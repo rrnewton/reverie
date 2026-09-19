@@ -63,6 +63,56 @@ use crate::failure::FailureContext;
 use crate::failure::RunFailure;
 use crate::failure::wait_for_failure;
 use crate::memory::RegionKind;
+
+/// Bounded test observations around the existing wait registration boundary.
+/// Registration is current-host scoped and invokes no closure under its borrow.
+#[cfg(test)]
+pub(crate) mod entry_wait_observation {
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum Site {
+        HostMain,
+        ToolMain,
+        Parking,
+    }
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum Boundary {
+        BeforeSubscription,
+        AfterSubscription,
+    }
+    type Observer = Arc<dyn Fn(Site, Boundary) + Send + Sync>;
+    thread_local! {
+        static OBSERVER: RefCell<Option<Observer>> = const { RefCell::new(None) };
+    }
+    pub(crate) struct Scope {
+        prior: Option<Observer>,
+        thread: std::thread::ThreadId,
+        _same_thread: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+    impl Scope {
+        pub(crate) fn new(observer: Observer) -> Self {
+            Self {
+                prior: OBSERVER.with(|slot| slot.replace(Some(observer))),
+                thread: std::thread::current().id(),
+                _same_thread: std::marker::PhantomData,
+            }
+        }
+    }
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            assert_eq!(self.thread, std::thread::current().id());
+            OBSERVER.with(|slot| slot.replace(self.prior.take()));
+        }
+    }
+    pub(crate) fn observe(site: Site, boundary: Boundary) {
+        let observer = OBSERVER.with(|slot| slot.borrow().clone());
+        if let Some(observer) = observer {
+            observer(site, boundary);
+        }
+    }
+}
 use crate::memory::UserMemory;
 use crate::vm::CompletedSyscallBoundary;
 use crate::vm::PageZeroFault;
@@ -227,6 +277,7 @@ where
 }
 
 enum InjectionCompletion {
+    ThreadCancelled,
     Returns {
         syscall_result: Option<i64>,
     },
@@ -952,7 +1003,7 @@ where
                         let continuation =
                             ProcessActionContinuation::from_captured(&action, boundary);
                         self.backend
-                            .run_process_action_with_tool_at_boundary(
+                            .run_injected_process_action_with_tool_at_boundary(
                                 self.executor,
                                 action,
                                 context,
@@ -998,6 +1049,9 @@ where
             let expose_result = expose_tool_scratch(&self.memory, self.backend.tool_stack_top());
             let outcome = action_result?;
             expose_result?;
+            if outcome.cancelled {
+                return Ok(InjectionCompletion::ThreadCancelled);
+            }
             *self.process_completed = true;
             if outcome.image_replaced || self.executor.has_pending_exit() {
                 Ok(InjectionCompletion::DoesNotReturn {
@@ -1054,6 +1108,7 @@ struct KvmGuest<'a, T: Tool> {
     stack_checked_out: Arc<AtomicBool>,
     observation_lease: Option<reverie::ParkedObservationLease>,
     notifying_dequeue: bool,
+    entry_watch: crate::entry::driver::EntryDriverWatch,
 }
 
 impl<'a, T: Tool> KvmGuest<'a, T> {
@@ -1077,6 +1132,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
         stack_checked_out: Arc<AtomicBool>,
     ) -> Self {
         executor.begin_signal_callback();
+        let entry_watch = crate::entry::driver::EntryDriverWatch::for_memory(&memory);
         Self {
             pid,
             tid,
@@ -1096,6 +1152,56 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
             stack_checked_out,
             observation_lease: None,
             notifying_dequeue: false,
+            entry_watch,
+        }
+    }
+
+    /// Preserve a previously selected nonlocal disposition. Its outer owner
+    /// folds the sticky private cause after settling the selected effects.
+    fn signal_ordinary_failure(&self, error: Error) {
+        let mut signal = self
+            .handler_signal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *signal = Some(match signal.take() {
+            Some(HandlerSignal::RuntimeError(prior)) => HandlerSignal::RuntimeError(
+                crate::entry::driver::combine_pending::<()>(Err(prior), Err(error)).unwrap_err(),
+            ),
+            Some(selected) => selected,
+            None => HandlerSignal::RuntimeError(error),
+        });
+    }
+
+    fn check_ordinary_operation(&self) -> Result<()> {
+        self.entry_watch
+            .check_operation(self.memory.entry_origin().operation.as_ref())
+    }
+
+    async fn admit_ordinary_operation(&self) {
+        if let Err(error) = self.check_ordinary_operation() {
+            self.signal_ordinary_failure(error);
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// Stop a continuation only after irreversible signal bookkeeping has
+    /// been retained. The ordinary admission check does not own that ledger.
+    async fn resume_ordinary_operation(&mut self, raw: Option<i64>) {
+        if let Err(error) = self.check_ordinary_operation() {
+            // A selected result already owns its ledger or nonlocal action.
+            // Do not copy that ledger into another branch of the error tree.
+            let selected = self
+                .handler_signal
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_some();
+            let error = if selected {
+                error
+            } else {
+                self.executor.with_signal_effects(error, raw)
+            };
+            self.signal_ordinary_failure(error);
+            std::future::pending::<()>().await;
         }
     }
 
@@ -1123,18 +1229,35 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for KvmGuest<'_, T> {
         // but a pending ordinary RPC can prevent its owner's physical join.
         // Signal the driver and leave this response unconstructed on failure.
         // Consuming hooks use KvmGlobal instead and must still deregister.
+        self.admit_ordinary_operation().await;
         let response = {
+            let mut private_failure = pin!(self.entry_watch.wait());
             let mut failure = pin!(wait_for_failure(
                 self.global_state,
                 self.executor.failure_subscription(),
             ));
+            // Admission precedes construction: an implementation of receive_rpc
+            // can perform work before returning its future.
             let mut response = pin!(self.global_state.receive_rpc(self.tid, message));
             poll_fn(|context| {
+                let _ = private_failure.as_mut().poll(context);
+                if let Err(error) = self.check_ordinary_operation() {
+                    self.signal_ordinary_failure(error);
+                    return Poll::Ready(None);
+                }
                 if failure.as_mut().poll(context).is_ready() {
+                    self.signal_ordinary_failure(Error::RunAborted);
                     return Poll::Ready(None);
                 }
                 let result = response.as_mut().poll(context);
+                if let Err(error) = self.check_ordinary_operation() {
+                    // Retain the cause before dropping a ready response: its
+                    // destructor can unwind into the existing outer catcher.
+                    self.signal_ordinary_failure(error);
+                    return Poll::Ready(None);
+                }
                 if failure.as_mut().poll(context).is_ready() {
+                    self.signal_ordinary_failure(Error::RunAborted);
                     return Poll::Ready(None);
                 }
                 result.map(Some)
@@ -1144,11 +1267,8 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for KvmGuest<'_, T> {
         match response {
             Some(response) => response,
             None => {
-                // Drop the ordinary request before publishing its nonlocal
-                // result. A callback may poll this RPC again (for example,
-                // after select returns its losing future); terminal polls must
-                // neither resume the completed failure wait nor admit RPC work.
-                self.signal_handler(HandlerSignal::RuntimeError(Error::RunAborted));
+                // The signal already owns the cause before ordinary request
+                // destruction. Repolling this losing future cannot dispatch.
                 std::future::pending().await
             }
         }
@@ -1204,6 +1324,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         &mut self,
         event: SignalEvent,
     ) -> std::result::Result<(), reverie::Error> {
+        self.admit_ordinary_operation().await;
         self.executor
             .defer_signal_delivery(event)
             .map_err(Into::into)
@@ -1213,6 +1334,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         &mut self,
         event: SignalEvent,
     ) -> reverie::ChildExitSignalOutcome {
+        self.admit_ordinary_operation().await;
         self.executor.queue_child_exit_signal(event)
     }
 
@@ -1220,6 +1342,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         &mut self,
         event: SignalEvent,
     ) -> reverie::ProcessAlarmSignalOutcome {
+        self.admit_ordinary_operation().await;
         self.executor.queue_process_alarm_signal(event)
     }
 
@@ -1268,6 +1391,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         lease: reverie::ParkedObservationLease,
     ) -> std::result::Result<reverie::ParkedSignalObservation, reverie::SignalObservationFailure>
     {
+        self.admit_ordinary_operation().await;
         self.observe_parked_signal_impl(site, lease).await
     }
     fn parked_signal_failure_context(&self) -> Option<reverie::ParkedSignalFailureContext> {
@@ -1299,6 +1423,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 
     async fn stack(&mut self) -> Self::Stack {
+        self.admit_ordinary_operation().await;
         KvmStack::new(
             self.memory.clone(),
             self.tool_stack_top,
@@ -1309,6 +1434,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     async fn daemonize(&mut self) {}
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> std::result::Result<i64, Errno> {
+        self.admit_ordinary_operation().await;
         self.executor.invalidate_polled_read_attempt();
         let request = SyscallRequest::from_syscall(syscall);
         if !self.executor.ordinary_injection_allowed(&request) {
@@ -1331,11 +1457,13 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
             self.signal_handler(HandlerSignal::RuntimeError(error));
             return std::future::pending().await;
         }
+        self.admit_ordinary_operation().await;
         let raw = self.executor.execute(&request, &self.memory);
         if let Err(error) = self.complete_signal_effects(Some(raw)).await {
             self.signal_handler(HandlerSignal::RuntimeError(error));
             return std::future::pending().await;
         }
+        self.resume_ordinary_operation(Some(raw)).await;
         let mut result = raw_to_result(raw);
         if result.is_ok() {
             let context = ToolContext {
@@ -1349,6 +1477,10 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
                 pending_child_starts: self.pending_child_starts.clone(),
             };
             match self.executor.complete_injection(context).await {
+                Ok(InjectionCompletion::ThreadCancelled) => {
+                    self.signal_handler(HandlerSignal::ThreadCancelled);
+                    return std::future::pending().await;
+                }
                 Ok(InjectionCompletion::DoesNotReturn {
                     image_replaced,
                     process_exited,
@@ -1374,10 +1506,16 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
                 }
             }
         }
+        self.resume_ordinary_operation(Some(match result {
+            Ok(raw) => raw,
+            Err(errno) => -i64::from(errno.into_raw()),
+        }))
+        .await;
         result
     }
 
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
+        self.admit_ordinary_operation().await;
         self.executor.invalidate_polled_read_attempt();
         let request = SyscallRequest::from_syscall(syscall);
         if !self.executor.tail_injection_allowed(&request) {
@@ -1439,6 +1577,10 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 
     fn read_clock(&mut self) -> std::result::Result<u64, reverie::Error> {
+        if let Err(error) = self.check_ordinary_operation() {
+            self.signal_ordinary_failure(error);
+            return Err(Errno::EIO.into());
+        }
         self.executor
             .read_clock()
             .map_err(|error| reverie::Error::Io(std::io::Error::other(error)))
@@ -1489,6 +1631,8 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
 /// A stack allocator backed by a low page reserved for Tool injection buffers.
 pub struct KvmStack {
     memory: UserMemory,
+    entry_watch: crate::entry::driver::EntryDriverWatch,
+    operation_origin: Option<crate::entry::owner::OperationOrigin>,
     top: u64,
     stack_pointer: u64,
     capacity: usize,
@@ -1511,6 +1655,8 @@ impl KvmStack {
         );
         Self {
             capacity: STACK_CAPACITY,
+            entry_watch: crate::entry::driver::EntryDriverWatch::for_memory(&memory),
+            operation_origin: memory.entry_origin().operation,
             memory: memory.user(),
             top,
             stack_pointer: top,
@@ -1591,10 +1737,27 @@ impl Stack for KvmStack {
     }
 
     fn commit(mut self) -> std::result::Result<Self::StackGuard, Errno> {
+        self.entry_watch
+            .check_operation(self.operation_origin.as_ref())
+            .map_err(|_| Errno::EIO)?;
         for (address, bytes) in &self.writes {
-            self.memory
-                .write_injection(*address, bytes)
-                .map_err(|_| Errno::EFAULT)?;
+            self.entry_watch
+                .check_operation(self.operation_origin.as_ref())
+                .map_err(|_| Errno::EIO)?;
+            self.memory.write_injection(*address, bytes).map_err(|_| {
+                if self
+                    .entry_watch
+                    .check_operation(self.operation_origin.as_ref())
+                    .is_err()
+                {
+                    Errno::EIO
+                } else {
+                    Errno::EFAULT
+                }
+            })?;
+            self.entry_watch
+                .check_operation(self.operation_origin.as_ref())
+                .map_err(|_| Errno::EIO)?;
         }
         Ok(KvmStackGuard {
             checked_out: self
@@ -1639,6 +1802,128 @@ enum HandlerOutcome<T> {
     RuntimeError(Error),
 }
 
+/// Map only a completed callback value, after the actual Tool future has been
+/// polled and destroyed by the driver. Nonlocal outcomes and payloads stay owned.
+fn map_handler_completion<T, U>(
+    completion: crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>>,
+    map: impl FnOnce(T) -> U,
+) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<U>> {
+    use crate::failure::owned_future::CaughtFuture;
+    let output = completion.output.map(|outcome| match outcome {
+        HandlerOutcome::Returned(value) => HandlerOutcome::Returned(map(value)),
+        HandlerOutcome::ParkedFatal(value) => HandlerOutcome::ParkedFatal(value),
+        HandlerOutcome::ParkedCancelled(value) => HandlerOutcome::ParkedCancelled(value),
+        HandlerOutcome::ParkedRetired(value) => HandlerOutcome::ParkedRetired(value),
+        HandlerOutcome::RunFailed => HandlerOutcome::RunFailed,
+        HandlerOutcome::ThreadCancelled => HandlerOutcome::ThreadCancelled,
+        HandlerOutcome::ThreadRetired => HandlerOutcome::ThreadRetired,
+        HandlerOutcome::TailInjected {
+            result,
+            image_replaced,
+            process_exited,
+        } => HandlerOutcome::TailInjected {
+            result,
+            image_replaced,
+            process_exited,
+        },
+        HandlerOutcome::RuntimeError(error) => HandlerOutcome::RuntimeError(error),
+    });
+    CaughtFuture {
+        output,
+        panics: completion.panics,
+    }
+}
+
+/// Scratch teardown follows destruction of the callback. An injected action
+/// error has not yet been published, so keep it ahead of any teardown error.
+fn finish_handler_scratch<T>(
+    outcome: HandlerOutcome<T>,
+    hidden: Result<()>,
+) -> Result<HandlerOutcome<T>> {
+    match outcome {
+        HandlerOutcome::RuntimeError(error) => Ok(HandlerOutcome::RuntimeError(
+            error.with_cleanup(hidden.err().into_iter().collect()),
+        )),
+        outcome => hidden.map(|()| outcome),
+    }
+}
+
+#[cfg(test)]
+mod handler_scratch_tests {
+    use super::*;
+
+    #[test]
+    fn injected_error_survives_scratch_failure_after_callback_destruction() {
+        struct CallbackGuard(Arc<AtomicBool>);
+        impl Drop for CallbackGuard {
+            fn drop(&mut self) {
+                assert!(!self.0.swap(true, Ordering::SeqCst));
+            }
+        }
+
+        for hide_fails in [false, true] {
+            let destroyed = Arc::new(AtomicBool::new(false));
+            let guard = CallbackGuard(destroyed.clone());
+            let primary = Arc::new(Error::HostIo(std::io::Error::from_raw_os_error(
+                libc::EAGAIN,
+            )));
+            let scratch = Arc::new(Error::GuestClock("scratch cleanup".to_owned()));
+            let signal = Arc::new(Mutex::new(None));
+            let callback_signal = signal.clone();
+            let callback_error = primary.clone();
+            let outcome = futures::executor::block_on(drive_handler(
+                async move {
+                    let _guard = guard;
+                    *callback_signal.lock().unwrap() = Some(HandlerSignal::RuntimeError(
+                        Error::SharedFailure(callback_error),
+                    ));
+                    std::future::pending::<()>().await
+                },
+                signal,
+                Arc::new(Mutex::new(Vec::new())),
+                std::future::pending(),
+            ));
+            assert!(destroyed.load(Ordering::SeqCst));
+            let hidden = if hide_fails {
+                Err(Error::SharedFailure(scratch.clone()))
+            } else {
+                Ok(())
+            };
+            let HandlerOutcome::RuntimeError(error) =
+                finish_handler_scratch(outcome, hidden).unwrap()
+            else {
+                panic!("injected failure was replaced");
+            };
+            assert!(error.retains_primary(&primary));
+            if hide_fails {
+                let Error::WithCleanup { cleanup, .. } = error else {
+                    panic!("scratch failure was discarded");
+                };
+                assert_eq!(cleanup.len(), 1);
+                assert!(cleanup[0].retains_primary(&scratch));
+            } else {
+                assert!(
+                    matches!(error, Error::SharedFailure(ref error) if Arc::ptr_eq(error, &primary))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_callback_value_requires_successful_scratch_cleanup() {
+        assert!(matches!(
+            finish_handler_scratch(HandlerOutcome::Returned(29), Ok(())),
+            Ok(HandlerOutcome::Returned(29))
+        ));
+        let error = Arc::new(Error::GuestClock("scratch cleanup".to_owned()));
+        let failed = finish_handler_scratch(
+            HandlerOutcome::Returned(29),
+            Err(Error::SharedFailure(error.clone())),
+        );
+        assert!(matches!(failed, Err(ref returned) if returned.retains_primary(&error)));
+    }
+}
+
 /// A callback can terminate the thread without selecting a guest continuation.
 enum CallbackOutcome<T> {
     Completed(T),
@@ -1646,12 +1931,173 @@ enum CallbackOutcome<T> {
     ThreadRetired,
 }
 
-async fn drive_handler<T>(
+fn handler_signal_outcome<T>(signal: HandlerSignal) -> HandlerOutcome<T> {
+    match signal {
+        HandlerSignal::ParkedFatal(selection) => HandlerOutcome::ParkedFatal(selection),
+        HandlerSignal::ParkedCancelled(context) => HandlerOutcome::ParkedCancelled(context),
+        HandlerSignal::ParkedRetired(context) => HandlerOutcome::ParkedRetired(context),
+        HandlerSignal::ThreadCancelled => HandlerOutcome::ThreadCancelled,
+        HandlerSignal::ThreadRetired => HandlerOutcome::ThreadRetired,
+        HandlerSignal::TailInjected {
+            result,
+            image_replaced,
+            process_exited,
+        } => HandlerOutcome::TailInjected {
+            result,
+            image_replaced,
+            process_exited,
+        },
+        HandlerSignal::RuntimeError(error) => HandlerOutcome::RuntimeError(error),
+    }
+}
+
+/// A callback constructor can record a terminal signal before returning its
+/// future. Retain that outcome even if construction itself then panics.
+#[cfg(test)]
+async fn drive_handler_completion_from<B, F, T>(
+    build: B,
+    handler_signal: SharedHandlerSignal,
+    pending_child_starts: SharedChildStarts,
+    failure: impl Future<Output = ()>,
+) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>>
+where
+    B: FnOnce() -> F,
+    F: Future<Output = T>,
+{
+    drive_handler_completion_from_inner(build, handler_signal, pending_child_starts, failure, None)
+        .await
+}
+
+async fn drive_entry_handler_completion_from<B, F, T>(
+    build: B,
+    handler_signal: SharedHandlerSignal,
+    pending_child_starts: SharedChildStarts,
+    failure: impl Future<Output = ()>,
+    watch: crate::entry::driver::EntryDriverWatch,
+) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>>
+where
+    B: FnOnce() -> F,
+    F: Future<Output = T>,
+{
+    drive_handler_completion_from_inner(
+        build,
+        handler_signal,
+        pending_child_starts,
+        failure,
+        Some(watch),
+    )
+    .await
+}
+
+async fn drive_handler_completion_from_inner<B, F, T>(
+    build: B,
+    handler_signal: SharedHandlerSignal,
+    pending_child_starts: SharedChildStarts,
+    failure: impl Future<Output = ()>,
+    watch: Option<crate::entry::driver::EntryDriverWatch>,
+) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>>
+where
+    B: FnOnce() -> F,
+    F: Future<Output = T>,
+{
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
+
+    use crate::failure::owned_future::CaughtFuture;
+
+    if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
+        // The factory itself can own user values with destructors. Keep the
+        // pending typed cause outside their separate destruction catch.
+        let mut completion = CaughtFuture {
+            output: Some(HandlerOutcome::RuntimeError(error)),
+            panics: Vec::new(),
+        };
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(build))) {
+            completion.panics.push(payload);
+        }
+        if let Some(signal) = handler_signal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            completion.output = Some(match signal {
+                HandlerSignal::RuntimeError(error) => HandlerOutcome::RuntimeError(
+                    crate::entry::driver::combine_pending::<()>(
+                        Err(error),
+                        watch.as_ref().unwrap().check(),
+                    )
+                    .unwrap_err(),
+                ),
+                signal => handler_signal_outcome(signal),
+            });
+        }
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(failure))) {
+            completion.panics.push(payload);
+        }
+        return completion;
+    }
+
+    match catch_unwind(AssertUnwindSafe(build)) {
+        Ok(future) => {
+            drive_handler_completion_inner(
+                future,
+                handler_signal,
+                pending_child_starts,
+                failure,
+                watch,
+            )
+            .await
+        }
+        Err(payload) => {
+            // Construction may have moved the only error owner into this slot
+            // and poisoned its lock. Recover it before another destructor can
+            // unwind. No callback future was returned, and no child may start.
+            let output = handler_signal
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+                .map(handler_signal_outcome);
+            let mut completion = CaughtFuture {
+                output,
+                panics: vec![payload],
+            };
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(failure))) {
+                completion.panics.push(payload);
+            }
+            if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err())
+                && completion.output.is_none()
+            {
+                completion.output = Some(HandlerOutcome::RuntimeError(error));
+            }
+            completion
+        }
+    }
+}
+
+#[cfg(any(test, feature = "native-test-support"))]
+async fn drive_handler_completion<T>(
     future: impl Future<Output = T>,
     handler_signal: SharedHandlerSignal,
     pending_child_starts: SharedChildStarts,
     failure: impl Future<Output = ()>,
-) -> HandlerOutcome<T> {
+) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>> {
+    drive_handler_completion_inner(future, handler_signal, pending_child_starts, failure, None)
+        .await
+}
+
+async fn drive_handler_completion_inner<T>(
+    future: impl Future<Output = T>,
+    handler_signal: SharedHandlerSignal,
+    pending_child_starts: SharedChildStarts,
+    failure: impl Future<Output = ()>,
+    watch: Option<crate::entry::driver::EntryDriverWatch>,
+) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>> {
+    use std::panic::AssertUnwindSafe;
+    use std::panic::catch_unwind;
+
+    use crate::failure::owned_future::CaughtFuture;
+    use crate::failure::owned_future::catch_owned_future;
+
     // The callback may already have moved irreversible effects into this
     // terminal error. Failure still wins over ordinary values/child starts,
     // but must not replace the owned error with an empty cancellation marker.
@@ -1663,15 +2109,64 @@ async fn drive_handler<T>(
         Some(HandlerSignal::RuntimeError(error)) => HandlerOutcome::RuntimeError(error),
         _ => HandlerOutcome::RunFailed,
     };
-    let mut future = pin!(future);
-    let mut failure = pin!(failure);
-    poll_fn(|context| {
+    // Own the pinned allocation: dropping a Pin<&mut F> would only end a
+    // borrow. Any caller's callback receipt must follow destruction of this
+    // future, including an inline RPC that was pending when failure arrived.
+    let mut future = Box::pin(future);
+    let mut failure = Box::pin(failure);
+    let private_watch = watch.clone();
+    let mut private_failure = Box::pin(async move {
+        match private_watch {
+            Some(watch) => watch.wait().await,
+            None => std::future::pending::<()>().await,
+        }
+    });
+    let mut selected = None;
+    let mut select = |outcome| {
+        selected = Some(outcome);
+        Poll::Ready(())
+    };
+    // This driver only borrows the callback. Its caught poll cannot destroy the
+    // callback allocation or an outcome already moved out of the signal slot.
+    let caught = catch_owned_future(poll_fn(|context| {
+        // Register the private wake before rechecking the sticky obligation.
+        let _ = private_failure.as_mut().poll(context);
+        if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
+            let prior = handler_signal
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            return select(match prior {
+                Some(HandlerSignal::RuntimeError(prior)) => HandlerOutcome::RuntimeError(
+                    crate::entry::driver::combine_pending::<()>(Err(prior), Err(error))
+                        .unwrap_err(),
+                ),
+                Some(signal) => handler_signal_outcome(signal),
+                None => HandlerOutcome::RuntimeError(error),
+            });
+        }
         if failure.as_mut().poll(context).is_ready() {
-            return Poll::Ready(terminal());
+            return select(terminal());
         }
         let result = future.as_mut().poll(context);
+        if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
+            // Keep a selected typed callback value/nonlocal result intact.
+            // The outer finalizer maps its error before combining this sticky
+            // cause; dropping a Ready Err here would lose its actual payload.
+            let signal = handler_signal
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            if let Some(signal) = signal {
+                return select(handler_signal_outcome(signal));
+            }
+            return select(match result {
+                Poll::Ready(value) => HandlerOutcome::Returned(value),
+                Poll::Pending => HandlerOutcome::RuntimeError(error),
+            });
+        }
         if failure.as_mut().poll(context).is_ready() {
-            return Poll::Ready(terminal());
+            return select(terminal());
         }
         // A callback can select another ready future after an operation records
         // a nonlocal result. Consume that result before accepting either a
@@ -1680,46 +2175,20 @@ async fn drive_handler<T>(
             .lock()
             .expect("KVM handler signal lock poisoned")
             .take();
-        match handler_signal {
-            Some(HandlerSignal::ParkedFatal(selection)) => {
-                return Poll::Ready(HandlerOutcome::ParkedFatal(selection));
-            }
-            Some(HandlerSignal::ParkedCancelled(context)) => {
-                return Poll::Ready(HandlerOutcome::ParkedCancelled(context));
-            }
-            Some(HandlerSignal::ParkedRetired(context)) => {
-                return Poll::Ready(HandlerOutcome::ParkedRetired(context));
-            }
-            Some(HandlerSignal::ThreadCancelled) => {
-                return Poll::Ready(HandlerOutcome::ThreadCancelled);
-            }
-            Some(HandlerSignal::ThreadRetired) => {
-                return Poll::Ready(HandlerOutcome::ThreadRetired);
-            }
-            Some(HandlerSignal::TailInjected {
-                result,
-                image_replaced,
-                process_exited,
-            }) => {
-                return Poll::Ready(HandlerOutcome::TailInjected {
-                    result,
-                    image_replaced,
-                    process_exited,
-                });
-            }
-            Some(HandlerSignal::RuntimeError(error)) => {
-                return Poll::Ready(HandlerOutcome::RuntimeError(error));
-            }
-            None => {}
+        if let Some(signal) = handler_signal {
+            return select(handler_signal_outcome(signal));
         }
         match result {
-            Poll::Ready(result) => Poll::Ready(HandlerOutcome::Returned(result)),
+            Poll::Ready(result) => select(HandlerOutcome::Returned(result)),
             Poll::Pending => {
+                if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
+                    return select(HandlerOutcome::RuntimeError(error));
+                }
                 let mut starts = pending_child_starts
                     .lock()
                     .expect("KVM child-start lock poisoned");
                 if starts.iter().any(|start| start.start().is_err()) {
-                    return Poll::Ready(HandlerOutcome::RuntimeError(Error::UnexpectedVcpuExit(
+                    return select(HandlerOutcome::RuntimeError(Error::UnexpectedVcpuExit(
                         "KVM child exited before its parent suspended registration".to_owned(),
                     )));
                 }
@@ -1727,8 +2196,59 @@ async fn drive_handler<T>(
                 Poll::Pending
             }
         }
-    })
-    .await
+    }))
+    .await;
+    // Selection precedes unwinding any discarded callback value as well as
+    // destruction of the callback future itself. Neither owns this outcome.
+    let mut completion = CaughtFuture {
+        output: selected,
+        panics: caught.panics,
+    };
+    if completion.output.is_none() {
+        // Polling may have stored the original error and then panicked while
+        // holding this mutex. Keep that owned result before callback Drop can
+        // panic too; lock poison must not replace the already-caught payload.
+        completion.output = handler_signal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .map(handler_signal_outcome);
+    }
+    // Keep the selected outcome outside both destruction catches. Neither a
+    // callback panic nor destruction of the failure future may discard it.
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(future))) {
+        completion.panics.push(payload);
+    }
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(failure))) {
+        completion.panics.push(payload);
+    }
+    // Destructors may themselves capture a cause. Do not discard a selected
+    // value before its typed mapping; the production finalizer rechecks it.
+    if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err())
+        && completion.output.is_none()
+    {
+        completion.output = Some(HandlerOutcome::RuntimeError(error));
+    }
+    completion
+}
+
+/// Compatibility for the old non-panicking controls. Production callers must
+/// retain both fields of the completion instead of using this wrapper.
+#[cfg(any(test, feature = "native-test-support"))]
+async fn drive_handler<T>(
+    future: impl Future<Output = T>,
+    handler_signal: SharedHandlerSignal,
+    pending_child_starts: SharedChildStarts,
+    failure: impl Future<Output = ()>,
+) -> HandlerOutcome<T> {
+    let mut completion =
+        drive_handler_completion(future, handler_signal, pending_child_starts, failure).await;
+    if !completion.panics.is_empty() {
+        std::panic::resume_unwind(completion.panics.remove(0));
+    }
+    completion
+        .output
+        .expect("non-panicking callback driver returned no outcome")
 }
 
 pub(crate) fn start_pending_children(pending_child_starts: &SharedChildStarts) -> Result<()> {
@@ -1802,9 +2322,15 @@ where
         let registers = kvm_registers(backend.vcpu.get_regs()?, 0);
         let handler_signal = Arc::new(Mutex::new(None));
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+        backend.check_entry_owner()?;
         expose_tool_scratch(memory, tool_stack_top)?;
         let mut _process_completed = false;
+        let callback_scope = backend.begin_entry_callback()?;
+        let callback_watch = backend.entry_driver_watch();
+        let callback_memory = backend.memory.clone();
+        executor.bind_address_space(&callback_memory);
         let outcome = {
+            let memory = callback_memory;
             let mut guest_executor = StaticElfSyscallExecutor {
                 backend,
                 executor,
@@ -1837,15 +2363,27 @@ where
                 tool_stack_top,
                 stack_checked_out.clone(),
             );
-            drive_handler(
-                tool.handle_post_exec(&mut guest),
+            drive_entry_handler_completion_from(
+                || tool.handle_post_exec(&mut guest),
                 handler_signal,
                 pending_child_starts.clone(),
                 wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
+                callback_watch.clone(),
             )
             .await
         };
-        hide_tool_scratch(memory, tool_stack_top)?;
+        drop(callback_scope);
+        backend.restore_entry_origin();
+        executor.bind_address_space(&backend.memory);
+
+        let outcome = backend
+            .finish_entry_handler_completion(
+                outcome,
+                hide_tool_scratch(memory, tool_stack_top),
+                Error::PostExec,
+                &callback_watch,
+            )
+            .await?;
         match outcome {
             HandlerOutcome::Returned(Ok(())) => return Ok(CallbackOutcome::Completed(())),
             HandlerOutcome::Returned(Err(error)) => return Err(Error::PostExec(error)),
@@ -1947,9 +2485,15 @@ where
 
     let handler_signal = Arc::new(Mutex::new(None));
     let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+    backend.check_entry_owner()?;
     expose_tool_scratch(memory, tool_stack_top)?;
     let mut _process_completed = false;
+    let callback_scope = backend.begin_entry_callback()?;
+    let callback_watch = backend.entry_driver_watch();
+    let callback_memory = backend.memory.clone();
+    executor.bind_address_space(&callback_memory);
     let outcome = {
+        let memory = callback_memory;
         let mut guest_executor = StaticElfSyscallExecutor {
             backend,
             executor,
@@ -1981,15 +2525,27 @@ where
             tool_stack_top,
             stack_checked_out.clone(),
         );
-        drive_handler(
-            tool.handle_syscall_event(&mut guest, syscall),
+        drive_entry_handler_completion_from(
+            || tool.handle_syscall_event(&mut guest, syscall),
             handler_signal,
             pending_child_starts.clone(),
             wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
+            callback_watch.clone(),
         )
         .await
     };
-    hide_tool_scratch(memory, tool_stack_top)?;
+    drop(callback_scope);
+    backend.restore_entry_origin();
+    executor.bind_address_space(&backend.memory);
+
+    let outcome = backend
+        .finish_entry_handler_completion(
+            outcome,
+            hide_tool_scratch(memory, tool_stack_top),
+            Error::Reverie,
+            &callback_watch,
+        )
+        .await?;
 
     match outcome {
         HandlerOutcome::Returned(result) => result
@@ -2121,7 +2677,7 @@ struct ToolExit {
     process_exited: bool,
 }
 #[allow(clippy::too_many_arguments)]
-async fn notify_tool_exit<T: Tool>(
+async fn notify_tool_exit_with_panics<T: Tool>(
     tool: Arc<T>,
     pid: Pid,
     tid: Pid,
@@ -2130,7 +2686,11 @@ async fn notify_tool_exit<T: Tool>(
     thread_state: T::ThreadState,
     exit: ToolExit,
     failure: Option<&FailureContext>,
+    panics: &crate::failure::tool_panics::ToolPanics,
 ) -> Result<()> {
+    use crate::failure::owned_future::CaughtFuture;
+    use crate::failure::owned_future::catch_owned_future_from;
+
     // on_exit_thread deregisters this thread from the scheduler, so its RPCs
     // must be attributed to the exiting thread's tid.
     let thread_global = KvmGlobal {
@@ -2138,18 +2698,27 @@ async fn notify_tool_exit<T: Tool>(
         state: global_state,
         config,
     };
-    let thread_result = tool
-        .on_exit_thread(tid, &thread_global, thread_state, exit.status)
-        .await
+    let caught = catch_owned_future_from(|| {
+        tool.on_exit_thread(tid, &thread_global, thread_state, exit.status)
+    })
+    .await;
+    let thread_result = panics
+        .finish(
+            CaughtFuture {
+                output: caught.output.map(|result| result.map_err(Error::Reverie)),
+                panics: caught.panics,
+            },
+            "thread exit hook",
+        )
         .map_err(|error| match failure {
-            Some(failure) => failure.publish("thread exit hook", Error::Reverie(error)),
+            Some(failure) => failure.publish("thread exit hook", error),
             None => {
                 global_state.report_backend_failure(reverie::BackendFailure {
                     pid,
                     tid,
                     phase: "thread exit hook",
                 });
-                Error::Reverie(error)
+                error
             }
         });
     if !exit.process_exited {
@@ -2164,10 +2733,18 @@ async fn notify_tool_exit<T: Tool>(
     // A failed thread hook has still consumed ThreadState. Attempt the
     // process hook as well, after every worker has dropped its process Arc.
     let process_result = match Arc::try_unwrap(tool) {
-        Ok(tool) => tool
-            .on_exit_process(pid, &process_global, exit.status)
-            .await
-            .map_err(Error::Reverie),
+        Ok(tool) => {
+            let caught =
+                catch_owned_future_from(|| tool.on_exit_process(pid, &process_global, exit.status))
+                    .await;
+            panics.finish(
+                CaughtFuture {
+                    output: caught.output.map(|result| result.map_err(Error::Reverie)),
+                    panics: caught.panics,
+                },
+                "process exit hook",
+            )
+        }
         Err(_) => Err(Error::UnexpectedVcpuExit(
             "KVM worker retained process Tool state after exit".to_owned(),
         )),
@@ -2190,16 +2767,42 @@ async fn notify_tool_exit<T: Tool>(
     }
 }
 
-/// Result of a Tool run after owned workers and children have completed.
-pub struct ToolRunCompletion<G> {
-    /// Global Tool state, retained on runtime failure for consuming cleanup.
-    pub global_state: G,
-    /// Guest output/status, or a typed fatal runtime/Tool cause.
-    pub result: Result<(i32, Vec<u8>, Vec<u8>)>,
+/// Compatibility for existing non-panicking controls. Production owners retain
+/// their ToolPanics through all hooks and joins instead of using this wrapper.
+#[cfg(any(test, feature = "native-test-support"))]
+#[allow(clippy::too_many_arguments)]
+async fn notify_tool_exit<T: Tool>(
+    tool: Arc<T>,
+    pid: Pid,
+    tid: Pid,
+    global_state: &T::GlobalState,
+    config: &<T::GlobalState as GlobalTool>::Config,
+    thread_state: T::ThreadState,
+    exit: ToolExit,
+    failure: Option<&FailureContext>,
+) -> Result<()> {
+    let panics = crate::failure::tool_panics::ToolPanics::default();
+    let result = notify_tool_exit_with_panics(
+        tool,
+        pid,
+        tid,
+        global_state,
+        config,
+        thread_state,
+        exit,
+        failure,
+        &panics,
+    )
+    .await;
+    let mut payloads = panics.take();
+    if !payloads.is_empty() {
+        std::panic::resume_unwind(payloads.remove(0));
+    }
+    result
 }
 
-/// Complete the owner after physical worker joins, publishing every newly
-/// discovered failure before consuming hooks or joining independent children.
+/// Compatibility for existing native controls which expect panic propagation.
+#[cfg(any(test, feature = "native-test-support"))]
 #[allow(clippy::too_many_arguments)]
 async fn finish_tool_process_after_workers<T: Tool>(
     executor: &mut ElfExecutor,
@@ -2212,6 +2815,54 @@ async fn finish_tool_process_after_workers<T: Tool>(
     cancelled_exit: Option<ToolProcessExit>,
     workers: Result<()>,
     failure: Option<&FailureContext>,
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+    let panics = crate::failure::tool_panics::ToolPanics::default();
+    let result = finish_tool_process_after_workers_with_panics(
+        executor,
+        tool,
+        identity,
+        global_state,
+        config,
+        thread_state,
+        outcome,
+        cancelled_exit,
+        workers,
+        failure,
+        &panics,
+        None,
+    )
+    .await;
+    let mut payloads = panics.take();
+    if !payloads.is_empty() {
+        std::panic::resume_unwind(payloads.remove(0));
+    }
+    result
+}
+
+/// Result of a Tool run after owned workers and children have completed.
+pub struct ToolRunCompletion<G> {
+    /// Global Tool state, retained on runtime failure for consuming cleanup.
+    pub global_state: G,
+    /// Guest output/status, or a typed fatal runtime/Tool cause.
+    pub result: Result<(i32, Vec<u8>, Vec<u8>)>,
+}
+
+/// Complete the owner after physical worker joins, publishing every newly
+/// discovered failure before consuming hooks or joining independent children.
+#[allow(clippy::too_many_arguments)]
+async fn finish_tool_process_after_workers_with_panics<T: Tool>(
+    executor: &mut ElfExecutor,
+    tool: Arc<T>,
+    identity: (Pid, Pid),
+    global_state: &T::GlobalState,
+    config: &<T::GlobalState as GlobalTool>::Config,
+    thread_state: T::ThreadState,
+    outcome: Result<ToolProcessExit>,
+    cancelled_exit: Option<ToolProcessExit>,
+    workers: Result<()>,
+    failure: Option<&FailureContext>,
+    panics: &crate::failure::tool_panics::ToolPanics,
+    backend: Option<&KvmBackend>,
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
     let (pid, tid) = identity;
     let report = |phase, error| match failure {
@@ -2265,7 +2916,7 @@ async fn finish_tool_process_after_workers<T: Tool>(
     }
     // Worker hooks precede the leader. Owner hooks precede independent forks
     // that may need the parent's deregistration/accounting to finish.
-    let owner = notify_tool_exit(
+    let owner = notify_tool_exit_with_panics(
         tool,
         pid,
         tid,
@@ -2277,9 +2928,17 @@ async fn finish_tool_process_after_workers<T: Tool>(
             process_exited: pid == tid,
         },
         failure,
+        panics,
     )
     .await
     .map_err(|error| report("owner exit", error));
+    // Consuming hooks may use retained memory. Route their newly captured
+    // obligation before any physical child join, outside all callback scopes.
+    let entry = match backend {
+        Some(backend) => backend.route_entry_outcome(Ok(())).await,
+        None => Ok(()),
+    }
+    .map_err(|error| report("entry completion", error));
     // A peer can publish after this process's successful local outcome. Its
     // terminal state must still select Cancel for every pending child gate.
     let terminal = wait_for_failure(global_state, failure.map(|failure| failure.run.subscribe()))
@@ -2291,6 +2950,7 @@ async fn finish_tool_process_after_workers<T: Tool>(
             || owner.is_err()
             || workers.is_err()
             || process_status.is_err()
+            || entry.is_err()
         {
             executor.join_child_processes_after_failure()
         } else {
@@ -2305,6 +2965,7 @@ async fn finish_tool_process_after_workers<T: Tool>(
         workers,
         process_status,
         owner,
+        entry,
         children,
     ]
     .into_iter()
@@ -2315,7 +2976,414 @@ async fn finish_tool_process_after_workers<T: Tool>(
     Ok((status, stdout, stderr))
 }
 
+/// Failed spawns transfer their unpolled consuming cleanup out of the parent
+/// callback. Its driver publishes the parent failure before calling this;
+/// a bare RunAborted is the child's derived failure-cleanup marker only.
+#[cfg(test)]
+async fn finish_unstarted_tool_cleanups(executor: &mut ElfExecutor) -> Result<()> {
+    let mut errors = Vec::new();
+    for cleanup in executor.take_unstarted_tool_cleanup() {
+        match cleanup.await {
+            Ok(()) | Err(Error::RunAborted) => {}
+            Err(error) => errors.push(error),
+        }
+    }
+    Error::combine(errors)
+}
+
+/// Drain constructed children in order while retaining each completed panic
+/// before polling the next child. A child's own transfer guard may also append
+/// payloads while its future is polled or destroyed.
+pub(crate) async fn finish_unstarted_tool_cleanups_with_panics(
+    executor: &mut ElfExecutor,
+    panics: &crate::failure::tool_panics::ToolPanics,
+) -> Result<()> {
+    let cleanups = executor.take_unstarted_tool_cleanup();
+    let mut errors = Vec::new();
+    for cleanup in cleanups {
+        let caught = crate::failure::owned_future::catch_owned_future(cleanup).await;
+        match panics.finish(caught, "unstarted-child cleanup") {
+            Ok(()) | Err(Error::RunAborted) => {}
+            Err(error) => errors.push(error),
+        }
+    }
+    Error::combine(errors)
+}
+
+/// Drain the retained consumers after their owner's caught panic. Publication
+/// and propagation of that panic remain the caller's responsibility.
+#[cfg(test)]
+pub(crate) async fn finish_unstarted_tool_cleanups_after_panic(
+    executor: &mut ElfExecutor,
+) -> crate::failure::owned_future::CaughtFuture<Result<()>> {
+    use crate::failure::owned_future::CaughtFuture;
+    use crate::failure::owned_future::catch_owned_future;
+
+    // Take the whole queue before polling a consumer. The iterator and all
+    // prior outcomes stay outside each individual poll/destruction catch.
+    let cleanups = executor.take_unstarted_tool_cleanup();
+    let mut errors = Vec::new();
+    let mut panics = Vec::new();
+    for cleanup in cleanups {
+        let caught = catch_owned_future(cleanup).await;
+        match caught.output {
+            None | Some(Ok(())) | Some(Err(Error::RunAborted)) => {}
+            Some(Err(error)) => errors.push(error),
+        }
+        panics.extend(caught.panics);
+    }
+    CaughtFuture {
+        output: Some(Error::combine(errors)),
+        panics,
+    }
+}
+
+#[cfg(test)]
+mod unstarted_cleanup_panic_tests {
+    use std::panic::resume_unwind;
+    use std::sync::atomic::AtomicUsize;
+    use std::task::Context;
+    use std::task::Waker;
+
+    use futures::channel::oneshot;
+
+    use super::*;
+    use crate::failure::owned_future::PanicPayload;
+
+    #[derive(Default)]
+    struct Counts {
+        polls: AtomicUsize,
+        drops: AtomicUsize,
+    }
+
+    struct Consumer {
+        counts: Arc<Counts>,
+        output: Option<Result<()>>,
+        release: Option<oneshot::Receiver<()>>,
+        poll_panic: Option<PanicPayload>,
+        drop_panic: Option<PanicPayload>,
+    }
+
+    impl Consumer {
+        fn ready(output: Result<()>, counts: Arc<Counts>) -> Self {
+            Self {
+                counts,
+                output: Some(output),
+                release: None,
+                poll_panic: None,
+                drop_panic: None,
+            }
+        }
+    }
+
+    impl Future for Consumer {
+        type Output = Result<()>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            this.counts.polls.fetch_add(1, Ordering::SeqCst);
+            if let Some(payload) = this.poll_panic.take() {
+                resume_unwind(payload);
+            }
+            if let Some(release) = this.release.as_mut() {
+                match Pin::new(release).poll(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Ok(())) => {}
+                    Poll::Ready(Err(_)) => panic!("consumer release was dropped"),
+                }
+            }
+            this.release.take();
+            Poll::Ready(this.output.take().expect("completed consumer was repolled"))
+        }
+    }
+
+    impl Drop for Consumer {
+        fn drop(&mut self) {
+            self.counts.drops.fetch_add(1, Ordering::SeqCst);
+            if let Some(payload) = self.drop_panic.take() {
+                resume_unwind(payload);
+            }
+        }
+    }
+
+    struct PanicMarker(&'static str);
+
+    fn payload(label: &'static str) -> (PanicPayload, usize) {
+        let marker = Box::new(PanicMarker(label));
+        let address = std::ptr::from_ref(marker.as_ref()) as usize;
+        (marker, address)
+    }
+
+    fn assert_payload(payload: &PanicPayload, address: usize, label: &'static str) {
+        let marker = payload.downcast_ref::<PanicMarker>().unwrap();
+        assert_eq!(std::ptr::from_ref(marker) as usize, address);
+        assert_eq!(marker.0, label);
+    }
+
+    fn executor() -> ElfExecutor {
+        ElfExecutor::new(
+            crate::executor::native_loaded_state(std::path::Path::new("/")),
+            false,
+        )
+    }
+
+    #[test]
+    fn poll_and_drop_panics_preserve_pending_and_later_consumers() {
+        let mut executor = executor();
+        let first = Arc::new(Counts::default());
+        let second = Arc::new(Counts::default());
+        let third = Arc::new(Counts::default());
+        let (poll_panic, poll_address) = payload("first poll");
+        let (drop_panic, drop_address) = payload("first drop");
+        let mut consumer = Consumer::ready(Ok(()), first.clone());
+        consumer.poll_panic = Some(poll_panic);
+        consumer.drop_panic = Some(drop_panic);
+        executor.retain_unstarted_tool_cleanup(Box::pin(consumer));
+        let (release, wait) = oneshot::channel();
+        let mut consumer = Consumer::ready(Ok(()), second.clone());
+        consumer.release = Some(wait);
+        executor.retain_unstarted_tool_cleanup(Box::pin(consumer));
+        executor.retain_unstarted_tool_cleanup(Box::pin(Consumer::ready(Ok(()), third.clone())));
+
+        let mut drain = Box::pin(finish_unstarted_tool_cleanups_after_panic(&mut executor));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(drain.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(first.polls.load(Ordering::SeqCst), 1);
+        assert_eq!(first.drops.load(Ordering::SeqCst), 1);
+        assert_eq!(second.polls.load(Ordering::SeqCst), 1);
+        assert_eq!(second.drops.load(Ordering::SeqCst), 0);
+        assert_eq!(third.polls.load(Ordering::SeqCst), 0);
+        assert_eq!(third.drops.load(Ordering::SeqCst), 0);
+
+        release.send(()).unwrap();
+        let Poll::Ready(caught) = drain.as_mut().poll(&mut cx) else {
+            panic!("released consumer stayed pending");
+        };
+        assert!(matches!(caught.output, Some(Ok(()))));
+        assert_eq!(caught.panics.len(), 2);
+        assert_payload(&caught.panics[0], poll_address, "first poll");
+        assert_payload(&caught.panics[1], drop_address, "first drop");
+        drop(drain);
+        assert_eq!(first.polls.load(Ordering::SeqCst), 1);
+        assert_eq!(first.drops.load(Ordering::SeqCst), 1);
+        assert_eq!(second.polls.load(Ordering::SeqCst), 2);
+        assert_eq!(second.drops.load(Ordering::SeqCst), 1);
+        assert_eq!(third.polls.load(Ordering::SeqCst), 1);
+        assert_eq!(third.drops.load(Ordering::SeqCst), 1);
+        assert!(executor.take_unstarted_tool_cleanup().is_empty());
+    }
+
+    #[test]
+    fn returned_error_and_drop_panic_preserve_later_real_errors() {
+        let mut executor = executor();
+        let first = Arc::new(Counts::default());
+        let second = Arc::new(Counts::default());
+        let third = Arc::new(Counts::default());
+        let first_cause = Arc::new(Error::GuestClock("first consumer error".to_owned()));
+        let second_cause = Arc::new(Error::HostIo(std::io::Error::from_raw_os_error(libc::EIO)));
+        let (drop_panic, drop_address) = payload("drop after returned error");
+        let (later_panic, later_address) = payload("drop after later error");
+        let mut consumer = Consumer::ready(
+            Err(Error::SharedFailure(first_cause.clone())),
+            first.clone(),
+        );
+        consumer.drop_panic = Some(drop_panic);
+        executor.retain_unstarted_tool_cleanup(Box::pin(consumer));
+        let mut consumer = Consumer::ready(
+            Err(Error::RunAborted.with_cleanup(vec![Error::SharedFailure(second_cause.clone())])),
+            second.clone(),
+        );
+        consumer.drop_panic = Some(later_panic);
+        executor.retain_unstarted_tool_cleanup(Box::pin(consumer));
+        executor.retain_unstarted_tool_cleanup(Box::pin(Consumer::ready(Ok(()), third.clone())));
+
+        let mut drain = Box::pin(finish_unstarted_tool_cleanups_after_panic(&mut executor));
+        let mut cx = Context::from_waker(Waker::noop());
+        let Poll::Ready(caught) = drain.as_mut().poll(&mut cx) else {
+            panic!("ready consumers stayed pending");
+        };
+        let Some(Err(error)) = caught.output else {
+            panic!("consumer errors were lost");
+        };
+        let Error::WithCleanup { primary, cleanup } = error else {
+            panic!("later error was not retained");
+        };
+        assert!(matches!(
+            primary.as_ref(),
+            Error::SharedFailure(cause) if Arc::ptr_eq(cause, &first_cause)
+        ));
+        assert_eq!(cleanup.len(), 1);
+        let Error::WithCleanup { primary, cleanup } = cleanup[0].as_ref() else {
+            panic!("wrapped abort hid its real cleanup error");
+        };
+        assert!(matches!(primary.as_ref(), Error::RunAborted));
+        assert_eq!(cleanup.len(), 1);
+        assert!(matches!(
+            cleanup[0].as_ref(),
+            Error::SharedFailure(cause) if Arc::ptr_eq(cause, &second_cause)
+        ));
+        assert_eq!(caught.panics.len(), 2);
+        assert_payload(&caught.panics[0], drop_address, "drop after returned error");
+        assert_payload(&caught.panics[1], later_address, "drop after later error");
+        drop(drain);
+        for counts in [&first, &second, &third] {
+            assert_eq!(counts.polls.load(Ordering::SeqCst), 1);
+            assert_eq!(counts.drops.load(Ordering::SeqCst), 1);
+        }
+        assert!(executor.take_unstarted_tool_cleanup().is_empty());
+    }
+
+    #[test]
+    fn only_bare_abort_is_ignored_and_empty_drain_has_an_output() {
+        let mut executor = executor();
+        let shared_abort = Arc::new(Error::RunAborted);
+        for error in [
+            Error::RunAborted,
+            Error::SharedFailure(shared_abort.clone()),
+            Error::RunAborted.cleanup("retained phase"),
+        ] {
+            executor.retain_unstarted_tool_cleanup(Box::pin(std::future::ready(Err(error))));
+        }
+        let mut drain = Box::pin(finish_unstarted_tool_cleanups_after_panic(&mut executor));
+        let mut cx = Context::from_waker(Waker::noop());
+        let Poll::Ready(caught) = drain.as_mut().poll(&mut cx) else {
+            panic!("ready consumers stayed pending");
+        };
+        let Some(Err(Error::WithCleanup { primary, cleanup })) = caught.output else {
+            panic!("wrapped abort was incorrectly ignored");
+        };
+        assert!(matches!(
+            primary.as_ref(),
+            Error::SharedFailure(cause) if Arc::ptr_eq(cause, &shared_abort)
+        ));
+        assert_eq!(cleanup.len(), 1);
+        assert!(matches!(
+            cleanup[0].as_ref(),
+            Error::Cleanup { phase: "retained phase", error }
+                if matches!(error.as_ref(), Error::RunAborted)
+        ));
+        assert!(caught.panics.is_empty());
+        drop(drain);
+        assert!(executor.take_unstarted_tool_cleanup().is_empty());
+
+        let mut empty = Box::pin(finish_unstarted_tool_cleanups_after_panic(&mut executor));
+        let Poll::Ready(caught) = empty.as_mut().poll(&mut cx) else {
+            panic!("empty drain stayed pending");
+        };
+        assert!(matches!(caught.output, Some(Ok(()))));
+        assert!(caught.panics.is_empty());
+    }
+}
+
 impl KvmBackend {
+    /// The callback borrow scope has ended. Keep its selected error and panic
+    /// until this concrete owner's outer cleanup and publication have finished.
+    fn finish_handler_completion<T, E>(
+        &self,
+        completion: crate::failure::owned_future::CaughtFuture<
+            HandlerOutcome<std::result::Result<T, E>>,
+        >,
+        hidden: Result<()>,
+        map_error: impl FnOnce(E) -> Error,
+    ) -> Result<HandlerOutcome<std::result::Result<T, E>>> {
+        use crate::failure::owned_future::CaughtFuture;
+
+        if completion.panics.is_empty() {
+            let outcome = completion.output.expect("Tool callback lost its outcome");
+            return match (outcome, hidden) {
+                (HandlerOutcome::Returned(Err(error)), Err(hidden)) => Ok(
+                    HandlerOutcome::RuntimeError(map_error(error).with_cleanup(vec![hidden])),
+                ),
+                (outcome, hidden) => finish_handler_scratch(outcome, hidden),
+            };
+        }
+        let original = match completion.output {
+            Some(HandlerOutcome::RuntimeError(error)) => Some(Err(error)),
+            Some(HandlerOutcome::Returned(Err(error))) => Some(Err(map_error(error))),
+            Some(HandlerOutcome::RunFailed) => Some(Err(Error::RunAborted)),
+            _ => None,
+        };
+        let error = self
+            .tool_panic_owner()
+            .finish::<()>(
+                CaughtFuture {
+                    output: original,
+                    panics: completion.panics,
+                },
+                "Tool callback",
+            )
+            .expect_err("callback panic must remain fatal");
+        Ok(HandlerOutcome::RuntimeError(
+            error.with_cleanup(hidden.err().into_iter().collect()),
+        ))
+    }
+
+    /// Recheck after actual callback destruction and typed result mapping.
+    /// Nonlocal outcomes keep their existing settlement path; the sticky entry
+    /// obligation is routed before the outer boundary publishes or joins.
+    async fn finish_entry_handler_completion<T, E>(
+        &mut self,
+        completion: crate::failure::owned_future::CaughtFuture<
+            HandlerOutcome<std::result::Result<T, E>>,
+        >,
+        hidden: Result<()>,
+        map_error: impl Fn(E) -> Error + Copy,
+        watch: &crate::entry::driver::EntryDriverWatch,
+    ) -> Result<HandlerOutcome<std::result::Result<T, E>>> {
+        let outcome = self.finish_handler_completion(completion, hidden, map_error)?;
+        let outcome = if let Err(entry) = watch.check() {
+            let error = match outcome {
+                HandlerOutcome::RuntimeError(error) => {
+                    crate::entry::driver::combine_pending::<()>(Err(error), Err(entry)).unwrap_err()
+                }
+                HandlerOutcome::Returned(Err(error)) => {
+                    crate::entry::driver::combine_pending::<()>(Err(map_error(error)), Err(entry))
+                        .unwrap_err()
+                }
+                HandlerOutcome::RunFailed => {
+                    crate::entry::driver::combine_pending::<()>(Err(Error::RunAborted), Err(entry))
+                        .unwrap_err()
+                }
+                HandlerOutcome::Returned(Ok(value)) => {
+                    // Retain the typed cause while discarding an ordinary success.
+                    // A user value destructor must not unwind through that cause.
+                    let panics =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(value)))
+                            .err()
+                            .into_iter()
+                            .collect();
+                    self.tool_panic_owner()
+                        .finish::<()>(
+                            crate::failure::owned_future::CaughtFuture {
+                                output: Some(Err(entry)),
+                                panics,
+                            },
+                            "Tool callback result",
+                        )
+                        .unwrap_err()
+                }
+                outcome => {
+                    // Preserve the actual nonlocal continuation and its settlement
+                    // ownership. Routing releases foreign observers first; the
+                    // retained cause still stops the next ordinary operation.
+                    let _ = self.route_entry_outcome::<()>(Err(entry)).await;
+                    return Ok(outcome);
+                }
+            };
+            HandlerOutcome::RuntimeError(error)
+        } else {
+            outcome
+        };
+        match outcome {
+            HandlerOutcome::RuntimeError(error) => Ok(HandlerOutcome::RuntimeError(
+                self.route_entry_outcome::<()>(Err(error))
+                    .await
+                    .unwrap_err(),
+            )),
+            outcome => Ok(outcome),
+        }
+    }
+
     async fn finish_signal_boundary<G: GlobalTool>(
         &mut self,
         executor: &mut ElfExecutor,
@@ -2337,10 +3405,19 @@ impl KvmBackend {
         // Consuming notification is after the actual frame/register/mask commit,
         // or on owned terminal/image cleanup. It is never an ordinary posthook
         // request and never waits for a guest rt_sigreturn.
-        global
-            .on_backend_signal_boundary(reverie::SignalBoundaryReceipt { permit, outcome })
-            .await
-            .map_err(Error::Reverie)?;
+        let completion = crate::failure::owned_future::catch_owned_future_from(|| {
+            global.on_backend_signal_boundary(reverie::SignalBoundaryReceipt { permit, outcome })
+        })
+        .await;
+        self.tool_panic_owner().finish(
+            crate::failure::owned_future::CaughtFuture {
+                output: completion
+                    .output
+                    .map(|result| result.map_err(Error::Reverie)),
+                panics: completion.panics,
+            },
+            "signal boundary receipt",
+        )?;
         executor
             .backend_signal_control()
             .process
@@ -2400,6 +3477,7 @@ impl KvmBackend {
             Err(Error::ExecWorkerTeardown(primary)) => (Err(*primary), true),
             outcome => (outcome, false),
         };
+        let outcome = self.route_entry_outcome(outcome).await;
         let settlement = self
             .finish_signal_boundary(
                 executor,
@@ -2422,7 +3500,23 @@ impl KvmBackend {
             executor.finish_parked_delivery();
         }
         let outcome = outcome.map_err(|error| executor.with_signal_effects(error, None));
+        let outcome = self.route_entry_outcome(outcome).await;
         let outcome = outcome.map_err(|error| self.report_tool_failure("execution", error));
+        // These futures own child ThreadState and consuming hooks. They were
+        // never polled inside the now-destroyed parent callback. Complete all
+        // of them before the parent's hooks can unwrap its shared Tool state.
+        let unstarted =
+            finish_unstarted_tool_cleanups_with_panics(executor, &self.tool_panic_owner()).await;
+        let outcome = match (outcome, unstarted) {
+            (Ok(exit), Ok(())) => Ok(exit),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(error)) => Err(self.report_tool_failure("unstarted-child cleanup", error)),
+            (Err(error), Err(cleanup)) => Err(error.with_cleanup(vec![cleanup])),
+        };
+        let outcome = self
+            .route_entry_outcome(outcome)
+            .await
+            .map_err(|error| self.report_tool_failure("unstarted-child entry cleanup", error));
         let natural_exit = outcome.as_ref().is_ok_and(|exit| exit.joins_live_peers());
         let cancelled_exit = retire_peer_cancelled_tool_worker(
             executor,
@@ -2450,6 +3544,12 @@ impl KvmBackend {
         self.clear_registered_worker_tid_before_exit(executor);
         executor.release_files_on_exit();
         self.release_stdin_on_exit();
+        let outcome = self
+            .route_entry_outcome(outcome)
+            .await
+            .map_err(|error| self.report_tool_failure("thread retirement entry cleanup", error));
+        let cancelled_exit = cancelled_exit
+            .filter(|_| is_peer_cancelled_tool_worker(identity, start_permitted, &outcome));
         if outcome.is_err() && cancelled_exit.is_none() {
             // A failed worker must interrupt live siblings before a leader's
             // natural join can block on an earlier handle. Cancellation does
@@ -2471,7 +3571,7 @@ impl KvmBackend {
         } else {
             self.guest_worker_teardown_result()
         };
-        finish_tool_process_after_workers(
+        finish_tool_process_after_workers_with_panics(
             executor,
             tool,
             identity,
@@ -2482,6 +3582,8 @@ impl KvmBackend {
             cancelled_exit,
             workers,
             self.tool_failure.as_ref(),
+            &self.tool_panic_owner(),
+            Some(self),
         )
         .await
     }
@@ -2538,7 +3640,8 @@ impl KvmBackend {
         // or scratch page after a terminal exit has been observed. Release it
         // before on_exit_thread can wake and admit another guest thread.
         self.release_thread_slot();
-        let result = notify_tool_exit(
+        let panics = self.tool_panic_owner();
+        let result = notify_tool_exit_with_panics(
             tool,
             pid,
             tid,
@@ -2550,6 +3653,7 @@ impl KvmBackend {
                 process_exited: pid == tid,
             },
             self.tool_failure.as_ref(),
+            &panics,
         )
         .await;
         // Run the owner's consuming hooks even when an earlier worker failed.
@@ -2588,6 +3692,7 @@ impl KvmBackend {
         global_state
             .install_backend_signal_control(None)
             .map_err(Error::Reverie)?;
+        let entry_scope = self.start_entry_driver();
         let tool = Arc::new(T::new(pid, &config));
         let subscriptions = T::subscriptions(&config);
         let mut thread_state = tool.init_thread_state(pid, None);
@@ -2595,12 +3700,18 @@ impl KvmBackend {
         let auxv = Vec::new();
         let stack_checked_out = Arc::new(AtomicBool::new(false));
 
-        let outcome: Result<ExitStatus> = async {
+        let panics = self.tool_panic_owner();
+        let execution = async {
             let registers = kvm_registers(self.vcpu.get_regs()?, 0);
             let handler_signal = Arc::new(Mutex::new(None));
             let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+            self.check_entry_owner()?;
             expose_tool_scratch(&memory, tool_stack_top)?;
+            let callback_scope = self.begin_entry_callback()?;
+            let callback_watch = self.entry_driver_watch();
+            let callback_memory = self.memory.clone();
             let start_outcome = {
+                let memory = callback_memory;
                 let mut guest_executor = DirectSyscallExecutor {
                     executor: &mut executor,
                     vcpu: &self.vcpu,
@@ -2624,15 +3735,26 @@ impl KvmBackend {
                     tool_stack_top,
                     stack_checked_out.clone(),
                 );
-                drive_handler(
-                    tool.handle_thread_start(&mut guest),
+                drive_entry_handler_completion_from(
+                    || tool.handle_thread_start(&mut guest),
                     handler_signal,
                     pending_child_starts,
                     wait_for_failure(&global_state, None),
+                    callback_watch.clone(),
                 )
                 .await
             };
-            hide_tool_scratch(&memory, tool_stack_top)?;
+            drop(callback_scope);
+            self.restore_entry_origin();
+
+            let start_outcome = self
+                .finish_entry_handler_completion(
+                    start_outcome,
+                    hide_tool_scratch(&memory, tool_stack_top),
+                    Error::Reverie,
+                    &callback_watch,
+                )
+                .await?;
             match start_outcome {
                 HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
                 HandlerOutcome::ThreadCancelled => {
@@ -2654,7 +3776,23 @@ impl KvmBackend {
             }
 
             loop {
-                let vcpu_exit = self.vcpu.run()?;
+                self.check_entry_owner()?;
+                let changed = memory.entry_gate().subscribe();
+                memory
+                    .entry_gate()
+                    .admit_operation()
+                    .map_err(|failure| failure.error())?;
+                if wait_for_failure(&global_state, None)
+                    .now_or_never()
+                    .is_some()
+                {
+                    return Err(Error::RunAborted);
+                }
+                let Some(vcpu_exit) = self.vcpu.run()? else {
+                    let failure = pin!(wait_for_failure(&global_state, None));
+                    let _ = futures::future::select(changed, failure).await;
+                    continue;
+                };
                 Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
                 match vcpu_exit {
                     VcpuExit::Hypercall(exit) => {
@@ -2676,8 +3814,13 @@ impl KvmBackend {
                             loop {
                                 let handler_signal = Arc::new(Mutex::new(None));
                                 let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                                self.check_entry_owner()?;
                                 expose_tool_scratch(&memory, tool_stack_top)?;
+                                let callback_scope = self.begin_entry_callback()?;
+                                let callback_watch = self.entry_driver_watch();
+                                let callback_memory = self.memory.clone();
                                 let outcome = {
+                                    let memory = callback_memory;
                                     let mut guest_executor = DirectSyscallExecutor {
                                         executor: &mut executor,
                                         vcpu: &self.vcpu,
@@ -2701,15 +3844,26 @@ impl KvmBackend {
                                         tool_stack_top,
                                         stack_checked_out.clone(),
                                     );
-                                    drive_handler(
-                                        tool.handle_syscall_event(&mut guest, syscall),
+                                    drive_entry_handler_completion_from(
+                                        || tool.handle_syscall_event(&mut guest, syscall),
                                         handler_signal,
                                         pending_child_starts,
                                         wait_for_failure(&global_state, None),
+                                        callback_watch.clone(),
                                     )
                                     .await
                                 };
-                                hide_tool_scratch(&memory, tool_stack_top)?;
+                                drop(callback_scope);
+                                self.restore_entry_origin();
+
+                                let outcome = self
+                                    .finish_entry_handler_completion(
+                                        outcome,
+                                        hide_tool_scratch(&memory, tool_stack_top),
+                                        Error::Reverie,
+                                        &callback_watch,
+                                    )
+                                    .await?;
                                 break match outcome {
                                     HandlerOutcome::Returned(result) => {
                                         match classify_handler_result(result)? {
@@ -2741,6 +3895,7 @@ impl KvmBackend {
                         } else {
                             executor.execute(&request, &memory)
                         };
+                        self.check_entry_owner()?;
                         // SAFETY: return_slot points into this vCPU's stable KVM_RUN
                         // mapping. The vCPU remains stopped and is not run again while
                         // the tool callback is active.
@@ -2754,8 +3909,14 @@ impl KvmBackend {
                     exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
                 }
             }
-        }
-        .await;
+        };
+        let outcome: Result<ExitStatus> = panics.finish(
+            crate::failure::owned_future::catch_owned_future(execution).await,
+            "direct Tool execution",
+        );
+        self.restore_entry_origin();
+        let entry_was_failed = self.check_entry_owner().is_err();
+        let outcome = self.route_entry_outcome(outcome).await;
         if outcome.is_err() {
             global_state.report_backend_failure(reverie::BackendFailure {
                 pid,
@@ -2774,12 +3935,24 @@ impl KvmBackend {
                 status,
             )
             .await;
-        Error::combine(
+        let result = Error::combine(
             [outcome.map(|_| ()), cleanup]
                 .into_iter()
                 .filter_map(Result::err)
                 .collect(),
-        )?;
+        );
+        let late_entry = !entry_was_failed && self.check_entry_owner().is_err();
+        let result = self.route_entry_outcome(result).await;
+        let before_retirement_ok = result.is_ok();
+        let result = self.finish_entry_driver(entry_scope, result);
+        if (late_entry || before_retirement_ok) && result.is_err() {
+            global_state.report_backend_failure(reverie::BackendFailure {
+                pid,
+                tid: pid,
+                phase: "direct entry completion",
+            });
+        }
+        self.finish_public_tool_panic(result, None)?;
         Ok(global_state)
     }
 
@@ -2860,7 +4033,8 @@ impl KvmBackend {
         let pid = Pid::from_raw(self.root_pid);
         let global_state = Arc::new(T::GlobalState::init_global_state(&config).await);
         let failure = RunFailure::new(&global_state);
-        self.tool_failure = Some(FailureContext::new(failure.clone(), pid, pid));
+        self.set_tool_failure(Some(FailureContext::new(failure.clone(), pid, pid)));
+        let entry_scope = self.start_entry_driver();
         let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
         // Atomic run-level installation precedes Tool/thread construction and
         // the first handle_thread_start. No capability is inferred from a PID.
@@ -2870,9 +4044,14 @@ impl KvmBackend {
             Ok(mode) => mode,
             Err(error) => {
                 let context = FailureContext::new(failure.clone(), pid, pid);
-                let error =
-                    context.publish("process signal control installation", Error::Reverie(error));
-                self.tool_failure = None;
+                let result = self
+                    .route_entry_outcome::<()>(Err(Error::Reverie(error)))
+                    .await;
+                let error = context.publish(
+                    "process signal control installation",
+                    self.finish_entry_driver(entry_scope, result).unwrap_err(),
+                );
+                self.set_tool_failure(None);
                 let global_state = Arc::try_unwrap(global_state).map_err(|_| {
                     Error::UnexpectedVcpuExit("signal setup retained GlobalState".to_owned())
                 })?;
@@ -2905,24 +4084,31 @@ impl KvmBackend {
             (Ok(_), Some(publication)) => Err(publication),
             (Err(error), Some(publication)) => Err(error.with_cleanup(vec![publication])),
         };
+        let result = self.route_entry_outcome(result).await;
+        let result = self
+            .finish_entry_driver(entry_scope, result)
+            .map_err(|error| self.report_tool_failure("entry driver completion", error));
         // All owned children have returned. Do not leave the backend holding
         // a reporter whose Weak owner is about to be consumed or released.
-        self.tool_failure = None;
+        self.set_tool_failure(None);
         let global_state = match Arc::try_unwrap(global_state) {
             Ok(global) => global,
             Err(_) => {
                 let ownership = Error::UnexpectedVcpuExit(
                     "KVM child retained global Tool state after exit".to_owned(),
                 );
-                return Err(match result {
+                let result = Err(match result {
                     Err(primary) => primary.with_cleanup(vec![ownership]),
                     Ok(_) => ownership,
                 });
+                return self
+                    .finish_public_tool_panic(failure.complete(result), Some(failure.clone()));
             }
         };
         let result = failure
             .complete(result)
             .map(|(status, stdout, stderr)| (conventional_exit_code(status), stdout, stderr));
+        let result = self.finish_public_tool_panic(result, Some(failure.clone()));
         Ok(ToolRunCompletion {
             global_state,
             result,
@@ -3072,22 +4258,39 @@ impl KvmBackend {
         let mut process_completed = false;
         let tool_stack_top = self.tool_stack_top();
         let failure_subscription = self.failure_subscription(executor.is_traced_tree_root());
+        self.check_entry_owner()?;
         expose_tool_scratch(memory, tool_stack_top)?;
         let process_context = if let Some(fault) = fault {
             ProcessExecutionContext::FaultBoundary(Box::new(fault.clone()))
         } else if thread_entry {
             ProcessExecutionContext::ThreadEntrySignal
         } else {
-            ProcessExecutionContext::SignalBoundary(CompletedSyscallBoundary::capture(
+            let mut stop = pin!(wait_for_failure(
+                global_state.as_ref(),
+                failure_subscription.clone(),
+            ));
+            let Some(boundary) = CompletedSyscallBoundary::capture_admitted(
                 self,
                 frame_address,
                 Some(registers),
-            )?)
+                stop.as_mut(),
+            )
+            .await?
+            else {
+                hide_tool_scratch(memory, tool_stack_top)?;
+                return Ok(CallbackOutcome::ThreadCancelled);
+            };
+            ProcessExecutionContext::SignalBoundary(boundary)
         };
         let continuation_site = executor
             .signal_failure_context()
             .map(|context| context.site);
+        let callback_scope = self.begin_entry_callback()?;
+        let callback_watch = self.entry_driver_watch();
+        let callback_memory = self.memory.clone();
+        executor.bind_address_space(&callback_memory);
         let outcome = {
+            let memory = callback_memory;
             let mut guest_executor = StaticElfSyscallExecutor {
                 backend: self,
                 executor,
@@ -3121,15 +4324,27 @@ impl KvmBackend {
                 tool_stack_top,
                 stack_checked_out.clone(),
             );
-            drive_handler(
-                tool.handle_structured_signal_event(&mut guest, pending.event),
+            drive_entry_handler_completion_from(
+                || tool.handle_structured_signal_event(&mut guest, pending.event),
                 handler_signal,
                 pending_child_starts.clone(),
                 wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
+                callback_watch.clone(),
             )
             .await
         };
-        hide_tool_scratch(memory, tool_stack_top)?;
+        drop(callback_scope);
+        self.restore_entry_origin();
+        executor.bind_address_space(&self.memory);
+
+        let outcome = self
+            .finish_entry_handler_completion(
+                outcome,
+                hide_tool_scratch(memory, tool_stack_top),
+                |error| Error::Reverie(error.into()),
+                &callback_watch,
+            )
+            .await?;
         let replacement = match outcome {
             HandlerOutcome::Returned(Ok(replacement)) => replacement,
             HandlerOutcome::Returned(Err(errno)) => {
@@ -3232,7 +4447,7 @@ impl KvmBackend {
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
         if let Some(failure) = &self.tool_failure {
-            self.tool_failure = Some(failure.for_thread(tid));
+            self.set_tool_failure(Some(failure.for_thread(tid)));
         }
         executor.observe_ignored_signals_with_tool();
         if T::observe_signal_dequeues(config) {
@@ -3250,7 +4465,8 @@ impl KvmBackend {
         let handler_signal = Arc::new(Mutex::new(None));
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
         let mut _process_completed = false;
-        let outcome: Result<ToolProcessExit> = async {
+        let panics = self.tool_panic_owner();
+        let execution = async {
             // Each actual Tool consumer admits its own subscription before
             // any user instruction. New fork/thread vCPUs start unarmed; the
             // tool-less Host worker loop never inherits trapping without a hook.
@@ -3259,8 +4475,14 @@ impl KvmBackend {
             self.vcpu.track_clock()?;
             _registration = Some(self.register_guest_thread()?);
             let registers = kvm_registers(self.vcpu.get_regs()?, 0);
+            self.check_entry_owner()?;
             expose_tool_scratch(&memory, tool_stack_top)?;
+            let callback_scope = self.begin_entry_callback()?;
+            let callback_watch = self.entry_driver_watch();
+            let callback_memory = self.memory.clone();
+            executor.bind_address_space(&callback_memory);
             let start_outcome = {
+                let memory = callback_memory;
                 let mut guest_executor = StaticElfSyscallExecutor {
                     backend: self,
                     executor,
@@ -3291,15 +4513,27 @@ impl KvmBackend {
                     tool_stack_top,
                     stack_checked_out.clone(),
                 );
-                drive_handler(
-                    tool.handle_thread_start(&mut guest),
+                drive_entry_handler_completion_from(
+                    || tool.handle_thread_start(&mut guest),
                     handler_signal,
                     pending_child_starts.clone(),
                     wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
+                    callback_watch.clone(),
                 )
                 .await
             };
-            hide_tool_scratch(&memory, tool_stack_top)?;
+            drop(callback_scope);
+            self.restore_entry_origin();
+            executor.bind_address_space(&self.memory);
+
+            let start_outcome = self
+                .finish_entry_handler_completion(
+                    start_outcome,
+                    hide_tool_scratch(&memory, tool_stack_top),
+                    Error::Reverie,
+                    &callback_watch,
+                )
+                .await?;
             match start_outcome {
                 HandlerOutcome::ThreadCancelled => {
                     self.start_pending_tool_children(executor, &pending_child_starts)?;
@@ -3482,6 +4716,23 @@ impl KvmBackend {
             // borrowed elsewhere in the loop body.
             let thread_ownership = self.thread_ownership;
             loop {
+                self.check_entry_owner()?;
+                #[cfg(test)]
+                entry_wait_observation::observe(
+                    entry_wait_observation::Site::ToolMain,
+                    entry_wait_observation::Boundary::BeforeSubscription,
+                );
+                let changed = memory.entry_gate().subscribe();
+                let cancelled = self.entry_cancellation();
+                #[cfg(test)]
+                entry_wait_observation::observe(
+                    entry_wait_observation::Site::ToolMain,
+                    entry_wait_observation::Boundary::AfterSubscription,
+                );
+                memory
+                    .entry_gate()
+                    .admit_operation()
+                    .map_err(|failure| failure.error())?;
                 if wait_for_failure(global_state.as_ref(), failure_subscription.clone())
                     .now_or_never()
                     .is_some()
@@ -3499,7 +4750,19 @@ impl KvmBackend {
                     return Ok(self.cancelled_tool_thread_status(executor));
                 }
                 let vcpu_exit = match self.vcpu.run() {
-                    Ok(exit) => exit,
+                    Ok(Some(exit)) => exit,
+                    Ok(None) => {
+                        let stop = pin!(wait_for_failure(
+                            global_state.as_ref(),
+                            failure_subscription.clone()
+                        ));
+                        let _ = futures::future::select(
+                            futures::future::select(changed, cancelled),
+                            stop,
+                        )
+                        .await;
+                        continue;
+                    }
                     Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
                     Err(error) => return Err(error),
                 };
@@ -3517,8 +4780,14 @@ impl KvmBackend {
                             let handler_signal = Arc::new(Mutex::new(None));
                             let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
                             let mut process_completed = false;
+                            self.check_entry_owner()?;
                             expose_tool_scratch(&memory, tool_stack_top)?;
+                            let callback_scope = self.begin_entry_callback()?;
+                            let callback_watch = self.entry_driver_watch();
+                            let callback_memory = self.memory.clone();
+                            executor.bind_address_space(&callback_memory);
                             let result = {
+                                let memory = callback_memory;
                                 let mut guest_executor = StaticElfSyscallExecutor {
                                     backend: self,
                                     executor,
@@ -3549,41 +4818,67 @@ impl KvmBackend {
                                     tool_stack_top,
                                     stack_checked_out.clone(),
                                 );
-                                drive_handler(
-                                    async {
-                                        match &boundary {
-                                            crate::vm::ToolInstructionBoundary::Timestamp(
-                                                boundary,
-                                            ) => tool
-                                                .handle_rdtsc_event(
+                                match &boundary {
+                                    crate::vm::ToolInstructionBoundary::Timestamp(boundary) => {
+                                        let completion = drive_entry_handler_completion_from(
+                                            || {
+                                                tool.handle_rdtsc_event(
                                                     &mut guest,
                                                     boundary.instruction.request,
                                                 )
-                                                .await
-                                                .map(crate::vm::ToolInstructionResult::Timestamp),
-                                            crate::vm::ToolInstructionBoundary::Cpuid(boundary) => {
+                                            },
+                                            handler_signal,
+                                            pending_child_starts,
+                                            wait_for_failure(
+                                                global_state.as_ref(),
+                                                failure_subscription.clone(),
+                                            ),
+                                            callback_watch.clone(),
+                                        )
+                                        .await;
+                                        map_handler_completion(completion, |result| {
+                                            result.map(crate::vm::ToolInstructionResult::Timestamp)
+                                        })
+                                    }
+                                    crate::vm::ToolInstructionBoundary::Cpuid(boundary) => {
+                                        let completion = drive_entry_handler_completion_from(
+                                            || {
                                                 tool.handle_cpuid_event(
                                                     &mut guest,
                                                     boundary.registers.rax as u32,
                                                     boundary.registers.rcx as u32,
                                                 )
-                                                .await
-                                                .map(crate::vm::ToolInstructionResult::Cpuid)
-                                            }
-                                        }
-                                    },
-                                    handler_signal,
-                                    pending_child_starts,
-                                    wait_for_failure(
-                                        global_state.as_ref(),
-                                        failure_subscription.clone(),
-                                    ),
-                                )
-                                .await
+                                            },
+                                            handler_signal,
+                                            pending_child_starts,
+                                            wait_for_failure(
+                                                global_state.as_ref(),
+                                                failure_subscription.clone(),
+                                            ),
+                                            callback_watch.clone(),
+                                        )
+                                        .await;
+                                        map_handler_completion(completion, |result| {
+                                            result.map(crate::vm::ToolInstructionResult::Cpuid)
+                                        })
+                                    }
+                                }
                             };
+                            drop(callback_scope);
+                            self.restore_entry_origin();
+                            executor.bind_address_space(&self.memory);
+
                             // Hide scratch even on callback failure. The outer
                             // process supervisor retains any committed effects.
                             let hidden = hide_tool_scratch(&memory, tool_stack_top);
+                            let result = self
+                                .finish_entry_handler_completion(
+                                    result,
+                                    Ok(()),
+                                    |error| Error::Reverie(error.into()),
+                                    &callback_watch,
+                                )
+                                .await?;
                             let value = match result {
                                 HandlerOutcome::Returned(Ok(value)) => value,
                                 HandlerOutcome::Returned(Err(error)) => {
@@ -3841,10 +5136,31 @@ impl KvmBackend {
                     loop {
                         let handler_signal = Arc::new(Mutex::new(None));
                         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                        self.check_entry_owner()?;
                         expose_tool_scratch(&memory, tool_stack_top)?;
-                        let boundary =
-                            CompletedSyscallBoundary::capture(self, frame_address, None)?;
+                        let boundary = {
+                            let mut stop = pin!(wait_for_failure(
+                                global_state.as_ref(),
+                                failure_subscription.clone(),
+                            ));
+                            CompletedSyscallBoundary::capture_admitted(
+                                self,
+                                frame_address,
+                                None,
+                                stop.as_mut(),
+                            )
+                            .await?
+                        };
+                        let Some(boundary) = boundary else {
+                            hide_tool_scratch(&memory, tool_stack_top)?;
+                            return Ok(self.cancelled_tool_thread_status(executor));
+                        };
+                        let callback_scope = self.begin_entry_callback()?;
+                        let callback_watch = self.entry_driver_watch();
+                        let callback_memory = self.memory.clone();
+                        executor.bind_address_space(&callback_memory);
                         let outcome = {
+                            let memory = callback_memory;
                             let mut guest_executor = StaticElfSyscallExecutor {
                                 backend: self,
                                 executor,
@@ -3875,18 +5191,30 @@ impl KvmBackend {
                                 tool_stack_top,
                                 stack_checked_out.clone(),
                             );
-                            drive_handler(
-                                tool.handle_syscall_event(&mut guest, syscall),
+                            drive_entry_handler_completion_from(
+                                || tool.handle_syscall_event(&mut guest, syscall),
                                 handler_signal,
                                 pending_child_starts.clone(),
                                 wait_for_failure(
                                     global_state.as_ref(),
                                     failure_subscription.clone(),
                                 ),
+                                callback_watch.clone(),
                             )
                             .await
                         };
-                        hide_tool_scratch(&memory, tool_stack_top)?;
+                        drop(callback_scope);
+                        self.restore_entry_origin();
+                        executor.bind_address_space(&self.memory);
+
+                        let outcome = self
+                            .finish_entry_handler_completion(
+                                outcome,
+                                hide_tool_scratch(&memory, tool_stack_top),
+                                Error::Reverie,
+                                &callback_watch,
+                            )
+                            .await?;
                         let classified = match outcome {
                             HandlerOutcome::Returned(result) => {
                                 let classified = match classify_handler_result(result) {
@@ -4053,12 +5381,23 @@ impl KvmBackend {
                 }
                 let mut replaced_image = handler_replaced_image;
                 if let Some(action) = pending_process {
-                    let continuation = CompletedSyscallBoundary::capture_for_action(
-                        self,
-                        frame_address,
-                        None,
-                        &action,
-                    )?;
+                    let continuation = {
+                        let mut stop = pin!(wait_for_failure(
+                            global_state.as_ref(),
+                            failure_subscription.clone(),
+                        ));
+                        CompletedSyscallBoundary::capture_for_action_admitted(
+                            self,
+                            frame_address,
+                            None,
+                            &action,
+                            stop.as_mut(),
+                        )
+                        .await?
+                    };
+                    let Some(continuation) = continuation else {
+                        return Ok(self.cancelled_tool_thread_status(executor));
+                    };
                     let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
                     let context: ToolContext<'_, T> = ToolContext {
                         pid,
@@ -4079,6 +5418,9 @@ impl KvmBackend {
                         )
                         .await;
                     let outcome = outcome?;
+                    if outcome.cancelled {
+                        return Ok(self.cancelled_tool_thread_status(executor));
+                    }
                     if !outcome.image_replaced {
                         result = outcome.syscall_result;
                         returned_registers = process_syscall_return_registers(
@@ -4235,8 +5577,14 @@ impl KvmBackend {
                     return Ok(exit.into());
                 }
             }
-        }
-        .await;
+        };
+        let outcome: Result<ToolProcessExit> = panics.finish(
+            crate::failure::owned_future::catch_owned_future(execution).await,
+            "Tool execution",
+        );
+        self.restore_entry_origin();
+        executor.bind_address_space(&self.memory);
+        let outcome = self.route_entry_outcome(outcome).await;
         let outcome = outcome.map_err(|error| {
             self.cleanup_unstarted_tool_children_after_error(executor, &pending_child_starts, error)
         });
@@ -4487,6 +5835,178 @@ mod tests {
             )),
             HandlerOutcome::Returned(true)
         ));
+    }
+
+    #[test]
+    fn handler_failure_destroys_owned_callback_before_scope_acknowledgement() {
+        use std::task::Context;
+        use std::task::Waker;
+
+        use crate::entry::owner::DriverScope;
+        use crate::entry::owner::OperationOrigin;
+
+        struct CallbackGuard {
+            origin: OperationOrigin,
+            destroyed: Arc<AtomicBool>,
+        }
+        impl Drop for CallbackGuard {
+            fn drop(&mut self) {
+                assert!(!self.origin.callback_dropped());
+                assert!(!self.destroyed.swap(true, Ordering::SeqCst));
+            }
+        }
+
+        for fail_during_poll in [false, true] {
+            let driver = DriverScope::new();
+            let owner = driver.owner();
+            let callback = owner.begin_callback(None).unwrap();
+            let origin = callback.origin();
+            let destroyed = Arc::new(AtomicBool::new(false));
+            let guard = CallbackGuard {
+                origin: origin.clone(),
+                destroyed: destroyed.clone(),
+            };
+            let (sender, receiver) = futures::channel::oneshot::channel();
+            let sender = Arc::new(Mutex::new(Some(sender)));
+            let callback_sender = sender.clone();
+            let future = async move {
+                let _guard = guard;
+                poll_fn(|_| {
+                    if fail_during_poll {
+                        callback_sender
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .unwrap()
+                            .send(())
+                            .unwrap();
+                        Poll::Ready(17)
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await
+            };
+            let mut driven = Box::pin(drive_handler(
+                future,
+                Arc::new(Mutex::new(None)),
+                Arc::new(Mutex::new(Vec::new())),
+                async {
+                    receiver.await.unwrap();
+                },
+            ));
+            fn require_send<T: Send>(_: &T) {}
+            require_send(&driven);
+            let mut context = Context::from_waker(Waker::noop());
+            if !fail_during_poll {
+                assert!(driven.as_mut().poll(&mut context).is_pending());
+                assert!(!destroyed.load(Ordering::SeqCst));
+                assert!(!origin.callback_dropped());
+                sender.lock().unwrap().take().unwrap().send(()).unwrap();
+            }
+            assert!(matches!(
+                driven.as_mut().poll(&mut context),
+                Poll::Ready(HandlerOutcome::RunFailed)
+            ));
+            assert!(
+                destroyed.load(Ordering::SeqCst),
+                "returned while callback still owned its guard"
+            );
+            assert!(
+                !origin.callback_dropped(),
+                "driver acknowledged caller's scope"
+            );
+            drop(driven);
+            drop(callback);
+            assert!(origin.callback_dropped());
+            let retirement = driver.retire();
+            retirement.result.unwrap();
+            assert!(retirement.pending.is_empty());
+            retirement.notification.notify();
+        }
+    }
+
+    #[test]
+    fn unstarted_cleanup_retains_pending_future_and_real_errors() {
+        use std::sync::atomic::AtomicUsize;
+        use std::task::Context;
+        use std::task::Waker;
+
+        struct OwnedState(Arc<AtomicUsize>);
+        impl Drop for OwnedState {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let mut executor = ElfExecutor::new(
+            crate::executor::native_loaded_state(std::path::Path::new("/")),
+            false,
+        );
+        let global = Arc::new(());
+        let run = RunFailure::new(&global);
+        let context = FailureContext::new(run.clone(), Pid::from_raw(1), Pid::from_raw(1));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let (release, wait) = futures::channel::oneshot::channel();
+        let cleanup_cause = Arc::new(Error::GuestClock("retained cleanup error".to_owned()));
+        let owned = OwnedState(drops.clone());
+        let observed_run = run.clone();
+        let observed_polls = polls.clone();
+        executor.retain_unstarted_tool_cleanup(Box::pin(async move {
+            let _owned = owned;
+            assert!(observed_run.published_primary().is_some());
+            observed_polls.fetch_add(1, Ordering::SeqCst);
+            wait.await.unwrap();
+            Err(Error::RunAborted)
+        }));
+        let owned = OwnedState(drops.clone());
+        let observed_polls = polls.clone();
+        let cause = cleanup_cause.clone();
+        executor.retain_unstarted_tool_cleanup(Box::pin(async move {
+            let _owned = owned;
+            observed_polls.fetch_add(1, Ordering::SeqCst);
+            Err(Error::RunAborted.with_cleanup(vec![Error::SharedFailure(cause)]))
+        }));
+        let owned = OwnedState(drops.clone());
+        let observed_polls = polls.clone();
+        executor.retain_unstarted_tool_cleanup(Box::pin(async move {
+            let _owned = owned;
+            assert_eq!(observed_polls.fetch_add(1, Ordering::SeqCst), 2);
+            Err(Error::RunAborted)
+        }));
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        let parent = context.publish(
+            "failed spawn",
+            Error::HostIo(std::io::Error::from_raw_os_error(libc::EAGAIN)),
+        );
+        let first = run.published_primary().unwrap();
+        let mut cleanup = Box::pin(finish_unstarted_tool_cleanups(&mut executor));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(cleanup.as_mut().poll(&mut context).is_pending());
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        release.send(()).unwrap();
+        let Poll::Ready(Err(error)) = cleanup.as_mut().poll(&mut context) else {
+            panic!("cleanup did not retain its real failure");
+        };
+        drop(cleanup);
+        assert_eq!(polls.load(Ordering::SeqCst), 3);
+        assert_eq!(drops.load(Ordering::SeqCst), 3);
+        assert!(executor.take_unstarted_tool_cleanup().is_empty());
+        let Error::WithCleanup { primary, cleanup } = &error else {
+            panic!("derived marker hid the cleanup aggregate");
+        };
+        assert!(matches!(primary.as_ref(), Error::RunAborted));
+        assert_eq!(cleanup.len(), 1);
+        assert!(cleanup[0].retains_primary(&cleanup_cause));
+        let combined = parent.with_cleanup(vec![error]);
+        assert!(combined.retains_primary(&first));
+        assert!(
+            matches!(combined.primary(), Error::HostIo(error) if error.raw_os_error() == Some(libc::EAGAIN))
+        );
+        assert!(Arc::ptr_eq(&first, &run.published_primary().unwrap()));
     }
 
     #[test]
@@ -5154,3 +6674,15 @@ mod process_alarm_tests;
 #[cfg(test)]
 #[path = "captured_write_runtime_tests.rs"]
 mod captured_write_tests;
+
+#[cfg(test)]
+mod callback_completion_tests;
+
+#[cfg(test)]
+mod consuming_panic_tests;
+
+#[cfg(test)]
+mod entry_owner_tests;
+
+#[cfg(test)]
+mod entry_operation_tests;

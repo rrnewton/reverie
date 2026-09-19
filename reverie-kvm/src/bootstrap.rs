@@ -444,14 +444,31 @@ pub(crate) fn syscall_hypercall_address(
         .expect("syscall hypercall address must not overflow")
 }
 
+/// The async owner retains its parking stage when admission is closed. This
+/// helper neither waits for reopening nor executes a guest instruction.
 // TODO-HUMAN-REVIEW(PR-172): Review per-thread trampoline park/unpark updates.
-pub(crate) fn set_syscall_return_park(
+pub(crate) fn try_set_syscall_return_park(
     memory: &mut GuestMemory,
     hypercall_instruction: [u8; 3],
     syscall_trampoline_address: u64,
     syscall_frame_address: u64,
     park: bool,
-) -> Result<()> {
+) -> Result<Option<()>> {
+    let (address, byte) = syscall_return_park_byte(
+        hypercall_instruction,
+        syscall_trampoline_address,
+        syscall_frame_address,
+        park,
+    );
+    memory.try_write_raw(address, &[byte])
+}
+
+fn syscall_return_park_byte(
+    hypercall_instruction: [u8; 3],
+    syscall_trampoline_address: u64,
+    syscall_frame_address: u64,
+    park: bool,
+) -> (u64, u8) {
     let trampoline = syscall_trampoline(hypercall_instruction, syscall_frame_address);
     let return_offset = (syscall_hypercall_address(
         hypercall_instruction,
@@ -464,7 +481,7 @@ pub(crate) fn set_syscall_return_park(
     } else {
         trampoline[return_offset]
     };
-    memory.write_raw(syscall_trampoline_address + return_offset as u64, &[byte])
+    (syscall_trampoline_address + return_offset as u64, byte)
 }
 
 fn write_descriptor_tables(memory: &mut GuestMemory) -> Result<()> {

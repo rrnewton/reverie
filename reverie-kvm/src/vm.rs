@@ -7,15 +7,20 @@
  */
 
 use std::fs::File;
+use std::future::Future;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use futures::FutureExt;
+use futures::channel::oneshot;
+use futures::future::Shared;
 use kvm_bindings::CpuId;
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 use kvm_bindings::kvm_enable_cap;
@@ -60,11 +65,11 @@ use crate::bootstrap::configure_user_segments;
 use crate::bootstrap::exception_from_halt;
 use crate::bootstrap::exception_pushes_error_code;
 use crate::bootstrap::process_syscall_return_registers;
-use crate::bootstrap::set_syscall_return_park;
 use crate::bootstrap::set_user_segment_base;
 use crate::bootstrap::stage_process_syscall_return;
 use crate::bootstrap::syscall_hypercall_address;
 use crate::bootstrap::thread_tool_stack_top;
+use crate::bootstrap::try_set_syscall_return_park;
 use crate::elf::LoadedStaticElf;
 use crate::elf::TaskLifecycleTable;
 use crate::elf::initial_thread_name;
@@ -305,16 +310,46 @@ fn set_guest_interrupt_signal_mask(how: libc::c_int) -> Result<bool> {
 }
 type GuestWorkerResult = Result<(ExitStatus, Vec<u8>, Vec<u8>)>;
 
+#[path = "vm/worker_join.rs"]
+mod worker_join;
+use worker_join::WorkerJoins;
+
 struct GuestWorkerHandle {
     tid: i32,
     start: Option<ChildStartGate>,
+    returning: Option<Arc<AtomicBool>>,
     handle: std::thread::JoinHandle<GuestWorkerResult>,
+}
+
+/// The outermost worker wrapper drops this after the actual worker closure
+/// and its owned state have returned or unwound. This only makes the worker
+/// eligible for an owned physical join: arbitrary TLS destructors may follow.
+struct WorkerCompletionNotice {
+    group: Arc<GuestThreadGroup>,
+    returning: Arc<AtomicBool>,
+}
+
+impl WorkerCompletionNotice {
+    fn new(group: Arc<GuestThreadGroup>) -> Self {
+        Self {
+            group,
+            returning: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl Drop for WorkerCompletionNotice {
+    fn drop(&mut self) {
+        self.returning.store(true, Ordering::Release);
+        self.group.notify_worker_completion();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessActionOutcome {
     pub(crate) image_replaced: bool,
     pub(crate) syscall_result: i64,
+    pub(crate) cancelled: bool,
 }
 
 impl ProcessActionOutcome {
@@ -322,6 +357,7 @@ impl ProcessActionOutcome {
         Self {
             image_replaced: false,
             syscall_result,
+            cancelled: false,
         }
     }
 
@@ -329,6 +365,33 @@ impl ProcessActionOutcome {
         Self {
             image_replaced: true,
             syscall_result: 0,
+            cancelled: false,
+        }
+    }
+
+    fn cancelled() -> Self {
+        Self {
+            image_replaced: false,
+            // No guest result is installed for this terminal disposition.
+            syscall_result: 0,
+            cancelled: true,
+        }
+    }
+}
+
+pub(crate) type GuestCancellationSubscription = Shared<oneshot::Receiver<()>>;
+
+struct CancellationWake {
+    sender: oneshot::Sender<()>,
+    receiver: GuestCancellationSubscription,
+}
+
+impl Default for CancellationWake {
+    fn default() -> Self {
+        let (sender, receiver) = oneshot::channel();
+        Self {
+            sender,
+            receiver: receiver.shared(),
         }
     }
 }
@@ -338,6 +401,7 @@ impl ProcessActionOutcome {
 pub(crate) struct GuestThreadGroup {
     cancelled: AtomicBool,
     cancelled_after_failure: AtomicBool,
+    cancellation_wake: Mutex<CancellationWake>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Propagate worker exit_group to the root vCPU.
     // TODO-HUMAN-REVIEW(PR-177): Review KVM thread-group exit ordering.
     exit_status: Mutex<Option<ExitStatus>>,
@@ -346,6 +410,7 @@ pub(crate) struct GuestThreadGroup {
     // AUTONOMOUS-BOT-IMPLEMENTED: Join cancelled KVM workers before root teardown returns.
     // TODO-HUMAN-REVIEW(PR-178): Review KVM worker join ordering.
     worker_handles: Mutex<Vec<GuestWorkerHandle>>,
+    worker_joins: Arc<WorkerJoins>,
     // Joining moves handles out of the registry. Cancellation must still own
     // every pending gate while a moved handle is blocking in JoinHandle::join.
     worker_start_gates: Mutex<std::collections::BTreeMap<i32, ChildStartGate>>,
@@ -354,9 +419,18 @@ pub(crate) struct GuestThreadGroup {
     worker_errors: Mutex<std::collections::BTreeMap<i32, Vec<Arc<Error>>>>,
     // A caught worker panic is published before retirement, then matched to
     // that worker's actual panicked join without creating another cause.
-    reported_worker_panics: Mutex<std::collections::BTreeMap<i32, Arc<Error>>>,
+    reported_worker_panics: Mutex<std::collections::BTreeMap<i32, WorkerPanicRecord>>,
+    // Keep payload destruction out of worker unwind and physical join. Typed
+    // diagnostics remain in worker_errors for repeated teardown observations.
+    completed_worker_panics: Mutex<Vec<WorkerPanicRecord>>,
     failure_state: Mutex<WorkerFailureState>,
     transport_slots: Mutex<Vec<bool>>,
+}
+
+struct WorkerPanicRecord {
+    error: Arc<Error>,
+    _cleanup_panics: Vec<crate::failure::owned_future::PanicPayload>,
+    _join_payload: Option<crate::failure::owned_future::PanicPayload>,
 }
 
 #[derive(Default)]
@@ -384,6 +458,7 @@ pub(crate) fn finish_host_worker_outcome<R>(
 
 /// Finish the already caught worker panic. This is not a general unwind guard:
 /// callback state may already have unwound, so no consuming hook is invented.
+#[cfg(test)]
 pub(crate) fn finish_caught_worker_panic(
     failure: Option<&crate::failure::FailureContext>,
     group: &GuestThreadGroup,
@@ -392,17 +467,74 @@ pub(crate) fn finish_caught_worker_panic(
     payload: Box<dyn std::any::Any + Send>,
     retire: impl FnOnce(),
 ) -> ! {
-    let error = match failure {
+    let error = publish_caught_worker_panic(failure, tid, error);
+    resume_caught_worker_panic(
+        group,
+        tid,
+        error,
+        crate::failure::owned_future::CaughtFuture {
+            output: Some(Ok(())),
+            panics: Vec::new(),
+        },
+        payload,
+        retire,
+    )
+}
+
+fn publish_caught_worker_panic(
+    failure: Option<&crate::failure::FailureContext>,
+    tid: i32,
+    error: Error,
+) -> Error {
+    match failure {
         Some(failure) => failure
             .for_thread(Pid::from_raw(tid))
             .publish("worker panic", error),
         None => error,
+    }
+}
+
+#[cfg(test)]
+fn resume_caught_worker_panic(
+    group: &GuestThreadGroup,
+    tid: i32,
+    error: Error,
+    cleanup: crate::failure::owned_future::CaughtFuture<Result<()>>,
+    payload: crate::failure::owned_future::PanicPayload,
+    retire: impl FnOnce(),
+) -> ! {
+    let mut errors: Vec<_> = cleanup
+        .output
+        .expect("unstarted child cleanup drain did not return")
+        .err()
+        .into_iter()
+        .collect();
+    errors.extend(
+        cleanup
+            .panics
+            .iter()
+            .map(|_| Error::GuestWorkerPanic.cleanup("unstarted-child cleanup")),
+    );
+    let record = WorkerPanicRecord {
+        error: Arc::new(error.with_cleanup(errors)),
+        _cleanup_panics: cleanup.panics,
+        _join_payload: None,
     };
+    resume_worker_panic_record(group, tid, record, payload, retire)
+}
+
+fn resume_worker_panic_record(
+    group: &GuestThreadGroup,
+    tid: i32,
+    record: WorkerPanicRecord,
+    payload: crate::failure::owned_future::PanicPayload,
+    retire: impl FnOnce(),
+) -> ! {
     let previous = group
         .reported_worker_panics
         .lock()
         .expect("KVM reported worker panic lock poisoned")
-        .insert(tid, Arc::new(error));
+        .insert(tid, record);
     assert!(
         previous.is_none(),
         "KVM worker panic recorded twice for tid {tid}"
@@ -413,9 +545,37 @@ pub(crate) fn finish_caught_worker_panic(
 }
 
 impl GuestThreadGroup {
+    /// Subscribe before rechecking the caller's existing cancellation and exit
+    /// predicates. Readiness only requests another recheck; it grants no entry
+    /// and does not decide whether worker cancellation applies to the root.
+    /// Take a fresh subscription after every wake, including an irrelevant one.
+    pub(crate) fn subscribe_cancellation(&self) -> GuestCancellationSubscription {
+        self.cancellation_wake
+            .lock()
+            .expect("KVM cancellation wake lock poisoned")
+            .receiver
+            .clone()
+    }
+
+    /// Called after publishing state and releasing every group registry lock.
+    fn notify_cancellation(&self) {
+        let previous = {
+            let mut wake = self
+                .cancellation_wake
+                .lock()
+                .expect("KVM cancellation wake lock poisoned");
+            std::mem::take(&mut *wake)
+        };
+        // Install a pending generation before invoking any wake callback. In
+        // particular, exec rearm and a root ignoring worker-only cancellation
+        // must not inherit a permanently-ready notification. Send outside the
+        // notification lock too: a callback may immediately subscribe again.
+        let _ = previous.sender.send(());
+    }
+
     #[cfg(test)]
     pub(crate) fn has_worker_handles(&self) -> bool {
-        !self.worker_handles.lock().unwrap().is_empty()
+        self.has_owned_worker_joins()
     }
 
     pub(crate) fn record_worker_failure(&self, tid: i32) {
@@ -488,8 +648,11 @@ impl GuestThreadGroup {
                 libc::pthread_kill(worker, worker_interrupt_signal());
             }
         }
+        drop(workers);
+        self.notify_cancellation();
     }
 
+    #[cfg(any(test, feature = "native-test-support"))]
     pub(crate) fn add_worker_handle(
         &self,
         tid: i32,
@@ -498,6 +661,7 @@ impl GuestThreadGroup {
         self.add_worker_handle_with_gate(tid, None, handle);
     }
 
+    #[cfg(test)]
     fn add_unstarted_worker(
         &self,
         tid: i32,
@@ -507,18 +671,30 @@ impl GuestThreadGroup {
         self.add_worker_handle_with_gate(tid, Some(start), handle);
     }
 
+    #[cfg(any(test, feature = "native-test-support"))]
     fn add_worker_handle_with_gate(
         &self,
         tid: i32,
         start: Option<ChildStartGate>,
         handle: std::thread::JoinHandle<GuestWorkerResult>,
     ) {
+        self.add_worker_handle_with_completion(tid, start, None, handle);
+    }
+
+    fn add_worker_handle_with_completion(
+        &self,
+        tid: i32,
+        start: Option<ChildStartGate>,
+        returning: Option<Arc<AtomicBool>>,
+        handle: std::thread::JoinHandle<GuestWorkerResult>,
+    ) {
+        let joins = self.worker_joins.lock();
         let mut handles = self
             .worker_handles
             .lock()
             .expect("KVM guest worker-handle lock poisoned");
         assert!(
-            !handles.iter().any(|worker| worker.tid == tid),
+            !handles.iter().any(|worker| worker.tid == tid) && !joins.active.contains_key(&tid),
             "duplicate KVM guest worker tid {tid}"
         );
         if let Some(gate) = &start {
@@ -528,43 +704,56 @@ impl GuestThreadGroup {
                 .insert(tid, gate.clone());
         }
         let gate = start.clone();
-        handles.push(GuestWorkerHandle { tid, start, handle });
+        handles.push(GuestWorkerHandle {
+            tid,
+            start,
+            returning,
+            handle,
+        });
         drop(handles);
+        drop(joins);
         if self.cancelled.load(Ordering::Acquire)
             && let Some(gate) = gate
         {
             self.cancel_worker_gate(&gate);
         }
+        self.notify_worker_completion();
     }
 
-    fn discard_unstarted_worker(&self, tid: i32) -> Result<bool> {
-        let handle = {
-            let mut handles = self
-                .worker_handles
+    fn subscribe_worker_completion(&self) -> GuestCancellationSubscription {
+        self.worker_joins.subscribe()
+    }
+
+    fn notify_worker_completion(&self) {
+        self.worker_joins.notify();
+    }
+
+    fn retain_joined_worker_panic(
+        &self,
+        tid: i32,
+        payload: crate::failure::owned_future::PanicPayload,
+    ) -> Arc<Error> {
+        // Move the entire record out before touching payload ownership. A
+        // temporary guard chained to field extraction could drop other fields
+        // while still holding the registry lock.
+        let record = {
+            self.reported_worker_panics
                 .lock()
-                .expect("KVM guest worker-handle lock poisoned");
-            handles
-                .iter()
-                .position(|worker| {
-                    worker.tid == tid
-                        && worker
-                            .start
-                            .as_ref()
-                            .is_some_and(ChildStartGate::is_cancelled)
-                })
-                .map(|index| handles.swap_remove(index).handle)
+                .expect("KVM reported worker panic lock poisoned")
+                .remove(&tid)
         };
-        let Some(handle) = handle else {
-            return Ok(false);
-        };
-        self.worker_start_gates
+        let mut record = record.unwrap_or_else(|| WorkerPanicRecord {
+            error: Arc::new(Error::GuestWorkerPanic),
+            _cleanup_panics: Vec::new(),
+            _join_payload: None,
+        });
+        record._join_payload = Some(payload);
+        let error = record.error.clone();
+        self.completed_worker_panics
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&tid);
-        let _ = handle.join().map_err(|_| {
-            Error::UnexpectedVcpuExit(format!("unstarted KVM guest thread {tid} panicked"))
-        })??;
-        Ok(true)
+            .expect("KVM completed worker panic lock poisoned")
+            .push(record);
+        error
     }
 
     fn cancel_worker_gate(&self, gate: &ChildStartGate) {
@@ -589,68 +778,28 @@ impl GuestThreadGroup {
         }
     }
 
-    pub(crate) fn join_workers(&self) {
-        // A worker may register a nested clone while an earlier batch is joining.
-        loop {
-            let handles = std::mem::take(
-                &mut *self
-                    .worker_handles
-                    .lock()
-                    .expect("KVM guest worker-handle lock poisoned"),
-            );
-            if handles.is_empty() {
-                return;
-            }
-            if self.cancelled.load(Ordering::Acquire) {
-                self.cancel_pending_worker_gates(&handles);
-            }
-            for worker in handles {
-                let error = match worker.handle.join() {
-                    Ok(Ok(_)) => None,
-                    Ok(Err(error)) => Some(Arc::new(error)),
-                    Err(_) => Some(
-                        self.reported_worker_panics
-                            .lock()
-                            .expect("KVM reported worker panic lock poisoned")
-                            .remove(&worker.tid)
-                            .unwrap_or_else(|| Arc::new(Error::GuestWorkerPanic)),
-                    ),
-                };
-                self.worker_start_gates
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&worker.tid);
-                if let Some(error) = error {
-                    self.worker_errors
-                        .lock()
-                        .expect("KVM worker error lock poisoned")
-                        .entry(worker.tid)
-                        .or_default()
-                        .push(error);
-                }
-            }
-        }
-    }
-
     pub(crate) fn teardown_result(&self) -> Result<()> {
         let errors = self
             .worker_errors
             .lock()
             .expect("KVM worker error lock poisoned");
-        if errors.is_empty() {
-            return Ok(());
-        }
-        Error::combine(
-            errors
-                .iter()
-                .flat_map(|(&tid, errors)| {
-                    errors
-                        .iter()
-                        .cloned()
-                        .map(move |error| Error::WorkerFailure { tid, error })
-                })
-                .collect(),
-        )
+        let mut collected: Vec<_> = errors
+            .iter()
+            .flat_map(|(&tid, errors)| {
+                errors
+                    .iter()
+                    .cloned()
+                    .map(move |error| Error::WorkerFailure { tid, error })
+            })
+            .collect();
+        drop(errors);
+        collected.extend(
+            self.worker_joins
+                .errors()
+                .into_iter()
+                .map(Error::SharedFailure),
+        );
+        Error::combine(collected)
     }
 
     fn cancel_workers(&self) {
@@ -672,6 +821,8 @@ impl GuestThreadGroup {
                 libc::pthread_kill(worker, worker_interrupt_signal());
             }
         }
+        drop(workers);
+        self.notify_cancellation();
     }
 
     // TODO-HUMAN-REVIEW(PR-211): Review KVM exec sibling cancellation ordering.
@@ -801,6 +952,20 @@ fn root_parent_pid(root_pid: i32) -> i32 {
 /// that can be restored after a returning injected process action.
 fn normalize_completed_syscall_boundary_registers(
     memory: &GuestMemory,
+    registers: kvm_regs,
+    hypercall_instruction: [u8; 3],
+    hypercall_address: u64,
+) -> Result<kvm_regs> {
+    normalize_completed_syscall_boundary_registers_with_read(
+        |address, bytes| memory.read_raw(address, bytes),
+        registers,
+        hypercall_instruction,
+        hypercall_address,
+    )
+}
+
+fn normalize_completed_syscall_boundary_registers_with_read(
+    mut read: impl FnMut(u64, &mut [u8]) -> Result<()>,
     mut registers: kvm_regs,
     hypercall_instruction: [u8; 3],
     hypercall_address: u64,
@@ -815,7 +980,7 @@ fn normalize_completed_syscall_boundary_registers(
         )));
     }
     let mut observed = [0; 3];
-    memory.read_raw(hypercall_address, &mut observed)?;
+    read(hypercall_address, &mut observed)?;
     if observed != hypercall_instruction {
         return Err(Error::UnexpectedVcpuExit(format!(
             "syscall boundary at {hypercall_address:#x} does not contain the configured hypercall"
@@ -866,6 +1031,61 @@ impl CompletedSyscallBoundary {
             action_return_registers,
             stage_action_outcome: false,
         })
+    }
+
+    fn capture_with_read(
+        backend: &KvmBackend,
+        frame_address: u64,
+        action_return_registers: Option<kvm_regs>,
+        mut read: impl FnMut(u64, &mut [u8]) -> Result<()>,
+    ) -> Result<Self> {
+        let mut frame = [0; FRAME_SIZE];
+        read(frame_address, &mut frame)?;
+        let (registers, special_registers) =
+            backend.completed_syscall_boundary_registers_with_read(&mut read)?;
+        Ok(Self {
+            frame_address,
+            frame,
+            registers,
+            special_registers,
+            action_return_registers,
+            stage_action_outcome: false,
+        })
+    }
+
+    pub(crate) async fn capture_admitted(
+        backend: &mut KvmBackend,
+        frame_address: u64,
+        action_return_registers: Option<kvm_regs>,
+        stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
+    ) -> Result<Option<Self>> {
+        backend
+            .prepare_action_read(stop, |backend, access| {
+                Self::capture_with_read(
+                    backend,
+                    frame_address,
+                    action_return_registers,
+                    |address, bytes| access.read_raw(address, bytes),
+                )
+            })
+            .await
+    }
+
+    pub(crate) async fn capture_for_action_admitted(
+        backend: &mut KvmBackend,
+        frame_address: u64,
+        action_return_registers: Option<kvm_regs>,
+        action: &ProcessAction,
+        stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
+    ) -> Result<Option<ProcessActionContinuation>> {
+        Ok(
+            Self::capture_admitted(backend, frame_address, action_return_registers, stop)
+                .await?
+                .map(|mut boundary| {
+                    boundary.stage_action_outcome = true;
+                    ProcessActionContinuation::from_captured(action, boundary)
+                }),
+        )
     }
 
     pub(crate) fn capture_for_action(
@@ -947,6 +1167,9 @@ impl ProcessActionContinuation {
         // Never restore after a failed action: its partial process state must
         // remain observable to the caller's fatal cleanup path.
         let outcome = action_result?;
+        if outcome.cancelled {
+            return Ok(outcome);
+        }
         match (self, outcome.image_replaced) {
             (Self::Restore(boundary), _) | (Self::Exec(boundary), false) => {
                 boundary.restore(backend)?;
@@ -973,6 +1196,11 @@ pub struct KvmBackend {
     pub(crate) syscall_frame_address: u64,
     thread_group: Arc<GuestThreadGroup>,
     pub(crate) tool_failure: Option<crate::failure::FailureContext>,
+    pub(crate) entry_driver: Option<crate::entry::owner::DriverOwner>,
+    tool_panics: Arc<crate::failure::tool_panics::ToolPanics>,
+    // Public root/direct runs can resume a panic after returning their Tool
+    // ownership. Keep the accompanying diagnostics on this backend.
+    completed_tool_panics: Mutex<Vec<CompletedToolPanic>>,
     thread_slot: Option<usize>,
     is_guest_thread: bool,
     // Who owns this backend's guest threads. The single value drives BOTH the
@@ -998,6 +1226,25 @@ pub struct KvmBackend {
     // One optional collector is shared by every fork and thread backend in the
     // guest tree. `None` is the allocation-free, update-free default.
     pub(crate) exit_collector: Option<Arc<KvmExitCollector>>,
+}
+
+struct CompletedToolPanic {
+    _error: Arc<Error>,
+    _secondary_payloads: Vec<crate::failure::owned_future::PanicPayload>,
+    _run_failure: Option<Arc<crate::failure::RunFailure>>,
+}
+
+// A failed spawn has no physical child owner. Keep this transfer alive even
+// if an unexpected unwind destroys its retained consuming future.
+struct ChildToolPanicTransfer {
+    parent: Arc<crate::failure::tool_panics::ToolPanics>,
+    child: Arc<crate::failure::tool_panics::ToolPanics>,
+}
+
+impl Drop for ChildToolPanicTransfer {
+    fn drop(&mut self) {
+        self.parent.append(self.child.take());
+    }
 }
 
 struct KvmProcessSnapshot {
@@ -1035,6 +1282,60 @@ struct InitializedKvmResources {
 }
 
 impl KvmBackend {
+    /// The lexical scope remains with the invocation that will retire it.
+    /// Child construction can carry parent memory views until this binding.
+    pub(crate) fn start_entry_driver(&mut self) -> crate::entry::owner::DriverScope {
+        assert!(
+            self.entry_driver.is_none(),
+            "KVM entry driver already active"
+        );
+        let scope = crate::entry::owner::DriverScope::new();
+        self.entry_driver = Some(scope.owner());
+        self.restore_entry_origin();
+        scope
+    }
+
+    pub(crate) fn entry_driver_owner(&self) -> Option<crate::entry::owner::DriverOwner> {
+        self.entry_driver.clone()
+    }
+
+    pub(crate) fn set_operation_origin(
+        &mut self,
+        origin: Option<crate::entry::owner::OperationOrigin>,
+    ) {
+        self.memory.set_operation_origin(origin.clone());
+        self.vcpu.set_operation_origin(origin);
+    }
+
+    pub(crate) fn restore_entry_origin(&mut self) {
+        let origin = self.entry_driver.as_ref().map(|owner| owner.origin());
+        self.set_operation_origin(origin);
+    }
+
+    /// The caller holds this guard outside the owned callback future and its
+    /// complete borrow scope, then restores ordinary views after destruction.
+    pub(crate) fn begin_entry_callback(
+        &mut self,
+    ) -> Result<Option<crate::entry::owner::CallbackScope>> {
+        self.check_entry_owner()?;
+        let Some(owner) = self.entry_driver_owner() else {
+            return Ok(None);
+        };
+        let callback = owner.begin_callback(None)?;
+        self.set_operation_origin(Some(callback.origin()));
+        Ok(Some(callback))
+    }
+
+    pub(crate) fn set_tool_failure(&mut self, origin: Option<crate::failure::FailureContext>) {
+        self.vcpu.set_failure_context(origin.clone());
+        self.memory.set_failure_context(origin.clone());
+        self.tool_failure = origin;
+    }
+
+    pub(crate) fn entry_cancellation(&self) -> GuestCancellationSubscription {
+        self.thread_group.subscribe_cancellation()
+    }
+
     pub(crate) fn failure_subscription(
         &self,
         is_traced_tree_root: bool,
@@ -1150,7 +1451,7 @@ impl KvmBackend {
             }
         };
         Ok(Self {
-            vcpu: crate::clock::CountedVcpu::new(vcpu),
+            vcpu: crate::clock::CountedVcpu::new(vcpu, memory.clone())?,
             vm,
             memory,
             _kvm: kvm,
@@ -1160,6 +1461,9 @@ impl KvmBackend {
             syscall_frame_address: SYSCALL_FRAME_ADDRESS,
             thread_group: Arc::new(GuestThreadGroup::default()),
             tool_failure: None,
+            entry_driver: None,
+            tool_panics: Arc::default(),
+            completed_tool_panics: Mutex::new(Vec::new()),
             thread_slot: None,
             is_guest_thread: false,
             // Effective ownership before any tool run resolves it. The direct
@@ -1475,8 +1779,34 @@ impl KvmBackend {
         Ok((registers, self.vcpu.get_sregs()?))
     }
 
+    fn completed_syscall_boundary_registers_with_read(
+        &self,
+        read: impl FnMut(u64, &mut [u8]) -> Result<()>,
+    ) -> Result<(kvm_regs, kvm_bindings::kvm_sregs)> {
+        let hypercall_address = syscall_hypercall_address(
+            self.hypercall_instruction,
+            self.syscall_trampoline_address,
+            self.syscall_frame_address,
+        );
+        let registers = normalize_completed_syscall_boundary_registers_with_read(
+            read,
+            self.vcpu.get_regs()?,
+            self.hypercall_instruction,
+            hypercall_address,
+        )?;
+        Ok((registers, self.vcpu.get_sregs()?))
+    }
+
     fn snapshot_process(&self) -> Result<KvmProcessSnapshot> {
-        let memory = self.memory.snapshot()?;
+        #[cfg(test)]
+        tests::entry_action_tests::observe("snapshot");
+        let mut memory = self.memory.snapshot()?;
+        #[cfg(test)]
+        tests::entry_action_tests::observe_fork_memory(&memory.entry_gate());
+        // Snapshot preparation is still part of the issuing operation. The
+        // actual child receives its independent origin only when it runs.
+        memory.set_failure_context(self.tool_failure.clone());
+        memory.set_operation_origin(self.memory.entry_origin().operation);
         hide_tool_scratch_pages(&memory)?;
         Ok(KvmProcessSnapshot {
             memory,
@@ -1488,6 +1818,8 @@ impl KvmBackend {
     }
 
     fn from_process_snapshot(snapshot: KvmProcessSnapshot) -> Result<Self> {
+        #[cfg(test)]
+        tests::entry_action_tests::observe("fork_backend");
         let mut child = Self::new_with_memory_and_cpuid_policy(
             snapshot.memory,
             snapshot.cpuid_policy,
@@ -1516,6 +1848,8 @@ impl KvmBackend {
         child_tid: i32,
         thread_group: Arc<GuestThreadGroup>,
     ) -> Result<Self> {
+        #[cfg(test)]
+        tests::entry_action_tests::observe("thread_backend");
         let mut child = Self::new_with_memory_and_cpuid_policy(memory, cpuid_policy, stdin)?;
         child.thread_group = thread_group;
         child.is_guest_thread = true;
@@ -1554,6 +1888,8 @@ impl KvmBackend {
         if self.is_guest_thread {
             return Err(Error::GuestThreadExecUnsupported);
         }
+        #[cfg(test)]
+        tests::entry_action_tests::observe("exec_image");
         // ElfExecutor preflights the image before scheduling this action. From
         // this reset onward, any exceptional loader or KVM failure is fatal to
         // the backend and is never reported back to the old guest image. This
@@ -1590,6 +1926,160 @@ impl KvmBackend {
         Ok(())
     }
 
+    /// Capture one complete parent read state only after admission. The owned
+    /// action stays with the caller across waits; no copy token or partial
+    /// capture survives this synchronous closure. None is terminal cancellation.
+    async fn prepare_action_read<T>(
+        &mut self,
+        mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
+        capture: impl Fn(&Self, &crate::memory::RawMemoryRead<'_>) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let gate = self.memory.entry_gate();
+        loop {
+            let changed = gate.subscribe();
+            let cancelled = self.entry_cancellation();
+            gate.admit_operation().map_err(|failure| failure.error())?;
+            if stop.as_mut().now_or_never().is_some() {
+                return Err(Error::RunAborted);
+            }
+            if self.guest_thread_group_exit_status().is_some() || self.guest_thread_is_cancelled() {
+                return Ok(None);
+            }
+            if let Some(value) = self.memory.try_read_with(|access| capture(self, access))? {
+                return Ok(Some(value));
+            }
+            match futures::future::select(
+                futures::future::select(changed, cancelled),
+                stop.as_mut(),
+            )
+            .await
+            {
+                futures::future::Either::Left(_) => {}
+                futures::future::Either::Right(_) => return Err(Error::RunAborted),
+            }
+        }
+    }
+
+    async fn capture_thread_parent(
+        &mut self,
+        stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
+    ) -> Result<Option<(kvm_regs, kvm_xsave, Vec<u8>)>> {
+        self.prepare_action_read(stop, |backend, access| {
+            #[cfg(test)]
+            tests::entry_action_tests::observe("parent_capture");
+            let registers = backend.vcpu.get_regs()?;
+            let xsave = backend.vcpu.get_xsave()?;
+            let mut frame = vec![0; FRAME_SIZE];
+            access.read_raw(backend.syscall_frame_address, &mut frame)?;
+            Ok((registers, xsave, frame))
+        })
+        .await
+    }
+
+    // The prepared action owns its frame and any earlier child state while
+    // admission is closed. Only this one entry is retried; the action is not.
+    async fn park_process_action(
+        &mut self,
+        phase: &'static str,
+        mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
+    ) -> Result<bool> {
+        let gate = self.memory.entry_gate();
+        let mut prepared = false;
+        let mut parked: Option<Result<()>> = None;
+        let with_actual_error = |parked: &mut Option<Result<()>>, error: Error| match parked.take()
+        {
+            Some(Err(actual)) => actual.with_cleanup(vec![error]),
+            _ => error,
+        };
+        loop {
+            #[cfg(test)]
+            crate::runtime::entry_wait_observation::observe(
+                crate::runtime::entry_wait_observation::Site::Parking,
+                crate::runtime::entry_wait_observation::Boundary::BeforeSubscription,
+            );
+            let changed = gate.subscribe();
+            let cancelled = self.entry_cancellation();
+            #[cfg(test)]
+            crate::runtime::entry_wait_observation::observe(
+                crate::runtime::entry_wait_observation::Site::Parking,
+                crate::runtime::entry_wait_observation::Boundary::AfterSubscription,
+            );
+            if let Err(failure) = gate.admit_operation() {
+                return Err(with_actual_error(&mut parked, failure.error()));
+            }
+            if stop.as_mut().now_or_never().is_some() {
+                return Err(with_actual_error(&mut parked, Error::RunAborted));
+            }
+            if self.guest_thread_group_exit_status().is_some() || self.guest_thread_is_cancelled() {
+                // A real unexpected exit remains an error even if cancellation
+                // arrived while its trampoline restoration was waiting.
+                return match parked.take() {
+                    Some(Err(error)) => Err(error),
+                    _ => Ok(false),
+                };
+            }
+            if parked.is_some() || !prepared {
+                let restoring = parked.is_some();
+                let update = try_set_syscall_return_park(
+                    &mut self.memory,
+                    self.hypercall_instruction,
+                    self.syscall_trampoline_address,
+                    self.syscall_frame_address,
+                    !restoring,
+                );
+                match update {
+                    Err(error) => return Err(with_actual_error(&mut parked, error)),
+                    Ok(Some(())) if restoring => {
+                        #[cfg(test)]
+                        tests::entry_action_tests::observe("park_restore");
+                        return parked.take().unwrap().map(|()| true);
+                    }
+                    Ok(Some(())) => {
+                        #[cfg(test)]
+                        tests::entry_action_tests::observe("park_prepare");
+                        prepared = true;
+                        continue;
+                    }
+                    Ok(None) => {}
+                }
+            } else if let Some(actual) = self.try_park_process_action(phase)? {
+                // This is an owned result, not a borrowed VcpuExit. Retain it
+                // across an unpark wait and never execute this entry twice.
+                parked = Some(actual);
+                continue;
+            }
+            match futures::future::select(
+                futures::future::select(changed, cancelled),
+                stop.as_mut(),
+            )
+            .await
+            {
+                futures::future::Either::Left(_) => {}
+                // The future has completed. Do not poll it again on the next
+                // loop iteration: async futures need not be fused.
+                futures::future::Either::Right(_) => {
+                    return Err(with_actual_error(&mut parked, Error::RunAborted));
+                }
+            }
+        }
+    }
+
+    fn try_park_process_action(&mut self, phase: &'static str) -> Result<Option<Result<()>>> {
+        let Some(exit) = self.vcpu.run()? else {
+            return Ok(None);
+        };
+        Self::record_exit(self.exit_collector.as_deref(), &exit);
+        Ok(Some(match exit {
+            VcpuExit::Hlt => {
+                #[cfg(test)]
+                tests::entry_action_tests::observe("park_hlt");
+                Ok(())
+            }
+            exit => Err(Error::UnexpectedVcpuExit(format!("{phase}: {exit:?}"))),
+        }))
+    }
+
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn prepare_forked_process(
         &mut self,
@@ -1604,46 +2094,64 @@ impl KvmBackend {
         park_syscall_return: bool,
         fault: Option<&PageZeroFault>,
     ) -> Result<ForkedProcess> {
+        let mut stop = std::pin::pin!(std::future::pending());
+        futures::executor::block_on(self.prepare_forked_process_admitted(
+            executor,
+            child_pid,
+            child_stack,
+            parent_tid,
+            child_tid,
+            clear_child_tid,
+            clear_sighand,
+            share_address_space,
+            park_syscall_return,
+            fault,
+            stop.as_mut(),
+        ))?
+        .ok_or_else(|| Error::UnexpectedVcpuExit("test fork was cancelled".to_owned()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_forked_process_admitted(
+        &mut self,
+        executor: &ElfExecutor,
+        child_pid: i32,
+        child_stack: Option<u64>,
+        parent_tid: Option<u64>,
+        child_tid: Option<u64>,
+        clear_child_tid: Option<u64>,
+        clear_sighand: bool,
+        share_address_space: bool,
+        park_syscall_return: bool,
+        fault: Option<&PageZeroFault>,
+        stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
+    ) -> Result<Option<ForkedProcess>> {
         let mut child_executor =
             executor.fork_child(child_pid, clear_sighand, share_address_space)?;
+        #[cfg(test)]
+        tests::entry_action_tests::observe("fork_executor");
         child_executor.set_clear_child_tid(clear_child_tid);
-        if park_syscall_return {
-            set_syscall_return_park(
-                &mut self.memory,
-                self.hypercall_instruction,
-                self.syscall_trampoline_address,
-                self.syscall_frame_address,
-                true,
-            )?;
-            let vcpu_exit = self.vcpu.run()?;
-            Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
-            let parked = match vcpu_exit {
-                VcpuExit::Hlt => Ok(()),
-                exit => Err(Error::UnexpectedVcpuExit(format!(
-                    "parent did not park at fork: {exit:?}"
-                ))),
-            };
-            set_syscall_return_park(
-                &mut self.memory,
-                self.hypercall_instruction,
-                self.syscall_trampoline_address,
-                self.syscall_frame_address,
-                false,
-            )?;
-            parked?;
+        if park_syscall_return
+            && !self
+                .park_process_action("parent did not park at fork", stop)
+                .await?
+        {
+            return Ok(None);
         }
         let child_snapshot = self.snapshot_process()?;
         write_tid_best_effort(&mut self.memory, parent_tid, child_pid);
 
         let mut child = Self::from_process_snapshot(child_snapshot)?;
-        child_executor.bind_address_space(&child.memory);
         // Forked children inherit the parent's thread ownership so execution and
         // `is_backend_owned_syscall`'s futex classification stay consistent.
         child.thread_ownership = self.thread_ownership;
-        child.tool_failure = self
-            .tool_failure
-            .as_ref()
-            .map(|failure| failure.for_process(Pid::from_raw(child_pid)));
+        child.set_tool_failure(
+            self.tool_failure
+                .as_ref()
+                .map(|failure| failure.for_process(Pid::from_raw(child_pid))),
+        );
+        child.set_operation_origin(self.memory.entry_origin().operation);
+        child_executor.bind_address_space(&child.memory);
         child.exit_collector = self.exit_collector.clone();
         write_tid_best_effort(&mut child.memory, child_tid, child_pid);
         let (fs_base, gs_base) = child_executor.segment_bases();
@@ -1659,17 +2167,29 @@ impl KvmBackend {
         if let Some(fault) = fault {
             fault.configure_child(&mut child, child_stack)?;
         }
-        Ok(ForkedProcess {
+        Ok(Some(ForkedProcess {
             pid: child_pid,
             backend: child,
             executor: child_executor,
-        })
+        }))
     }
 
+    #[cfg(test)]
     fn finish_forked_process(
         &mut self,
         executor: &mut ElfExecutor,
         mut child: ForkedProcess,
+        status: ExitStatus,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    ) -> Result<()> {
+        self.finish_forked_process_inner(executor, &mut child, status, stdout, stderr)
+    }
+
+    fn finish_forked_process_inner(
+        &mut self,
+        executor: &mut ElfExecutor,
+        child: &mut ForkedProcess,
         status: ExitStatus,
         stdout: Vec<u8>,
         stderr: Vec<u8>,
@@ -1681,6 +2201,7 @@ impl KvmBackend {
             child.executor.take_clear_child_tid(),
             0,
         );
+        child.backend.check_entry_owner()?;
         let completion = executor.child_completion(status);
         executor.record_child_completion(child.pid, completion)?;
         executor.append_output(stdout, stderr);
@@ -1694,12 +2215,13 @@ impl KvmBackend {
     }
 
     // TODO-HUMAN-REVIEW(PR-156): Review process actions completed during Tool injection.
-    fn run_process_action_inner(
+    async fn run_process_action_inner(
         &mut self,
         executor: &mut ElfExecutor,
         action: ProcessAction,
         park_syscall_return: bool,
         fault: Option<&PageZeroFault>,
+        mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
     ) -> Result<ProcessActionOutcome> {
         let outcome = match &action {
             ProcessAction::Fork { child_pid, .. } => {
@@ -1720,21 +2242,71 @@ impl KvmBackend {
                 clear_sighand,
                 share_address_space,
             } => {
-                let mut child = self.prepare_forked_process(
-                    executor,
-                    child_pid,
-                    child_stack,
-                    parent_tid,
-                    child_tid,
-                    clear_child_tid,
-                    clear_sighand,
-                    share_address_space,
-                    park_syscall_return,
-                    fault,
-                )?;
-                let (code, stdout, stderr) =
-                    child.backend.run_static_elf_process(&mut child.executor)?;
-                self.finish_forked_process(executor, child, code, stdout, stderr)?;
+                let Some(mut child) = self
+                    .prepare_forked_process_admitted(
+                        executor,
+                        child_pid,
+                        child_stack,
+                        parent_tid,
+                        child_tid,
+                        clear_child_tid,
+                        clear_sighand,
+                        share_address_space,
+                        park_syscall_return,
+                        fault,
+                        stop.as_mut(),
+                    )
+                    .await?
+                else {
+                    return Ok(ProcessActionOutcome::cancelled());
+                };
+                // This fork runs on the parent's call stack, including during
+                // injection. It is nested work, not an independent driver
+                // that can await the parent's terminal publication.
+                child.backend.entry_driver = self.entry_driver_owner();
+                child
+                    .backend
+                    .set_operation_origin(self.memory.entry_origin().operation);
+                child.executor.bind_address_space(&child.backend.memory);
+                let result = child.backend.run_static_elf_process(&mut child.executor);
+                let result = match result {
+                    Ok((status, stdout, stderr)) => self
+                        .finish_forked_process_inner(executor, &mut child, status, stdout, stderr),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = result {
+                    if self.entry_driver.is_some() {
+                        // KvmBackend::drop cancels/joins. Keep that destruction
+                        // outside the enclosing callback along with every
+                        // nested owned consumer, after outer publication.
+                        let transfer = ChildToolPanicTransfer {
+                            parent: self.tool_panic_owner(),
+                            child: child.backend.tool_panic_owner(),
+                        };
+                        executor.retain_unstarted_tool_cleanup(Box::pin(async move {
+                            let transfer = transfer;
+                            child.backend.restore_entry_origin();
+                            child.executor.bind_address_space(&child.backend.memory);
+                            let cleanup =
+                                crate::runtime::finish_unstarted_tool_cleanups_with_panics(
+                                    &mut child.executor,
+                                    &child.backend.tool_panics,
+                                )
+                                .await;
+                            child.backend.cancel_guest_threads_after_failure();
+                            let workers = child.backend.guest_worker_teardown_result();
+                            let children = child.executor.join_child_processes_after_failure();
+                            drop(transfer);
+                            Error::combine(
+                                [cleanup, workers, children]
+                                    .into_iter()
+                                    .filter_map(Result::err)
+                                    .collect(),
+                            )
+                        }));
+                    }
+                    return Err(error);
+                }
             }
             // TODO-HUMAN-REVIEW(PR-172): Review concurrent CLONE_THREAD lifecycle semantics.
             ProcessAction::Thread {
@@ -1745,37 +2317,19 @@ impl KvmBackend {
                 clear_child_tid,
                 tls,
             } => {
-                let parent_registers = self.vcpu.get_regs()?;
-                let parent_xsave = self.vcpu.get_xsave()?;
+                let Some((parent_registers, parent_xsave, parent_syscall_frame)) =
+                    self.capture_thread_parent(stop.as_mut()).await?
+                else {
+                    return Ok(ProcessActionOutcome::cancelled());
+                };
                 let (parent_fs, parent_gs) = executor.segment_bases();
-                let mut parent_syscall_frame = vec![0; FRAME_SIZE];
-                self.memory
-                    .read_raw(self.syscall_frame_address, &mut parent_syscall_frame)?;
 
-                if park_syscall_return {
-                    set_syscall_return_park(
-                        &mut self.memory,
-                        self.hypercall_instruction,
-                        self.syscall_trampoline_address,
-                        self.syscall_frame_address,
-                        true,
-                    )?;
-                    let vcpu_exit = self.vcpu.run()?;
-                    Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
-                    let parked = match vcpu_exit {
-                        VcpuExit::Hlt => Ok(()),
-                        exit => Err(Error::UnexpectedVcpuExit(format!(
-                            "parent did not park at thread clone: {exit:?}"
-                        ))),
-                    };
-                    set_syscall_return_park(
-                        &mut self.memory,
-                        self.hypercall_instruction,
-                        self.syscall_trampoline_address,
-                        self.syscall_frame_address,
-                        false,
-                    )?;
-                    parked?;
+                if park_syscall_return
+                    && !self
+                        .park_process_action("parent did not park at thread clone", stop.as_mut())
+                        .await?
+                {
+                    return Ok(ProcessActionOutcome::cancelled());
                 }
                 let child_registers = self.vcpu.get_regs()?;
 
@@ -1800,7 +2354,11 @@ impl KvmBackend {
                 // execution and futex classification stay consistent.
                 self.debug_assert_thread_ownership_consistent();
                 child.thread_ownership = self.thread_ownership;
-                child.tool_failure = self.tool_failure.clone();
+                child.set_tool_failure(
+                    self.tool_failure
+                        .as_ref()
+                        .map(|failure| failure.for_thread(Pid::from_raw(child_tid))),
+                );
                 child.exit_collector = self.exit_collector.clone();
                 child
                     .memory
@@ -1828,48 +2386,107 @@ impl KvmBackend {
                     None,
                 )?;
 
+                let completion_notice = WorkerCompletionNotice::new(self.thread_group.clone());
+                let returning = completion_notice.returning.clone();
+                #[cfg(test)]
+                tests::entry_action_tests::observe("host_spawn");
                 let handle = std::thread::Builder::new()
                     .name(format!("reverie-kvm-guest-{child_tid}"))
                     .spawn(move || {
-                        let execution =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                let result = child.run_static_elf_process(&mut child_executor);
-                                let failure = child.tool_failure.clone();
-                                let result = finish_host_worker_outcome(
-                                    failure.as_ref(),
-                                    Pid::from_raw(child_tid),
-                                    result,
-                                    |failed| {
-                                        child.release_thread_slot();
-                                        clear_tid_and_wake(
-                                            &mut child.memory,
-                                            child_executor.take_clear_child_tid(),
-                                        );
-                                        if failed {
-                                            child_executor.retire_failed_thread();
-                                            child.thread_group.record_worker_failure(child_tid);
-                                        }
-                                    },
-                                );
-                                if let Err(error) = &result
-                                    && child.thread_group.take_worker_error_report(child_tid)
-                                {
-                                    eprintln!(
-                                        "reverie-kvm guest thread {child_tid} failed: {error}"
+                        let _completion_notice = completion_notice;
+                        let mut run_child = move || {
+                            let driver = child.start_entry_driver();
+                            child_executor.bind_address_space(&child.memory);
+                            let execution =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    let result = child.run_static_elf_process(&mut child_executor);
+                                    child.restore_entry_origin();
+                                    child_executor.bind_address_space(&child.memory);
+                                    let result = futures::executor::block_on(
+                                        child.route_entry_outcome(result),
                                     );
+                                    let result = result.map_err(|error| {
+                                        child.report_tool_failure("host worker outcome", error)
+                                    });
+                                    let cleanup = futures::executor::block_on(
+                                        crate::runtime::finish_unstarted_tool_cleanups_with_panics(
+                                            &mut child_executor,
+                                            &child.tool_panics,
+                                        ),
+                                    );
+                                    let result = match (result, cleanup) {
+                                        (Ok(value), Ok(())) => Ok(value),
+                                        (Ok(_), Err(error)) => Err(error),
+                                        (Err(error), Ok(())) => Err(error),
+                                        (Err(error), Err(cleanup)) => {
+                                            Err(error.with_cleanup(vec![cleanup]))
+                                        }
+                                    };
+                                    let result = futures::executor::block_on(
+                                        child.route_entry_outcome(result),
+                                    );
+                                    let failure = child.tool_failure.clone();
+                                    let result = finish_host_worker_outcome(
+                                        failure.as_ref(),
+                                        Pid::from_raw(child_tid),
+                                        result,
+                                        |failed| {
+                                            child.release_thread_slot();
+                                            clear_tid_and_wake(
+                                                &mut child.memory,
+                                                child_executor.take_clear_child_tid(),
+                                            );
+                                            if failed {
+                                                child_executor.retire_failed_thread();
+                                                child.thread_group.record_worker_failure(child_tid);
+                                            }
+                                        },
+                                    );
+                                    // Clear-TID is best effort, but a captured
+                                    // entry failure still belongs to this driver.
+                                    let result = futures::executor::block_on(
+                                        child.route_entry_outcome(result),
+                                    )
+                                    .map_err(|error| {
+                                        child.report_tool_failure("host worker retirement", error)
+                                    });
+                                    if let Err(error) = &result
+                                        && child.thread_group.take_worker_error_report(child_tid)
+                                    {
+                                        eprintln!(
+                                            "reverie-kvm guest thread {child_tid} failed: {error}"
+                                        );
+                                    }
+                                    result
+                                }));
+                            match execution {
+                                Ok(result) => {
+                                    let result = child.finish_entry_driver(driver, result).map_err(
+                                        |error| {
+                                            child.report_tool_failure(
+                                                "host worker completion",
+                                                error,
+                                            )
+                                        },
+                                    );
+                                    child.finish_deferred_worker_panic(child_tid, result)
                                 }
-                                result
-                            }));
-                        match execution {
-                            Ok(result) => result,
-                            Err(payload) => child.finish_panicked_guest_worker(
-                                &mut child_executor,
-                                child_tid,
-                                payload,
-                            ),
-                        }
+                                Err(payload) => child.finish_panicked_guest_worker_with_entry(
+                                    &mut child_executor,
+                                    child_tid,
+                                    payload,
+                                    Some(driver),
+                                ),
+                            }
+                        };
+                        run_child()
                     })?;
-                self.thread_group.add_worker_handle(child_tid, handle);
+                self.thread_group.add_worker_handle_with_completion(
+                    child_tid,
+                    None,
+                    Some(returning),
+                    handle,
+                );
             }
             ProcessAction::Exec {
                 executable_path,
@@ -1881,36 +2498,18 @@ impl KvmBackend {
                 if self.is_guest_thread {
                     return Err(Error::GuestThreadExecUnsupported);
                 }
-                if park_syscall_return {
-                    set_syscall_return_park(
-                        &mut self.memory,
-                        self.hypercall_instruction,
-                        self.syscall_trampoline_address,
-                        self.syscall_frame_address,
-                        true,
-                    )?;
-                    let vcpu_exit = self.vcpu.run()?;
-                    Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
-                    let parked = match vcpu_exit {
-                        VcpuExit::Hlt => Ok(()),
-                        exit => Err(Error::UnexpectedVcpuExit(format!(
-                            "process did not park before exec: {exit:?}"
-                        ))),
-                    };
-                    set_syscall_return_park(
-                        &mut self.memory,
-                        self.hypercall_instruction,
-                        self.syscall_trampoline_address,
-                        self.syscall_frame_address,
-                        false,
-                    )?;
-                    parked?;
+                if park_syscall_return
+                    && !self
+                        .park_process_action("process did not park before exec", stop.as_mut())
+                        .await?
+                {
+                    return Ok(ProcessActionOutcome::cancelled());
                 }
                 // A successful exec terminates every sibling thread before the
                 // new address space becomes visible. Leaving a sibling vCPU
                 // alive lets it execute stale instructions in the replacement
                 // image and can turn an otherwise successful exec into a fault.
-                self.cancel_guest_threads();
+                self.cancel_guest_threads_for_exec(stop.as_mut()).await?;
                 self.guest_worker_teardown_result()
                     .map_err(|error| Error::ExecWorkerTeardown(Box::new(error)))?;
                 let result = self.exec_process(
@@ -1934,8 +2533,15 @@ impl KvmBackend {
         action: ProcessAction,
         park_syscall_return: bool,
     ) -> Result<()> {
-        self.run_process_action_inner(executor, action, park_syscall_return, None)
-            .map(|_| ())
+        let mut stop = std::pin::pin!(std::future::pending());
+        futures::executor::block_on(self.run_process_action_inner(
+            executor,
+            action,
+            park_syscall_return,
+            None,
+            stop.as_mut(),
+        ))
+        .map(|_| ())
     }
 
     /// Cancels and joins children created by a Tool action whose parent
@@ -2040,6 +2646,17 @@ impl KvmBackend {
         first_error.map_or(Ok(()), Err)
     }
 
+    /// Finish the action while its parent callback still owns borrowed state.
+    /// The outer driver retains the pending gates and owns error publication,
+    /// cancellation and joins after destroying that callback.
+    fn finish_injected_tool_process_action_at_boundary(
+        &mut self,
+        continuation: ProcessActionContinuation,
+        action_result: Result<ProcessActionOutcome>,
+    ) -> Result<ProcessActionOutcome> {
+        continuation.finish(self, action_result)
+    }
+
     fn finish_tool_process_action_at_boundary(
         &mut self,
         executor: &mut ElfExecutor,
@@ -2047,7 +2664,7 @@ impl KvmBackend {
         continuation: ProcessActionContinuation,
         action_result: Result<ProcessActionOutcome>,
     ) -> Result<ProcessActionOutcome> {
-        match continuation.finish(self, action_result) {
+        match self.finish_injected_tool_process_action_at_boundary(continuation, action_result) {
             Ok(outcome) => Ok(outcome),
             Err(action_error) => Err(self.cleanup_unstarted_tool_children_after_error(
                 executor,
@@ -2062,6 +2679,7 @@ impl KvmBackend {
         executor: &mut ElfExecutor,
         starts: &SharedChildStarts,
     ) -> Result<()> {
+        self.check_entry_owner()?;
         if let Err(error) = crate::runtime::start_pending_children(starts) {
             return Err(self.cleanup_unstarted_tool_children_after_error(executor, starts, error));
         }
@@ -2106,7 +2724,14 @@ impl KvmBackend {
         action: ProcessAction,
         continuation: ProcessActionContinuation,
     ) -> Result<ProcessActionOutcome> {
-        let result = self.run_process_action_inner(executor, action, true, None);
+        let mut stop = std::pin::pin!(std::future::pending());
+        let result = futures::executor::block_on(self.run_process_action_inner(
+            executor,
+            action,
+            true,
+            None,
+            stop.as_mut(),
+        ));
         continuation.finish(self, result)
     }
 
@@ -2126,6 +2751,19 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
+        let global = context.global_state.clone();
+        let local = self.failure_subscription(executor.is_traced_tree_root());
+        let mut stop = std::pin::pin!(async {
+            match global.as_ref() {
+                Some(global) => crate::failure::wait_for_failure(global.as_ref(), local).await,
+                None => match local {
+                    Some(local) => {
+                        let _ = local.await;
+                    }
+                    None => std::future::pending().await,
+                },
+            }
+        });
         match action {
             ProcessAction::Fork {
                 child_pid,
@@ -2136,18 +2774,24 @@ impl KvmBackend {
                 clear_sighand,
                 share_address_space,
             } => {
-                let child = self.prepare_forked_process(
-                    executor,
-                    child_pid,
-                    child_stack,
-                    parent_tid,
-                    child_tid,
-                    clear_child_tid,
-                    clear_sighand,
-                    share_address_space,
-                    park_syscall_return,
-                    fault,
-                )?;
+                let Some(child) = self
+                    .prepare_forked_process_admitted(
+                        executor,
+                        child_pid,
+                        child_stack,
+                        parent_tid,
+                        child_tid,
+                        clear_child_tid,
+                        clear_sighand,
+                        share_address_space,
+                        park_syscall_return,
+                        fault,
+                        stop.as_mut(),
+                    )
+                    .await?
+                else {
+                    return Ok(ProcessActionOutcome::cancelled());
+                };
 
                 let child_pid = Pid::from_raw(child.pid);
                 let global_state = context.global_state.ok_or_else(|| {
@@ -2168,6 +2812,10 @@ impl KvmBackend {
                 let completion_notifier = executor.child_completion_notifier();
                 let completion = Arc::new(Mutex::new(None));
                 let child_completion = completion.clone();
+                let panic_owner = child.backend.tool_failure.as_ref().map(|failure| {
+                    crate::executor::ChildProcessPanicOwner::new(failure.run.clone())
+                });
+                let child_panic_owner = panic_owner.clone();
                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
                 let start_gate = ChildStartGate::new(start_sender);
                 let handle = crate::failure::spawn_owned(
@@ -2189,84 +2837,132 @@ impl KvmBackend {
                         config,
                         subscriptions,
                     )| {
-                        let start = start_receiver.recv();
-                        let cancel = !matches!(start, Ok(ChildStartCommand::Start));
-                        let failure = match start {
-                            Ok(command) => command.failure(),
-                            Err(_) => Some(Error::UnexpectedVcpuExit(format!(
-                                "KVM child process {raw_child_pid} lost its parent start gate"
-                            ))),
-                        };
-                        let result = if cancel {
-                            futures::executor::block_on(child.backend.finish_unstarted_tool(
-                                &mut child.executor,
-                                child_tool,
-                                (child_pid, child_pid),
-                                global_state.as_ref(),
-                                &config,
-                                child_thread_state,
-                                failure,
-                            ))
-                        } else {
-                            futures::executor::block_on(
-                                child.backend.run_static_elf_process_with_tool(
-                                    &mut child.executor,
-                                    child_pid,
-                                    // A forked process child is its own leader (tid == pid).
-                                    child_pid,
-                                    child_tool,
-                                    child_thread_state,
-                                    global_state,
-                                    &config,
-                                    &subscriptions,
-                                    false,
-                                ),
-                            )
-                        };
-                        match result {
-                            Ok((status, _, _)) => {
-                                write_tid_best_effort(
-                                    &mut child.backend.memory,
-                                    child.executor.take_clear_child_tid(),
-                                    0,
-                                );
-                                let waitable = !auto_reap.load(Ordering::SeqCst);
-                                let completion =
-                                    ChildCompletion::from_waitability(status, waitable);
-                                *child_completion
-                                    .lock()
-                                    .expect("KVM child completion lock poisoned") =
-                                    Some(completion);
-                                let _ = completion_notifier.send(raw_child_pid);
-                                futures::executor::block_on(
-                                    lifecycle_state.on_backend_child_wait_event(
-                                        BackendChildWaitEvent {
-                                            parent: parent_pid,
-                                            child: child_pid,
-                                            state: BackendChildWaitState::Exited {
-                                                status,
-                                                waitable,
-                                            },
-                                        },
-                                    ),
-                                )
-                                .map_err(|error| {
-                                    child.backend.report_tool_failure(
-                                        "child wait hook",
-                                        Error::Reverie(error),
+                        let driver = child.backend.start_entry_driver();
+                        child.executor.bind_address_space(&child.backend.memory);
+                        let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                            || {
+                                let start = start_receiver.recv();
+                                let cancel = !matches!(start, Ok(ChildStartCommand::Start));
+                                let failure = match start {
+                                    Ok(command) => command.failure(),
+                                    Err(_) => Some(Error::UnexpectedVcpuExit(format!(
+                                        "KVM child process {raw_child_pid} lost its parent start gate"
+                                    ))),
+                                };
+                                let result = if cancel {
+                                    futures::executor::block_on(
+                                        child.backend.finish_unstarted_tool(
+                                            &mut child.executor,
+                                            child_tool,
+                                            (child_pid, child_pid),
+                                            global_state.as_ref(),
+                                            &config,
+                                            child_thread_state,
+                                            failure,
+                                        ),
                                     )
-                                })?;
-                                Ok(())
-                            }
-                            Err(error) => {
-                                *child_completion
-                                    .lock()
-                                    .expect("KVM child completion lock poisoned") =
-                                    Some(ChildCompletion::Failed);
-                                let _ = completion_notifier.send(raw_child_pid);
-                                Err(error)
-                            }
+                                } else {
+                                    futures::executor::block_on(
+                                        child.backend.run_static_elf_process_with_tool(
+                                            &mut child.executor,
+                                            child_pid,
+                                            // A forked process child is its own leader (tid == pid).
+                                            child_pid,
+                                            child_tool,
+                                            child_thread_state,
+                                            global_state,
+                                            &config,
+                                            &subscriptions,
+                                            false,
+                                        ),
+                                    )
+                                };
+                                child.backend.restore_entry_origin();
+                                child.executor.bind_address_space(&child.backend.memory);
+                                match result {
+                                    Ok((status, _, _)) => {
+                                        write_tid_best_effort(
+                                            &mut child.backend.memory,
+                                            child.executor.take_clear_child_tid(),
+                                            0,
+                                        );
+                                        // A best-effort clear can have captured a real
+                                        // gate failure despite its unit return value.
+                                        futures::executor::block_on(
+                                            child.backend.route_entry_outcome(Ok(())),
+                                        )?;
+                                        let waitable = !auto_reap.load(Ordering::SeqCst);
+                                        let completion =
+                                            ChildCompletion::from_waitability(status, waitable);
+                                        *child_completion
+                                            .lock()
+                                            .expect("KVM child completion lock poisoned") =
+                                            Some(completion);
+                                        let _ = completion_notifier.send(raw_child_pid);
+                                        let caught = futures::executor::block_on(
+                                            crate::failure::owned_future::catch_owned_future_from(
+                                                || {
+                                                    lifecycle_state.on_backend_child_wait_event(
+                                                        BackendChildWaitEvent {
+                                                            parent: parent_pid,
+                                                            child: child_pid,
+                                                            state: BackendChildWaitState::Exited {
+                                                                status,
+                                                                waitable,
+                                                            },
+                                                        },
+                                                    )
+                                                },
+                                            ),
+                                        );
+                                        child.backend.tool_panic_owner().finish(
+                                            crate::failure::owned_future::CaughtFuture {
+                                                output: caught
+                                                    .output
+                                                    .map(|result| result.map_err(Error::Reverie)),
+                                                panics: caught.panics,
+                                            },
+                                            "child wait hook",
+                                        )
+                                    }
+                                    Err(error) => Err(error),
+                                }
+                            },
+                        ));
+                        let result = match execution {
+                            Ok(result) => result,
+                            Err(payload) => child
+                                .backend
+                                .finish_panicked_tool_process_owner(&mut child.executor, payload),
+                        };
+                        child.backend.restore_entry_origin();
+                        child.executor.bind_address_space(&child.backend.memory);
+                        let result =
+                            futures::executor::block_on(child.backend.route_entry_outcome(result))
+                                .map_err(|error| {
+                                    child
+                                        .backend
+                                        .report_tool_failure("fork owner completion", error)
+                                });
+                        let result =
+                            child
+                                .backend
+                                .finish_entry_driver(driver, result)
+                                .map_err(|error| {
+                                    child
+                                        .backend
+                                        .report_tool_failure("fork owner retirement", error)
+                                });
+                        if result.is_err() {
+                            *child_completion
+                                .lock()
+                                .expect("KVM child completion lock poisoned") =
+                                Some(ChildCompletion::Failed);
+                            let _ = completion_notifier.send(raw_child_pid);
                         }
+                        child
+                            .backend
+                            .finish_deferred_process_panic(result, child_panic_owner.as_deref())
                     },
                 );
                 let handle = match handle {
@@ -2275,19 +2971,48 @@ impl KvmBackend {
                         error,
                         (mut child, child_tool, child_thread_state, global_state, config, _),
                     )) => {
-                        return child
-                            .backend
-                            .finish_unstarted_tool(
-                                &mut child.executor,
-                                child_tool,
-                                (child_pid, child_pid),
-                                global_state.as_ref(),
-                                &config,
-                                child_thread_state,
-                                Some(Error::HostIo(error)),
-                            )
-                            .await
-                            .map(|_| unreachable!("failed spawn completed successfully"));
+                        // Publish the original spawn failure through the parent
+                        // first. Its outer owner consumes this child afterward,
+                        // outside the still-borrowed parent Tool callback.
+                        let transfer = ChildToolPanicTransfer {
+                            parent: self.tool_panic_owner(),
+                            child: child.backend.tool_panic_owner(),
+                        };
+                        executor.retain_unstarted_tool_cleanup(Box::pin(async move {
+                            let transfer = transfer;
+                            let driver = child.backend.start_entry_driver();
+                            child.executor.bind_address_space(&child.backend.memory);
+                            let caught =
+                                crate::failure::owned_future::catch_owned_future_from(|| {
+                                    child.backend.finish_unstarted_tool(
+                                        &mut child.executor,
+                                        child_tool,
+                                        (child_pid, child_pid),
+                                        global_state.as_ref(),
+                                        &config,
+                                        child_thread_state,
+                                        Some(Error::RunAborted),
+                                    )
+                                })
+                                .await;
+                            let result = child
+                                .backend
+                                .tool_panic_owner()
+                                .finish(caught, "unstarted fork owner");
+                            child.backend.restore_entry_origin();
+                            child.executor.bind_address_space(&child.backend.memory);
+                            let result = child.backend.route_entry_outcome(result).await;
+                            let result = child.backend.finish_entry_driver(driver, result).map_err(
+                                |error| {
+                                    child
+                                        .backend
+                                        .report_tool_failure("unstarted fork completion", error)
+                                },
+                            );
+                            drop(transfer);
+                            result.map(|_| unreachable!("failed spawn completed successfully"))
+                        }));
+                        return Err(Error::HostIo(error));
                     }
                 };
                 pending_child_starts
@@ -2297,11 +3022,12 @@ impl KvmBackend {
                         raw_child_pid,
                         start_gate.clone(),
                     ));
-                executor.register_child_process_with_gate(
+                executor.register_child_process_with_panic_owner(
                     raw_child_pid,
                     start_gate,
                     completion,
                     handle,
+                    panic_owner,
                 );
                 configure_process_syscall_return(
                     &self.memory,
@@ -2323,7 +3049,14 @@ impl KvmBackend {
             // never reaches the host waiter — is unrepresentable now that one
             // enum drives both decisions.)
             ProcessAction::Thread { .. } if self.thread_ownership.executes_on_host() => {
-                self.run_process_action_inner(executor, action, park_syscall_return, fault)
+                self.run_process_action_inner(
+                    executor,
+                    action,
+                    park_syscall_return,
+                    fault,
+                    stop.as_mut(),
+                )
+                .await
             }
             // `ThreadOwnership::Tool`: a CLONE_THREAD worker runs its own vCPU on
             // a fresh OS thread but shares the guest address space, file table,
@@ -2342,37 +3075,19 @@ impl KvmBackend {
                 clear_child_tid,
                 tls,
             } => {
-                let parent_registers = self.vcpu.get_regs()?;
-                let parent_xsave = self.vcpu.get_xsave()?;
+                let Some((parent_registers, parent_xsave, parent_syscall_frame)) =
+                    self.capture_thread_parent(stop.as_mut()).await?
+                else {
+                    return Ok(ProcessActionOutcome::cancelled());
+                };
                 let (parent_fs, parent_gs) = executor.segment_bases();
-                let mut parent_syscall_frame = vec![0; FRAME_SIZE];
-                self.memory
-                    .read_raw(self.syscall_frame_address, &mut parent_syscall_frame)?;
 
-                if park_syscall_return {
-                    set_syscall_return_park(
-                        &mut self.memory,
-                        self.hypercall_instruction,
-                        self.syscall_trampoline_address,
-                        self.syscall_frame_address,
-                        true,
-                    )?;
-                    let vcpu_exit = self.vcpu.run()?;
-                    Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
-                    let parked = match vcpu_exit {
-                        VcpuExit::Hlt => Ok(()),
-                        exit => Err(Error::UnexpectedVcpuExit(format!(
-                            "parent did not park at thread clone: {exit:?}"
-                        ))),
-                    };
-                    set_syscall_return_park(
-                        &mut self.memory,
-                        self.hypercall_instruction,
-                        self.syscall_trampoline_address,
-                        self.syscall_frame_address,
-                        false,
-                    )?;
-                    parked?;
+                if park_syscall_return
+                    && !self
+                        .park_process_action("parent did not park at thread clone", stop.as_mut())
+                        .await?
+                {
+                    return Ok(ProcessActionOutcome::cancelled());
                 }
                 let child_registers = self.vcpu.get_regs()?;
 
@@ -2396,7 +3111,7 @@ impl KvmBackend {
                 // execution and futex classification stay consistent.
                 self.debug_assert_thread_ownership_consistent();
                 child.thread_ownership = self.thread_ownership;
-                child.tool_failure = self.tool_failure.clone();
+                child.set_tool_failure(self.tool_failure.clone());
                 child.exit_collector = self.exit_collector.clone();
                 child
                     .memory
@@ -2444,11 +3159,15 @@ impl KvmBackend {
                 let child_thread_state = child_tool
                     .init_thread_state(child_tid_pid, Some((context.tid, context.thread_state)));
                 if let Some(failure) = &child.tool_failure {
-                    child.tool_failure = Some(failure.for_thread(child_tid_pid));
+                    child.set_tool_failure(Some(failure.for_thread(child_tid_pid)));
                 }
                 let pending_child_starts = context.pending_child_starts;
                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
                 let start_gate = ChildStartGate::new(start_sender);
+                let completion_notice = WorkerCompletionNotice::new(self.thread_group.clone());
+                let returning = completion_notice.returning.clone();
+                #[cfg(test)]
+                tests::entry_action_tests::observe("tool_spawn");
                 let handle = crate::failure::spawn_owned(
                     std::thread::Builder::new().name(format!("reverie-kvm-guest-{child_tid}")),
                     (
@@ -2469,74 +3188,100 @@ impl KvmBackend {
                         config,
                         subscriptions,
                     )| {
-                        let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                            || {
-                                let start = start_receiver.recv();
-                                let cancel = !matches!(start, Ok(ChildStartCommand::Start));
-                                let failure = match start {
-                                    Ok(command) => command.failure(),
-                                    Err(_) => Some(Error::UnexpectedVcpuExit(format!(
-                                        "KVM guest thread {child_tid} lost its parent start gate"
-                                    ))),
-                                };
-                                let result = if cancel {
-                                    futures::executor::block_on(child.finish_unstarted_tool(
-                                        &mut child_executor,
-                                        child_tool,
-                                        (tgid, child_tid_pid),
-                                        global_state.as_ref(),
-                                        &config,
-                                        child_thread_state,
-                                        failure,
-                                    ))
-                                } else {
-                                    futures::executor::block_on(
-                                        child.run_static_elf_process_with_tool(
+                        let _completion_notice = completion_notice;
+                        let run_child = move || {
+                            let driver = child.start_entry_driver();
+                            child_executor.bind_address_space(&child.memory);
+                            let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                || {
+                                    let start = start_receiver.recv();
+                                    let cancel = !matches!(start, Ok(ChildStartCommand::Start));
+                                    let failure = match start {
+                                        Ok(command) => command.failure(),
+                                        Err(_) => Some(Error::UnexpectedVcpuExit(format!(
+                                            "KVM guest thread {child_tid} lost its parent start gate"
+                                        ))),
+                                    };
+                                    let result = if cancel {
+                                        futures::executor::block_on(child.finish_unstarted_tool(
                                             &mut child_executor,
-                                            tgid,
-                                            child_tid_pid,
                                             child_tool,
-                                            child_thread_state,
-                                            global_state,
+                                            (tgid, child_tid_pid),
+                                            global_state.as_ref(),
                                             &config,
-                                            &subscriptions,
-                                            false,
-                                        ),
-                                    )
-                                };
-                                child.release_thread_slot();
-                                clear_tid_and_wake(
-                                    &mut child.memory,
-                                    child_executor.take_clear_child_tid(),
-                                );
-                                let peer_cancelled = crate::runtime::is_peer_cancelled_tool_worker(
-                                    (tgid, child_tid_pid),
-                                    !cancel,
-                                    &result,
-                                );
-                                if result.is_err() && !peer_cancelled {
-                                    child_executor.retire_failed_thread();
-                                    child.thread_group.record_worker_failure(child_tid);
-                                }
-                                if let Err(error) = &result
-                                    && !peer_cancelled
-                                    && child.thread_group.take_worker_error_report(child_tid)
-                                {
-                                    eprintln!(
-                                        "reverie-kvm guest thread {child_tid} tool loop failed: {error}"
+                                            child_thread_state,
+                                            failure,
+                                        ))
+                                    } else {
+                                        futures::executor::block_on(
+                                            child.run_static_elf_process_with_tool(
+                                                &mut child_executor,
+                                                tgid,
+                                                child_tid_pid,
+                                                child_tool,
+                                                child_thread_state,
+                                                global_state,
+                                                &config,
+                                                &subscriptions,
+                                                false,
+                                            ),
+                                        )
+                                    };
+                                    child.restore_entry_origin();
+                                    child_executor.bind_address_space(&child.memory);
+                                    child.release_thread_slot();
+                                    clear_tid_and_wake(
+                                        &mut child.memory,
+                                        child_executor.take_clear_child_tid(),
                                     );
+                                    let result = futures::executor::block_on(
+                                        child.route_entry_outcome(result),
+                                    )
+                                    .map_err(|error| {
+                                        child.report_tool_failure("Tool worker retirement", error)
+                                    });
+                                    let peer_cancelled =
+                                        crate::runtime::is_peer_cancelled_tool_worker(
+                                            (tgid, child_tid_pid),
+                                            !cancel,
+                                            &result,
+                                        );
+                                    if result.is_err() && !peer_cancelled {
+                                        child_executor.retire_failed_thread();
+                                        child.thread_group.record_worker_failure(child_tid);
+                                    }
+                                    if let Err(error) = &result
+                                        && !peer_cancelled
+                                        && child.thread_group.take_worker_error_report(child_tid)
+                                    {
+                                        eprintln!(
+                                            "reverie-kvm guest thread {child_tid} tool loop failed: {error}"
+                                        );
+                                    }
+                                    result
+                                },
+                            ));
+                            match execution {
+                                Ok(result) => {
+                                    let result = child.finish_entry_driver(driver, result).map_err(
+                                        |error| {
+                                            child.report_tool_failure(
+                                                "Tool worker completion",
+                                                error,
+                                            )
+                                        },
+                                    );
+                                    child.finish_deferred_worker_panic(child_tid, result)
                                 }
-                                result
-                            },
-                        ));
-                        match execution {
-                            Ok(result) => result,
-                            Err(payload) => child.finish_panicked_guest_worker(
-                                &mut child_executor,
-                                child_tid,
-                                payload,
-                            ),
-                        }
+                                Err(payload) => child.finish_panicked_guest_worker_with_entry(
+                                    &mut child_executor,
+                                    child_tid,
+                                    payload,
+                                    Some(driver),
+                                ),
+                            }
+                        };
+                        run_child()
                     },
                 );
                 let handle = match handle {
@@ -2553,30 +3298,91 @@ impl KvmBackend {
                             _,
                         ),
                     )) => {
-                        return child
-                            .finish_unstarted_tool(
-                                &mut child_executor,
-                                child_tool,
-                                (tgid, child_tid_pid),
-                                global_state.as_ref(),
-                                &config,
-                                child_thread_state,
-                                Some(Error::HostIo(error)),
-                            )
-                            .await
-                            .map(|_| unreachable!("failed spawn completed successfully"));
+                        // A failed spawn never starts this child. Retain its
+                        // consuming hooks until the parent has published the
+                        // original error and released its borrowed callback.
+                        let transfer = ChildToolPanicTransfer {
+                            parent: self.tool_panic_owner(),
+                            child: child.tool_panic_owner(),
+                        };
+                        executor.retain_unstarted_tool_cleanup(Box::pin(async move {
+                            let transfer = transfer;
+                            let driver = child.start_entry_driver();
+                            child_executor.bind_address_space(&child.memory);
+                            let caught =
+                                crate::failure::owned_future::catch_owned_future_from(|| {
+                                    child.finish_unstarted_tool(
+                                        &mut child_executor,
+                                        child_tool,
+                                        (tgid, child_tid_pid),
+                                        global_state.as_ref(),
+                                        &config,
+                                        child_thread_state,
+                                        Some(Error::RunAborted),
+                                    )
+                                })
+                                .await;
+                            let result = child
+                                .tool_panic_owner()
+                                .finish(caught, "unstarted thread owner");
+                            child.restore_entry_origin();
+                            child_executor.bind_address_space(&child.memory);
+                            let result = child.route_entry_outcome(result).await;
+                            let result =
+                                child.finish_entry_driver(driver, result).map_err(|error| {
+                                    child.report_tool_failure("unstarted thread completion", error)
+                                });
+                            drop(transfer);
+                            result.map(|_| unreachable!("failed spawn completed successfully"))
+                        }));
+                        return Err(Error::HostIo(error));
                     }
                 };
-                self.thread_group
-                    .add_unstarted_worker(child_tid, start_gate.clone(), handle);
+                self.thread_group.add_worker_handle_with_completion(
+                    child_tid,
+                    Some(start_gate.clone()),
+                    Some(returning),
+                    handle,
+                );
                 pending_child_starts
                     .lock()
                     .expect("KVM child-start lock poisoned")
                     .push(PendingChildStart::tool_thread(child_tid, start_gate));
                 Ok(ProcessActionOutcome::returned(i64::from(child_tid)))
             }
-            other => self.run_process_action_inner(executor, other, park_syscall_return, fault),
+            other => {
+                self.run_process_action_inner(
+                    executor,
+                    other,
+                    park_syscall_return,
+                    fault,
+                    stop.as_mut(),
+                )
+                .await
+            }
         }
+    }
+
+    /// Run an injected action without consuming pending children on error.
+    /// The caller must retain its SharedChildStarts outside the callback and
+    /// give the complete error to the outer driver after callback destruction.
+    pub(crate) async fn run_injected_process_action_with_tool_at_boundary<T>(
+        &mut self,
+        executor: &mut ElfExecutor,
+        action: ProcessAction,
+        context: ToolContext<'_, T>,
+        continuation: ProcessActionContinuation,
+    ) -> Result<ProcessActionOutcome>
+    where
+        T: Tool + 'static,
+        T::ThreadState: 'static,
+        T::GlobalState: 'static,
+        <T::GlobalState as GlobalTool>::Config: 'static,
+    {
+        let action_result = self
+            .run_process_action_with_tool_inner(executor, action, true, context, None)
+            .await;
+        self.finish_injected_tool_process_action_at_boundary(continuation, action_result)
     }
 
     /// Runs one Tool-owned process action and restores the completed syscall
@@ -2628,6 +3434,9 @@ impl KvmBackend {
         let result = self
             .run_process_action_with_tool_inner(executor, action, false, context, Some(fault))
             .await;
+        if result.as_ref().is_ok_and(|outcome| outcome.cancelled) {
+            return result;
+        }
         let restored = fault.restore_boundary(self);
         match result {
             Err(error) => Err(error),
@@ -3384,6 +4193,22 @@ impl KvmBackend {
             }
         }
         loop {
+            #[cfg(test)]
+            crate::runtime::entry_wait_observation::observe(
+                crate::runtime::entry_wait_observation::Site::HostMain,
+                crate::runtime::entry_wait_observation::Boundary::BeforeSubscription,
+            );
+            let changed = self.memory.entry_gate().subscribe();
+            let cancelled = self.entry_cancellation();
+            #[cfg(test)]
+            crate::runtime::entry_wait_observation::observe(
+                crate::runtime::entry_wait_observation::Site::HostMain,
+                crate::runtime::entry_wait_observation::Boundary::AfterSubscription,
+            );
+            self.memory
+                .entry_gate()
+                .admit_operation()
+                .map_err(|failure| failure.error())?;
             if let Some(status) = self.guest_thread_group_exit_status() {
                 return self.finish_static_elf_thread(
                     executor,
@@ -3403,7 +4228,11 @@ impl KvmBackend {
                 );
             }
             let vcpu_exit = match self.vcpu.run() {
-                Ok(exit) => exit,
+                Ok(Some(exit)) => exit,
+                Ok(None) => {
+                    futures::executor::block_on(futures::future::select(changed, cancelled));
+                    continue;
+                }
                 Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
                 Err(error) => return Err(error),
             };
@@ -3512,6 +4341,19 @@ impl KvmBackend {
                     action,
                     continuation.expect("a process action has a continuation policy"),
                 )?;
+                if outcome.cancelled {
+                    let exit = match self.guest_thread_group_exit_status() {
+                        Some(status) => ProcessExit {
+                            status,
+                            group: true,
+                        },
+                        None => ProcessExit {
+                            status: ExitStatus::SUCCESS,
+                            group: false,
+                        },
+                    };
+                    return self.finish_static_elf_thread(executor, exit);
+                }
                 returns_to_original_image = !outcome.image_replaced;
                 if let Some((_, result)) = signal_boundary.as_mut() {
                     *result = outcome.syscall_result;
@@ -3547,6 +4389,10 @@ impl KvmBackend {
         if exit.group {
             self.request_guest_thread_group_exit(exit.status);
         }
+        // Best-effort writes and Errno adapters can conceal a captured cause.
+        // An inline child must hand that cause back to its enclosing callback
+        // before cancellation or a physical join can depend on destruction.
+        self.check_entry_owner()?;
         let status = if self.is_guest_thread {
             exit.status
         } else {
@@ -3599,6 +4445,75 @@ impl KvmBackend {
         self.stdin = None;
     }
 
+    pub(crate) fn tool_panic_owner(&self) -> Arc<crate::failure::tool_panics::ToolPanics> {
+        self.tool_panics.clone()
+    }
+
+    pub(crate) fn finish_public_tool_panic<R>(
+        &self,
+        result: Result<R>,
+        retained_failure: Option<Arc<crate::failure::RunFailure>>,
+    ) -> Result<R> {
+        let mut payloads = self.tool_panics.take().into_iter();
+        let Some(original) = payloads.next() else {
+            return result;
+        };
+        let error = result.err().unwrap_or(Error::GuestWorkerPanic);
+        self.completed_tool_panics
+            .lock()
+            .expect("KVM completed Tool panic lock poisoned")
+            .push(CompletedToolPanic {
+                _error: Arc::new(error),
+                _secondary_payloads: payloads.collect(),
+                _run_failure: retained_failure,
+            });
+        std::panic::resume_unwind(original)
+    }
+
+    fn finish_deferred_worker_panic<R>(&self, tid: i32, result: Result<R>) -> Result<R> {
+        let mut payloads = self.tool_panics.take().into_iter();
+        let Some(original) = payloads.next() else {
+            return result;
+        };
+        let record = WorkerPanicRecord {
+            error: Arc::new(result.err().unwrap_or(Error::GuestWorkerPanic)),
+            _cleanup_panics: payloads.collect(),
+            _join_payload: None,
+        };
+        let previous = self
+            .thread_group
+            .reported_worker_panics
+            .lock()
+            .expect("KVM reported worker panic lock poisoned")
+            .insert(tid, record);
+        assert!(
+            previous.is_none(),
+            "KVM worker panic recorded twice for tid {tid}"
+        );
+        std::panic::resume_unwind(original)
+    }
+
+    fn finish_deferred_process_panic<R>(
+        &self,
+        result: Result<R>,
+        panic_owner: Option<&crate::executor::ChildProcessPanicOwner>,
+    ) -> Result<R> {
+        let mut payloads = self.tool_panics.take().into_iter();
+        let Some(original) = payloads.next() else {
+            return result;
+        };
+        let error = Arc::new(result.err().unwrap_or(Error::GuestWorkerPanic));
+        if let Some(owner) = panic_owner {
+            owner.record(error.clone());
+        }
+        self.tool_failure
+            .as_ref()
+            .expect("Tool process panic lost its failure owner")
+            .run
+            .retain_panic_cleanup(Error::SharedFailure(error), payloads.collect());
+        std::panic::resume_unwind(original)
+    }
+
     pub(crate) fn guest_thread_group_exit_status(&self) -> Option<ExitStatus> {
         self.thread_group.exit_status()
     }
@@ -3615,6 +4530,73 @@ impl KvmBackend {
         }
     }
 
+    async fn cancel_guest_threads_for_exec(
+        &self,
+        mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
+    ) -> Result<()> {
+        self.thread_group.cancel_workers();
+        let watch = self.entry_driver_watch();
+        watch.check()?;
+        // Preserve the existing worker-Exec rejection in exec_process; a
+        // guest-thread backend never becomes a physical join owner here.
+        if self.is_guest_thread {
+            return Ok(());
+        }
+        loop {
+            // Subscribe before each registry/entry recheck. Private failure
+            // wakes can interrupt without first publishing through the Tool.
+            let mut changed = Box::pin(self.thread_group.subscribe_worker_completion());
+            let mut interrupted = Box::pin(watch.wait());
+            let complete = std::future::poll_fn(|cx| {
+                if let Err(error) = watch.check() {
+                    return std::task::Poll::Ready(Err(error));
+                }
+                if stop.as_mut().poll(cx).is_ready() {
+                    return std::task::Poll::Ready(Err(watch
+                        .check()
+                        .err()
+                        .unwrap_or(Error::RunAborted)));
+                }
+                let (empty, returning) = match self.thread_group.advance_worker_joins_for_exec() {
+                    Ok(state) => state,
+                    Err(error) => return std::task::Poll::Ready(Err(error)),
+                };
+                if let Err(error) = watch.check() {
+                    return std::task::Poll::Ready(Err(error));
+                }
+                if stop.as_mut().poll(cx).is_ready() {
+                    return std::task::Poll::Ready(Err(watch
+                        .check()
+                        .err()
+                        .unwrap_or(Error::RunAborted)));
+                }
+                if empty {
+                    return std::task::Poll::Ready(Ok(true));
+                }
+                if changed.as_mut().poll(cx).is_ready() {
+                    return std::task::Poll::Ready(Ok(false));
+                }
+                if interrupted.as_mut().poll(cx).is_ready() {
+                    let Err(error) = watch.check() else {
+                        panic!("private entry interruption lost its captured cause");
+                    };
+                    return std::task::Poll::Ready(Err(error));
+                }
+                if returning {
+                    // A real completion notice can precede is_finished by
+                    // host bookkeeping. One cooperative recheck per poll
+                    // preserves entry/stop interruption through that interval.
+                    cx.waker().wake_by_ref();
+                }
+                std::task::Poll::Pending
+            })
+            .await?;
+            if complete {
+                return Ok(());
+            }
+        }
+    }
+
     pub(crate) fn cancel_guest_threads_after_failure(&self) {
         self.thread_group
             .cancelled_after_failure
@@ -3622,27 +4604,110 @@ impl KvmBackend {
         self.cancel_guest_threads();
     }
 
+    #[cfg(test)]
     fn finish_panicked_guest_worker(
         &mut self,
         executor: &mut ElfExecutor,
         tid: i32,
         payload: Box<dyn std::any::Any + Send>,
     ) -> ! {
+        self.finish_panicked_guest_worker_with_entry(executor, tid, payload, None)
+    }
+
+    fn finish_panicked_guest_worker_with_entry(
+        &mut self,
+        executor: &mut ElfExecutor,
+        tid: i32,
+        payload: Box<dyn std::any::Any + Send>,
+        driver: Option<crate::entry::owner::DriverScope>,
+    ) -> ! {
         // The callback and its borrowed Tool references have already unwound.
         // Keep the original JoinHandle panic while releasing this worker's
         // resources and transferring independent forks to the process owner.
         let failure = self.tool_failure.clone();
         let group = self.thread_group.clone();
-        // No consuming Tool hook survives unwind. Transfer only this exact
-        // executor's journal/ledger, retaining the panic as the primary cause.
+        self.restore_entry_origin();
+        executor.bind_address_space(&self.memory);
+        // A previous callback/consumer panic may already be deferred. Keep it
+        // ahead of this unexpected outer unwind and all cleanup that follows.
+        self.tool_panics.append(vec![payload]);
+        // The parent's consuming Tool state has unwound; separately retained
+        // child consumers still exist. Transfer this exact executor's ledger,
+        // retaining the panic as the primary cause.
         let error = executor.with_signal_effects(Error::GuestWorkerPanic, None);
-        finish_caught_worker_panic(failure.as_ref(), &group, tid, error, payload, || {
-            executor.retire_failed_thread();
-            self.clear_registered_worker_tid_before_exit(executor);
-            executor.release_files_on_exit();
-            self.release_stdin_on_exit();
-            executor.transfer_child_processes_to_owner();
-        })
+        let error = futures::executor::block_on(self.route_entry_outcome::<()>(Err(error)))
+            .expect_err("caught worker panic must remain a failure");
+        let error = publish_caught_worker_panic(failure.as_ref(), tid, error);
+        // The previous executor has already unwound out of block_on. Each
+        // retained child now gets its own polling and destruction catch, while
+        // the remaining children stay owned outside that catch.
+        let cleanup = futures::executor::block_on(
+            crate::runtime::finish_unstarted_tool_cleanups_with_panics(executor, &self.tool_panics),
+        );
+        executor.retire_failed_thread();
+        self.clear_registered_worker_tid_before_exit(executor);
+        executor.release_files_on_exit();
+        self.release_stdin_on_exit();
+        executor.transfer_child_processes_to_owner();
+        let result = futures::executor::block_on(self.route_entry_outcome::<()>(Err(
+            error.with_cleanup(cleanup.err().into_iter().collect()),
+        )));
+        let result = match driver {
+            Some(driver) => self.finish_entry_driver(driver, result),
+            None => result,
+        };
+        let error = result
+            .map_err(|error| self.report_tool_failure("worker panic retirement", error))
+            .expect_err("caught worker panic retirement must remain a failure");
+        let mut payloads = self.tool_panics.take().into_iter();
+        let original = payloads
+            .next()
+            .expect("caught worker lost its original panic");
+        let record = WorkerPanicRecord {
+            error: Arc::new(error),
+            _cleanup_panics: payloads.collect(),
+            _join_payload: None,
+        };
+        resume_worker_panic_record(&group, tid, record, original, || {})
+    }
+
+    /// An unexpected fork-owner unwind has already destroyed the interrupted
+    /// Tool state. Consume only separately retained children, and preserve the
+    /// original payload for the normal process-owner propagation below.
+    fn finish_panicked_tool_process_owner(
+        &mut self,
+        executor: &mut ElfExecutor,
+        payload: crate::failure::owned_future::PanicPayload,
+    ) -> Result<()> {
+        self.tool_panics.append(vec![payload]);
+        self.restore_entry_origin();
+        executor.bind_address_space(&self.memory);
+        let error = executor.with_signal_effects(Error::GuestWorkerPanic, None);
+        let error = futures::executor::block_on(self.route_entry_outcome::<()>(Err(error)))
+            .expect_err("caught fork panic must remain a failure");
+        let error = self.report_tool_failure("fork owner panic", error);
+        let cleanup = futures::executor::block_on(
+            crate::runtime::finish_unstarted_tool_cleanups_with_panics(executor, &self.tool_panics),
+        );
+        executor.retire_failed_thread();
+        self.clear_registered_worker_tid_before_exit(executor);
+        executor.release_files_on_exit();
+        self.release_stdin_on_exit();
+        let error = futures::executor::block_on(self.route_entry_outcome::<()>(Err(
+            error.with_cleanup(cleanup.err().into_iter().collect()),
+        )))
+        .map_err(|error| self.report_tool_failure("fork panic retirement", error))
+        .expect_err("caught fork panic retirement must remain a failure");
+        // The publication above releases dependent peers before either join.
+        self.cancel_guest_threads_after_failure();
+        let workers = self.guest_worker_teardown_result();
+        let children = executor.join_child_processes_after_failure();
+        Err(error.with_cleanup(
+            [workers, children]
+                .into_iter()
+                .filter_map(Result::err)
+                .collect(),
+        ))
     }
 
     pub(crate) fn record_guest_worker_failure(&self, tid: i32) {
@@ -3722,6 +4787,11 @@ impl KvmBackend {
     }
 
     /// Runs until the guest halts, invoking `handler` for each syscall vmcall.
+    ///
+    /// Actual KVM_RUN interruption remains an error on this raw interface.
+    /// A private close against a running vCPU can also cause EINTR; this loop
+    /// does not distinguish that kick from a foreign interrupt. A production
+    /// closer must not use this driver without defining that distinction.
     pub fn run<F>(&mut self, mut handler: F) -> Result<()>
     where
         F: FnMut(Syscall, &GuestMemory) -> i64,
@@ -3729,7 +4799,11 @@ impl KvmBackend {
         self.set_rdtsc_interception(false)?;
         self.set_cpuid_interception(false)?;
         loop {
-            let vcpu_exit = self.vcpu.run()?;
+            let changed = self.memory.entry_gate().subscribe();
+            let Some(vcpu_exit) = self.vcpu.run()? else {
+                let _ = futures::executor::block_on(changed);
+                continue;
+            };
             Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
             match vcpu_exit {
                 VcpuExit::Hypercall(exit) => {
@@ -3738,7 +4812,12 @@ impl KvmBackend {
                     }
                     let syscall =
                         SyscallRequest::read_from(&self.memory, exit.args[0])?.into_syscall()?;
-                    *exit.ret = handler(syscall, &self.memory) as u64;
+                    let result = handler(syscall, &self.memory);
+                    self.memory
+                        .entry_gate()
+                        .admit_operation()
+                        .map_err(|failure| failure.error())?;
+                    *exit.ret = result as u64;
                 }
                 VcpuExit::Hlt => return Ok(()),
                 exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
@@ -3776,6 +4855,8 @@ impl Drop for KvmBackend {
 
 fn write_tid_best_effort(memory: &mut GuestMemory, address: Option<u64>, tid: i32) {
     if let Some(address) = address {
+        #[cfg(test)]
+        tests::entry_action_tests::observe("tid_store");
         // Linux creates the child even if a clone TID store faults.
         let _ = memory.user().write(address, &tid.to_le_bytes());
     }
@@ -3831,10 +4912,403 @@ fn supported_hypercall_instruction(cpuid: &CpuId) -> Result<[u8; 3]> {
 }
 
 #[cfg(test)]
+#[path = "vm/worker_panic_tests.rs"]
+mod worker_panic_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     include!("cpuid_runtime_tests.rs");
+    include!("vm/entry_public_tests.rs");
+    include!("vm/entry_main_tests.rs");
+    include!("vm/entry_spawn_tests.rs");
+    include!("vm/entry_hypercall_tests.rs");
+    include!("vm/entry_race_tests.rs");
+    include!("vm/entry_multi_owner_tests.rs");
+    include!("vm/entry_action_tests.rs");
+    include!("vm/entry_wait_tests.rs");
+    include!("vm/entry_eintr_tests.rs");
+
+    #[test]
+    fn action_parent_captures_yield_for_close_and_keep_stop_and_validation() {
+        use std::task::Context;
+        use std::task::Poll;
+
+        type CaptureFuture<'a> =
+            Pin<Box<dyn Future<Output = Result<Option<(kvm_regs, Vec<u8>)>>> + 'a>>;
+
+        for boundary_capture in [false, true] {
+            for event in ["failure", "cancellation", "poison", "reopen"] {
+                let mut backend = KvmBackend::new(0x10000).expect("this control requires /dev/kvm");
+                let frame_address = backend.syscall_frame_address;
+                let frame = [0xa5; FRAME_SIZE];
+                backend.memory.write_raw(frame_address, &frame).unwrap();
+                let hypercall_address = syscall_hypercall_address(
+                    backend.hypercall_instruction,
+                    backend.syscall_trampoline_address,
+                    frame_address,
+                );
+                backend
+                    .memory
+                    .write_raw(hypercall_address, &backend.hypercall_instruction)
+                    .unwrap();
+                let mut registers = backend.vcpu.get_regs().unwrap();
+                registers.rip = hypercall_address;
+                registers.rax = 0x1234;
+                backend.vcpu.set_regs(&registers).unwrap();
+                let expected = if boundary_capture {
+                    CompletedSyscallBoundary::capture(&backend, frame_address, None)
+                        .unwrap()
+                        .registers
+                } else {
+                    registers
+                };
+                let gate = backend.memory.entry_gate();
+                let group = backend.thread_group.clone();
+                let mut closed = Some(
+                    gate.try_close()
+                        .unwrap()
+                        .unwrap()
+                        .finish()
+                        .now_or_never()
+                        .unwrap()
+                        .unwrap(),
+                );
+                let original = Arc::new(Error::UnexpectedVcpuExit(
+                    "controlled capture poison".to_owned(),
+                ));
+                let (sender, receiver) = oneshot::channel();
+                let mut stop = Box::pin(async move {
+                    receiver.await.unwrap();
+                });
+                // These are the actual two production capture paths. Both
+                // own their buffers and drop admission before returning.
+                let mut capture: CaptureFuture<'_> = if boundary_capture {
+                    Box::pin(async {
+                        CompletedSyscallBoundary::capture_admitted(
+                            &mut backend,
+                            frame_address,
+                            None,
+                            stop.as_mut(),
+                        )
+                        .await
+                        .map(|result| result.map(|value| (value.registers, value.frame.to_vec())))
+                    })
+                } else {
+                    Box::pin(async {
+                        backend
+                            .capture_thread_parent(stop.as_mut())
+                            .await
+                            .map(|result| result.map(|(registers, _, frame)| (registers, frame)))
+                    })
+                };
+                let waker = futures::task::noop_waker();
+                let mut context = Context::from_waker(&waker);
+                assert!(capture.as_mut().poll(&mut context).is_pending());
+                assert!(capture.as_mut().poll(&mut context).is_pending());
+                match event {
+                    "failure" => sender.send(()).unwrap(),
+                    "cancellation" => group.request_exit_group(ExitStatus::Exited(7)),
+                    "poison" => {
+                        gate.poison(None, Error::SharedFailure(original.clone()));
+                    }
+                    "reopen" => drop(closed.take()),
+                    _ => unreachable!(),
+                }
+                match (event, capture.as_mut().poll(&mut context)) {
+                    ("failure", Poll::Ready(Err(Error::RunAborted))) => {}
+                    ("cancellation", Poll::Ready(Ok(None))) => {}
+                    ("poison", Poll::Ready(Err(error))) => {
+                        assert!(error.retains_primary(&original))
+                    }
+                    ("reopen", Poll::Ready(Ok(Some((actual_registers, actual_frame))))) => {
+                        assert_eq!(actual_registers, expected);
+                        assert_eq!(actual_frame, frame);
+                    }
+                    _ => panic!("capture did not preserve {event} disposition"),
+                }
+                drop(capture);
+                assert_eq!(
+                    backend.vcpu.get_regs().unwrap(),
+                    registers,
+                    "capture ran or changed the vCPU"
+                );
+                if event == "cancellation" {
+                    assert_eq!(group.exit_status(), Some(ExitStatus::Exited(7)));
+                }
+                drop(closed);
+                if event == "reopen" && boundary_capture {
+                    let mut pending = std::pin::pin!(std::future::pending());
+                    let mut invalid = registers;
+                    invalid.rip = hypercall_address + 1;
+                    backend.vcpu.set_regs(&invalid).unwrap();
+                    assert!(matches!(
+                        futures::executor::block_on(CompletedSyscallBoundary::capture_admitted(
+                            &mut backend,
+                            frame_address,
+                            None,
+                            pending.as_mut()
+                        )),
+                        Err(Error::UnexpectedVcpuExit(_))
+                    ));
+                    backend.vcpu.set_regs(&registers).unwrap();
+                    backend
+                        .memory
+                        .write_raw(hypercall_address, &[0x90; 3])
+                        .unwrap();
+                    assert!(matches!(
+                        futures::executor::block_on(CompletedSyscallBoundary::capture_admitted(
+                            &mut backend,
+                            frame_address,
+                            None,
+                            pending.as_mut()
+                        )),
+                        Err(Error::UnexpectedVcpuExit(_))
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parking_wait_preserves_failure_cancellation_and_reopen() {
+        use std::task::Context;
+        use std::task::Poll;
+
+        for event in ["failure", "cancellation", "reopen"] {
+            let mut backend = KvmBackend::new(0x10000).expect("this control requires /dev/kvm");
+            backend.install_real_mode_program(0x1000, &[HLT]).unwrap();
+            let before = backend.vcpu.get_regs().unwrap();
+            let mut original_trampoline = [0; 256];
+            backend
+                .memory
+                .read_raw(SYSCALL_TRAMPOLINE_ADDRESS, &mut original_trampoline)
+                .unwrap();
+            let gate = backend.memory.entry_gate();
+            let group = backend.thread_group.clone();
+            let mut closed = Some(
+                futures::executor::block_on(gate.try_close().unwrap().unwrap().finish()).unwrap(),
+            );
+            let (sender, receiver) = oneshot::channel();
+            // An ordinary async block panics if polled after completion; this
+            // is deliberately not a fused failure future.
+            let mut stop = Box::pin(async move {
+                receiver.await.unwrap();
+            });
+            let mut parking =
+                Box::pin(backend.park_process_action("parking control", stop.as_mut()));
+            let waker = futures::task::noop_waker();
+            let mut context = Context::from_waker(&waker);
+            assert!(
+                parking.as_mut().poll(&mut context).is_pending(),
+                "{event}: closed parking did not yield"
+            );
+            match event {
+                "failure" => sender.send(()).unwrap(),
+                "cancellation" => group.request_exit_group(ExitStatus::Exited(7)),
+                "reopen" => drop(closed.take()),
+                _ => unreachable!(),
+            }
+            let outcome = parking.as_mut().poll(&mut context);
+            match event {
+                "failure" => assert!(matches!(outcome, Poll::Ready(Err(Error::RunAborted)))),
+                "cancellation" => assert!(matches!(outcome, Poll::Ready(Ok(false)))),
+                "reopen" => assert!(matches!(outcome, Poll::Ready(Ok(true)))),
+                _ => unreachable!(),
+            }
+            drop(parking);
+            let after = backend.vcpu.get_regs().unwrap();
+            if event == "reopen" {
+                assert_eq!(after.rip, 0x1001);
+            } else {
+                assert_eq!(after, before, "a stopped action must not enter KVM");
+                // The stop returned while the close token was still held.
+                assert!(closed.is_some());
+                drop(closed.take());
+                let mut actual = [0; 256];
+                backend
+                    .memory
+                    .read_raw(SYSCALL_TRAMPOLINE_ADDRESS, &mut actual)
+                    .unwrap();
+                assert_eq!(
+                    actual, original_trampoline,
+                    "closed preparation changed bytes"
+                );
+            }
+            if event == "cancellation" {
+                assert_eq!(
+                    backend.guest_thread_group_exit_status(),
+                    Some(ExitStatus::Exited(7))
+                );
+            }
+        }
+    }
+
+    mod cancellation_wake_tests {
+        use std::sync::Weak;
+        use std::sync::atomic::AtomicUsize;
+        use std::task::Context;
+
+        use super::*;
+
+        #[test]
+        fn subscriptions_cover_registration_before_and_after_publication() {
+            for exit_group in [false, true] {
+                let group = GuestThreadGroup::default();
+                let first = group.subscribe_cancellation();
+                let second = group.subscribe_cancellation();
+                let unpolled = first.clone();
+                drop(group.subscribe_cancellation());
+                assert!(first.clone().now_or_never().is_none());
+                assert!(second.clone().now_or_never().is_none());
+                assert!(!group.cancelled.load(Ordering::Acquire));
+
+                if exit_group {
+                    group.request_exit_group(ExitStatus::Exited(19));
+                } else {
+                    group.cancel_workers();
+                }
+                assert_eq!(first.now_or_never(), Some(Ok(())));
+                assert_eq!(second.now_or_never(), Some(Ok(())));
+                assert_eq!(unpolled.now_or_never(), Some(Ok(())));
+
+                // A late subscriber must see the published predicate on its
+                // recheck even though its new notification is still pending.
+                let late = group.subscribe_cancellation();
+                assert!(group.cancelled.load(Ordering::Acquire));
+                assert_eq!(
+                    group.exit_status(),
+                    exit_group.then_some(ExitStatus::Exited(19))
+                );
+                assert!(late.clone().now_or_never().is_none());
+                if exit_group {
+                    group.request_exit_group(ExitStatus::Exited(23));
+                } else {
+                    group.cancel_workers();
+                }
+                assert_eq!(late.now_or_never(), Some(Ok(())));
+                assert_eq!(
+                    group.exit_status(),
+                    exit_group.then_some(ExitStatus::Exited(19)),
+                    "notification must preserve the first exit status"
+                );
+            }
+        }
+
+        #[test]
+        fn root_can_resubscribe_after_worker_only_cancellation() {
+            let group = GuestThreadGroup::default();
+            let old = group.subscribe_cancellation();
+            group.cancel_workers();
+            assert_eq!(old.now_or_never(), Some(Ok(())));
+
+            // The root's existing exit predicate ignores worker-only cancel.
+            let next = group.subscribe_cancellation();
+            assert_eq!(group.exit_status(), None);
+            assert!(group.cancelled.load(Ordering::Acquire));
+            assert!(next.clone().now_or_never().is_none());
+
+            group.request_exit_group(ExitStatus::Exited(31));
+            assert_eq!(next.now_or_never(), Some(Ok(())));
+            assert_eq!(group.exit_status(), Some(ExitStatus::Exited(31)));
+            assert!(group.subscribe_cancellation().now_or_never().is_none());
+        }
+
+        #[test]
+        fn subscriptions_survive_exec_rearm_and_wake_on_later_cancellation() {
+            let group = GuestThreadGroup::default();
+            let old = group.subscribe_cancellation();
+            group.record_worker_failure(2);
+            group.request_exit_group(ExitStatus::Exited(41));
+            assert_eq!(old.now_or_never(), Some(Ok(())));
+            assert!(group.cancelled_after_failure.load(Ordering::Acquire));
+
+            let before_rearm = group.subscribe_cancellation();
+            group.join_workers();
+            group.rearm_after_exec();
+            assert!(!group.cancelled.load(Ordering::Acquire));
+            assert!(!group.cancelled_after_failure.load(Ordering::Acquire));
+            assert_eq!(group.exit_status(), None);
+            assert!(before_rearm.clone().now_or_never().is_none());
+            let after_rearm = group.subscribe_cancellation();
+            assert!(after_rearm.clone().now_or_never().is_none());
+
+            group.cancel_workers();
+            assert_eq!(before_rearm.now_or_never(), Some(Ok(())));
+            assert_eq!(after_rearm.now_or_never(), Some(Ok(())));
+            assert!(group.cancelled.load(Ordering::Acquire));
+            assert!(!group.cancelled_after_failure.load(Ordering::Acquire));
+            assert_eq!(group.exit_status(), None);
+        }
+
+        struct CancellationWakeProbe {
+            group: Weak<GuestThreadGroup>,
+            expected_status: Option<ExitStatus>,
+            expected_failure: bool,
+            wakes: AtomicUsize,
+        }
+
+        impl futures::task::ArcWake for CancellationWakeProbe {
+            fn wake_by_ref(probe: &Arc<Self>) {
+                let group = probe.group.upgrade().unwrap();
+                assert!(group.cancelled.load(Ordering::Acquire));
+                assert_eq!(
+                    group.cancelled_after_failure.load(Ordering::Acquire),
+                    probe.expected_failure
+                );
+                assert_eq!(
+                    *group.exit_status.try_lock().unwrap(),
+                    probe.expected_status
+                );
+                assert!(group.root.try_lock().is_ok());
+                assert!(group.workers.try_lock().is_ok());
+                assert!(group.worker_handles.try_lock().is_ok());
+                assert!(group.worker_start_gates.try_lock().is_ok());
+                assert!(group.worker_errors.try_lock().is_ok());
+                assert!(group.reported_worker_panics.try_lock().is_ok());
+                assert!(group.completed_worker_panics.try_lock().is_ok());
+                assert!(group.failure_state.try_lock().is_ok());
+                assert!(group.transport_slots.try_lock().is_ok());
+                assert!(group.cancellation_wake.try_lock().is_ok());
+                assert!(group.subscribe_cancellation().now_or_never().is_none());
+                probe.wakes.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        #[test]
+        fn wake_callbacks_observe_published_state_outside_group_locks() {
+            for after_failure in [false, true] {
+                for exit_group in [false, true] {
+                    let group = Arc::new(GuestThreadGroup::default());
+                    if after_failure {
+                        group.record_worker_failure(2);
+                    }
+                    let probe = Arc::new(CancellationWakeProbe {
+                        group: Arc::downgrade(&group),
+                        expected_status: exit_group.then_some(ExitStatus::Exited(47)),
+                        expected_failure: after_failure,
+                        wakes: AtomicUsize::new(0),
+                    });
+                    let waker = futures::task::waker(probe.clone());
+                    let mut subscription = group.subscribe_cancellation();
+                    assert!(
+                        subscription
+                            .poll_unpin(&mut Context::from_waker(&waker))
+                            .is_pending()
+                    );
+                    assert_eq!(probe.wakes.load(Ordering::Relaxed), 0);
+                    if exit_group {
+                        group.request_exit_group(ExitStatus::Exited(47));
+                    } else {
+                        group.cancel_workers();
+                    }
+                    assert!(probe.wakes.load(Ordering::Relaxed) > 0);
+                    assert_eq!(subscription.now_or_never(), Some(Ok(())));
+                }
+            }
+        }
+    }
 
     mod initialization_tests {
         use std::io::Seek;
@@ -4866,7 +6340,12 @@ mod tests {
         let trampoline_offset = trampoline_hypercall - backend.syscall_trampoline_address;
         backend.syscall_trampoline_address = ENTRY + 12 - trampoline_offset;
 
-        let frame_address = match backend.vcpu.run().unwrap() {
+        let frame_address = match backend
+            .vcpu
+            .run()
+            .unwrap()
+            .expect("test entry admission was unexpectedly closed")
+        {
             VcpuExit::Hypercall(exit) => {
                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
                 *exit.ret = 0;
@@ -4945,6 +6424,7 @@ mod tests {
             ProcessActionOutcome {
                 image_replaced: false,
                 syscall_result: expected_result,
+                cancelled: false,
             }
         );
         let mut restored_frame = [0; FRAME_SIZE];
@@ -4982,6 +6462,7 @@ mod tests {
             ProcessActionOutcome {
                 image_replaced: false,
                 syscall_result: expected_exec_result,
+                cancelled: false,
             },
             "the injected Exec result belongs to the Tool"
         );
@@ -5387,11 +6868,11 @@ mod tests {
 
         let global = Arc::new(ForkFailureIdentityLog::default());
         let failure = crate::failure::RunFailure::new(&global);
-        parent.tool_failure = Some(crate::failure::FailureContext::new(
+        parent.set_tool_failure(Some(crate::failure::FailureContext::new(
             failure.clone(),
             Pid::from_raw(1),
             Pid::from_raw(1),
-        ));
+        )));
         let mut child = parent
             .prepare_forked_process(
                 &executor, 2, None, None, None, None, false, false, false, None,
@@ -5509,7 +6990,12 @@ mod tests {
             .install_static_elf(&minimal_test_elf(&code), "/bin/fatal-process-memory")
             .unwrap();
         let mut executor = ElfExecutor::new(parent.static_elf.take().unwrap(), true);
-        match parent.vcpu.run().unwrap() {
+        match parent
+            .vcpu
+            .run()
+            .unwrap()
+            .expect("test entry admission was unexpectedly closed")
+        {
             VcpuExit::Hypercall(exit) => {
                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
                 *exit.ret = 0;
@@ -5636,7 +7122,14 @@ mod tests {
                 registers.rcx = 0x7777;
                 registers.r11 = 0x8888;
                 backend.vcpu.set_regs(&registers).unwrap();
-                assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
+                assert!(matches!(
+                    backend
+                        .vcpu
+                        .run()
+                        .unwrap()
+                        .expect("test entry admission was unexpectedly closed"),
+                    VcpuExit::Hlt
+                ));
                 let fault = backend.capture_page_zero_fault(&executor).unwrap().unwrap();
                 let mut frame_before = [0; PAGE_SIZE as usize];
                 let mut exception_before = [0; PAGE_SIZE as usize];
@@ -5747,7 +7240,12 @@ mod tests {
             .install_static_elf(&minimal_test_elf(&code), "/bin/fatal-process-memory")
             .unwrap();
         let mut executor = ElfExecutor::new(parent.static_elf.take().unwrap(), true);
-        match parent.vcpu.run().unwrap() {
+        match parent
+            .vcpu
+            .run()
+            .unwrap()
+            .expect("test entry admission was unexpectedly closed")
+        {
             VcpuExit::Hypercall(exit) => {
                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
                 *exit.ret = 0;
@@ -6306,6 +7804,156 @@ mod tests {
         assert!(!backend.thread_group.discard_unstarted_worker(42).unwrap());
     }
 
+    #[test]
+    fn injected_boundary_error_defers_each_child_until_callback_destruction() {
+        use std::sync::atomic::AtomicUsize;
+
+        struct CallbackGuard(Arc<AtomicBool>);
+        impl Drop for CallbackGuard {
+            fn drop(&mut self) {
+                assert!(!self.0.swap(true, Ordering::SeqCst));
+            }
+        }
+
+        for exec_failure in [false, true] {
+            let mut backend = KvmBackend::new(0x10_000).expect("this control requires /dev/kvm");
+            let mut executor = test_executor();
+            let starts = Arc::new(Mutex::new(Vec::new()));
+            let log = Arc::new(GateFailureLog::default());
+            let failure = crate::failure::RunFailure::new(&log);
+            backend.set_tool_failure(Some(crate::failure::FailureContext::new(
+                failure.clone(),
+                Pid::from_raw(1),
+                Pid::from_raw(1),
+            )));
+            let destroyed = Arc::new(AtomicBool::new(false));
+            let consumed = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
+            let child_error = Arc::new(Error::GuestClock("child cleanup error".to_owned()));
+
+            let (fork_sender, fork_receiver) = std::sync::mpsc::channel();
+            let fork_gate = ChildStartGate::new(fork_sender);
+            let child_destroyed = destroyed.clone();
+            let child_consumed = consumed.clone();
+            let child_failure = failure.clone();
+            let fork_handle = std::thread::spawn(move || {
+                assert_eq!(
+                    fork_receiver.recv().unwrap(),
+                    ChildStartCommand::CancelAfterFailure
+                );
+                assert!(child_destroyed.load(Ordering::SeqCst));
+                assert!(child_failure.published_primary().is_some());
+                assert_eq!(child_consumed[0].fetch_add(1, Ordering::SeqCst), 0);
+                Err(Error::RunAborted)
+            });
+            executor.register_child_process_with_gate(
+                41,
+                fork_gate.clone(),
+                Arc::new(Mutex::new(None)),
+                fork_handle,
+            );
+            starts
+                .lock()
+                .unwrap()
+                .push(PendingChildStart::fork_process(41, fork_gate.clone()));
+
+            let (thread_sender, thread_receiver) = std::sync::mpsc::channel();
+            let thread_gate = ChildStartGate::new(thread_sender);
+            let child_destroyed = destroyed.clone();
+            let child_consumed = consumed.clone();
+            let child_failure = failure.clone();
+            let child_cause = child_error.clone();
+            let thread_handle = std::thread::spawn(move || {
+                assert_eq!(
+                    thread_receiver.recv().unwrap(),
+                    ChildStartCommand::CancelAfterFailure
+                );
+                assert!(child_destroyed.load(Ordering::SeqCst));
+                assert!(child_failure.published_primary().is_some());
+                assert_eq!(child_consumed[1].fetch_add(1, Ordering::SeqCst), 0);
+                Err(Error::SharedFailure(child_cause))
+            });
+            backend
+                .thread_group
+                .add_unstarted_worker(42, thread_gate.clone(), thread_handle);
+            starts
+                .lock()
+                .unwrap()
+                .push(PendingChildStart::tool_thread(42, thread_gate.clone()));
+
+            let action_cleanup = Arc::new(Error::GuestClock("action cleanup error".to_owned()));
+            let action_cause = Arc::new(
+                Error::HostIo(std::io::Error::from_raw_os_error(libc::EAGAIN))
+                    .with_cleanup(vec![Error::SharedFailure(action_cleanup)]),
+            );
+            let action_error = Error::SharedFailure(action_cause.clone());
+            let action_error = if exec_failure {
+                Error::ExecWorkerTeardown(Box::new(action_error))
+            } else {
+                action_error
+            };
+            let callback = CallbackGuard(destroyed.clone());
+            // An action error must win without attempting this invalid restore.
+            let mut boundary = CompletedSyscallBoundary::for_test();
+            boundary.frame_address = backend.memory.guest_end();
+            let error = backend
+                .finish_injected_tool_process_action_at_boundary(
+                    ProcessActionContinuation::Restore(Box::new(boundary)),
+                    Err(action_error),
+                )
+                .unwrap_err();
+            let inner = match (&error, exec_failure) {
+                (Error::ExecWorkerTeardown(inner), true) => inner.as_ref(),
+                (error, false) => error,
+                _ => panic!("injected action lost its exec teardown disposition"),
+            };
+            let Error::SharedFailure(actual) = inner else {
+                panic!("injected action changed its original typed error");
+            };
+            assert!(Arc::ptr_eq(actual, &action_cause));
+            assert!(!destroyed.load(Ordering::SeqCst));
+            assert!(failure.published_primary().is_none());
+            assert!(log.failures.lock().unwrap().is_empty());
+            assert_eq!(starts.lock().unwrap().len(), 2);
+            assert!(fork_gate.is_pending());
+            assert!(thread_gate.is_pending());
+            assert_eq!(consumed[0].load(Ordering::SeqCst), 0);
+            assert_eq!(consumed[1].load(Ordering::SeqCst), 0);
+            assert!(executor.has_pending_child_process(41));
+            assert!(backend.thread_group.has_worker_handles());
+
+            drop(callback);
+            let error =
+                backend.cleanup_unstarted_tool_children_after_error(&mut executor, &starts, error);
+            let inner = match (&error, exec_failure) {
+                (Error::ExecWorkerTeardown(inner), true) => inner.as_ref(),
+                (error, false) => error,
+                _ => panic!("outer cleanup lost its exec teardown disposition"),
+            };
+            let Error::WithCleanup { primary, cleanup } = inner else {
+                panic!("outer cleanup lost the child's real error");
+            };
+            assert!(primary.retains_primary(&action_cause));
+            assert_eq!(cleanup.len(), 1);
+            assert!(cleanup[0].retains_primary(&child_error));
+            assert!(matches!(
+                error.primary(),
+                Error::HostIo(error) if error.raw_os_error() == Some(libc::EAGAIN)
+            ));
+            assert_eq!(log.failures.lock().unwrap().len(), 1);
+            assert_eq!(consumed[0].load(Ordering::SeqCst), 1);
+            assert_eq!(consumed[1].load(Ordering::SeqCst), 1);
+            assert!(starts.lock().unwrap().is_empty());
+            assert!(!executor.has_pending_child_process(41));
+            assert!(!backend.thread_group.has_worker_handles());
+            let error =
+                backend.cleanup_unstarted_tool_children_after_error(&mut executor, &starts, error);
+            assert!(error.retains_primary(&action_cause));
+            assert_eq!(log.failures.lock().unwrap().len(), 1);
+            assert_eq!(consumed[0].load(Ordering::SeqCst), 1);
+            assert_eq!(consumed[1].load(Ordering::SeqCst), 1);
+        }
+    }
+
     #[derive(Default)]
     struct GateFailureLog {
         events: Mutex<Vec<(u8, i32, i32)>>,
@@ -6459,7 +8107,7 @@ mod tests {
                     Pid::from_raw(1),
                     Pid::from_raw(1),
                 );
-                cleanup.backend.tool_failure = Some(context.clone());
+                cleanup.backend.set_tool_failure(Some(context.clone()));
                 let action = if thread {
                     ProcessAction::Thread {
                         child_tid: 2,
@@ -6667,7 +8315,14 @@ mod tests {
                 )
                 .unwrap();
             backend.set_rdtsc_interception(true).unwrap();
-            assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
+            assert!(matches!(
+                backend
+                    .vcpu
+                    .run()
+                    .unwrap()
+                    .expect("test entry admission was unexpectedly closed"),
+                VcpuExit::Hlt
+            ));
             let fault = backend.static_elf_exception().unwrap().unwrap();
             assert_eq!(fault.instruction_pointer, BOUNDARY - 2);
             assert_eq!(fault.vector, if rdtscp { 14 } else { 13 });
@@ -6778,7 +8433,12 @@ mod tests {
         // before its manual first guest entry, just as the production runner does.
         backend.vcpu.track_clock().unwrap();
         let mut executor = ElfExecutor::new(backend.static_elf.take().unwrap(), false);
-        let frame_address = match backend.vcpu.run().unwrap() {
+        let frame_address = match backend
+            .vcpu
+            .run()
+            .unwrap()
+            .expect("test entry admission was unexpectedly closed")
+        {
             VcpuExit::Hypercall(exit) => {
                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
                 *exit.ret = 0;
@@ -8486,8 +10146,19 @@ mod tests {
         assert!(nested_cancelled.load(Ordering::Acquire));
         assert!(group.worker_handles.lock().unwrap().is_empty());
     }
+
+    include!("vm/public_tool_panic_tests.rs");
+    include!("vm/instruction_callback_panic_tests.rs");
 }
 
 #[cfg(test)]
 #[path = "terminal_vm_tests.rs"]
 mod terminal_tests;
+
+#[cfg(test)]
+#[path = "vm/entry_owner_tests.rs"]
+mod entry_owner_tests;
+
+#[cfg(test)]
+#[path = "vm/exec_wait_tests.rs"]
+mod exec_wait_tests;
