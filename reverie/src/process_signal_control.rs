@@ -1,0 +1,148 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! Run-scoped process signal publication and scheduler-selected delivery.
+//!
+//! These operations do not borrow a Guest, resume instructions, or run a Tool
+//! hook. Installation is atomic and precedes the first guest callback.
+
+use std::fmt::Debug;
+use std::sync::Arc;
+
+use serde::Deserialize;
+use serde::Serialize;
+
+use crate::CallbackSignalSite;
+use crate::ProcessAlarmSignalDisposition;
+use crate::SignalEvent;
+use crate::SignalProcessId;
+use crate::SignalTaskIdentity;
+use crate::syscalls::Errno;
+
+/// Whether the Tool takes responsibility for recipient selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendSignalControlMode {
+    /// Preserve the backend's existing selection behavior.
+    Unchanged,
+    /// Publication and return-to-user selection use the installed control.
+    ToolControlled,
+}
+
+/// An actual process-pending publication; it says nothing about recipient masks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProcessSignalPublication {
+    /// Exact lifetime whose shared pending queue committed the operation.
+    pub process: SignalProcessId,
+    /// Disposition/pending generation, not a delivery counter.
+    pub pending_generation: u64,
+    /// Whether the first pending event already occupied this standard signal.
+    pub coalesced: bool,
+    /// Disposition observed at publication, before any Tool filtering.
+    pub disposition: ProcessAlarmSignalDisposition,
+}
+
+/// Publication errors retain the boundary between no effect and committed effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ProcessSignalPublicationResult {
+    /// No pending state or readiness changed.
+    RejectedBeforeCommit(Errno),
+    /// Shared pending state and readiness committed.
+    Committed(ProcessSignalPublication),
+    /// The pending operation committed but readiness failed. Never retry it.
+    FailedAfterCommit {
+        /// Committed effect.
+        receipt: ProcessSignalPublication,
+        /// Original readiness failure.
+        errno: Errno,
+    },
+}
+
+/// One eligible task in an authoritative, process-transaction snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SignalRecipient {
+    /// Exact live task, independent of numeric TID reuse.
+    pub task: SignalTaskIdentity,
+}
+
+/// Authorization for one task's actual return-to-user selection.
+///
+/// The backend registers this permit before the Tool releases its callback.
+/// Copying the value does not create another registered permission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SignalDeliveryPermit {
+    /// Exact process/task lifetime.
+    pub task: SignalTaskIdentity,
+    /// Run-local scheduler choice identity.
+    pub sequence: u64,
+    /// Parked syscall callback, or an ordinary user-return boundary.
+    pub site: Option<CallbackSignalSite>,
+}
+
+/// Actual completion of a permitted boundary, before guest entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum SignalBoundaryOutcome {
+    /// A caught handler's frame, registers and mask are committed.
+    Caught,
+    /// No handler was installed; no interrupted wait may be invented.
+    NoHandler,
+    /// The selected default action or frame fault established guest exit.
+    Terminated,
+    /// Successful exec replaced the selected callback's old image.
+    ImageReplaced,
+    /// Consuming logical task retirement cancelled the callback before entry.
+    Cancelled,
+    /// The run is terminal; its original error retains any partial signal effects.
+    Failed,
+}
+
+/// A consuming notification, not an ordinary scheduler resource request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SignalBoundaryReceipt {
+    /// Registered permit consumed by the backend.
+    pub permit: SignalDeliveryPermit,
+    /// Actual boundary outcome.
+    pub outcome: SignalBoundaryOutcome,
+}
+
+/// Shared run-owned facade. Implementations must not retain a Tool or Guest.
+///
+/// Calls are synchronous. Except for the explicitly named failure forwarding
+/// method, they must not call GlobalTool. No method may block on a guest
+/// callback, execute ordinary host IO, or drop retired descriptors while a
+/// signal/file-table guard is held. The caller supplies the causal scheduler
+/// fence; a snapshot by itself is not deterministic admission.
+pub trait ProcessSignalControl: Debug + Send + Sync {
+    /// Publish a complete SIGALRM/SI_KERNEL event to an exact process lifetime.
+    fn publish_alarm(
+        &self,
+        process: SignalProcessId,
+        event: SignalEvent,
+    ) -> ProcessSignalPublicationResult;
+
+    /// Eligible live recipients, in ascending numeric TID order. The caller
+    /// intersects these with its causally admitted task generations.
+    fn alarm_recipients(&self, process: SignalProcessId) -> Result<Vec<SignalRecipient>, Errno>;
+
+    /// Register one selected task. A second outstanding permit is not a retry.
+    fn reserve_delivery(&self, permit: SignalDeliveryPermit) -> Result<(), Errno>;
+
+    /// Settle a permit that did not remove a signal (for example, a masked
+    /// pending set after an authorized Tool operation). Exact duplicate receipts
+    /// are acknowledged, never interpreted as a second operation.
+    fn release_delivery(&self, permit: SignalDeliveryPermit) -> Result<(), Errno>;
+
+    /// Forward a retained publication failure to the run owner. This may call
+    /// GlobalTool, so the caller MUST release its scheduler mutex first.
+    fn finish_publication_failure(&self, process: SignalProcessId) -> Result<(), Errno>;
+}
+
+/// The single run-level installation carries both publication and selection.
+#[derive(Clone, Debug)]
+pub struct BackendSignalControl {
+    /// Run-local weak backend facade.
+    pub process: Arc<dyn ProcessSignalControl>,
+}

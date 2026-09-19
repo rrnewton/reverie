@@ -5,15 +5,17 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Backend-private preparation for callback-independent process publication.
+//! Run-scoped callback-independent process publication and recipient permits.
 //!
-//! There is deliberately no Tool installation hook or production publisher.
-//! This does not authorize selection, resume a task, or change waitability.
-//! Activating it requires the separately reviewed scheduler/selection protocol.
+//! Installation precedes guest startup. A permit authorizes one actual task
+//! continuation, not a host wake or an unrelated borrowed Guest. Child
+//! completion publication remains private and inactive.
 //!
-//! Initial registry/image lookups release their guards before taking files.
-//! Publication takes file table -> transaction -> lifecycle -> run failure ->
-//! process signals. Image validation briefly reacquires image below transaction;
+//! Active publication uses only transaction -> lifecycle -> run failure ->
+//! process signals and pinned private eventfd carriers. It never acquires or
+//! pins the ordinary file table. The inactive private endpoint additionally
+//! takes file table first, retaining its original negative controls.
+//! Image validation briefly reacquires image below transaction;
 //! child lookup briefly reacquires registry below lifecycle. Those guards are
 //! released before failure/process acquisition. The run failure guard remains
 //! held through readiness I/O after process/lifecycle guards are released,
@@ -25,6 +27,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use reverie::SignalEvent;
 use reverie::SignalProcessId;
@@ -82,6 +86,11 @@ pub(super) struct ProcessSignalRegistry {
     // terminal after saving FailedAfterCommit. This latch refuses further
     // publication; it is not a substitute for that owner transition.
     failure: Mutex<Option<PublicationFailure>>,
+    controlled: AtomicBool,
+    permits: Mutex<BTreeMap<(i32, u64, i32, u64), RegisteredPermit>>,
+    completed_permits: Mutex<BTreeMap<(i32, u64, i32, u64), reverie::SignalDeliveryPermit>>,
+    run_failure: Mutex<Weak<crate::failure::RunFailure>>,
+    reported_failure: Mutex<Option<crate::Error>>,
 }
 
 impl ProcessSignalRegistry {
@@ -120,13 +129,6 @@ impl ProcessSignalRegistry {
             .upgrade()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "private inactive capability; no production Tool installation yet"
-        )
-    )]
     pub(super) fn control(self: &Arc<Self>) -> ProcessSignalControl {
         ProcessSignalControl(Arc::downgrade(self))
     }
@@ -134,6 +136,28 @@ impl ProcessSignalRegistry {
 
 /// Retaining a control does not retain executors, descriptors, or GlobalState.
 pub(super) struct ProcessSignalControl(Weak<ProcessSignalRegistry>);
+
+impl std::fmt::Debug for ProcessSignalControl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProcessSignalControl")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone)]
+struct RegisteredPermit {
+    permit: reverie::SignalDeliveryPermit,
+    image: ImageRevision,
+}
+
+fn task_key(task: reverie::SignalTaskIdentity) -> (i32, u64, i32, u64) {
+    (
+        task.process.tgid.as_raw(),
+        task.process.generation,
+        task.tid.as_raw(),
+        task.task_generation,
+    )
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PublicationRejection {
@@ -201,7 +225,7 @@ impl ProcessSignalControl {
         not(test),
         expect(
             dead_code,
-            reason = "inactive private entry point; scheduler activation is separate"
+            reason = "retained inactive private endpoint; active facade uses independent carriers"
         )
     )]
     pub(super) fn publish_alarm(
@@ -218,7 +242,24 @@ impl ProcessSignalControl {
         {
             return ProcessPublication::Rejected(PublicationRejection::InvalidEvent);
         }
-        self.publish(target, event, None)
+        self.publish(target, event, None, false)
+    }
+
+    fn publish_active_alarm(
+        &self,
+        target: SignalProcessId,
+        event: SignalEvent,
+    ) -> ProcessPublication {
+        let mut expected = [0; reverie::SIGNAL_INFO_SIZE];
+        expected[..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
+        expected[8..12].copy_from_slice(&libc::SI_KERNEL.to_ne_bytes());
+        if event.signal() != libc::SIGALRM
+            || event.siginfo() != expected
+            || event.target() != (reverie::SignalTarget::Process { pid: target.tgid })
+        {
+            return ProcessPublication::Rejected(PublicationRejection::InvalidEvent);
+        }
+        self.publish(target, event, None, true)
     }
 
     #[cfg_attr(
@@ -250,7 +291,7 @@ impl ProcessSignalControl {
         let Ok(event) = event else {
             return ProcessPublication::Rejected(PublicationRejection::InvalidCompletion);
         };
-        self.publish(completion.parent, event, Some(&completion))
+        self.publish(completion.parent, event, Some(&completion), false)
     }
 
     fn publish(
@@ -258,6 +299,7 @@ impl ProcessSignalControl {
         target: SignalProcessId,
         event: SignalEvent,
         completion: Option<&CommittedChildExit>,
+        independent_carriers: bool,
     ) -> ProcessPublication {
         use ProcessPublication::Rejected;
         use PublicationRejection::*;
@@ -272,22 +314,31 @@ impl ProcessSignalControl {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
-        let (Some(files), Some(transaction), Some(lifecycle), Some(signals)) = (
-            image.files.upgrade(),
+        let (Some(transaction), Some(lifecycle), Some(signals)) = (
             binding.transaction.upgrade(),
             binding.lifecycle.upgrade(),
             image.signals.upgrade(),
         ) else {
             return Rejected(StaleProcess);
         };
-        // No registry/image mutex is held while taking the file table.
-        // Ordinary operations use this same file-table -> transaction order.
-        // Ordinary execution treats an authoritative-table poison as failure.
-        // Do not let this inactive endpoint publish through an inconsistent
-        // table after a failed ordinary update.
-        let files = match files.lock() {
-            Ok(files) => files,
-            Err(_) => return Rejected(Backend(Errno::EIO)),
+        // The active path neither acquires nor pins an ordinary file table:
+        // even dropping its final Arc could close an unrelated blocking socket
+        // while the Tool holds its scheduler mutex. Only the inactive private
+        // endpoint retains its historical table preflight and corruption checks.
+        let files_owner = if independent_carriers {
+            None
+        } else {
+            let Some(files) = image.files.upgrade() else {
+                return Rejected(StaleProcess);
+            };
+            Some(files)
+        };
+        let files = match files_owner.as_ref() {
+            Some(files) => match files.lock() {
+                Ok(files) => Some(files),
+                Err(_) => return Rejected(Backend(Errno::EIO)),
+            },
+            None => None,
         };
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         if binding
@@ -355,9 +406,27 @@ impl ProcessSignalControl {
             .iter()
             .filter_map(|(&fd, mask)| mask.contains(signal).then_some(fd))
             .collect::<Vec<_>>();
-        if matching.iter().any(|fd| !files.files.contains_key(fd)) {
-            return Rejected(Backend(Errno::EBADF));
-        }
+        let carriers = if independent_carriers {
+            let Some(carriers) = matching
+                .iter()
+                .map(|fd| process.signalfd_carriers.get(fd).cloned())
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Rejected(Backend(Errno::EBADF));
+            };
+            carriers
+        } else {
+            if matching.iter().any(|fd| {
+                !files
+                    .as_ref()
+                    .expect("private endpoint owns table")
+                    .files
+                    .contains_key(fd)
+            }) {
+                return Rejected(Backend(Errno::EBADF));
+            }
+            Vec::new()
+        };
         receipt.change = match process
             .shared_pending
             .enqueue(event, receipt.pending_generation)
@@ -370,8 +439,13 @@ impl ProcessSignalControl {
         // ownership across only bounded, nonblocking eventfd readiness I/O.
         drop(process);
         drop(lifecycle);
-        for fd in matching {
-            if let Err(raw) = set_signalfd_ready(&files.files[&fd], true) {
+        for (index, fd) in matching.into_iter().enumerate() {
+            let file = if independent_carriers {
+                carriers[index].file()
+            } else {
+                &files.as_ref().expect("private endpoint owns table").files[&fd]
+            };
+            if let Err(raw) = set_signalfd_ready(file, true) {
                 let committed = PublicationFailure {
                     receipt,
                     errno: Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO)),
@@ -381,6 +455,248 @@ impl ProcessSignalControl {
             }
         }
         ProcessPublication::Committed(receipt)
+    }
+}
+
+impl ProcessSignalRegistry {
+    pub(super) fn install(
+        &self,
+        mode: reverie::BackendSignalControlMode,
+        failure: &Arc<crate::failure::RunFailure>,
+    ) {
+        *self.run_failure.lock().unwrap_or_else(|p| p.into_inner()) = Arc::downgrade(failure);
+        self.controlled.store(
+            mode == reverie::BackendSignalControlMode::ToolControlled,
+            Ordering::Release,
+        );
+    }
+
+    pub(super) fn controlled(&self) -> bool {
+        self.controlled.load(Ordering::Acquire)
+    }
+
+    pub(super) fn permit(
+        &self,
+        task: reverie::SignalTaskIdentity,
+    ) -> Option<reverie::SignalDeliveryPermit> {
+        let binding = self.lookup(task.process)?;
+        let image = binding
+            .image
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .revision
+            .clone();
+        self.permits
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&task_key(task))
+            .filter(|registered| registered.image == image)
+            .map(|registered| registered.permit)
+    }
+
+    pub(super) fn take_reported_failure(&self) -> Option<crate::Error> {
+        self.reported_failure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+
+    pub(super) fn owned_permit(
+        &self,
+        task: reverie::SignalTaskIdentity,
+    ) -> Option<reverie::SignalDeliveryPermit> {
+        self.permits
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&task_key(task))
+            .map(|p| p.permit)
+    }
+
+    pub(super) fn retire_task(&self, task: reverie::SignalTaskIdentity) {
+        self.permits
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&task_key(task));
+        self.completed_permits
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&task_key(task));
+    }
+}
+
+fn public_receipt(receipt: &PublicationReceipt) -> reverie::ProcessSignalPublication {
+    reverie::ProcessSignalPublication {
+        process: receipt.process,
+        pending_generation: receipt.pending_generation,
+        coalesced: receipt.change == PendingChange::Coalesced,
+        disposition: match receipt.disposition {
+            PublicationDisposition::Ignored => reverie::ProcessAlarmSignalDisposition::Ignored,
+            PublicationDisposition::Caught => reverie::ProcessAlarmSignalDisposition::Caught,
+            PublicationDisposition::Default => reverie::ProcessAlarmSignalDisposition::DefaultFatal,
+        },
+    }
+}
+
+impl reverie::ProcessSignalControl for ProcessSignalControl {
+    fn publish_alarm(
+        &self,
+        process: SignalProcessId,
+        event: SignalEvent,
+    ) -> reverie::ProcessSignalPublicationResult {
+        use reverie::ProcessSignalPublicationResult as Outcome;
+        match self.publish_active_alarm(process, event) {
+            ProcessPublication::Committed(receipt) => Outcome::Committed(public_receipt(&receipt)),
+            ProcessPublication::FailedAfterCommit(failure) => Outcome::FailedAfterCommit {
+                receipt: public_receipt(&failure.receipt),
+                errno: failure.errno,
+            },
+            ProcessPublication::Rejected(reason) => Outcome::RejectedBeforeCommit(match reason {
+                PublicationRejection::Backend(errno) => errno,
+                PublicationRejection::Closed | PublicationRejection::StaleProcess => Errno::ESRCH,
+                PublicationRejection::ChangedImage => Errno::EAGAIN,
+                PublicationRejection::InvalidEvent | PublicationRejection::InvalidCompletion => {
+                    Errno::EINVAL
+                }
+                PublicationRejection::Terminal => Errno::EIO,
+            }),
+        }
+    }
+
+    fn alarm_recipients(
+        &self,
+        process: SignalProcessId,
+    ) -> Result<Vec<reverie::SignalRecipient>, Errno> {
+        let registry = self.0.upgrade().ok_or(Errno::ESRCH)?;
+        let binding = registry.lookup(process).ok_or(Errno::ESRCH)?;
+        let image = binding
+            .image
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let transaction = binding.transaction.upgrade().ok_or(Errno::ESRCH)?;
+        let lifecycle = binding.lifecycle.upgrade().ok_or(Errno::ESRCH)?;
+        let signals = image.signals.upgrade().ok_or(Errno::ESRCH)?;
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        if binding
+            .image
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .revision
+            != image.revision
+        {
+            return Err(Errno::EAGAIN);
+        }
+        let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+        let signals = signals.lock().unwrap_or_else(|p| p.into_inner());
+        let mut alarm_mask = crate::signal::KernelSigset::default();
+        alarm_mask.insert(libc::SIGALRM);
+        if !signals
+            .shared_pending
+            .any_matching(alarm_mask, &signals.pending_generations)
+        {
+            return Ok(Vec::new());
+        }
+        let mut recipients = Vec::new();
+        for task in lifecycle.signal_process_tasks(process) {
+            let Some(thread) = lifecycle.signal_target(task.tid.as_raw()) else {
+                continue;
+            };
+            if !thread.lock().blocked.contains(libc::SIGALRM) {
+                recipients.push(reverie::SignalRecipient { task });
+            }
+        }
+        Ok(recipients)
+    }
+
+    fn reserve_delivery(&self, permit: reverie::SignalDeliveryPermit) -> Result<(), Errno> {
+        let registry = self.0.upgrade().ok_or(Errno::ESRCH)?;
+        let binding = registry.lookup(permit.task.process).ok_or(Errno::ESRCH)?;
+        let transaction = binding.transaction.upgrade().ok_or(Errno::ESRCH)?;
+        let lifecycle = binding.lifecycle.upgrade().ok_or(Errno::ESRCH)?;
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+        let task = lifecycle
+            .get(permit.task.tid.as_raw())
+            .ok_or(Errno::ESRCH)?;
+        if task.generation != permit.task.task_generation
+            || task.process_generation != permit.task.process.generation
+            || task.tgid != permit.task.process.tgid.as_raw()
+            || permit.site.is_some_and(|site| {
+                site.process != permit.task.process
+                    || site.tid != permit.task.tid
+                    || site.task_generation != permit.task.task_generation
+            })
+        {
+            return Err(Errno::EINVAL);
+        }
+        let image = binding
+            .image
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .revision
+            .clone();
+        let mut permits = registry.permits.lock().unwrap_or_else(|p| p.into_inner());
+        if permits.contains_key(&task_key(permit.task)) {
+            return Err(Errno::EBUSY);
+        }
+        permits.insert(task_key(permit.task), RegisteredPermit { permit, image });
+        Ok(())
+    }
+
+    fn release_delivery(&self, permit: reverie::SignalDeliveryPermit) -> Result<(), Errno> {
+        let registry = self.0.upgrade().ok_or(Errno::ESRCH)?;
+        let mut permits = registry.permits.lock().unwrap_or_else(|p| p.into_inner());
+        let mut completed = registry
+            .completed_permits
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let key = task_key(permit.task);
+        match permits.get(&key) {
+            Some(current) if current.permit == permit => {
+                permits.remove(&key);
+                completed.insert(key, permit);
+                Ok(())
+            }
+            None if completed.get(&key) == Some(&permit) => Ok(()),
+            _ => Err(Errno::EINVAL),
+        }
+    }
+
+    fn finish_publication_failure(&self, process: SignalProcessId) -> Result<(), Errno> {
+        let registry = self.0.upgrade().ok_or(Errno::ESRCH)?;
+        let failure = registry
+            .failure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or(Errno::EINVAL)?;
+        if failure.receipt.process != process {
+            return Err(Errno::EINVAL);
+        }
+        let run = registry
+            .run_failure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .upgrade()
+            .ok_or(Errno::ESRCH)?;
+        // No scheduler, registry, image or signal lock survives this call.
+        let context = crate::failure::FailureContext::new(run, process.tgid, process.tgid);
+        let published = context.publish(
+            "process signal publication",
+            crate::Error::ProcessSignalPublication {
+                receipt: public_receipt(&failure.receipt),
+                errno: failure.errno,
+            },
+        );
+        // The first run cause may be a concurrent independent failure. Keep
+        // this returned Error too, so root completion retains the committed
+        // publication receipt as secondary cleanup rather than losing it.
+        registry
+            .reported_failure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_or_insert(published);
+        Ok(())
     }
 }
 
@@ -451,6 +767,548 @@ mod tests {
             ProcessPublication::Committed(receipt) => receipt,
             other => panic!("publication did not commit: {other:?}"),
         }
+    }
+
+    #[test]
+    fn active_publication_and_dequeue_complete_while_file_table_is_held() {
+        let mut executor = executor();
+        let process = identity(&executor);
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let fd = signalfd(&mut executor, &mut memory);
+        let alias = call(
+            &mut executor,
+            &memory,
+            libc::SYS_dup,
+            [fd as u64, 0, 0, 0, 0, 0],
+        );
+        assert!(alias > i64::from(fd));
+        executor
+            .signal_registry
+            .controlled
+            .store(true, Ordering::Release);
+        let control = executor.backend_signal_control().process;
+        let permit = reverie::SignalDeliveryPermit {
+            task: executor.signal_task_identity().unwrap(),
+            sequence: 1,
+            site: None,
+        };
+        control.reserve_delivery(permit).unwrap();
+        let table = executor.file_table.clone();
+        let held = table.lock().unwrap();
+        // The predecessor deadlocks here. This is a structural native control,
+        // not a claim that arbitrary guest blocking reads are interruptible.
+        assert!(matches!(
+            control.publish_alarm(process, alarm(process)),
+            reverie::ProcessSignalPublicationResult::Committed(_)
+        ));
+        let ready = |fd: i32| {
+            let mut poll = libc::pollfd {
+                fd: held.files[&fd].as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert!(unsafe { libc::poll(&mut poll, 1, 0) } >= 0);
+            poll.revents & libc::POLLIN != 0
+        };
+        assert!(ready(fd) && ready(alias as i32));
+        assert_eq!(
+            executor
+                .take_pending_signal_for_delivery()
+                .unwrap()
+                .unwrap()
+                .event,
+            alarm(process)
+        );
+        assert!(!ready(fd) && !ready(alias as i32));
+        assert!(
+            table.try_lock().is_err(),
+            "the real table guard still belongs to this control"
+        );
+        control.release_delivery(permit).unwrap();
+        drop(held);
+    }
+
+    #[test]
+    fn active_carrier_alias_exec_close_and_process_lifetimes_are_exact() {
+        let mut parent = executor();
+        let child = parent.fork_child(2, false, false).unwrap();
+        let parent_id = identity(&parent);
+        let child_id = identity(&child);
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let fd = signalfd(&mut parent, &mut memory);
+        let alias = call(
+            &mut parent,
+            &memory,
+            libc::SYS_dup,
+            [fd as u64, 0, 0, 0, 0, 0],
+        ) as i32;
+        assert!(alias > fd);
+        let keeper = {
+            let signals = parent.state.process_signals.lock().unwrap();
+            assert_eq!(
+                signals.signalfd_carriers[&fd],
+                signals.signalfd_carriers[&alias]
+            );
+            signals.signalfd_carriers[&fd].downgrade()
+        };
+        assert!(
+            child
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .signalfd_carriers
+                .is_empty()
+        );
+        assert!(
+            parent.fork_child(3, false, false).is_err(),
+            "existing signalfd/fork limitation remains explicit"
+        );
+        assert_eq!(
+            call(
+                &mut parent,
+                &memory,
+                libc::SYS_fcntl,
+                [
+                    fd as u64,
+                    libc::F_SETFD as u64,
+                    libc::FD_CLOEXEC as u64,
+                    0,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        let control = parent.backend_signal_control().process;
+        assert!(matches!(
+            control.publish_alarm(child_id, alarm(child_id)),
+            reverie::ProcessSignalPublicationResult::Committed(_)
+        ));
+        assert!(
+            !ready(&parent, alias),
+            "another process cannot publish to this carrier"
+        );
+        parent.replace_after_exec(native_loaded_state(std::path::Path::new("/tmp")));
+        assert_eq!(identity(&parent), parent_id);
+        assert_eq!(
+            parent
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .signalfd_carriers
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![alias]
+        );
+        assert!(
+            keeper.upgrade().is_some(),
+            "non-CLOEXEC alias retains the same description"
+        );
+        assert!(matches!(
+            control.publish_alarm(parent_id, alarm(parent_id)),
+            reverie::ProcessSignalPublicationResult::Committed(_)
+        ));
+        assert!(ready(&parent, alias));
+        assert_eq!(
+            call(
+                &mut parent,
+                &memory,
+                libc::SYS_close,
+                [alias as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert!(
+            keeper.upgrade().is_none(),
+            "last guest alias releases the sole private keeper"
+        );
+        assert!(
+            parent
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .signalfd_carriers
+                .is_empty()
+        );
+        assert!(
+            parent
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGALRM),
+            "close is not signal consumption"
+        );
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        assert_eq!(
+            control.publish_alarm(parent_id, alarm(parent_id)),
+            reverie::ProcessSignalPublicationResult::RejectedBeforeCommit(Errno::ESRCH)
+        );
+        assert!(
+            child
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGALRM)
+        );
+    }
+
+    #[test]
+    fn active_carrier_preparation_emfile_has_no_guest_descriptor_effect() {
+        use std::os::fd::FromRawFd;
+        const TEST: &str = "executor::process_signal_publication::tests::active_carrier_preparation_emfile_has_no_guest_descriptor_effect";
+        const ENV: &str = "REVERIE_SIGNALFD_KEEPER_EMFILE_CHILD";
+        const COMPLETE: &str = "signalfd keeper EMFILE control completed";
+        fn limit() -> libc::rlimit {
+            let mut r = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) }, 0);
+            r
+        }
+        if std::env::var(ENV).as_deref() != Ok(TEST) {
+            assert!(std::env::var_os(ENV).is_none());
+            let before = limit();
+            let output = std::process::Command::new("/usr/bin/timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--test-threads=1", "--nocapture"])
+                .env(ENV, TEST)
+                .output()
+                .unwrap();
+            let after = limit();
+            assert_eq!(
+                (after.rlim_cur, after.rlim_max),
+                (before.rlim_cur, before.rlim_max)
+            );
+            eprintln!(
+                "signalfd keeper child status={}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr)
+                    .lines()
+                    .filter(|line| *line == COMPLETE)
+                    .count(),
+                1
+            );
+            return;
+        }
+        let mut executor = executor();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let mut mask = KernelSigset::default();
+        mask.insert(libc::SIGALRM);
+        memory.write(0x80, &mask.to_bytes()).unwrap();
+        let original = limit();
+        let reduced = libc::rlimit {
+            rlim_cur: original.rlim_cur.min(256),
+            rlim_max: original.rlim_max,
+        };
+        let source = std::fs::File::open("/dev/null").unwrap();
+        let keys = executor.state.files.keys().copied().collect::<Vec<_>>();
+        let mut fillers = Vec::with_capacity(257);
+        let mut exhausted = None;
+        let mut observed = None;
+        let lowered = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &reduced) };
+        if lowered == 0 {
+            for _ in 0..=256 {
+                let raw = unsafe { libc::fcntl(source.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+                if raw < 0 {
+                    exhausted = std::io::Error::last_os_error().raw_os_error();
+                    break;
+                }
+                fillers.push(unsafe { std::fs::File::from_raw_fd(raw) });
+            }
+            if exhausted == Some(libc::EMFILE) && !fillers.is_empty() {
+                drop(fillers.pop());
+                // Prove an actual eventfd fits but its simultaneous keeper does
+                // not. Then restore the same one-slot boundary for execute().
+                let probe = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+                if probe >= 0 {
+                    let probe = unsafe { std::fs::File::from_raw_fd(probe) };
+                    let clone_error = probe.try_clone().err().and_then(|e| e.raw_os_error());
+                    drop(probe);
+                    let raw = call(
+                        &mut executor,
+                        &memory,
+                        libc::SYS_signalfd4,
+                        [u64::MAX, 0x80, 8, libc::SFD_NONBLOCK as u64, 0, 0],
+                    );
+                    observed = Some((clone_error, raw));
+                }
+            }
+        }
+        let restored = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original) };
+        drop(fillers);
+        assert_eq!(restored, 0);
+        assert_eq!(lowered, 0);
+        assert_eq!(exhausted, Some(libc::EMFILE));
+        assert_eq!(
+            observed,
+            Some((Some(libc::EMFILE), -i64::from(libc::EMFILE)))
+        );
+        assert_eq!(
+            executor.state.files.keys().copied().collect::<Vec<_>>(),
+            keys
+        );
+        assert_eq!(
+            executor
+                .file_table
+                .lock()
+                .unwrap()
+                .files
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            keys
+        );
+        let signals = executor.state.process_signals.lock().unwrap();
+        assert!(signals.signalfd_masks.is_empty() && signals.signalfd_carriers.is_empty());
+        assert!(signals.shared_pending.is_empty());
+        drop(signals);
+        let fd = signalfd(&mut executor, &mut memory);
+        assert!(fd >= 3, "unconstrained creation still works");
+        eprintln!("{COMPLETE}");
+    }
+
+    #[test]
+    fn active_publication_failure_retains_receipt_beside_prior_run_cause() {
+        let mut executor = executor();
+        let process = identity(&executor);
+        let global = Arc::new(());
+        let run = crate::failure::RunFailure::new(&global);
+        executor
+            .signal_registry
+            .install(reverie::BackendSignalControlMode::ToolControlled, &run);
+        let context = crate::failure::FailureContext::new(run.clone(), process.tgid, process.tgid);
+        let _first = context.publish(
+            "prior cause",
+            crate::Error::GuestClock("prior clock cause".into()),
+        );
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let fd = signalfd(&mut executor, &mut memory);
+        // Real post-commit carrier failure, identical to the existing private
+        // negative control: queue insertion succeeds, eventfd write gets EBADF.
+        let carrier = executor
+            .state
+            .process_signals
+            .lock()
+            .unwrap()
+            .signalfd_carriers
+            .insert(
+                fd,
+                crate::signal::SignalFdCarrier::pin_eventfd(
+                    &std::fs::File::open("/dev/null").unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let control = executor.backend_signal_control().process;
+        let reverie::ProcessSignalPublicationResult::FailedAfterCommit { receipt, errno } =
+            control.publish_alarm(process, alarm(process))
+        else {
+            panic!("missing committed failure")
+        };
+        assert_eq!(errno, Errno::EBADF);
+        control.finish_publication_failure(process).unwrap();
+        let retained = executor
+            .take_process_publication_failure()
+            .expect("root-owned error receipt");
+        assert!(
+            matches!(retained.primary(), crate::Error::ProcessSignalPublication { receipt: actual, errno: Errno::EBADF } if *actual == receipt)
+        );
+        let completed = run.complete::<()>(Err(retained)).unwrap_err();
+        assert!(
+            matches!(completed.primary(), crate::Error::GuestClock(message) if message == "prior clock cause")
+        );
+        assert!(
+            completed
+                .to_string()
+                .contains("process signal publication committed")
+        );
+        assert!(executor.take_process_publication_failure().is_none());
+        executor
+            .state
+            .process_signals
+            .lock()
+            .unwrap()
+            .signalfd_carriers
+            .insert(fd, carrier);
+    }
+
+    #[test]
+    fn controlled_pending_alarm_does_not_reject_or_preselect_a_new_thread() {
+        let leader = executor();
+        leader
+            .signal_registry
+            .controlled
+            .store(true, Ordering::Release);
+        let control = leader.backend_signal_control().process;
+        let process = identity(&leader);
+        assert!(matches!(
+            control.publish_alarm(process, alarm(process)),
+            reverie::ProcessSignalPublicationResult::Committed(_)
+        ));
+        let mut worker = leader.thread_child(2).unwrap();
+        assert!(worker.take_pending_signal_for_delivery().unwrap().is_none());
+        assert_eq!(worker.delivery_permit(), None);
+        let permit = reverie::SignalDeliveryPermit {
+            task: worker.signal_task_identity().unwrap(),
+            sequence: 1,
+            site: None,
+        };
+        control.reserve_delivery(permit).unwrap();
+        assert_eq!(
+            worker
+                .take_pending_signal_for_delivery()
+                .unwrap()
+                .unwrap()
+                .event,
+            alarm(process)
+        );
+        control.release_delivery(permit).unwrap();
+    }
+
+    #[test]
+    fn controlled_alarm_selects_unblocked_worker_and_requires_its_permit() {
+        let mut leader = executor();
+        let mut worker = leader.thread_child(2).unwrap();
+        let process = identity(&leader);
+        leader
+            .signal_registry
+            .controlled
+            .store(true, Ordering::Release);
+        leader
+            .state
+            .thread_signals
+            .lock()
+            .blocked
+            .insert(libc::SIGALRM);
+        let control = leader.backend_signal_control().process;
+        assert!(matches!(
+            control.publish_alarm(process, alarm(process)),
+            reverie::ProcessSignalPublicationResult::Committed(_)
+        ));
+        assert_eq!(
+            control.alarm_recipients(process).unwrap(),
+            vec![reverie::SignalRecipient {
+                task: worker.signal_task_identity().unwrap()
+            }]
+        );
+        assert!(leader.take_pending_signal_for_delivery().unwrap().is_none());
+        assert!(worker.take_pending_signal_for_delivery().unwrap().is_none());
+        let permit = reverie::SignalDeliveryPermit {
+            task: worker.signal_task_identity().unwrap(),
+            sequence: 1,
+            site: None,
+        };
+        control.reserve_delivery(permit).unwrap();
+        assert_eq!(
+            worker
+                .take_pending_signal_for_delivery()
+                .unwrap()
+                .unwrap()
+                .event,
+            alarm(process)
+        );
+        control.release_delivery(permit).unwrap();
+        control.release_delivery(permit).unwrap();
+        assert!(
+            control
+                .release_delivery(reverie::SignalDeliveryPermit {
+                    sequence: 2,
+                    ..permit
+                })
+                .is_err()
+        );
+        assert!(control.alarm_recipients(process).unwrap().is_empty());
+    }
+
+    #[test]
+    fn controlled_permit_is_bound_to_image_and_old_owner_can_settle_after_exec() {
+        let mut executor = executor();
+        let process = identity(&executor);
+        executor
+            .signal_registry
+            .controlled
+            .store(true, Ordering::Release);
+        let control = executor.backend_signal_control().process;
+        let permit = reverie::SignalDeliveryPermit {
+            task: executor.signal_task_identity().unwrap(),
+            sequence: 1,
+            site: None,
+        };
+        control.reserve_delivery(permit).unwrap();
+        assert_eq!(executor.delivery_permit(), Some(permit));
+        executor.replace_after_exec(native_loaded_state(std::path::Path::new("/tmp")));
+        assert_eq!(executor.delivery_permit(), None);
+        assert_eq!(executor.owned_delivery_permit(), Some(permit));
+        assert!(matches!(
+            control.publish_alarm(process, alarm(process)),
+            reverie::ProcessSignalPublicationResult::Committed(_)
+        ));
+        assert!(
+            executor
+                .take_pending_signal_for_delivery()
+                .unwrap()
+                .is_none()
+        );
+        control.release_delivery(permit).unwrap();
+        let fresh = reverie::SignalDeliveryPermit {
+            sequence: 2,
+            ..permit
+        };
+        control.reserve_delivery(fresh).unwrap();
+        assert_eq!(
+            executor
+                .take_pending_signal_for_delivery()
+                .unwrap()
+                .unwrap()
+                .event,
+            alarm(process)
+        );
+        control.release_delivery(fresh).unwrap();
+    }
+
+    #[test]
+    fn controlled_parked_lease_does_not_borrow_another_permit_or_callback() {
+        let mut executor = executor();
+        executor.enable_signal_dequeues();
+        executor
+            .signal_registry
+            .controlled
+            .store(true, Ordering::Release);
+        let site = executor.begin_signal_callback().unwrap();
+        let control = executor.backend_signal_control().process;
+        let permit = reverie::SignalDeliveryPermit {
+            task: executor.signal_task_identity().unwrap(),
+            sequence: 7,
+            site: Some(site),
+        };
+        control.reserve_delivery(permit).unwrap();
+        assert_eq!(
+            executor.admit_signal_observation(site, reverie::ParkedObservationLease { nonce: 8 }),
+            Err(Errno::EINVAL)
+        );
+        executor
+            .admit_signal_observation(site, reverie::ParkedObservationLease { nonce: 7 })
+            .unwrap();
+        assert_eq!(
+            executor.admit_signal_observation(site, reverie::ParkedObservationLease { nonce: 7 }),
+            Err(Errno::EINVAL)
+        );
+        control.release_delivery(permit).unwrap();
     }
 
     #[test]

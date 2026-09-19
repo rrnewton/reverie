@@ -387,6 +387,41 @@ pub(crate) struct OwnedSignalDequeue {
     pub(crate) wake: SignalDequeueWake,
 }
 
+/// A private nonblocking eventfd keeper, never an ordinary guest file/socket.
+/// One keeper is shared by all descriptor aliases of one signalfd. Creation
+/// pins it before publishing the guest descriptor; close/exec can drop this
+/// bounded eventfd owner under the signal transaction without a blocking close.
+#[derive(Clone, Debug)]
+pub(crate) struct SignalFdCarrier(Arc<std::fs::File>);
+impl SignalFdCarrier {
+    pub(crate) fn pin_eventfd(file: &std::fs::File) -> std::io::Result<Self> {
+        // The only production caller owns a freshly created EFD_NONBLOCK fd.
+        // Existing signalfd F_SETFL/SCM_RIGHTS/proc-reopen guards preserve it.
+        use std::os::fd::AsRawFd;
+        use std::os::fd::FromRawFd;
+        // Keep private descriptors out of host standard slots as well.
+        let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: successful F_DUPFD_CLOEXEC returns a newly owned descriptor.
+        Ok(Self(Arc::new(unsafe { std::fs::File::from_raw_fd(fd) })))
+    }
+    pub(crate) fn file(&self) -> &std::fs::File {
+        &self.0
+    }
+    #[cfg(test)]
+    pub(crate) fn downgrade(&self) -> std::sync::Weak<std::fs::File> {
+        Arc::downgrade(&self.0)
+    }
+}
+impl PartialEq for SignalFdCarrier {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for SignalFdCarrier {}
+
 /// Signal state shared by all threads in one guest process.
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
@@ -394,6 +429,7 @@ pub(crate) struct ProcessSignalState {
     pub(crate) dispositions: BTreeMap<i32, KernelSigaction>,
     pub(crate) shared_pending: StandardPendingSignals,
     pub(crate) signalfd_masks: BTreeMap<i32, Arc<KernelSigset>>,
+    pub(crate) signalfd_carriers: BTreeMap<i32, SignalFdCarrier>,
     pub(crate) pending_generations: PendingSignalGenerations,
     pub(crate) dequeue_enabled: bool,
     pub(crate) dequeue_sequence: u64,
@@ -409,6 +445,7 @@ impl Default for ProcessSignalState {
             dispositions: BTreeMap::new(),
             shared_pending: StandardPendingSignals::default(),
             signalfd_masks: BTreeMap::new(),
+            signalfd_carriers: BTreeMap::new(),
             pending_generations: [0; PENDING_SIGNAL_GENERATION_COUNT],
             dequeue_enabled: false,
             dequeue_sequence: 0,
@@ -436,6 +473,7 @@ impl ProcessSignalState {
             dispositions: self.dispositions.clone(),
             shared_pending: StandardPendingSignals::default(),
             signalfd_masks: self.signalfd_masks.clone(),
+            signalfd_carriers: self.signalfd_carriers.clone(),
             pending_generations: self.pending_generations,
             dequeue_enabled: self.dequeue_enabled,
             dequeue_sequence: 0,
@@ -463,6 +501,7 @@ impl ProcessSignalState {
                 .collect(),
             shared_pending: self.shared_pending.clone(),
             signalfd_masks: self.signalfd_masks.clone(),
+            signalfd_carriers: self.signalfd_carriers.clone(),
             pending_generations: self.pending_generations,
             dequeue_enabled: self.dequeue_enabled,
             dequeue_sequence: self.dequeue_sequence,

@@ -13,6 +13,14 @@ use thiserror::Error;
 /// Errors produced by the KVM backend prototype.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// A process-pending operation committed before readiness failed.
+    #[error("process signal publication committed {receipt:?}, then failed: {errno}")]
+    ProcessSignalPublication {
+        /// Irreversible publication identity.
+        receipt: reverie::ProcessSignalPublication,
+        /// Original carrier error.
+        errno: reverie::syscalls::Errno,
+    },
     /// A peer or the Tool scheduler has made this run terminal. This internal
     /// outcome is never a successful guest status or a syscall errno.
     #[error("KVM execution stopped after a fatal run failure")]

@@ -2388,7 +2388,11 @@ impl ElfExecutor {
         let _retirement = self.state.file_retirement.hold();
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-        if self.has_shared_pending_signal()
+        // Controlled mode admits new task generations through the Tool before
+        // any delivery permit. A pending process signal no longer makes physical
+        // thread creation race a backend-selected recipient. Signalfd sharing
+        // keeps its separate existing unsupported boundary.
+        if (!self.signal_controlled() && self.has_shared_pending_signal())
             || !self
                 .state
                 .process_signals
@@ -3518,6 +3522,37 @@ impl ElfExecutor {
         })
     }
 
+    pub(crate) fn backend_signal_control(&self) -> reverie::BackendSignalControl {
+        reverie::BackendSignalControl {
+            process: Arc::new(self.signal_registry.control()),
+        }
+    }
+
+    pub(crate) fn install_signal_control(
+        &self,
+        mode: reverie::BackendSignalControlMode,
+        failure: &Arc<crate::failure::RunFailure>,
+    ) {
+        self.signal_registry.install(mode, failure);
+    }
+
+    pub(crate) fn signal_controlled(&self) -> bool {
+        self.signal_registry.controlled()
+    }
+
+    pub(crate) fn delivery_permit(&self) -> Option<reverie::SignalDeliveryPermit> {
+        self.signal_registry.permit(self.admitted_signal_identity())
+    }
+
+    pub(crate) fn take_process_publication_failure(&self) -> Option<crate::Error> {
+        self.signal_registry.take_reported_failure()
+    }
+
+    pub(crate) fn owned_delivery_permit(&self) -> Option<reverie::SignalDeliveryPermit> {
+        self.signal_registry
+            .owned_permit(self.admitted_signal_identity())
+    }
+
     pub(crate) fn signal_dequeues_enabled(&self) -> bool {
         self.state
             .process_signals
@@ -3680,6 +3715,10 @@ impl ElfExecutor {
     ) -> Result<(), reverie::syscalls::Errno> {
         use reverie::syscalls::Errno;
         if !self.signal_site_is_current(site)
+            || (self.signal_controlled()
+                && self.delivery_permit().is_none_or(|permit| {
+                    permit.site != Some(site) || permit.sequence != lease.nonce
+                }))
             || self.parked_signals.as_ref().is_some_and(|state| {
                 state.site != site
                     || state.prepared.is_some()
@@ -4022,11 +4061,16 @@ impl ElfExecutor {
     pub(crate) fn take_pending_signal_for_delivery(
         &mut self,
     ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
+        if self.signal_controlled() && self.delivery_permit().is_none() {
+            return Ok(None);
+        }
+        // Process-owned eventfd keepers remove the ordinary descriptor-table
+        // dependency. A sibling FIFO open or recvmsg may retain that table indefinitely.
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         self.reserve_signal_effects(1)?;
         let pending = take_signal_event_locked(&mut self.state, SignalSelection::Delivery)?;
-        refresh_all_signalfd_readiness_locked(&self.state).map_err(|raw| {
+        refresh_signalfd_readiness_from_carriers_locked(&self.state, None).map_err(|raw| {
             reverie::syscalls::Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO))
         })?;
         Ok(pending)
@@ -4325,6 +4369,8 @@ impl ElfExecutor {
 
 impl Drop for ElfExecutor {
     fn drop(&mut self) {
+        self.signal_registry
+            .retire_task(self.admitted_signal_identity());
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let mut lifecycle = self
@@ -6993,9 +7039,22 @@ fn replace_signalfd_mask(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(mask) = mask {
+        // Dup retains the same open description. Resolve its keeper while the
+        // source alias is still live; no new host clone is needed for an alias.
+        let carrier = process_signals
+            .signalfd_masks
+            .iter()
+            .find_map(|(source, current)| {
+                Arc::ptr_eq(current, &mask)
+                    .then(|| process_signals.signalfd_carriers.get(source).cloned())
+                    .flatten()
+            })
+            .expect("live signalfd source owns its readiness keeper");
         process_signals.signalfd_masks.insert(fd, mask);
+        process_signals.signalfd_carriers.insert(fd, carrier);
     } else {
         process_signals.signalfd_masks.remove(&fd);
+        process_signals.signalfd_carriers.remove(&fd);
     }
 }
 
@@ -7824,7 +7883,7 @@ fn signalfd(
         return i64::from(requested_fd);
     }
 
-    let guest_fd = if requested_fd == -1 {
+    let (guest_fd, carrier) = if requested_fd == -1 {
         let event_flags = libc::EFD_CLOEXEC
             | if flags & libc::SFD_NONBLOCK != 0 {
                 libc::EFD_NONBLOCK
@@ -7838,13 +7897,22 @@ fn signalfd(
         }
         // SAFETY: eventfd returned a new owned descriptor.
         let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
+        // Stage the only extra host descriptor before either guest-table or
+        // signal-state insertion. Failure leaves no guest-visible descriptor.
+        let carrier = match crate::signal::SignalFdCarrier::pin_eventfd(&file) {
+            Ok(carrier) => carrier,
+            Err(error) => {
+                state.file_retirement.retire([file]);
+                return io_error(error);
+            }
+        };
         let guest_fd = insert_file_with_flags(state, file, flags & libc::SFD_CLOEXEC != 0, None);
         if guest_fd < 0 {
             return guest_fd;
         }
-        guest_fd as libc::c_int
+        (guest_fd as libc::c_int, carrier)
     } else {
-        requested_fd
+        unreachable!("existing signalfd updates return above")
     };
 
     let ready = {
@@ -7852,6 +7920,7 @@ fn signalfd(
             .process_signals
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        process_signals.signalfd_carriers.insert(guest_fd, carrier);
         process_signals
             .signalfd_masks
             .insert(guest_fd, Arc::new(mask));
@@ -8016,6 +8085,14 @@ fn refresh_signalfd_readiness_for_signal_locked(
     state: &LoadedStaticElf,
     signal: Option<i32>,
 ) -> Result<(), i64> {
+    refresh_signalfd_readiness_from_files_locked(state, signal, &state.files)
+}
+
+fn refresh_signalfd_readiness_from_files_locked(
+    state: &LoadedStaticElf,
+    signal: Option<i32>,
+    files: &std::collections::BTreeMap<i32, std::fs::File>,
+) -> Result<(), i64> {
     let readiness = {
         let process_signals = state
             .process_signals
@@ -8041,9 +8118,47 @@ fn refresh_signalfd_readiness_for_signal_locked(
             .collect::<Vec<_>>()
     };
     for (fd, ready) in readiness {
-        if let Some(file) = state.files.get(&fd) {
-            set_signalfd_ready(file, ready)?;
-        }
+        let file = files.get(&fd).ok_or_else(|| negative_errno(libc::EBADF))?;
+        set_signalfd_ready(file, ready)?;
+    }
+    Ok(())
+}
+
+/// Requires the process signal transaction. Only dedicated eventfd keepers
+/// cross this boundary, so no authoritative file-table acquisition or ordinary
+/// last-owner descriptor destruction can block a scheduler-selected return.
+fn refresh_signalfd_readiness_from_carriers_locked(
+    state: &LoadedStaticElf,
+    signal: Option<i32>,
+) -> Result<(), i64> {
+    let readiness = {
+        let process = state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let thread = state.thread_signals.lock();
+        process
+            .signalfd_masks
+            .iter()
+            .filter(|(_, mask)| signal.is_none_or(|signal| mask.contains(signal)))
+            .map(|(fd, mask)| {
+                let carrier = process
+                    .signalfd_carriers
+                    .get(fd)
+                    .cloned()
+                    .ok_or_else(|| negative_errno(libc::EBADF))?;
+                let ready = thread
+                    .pending
+                    .any_matching(**mask, &process.pending_generations)
+                    || process
+                        .shared_pending
+                        .any_matching(**mask, &process.pending_generations);
+                Ok((carrier, ready))
+            })
+            .collect::<Result<Vec<_>, i64>>()?
+    };
+    for (carrier, ready) in readiness {
+        set_signalfd_ready(carrier.file(), ready)?;
     }
     Ok(())
 }

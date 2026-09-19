@@ -357,6 +357,25 @@ impl TaskLifecycleTable {
         self.tasks.get(&tid).copied()
     }
 
+    /// Exact live task identities in one process lifetime, in stable TID order.
+    pub(crate) fn signal_process_tasks(
+        &self,
+        process: reverie::SignalProcessId,
+    ) -> Vec<reverie::SignalTaskIdentity> {
+        self.tasks
+            .iter()
+            .filter_map(|(&tid, task)| {
+                (task.tgid == process.tgid.as_raw()
+                    && task.process_generation == process.generation)
+                    .then_some(reverie::SignalTaskIdentity {
+                        process,
+                        tid: reverie::Pid::from_raw(tid),
+                        task_generation: task.generation,
+                    })
+            })
+            .collect()
+    }
+
     pub(crate) fn contains_process(&self, tgid: i32, generation: u64) -> bool {
         self.tasks
             .values()
@@ -964,6 +983,9 @@ impl LoadedStaticElf {
             let thread_signals = previous.thread_signals.after_exec();
             process_signals
                 .signalfd_masks
+                .retain(|fd, _| files.contains_key(fd));
+            process_signals
+                .signalfd_carriers
                 .retain(|fd, _| files.contains_key(fd));
             lifecycle.reset_after_exec_with_signals(
                 previous.tid,
