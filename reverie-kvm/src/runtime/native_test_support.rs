@@ -143,7 +143,7 @@ where
             true,
         )));
         Ok(Self {
-            executor: Some(ElfExecutor::new(state, false)),
+            executor: Some(ElfExecutor::with_output(state, None)),
             tool: Some(tool),
             thread: Some(thread),
             identity: (pid, pid),
