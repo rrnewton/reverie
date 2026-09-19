@@ -1117,8 +1117,12 @@ pub(crate) fn admission_floor_canonical_refusal(row: &HistoryRow) -> Option<&'st
 /// grandfathered through the count-only fallback with no coverage evidence.
 pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate) -> Qualification {
     let req = &pred.require;
-    if row.commit.as_deref() != Some(sha) {
-        return Qualification::refused("identity/result clause");
+    let commit = row.commit.as_deref().unwrap_or_default();
+    if commit.is_empty() || commit == "unknown" {
+        return Qualification::refused("no-commit");
+    }
+    if commit != sha {
+        return Qualification::refused("commit");
     }
     if row.commit_anchored != Some(req.commit_anchored) {
         return Qualification::refused("commit_anchored");
@@ -1127,18 +1131,18 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
         return Qualification::refused("tree_dirty");
     }
     if row.profile.as_deref() != Some(req.profile.as_str()) {
-        return Qualification::refused("identity/result clause");
+        return Qualification::refused("profile");
     }
     if row.selection_mode.as_deref() != Some(req.selection_mode.as_str()) {
-        return Qualification::refused("identity/result clause");
+        return Qualification::refused("selection_mode");
     }
     if row.result.as_deref() != Some(req.result.as_str()) {
-        return Qualification::refused("identity/result clause");
+        return Qualification::refused("result");
     }
     // `pass` with a positive failure count is malformed; an absent count on a
     // pass row is treated as zero (old rows predate the field).
     if row.failures.unwrap_or(0) > req.failures_max {
-        return Qualification::refused("failures > failures_max");
+        return Qualification::refused("failures");
     }
     // A demonstrated zero-test run is never a full green, at any schema.
     if row.executed_tests == Some(0) {
@@ -1430,6 +1434,65 @@ mod tests {
     }
 
     #[test]
+    fn each_identity_clause_names_its_own_cause() {
+        let sha = "b".repeat(40);
+        let other = "c".repeat(40);
+        let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
+        let good = row_with_producer(&sha, "2026-08-08T09:00:00Z", Some("hermit-validate-sh"));
+        assert!(
+            row_qualifies(&good, &sha, &pred),
+            "the fixture must otherwise qualify"
+        );
+
+        let refusal = |row: &HistoryRow| match row_qualification(row, &sha, &pred) {
+            Qualification::Refused(reason) => reason,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+
+        // Absent, empty and the literal "unknown" are all "no commit", and the
+        // spelling matches the Python authority exactly so the two explanations
+        // agree rather than merely coincide in meaning.
+        for absent in [None, Some(String::new()), Some("unknown".to_string())] {
+            let mut row = good.clone();
+            row.commit = absent.clone();
+            assert_eq!("no-commit", refusal(&row), "commit={absent:?}");
+        }
+
+        let mut wrong_commit = good.clone();
+        wrong_commit.commit = Some(other.clone());
+        assert_eq!("commit", refusal(&wrong_commit));
+
+        let mut wrong_profile = good.clone();
+        wrong_profile.profile = Some("not-the-required-profile".into());
+        assert_eq!("profile", refusal(&wrong_profile));
+
+        let mut wrong_selection = good.clone();
+        wrong_selection.selection_mode = Some("not-the-required-selection".into());
+        assert_eq!("selection_mode", refusal(&wrong_selection));
+
+        let mut wrong_result = good.clone();
+        wrong_result.result = Some("failure".into());
+        assert_eq!("result", refusal(&wrong_result));
+
+        // THE POINT OF THE TEST, not an afterthought: the five causes must be
+        // DISTINGUISHABLE. Asserting each string individually would still pass
+        // if every clause returned the same one.
+        let causes = [
+            refusal(&wrong_commit),
+            refusal(&wrong_profile),
+            refusal(&wrong_selection),
+            refusal(&wrong_result),
+            "no-commit".to_string(),
+        ];
+        let distinct: std::collections::BTreeSet<_> = causes.iter().collect();
+        assert_eq!(
+            5,
+            distinct.len(),
+            "each clause needs its own cause: {causes:?}"
+        );
+    }
+
+    #[test]
     fn optional_admission_is_checked_on_both_early_full_coverage_paths() {
         let sha = "b".repeat(40);
         let legacy = serde_json::to_value(row_with_producer(
@@ -1631,11 +1694,7 @@ mod tests {
         }
         for (field, value, expected) in [
             ("tree_dirty", serde_json::json!(true), "tree_dirty"),
-            (
-                "result",
-                serde_json::json!("fail"),
-                "identity/result clause",
-            ),
+            ("result", serde_json::json!("fail"), "result"),
             (
                 "executed_tests",
                 serde_json::json!(0),
@@ -2633,5 +2692,481 @@ mod tests {
         non_string_path["green_class"] = serde_json::json!("soft-force-full-touched");
         let non_string_path: HistoryRow = serde_json::from_value(non_string_path).unwrap();
         assert_eq!(derived_green_class(&non_string_path), None);
+    }
+}
+
+// Real implementation comparison. Shared-authority accounting is reported only
+// AFTER every verdict has been compared; acceptance is never an exemption.
+#[cfg(test)]
+pub(crate) mod differential_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+    pub(crate) enum Answer {
+        Accepted,
+        Refused { cause: String },
+        ReaderFault { cause: String },
+    }
+
+    #[derive(Clone, serde::Serialize)]
+    pub(crate) struct Case {
+        pub id: String,
+        pub sha: String,
+        // Retain raw JSON until each real reader decodes it. In particular,
+        // do not round-trip a historical admission claim through Value.
+        pub row: String,
+    }
+
+    pub(crate) struct Scratch(pub PathBuf);
+    impl Scratch {
+        pub(crate) fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "qualifier-history-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&path).expect("exclusive test directory");
+            Self(path)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).expect("remove this test's own temporary directory");
+        }
+    }
+
+    pub(crate) fn source_root() -> PathBuf {
+        let root = resolve_root();
+        assert_eq!(
+            std::fs::read_to_string(root.join(PREDICATE_REL)).unwrap(),
+            EMBEDDED,
+            "Python's actual predicate must equal Rust's embedded predicate"
+        );
+        root
+    }
+
+    pub(crate) fn rust_answer(case: &Case) -> Answer {
+        let row: HistoryRow = match serde_json::from_str(&case.row) {
+            Ok(row) => row,
+            Err(error) => {
+                return Answer::ReaderFault {
+                    cause: format!("HistoryRow: {error}"),
+                }
+            }
+        };
+        match row_qualification(
+            &row,
+            &case.sha,
+            &QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap(),
+        ) {
+            Qualification::FullCoverage => Answer::Accepted,
+            Qualification::Refused(cause) => Answer::Refused { cause },
+            Qualification::Indeterminate(cause) => Answer::ReaderFault {
+                cause: cause.into(),
+            },
+            Qualification::CountsOnlyGrandfathered { schema } => Answer::ReaderFault {
+                cause: format!("unmodeled counts-only acceptance at schema {schema}"),
+            },
+        }
+    }
+
+    const PYTHON: &str = r#"
+import json, sys
+sys.path.insert(0, sys.argv[1] + '/ci-hub')
+import qualifying_receipt as qr
+pred = qr.active()
+with open(sys.argv[2]) as source:
+    cases = json.load(source)
+with open(sys.argv[3], 'x') as target:
+    for case in cases:
+        try:
+            row = json.loads(case['row'], object_pairs_hook=qr.AdmissionJsonObject)
+            accepted, reason = qr.row_qualification(row, case['sha'], pred)
+            if accepted:
+                if reason != 'qualifies':
+                    raise ValueError('unmodeled accepted explanation: ' + repr(reason))
+                answer = {'kind': 'accepted'}
+            else:
+                answer = {'kind': 'refused', 'cause': reason}
+        except qr.ValidationEvidenceReaderFault as error:
+            answer = {'kind': 'reader_fault', 'cause': str(error)}
+        except Exception as error:
+            answer = {'kind': 'unexpected_exception', 'cause': type(error).__name__ + ': ' + str(error)}
+        target.write(json.dumps({'id': case['id'], 'answer': answer}) + '\n')
+"#;
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Reply {
+        id: String,
+        answer: Answer,
+    }
+
+    fn decode_replies(cases: &[Case], raw: &str) -> Result<Vec<Answer>, String> {
+        let mut replies = BTreeMap::new();
+        for line in raw.lines() {
+            let reply: Reply =
+                serde_json::from_str(line).map_err(|error| format!("Python reply: {error}"))?;
+            if replies.insert(reply.id.clone(), reply.answer).is_some() {
+                return Err(format!("duplicate Python reply {}", reply.id));
+            }
+        }
+        if replies.len() != cases.len() {
+            return Err(format!(
+                "Python reply count {} != {}",
+                replies.len(),
+                cases.len()
+            ));
+        }
+        let mut out = Vec::new();
+        for case in cases {
+            out.push(
+                replies
+                    .remove(&case.id)
+                    .ok_or_else(|| format!("missing Python reply {}", case.id))?,
+            );
+        }
+        if !replies.is_empty() {
+            return Err("unexpected Python replies".into());
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn python_answers(cases: &[Case]) -> Vec<Answer> {
+        let root = source_root();
+        let scratch = Scratch::new();
+        let input = scratch.0.join("input.json");
+        let output = scratch.0.join("output.jsonl");
+        std::fs::write(&input, serde_json::to_vec(cases).unwrap()).unwrap();
+        let result = Command::new("python3")
+            .args(["-B", "-c", PYTHON])
+            .arg(root)
+            .arg(input)
+            .arg(&output)
+            .env_remove(PREDICATE_ENV)
+            .output()
+            .expect("run the real Python authority");
+        assert!(
+            result.status.success(),
+            "Python driver refused: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        decode_replies(cases, &std::fs::read_to_string(output).unwrap()).unwrap()
+    }
+
+    // Exactly the observed cause/detail differences. Unknown explanations are
+    // compared literally; a generic '=' splitter could erase a new cause.
+    pub(crate) fn cause(reason: &str) -> String {
+        for field in ["commit", "profile", "selection_mode", "result", "failures"] {
+            if let Some(detail) = reason.strip_prefix(&format!("{field}=")) {
+                let detail = if field == "selection_mode" {
+                    detail.strip_suffix("(1-hop)").unwrap_or(detail)
+                } else {
+                    detail
+                };
+                if !detail.is_empty() {
+                    return field.into();
+                }
+            }
+        }
+        match reason {
+            "executed_tests == 0" => "executed_tests==0".into(),
+            "filtered_tests != 0" => "filtered_tests!=0".into(),
+            other => other.into(),
+        }
+    }
+
+    pub(crate) fn compare(id: &str, rust: &Answer, python: &Answer) -> Result<(), String> {
+        let agree = match (rust, python) {
+            (Answer::Accepted, Answer::Accepted) => true,
+            (Answer::Refused { cause: left }, Answer::Refused { cause: right }) => {
+                cause(left) == cause(right)
+            }
+            // Reader failures are evidence loss, never a successful comparison
+            // merely because both implementations could not judge the input.
+            _ => false,
+        };
+        if agree {
+            Ok(())
+        } else {
+            Err(format!("{id}: Rust {rust:?}; Python {python:?}"))
+        }
+    }
+
+    #[test]
+    fn comparison_catches_both_verdict_directions_causes_and_reader_faults() {
+        let pass = Answer::Accepted;
+        let profile = Answer::Refused {
+            cause: "profile".into(),
+        };
+        let detail = Answer::Refused {
+            cause: "profile='quick'".into(),
+        };
+        let result = Answer::Refused {
+            cause: "result".into(),
+        };
+        let fault = Answer::ReaderFault {
+            cause: "reader unavailable".into(),
+        };
+        assert!(compare("genuine-positive", &pass, &pass).is_ok());
+        assert!(compare("known-detail", &profile, &detail).is_ok());
+        for (left, right) in [
+            (&pass, &profile),
+            (&profile, &pass),
+            (&profile, &result),
+            (&fault, &profile),
+            (&profile, &fault),
+            (&fault, &fault),
+        ] {
+            let refusal = compare("named-counterexample", left, right).unwrap_err();
+            assert!(
+                refusal.contains("named-counterexample")
+                    && refusal.contains("Rust")
+                    && refusal.contains("Python")
+            );
+        }
+        assert_ne!(cause("identity/result clause"), cause("no-commit"));
+        assert_eq!(cause("profile='a=b'"), "profile");
+        assert_eq!(cause("selection_mode='x'(1-hop)"), "selection_mode");
+        assert_eq!(cause("executed_tests==0"), cause("executed_tests == 0"));
+        assert_eq!(cause("filtered_tests!=0"), cause("filtered_tests != 0"));
+        for unknown in [
+            "new-cause=pass",
+            "profile",
+            "profile=",
+            "unrelated(1-hop)",
+            "executed_tests >= 0",
+        ] {
+            assert_eq!(cause(unknown), unknown);
+        }
+    }
+
+    #[test]
+    fn missing_duplicate_wrong_id_and_malformed_python_replies_refuse() {
+        let cases = vec![Case {
+            id: "case-one".into(),
+            sha: "a".repeat(40),
+            row: "{}".into(),
+        }];
+        let good = r#"{"id":"case-one","answer":{"kind":"accepted"}}"#;
+        assert_eq!(
+            decode_replies(&cases, good).unwrap(),
+            vec![Answer::Accepted]
+        );
+        for bad in [
+            String::new(),
+            format!("{good}\n{good}"),
+            good.replace("case-one", "different"),
+            good.replace("accepted", "unexpected_exception"),
+            "{".into(),
+        ] {
+            assert!(
+                decode_replies(&cases, &bad).is_err(),
+                "accepted malformed replies: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_rows_compare_every_verdict_before_shared_authority_accounting() {
+        let sha = "a".repeat(40);
+        let values = generated_rows(&sha);
+        let cases: Vec<Case> = values
+            .iter()
+            .enumerate()
+            .map(|(index, (row, label))| Case {
+                id: format!("generated-{index:05}: {label}"),
+                sha: sha.clone(),
+                row: serde_json::to_string(row).unwrap(),
+            })
+            .collect();
+        assert_eq!(cases.len(), 32_805);
+        let python = python_answers(&cases);
+        let mut accepted = Vec::new();
+        let mut causes = std::collections::BTreeSet::new();
+        let mut errors = Vec::new();
+        for (index, (case, theirs)) in cases.iter().zip(&python).enumerate() {
+            let ours = rust_answer(case);
+            // Crucially before classification; even a new false acceptance is
+            // compared rather than silently moved out of the tested population.
+            if let Err(error) = compare(&case.id, &ours, theirs) {
+                errors.push(error);
+            }
+            match ours {
+                Answer::Accepted => accepted.push(index),
+                Answer::Refused { cause: reason } => {
+                    causes.insert(cause(&reason));
+                }
+                Answer::ReaderFault { .. } => {}
+            }
+        }
+        assert!(
+            errors.is_empty(),
+            "{} disagreements; first:\n{}",
+            errors.len(),
+            errors
+                .iter()
+                .take(12)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        // These exact six inputs differ only in absent/zero failures and the
+        // three filtered-count values; the shipped predicate does not gate
+        // filtered_tests. All have executed_tests=passed_tests=427.
+        assert_eq!(
+            accepted,
+            [0, 1, 2, 18, 19, 20],
+            "the explicit shared-authority input set changed"
+        );
+        let expected: std::collections::BTreeSet<String> = [
+            "no-commit",
+            "commit",
+            "commit_anchored",
+            "tree_dirty",
+            "profile",
+            "selection_mode",
+            "result",
+            "failures",
+            "executed_tests==0",
+            PASSED_TESTS_REFUSAL_REASON,
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(
+            causes, expected,
+            "the measured independent cause population changed"
+        );
+        eprintln!("32805 complete outcome comparisons; 32799 independently refused inputs; six explicit accepted inputs {:?} traverse shared Python evidence; ten distinct refusal causes", accepted);
+    }
+    fn generated_rows(sha: &str) -> Vec<(serde_json::Value, String)> {
+        let other = "c".repeat(40);
+        let commits: Vec<Option<String>> = vec![
+            Some(sha.to_string()),
+            Some(other),
+            None,
+            Some(String::new()),
+            Some("unknown".to_string()),
+        ];
+        let mut out = Vec::new();
+        for commit in &commits {
+            for anchored in [Some(true), Some(false), None] {
+                for dirty in [Some(false), Some(true), None] {
+                    for profile in [Some("full"), Some("quick"), None] {
+                        for selection in [Some("full"), Some("selected"), None] {
+                            for result in [Some("pass"), Some("failure"), None] {
+                                for failures in [Some(0), Some(5), None] {
+                                    for executed in [Some(427), Some(0), None] {
+                                        for filtered in [Some(0), Some(3), None] {
+                                            let mut row = serde_json::json!({
+                                                "schema_version": 5,
+                                                "passed_tests": 427,
+                                                "finished_at": "2026-08-08T09:00:00Z",
+                                                "producer": "hermit-validate-sh",
+                                                "checks": 1,
+                                                "gates_run": 1,
+                                                "gates_expected": 1,
+                                                "gates": [{"name":"test","result":"pass","exit_code":0}],
+                                                "coverage": {"planned_test_nodes":19,"executed_test_nodes":19,
+                                                             "zero_executed_nodes":[],"absent_nodes":[]},
+                                                "admission": "ci-hub-validate-lock",
+                                                "concurrent_validates": 0,
+                                                "concurrency_proof": "validate_lock_owner_ancestry",
+                                                "base_sha": "1".repeat(40),
+                                                "base_tree": "2".repeat(40),
+                                                "reverie_base_sha": "3".repeat(40),
+                                                "reverie_base_tree": "4".repeat(40),
+                                            });
+                                            let map = row.as_object_mut().unwrap();
+                                            if let Some(value) = commit {
+                                                map.insert(
+                                                    "commit".into(),
+                                                    serde_json::json!(value),
+                                                );
+                                            }
+                                            if let Some(value) = anchored {
+                                                map.insert(
+                                                    "commit_anchored".into(),
+                                                    serde_json::json!(value),
+                                                );
+                                            }
+                                            if let Some(value) = dirty {
+                                                map.insert(
+                                                    "tree_dirty".into(),
+                                                    serde_json::json!(value),
+                                                );
+                                            }
+                                            if let Some(value) = profile {
+                                                map.insert(
+                                                    "profile".into(),
+                                                    serde_json::json!(value),
+                                                );
+                                            }
+                                            if let Some(value) = selection {
+                                                map.insert(
+                                                    "selection_mode".into(),
+                                                    serde_json::json!(value),
+                                                );
+                                            }
+                                            if let Some(value) = result {
+                                                map.insert(
+                                                    "result".into(),
+                                                    serde_json::json!(value),
+                                                );
+                                            }
+                                            if let Some(value) = failures {
+                                                map.insert(
+                                                    "failures".into(),
+                                                    serde_json::json!(value),
+                                                );
+                                            }
+                                            if let Some(value) = executed {
+                                                map.insert(
+                                                    "executed_tests".into(),
+                                                    serde_json::json!(value),
+                                                );
+                                            }
+                                            if let Some(value) = filtered {
+                                                map.insert(
+                                                    "filtered_tests".into(),
+                                                    serde_json::json!(value),
+                                                );
+                                            }
+                                            let label = format!(
+                                                "commit={commit:?} anchored={anchored:?} dirty={dirty:?} \
+                                                 profile={profile:?} selection={selection:?} result={result:?} \
+                                                 failures={failures:?} executed={executed:?} filtered={filtered:?}"
+                                            );
+                                            out.push((row, label));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub(crate) fn compare_expected(
+        id: &str,
+        expected: &Answer,
+        rust: &Answer,
+        python: &Answer,
+    ) -> Result<(), String> {
+        if compare(id, rust, python).is_ok() && compare(id, expected, rust).is_ok() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{id}: recorded expectation {expected:?}; Rust {rust:?}; Python {python:?}"
+            ))
+        }
     }
 }

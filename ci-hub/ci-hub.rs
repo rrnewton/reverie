@@ -18441,3 +18441,282 @@ print(json.dumps({"schema_version": 1, "rows": rows, "records": records}))
         assert!(command.cost_spec().is_some());
     }
 }
+
+#[cfg(test)]
+mod retained_qualification_histories {
+    use super::*;
+    use qualifying_receipt::differential_tests::{self as differential, Answer, Case, Scratch};
+
+    const EVENTS: &str = include_str!("tests/fixtures/qualifying-receipt-retained-events.jsonl");
+    const PROVENANCE: &str =
+        include_str!("tests/fixtures/qualifying-receipt-retained-events.provenance.json");
+    const EXPECTED: &str =
+        include_str!("tests/fixtures/qualifying-receipt-retained-events.expected.json");
+
+    fn shard(root: &Path, text: &str) {
+        let path = root.join("ledger/hermit/devbig014/2026-08.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    fn canonical_cases(
+        root: &Path,
+        tools: &Path,
+    ) -> (Vec<Case>, Vec<validate_status::LedgerParseFailure>) {
+        // The ordinary loader diagnoses unreadable original rows by identity.
+        // Retain raw status-input bytes even for those rows, so reader faults
+        // cannot silently reduce the comparison population.
+        let loaded =
+            load_validation_ledger_reporting_with_tool(&root.join("ledger"), tools).unwrap();
+        let output = Command::new("python3")
+            .arg("-B")
+            .arg(tools.join("ci-hub/ledger/validate_rows.py"))
+            .args(["status-input", "--preserve-admission"])
+            .current_dir(root)
+            .env("DEV_HERMIT_PARENT", root)
+            .env("DEV_HERMIT_TOOL_ROOT", tools)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "canonical reader: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let input: CanonicalLedgerStatusInput = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(input.schema_version, 1);
+        let (rows, failures) = parse_history_values(&input.rows);
+        assert_eq!(input.rows.len(), loaded.rows.len() + loaded.failures.len());
+        assert_eq!(
+            serde_json::to_value(&rows).unwrap(),
+            serde_json::to_value(&loaded.rows).unwrap()
+        );
+        assert_eq!(
+            failures.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            loaded
+                .failures
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        );
+        let cases = input
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, raw)| {
+                // Generic decoding recovers diagnostic identity only. Classification
+                // receives the original raw JSON string in both implementations.
+                let identity: serde_json::Value = serde_json::from_str(raw.get()).unwrap();
+                let sha = identity["commit"]
+                    .as_str()
+                    .expect("retained recorded head")
+                    .to_string();
+                let name = identity["record_id"].as_str().unwrap_or(&sha);
+                Case {
+                    id: format!("retained-row-{index}-{name}"),
+                    sha,
+                    row: raw.get().into(),
+                }
+            })
+            .collect();
+        (cases, loaded.failures)
+    }
+
+    fn known_reader_disagreement(
+        case: &Case,
+        expected: &serde_json::Value,
+        rust: &Answer,
+        python: &Answer,
+    ) -> Result<(), String> {
+        let identity: serde_json::Value = serde_json::from_str(&case.row).unwrap();
+        let exact_identity = case.sha == expected["commit"].as_str().unwrap()
+            && identity["record_id"] == expected["record_id"];
+        let null_gates = identity["gates"].as_array().is_some_and(|gates| {
+            gates.len() == 3
+                && gates
+                    .iter()
+                    .all(|gate| gate.get("failed_substeps") == Some(&serde_json::Value::Null))
+        });
+        let expected_rust = expected["rust_error_prefix"].as_str().unwrap();
+        let rust_fault = matches!(rust, Answer::ReaderFault { cause } if cause.strip_prefix(expected_rust)
+            .and_then(|column| column.parse::<usize>().ok()).is_some());
+        let python_refusal = matches!(python, Answer::Refused { cause } if cause==expected["python_cause"].as_str().unwrap());
+        if exact_identity && null_gates && rust_fault && python_refusal {
+            Ok(())
+        } else {
+            Err(format!("{}: known reader disagreement expectation {expected}; Rust {rust:?}; Python {python:?}", case.id))
+        }
+    }
+
+    #[test]
+    fn canonical_retained_event_transitions_match_both_implementations_and_recorded_expectations() {
+        let provenance: serde_json::Value = serde_json::from_str(PROVENANCE).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(EVENTS.as_bytes())),
+            provenance["events_sha256"]
+        );
+        let expected: serde_json::Value = serde_json::from_str(EXPECTED).unwrap();
+        let events: Vec<&str> = EVENTS.split_inclusive('\n').collect();
+        assert_eq!(events.len(), 5, "retained event corpus missing or changed");
+        let scratch = Scratch::new();
+        let tools = differential::source_root();
+        let states = expected["states"].as_array().unwrap();
+        assert_eq!(states.len(), events.len() + 1);
+        let mut compared = 0;
+        let mut known_disagreements = 0;
+        for (count, state) in states.iter().enumerate() {
+            assert_eq!(state["event_count"], count);
+            shard(&scratch.0, &events[..count].concat());
+            let (cases, failures) = canonical_cases(&scratch.0, &tools);
+            assert_eq!(
+                failures.len(),
+                if count == 3 { 1 } else { 0 },
+                "unexpected original-row reader failure at state {count}"
+            );
+            if count == 3 {
+                assert_eq!(
+                    failures[0].record_id.as_deref(),
+                    Some("devbig014-1787001578-449161")
+                );
+                assert_eq!(
+                    failures[0].commit.as_deref(),
+                    Some("87f2f558301956985d6c874f527cae99e3ab05a9")
+                );
+                assert!(failures[0]
+                    .error
+                    .starts_with("invalid type: null, expected a sequence"));
+            }
+            let expected_rows = state["rows"].as_array().unwrap();
+            assert_eq!(
+                cases.len(),
+                expected_rows.len(),
+                "state after {count} events"
+            );
+            let python = differential::python_answers(&cases);
+            for ((case, recorded), theirs) in cases.iter().zip(expected_rows).zip(&python) {
+                assert_eq!(
+                    case.sha, recorded["commit"],
+                    "retained head identity changed"
+                );
+                let ours = differential::rust_answer(case);
+                if let Some(known) = recorded.get("known_reader_disagreement") {
+                    // This exception is selected by the fixed provenance-bound
+                    // history state, never by an observed acceptance/refusal.
+                    assert_eq!(count, 3);
+                    assert_eq!(
+                        format!("{:x}", Sha256::digest(events[2].as_bytes())),
+                        known["raw_event_sha256"]
+                    );
+                    assert_eq!(
+                        serde_json::from_str::<serde_json::Value>(events[2]).unwrap()["event_id"],
+                        known["event_id"]
+                    );
+                    let difference = differential::compare(&case.id, &ours, theirs).unwrap_err();
+                    known_reader_disagreement(case, known, &ours, theirs).unwrap();
+                    for wrong in [
+                        Answer::Accepted,
+                        Answer::ReaderFault {
+                            cause: "unrelated reader error".into(),
+                        },
+                    ] {
+                        assert!(known_reader_disagreement(case, known, &wrong, theirs).is_err());
+                    }
+                    let wrong_cause = Answer::Refused {
+                        cause: "profile='different'".into(),
+                    };
+                    assert!(known_reader_disagreement(case, known, &ours, &wrong_cause).is_err());
+                    eprintln!(
+                        "KNOWN RETAINED READER DISAGREEMENT (not parity success): {difference}"
+                    );
+                    known_disagreements += 1;
+                } else {
+                    let expected_answer: Answer =
+                        serde_json::from_value(recorded["answer"].clone()).unwrap();
+                    differential::compare_expected(&case.id, &expected_answer, &ours, theirs)
+                        .unwrap();
+                    compared += 1;
+                }
+                if count == 5 && recorded["answer"]["kind"] == "refused" {
+                    let mismatch =
+                        differential::compare_expected(&case.id, &Answer::Accepted, &ours, theirs)
+                            .unwrap_err();
+                    assert!(
+                        mismatch.contains(&case.id)
+                            && mismatch.contains("recorded expectation Accepted")
+                            && mismatch.contains("Rust Refused")
+                            && mismatch.contains("Python Refused")
+                    );
+                }
+            }
+            if count == 3 || count == 4 {
+                // The real correction replaces its original record, not a new
+                // unrelated row; null -> [] is its actual failure-binding fix.
+                let row: serde_json::Value = serde_json::from_str(&cases[2].row).unwrap();
+                assert_eq!(row["record_id"], "devbig014-1787001578-449161");
+                assert_eq!(
+                    row["gates"][2]["failed_substeps"],
+                    if count == 3 {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::json!([])
+                    }
+                );
+            }
+            if count == 5 {
+                assert!(
+                    matches!(python.last(), Some(Answer::Accepted)),
+                    "real complete pass must qualify"
+                );
+                assert_eq!(cases[3].sha, "f2be3d81c9cb609443bd34c4611683e2bfccf728");
+                let row: HistoryRow = serde_json::from_str(&cases[1].row).unwrap();
+                let reasons = match validate_status::failure_disposition(&row, &cases[1].sha) {
+                    validate_status::FailureDisposition::NoResult(reasons) => reasons,
+                    other => panic!("real no-result history lost its state: {other:?}"),
+                };
+                let record = validate_status::RowNoResultReasons::from_row(&row, reasons);
+                let text = format!(
+                    "{}\n{}",
+                    exact_no_result_verdict_summary(&cases[1].sha),
+                    exact_no_result_record_summary(&record)
+                );
+                assert!(
+                    text.contains("NO-RESULT")
+                        && text.contains(&cases[1].sha)
+                        && text.contains("result=no_result")
+                        && text.contains("re-dispatch required")
+                );
+                // This historical receipt did not record these IDs. Preserve
+                // that absence; its envelope identifier stays in provenance.
+                assert!(row.extra.get("record_id").is_none() && row.run_id.is_none());
+                assert!(!text.contains("run_id=") && !text.contains("record_id="));
+                eprintln!("real retained no-result output (event legacy-000347-000; no fabricated receipt IDs):\n{text}");
+            }
+            eprintln!(
+                "retained canonical state: {count} events -> {} row outcomes examined",
+                cases.len()
+            );
+        }
+        assert_eq!(compared, 12);
+        assert_eq!(known_disagreements, 1);
+        eprintln!("13 retained row observations: 12 matching verdict/cause pairs; one exact historical reader disagreement detected and asserted, repaired by its recorded correction");
+    }
+
+    #[test]
+    fn retained_correction_without_its_target_refuses_at_real_ingestion() {
+        let events: Vec<&str> = EVENTS.split_inclusive('\n').collect();
+        assert_eq!(events.len(), 5);
+        let scratch = Scratch::new();
+        shard(&scratch.0, events[3]);
+        let refusal = load_validation_ledger_reporting_with_tool(
+            &scratch.0.join("ledger"),
+            &differential::source_root(),
+        )
+        .err()
+        .expect("an orphan correction cannot be treated as a receipt")
+        .to_string();
+        assert!(
+            refusal.contains("unresolvable-reference")
+                && refusal.contains("devbig014-1787796150-correction-01"),
+            "wrong refusal: {refusal}"
+        );
+    }
+}

@@ -1,0 +1,130 @@
+{
+  "contract": "Canonical event prefixes, including a real replacement correction. Expected qualifying pass has complete recorded inline schema7 evidence; legacy failure/no-result and targeted requalification remain refused for their first applicable cause. No blanket interpretation of raw result=pass as canonical authority.",
+  "states": [
+    {
+      "event_count": 0,
+      "rows": []
+    },
+    {
+      "event_count": 1,
+      "rows": [
+        {
+          "commit": "a4d20fa841019bba10368503d26f884d6f945a34",
+          "answer": {
+            "kind": "refused",
+            "cause": "result"
+          }
+        }
+      ]
+    },
+    {
+      "event_count": 2,
+      "rows": [
+        {
+          "commit": "a4d20fa841019bba10368503d26f884d6f945a34",
+          "answer": {
+            "kind": "refused",
+            "cause": "result"
+          }
+        },
+        {
+          "commit": "781a5f752f04ac4ed9107716b5c4ea2dc72f0441",
+          "answer": {
+            "kind": "refused",
+            "cause": "result"
+          }
+        }
+      ]
+    },
+    {
+      "event_count": 3,
+      "rows": [
+        {
+          "commit": "a4d20fa841019bba10368503d26f884d6f945a34",
+          "answer": {
+            "kind": "refused",
+            "cause": "result"
+          }
+        },
+        {
+          "commit": "781a5f752f04ac4ed9107716b5c4ea2dc72f0441",
+          "answer": {
+            "kind": "refused",
+            "cause": "result"
+          }
+        },
+        {
+          "commit": "87f2f558301956985d6c874f527cae99e3ab05a9",
+          "known_reader_disagreement": {
+            "event_id": "devbig014-1787001578-449161",
+            "raw_event_sha256": "ee82f70ae501b0d439dc4700c481023dce61cd83c062a0135b0abed325f8a171",
+            "record_id": "devbig014-1787001578-449161",
+            "commit": "87f2f558301956985d6c874f527cae99e3ab05a9",
+            "rust_error_prefix": "HistoryRow: invalid type: null, expected a sequence at line 1 column ",
+            "python_cause": "profile='cell-requalification'",
+            "repair_event": "devbig014-1787796150-correction-01",
+            "meaning": "Original malformed gates[].failed_substeps=null is a Rust reader fault while untyped Python refuses the earlier profile condition. This is counted as a named disagreement, never parity success. The real correction repairs the raw gate shape."
+          }
+        }
+      ]
+    },
+    {
+      "event_count": 4,
+      "rows": [
+        {
+          "commit": "a4d20fa841019bba10368503d26f884d6f945a34",
+          "answer": {
+            "kind": "refused",
+            "cause": "result"
+          }
+        },
+        {
+          "commit": "781a5f752f04ac4ed9107716b5c4ea2dc72f0441",
+          "answer": {
+            "kind": "refused",
+            "cause": "result"
+          }
+        },
+        {
+          "commit": "87f2f558301956985d6c874f527cae99e3ab05a9",
+          "answer": {
+            "kind": "refused",
+            "cause": "profile"
+          }
+        }
+      ]
+    },
+    {
+      "event_count": 5,
+      "rows": [
+        {
+          "commit": "a4d20fa841019bba10368503d26f884d6f945a34",
+          "answer": {
+            "kind": "refused",
+            "cause": "result"
+          }
+        },
+        {
+          "commit": "781a5f752f04ac4ed9107716b5c4ea2dc72f0441",
+          "answer": {
+            "kind": "refused",
+            "cause": "result"
+          }
+        },
+        {
+          "commit": "87f2f558301956985d6c874f527cae99e3ab05a9",
+          "answer": {
+            "kind": "refused",
+            "cause": "profile"
+          }
+        },
+        {
+          "commit": "f2be3d81c9cb609443bd34c4611683e2bfccf728",
+          "answer": {
+            "kind": "accepted"
+          }
+        }
+      ]
+    }
+  ]
+}
