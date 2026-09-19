@@ -11,6 +11,34 @@ const INSTRUCTION_CONTROL_UNAVAILABLE_STATUS: i32 = 77;
 const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
 
 #[test]
+fn getrandom_vdso_query_prefix_survives_the_installed_callback() {
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("coordinator.sock");
+    let mut coordinator = Command::new(binary)
+        .arg("coordinator")
+        .arg(&socket)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let ready = socket.exists();
+    let mut command = Command::new(binary);
+    command.arg("getrandom-vdso-guest").arg(&socket);
+    let output = ready.then(|| output_with_timeout(command, Duration::from_secs(20)));
+    let _ = coordinator.kill();
+    let _ = coordinator.wait();
+    let output = output.expect("coordinator socket was not created");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(output.stdout, b"getrandom-vdso: state=kernel-allocated prehook=3 query=ENOSYS canaries=unchanged callbacks=16/1,0/4294967295 hook-offset=48\n");
+}
+
+#[test]
 fn fallback_uses_owned_frames_after_guest_stack_revocation() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
     for on_alt_stack in [true, false] {
