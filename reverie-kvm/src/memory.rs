@@ -101,13 +101,149 @@ struct Mapping {
     mapping: NonNull<u8>,
     slice: BackingSlice,
     guest_base: u64,
-    user_access: Mutex<UserAccess>,
+    address_space: Mutex<AddressSpaceState>,
+    allocation: Mutex<()>,
 }
 
-#[derive(Clone, Debug, Default)]
-struct UserAccess {
+#[derive(Clone, Debug)]
+struct AddressSpaceState {
+    coverage: IdentityCoverage,
+    cursors: Option<AllocationCursors>,
+    reservations: BTreeMap<u64, RegionKind>,
     enabled: bool,
     pages: BTreeMap<u64, UserPageState>,
+}
+
+/// Compatibility placement for the current fixed physical arena. Coverage is
+/// independent of reservations and user-copy permissions: a covered hole is
+/// still RAM, and reserving it does not make it accessible to user copies.
+#[derive(Clone, Debug)]
+struct IdentityCoverage {
+    start: u64,
+    end: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AllocationCursors {
+    pub(crate) program_break: u64,
+    pub(crate) mmap_base: u64,
+    pub(crate) mmap_next: u64,
+    pub(crate) mmap_limit: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RegionKind {
+    Bootstrap,
+    Elf,
+    ProgramHeaders,
+    Stack,
+    Heap,
+    Mmap,
+    ToolScratch,
+    // The existing public policy helpers also serve native memory controls.
+    User,
+}
+
+impl RegionKind {
+    fn permanent(self) -> bool {
+        matches!(
+            self,
+            Self::Bootstrap | Self::ProgramHeaders | Self::ToolScratch
+        )
+    }
+}
+
+impl AddressSpaceState {
+    fn new(start: u64, length: usize) -> Self {
+        Self {
+            coverage: IdentityCoverage {
+                start,
+                end: start + length as u64,
+            },
+            cursors: None,
+            reservations: BTreeMap::new(),
+            enabled: false,
+            pages: BTreeMap::new(),
+        }
+    }
+
+    fn translate(&self, address: u64, length: usize) -> Result<u64> {
+        let offset = address.checked_sub(self.coverage.start);
+        let end = offset.and_then(|offset| offset.checked_add(length as u64));
+        if end.is_none_or(|end| end > self.coverage.end - self.coverage.start) {
+            return Err(Error::InvalidGuestAddress {
+                address,
+                length,
+                guest_base: self.coverage.start,
+                guest_end: self.coverage.end,
+            });
+        }
+        // This is deliberately the only production placement in this step.
+        // No page-table, memslot or backing mutation accompanies translation.
+        Ok(self.coverage.start + offset.unwrap())
+    }
+}
+
+/// An explicit user-virtual view of a retained physical mapping. Its owner is
+/// the same address-space state used by ELF allocation and permission updates.
+#[derive(Clone, Debug)]
+pub(crate) struct UserMemory {
+    memory: GuestMemory,
+}
+
+/// A contiguous kernel operand retains its mmap and backing until the host
+/// operation returns. No permission/mutation lock is held across a blocking
+/// syscall. This is sound only for the current immutable identity coverage;
+/// live remapping and noncontiguous operands require a later adapter protocol.
+#[derive(Debug)]
+pub(crate) struct HostMemoryOperand {
+    _memory: GuestMemory,
+    address: usize,
+}
+
+impl HostMemoryOperand {
+    pub(crate) fn address(&self) -> usize {
+        self.address
+    }
+}
+
+/// An allocation owns its proposed physical pages before initialization. A
+/// failed initialization restores ownership metadata, without pretending to
+/// undo any bytes that the historical operation already modified.
+pub(crate) struct PendingReservation {
+    memory: GuestMemory,
+    old: Vec<(u64, Option<RegionKind>)>,
+    committed: bool,
+}
+
+impl PendingReservation {
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PendingReservation {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let mut state = self
+            .memory
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        for (page, old) in &self.old {
+            match old {
+                Some(kind) => {
+                    state.reservations.insert(*page, *kind);
+                }
+                None => {
+                    state.reservations.remove(page);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,12 +304,14 @@ impl GuestMemory {
             return Err(Error::MemoryMapping(std::io::Error::last_os_error()));
         }
 
+        let size = slice.length;
         Ok(Self {
             mapping: Arc::new(Mapping {
                 mapping: NonNull::new(mapping.cast()).expect("mmap returned a null mapping"),
                 slice,
                 guest_base,
-                user_access: Mutex::new(UserAccess::default()),
+                address_space: Mutex::new(AddressSpaceState::new(guest_base, size)),
+                allocation: Mutex::new(()),
             }),
         })
     }
@@ -188,10 +326,11 @@ impl GuestMemory {
     ) -> Result<Self> {
         const COPY_CHUNK: usize = 1024 * 1024;
 
+        let _allocation = self.allocation_guard();
         let snapshot = Self::new(self.guest_base(), self.len())?;
         let user_access = self
             .mapping
-            .user_access
+            .address_space
             .lock()
             .expect("guest memory access map lock poisoned")
             .clone();
@@ -242,10 +381,131 @@ impl GuestMemory {
         }
         *snapshot
             .mapping
-            .user_access
+            .address_space
             .lock()
             .expect("guest memory access map lock poisoned") = user_access;
         Ok(snapshot)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reservation_kind(&self, address: u64) -> Option<RegionKind> {
+        self.mapping
+            .address_space
+            .lock()
+            .unwrap()
+            .reservations
+            .get(&(address / PAGE_SIZE as u64))
+            .copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reserved_pages(&self) -> usize {
+        self.mapping
+            .address_space
+            .lock()
+            .unwrap()
+            .reservations
+            .len()
+    }
+
+    pub(crate) fn user(&self) -> UserMemory {
+        UserMemory {
+            memory: self.clone(),
+        }
+    }
+
+    pub(crate) fn allocation_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.mapping
+            .allocation
+            .lock()
+            .expect("KVM allocation transaction lock poisoned")
+    }
+
+    pub(crate) fn allocation_cursors(&self) -> Option<AllocationCursors> {
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .cursors
+    }
+
+    pub(crate) fn set_allocation_cursors(&self, cursors: AllocationCursors) {
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .cursors = Some(cursors);
+    }
+
+    pub(crate) fn reserve_region(
+        &self,
+        address: u64,
+        length: u64,
+        kind: RegionKind,
+    ) -> Result<PendingReservation> {
+        self.reserve_region_inner(address, length, kind, false)
+    }
+
+    /// mremap historically admits a mapped PHDR range below BOOT_RESERVED_END.
+    /// Preserve that guest policy without transferring or releasing ownership
+    /// of the underlying supervisor frame. No new low mapping is admitted.
+    pub(crate) fn reserve_remap_region(
+        &self,
+        address: u64,
+        length: u64,
+    ) -> Result<PendingReservation> {
+        self.reserve_region_inner(address, length, RegionKind::Mmap, true)
+    }
+
+    fn reserve_region_inner(
+        &self,
+        address: u64,
+        length: u64,
+        kind: RegionKind,
+        preserve_supervisor: bool,
+    ) -> Result<PendingReservation> {
+        let range = self.checked_page_range(address, length)?;
+        let mut state = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        let mut old = Vec::new();
+        if let Some((first, last)) = range {
+            // User replacements remain admitted, including overlapping PT_LOAD
+            // pages and MAP_FIXED. Supervisor replacement is only explicit PHDR
+            // or Tool-scratch exposure, never an ordinary allocation.
+            if !preserve_supervisor
+                && !kind.permanent()
+                && (first..=last).any(|page| {
+                    state
+                        .reservations
+                        .get(&page)
+                        .is_some_and(|kind| kind.permanent())
+                })
+            {
+                return Err(Error::GuestMemoryAccessDenied {
+                    address,
+                    length: length as usize,
+                });
+            }
+            for page in first..=last {
+                if preserve_supervisor
+                    && state
+                        .reservations
+                        .get(&page)
+                        .is_some_and(|kind| kind.permanent())
+                {
+                    continue;
+                }
+                old.push((page, state.reservations.insert(page, kind)));
+            }
+        }
+        Ok(PendingReservation {
+            memory: self.clone(),
+            old,
+            committed: false,
+        })
     }
 
     /// Returns the first guest-physical address in the mapping.
@@ -272,17 +532,19 @@ impl GuestMemory {
     pub(crate) fn clear_user_access(&self) {
         let mut access = self
             .mapping
-            .user_access
+            .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
         access.enabled = false;
         access.pages.clear();
+        access.reservations.clear();
+        access.cursors = None;
     }
 
     // TODO-HUMAN-REVIEW(PR-132): Review the host-side KVM user mapping API.
     pub(crate) fn enable_user_access(&self) {
         self.mapping
-            .user_access
+            .address_space
             .lock()
             .expect("guest memory access map lock poisoned")
             .enabled = true;
@@ -315,11 +577,12 @@ impl GuestMemory {
         };
         let mut access = self
             .mapping
-            .user_access
+            .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
         for page in first_page..=last_page {
             access.pages.insert(page, state);
+            access.reservations.entry(page).or_insert(RegionKind::User);
         }
         Ok(())
     }
@@ -331,11 +594,18 @@ impl GuestMemory {
         };
         let mut access = self
             .mapping
-            .user_access
+            .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
         for page in first_page..=last_page {
             access.pages.remove(&page);
+            if !access
+                .reservations
+                .get(&page)
+                .is_some_and(|kind| kind.permanent())
+            {
+                access.reservations.remove(&page);
+            }
         }
         Ok(())
     }
@@ -348,7 +618,7 @@ impl GuestMemory {
         };
         let access = self
             .mapping
-            .user_access
+            .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
         (first_page..=last_page).all(|page| access.pages.contains_key(&page))
@@ -383,7 +653,7 @@ impl GuestMemory {
 
         let access = self
             .mapping
-            .user_access
+            .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
         for (&occupied, _) in access.pages.range(candidate..end_page) {
@@ -414,7 +684,7 @@ impl GuestMemory {
         };
         let mut access = self
             .mapping
-            .user_access
+            .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
         let old_states = (old_first..=old_last)
@@ -426,6 +696,15 @@ impl GuestMemory {
                 length: usize::try_from(old_length).unwrap_or(usize::MAX),
             });
         }
+        let old_kinds = (old_first..=old_last)
+            .map(|page| {
+                access
+                    .reservations
+                    .get(&page)
+                    .copied()
+                    .unwrap_or(RegionKind::User)
+            })
+            .collect::<Vec<_>>();
         let extension_state = old_states
             .last()
             .copied()
@@ -433,6 +712,13 @@ impl GuestMemory {
             .expect("nonempty mapped range has a last page");
         for page in old_first..=old_last {
             access.pages.remove(&page);
+            if !access
+                .reservations
+                .get(&page)
+                .is_some_and(|kind| kind.permanent())
+            {
+                access.reservations.remove(&page);
+            }
         }
         for (index, page) in (new_first..=new_last).enumerate() {
             let state = old_states
@@ -441,6 +727,26 @@ impl GuestMemory {
                 .flatten()
                 .unwrap_or(extension_state);
             access.pages.insert(page, state);
+            if !access
+                .reservations
+                .get(&page)
+                .is_some_and(|kind| kind.permanent())
+            {
+                let kind = old_kinds
+                    .get(index)
+                    .copied()
+                    .unwrap_or(*old_kinds.last().unwrap());
+                // A low exposed supervisor page may supply the original user
+                // policy; its physical reservation does not move with bytes.
+                access.reservations.insert(
+                    page,
+                    if kind.permanent() {
+                        RegionKind::Mmap
+                    } else {
+                        kind
+                    },
+                );
+            }
         }
         Ok(())
     }
@@ -493,65 +799,22 @@ impl GuestMemory {
         self.write_raw(guest_address, source)
     }
 
+    #[cfg(test)]
     pub(crate) fn copy_to_user(&self, guest_address: u64, source: &[u8]) -> Result<()> {
-        self.write_user(guest_address, source, true)
+        self.user().copy_to_user(guest_address, source)
     }
 
+    #[cfg(test)]
     pub(crate) fn put_user_i32(&self, guest_address: u64, value: i32) -> Result<()> {
-        self.write_user(guest_address, &value.to_ne_bytes(), false)
+        self.user().put_user_i32(guest_address, value)
     }
 
     /// Copies and returns the writable prefix while retaining the permission
     /// lock through the copy. Callers that consume a stream must advance only
     /// by this actual count, including a partial fault.
+    #[cfg(test)]
     pub(crate) fn copy_to_user_prefix(&self, guest_address: u64, source: &[u8]) -> Result<usize> {
-        self.write_user_prefix(guest_address, source, true)
-    }
-
-    fn write_user(&self, guest_address: u64, source: &[u8], partial: bool) -> Result<()> {
-        if self.write_user_prefix(guest_address, source, partial)? != source.len() {
-            return Err(Error::GuestMemoryAccessDenied {
-                address: guest_address,
-                length: source.len(),
-            });
-        }
-        Ok(())
-    }
-
-    fn write_user_prefix(&self, guest_address: u64, source: &[u8], partial: bool) -> Result<usize> {
-        if source.is_empty() {
-            return Ok(0);
-        }
-        self.checked_offset(guest_address, 1)?;
-        let requested_end = guest_address.checked_add(source.len() as u64).ok_or(
-            Error::GuestMemoryAccessDenied {
-                address: guest_address,
-                length: source.len(),
-            },
-        )?;
-        let end = requested_end.min(self.guest_end());
-        let access = self
-            .mapping
-            .user_access
-            .lock()
-            .expect("guest memory access map lock poisoned");
-        let mut cursor = guest_address;
-        while cursor < end {
-            if access.enabled
-                && !matches!(
-                    access.pages.get(&(cursor / PAGE_SIZE as u64)),
-                    Some(UserPageState::Accessible { writable: true })
-                )
-            {
-                break;
-            }
-            cursor = ((cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64).min(end);
-        }
-        let length = usize::try_from(cursor - guest_address).expect("copyout prefix fits usize");
-        if length == source.len() || (partial && length != 0) {
-            self.write_raw(guest_address, &source[..length])?;
-        }
-        Ok(length)
+        self.user().copy_to_user_prefix(guest_address, source)
     }
 
     // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
@@ -695,6 +958,170 @@ impl GuestMemory {
         guest_address: u64,
         length: usize,
     ) -> Result<usize> {
+        self.user().user_accessible_prefix(guest_address, length)
+    }
+
+    /// Returns the writable prefix of a guest userspace range.
+    #[cfg(test)]
+    pub(crate) fn user_writable_prefix(&self, guest_address: u64, length: usize) -> Result<usize> {
+        self.user().user_writable_prefix(guest_address, length)
+    }
+}
+
+impl UserMemory {
+    fn guest_base(&self) -> u64 {
+        self.memory.guest_base()
+    }
+    fn guest_end(&self) -> u64 {
+        self.memory.guest_end()
+    }
+
+    fn translate(&self, address: u64, length: usize) -> Result<u64> {
+        self.memory
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .translate(address, length)
+    }
+
+    fn read_translated_raw(&self, address: u64, destination: &mut [u8]) -> Result<()> {
+        let physical = self.translate(address, destination.len())?;
+        self.memory.read_raw(physical, destination)
+    }
+
+    fn write_translated_raw(&self, address: u64, source: &[u8]) -> Result<()> {
+        let physical = self.translate(address, source.len())?;
+        self.memory.write_raw(physical, source)
+    }
+
+    /// Tool scratch is initialized before it is temporarily exposed to the
+    /// injected syscall. Preserve that existing privileged staging operation.
+    pub(crate) fn write_injection(&self, address: u64, source: &[u8]) -> Result<()> {
+        self.write_translated_raw(address, source)
+    }
+
+    pub(crate) fn host_operand(&self, address: u64, length: usize) -> Result<HostMemoryOperand> {
+        // Preserve the existing Accessible probe, including its actual read;
+        // PI/requeue operands do not gain a new permission policy here.
+        let mut probe = vec![0; length];
+        self.read(address, &mut probe)?;
+        self.retain_translated_range(address, length)
+    }
+
+    /// Retain a range already admitted by the caller's exact copy/check. This
+    /// adds no second permission observation before a best-effort clear-TID wake.
+    pub(crate) fn retain_translated_range(
+        &self,
+        address: u64,
+        length: usize,
+    ) -> Result<HostMemoryOperand> {
+        let physical = self.translate(address, length)?;
+        let offset = self.memory.checked_offset(physical, length)?;
+        Ok(HostMemoryOperand {
+            _memory: self.memory.clone(),
+            address: (self.memory.host_address() as usize) + offset,
+        })
+    }
+    pub fn read(&self, guest_address: u64, destination: &mut [u8]) -> Result<()> {
+        self.translate(guest_address, destination.len())?;
+        if self.user_accessible_prefix(guest_address, destination.len())? != destination.len() {
+            return Err(Error::GuestMemoryAccessDenied {
+                address: guest_address,
+                length: destination.len(),
+            });
+        }
+        self.read_translated_raw(guest_address, destination)
+    }
+
+    pub fn write(&mut self, guest_address: u64, source: &[u8]) -> Result<()> {
+        self.translate(guest_address, source.len())?;
+        if self.user_accessible_prefix(guest_address, source.len())? != source.len() {
+            return Err(Error::GuestMemoryAccessDenied {
+                address: guest_address,
+                length: source.len(),
+            });
+        }
+        self.write_translated_raw(guest_address, source)
+    }
+
+    pub(crate) fn copy_to_user(&self, guest_address: u64, source: &[u8]) -> Result<()> {
+        self.write_user(guest_address, source, true)
+    }
+
+    pub(crate) fn put_user_i32(&self, guest_address: u64, value: i32) -> Result<()> {
+        self.write_user(guest_address, &value.to_ne_bytes(), false)
+    }
+
+    pub(crate) fn copy_to_user_prefix(&self, guest_address: u64, source: &[u8]) -> Result<usize> {
+        self.write_user_prefix(guest_address, source, true)
+    }
+
+    fn write_user(&self, guest_address: u64, source: &[u8], partial: bool) -> Result<()> {
+        if self.write_user_prefix(guest_address, source, partial)? != source.len() {
+            return Err(Error::GuestMemoryAccessDenied {
+                address: guest_address,
+                length: source.len(),
+            });
+        }
+        Ok(())
+    }
+
+    fn write_user_prefix(&self, guest_address: u64, source: &[u8], partial: bool) -> Result<usize> {
+        if source.is_empty() {
+            return Ok(0);
+        }
+        self.translate(guest_address, 1)?;
+        let requested_end = guest_address.checked_add(source.len() as u64).ok_or(
+            Error::GuestMemoryAccessDenied {
+                address: guest_address,
+                length: source.len(),
+            },
+        )?;
+        let end = requested_end.min(self.guest_end());
+        let access = self
+            .memory
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        let mut cursor = guest_address;
+        while cursor < end {
+            if access.enabled
+                && !matches!(
+                    access.pages.get(&(cursor / PAGE_SIZE as u64)),
+                    Some(UserPageState::Accessible { writable: true })
+                )
+            {
+                break;
+            }
+            cursor = ((cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64).min(end);
+        }
+        let length = usize::try_from(cursor - guest_address).expect("copyout prefix fits usize");
+        if length == source.len() || (partial && length != 0) {
+            let physical = access.translate(guest_address, length)?;
+            self.memory.write_raw(physical, &source[..length])?;
+        }
+        Ok(length)
+    }
+
+    pub fn zero(&mut self, guest_address: u64, length: usize) -> Result<()> {
+        self.translate(guest_address, length)?;
+        if self.user_accessible_prefix(guest_address, length)? != length {
+            return Err(Error::GuestMemoryAccessDenied {
+                address: guest_address,
+                length,
+            });
+        }
+        self.memory
+            .zero_raw(self.translate(guest_address, length)?, length)
+    }
+
+    pub(crate) fn user_accessible_prefix(
+        &self,
+        guest_address: u64,
+        length: usize,
+    ) -> Result<usize> {
         if length == 0 {
             return Ok(0);
         }
@@ -709,8 +1136,9 @@ impl GuestMemory {
         let requested_end = guest_address.saturating_add(length as u64);
         let end = requested_end.min(self.guest_end());
         let access = self
+            .memory
             .mapping
-            .user_access
+            .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
         if !access.enabled {
@@ -733,7 +1161,6 @@ impl GuestMemory {
         Ok(usize::try_from(cursor - guest_address).expect("guest memory prefix must fit usize"))
     }
 
-    /// Returns the writable prefix of a guest userspace range.
     pub(crate) fn user_writable_prefix(&self, guest_address: u64, length: usize) -> Result<usize> {
         if length == 0 {
             return Ok(0);
@@ -750,8 +1177,9 @@ impl GuestMemory {
             .saturating_add(length as u64)
             .min(self.guest_end());
         let access = self
+            .memory
             .mapping
-            .user_access
+            .address_space
             .lock()
             .expect("guest memory access map lock poisoned");
         if !access.enabled {
@@ -771,6 +1199,119 @@ impl GuestMemory {
             cursor = next_page.min(end);
         }
         Ok(usize::try_from(cursor - guest_address).expect("guest memory prefix must fit usize"))
+    }
+}
+
+impl MemoryAccess for GuestMemory {
+    fn read_vectored(
+        &self,
+        read_from: &[std::io::IoSlice],
+        write_to: &mut [std::io::IoSliceMut],
+    ) -> std::result::Result<usize, Errno> {
+        let mut source_index = 0;
+        let mut source_offset = 0;
+        let mut destination_index = 0;
+        let mut destination_offset = 0;
+        let mut total = 0;
+
+        while source_index < read_from.len() && destination_index < write_to.len() {
+            if source_offset == read_from[source_index].len() {
+                source_index += 1;
+                source_offset = 0;
+                continue;
+            }
+            if destination_offset == write_to[destination_index].len() {
+                destination_index += 1;
+                destination_offset = 0;
+                continue;
+            }
+
+            let requested = (read_from[source_index].len() - source_offset)
+                .min(write_to[destination_index].len() - destination_offset);
+            let address = read_from[source_index].as_ptr() as u64 + source_offset as u64;
+            let count = self
+                .user_accessible_prefix(address, requested)
+                .unwrap_or_default();
+            if count == 0 {
+                return if total == 0 {
+                    Err(Errno::EFAULT)
+                } else {
+                    Ok(total)
+                };
+            }
+            let destination =
+                &mut write_to[destination_index][destination_offset..destination_offset + count];
+            if self.read_raw(address, destination).is_err() {
+                return if total == 0 {
+                    Err(Errno::EFAULT)
+                } else {
+                    Ok(total)
+                };
+            }
+            source_offset += count;
+            destination_offset += count;
+            total += count;
+            if count < requested {
+                return Ok(total);
+            }
+        }
+        Ok(total)
+    }
+
+    fn write_vectored(
+        &mut self,
+        read_from: &[std::io::IoSlice],
+        write_to: &mut [std::io::IoSliceMut],
+    ) -> std::result::Result<usize, Errno> {
+        let mut source_index = 0;
+        let mut source_offset = 0;
+        let mut destination_index = 0;
+        let mut destination_offset = 0;
+        let mut total = 0;
+
+        while source_index < read_from.len() && destination_index < write_to.len() {
+            if source_offset == read_from[source_index].len() {
+                source_index += 1;
+                source_offset = 0;
+                continue;
+            }
+            if destination_offset == write_to[destination_index].len() {
+                destination_index += 1;
+                destination_offset = 0;
+                continue;
+            }
+
+            let count = (read_from[source_index].len() - source_offset)
+                .min(write_to[destination_index].len() - destination_offset);
+            let address =
+                write_to[destination_index].as_mut_ptr() as u64 + destination_offset as u64;
+            let requested = count;
+            let count = self
+                .user_accessible_prefix(address, requested)
+                .unwrap_or_default();
+            if count == 0 {
+                return if total == 0 {
+                    Err(Errno::EFAULT)
+                } else {
+                    Ok(total)
+                };
+            }
+            let source = &read_from[source_index][source_offset..source_offset + count];
+            if self.write_raw(address, source).is_err() {
+                return if total == 0 {
+                    Err(Errno::EFAULT)
+                } else {
+                    Ok(total)
+                };
+            }
+            source_offset += count;
+            destination_offset += count;
+            total += count;
+            if count < requested {
+                return Ok(total);
+            }
+        }
+        Ok(total)
     }
 }
 
@@ -887,7 +1428,7 @@ impl Drop for Mapping {
 }
 
 // TODO-HUMAN-REVIEW(PR-132): Review KVM partial user-copy semantics.
-impl MemoryAccess for GuestMemory {
+impl MemoryAccess for UserMemory {
     fn read_vectored(
         &self,
         read_from: &[std::io::IoSlice],
@@ -926,7 +1467,7 @@ impl MemoryAccess for GuestMemory {
             }
             let destination =
                 &mut write_to[destination_index][destination_offset..destination_offset + count];
-            if self.read_raw(address, destination).is_err() {
+            if self.read_translated_raw(address, destination).is_err() {
                 return if total == 0 {
                     Err(Errno::EFAULT)
                 } else {
@@ -982,7 +1523,7 @@ impl MemoryAccess for GuestMemory {
                 };
             }
             let source = &read_from[source_index][source_offset..source_offset + count];
-            if self.write_raw(address, source).is_err() {
+            if self.write_translated_raw(address, source).is_err() {
                 return if total == 0 {
                     Err(Errno::EFAULT)
                 } else {
@@ -1005,6 +1546,175 @@ mod tests {
     use reverie::syscalls::AddrMut;
 
     use super::*;
+
+    #[test]
+    fn identity_view_preserves_tool_writes_copyout_faults_and_partial_reads() {
+        use reverie::syscalls::Addr;
+        let memory = GuestMemory::new(0x1_0000, 3 * PAGE_SIZE).unwrap();
+        memory
+            .map_user_permissions(0x1_0000, PAGE_SIZE as u64, true, false)
+            .unwrap();
+        memory
+            .map_user_range(0x1_1000, PAGE_SIZE as u64, false)
+            .unwrap();
+        memory.enable_user_access();
+        let mut user = memory.user();
+        user.write(0x1_0000, b"tool").unwrap();
+        assert!(user.copy_to_user(0x1_0000, b"bad!").is_err());
+        let mut bytes = [0; 4];
+        memory.read_raw(0x1_0000, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"tool");
+        assert!(user.copy_to_user(0x1_1ffe, b"abcd").is_err());
+        memory.read_raw(0x1_1ffe, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"ab\0\0");
+        assert_eq!(user.copy_to_user_prefix(0x1_1ffe, b"wxyz").unwrap(), 2);
+        assert!(user.put_user_i32(0x1_1ffe, 0x01020304).is_err());
+        memory.read_raw(0x1_1ffe, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"wx\0\0");
+        let mut output = [0; 4];
+        assert_eq!(
+            MemoryAccess::read(&user, Addr::from_raw(0x1_1ffe).unwrap(), &mut output).unwrap(),
+            2
+        );
+        assert_eq!(&output, b"wx\0\0");
+        assert!(user.read(0x1_2000, &mut [0]).is_err());
+        assert!(user.read(u64::MAX, &mut [0; 2]).is_err());
+        assert!(user.read(0x1_3000, &mut []).is_ok());
+        assert!(user.read(u64::MAX, &mut []).is_err());
+        assert_eq!(user.copy_to_user_prefix(u64::MAX, &[]).unwrap(), 0);
+        // Reservation classes must not turn a physically covered hole into
+        // accessible userspace, and physical compatibility remains unchanged.
+        memory.write_raw(0x1_2000, b"physical").unwrap();
+        assert!(memory.read(0x1_2000, &mut [0]).is_err());
+    }
+
+    #[test]
+    fn identity_reservations_validate_transactionally_and_keep_coverage_distinct() {
+        let memory = GuestMemory::new(0, 4 * PAGE_SIZE).unwrap();
+        memory
+            .reserve_region(0, PAGE_SIZE as u64, RegionKind::Bootstrap)
+            .unwrap()
+            .commit();
+        assert!(
+            memory
+                .reserve_region(0, PAGE_SIZE as u64, RegionKind::Heap)
+                .is_err()
+        );
+        assert!(
+            memory
+                .reserve_region(u64::MAX - 1, 4, RegionKind::Mmap)
+                .is_err()
+        );
+        assert!(
+            memory
+                .reserve_region(4 * PAGE_SIZE as u64, PAGE_SIZE as u64, RegionKind::Mmap)
+                .is_err()
+        );
+        assert_eq!(memory.reserved_pages(), 1);
+        {
+            let _proposed = memory
+                .reserve_region(PAGE_SIZE as u64, 2 * PAGE_SIZE as u64, RegionKind::Mmap)
+                .unwrap();
+            assert_eq!(memory.reserved_pages(), 3);
+        }
+        assert_eq!(memory.reserved_pages(), 1);
+        memory
+            .reserve_region(PAGE_SIZE as u64, 2 * PAGE_SIZE as u64, RegionKind::Elf)
+            .unwrap()
+            .commit();
+        memory
+            .reserve_region(PAGE_SIZE as u64, PAGE_SIZE as u64, RegionKind::Elf)
+            .unwrap()
+            .commit();
+        assert_eq!(memory.reserved_pages(), 3); // overlapping load pages count once
+        memory.enable_user_access();
+        assert!(memory.user().read(PAGE_SIZE as u64, &mut [0]).is_err());
+        assert!(memory.read_raw(3 * PAGE_SIZE as u64, &mut [0]).is_ok());
+        memory
+            .map_user_range(PAGE_SIZE as u64, PAGE_SIZE as u64, true)
+            .unwrap();
+        assert!(memory.user().read(PAGE_SIZE as u64, &mut [0]).is_err());
+        memory
+            .unmap_user_range(PAGE_SIZE as u64, PAGE_SIZE as u64)
+            .unwrap();
+        assert_eq!(memory.reservation_kind(PAGE_SIZE as u64), None);
+        assert_eq!(memory.reservation_kind(0), Some(RegionKind::Bootstrap));
+    }
+
+    #[test]
+    fn retained_host_operand_keeps_view_alive_without_a_sleeping_layout_lock() {
+        let mut memory = GuestMemory::new(0x2_0000, PAGE_SIZE).unwrap();
+        memory
+            .map_user_range(0x2_0000, PAGE_SIZE as u64, false)
+            .unwrap();
+        memory.enable_user_access();
+        memory.write(0x2_0000, &7_u32.to_ne_bytes()).unwrap();
+        let weak = Arc::downgrade(&memory.mapping);
+        let operand = memory.user().host_operand(0x2_0000, 4).unwrap();
+        // Resolving an operand must not hold either owner lock across futex.
+        assert!(memory.mapping.allocation.try_lock().is_ok());
+        assert!(memory.mapping.address_space.try_lock().is_ok());
+        memory.unmap_user_range(0x2_0000, PAGE_SIZE as u64).unwrap();
+        drop(memory);
+        assert!(weak.upgrade().is_some());
+        // SAFETY: operand owns the checked, aligned mmap word for both calls.
+        assert_eq!(unsafe { (operand.address() as *const u32).read() }, 7);
+        assert_eq!(
+            unsafe {
+                libc::syscall(
+                    libc::SYS_futex,
+                    operand.address(),
+                    libc::FUTEX_WAKE,
+                    1,
+                    0,
+                    0,
+                    0,
+                )
+            },
+            0
+        );
+        drop(operand);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn private_snapshot_copies_one_allocation_owner_and_keeps_policy_independent() {
+        let memory = GuestMemory::new(0, 4 * PAGE_SIZE).unwrap();
+        let cursors = AllocationCursors {
+            program_break: 4096,
+            mmap_base: 8192,
+            mmap_next: 8192,
+            mmap_limit: 16384,
+        };
+        memory.set_allocation_cursors(cursors);
+        memory
+            .reserve_region(4096, 4096, RegionKind::Heap)
+            .unwrap()
+            .commit();
+        memory.map_user_range(4096, 4096, false).unwrap();
+        memory.enable_user_access();
+        memory.user().copy_to_user(4096, b"private").unwrap();
+        let shared = memory.clone();
+        let snapshot = memory
+            .snapshot_with_sparse_copy(|_, _, _| Err(io::Error::other("forced fallback")))
+            .unwrap();
+        assert_eq!(snapshot.allocation_cursors(), Some(cursors));
+        assert_eq!(snapshot.reservation_kind(4096), Some(RegionKind::Heap));
+        shared.set_allocation_cursors(AllocationCursors {
+            mmap_next: 12288,
+            ..cursors
+        });
+        shared.unmap_user_range(4096, 4096).unwrap();
+        assert_eq!(memory.allocation_cursors().unwrap().mmap_next, 12288);
+        assert!(memory.user().read(4096, &mut [0]).is_err());
+        assert_eq!(snapshot.allocation_cursors(), Some(cursors));
+        let mut bytes = [0; 7];
+        snapshot.user().read(4096, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"private");
+        snapshot.user().copy_to_user(4096, b"changed").unwrap();
+        memory.read_raw(4096, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"private");
+    }
 
     #[test]
     fn reads_and_writes_guest_memory() {

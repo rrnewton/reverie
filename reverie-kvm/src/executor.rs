@@ -36,6 +36,9 @@ use crate::elf::STACK_LIMIT;
 use crate::elf::TASK_COMM_LEN;
 use crate::elf::load_static_elf;
 use crate::elf::resolve_executable_path;
+use crate::memory::AllocationCursors;
+use crate::memory::HostMemoryOperand;
+use crate::memory::RegionKind;
 use crate::runtime::SyscallExecutor;
 use crate::signal::GuestStack;
 use crate::signal::KERNEL_SIGACTION_SIZE;
@@ -373,6 +376,45 @@ pub(crate) fn execute_basic_syscall(
 }
 
 fn execute_basic_syscall_with_output(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    request: &SyscallRequest,
+    current_user_stack_pointer: Option<u64>,
+    output: Option<&mut CapturedOutput>,
+) -> SyscallAction {
+    let mutates_layout = matches!(request.number(), number if
+        number == libc::SYS_brk as u64 || number == libc::SYS_mmap as u64
+        || number == libc::SYS_mremap as u64 || number == libc::SYS_munmap as u64
+        || number == libc::SYS_mprotect as u64);
+    if !mutates_layout {
+        return execute_basic_syscall_inner(
+            memory,
+            state,
+            request,
+            current_user_stack_pointer,
+            output,
+        );
+    }
+    let owner = memory.clone();
+    // Lock order: allocation transaction -> address-space state -> backing.
+    // Individual copy/policy methods take state themselves, so holding state
+    // here would recursively lock it. General I/O and futex waits do not hold
+    // it; mmap file population retains the existing serialized allocation scope.
+    let _transaction = owner.allocation_guard();
+    let cursors = owner
+        .allocation_cursors()
+        .unwrap_or_else(|| AllocationCursors::from_elf(state));
+    state.program_break = cursors.program_break;
+    state.mmap_base = cursors.mmap_base;
+    state.mmap_next = cursors.mmap_next;
+    state.mmap_limit = cursors.mmap_limit;
+    let action =
+        execute_basic_syscall_inner(memory, state, request, current_user_stack_pointer, output);
+    owner.set_allocation_cursors(AllocationCursors::from_elf(state));
+    action
+}
+
+fn execute_basic_syscall_inner(
     memory: &mut GuestMemory,
     state: &mut LoadedStaticElf,
     request: &SyscallRequest,
@@ -977,6 +1019,8 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     };
     let operation = args[1] as libc::c_int;
     let command = operation & FUTEX_CMD_MASK;
+    let mut timeout_operand = None;
+    let mut second_operand = None;
     let fourth = if args[3] == 0 {
         0
     } else if matches!(
@@ -984,7 +1028,11 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
         FUTEX_WAIT | FUTEX_LOCK_PI | FUTEX_WAIT_BITSET | FUTEX_WAIT_REQUEUE_PI | FUTEX_LOCK_PI2
     ) {
         match guest_host_address(memory, args[3], std::mem::size_of::<libc::timespec>()) {
-            Ok(address) => address,
+            Ok(operand) => {
+                let address = operand.address();
+                timeout_operand = Some(operand);
+                address
+            }
             Err(error) => return error,
         }
     } else {
@@ -999,7 +1047,11 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
             | FUTEX_CMP_REQUEUE_PI
     ) {
         match guest_host_address(memory, args[4], std::mem::size_of::<u32>()) {
-            Ok(address) => address,
+            Ok(operand) => {
+                let address = operand.address();
+                second_operand = Some(operand);
+                address
+            }
             Err(error) => return error,
         }
     } else {
@@ -1012,7 +1064,7 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     let result = unsafe {
         libc::syscall(
             libc::SYS_futex,
-            uaddr,
+            uaddr.address(),
             operation,
             args[2] as u32,
             fourth,
@@ -1020,11 +1072,13 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
             args[5] as u32,
         )
     };
-    if result < 0 {
+    let result = if result < 0 {
         io_error(std::io::Error::last_os_error())
     } else {
         result as i64
-    }
+    };
+    drop((uaddr, timeout_operand, second_operand));
+    result
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -1089,12 +1143,11 @@ fn guest_host_address(
     memory: &GuestMemory,
     guest_address: u64,
     length: usize,
-) -> Result<usize, i64> {
-    let mut probe = vec![0; length];
-    if memory.read(guest_address, &mut probe).is_err() {
-        return Err(negative_errno(libc::EFAULT));
-    }
-    Ok((memory.host_address() + guest_address - memory.guest_base()) as usize)
+) -> Result<HostMemoryOperand, i64> {
+    memory
+        .user()
+        .host_operand(guest_address, length)
+        .map_err(|_| negative_errno(libc::EFAULT))
 }
 
 /// A [`SyscallExecutor`] that supplies the static-ELF guest-kernel semantics
@@ -1112,7 +1165,8 @@ pub(crate) struct ElfExecutor {
     process_generation: u64,
     signal_registry: Arc<ProcessSignalRegistry>,
     signal_binding: Arc<ProcessBinding>,
-    address_space: Arc<std::sync::Mutex<AddressSpaceState>>,
+    // Retained view only; allocation/policy authority lives in its one owner.
+    address_space: Option<GuestMemory>,
     file_table: Arc<std::sync::Mutex<FileTableState>>,
     output: Option<CapturedOutput>,
     owns_output: bool,
@@ -1267,13 +1321,6 @@ impl ChildCompletion {
     }
 }
 
-struct AddressSpaceState {
-    program_break: u64,
-    mmap_base: u64,
-    mmap_next: u64,
-    mmap_limit: u64,
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct FileTableState {
     stdin: Option<std::fs::File>,
@@ -1400,6 +1447,7 @@ impl FdinfoDescription {
             || self.observe(),
             |bytes| {
                 memory
+                    .user()
                     .copy_to_user_prefix(args[1], bytes)
                     .map_err(|_| negative_errno(libc::EFAULT))
             },
@@ -1846,7 +1894,7 @@ fn accept_flags(request: &SyscallRequest) -> Option<Result<libc::c_int, i64>> {
     }
 }
 
-impl AddressSpaceState {
+impl AllocationCursors {
     fn from_elf(state: &LoadedStaticElf) -> Self {
         Self {
             program_break: state.program_break,
@@ -1858,12 +1906,21 @@ impl AddressSpaceState {
 }
 
 impl ElfExecutor {
+    pub(crate) fn bind_address_space(&mut self, memory: &GuestMemory) {
+        self.address_space = Some(memory.clone());
+    }
+
     /// The brk-managed heap region `[heap_base, program_break)` of the loaded
     /// guest. `heap_base` is the initial program break (`align_up(main_end)`),
     /// so the returned range covers exactly the pages `brk()` has mapped; it is
     /// empty when the guest has never grown its break.
     pub(crate) fn heap_region(&self) -> (u64, u64) {
-        (self.state.heap_base, self.state.program_break)
+        let program_break = self
+            .address_space
+            .as_ref()
+            .and_then(GuestMemory::allocation_cursors)
+            .map_or(self.state.program_break, |cursors| cursors.program_break);
+        (self.state.heap_base, program_break)
     }
 
     #[cfg(test)]
@@ -1897,7 +1954,7 @@ impl ElfExecutor {
             .process_generation;
         let next_pid = state.pid.saturating_add(1);
         let sigchld_auto_reap = Arc::new(AtomicBool::new(sigchld_auto_reaps(&state)));
-        let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
+        let address_space = None;
         file_table = Arc::new(std::sync::Mutex::new(
             FileTableState::try_from_elf(&state).expect("clone initial KVM file table"),
         ));
@@ -2308,7 +2365,7 @@ impl ElfExecutor {
                 .dispositions
                 .retain(|_, action| action.is_ignored());
         }
-        let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
+        let address_space = None;
         file_table = Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?));
         state.fdinfo_table = Arc::downgrade(&file_table);
         let task_generation = state
@@ -2897,8 +2954,9 @@ impl ElfExecutor {
 
             if nonblocking && running.is_some() {
                 if args[2] != 0 {
-                    let mut memory = memory.clone();
+                    let memory = memory.clone();
                     if memory
+                        .user()
                         .zero(args[2], std::mem::size_of::<libc::siginfo_t>())
                         .is_err()
                     {
@@ -2958,10 +3016,9 @@ impl ElfExecutor {
             .expect("execing KVM task is absent from its lifecycle table");
         self.task_generation = identity.generation;
         self.process_generation = identity.process_generation;
-        *self
-            .address_space
-            .lock()
-            .expect("KVM address-space lock poisoned") = AddressSpaceState::from_elf(&self.state);
+        if let Some(memory) = &self.address_space {
+            memory.set_allocation_cursors(AllocationCursors::from_elf(&self.state));
+        }
         files
             .update_from_elf(&self.state)
             .expect("clone post-exec KVM file table");
@@ -4456,6 +4513,7 @@ impl Drop for ElfExecutor {
 
 impl SyscallExecutor for ElfExecutor {
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        self.bind_address_space(memory);
         let _retirement = self.state.file_retirement.hold();
         if let Some(result) = self.synchronize_wait4(request) {
             return result;
@@ -4500,42 +4558,13 @@ impl SyscallExecutor for ElfExecutor {
             && request.args()[0] as libc::c_int == libc::SIGCHLD
             && request.args()[1] != 0)
             .then(|| installed_signal_action(&self.state, libc::SIGCHLD));
-        let address_space_syscall = matches!(
-            request.number(),
-            number if number == libc::SYS_brk as u64
-                || number == libc::SYS_mmap as u64
-                || number == libc::SYS_mremap as u64
+        let action = execute_basic_syscall_with_output(
+            &mut memory,
+            &mut self.state,
+            request,
+            self.current_user_stack_pointer,
+            self.output.as_mut(),
         );
-        let action = if address_space_syscall {
-            let address_space = self.address_space.clone();
-            let mut shared = address_space
-                .lock()
-                .expect("KVM address-space lock poisoned");
-            self.state.program_break = shared.program_break;
-            self.state.mmap_base = shared.mmap_base;
-            self.state.mmap_next = shared.mmap_next;
-            self.state.mmap_limit = shared.mmap_limit;
-            let action = execute_basic_syscall_with_output(
-                &mut memory,
-                &mut self.state,
-                request,
-                self.current_user_stack_pointer,
-                self.output.as_mut(),
-            );
-            shared.program_break = self.state.program_break;
-            shared.mmap_base = self.state.mmap_base;
-            shared.mmap_next = self.state.mmap_next;
-            shared.mmap_limit = self.state.mmap_limit;
-            action
-        } else {
-            execute_basic_syscall_with_output(
-                &mut memory,
-                &mut self.state,
-                request,
-                self.current_user_stack_pointer,
-                self.output.as_mut(),
-            )
-        };
         if let Some(before) = sigchld_action_before {
             let after = installed_signal_action(&self.state, libc::SIGCHLD);
             if after != before {
@@ -4834,7 +4863,7 @@ fn write(
     }
 
     let mut bytes = vec![0; length];
-    if memory.read(args[1], &mut bytes).is_err() {
+    if memory.user().read(args[1], &mut bytes).is_err() {
         return negative_errno(libc::EFAULT);
     }
 
@@ -4989,7 +5018,7 @@ fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -
     if !range_is_valid(memory, address, length as u64) {
         return negative_errno(libc::EFAULT);
     }
-    let Ok(writable) = memory.user_accessible_prefix(address, length) else {
+    let Ok(writable) = memory.user().user_accessible_prefix(address, length) else {
         return negative_errno(libc::EFAULT);
     };
     if writable == 0 && length != 0 {
@@ -5005,7 +5034,7 @@ fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -
     if count == 0 {
         return 0;
     }
-    match memory.write(address, &bytes[..count]) {
+    match memory.user().write(address, &bytes[..count]) {
         Ok(()) => count as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -5082,7 +5111,7 @@ fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -
     if !range_is_valid(memory, args[1], length as u64) {
         return negative_errno(libc::EFAULT);
     }
-    let Ok(writable) = memory.user_accessible_prefix(args[1], length) else {
+    let Ok(writable) = memory.user().user_accessible_prefix(args[1], length) else {
         return negative_errno(libc::EFAULT);
     };
     if writable == 0 {
@@ -5090,7 +5119,7 @@ fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -
     }
     let mut bytes = vec![0; writable];
     match file.read_at(&mut bytes, args[3]) {
-        Ok(count) => match memory.write(args[1], &bytes[..count]) {
+        Ok(count) => match memory.user().write(args[1], &bytes[..count]) {
             Ok(()) => count as i64,
             Err(_) => negative_errno(libc::EFAULT),
         },
@@ -5116,7 +5145,7 @@ fn pwrite64(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
         return 0;
     }
     let mut bytes = vec![0; length];
-    if memory.read(args[1], &mut bytes).is_err() {
+    if memory.user().read(args[1], &mut bytes).is_err() {
         return negative_errno(libc::EFAULT);
     }
     file.write_at(&bytes, args[3])
@@ -5581,7 +5610,7 @@ fn capture_vectored_write(
             return negative_errno(libc::EINVAL);
         };
         bytes.resize(end, 0);
-        if memory.read(iovec.base, &mut bytes[start..]).is_err() {
+        if memory.user().read(iovec.base, &mut bytes[start..]).is_err() {
             return negative_errno(libc::EFAULT);
         }
     }
@@ -5773,9 +5802,13 @@ fn vectored_io(
     let mut staged_vectors = Vec::with_capacity(guest_iovecs.len());
     for vector in &guest_iovecs {
         let prefix = if reading {
-            memory.user_writable_prefix(vector.base, vector.length)
+            memory
+                .user()
+                .user_writable_prefix(vector.base, vector.length)
         } else {
-            memory.user_accessible_prefix(vector.base, vector.length)
+            memory
+                .user()
+                .user_accessible_prefix(vector.base, vector.length)
         }
         .unwrap_or(0);
         let mut staged = match StagedIoVector::new(*vector, prefix, staging_alignment) {
@@ -5784,6 +5817,7 @@ fn vectored_io(
         };
         if prefix != 0
             && memory
+                .user()
                 .read(vector.base, staged.accessible_slice_mut(prefix))
                 .is_err()
         {
@@ -5805,6 +5839,7 @@ fn vectored_io(
             let copied = transferred.min(vector.accessible_length);
             if copied != 0
                 && memory
+                    .user()
                     .write(vector.guest.base, vector.accessible_slice(copied))
                     .is_err()
             {
@@ -5826,6 +5861,7 @@ fn vectored_io(
         for vector in &staged_vectors {
             if vector.accessible_length != 0
                 && memory
+                    .user()
                     .write(
                         vector.guest.base,
                         vector.accessible_slice(vector.accessible_length),
@@ -5941,7 +5977,7 @@ fn sendfile(
             return negative_errno(libc::EFAULT);
         }
         let mut raw = [0u8; 8];
-        if memory.read(offset_ptr, &mut raw).is_err() {
+        if memory.user().read(offset_ptr, &mut raw).is_err() {
             return negative_errno(libc::EFAULT);
         }
         let mut host_offset: libc::off_t = i64::from_ne_bytes(raw);
@@ -5952,6 +5988,7 @@ fn sendfile(
             return io_error(std::io::Error::last_os_error());
         }
         if memory
+            .user()
             .write(offset_ptr, &host_offset.to_ne_bytes())
             .is_err()
         {
@@ -5981,7 +6018,7 @@ fn sendfile(
             return negative_errno(libc::EFAULT);
         }
         let mut raw = [0u8; 8];
-        if memory.read(offset_ptr, &mut raw).is_err() {
+        if memory.user().read(offset_ptr, &mut raw).is_err() {
             return negative_errno(libc::EFAULT);
         }
         let host_offset: libc::off_t = i64::from_ne_bytes(raw);
@@ -6026,11 +6063,15 @@ fn sendfile(
     // to the output; write it back so the guest observes faithful semantics.
     if offset_ptr != 0 {
         let mut raw = [0u8; 8];
-        if memory.read(offset_ptr, &mut raw).is_err() {
+        if memory.user().read(offset_ptr, &mut raw).is_err() {
             return negative_errno(libc::EFAULT);
         }
         let advanced = i64::from_ne_bytes(raw).saturating_add(written);
-        if memory.write(offset_ptr, &advanced.to_ne_bytes()).is_err() {
+        if memory
+            .user()
+            .write(offset_ptr, &advanced.to_ne_bytes())
+            .is_err()
+        {
             return negative_errno(libc::EFAULT);
         }
     }
@@ -7354,7 +7395,7 @@ fn insert_file_pair(
     let mut bytes = [0; std::mem::size_of::<[libc::c_int; 2]>()];
     bytes[..std::mem::size_of::<libc::c_int>()].copy_from_slice(&fds[0].to_ne_bytes());
     bytes[std::mem::size_of::<libc::c_int>()..].copy_from_slice(&fds[1].to_ne_bytes());
-    if memory.write(address, &bytes).is_err() {
+    if memory.user().write(address, &bytes).is_err() {
         for fd in fds {
             remove_inserted_file(state, fd);
         }
@@ -7395,7 +7436,7 @@ fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
             let bytes = unsafe {
                 std::slice::from_raw_parts_mut(set.as_mut_ptr().cast::<u8>(), byte_length)
             };
-            if memory.read(*address, bytes).is_err() {
+            if memory.user().read(*address, bytes).is_err() {
                 return negative_errno(libc::EFAULT);
             }
         }
@@ -7482,7 +7523,7 @@ fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
         // is exactly bounded to its allocation.
         let bytes =
             unsafe { std::slice::from_raw_parts(ready_set.as_ptr().cast::<u8>(), byte_length) };
-        if memory.write(*address, bytes).is_err() {
+        if memory.user().write(*address, bytes).is_err() {
             return negative_errno(libc::EFAULT);
         }
     }
@@ -7549,7 +7590,7 @@ fn ppoll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
         // across the wait (see the note below), but a bogus pointer can never be
         // serviced as ready.
         let mut signal_mask = [0u8; KERNEL_SIGSET_SIZE];
-        if memory.read(args[3], &mut signal_mask).is_err() {
+        if memory.user().read(args[3], &mut signal_mask).is_err() {
             return negative_errno(libc::EFAULT);
         }
         // A masked ppoll mirrors detcore's handle_internal_ppoll (hermit
@@ -7603,7 +7644,7 @@ fn poll_with_timeout(
         let bytes = unsafe {
             std::slice::from_raw_parts_mut(poll_fds.as_mut_ptr().cast::<u8>(), byte_length)
         };
-        if memory.read(args[0], bytes).is_err() {
+        if memory.user().read(args[0], bytes).is_err() {
             return negative_errno(libc::EFAULT);
         }
     }
@@ -7674,7 +7715,7 @@ fn poll_with_timeout(
         // exactly bounded to the vector allocation.
         let bytes =
             unsafe { std::slice::from_raw_parts(poll_fds.as_ptr().cast::<u8>(), byte_length) };
-        if memory.write(args[0], bytes).is_err() {
+        if memory.user().write(args[0], bytes).is_err() {
             return negative_errno(libc::EFAULT);
         }
     }
@@ -7740,7 +7781,7 @@ fn epoll_wait(
             return negative_errno(libc::EINVAL);
         }
         let mut signal_mask = [0; KERNEL_SIGSET_SIZE];
-        if memory.read(args[4], &mut signal_mask).is_err() {
+        if memory.user().read(args[4], &mut signal_mask).is_err() {
             return negative_errno(libc::EFAULT);
         }
     }
@@ -7782,7 +7823,7 @@ fn epoll_wait(
             ready * std::mem::size_of::<libc::epoll_event>(),
         )
     };
-    match memory.write(args[1], bytes) {
+    match memory.user().write(args[1], bytes) {
         Ok(()) => ready as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -8092,10 +8133,14 @@ impl GuestWriteCursor<'_> {
             let count = bytes.len().min(vector.length - self.offset);
             let address = vector.base + self.offset as u64;
             let writable = memory
+                .user()
                 .user_writable_prefix(address, count)
                 .map_err(|_| ())?;
             if writable != 0 {
-                memory.write(address, &bytes[..writable]).map_err(|_| ())?;
+                memory
+                    .user()
+                    .write(address, &bytes[..writable])
+                    .map_err(|_| ())?;
                 self.offset += writable;
                 bytes = &bytes[writable..];
             }
@@ -8648,7 +8693,7 @@ fn setsockopt(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
         return negative_errno(libc::EINVAL);
     }
     let mut value = vec![0; length_usize];
-    if length_usize != 0 && memory.read(args[3], &mut value).is_err() {
+    if length_usize != 0 && memory.user().read(args[3], &mut value).is_err() {
         return negative_errno(libc::EFAULT);
     }
     let value_ptr = if value.is_empty() {
@@ -8735,7 +8780,7 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         }
         let copy_length = capacity.min(length as usize);
         canonicalize_tcp_info(&mut value[..copy_length]);
-        if copy_length != 0 && memory.write(args[3], &value[..copy_length]).is_err() {
+        if copy_length != 0 && memory.user().write(args[3], &value[..copy_length]).is_err() {
             return negative_errno(libc::EFAULT);
         }
         return write_struct(memory, args[4], &length);
@@ -8753,7 +8798,7 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     if args[2] as libc::c_int == libc::SO_NETNS_COOKIE {
         let bytes = GUEST_NETNS_COOKIE.to_ne_bytes();
         let copy_length = capacity.min(bytes.len());
-        if copy_length != 0 && memory.write(args[3], &bytes[..copy_length]).is_err() {
+        if copy_length != 0 && memory.user().write(args[3], &bytes[..copy_length]).is_err() {
             return negative_errno(libc::EFAULT);
         }
         let result_length = copy_length as libc::socklen_t;
@@ -8768,7 +8813,7 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         };
         let bytes = identity.inode.to_ne_bytes();
         let copy_length = capacity.min(bytes.len());
-        if copy_length != 0 && memory.write(args[3], &bytes[..copy_length]).is_err() {
+        if copy_length != 0 && memory.user().write(args[3], &bytes[..copy_length]).is_err() {
             return negative_errno(libc::EFAULT);
         }
         let result_length = copy_length as libc::socklen_t;
@@ -8806,7 +8851,12 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         // the option's returned length (never more than a 32-bit CPU id).
         let zero_cpu = 0_i32.to_ne_bytes();
         let copy_length = capacity.min(length as usize).min(zero_cpu.len());
-        if copy_length != 0 && memory.write(args[3], &zero_cpu[..copy_length]).is_err() {
+        if copy_length != 0
+            && memory
+                .user()
+                .write(args[3], &zero_cpu[..copy_length])
+                .is_err()
+        {
             return negative_errno(libc::EFAULT);
         }
         return write_struct(memory, args[4], &length);
@@ -8837,7 +8887,7 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         return io_error(std::io::Error::last_os_error());
     }
     let copy_length = capacity.min(length as usize);
-    if copy_length != 0 && memory.write(args[3], &value[..copy_length]).is_err() {
+    if copy_length != 0 && memory.user().write(args[3], &value[..copy_length]).is_err() {
         return negative_errno(libc::EFAULT);
     }
     write_struct(memory, args[4], &length)
@@ -8859,7 +8909,7 @@ fn bind(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
         return negative_errno(libc::EINVAL);
     }
     let mut address = vec![0; length_usize];
-    if memory.read(args[1], &mut address).is_err() {
+    if memory.user().read(args[1], &mut address).is_err() {
         return negative_errno(libc::EFAULT);
     }
     let family = libc::sa_family_t::from_ne_bytes(
@@ -8924,7 +8974,12 @@ fn getsockname(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6
         return io_error(std::io::Error::last_os_error());
     }
     let copy_length = capacity.min(length as usize);
-    if copy_length != 0 && memory.write(args[1], &address[..copy_length]).is_err() {
+    if copy_length != 0
+        && memory
+            .user()
+            .write(args[1], &address[..copy_length])
+            .is_err()
+    {
         return negative_errno(libc::EFAULT);
     }
     write_struct(memory, args[2], &length)
@@ -8997,7 +9052,7 @@ fn accept_socket(
             let bytes = unsafe {
                 std::slice::from_raw_parts(std::ptr::from_ref(&address).cast::<u8>(), copy_length)
             };
-            if memory.write(args[1], bytes).is_err() {
+            if memory.user().write(args[1], bytes).is_err() {
                 return Err(negative_errno(libc::EFAULT));
             }
         }
@@ -9069,7 +9124,7 @@ fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
         return negative_errno(libc::EINVAL);
     }
     let mut address = vec![0; length_usize];
-    if memory.read(args[1], &mut address).is_err() {
+    if memory.user().read(args[1], &mut address).is_err() {
         return negative_errno(libc::EFAULT);
     }
     let family = libc::sa_family_t::from_ne_bytes(
@@ -9142,7 +9197,7 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
     };
     let length = requested_length.min(MAX_HOST_IO);
     let mut bytes = vec![0; length];
-    if length != 0 && memory.read(args[1], &mut bytes).is_err() {
+    if length != 0 && memory.user().read(args[1], &mut bytes).is_err() {
         return negative_errno(libc::EFAULT);
     }
 
@@ -9153,7 +9208,7 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
         return negative_errno(libc::EINVAL);
     }
     let mut address = vec![0; address_length as usize];
-    if args[4] != 0 && address_length != 0 && memory.read(args[4], &mut address).is_err() {
+    if args[4] != 0 && address_length != 0 && memory.user().read(args[4], &mut address).is_err() {
         return negative_errno(libc::EFAULT);
     }
     let address_pointer = if args[4] == 0 {
@@ -9200,7 +9255,7 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
         return negative_errno(libc::EFAULT);
     }
     let length = requested_length.min(MAX_HOST_IO);
-    let Ok(writable) = memory.user_accessible_prefix(args[1], length) else {
+    let Ok(writable) = memory.user().user_accessible_prefix(args[1], length) else {
         return negative_errno(libc::EFAULT);
     };
     if writable == 0 && requested_length != 0 {
@@ -9252,7 +9307,7 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
         return io_error(std::io::Error::last_os_error());
     }
     let copy_length = (result as usize).min(bytes.len());
-    if copy_length != 0 && memory.write(args[1], &bytes[..copy_length]).is_err() {
+    if copy_length != 0 && memory.user().write(args[1], &bytes[..copy_length]).is_err() {
         return negative_errno(libc::EFAULT);
     }
 
@@ -9269,7 +9324,7 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
                     address_copy_length,
                 )
             };
-            if memory.write(args[4], address_bytes).is_err() {
+            if memory.user().write(args[4], address_bytes).is_err() {
                 return negative_errno(libc::EFAULT);
             }
         }
@@ -9665,6 +9720,7 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
         if iov.iov_len != 0 {
             let mut segment = vec![0u8; iov.iov_len];
             if memory
+                .user()
                 .read(iov.iov_base as usize as u64, &mut segment)
                 .is_err()
             {
@@ -9689,6 +9745,7 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
     let mut control = vec![0u8; control_capacity];
     if name_capacity != 0
         && memory
+            .user()
             .read(message.msg_name as usize as u64, &mut name)
             .is_err()
     {
@@ -9696,6 +9753,7 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
     }
     if control_capacity != 0
         && memory
+            .user()
             .read(message.msg_control as usize as u64, &mut control)
             .is_err()
     {
@@ -9803,6 +9861,7 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
         if iov.iov_len != 0 {
             let mut probe = vec![0; iov.iov_len];
             if memory
+                .user()
                 .read(iov.iov_base as usize as u64, &mut probe)
                 .is_err()
             {
@@ -9833,7 +9892,7 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
     ] {
         if length != 0 {
             let mut probe = vec![0; length];
-            if memory.read(address, &mut probe).is_err() {
+            if memory.user().read(address, &mut probe).is_err() {
                 return negative_errno(libc::EFAULT);
             }
         }
@@ -9892,6 +9951,7 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
         let length = iov.iov_len.min(copied_length.saturating_sub(copied));
         if length != 0
             && memory
+                .user()
                 .write(
                     iov.iov_base as usize as u64,
                     &payload[copied..copied + length],
@@ -9904,6 +9964,7 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
     }
     if name_capacity != 0
         && memory
+            .user()
             .write(
                 message.msg_name as usize as u64,
                 &name[..name_capacity.min(host_header.msg_namelen as usize)],
@@ -9930,6 +9991,7 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
         let mut guest_control = vec![0; control_capacity];
         guest_control[..control_bytes.len()].copy_from_slice(&control_bytes);
         if memory
+            .user()
             .write(message.msg_control as usize as u64, &guest_control)
             .is_err()
         {
@@ -10039,6 +10101,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
             if iov.iov_len != 0 {
                 let mut probe = vec![0; iov.iov_len];
                 if memory
+                    .user()
                     .read(iov.iov_base as usize as u64, &mut probe)
                     .is_err()
                 {
@@ -10067,6 +10130,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
         let mut control = vec![0u8; control_capacity];
         if name_capacity != 0
             && memory
+                .user()
                 .read(message.msg_hdr.msg_name as usize as u64, &mut name)
                 .is_err()
         {
@@ -10078,6 +10142,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
         }
         if control_capacity != 0
             && memory
+                .user()
                 .read(message.msg_hdr.msg_control as usize as u64, &mut control)
                 .is_err()
         {
@@ -10150,6 +10215,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
             let length = iov.iov_len.min(copied_length.saturating_sub(copied));
             if length != 0
                 && memory
+                    .user()
                     .write(
                         iov.iov_base as usize as u64,
                         &payload[copied..copied + length],
@@ -10166,6 +10232,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
         }
         if name_capacity != 0
             && memory
+                .user()
                 .write(
                     message.msg_hdr.msg_name as usize as u64,
                     &name[..name_capacity.min(host_header.msg_namelen as usize)],
@@ -10197,6 +10264,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
             let mut guest_control = vec![0; control_capacity];
             guest_control[..control_bytes.len()].copy_from_slice(&control_bytes);
             if memory
+                .user()
                 .write(message.msg_hdr.msg_control as usize as u64, &guest_control)
                 .is_err()
             {
@@ -10278,7 +10346,7 @@ fn pipe_fionread(
     if unsafe { libc::ioctl(host_fd, libc::FIONREAD, &mut count) } != 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    if memory.put_user_i32(address, count).is_err() {
+    if memory.user().put_user_i32(address, count).is_err() {
         return negative_errno(libc::EFAULT);
     }
     0
@@ -10391,7 +10459,7 @@ fn getgroups(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     for group in GUEST_SUPPLEMENTARY_GROUPS {
         bytes.extend_from_slice(&group.to_ne_bytes());
     }
-    match memory.write(args[1], &bytes) {
+    match memory.user().write(args[1], &bytes) {
         Ok(()) => i64::from(count),
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -10401,7 +10469,7 @@ fn getgroups(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
 fn get_fixed_root_ids(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     let root_id = libc::uid_t::from(0_u8).to_ne_bytes();
     for address in &args[..3] {
-        if memory.write(*address, &root_id).is_err() {
+        if memory.user().write(*address, &root_id).is_err() {
             return negative_errno(libc::EFAULT);
         }
     }
@@ -10762,7 +10830,7 @@ fn fstatat_impl(
                 std::mem::size_of::<libc::stat>(),
             )
         };
-        match memory.copy_to_user(output_address, bytes) {
+        match memory.user().copy_to_user(output_address, bytes) {
             Ok(()) => 0,
             Err(_) => negative_errno(libc::EFAULT),
         }
@@ -11641,7 +11709,7 @@ fn getcwd(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
     let mut terminated = Vec::with_capacity(required);
     terminated.extend_from_slice(bytes);
     terminated.push(0);
-    match memory.write(args[0], &terminated) {
+    match memory.user().write(args[0], &terminated) {
         Ok(()) => required as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -12447,7 +12515,7 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
         return negative_errno(libc::EFAULT);
     }
     if length >= 24 {
-        let Ok(writable) = memory.user_accessible_prefix(args[1], length) else {
+        let Ok(writable) = memory.user().user_accessible_prefix(args[1], length) else {
             return negative_errno(libc::EFAULT);
         };
         if writable < 24 {
@@ -12472,7 +12540,7 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     if count == 0 {
         return 0;
     }
-    match memory.write(args[1], &bytes[..count]) {
+    match memory.user().write(args[1], &bytes[..count]) {
         Ok(()) => count as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -12850,6 +12918,7 @@ fn prctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         // TODO-HUMAN-REVIEW(PR-537): Review deterministic task-name state and lifecycle.
         option if option == libc::PR_SET_NAME as u64 => set_prctl_name(memory, state, args[1]),
         option if option == libc::PR_GET_NAME as u64 => memory
+            .user()
             .copy_to_user(args[1], &state.thread_name)
             .map_or_else(|_| negative_errno(libc::EFAULT), |_| 0),
         // TODO-HUMAN-REVIEW(PR-537): Review virtual parent-death signal state and copyout.
@@ -12863,6 +12932,7 @@ fn prctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
             }
         }
         option if option == libc::PR_GET_PDEATHSIG as u64 => memory
+            .user()
             .put_user_i32(args[1], 0)
             .map_or_else(|_| negative_errno(libc::EFAULT), |_| 0),
         // TODO-HUMAN-REVIEW(PR-537): Review deterministic transparent-hugepage state and lifecycle.
@@ -12954,7 +13024,7 @@ fn set_prctl_name(memory: &GuestMemory, state: &mut LoadedStaticElf, address: u6
             return negative_errno(libc::EFAULT);
         };
         let mut byte = [0];
-        if memory.read(address, &mut byte).is_err() {
+        if memory.user().read(address, &mut byte).is_err() {
             return negative_errno(libc::EFAULT);
         }
         if byte[0] == 0 {
@@ -13011,6 +13081,7 @@ fn capget(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
     };
     if version != LINUX_CAPABILITY_VERSION_3 {
         if memory
+            .user()
             .write(args[0], &LINUX_CAPABILITY_VERSION_3.to_ne_bytes())
             .is_err()
         {
@@ -13033,7 +13104,7 @@ fn capget(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
         state.capability_permitted,
         state.capability_inheritable,
     );
-    match memory.write(args[1], &bytes) {
+    match memory.user().write(args[1], &bytes) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -13071,7 +13142,7 @@ fn capset(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) ->
 
 fn read_capability_header(memory: &GuestMemory, address: u64) -> Result<(u32, i32), ()> {
     let mut bytes = [0; 8];
-    memory.read(address, &mut bytes).map_err(|_| ())?;
+    memory.user().read(address, &mut bytes).map_err(|_| ())?;
     Ok((
         u32::from_ne_bytes(bytes[..4].try_into().expect("capability version size")),
         i32::from_ne_bytes(bytes[4..].try_into().expect("capability pid size")),
@@ -13102,7 +13173,7 @@ fn capability_data_bytes(effective: u64, permitted: u64, inheritable: u64) -> [u
 
 fn read_capability_data(memory: &GuestMemory, address: u64) -> Result<(u64, u64, u64), ()> {
     let mut bytes = [0; 24];
-    memory.read(address, &mut bytes).map_err(|_| ())?;
+    memory.user().read(address, &mut bytes).map_err(|_| ())?;
     let field = |index: usize| {
         u64::from(u32::from_ne_bytes(
             bytes[index * 4..index * 4 + 4]
@@ -13208,7 +13279,7 @@ fn setxattr(memory: &GuestMemory, state: &LoadedStaticElf, number: u64, args: &[
     }
     if value_length != 0 {
         let mut value = vec![0; value_length];
-        if memory.read(args[2], &mut value).is_err() {
+        if memory.user().read(args[2], &mut value).is_err() {
             return negative_errno(libc::EFAULT);
         }
     }
@@ -13236,6 +13307,10 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
         let Ok(length) = usize::try_from(requested - previous) else {
             return state.program_break as i64;
         };
+        let Ok(reservation) = memory.reserve_region(previous, length as u64, RegionKind::Heap)
+        else {
+            return state.program_break as i64;
+        };
         if memory.zero_raw(previous, length).is_err()
             || memory
                 .map_user_range(previous, requested - previous, false)
@@ -13243,6 +13318,7 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
         {
             return state.program_break as i64;
         }
+        reservation.commit();
     } else if requested < previous {
         let Some(unmap_start) = align_up(requested, PAGE_SIZE) else {
             return state.program_break as i64;
@@ -13345,6 +13421,9 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         None
     };
 
+    let Ok(reservation) = memory.reserve_region(address, length as u64, RegionKind::Mmap) else {
+        return negative_errno(libc::ENOMEM);
+    };
     if memory.zero_raw(address, length).is_err() {
         return negative_errno(libc::ENOMEM);
     }
@@ -13365,6 +13444,7 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         return negative_errno(libc::ENOMEM);
     }
 
+    reservation.commit();
     if !fixed {
         state.mmap_next = state.mmap_next.max(end);
     }
@@ -13504,6 +13584,9 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
             let Ok(extension) = usize::try_from(new_length - old_length) else {
                 return negative_errno(libc::ENOMEM);
             };
+            let Ok(reservation) = memory.reserve_remap_region(old_end, extension as u64) else {
+                return negative_errno(libc::ENOMEM);
+            };
             if memory.zero_raw(old_end, extension).is_err() {
                 return negative_errno(libc::ENOMEM);
             }
@@ -13513,6 +13596,7 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
             {
                 return negative_errno(libc::ENOMEM);
             }
+            reservation.commit();
             state.mmap_next = state.mmap_next.max(new_end);
             return old_address as i64;
         }
@@ -13550,6 +13634,9 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     let Ok(new_length_usize) = usize::try_from(new_length) else {
         return negative_errno(libc::ENOMEM);
     };
+    let Ok(reservation) = memory.reserve_region(destination, new_length, RegionKind::Mmap) else {
+        return negative_errno(libc::EFAULT);
+    };
     let mut bytes = vec![0; copy_length];
     if memory.read_raw(old_address, &mut bytes).is_err()
         || memory.zero_raw(destination, new_length_usize).is_err()
@@ -13561,6 +13648,7 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     {
         return negative_errno(libc::EFAULT);
     }
+    reservation.commit();
     if flags & libc::MREMAP_FIXED as u64 == 0 {
         state.mmap_next = state.mmap_next.max(destination_end);
     }
@@ -13608,7 +13696,7 @@ fn mincore(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
         return negative_errno(libc::ENOMEM);
     };
     let residency = vec![1_u8; page_count];
-    match memory.write(args[2], &residency) {
+    match memory.user().write(args[2], &residency) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -13641,7 +13729,7 @@ fn sched_getaffinity(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[
     }
     let mut mask = [0_u8; MASK_BYTES];
     mask[0] = 1;
-    match memory.write(args[2], &mask) {
+    match memory.user().write(args[2], &mask) {
         Ok(()) => MASK_BYTES as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -13685,6 +13773,7 @@ fn read_sched_param(memory: &GuestMemory, address: u64) -> Result<libc::c_int, i
     }
     let mut priority = [0; std::mem::size_of::<libc::c_int>()];
     memory
+        .user()
         .read(address, &mut priority)
         .map_err(|_| negative_errno(libc::EFAULT))?;
     Ok(libc::c_int::from_ne_bytes(priority))
@@ -13692,7 +13781,7 @@ fn read_sched_param(memory: &GuestMemory, address: u64) -> Result<libc::c_int, i
 
 // TODO-HUMAN-REVIEW(PR-119): Review guest sched_param output validation.
 fn write_sched_param(memory: &mut GuestMemory, address: u64, priority: libc::c_int) -> i64 {
-    match memory.write(address, &priority.to_ne_bytes()) {
+    match memory.user().write(address, &priority.to_ne_bytes()) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -13953,7 +14042,7 @@ fn sched_getattr(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64;
     // SAFETY: attr is initialized repr(C) data and length is bounded to it.
     let bytes =
         unsafe { std::slice::from_raw_parts((&attr as *const SchedAttr).cast::<u8>(), length) };
-    match memory.write(args[1], bytes) {
+    match memory.user().write(args[1], bytes) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -13968,7 +14057,7 @@ fn getrandom(memory: &mut GuestMemory, tid: i32, address: u64, length: u64) -> i
         return negative_errno(libc::E2BIG);
     }
     let bytes = deterministic_random_bytes(tid, length, 17, 0x5a);
-    match memory.write(address, &bytes) {
+    match memory.user().write(address, &bytes) {
         Ok(()) => length as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -14148,7 +14237,7 @@ fn readlink_at_impl(
             Err(error) => return error,
         };
         let count = capacity.min(target.len());
-        return match memory.write(output_address, &target[..count]) {
+        return match memory.user().write(output_address, &target[..count]) {
             Ok(()) => count as i64,
             Err(_) => negative_errno(libc::EFAULT),
         };
@@ -14178,9 +14267,9 @@ fn readlink_at_impl(
     if let Some(target) = proc_link_target {
         let count = capacity.min(target.len());
         let copied = if executable_target.is_some() {
-            memory.copy_to_user(output_address, &target[..count])
+            memory.user().copy_to_user(output_address, &target[..count])
         } else {
-            memory.write(output_address, &target[..count])
+            memory.user().write(output_address, &target[..count])
         };
         return match copied {
             Ok(()) => count as i64,
@@ -14191,7 +14280,7 @@ fn readlink_at_impl(
     if path == b"/proc/self" || path == format!("/proc/{}", state.pid).as_bytes() {
         let target = state.pid.to_string().into_bytes();
         let count = capacity.min(target.len());
-        return match memory.write(output_address, &target[..count]) {
+        return match memory.user().write(output_address, &target[..count]) {
             Ok(()) => count as i64,
             Err(_) => negative_errno(libc::EFAULT),
         };
@@ -14235,7 +14324,7 @@ fn readlink_at_impl(
         return io_error(std::io::Error::last_os_error());
     }
     let count = count as usize;
-    match memory.write(output_address, &bytes[..count]) {
+    match memory.user().write(output_address, &bytes[..count]) {
         Ok(()) => count as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -14441,7 +14530,10 @@ fn rt_sigpending(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64;
     pending.union_with(process_signals.shared_pending.pending_mask(generations));
     // Linux reports only signals that are both pending and blocked.
     pending.intersect_with(state.thread_signals.lock().blocked);
-    match memory.copy_to_user(args[0], &pending.to_bytes()[..args[1] as usize]) {
+    match memory
+        .user()
+        .copy_to_user(args[0], &pending.to_bytes()[..args[1] as usize])
+    {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -14972,11 +15064,12 @@ fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         return negative_errno(libc::ECHILD);
     };
     let status = state.children[&child_pid].into_raw();
-    if args[1] != 0 && memory.write(args[1], &status.to_le_bytes()).is_err() {
+    if args[1] != 0 && memory.user().write(args[1], &status.to_le_bytes()).is_err() {
         return negative_errno(libc::EFAULT);
     }
     if args[3] != 0
         && memory
+            .user()
             .zero(args[3], std::mem::size_of::<libc::rusage>())
             .is_err()
     {
@@ -15049,6 +15142,7 @@ fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     }
     if args[4] != 0 {
         let result = memory
+            .user()
             .zero(args[4], std::mem::size_of::<libc::rusage>())
             .map(|()| 0)
             .unwrap_or_else(|_| negative_errno(libc::EFAULT));
@@ -15067,7 +15161,7 @@ fn write_u64(memory: &mut GuestMemory, address: u64, value: u64) -> i64 {
 }
 
 fn write_bytes(memory: &mut GuestMemory, address: u64, bytes: &[u8]) -> i64 {
-    match memory.write(address, bytes) {
+    match memory.user().write(address, bytes) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -15088,6 +15182,7 @@ fn write_struct<T>(memory: &mut GuestMemory, address: u64, value: &T) -> i64 {
 fn read_guest_bytes<const N: usize>(memory: &GuestMemory, address: u64) -> Result<[u8; N], i64> {
     let mut bytes = [0; N];
     memory
+        .user()
         .read(address, &mut bytes)
         .map_err(|_| negative_errno(libc::EFAULT))?;
     Ok(bytes)
@@ -15101,6 +15196,7 @@ fn read_guest_struct<T>(memory: &GuestMemory, address: u64) -> Result<T, i64> {
         std::slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), std::mem::size_of::<T>())
     };
     memory
+        .user()
         .read(address, bytes)
         .map_err(|_| negative_errno(libc::EFAULT))?;
     // SAFETY: the entire plain-data Linux ABI value was initialized above.
@@ -15152,6 +15248,7 @@ fn read_c_string(
             .ok_or(ReadCStringError::Fault)?;
         let mut byte = [0];
         memory
+            .user()
             .read(address, &mut byte)
             .map_err(|_| ReadCStringError::Fault)?;
         if byte[0] == 0 {
@@ -15227,11 +15324,13 @@ fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<CloneReq
     }
     let mut bytes = [0; MAX_SIZE];
     memory
+        .user()
         .read(address, &mut bytes[..size.min(MAX_SIZE)])
         .map_err(|_| negative_errno(libc::EFAULT))?;
     if size > MAX_SIZE {
         let mut extension = vec![0; size - MAX_SIZE];
         memory
+            .user()
             .read(address + MAX_SIZE as u64, &mut extension)
             .map_err(|_| negative_errno(libc::EFAULT))?;
         if extension.iter().any(|byte| *byte != 0) {
@@ -15288,6 +15387,7 @@ fn read_string_array(memory: &GuestMemory, address: u64) -> Result<Vec<String>, 
             .ok_or_else(|| negative_errno(libc::EFAULT))?;
         let mut pointer = [0; 8];
         memory
+            .user()
             .read(pointer_address, &mut pointer)
             .map_err(|_| negative_errno(libc::EFAULT))?;
         let pointer = u64::from_le_bytes(pointer);
@@ -15440,6 +15540,299 @@ mod tests {
     include!("child_exit_signal_tests.rs");
     include!("process_alarm_signal_tests.rs");
     include!("signal_dequeue_tests.rs");
+
+    #[test]
+    fn legacy_readonly_arch_output_stays_accessible_while_scalar_copyout_refuses() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0x1_0000, PAGE_SIZE as usize).unwrap();
+        memory
+            .map_user_permissions(0x1_0000, PAGE_SIZE, true, false)
+            .unwrap();
+        memory.enable_user_access();
+        memory.write_raw(0x1_0000, &[0xa5; 16]).unwrap();
+        state.fs_base = 0x1122_3344_5566;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_arch_prctl,
+                [0x1003, 0x1_0004, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert!(memory.user().put_user_i32(0x1_0004, 0).is_err());
+        let mut bytes = [0; 16];
+        memory.read_raw(0x1_0000, &mut bytes).unwrap();
+        let mut expected = [0xa5; 16];
+        expected[4..12].copy_from_slice(&state.fs_base.to_ne_bytes());
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn fixed_mapping_in_brk_gap_is_replaced_and_released_by_heap_growth_and_shrink() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.heap_base = BOOT_RESERVED_END;
+        state.program_break = state.heap_base;
+        state.brk_limit = state.heap_base + 4 * PAGE_SIZE;
+        state.mmap_base = state.brk_limit;
+        state.mmap_next = state.mmap_base;
+        state.mmap_limit = state.mmap_base + 4 * PAGE_SIZE;
+        let mut memory = GuestMemory::new(0, state.mmap_limit as usize).unwrap();
+        let address = state.heap_base + PAGE_SIZE;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mmap,
+                [
+                    address,
+                    PAGE_SIZE,
+                    libc::PROT_READ as u64,
+                    (libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
+                    u64::MAX,
+                    0
+                ]
+            ),
+            address as i64
+        );
+        memory.enable_user_access();
+        memory.user().write(address, &[0xa5; 16]).unwrap();
+        assert_eq!(memory.reservation_kind(address), Some(RegionKind::Mmap));
+        assert_eq!(memory.user().user_writable_prefix(address, 16).unwrap(), 0);
+        let new_break = address + PAGE_SIZE;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_brk,
+                [new_break, 0, 0, 0, 0, 0]
+            ),
+            new_break as i64
+        );
+        assert_eq!(memory.reservation_kind(address), Some(RegionKind::Heap));
+        assert_eq!(memory.user().user_writable_prefix(address, 16).unwrap(), 16);
+        let mut bytes = [0xa5; 16];
+        memory.read_raw(address, &mut bytes).unwrap();
+        assert_eq!(bytes, [0; 16]);
+        let heap_base = state.heap_base;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_brk,
+                [heap_base, 0, 0, 0, 0, 0]
+            ),
+            heap_base as i64
+        );
+        assert_eq!(memory.reservation_kind(address), None);
+        assert!(!memory.user_range_is_mapped(address, PAGE_SIZE));
+        assert_eq!(
+            memory.allocation_cursors().unwrap().program_break,
+            heap_base
+        );
+    }
+
+    #[test]
+    fn retained_futex_requeue_preserves_counts_and_allows_owner_mutation_while_waiting() {
+        use std::time::Duration;
+        use std::time::Instant;
+        const WORD: u64 = 0x1_0000;
+        const SECOND: u64 = WORD + 4;
+        const TIMEOUT: u64 = WORD + 16;
+        let memory = GuestMemory::new(WORD, 2 * PAGE_SIZE as usize).unwrap();
+        memory.map_user_range(WORD, PAGE_SIZE, false).unwrap();
+        memory.enable_user_access();
+        let timeout = libc::timespec {
+            tv_sec: 5,
+            tv_nsec: 0,
+        };
+        let timeout_bytes = unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref(&timeout).cast::<u8>(),
+                std::mem::size_of::<libc::timespec>(),
+            )
+        };
+        memory.write_raw(TIMEOUT, timeout_bytes).unwrap();
+        // Invalid timeout and second pointers still refuse at their old stage.
+        assert_eq!(
+            futex(&memory, &[WORD, libc::FUTEX_WAIT as u64, 0, 1, 0, 0]),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            futex(&memory, &[WORD, libc::FUTEX_CMP_REQUEUE as u64, 0, 1, 1, 0]),
+            negative_errno(libc::EFAULT)
+        );
+        let waiting_memory = memory.clone();
+        let waiter = std::thread::spawn(move || {
+            futex(
+                &waiting_memory,
+                &[WORD, libc::FUTEX_WAIT as u64, 0, TIMEOUT, 0, 0],
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            // Count one is deliberately outside guest coverage: it must not
+            // become a pointer. A return of one proves a real queued waiter.
+            let moved = futex(
+                &memory,
+                &[WORD, libc::FUTEX_CMP_REQUEUE as u64, 0, 1, SECOND, 0],
+            );
+            assert!(moved == 0 || moved == 1, "requeue returned {moved}");
+            if moved == 1 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "waiter did not enter the kernel queue"
+            );
+            std::thread::yield_now();
+        }
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        let mutating_memory = memory.clone();
+        let mutator = std::thread::spawn(move || {
+            let _transaction = mutating_memory.allocation_guard();
+            mutating_memory
+                .reserve_region(WORD + PAGE_SIZE, PAGE_SIZE, RegionKind::Mmap)
+                .unwrap()
+                .commit();
+            mutating_memory
+                .map_user_range(WORD + PAGE_SIZE, PAGE_SIZE, false)
+                .unwrap();
+            ack_tx.send(()).unwrap();
+        });
+        ack_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("owner mutation blocked behind sleeping futex");
+        mutator.join().unwrap();
+        assert_eq!(
+            memory.reservation_kind(WORD + PAGE_SIZE),
+            Some(RegionKind::Mmap)
+        );
+        assert_eq!(
+            futex(&memory, &[SECOND, libc::FUTEX_WAKE as u64, 1, 0, 0, 0]),
+            1
+        );
+        assert_eq!(waiter.join().unwrap(), 0);
+    }
+
+    #[test]
+    fn mapped_low_phdr_remap_keeps_legacy_policy_without_releasing_supervisor_frames() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (BOOT_RESERVED_END + 8 * PAGE_SIZE) as usize).unwrap();
+        memory
+            .reserve_region(0, BOOT_RESERVED_END, RegionKind::Bootstrap)
+            .unwrap()
+            .commit();
+        let low = crate::bootstrap::PROGRAM_HEADERS_ADDRESS;
+        memory
+            .reserve_region(low, PAGE_SIZE, RegionKind::ProgramHeaders)
+            .unwrap()
+            .commit();
+        memory.map_user_range(low, PAGE_SIZE, false).unwrap();
+        memory.enable_user_access();
+        memory.user().write(low, b"phdr").unwrap();
+        memory.write_raw(low + PAGE_SIZE, &[0xa5; 16]).unwrap();
+        assert_eq!(
+            memory
+                .user()
+                .user_accessible_prefix(low + PAGE_SIZE, 16)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mremap,
+                [low, PAGE_SIZE, 2 * PAGE_SIZE, 0, 0, 0]
+            ),
+            low as i64
+        );
+        assert_eq!(
+            memory.reservation_kind(low),
+            Some(RegionKind::ProgramHeaders)
+        );
+        assert_eq!(
+            memory.reservation_kind(low + PAGE_SIZE),
+            Some(RegionKind::Bootstrap)
+        );
+        let mut bytes = [0; 4];
+        memory.user().read(low, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"phdr");
+        let mut newly_exposed = [0xa5; 16];
+        memory
+            .user()
+            .read(low + PAGE_SIZE, &mut newly_exposed)
+            .unwrap();
+        assert_eq!(newly_exposed, [0; 16]);
+        assert_eq!(
+            memory
+                .user()
+                .user_writable_prefix(low + PAGE_SIZE, 16)
+                .unwrap(),
+            16
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mmap,
+                [
+                    low,
+                    PAGE_SIZE,
+                    libc::PROT_READ as u64,
+                    (libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
+                    u64::MAX,
+                    0
+                ]
+            ),
+            negative_errno(libc::ENOMEM)
+        );
+    }
+
+    #[test]
+    fn failed_fixed_mapping_preserves_bytes_reservations_and_allocation_cursor() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (BOOT_RESERVED_END + 8 * PAGE_SIZE) as usize).unwrap();
+        let args = [
+            0,
+            PAGE_SIZE,
+            (libc::PROT_READ | libc::PROT_WRITE) as u64,
+            (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
+            u64::MAX,
+            0,
+        ];
+        let address = syscall_result(&mut memory, &mut state, libc::SYS_mmap, args) as u64;
+        memory.user().write(address, b"retained").unwrap();
+        let cursors = memory.allocation_cursors();
+        let pages = memory.reserved_pages();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mmap,
+                [
+                    address,
+                    PAGE_SIZE,
+                    libc::PROT_READ as u64,
+                    (libc::MAP_FIXED | libc::MAP_PRIVATE) as u64,
+                    u64::MAX,
+                    0
+                ]
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(memory.reserved_pages(), pages);
+        assert_eq!(memory.reservation_kind(address), Some(RegionKind::Mmap));
+        assert_eq!(memory.allocation_cursors(), cursors);
+        let mut bytes = [0; 8];
+        memory.user().read(address, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"retained");
+    }
 
     #[test]
     fn proc_root_identity_requires_qualified_mount_and_directory() {

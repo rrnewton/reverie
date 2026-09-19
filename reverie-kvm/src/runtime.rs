@@ -62,6 +62,8 @@ use crate::executor::conventional_exit_code;
 use crate::failure::FailureContext;
 use crate::failure::RunFailure;
 use crate::failure::wait_for_failure;
+use crate::memory::RegionKind;
+use crate::memory::UserMemory;
 use crate::vm::CompletedSyscallBoundary;
 use crate::vm::PageZeroFault;
 use crate::vm::ProcessActionContinuation;
@@ -1163,7 +1165,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         self.executor.has_cpuid_interception()
     }
 
-    type Memory = GuestMemory;
+    type Memory = UserMemory;
     type Stack = KvmStack;
 
     fn tid(&self) -> Pid {
@@ -1179,7 +1181,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 
     fn memory(&self) -> Self::Memory {
-        self.memory.clone()
+        self.memory.user()
     }
 
     fn auxv(&self) -> Auxv {
@@ -1486,7 +1488,7 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
 
 /// A stack allocator backed by a low page reserved for Tool injection buffers.
 pub struct KvmStack {
-    memory: GuestMemory,
+    memory: UserMemory,
     top: u64,
     stack_pointer: u64,
     capacity: usize,
@@ -1509,7 +1511,7 @@ impl KvmStack {
         );
         Self {
             capacity: STACK_CAPACITY,
-            memory,
+            memory: memory.user(),
             top,
             stack_pointer: top,
             writes: Vec::new(),
@@ -1591,7 +1593,7 @@ impl Stack for KvmStack {
     fn commit(mut self) -> std::result::Result<Self::StackGuard, Errno> {
         for (address, bytes) in &self.writes {
             self.memory
-                .write_raw(*address, bytes)
+                .write_injection(*address, bytes)
                 .map_err(|_| Errno::EFAULT)?;
         }
         Ok(KvmStackGuard {
@@ -1751,7 +1753,14 @@ fn tool_stack_bottom(tool_stack_top: u64) -> u64 {
 }
 
 fn expose_tool_scratch(memory: &GuestMemory, tool_stack_top: u64) -> Result<()> {
-    memory.map_user_range(tool_stack_bottom(tool_stack_top), TOOL_STACK_SIZE, false)
+    let reservation = memory.reserve_region(
+        tool_stack_bottom(tool_stack_top),
+        TOOL_STACK_SIZE,
+        RegionKind::ToolScratch,
+    )?;
+    memory.map_user_range(tool_stack_bottom(tool_stack_top), TOOL_STACK_SIZE, false)?;
+    reservation.commit();
+    Ok(())
 }
 
 fn hide_tool_scratch(memory: &GuestMemory, tool_stack_top: u64) -> Result<()> {
@@ -1883,7 +1892,7 @@ where
 fn initial_exec_request(memory: &GuestMemory, stack_pointer: u64) -> Result<SyscallRequest> {
     fn read_word(memory: &GuestMemory, address: u64) -> Result<u64> {
         let mut bytes = [0; std::mem::size_of::<u64>()];
-        memory.read(address, &mut bytes)?;
+        memory.user().read(address, &mut bytes)?;
         Ok(u64::from_le_bytes(bytes))
     }
 
@@ -5011,6 +5020,32 @@ mod tests {
                     [1, libc::SIGUSR1 as u64, 0, 0, 0, 0],
                 ))
         );
+    }
+
+    #[test]
+    fn hidden_scratch_commit_initializes_physical_bytes_without_exposing_tool_access() {
+        let memory = GuestMemory::new(0, TOOL_STACK_TOP as usize).unwrap();
+        expose_tool_scratch(&memory, TOOL_STACK_TOP).unwrap();
+        memory.enable_user_access();
+        hide_tool_scratch(&memory, TOOL_STACK_TOP).unwrap();
+        let checked_out = Arc::new(AtomicBool::new(false));
+        let mut stack = KvmStack::new(memory.clone(), TOOL_STACK_TOP, checked_out.clone());
+        let address = stack.push(0x1122_3344_u32);
+        assert!(stack.read_value(address).is_err());
+        let guard = stack.commit().unwrap();
+        let mut bytes = [0; 4];
+        memory
+            .read_raw(address.as_raw() as u64, &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, 0x1122_3344_u32.to_ne_bytes());
+        assert!(memory.user().read_value(address).is_err());
+        assert_eq!(
+            memory.reservation_kind(TOOL_STACK_TOP - TOOL_STACK_SIZE),
+            Some(RegionKind::ToolScratch)
+        );
+        assert!(checked_out.load(Ordering::SeqCst));
+        drop(guard);
+        assert!(!checked_out.load(Ordering::SeqCst));
     }
 
     #[test]
