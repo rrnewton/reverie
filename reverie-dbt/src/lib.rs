@@ -18,6 +18,7 @@
 
 pub mod backend_stats;
 pub mod counter;
+mod counter2_global;
 mod evidence;
 mod launcher;
 pub mod sync_rpc;
@@ -33,6 +34,7 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
+#[cfg(feature = "prototype-runtime")]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU16;
@@ -42,6 +44,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
+pub use counter2_global::Counter2Global;
 pub use evidence::DbtEvidence;
 pub use evidence::DbtEvidenceLogLevel;
 pub use evidence::decode_evidence;
@@ -70,13 +73,12 @@ use reverie::syscalls::Syscall;
 #[cfg(any(feature = "prototype-runtime", test))]
 use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
+#[cfg(any(feature = "prototype-runtime", test))]
 use reverie::syscalls::Sysno;
 use reverie_memory::LocalMemory;
 use reverie_memory::MemoryAccess;
 use serde::Deserialize;
 use serde::Serialize;
-#[cfg(feature = "prototype-runtime")]
-pub use tools::Counter2Global;
 
 /// Native callback used to issue a syscall with DynamoRIO bookkeeping.
 pub type SyscallInvoker = unsafe extern "C" fn(usize, i64, *const u64) -> i64;
@@ -115,6 +117,7 @@ pub type RuntimeIdler = unsafe extern "C" fn();
 /// update and fails at link or at the pre-callback ABI check.
 pub const DBT_RUNTIME_ABI_VERSION: u32 = 4;
 
+#[cfg(feature = "prototype-runtime")]
 #[repr(C)]
 struct DbtRuntimeCallbacksV1 {
     emit: RuntimeEmitter,
@@ -156,14 +159,14 @@ pub struct DbtRuntimeCallbacks {
 }
 
 /// Reports the exact native-client/external-runtime ABI version.
-#[cfg(feature = "prototype-runtime")]
+#[cfg(any(feature = "prototype-runtime", test))]
 #[unsafe(no_mangle)]
 pub extern "C" fn reverie_dbt_runtime_abi_version() -> u32 {
     DBT_RUNTIME_ABI_VERSION
 }
 
 /// Reports the exact callback-structure size for the current ABI version.
-#[cfg(feature = "prototype-runtime")]
+#[cfg(any(feature = "prototype-runtime", test))]
 #[unsafe(no_mangle)]
 pub extern "C" fn reverie_dbt_runtime_callbacks_size() -> usize {
     std::mem::size_of::<DbtRuntimeCallbacks>()
@@ -1666,11 +1669,11 @@ pub fn set_current_ppid(in_tree_ppid: i32) {
     PROCESS_PPID.store(in_tree_ppid, Ordering::Relaxed);
 }
 
-#[cfg(feature = "prototype-runtime")]
+#[cfg(any(feature = "prototype-runtime", test))]
 static PROTOTYPE_TOOL: PrototypeTool = PrototypeTool;
-#[cfg(feature = "prototype-runtime")]
+#[cfg(any(feature = "prototype-runtime", test))]
 static GLOBAL_STATE: () = ();
-#[cfg(feature = "prototype-runtime")]
+#[cfg(any(feature = "prototype-runtime", test))]
 static CONFIG: () = ();
 #[cfg(feature = "prototype-runtime")]
 static TOTAL_BRANCHES: AtomicU64 = AtomicU64::new(0);
@@ -1697,7 +1700,7 @@ pub extern "C" fn reverie_dbt_runtime_image_init() -> u64 {
 /// `counters` must point to aligned, writable storage for one counter value and
 /// the callback pointers must be valid for the lifetime of the application.
 // TODO-HUMAN-REVIEW(PR-131): Review the expanded native thread initialization ABI.
-#[cfg(feature = "prototype-runtime")]
+#[cfg(any(feature = "prototype-runtime", test))]
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn reverie_dbt_runtime_thread_init(
@@ -1888,6 +1891,7 @@ pub extern "C" fn reverie_dbt_runtime_copied_syscall(_sysnum: i64, _args: *const
 }
 
 // TODO-HUMAN-REVIEW(PR-154): Review the deferred lifecycle syscall callback ABI.
+#[cfg(any(feature = "prototype-runtime", test))]
 unsafe fn write_deferred_syscall(syscall: Syscall, number: *mut i64, args: *mut u64) {
     let (sysno, syscall_args) = syscall.into_parts();
     unsafe { number.write(sysno.id() as i64) };

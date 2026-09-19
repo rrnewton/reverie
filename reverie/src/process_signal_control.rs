@@ -89,8 +89,15 @@ pub enum SignalBoundaryOutcome {
     Caught,
     /// No handler was installed; no interrupted wait may be invented.
     NoHandler,
-    /// The selected default action or frame fault established guest exit.
-    Terminated,
+    /// A committed guest exit, before physical worker joins or consuming hooks.
+    /// The permit supplies the exact process/task lifetime; an individual exit
+    /// must never be interpreted as permission to retire its live peers.
+    Terminated {
+        /// True only for the committed process-wide exit.
+        group: bool,
+        /// Winner status from the backend lifecycle table, in wait(2) encoding.
+        wait_status: i32,
+    },
     /// Successful exec replaced the selected callback's old image.
     ImageReplaced,
     /// Consuming logical task retirement cancelled the callback before entry.

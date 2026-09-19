@@ -3708,6 +3708,75 @@ impl ElfExecutor {
         self.signal_failure_context() == Some(context) && self.signal_site_is_current(context.site)
     }
 
+    /// Retirement cannot convert an unacknowledged removal or a stale image's
+    /// ledger into success. Keep all evidence owned until the driver's exact
+    /// boundary receipt is acknowledged; refusal transfers it through normal
+    /// with_signal_effects cleanup.
+    pub(crate) fn validate_signal_retirement(
+        &self,
+        context: Option<reverie::ParkedSignalFailureContext>,
+    ) -> crate::Result<()> {
+        let fail = || {
+            crate::Error::UnexpectedVcpuExit(
+                "thread retirement has stale or unacknowledged signal effects".to_owned(),
+            )
+        };
+        if self.signal_failure_context() != context
+            || context.is_some_and(|context| !self.signal_failure_context_is_current(context))
+            || self.signal_dequeue_failure().is_some()
+        {
+            return Err(fail());
+        }
+        let owner = self.admitted_signal_identity();
+        let owned = self.owned_delivery_permit();
+        if owned != self.delivery_permit()
+            || owned.is_some_and(|permit| permit.task != owner)
+            || (self.signal_controlled()
+                && self.parked_signals.as_ref().is_some_and(|state| {
+                    !state.observations.is_empty()
+                        && owned.is_none_or(|permit| {
+                            permit.site != Some(state.site)
+                                || !state
+                                    .observations
+                                    .iter()
+                                    .any(|lease| lease.nonce == permit.sequence)
+                        })
+                }))
+        {
+            return Err(fail());
+        }
+        let process = self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if process.dequeue_failed
+            || process
+                .dequeue_journal
+                .iter()
+                .any(|entry| entry.owner == owner)
+        {
+            return Err(fail());
+        }
+        let acknowledged = process
+            .dequeue_acknowledged
+            .map_or(0, |effect| effect.sequence);
+        if self
+            .completed_signal_effects
+            .iter()
+            .any(|effect| effect.sequence > acknowledged)
+            || self.parked_signals.as_ref().is_some_and(|state| {
+                state
+                    .effects
+                    .iter()
+                    .any(|effect| effect.sequence > state.acknowledged)
+            })
+        {
+            return Err(fail());
+        }
+        Ok(())
+    }
+
     pub(crate) fn admit_signal_observation(
         &mut self,
         site: reverie::CallbackSignalSite,

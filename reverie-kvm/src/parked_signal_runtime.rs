@@ -288,6 +288,9 @@ where
     let pending_children = Arc::new(Mutex::new(Vec::new()));
     let mut process_completed = false;
     let tool_stack_top = backend.tool_stack_top();
+    let continuation_site = executor
+        .signal_failure_context()
+        .map(|context| context.site);
     let outcome = {
         let mut adapter = StaticElfSyscallExecutor {
             backend,
@@ -295,8 +298,9 @@ where
             memory: memory.clone(),
             process_context: ProcessExecutionContext::Lifecycle,
             last_result: raw,
+            polled_read_attempt: None,
             process_completed: &mut process_completed,
-            callback_site: None,
+            callback_site: continuation_site,
             original_syscall: None,
             signal_guard: SignalGuard::Ordinary,
         };
@@ -456,6 +460,7 @@ mod signal_cleanup_tests {
                         memory: memory.clone(),
                         process_context: ProcessExecutionContext::Lifecycle,
                         last_result: None,
+                        polled_read_attempt: None,
                         process_completed: &mut completed,
                         callback_site: None,
                         original_syscall: None,

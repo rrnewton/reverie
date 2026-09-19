@@ -232,6 +232,19 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         self.tail_inject(reverie_syscalls::Exit::default()).await
     }
 
+    /// Retires only the current guest thread after the Tool has determined
+    /// that it must never resume, without requesting cancellation of peers.
+    ///
+    /// This abandons the callback and runs consuming thread cleanup once. It
+    /// defaults to a raw thread exit with status zero; an established backend
+    /// exit keeps its status. A KVM leader retains and joins live workers, then
+    /// adopts the final process status, including a peer's later group exit.
+    /// Unlike explicit cancellation, retirement does not discard their work.
+    /// Restricted signal callbacks do not gain arbitrary syscall injection.
+    async fn retire_current_thread(&mut self) -> Never {
+        self.tail_inject(reverie_syscalls::Exit::default()).await
+    }
+
     /// Defers one already-selected signal for delivery by the backend at its
     /// next safe return-to-userspace boundary.
     ///
@@ -302,6 +315,21 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
 
     /// Current parked-observation capability, bound to this exact callback.
     fn parked_signal_site(&self) -> Option<crate::CallbackSignalSite> {
+        None
+    }
+
+    /// Authenticates a zero-effect attempt of this exact original scalar read.
+    ///
+    /// A site is returned only after an actual injection of the identical raw
+    /// syscall and arguments returned EAGAIN/EWOULDBLOCK, while its original
+    /// callback remains live. A later injection invalidates that attempt. A
+    /// positive/partial result, EOF, another errno or another syscall is never
+    /// eligible. This query does not execute or restart the read, consume a
+    /// signal or grant scheduler ownership. Unsupported backends return None.
+    fn polled_read_signal_site(
+        &self,
+        _call: crate::syscalls::Read,
+    ) -> Option<crate::CallbackSignalSite> {
         None
     }
 
@@ -609,6 +637,10 @@ where
         self.inner.cancel_current_thread().await
     }
 
+    async fn retire_current_thread(&mut self) -> Never {
+        self.inner.retire_current_thread().await
+    }
+
     async fn defer_signal_delivery(&mut self, event: SignalEvent) -> Result<(), Error> {
         self.inner.defer_signal_delivery(event).await
     }
@@ -632,6 +664,12 @@ where
     }
     fn parked_signal_site(&self) -> Option<crate::CallbackSignalSite> {
         self.inner.parked_signal_site()
+    }
+    fn polled_read_signal_site(
+        &self,
+        call: crate::syscalls::Read,
+    ) -> Option<crate::CallbackSignalSite> {
+        self.inner.polled_read_signal_site(call)
     }
     fn captured_write_signal_site(
         &self,

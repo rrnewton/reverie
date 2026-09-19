@@ -227,12 +227,26 @@ impl Tool for ParkedTool {
                 let result = guest.inject(syscall).await;
                 seen(Seen::RestartReadResult(result));
                 assert_eq!(result, Ok(1), "handler supplied the real restart byte");
+                assert!(
+                    guest
+                        .polled_read_signal_site(reverie::syscalls::Read::from(args))
+                        .is_none()
+                );
                 return result.map_err(Into::into);
             }
             assert_eq!(handled, 0);
+            let read = reverie::syscalls::Read::from(args);
+            assert!(
+                guest.polled_read_signal_site(read).is_none(),
+                "no actual attempt yet"
+            );
             let result = guest.inject(syscall).await;
             seen(Seen::RestartReadResult(result));
             if self.mode == 19 {
+                assert!(
+                    guest.polled_read_signal_site(read).is_none(),
+                    "partial result is complete"
+                );
                 assert_eq!(
                     result,
                     Ok(3),
@@ -245,6 +259,51 @@ impl Tool for ParkedTool {
                     Err(Errno::EAGAIN),
                     "control requires actual zero progress"
                 );
+                let site = guest
+                    .polled_read_signal_site(read)
+                    .expect("exact real EAGAIN");
+                let raw = [
+                    args.arg0, args.arg1, args.arg2, args.arg3, args.arg4, args.arg5,
+                ];
+                for index in 0..6 {
+                    let mut wrong = raw;
+                    wrong[index] = wrong[index].wrapping_add(1);
+                    let wrong_read = reverie::syscalls::Read::from(SyscallArgs::new(
+                        wrong[0], wrong[1], wrong[2], wrong[3], wrong[4], wrong[5],
+                    ));
+                    assert!(guest.polled_read_signal_site(wrong_read).is_none());
+                }
+                let stack = guest.stack().await;
+                assert!(
+                    guest.polled_read_signal_site(read).is_none(),
+                    "checked-out scratch"
+                );
+                drop(stack);
+                assert_eq!(guest.polled_read_signal_site(read), Some(site));
+                // EAGAIN from a different real read is not this original read's witness.
+                let wrong = reverie::syscalls::Read::from(SyscallArgs::new(
+                    args.arg0,
+                    args.arg1 + 1,
+                    args.arg2,
+                    args.arg3,
+                    args.arg4,
+                    args.arg5,
+                ));
+                assert_eq!(guest.inject(wrong).await, Err(Errno::EAGAIN));
+                assert!(guest.polled_read_signal_site(read).is_none());
+                assert!(guest.polled_read_signal_site(wrong).is_none());
+                assert_eq!(guest.inject(read).await, Err(Errno::EAGAIN));
+                assert_eq!(guest.polled_read_signal_site(read), Some(site));
+                assert_eq!(
+                    guest.inject(reverie::syscalls::Getpid::new()).await?,
+                    i64::from(guest.pid().as_raw())
+                );
+                assert!(
+                    guest.polled_read_signal_site(read).is_none(),
+                    "later injection invalidates witness"
+                );
+                assert_eq!(guest.inject(read).await, Err(Errno::EAGAIN));
+                assert_eq!(guest.polled_read_signal_site(read), Some(site));
             }
         } else {
             if syscall.number() != Sysno::getpid || args.arg0 != 0x7061726b {
