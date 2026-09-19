@@ -3079,8 +3079,21 @@ fn scan_descendants(root_pid: u32) -> io::Result<Vec<ProcessIdentity>> {
             Ok((state, parent, start_ticks)) => {
                 processes.insert(pid, (state, parent, start_ticks));
             }
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
-            Err(source) => return Err(source),
+            // /proc can open a live task's stat entry, then return ESRCH
+            // from read after the task exits. Like ENOENT at open, that proves
+            // this entry vanished; every other read/parse error stays unknown.
+            Err(source)
+                if source.kind() == io::ErrorKind::NotFound
+                    || source.raw_os_error() == Some(libc::ESRCH) => {}
+            Err(source) => {
+                #[cfg(test)]
+                eprintln!(
+                    "CENSUS_SCAN_ERROR root={root_pid} pid={pid} kind={:?} errno={:?} error={source:?}",
+                    source.kind(),
+                    source.raw_os_error()
+                );
+                return Err(source);
+            }
         }
     }
     let mut domain = BTreeSet::from([root_pid]);
@@ -3124,7 +3137,42 @@ fn scan_process_stat_fields(pid: u32) -> io::Result<(char, u32, u64)> {
             "test-injected unreadable process identity",
         ));
     }
+    #[cfg(test)]
+    if let Some(reader) = SCAN_STAT_READER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.as_ref().is_some_and(|(target, _)| *target == pid) {
+            slot.take().map(|(_, reader)| reader)
+        } else {
+            None
+        }
+    }) {
+        return reader();
+    }
     process_stat_fields(pid)
+}
+
+#[cfg(test)]
+type ScanStatReader = Box<dyn FnOnce() -> io::Result<(char, u32, u64)>>;
+
+#[cfg(test)]
+thread_local! {
+    // One exact read boundary in the current isolated process-domain test.
+    static SCAN_STAT_READER: std::cell::RefCell<Option<(u32, ScanStatReader)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn inject_scan_stat_reader(
+    pid: u32,
+    reader: impl FnOnce() -> io::Result<(char, u32, u64)> + 'static,
+) {
+    SCAN_STAT_READER.with(|slot| {
+        assert!(
+            slot.borrow().is_none(),
+            "previous scan fixture was not read"
+        );
+        *slot.borrow_mut() = Some((pid, Box::new(reader)));
+    });
 }
 
 #[cfg(test)]
@@ -3256,7 +3304,7 @@ pub(crate) fn capture_and_freeze_residuals(
 ) -> ResidualCapture {
     let mut prior = Vec::new();
     let mut unclassifiable = Vec::new();
-    for _ in 0..4 {
+    for _diagnostic_sample in 0..4 {
         // The supervisor is a child subreaper. A payload helper can therefore
         // become our adopted zombie after the supervised group leader has
         // already returned. Drain those exits before every sample rather than
@@ -3282,12 +3330,18 @@ pub(crate) fn capture_and_freeze_residuals(
                 }
                 mine
             }
-            Err(_) => {
+            Err(_diagnostic_source) => {
+                #[cfg(test)]
+                eprintln!(
+                    "CENSUS_CAPTURE_ERROR supervisor={supervisor_pid} sample={_diagnostic_sample} floor={payload_start_ticks} kind={:?} errno={:?} prior={prior:?} unclassifiable={unclassifiable:?} error={_diagnostic_source:?}",
+                    _diagnostic_source.kind(),
+                    _diagnostic_source.raw_os_error()
+                );
                 return ResidualCapture {
                     complete: false,
                     identities: prior,
                     unclassifiable,
-                }
+                };
             }
         };
         let mut all_stopped = true;
@@ -4586,23 +4640,133 @@ mod tests {
 
         // Floor 0, so the floor cannot be what excludes anything here.
         let capture = capture_and_freeze_residuals(std::process::id(), 0, &token);
+        eprintln!(
+            "CENSUS_CONTROL_RESULT supervisor={} mine={mine_identity:?} foreign={foreign_identity:?} complete={} identities={:?} unclassifiable={:?}",
+            std::process::id(), capture.complete, capture.identities, capture.unclassifiable
+        );
         assert!(
             capture.identities.contains(&mine_identity),
-            "CONTROL FAILED: a token-carrying descendant must remain a residual"
+            "CONTROL FAILED: a token-carrying descendant must remain a residual; mine={mine_identity:?}, complete={}, identities={:?}, unclassifiable={:?}",
+            capture.complete, capture.identities, capture.unclassifiable
         );
         assert!(
             !capture.identities.contains(&foreign_identity),
-            "an orphan carrying another payload's token was charged to this one"
+            "an orphan carrying another payload's token was charged to this one; foreign={foreign_identity:?}, complete={}, identities={:?}, unclassifiable={:?}",
+            capture.complete, capture.identities, capture.unclassifiable
         );
         assert!(
             !capture.unclassifiable.contains(&foreign_identity),
-            "a readable non-member is Foreign, not Unclassifiable"
+            "a readable non-member is Foreign, not Unclassifiable; foreign={foreign_identity:?}, complete={}, identities={:?}, unclassifiable={:?}",
+            capture.complete, capture.identities, capture.unclassifiable
+        );
+
+        assert!(
+            capture.complete,
+            "the member/non-member census must be complete"
         );
 
         signal_exact_process(&foreign_identity, libc::SIGKILL).unwrap();
         signal_exact_process(&mine_identity, libc::SIGKILL).unwrap();
         foreign.wait().unwrap();
         mine.wait().unwrap();
+    }
+
+    struct ScanFixtureChildren(Vec<Child>);
+
+    impl Drop for ScanFixtureChildren {
+        fn drop(&mut self) {
+            for child in &mut self.0 {
+                // Only an unreaped live child can be signalled safely here.
+                if matches!(child.try_wait(), Ok(None)) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
+
+    fn scan_fixture_child(token: &str) -> Child {
+        Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .env(PAYLOAD_DOMAIN_ENV, token)
+            .spawn()
+            .unwrap()
+    }
+
+    fn scan_fixture_identity(child: &Child) -> ProcessIdentity {
+        ProcessIdentity {
+            pid: child.id(),
+            start_ticks: process_start_ticks(child.id()).unwrap(),
+        }
+    }
+
+    #[test]
+    fn vanished_proc_stat_entry_does_not_poison_the_capture() {
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
+        let token = mint_domain_token();
+        let children = ScanFixtureChildren(vec![
+            scan_fixture_child(&token),
+            scan_fixture_child("other-payload"),
+        ]);
+        let mine = scan_fixture_identity(&children.0[0]);
+        let foreign = scan_fixture_identity(&children.0[1]);
+        let mut gone = ScanFixtureChildren(vec![scan_fixture_child(&token)]);
+        let gone_identity = scan_fixture_identity(&gone.0[0]);
+        let mut stat = File::open(format!("/proc/{}/stat", gone_identity.pid)).unwrap();
+        // The entry is live when /proc is enumerated. At its actual scan read
+        // boundary, reap this owned child and read the previously opened fd.
+        // Linux reports ESRCH here; opening the now-absent path gives ENOENT.
+        inject_scan_stat_reader(gone_identity.pid, move || {
+            gone.0[0].kill()?;
+            gone.0[0].wait()?;
+            let mut raw = String::new();
+            let error = stat.read_to_string(&mut raw).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(libc::ESRCH));
+            assert_eq!(
+                File::open(format!("/proc/{}/stat", gone_identity.pid))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::NotFound
+            );
+            Err(error)
+        });
+        let capture = capture_and_freeze_residuals(std::process::id(), 0, &token);
+        assert!(SCAN_STAT_READER.with(|slot| slot.borrow().is_none()));
+        assert!(capture.complete, "gone entry poisoned the census");
+        assert!(capture.identities.contains(&mine));
+        assert!(!capture.identities.contains(&foreign));
+        assert!(!capture.identities.contains(&gone_identity));
+        assert!(capture.unclassifiable.is_empty());
+    }
+
+    #[test]
+    fn unreadable_or_malformed_proc_stat_still_refuses_completeness() {
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
+        let token = mint_domain_token();
+        let children = ScanFixtureChildren(vec![scan_fixture_child(&token)]);
+        let mine = scan_fixture_identity(&children.0[0]);
+        for (name, error) in [
+            ("permission", io::Error::from_raw_os_error(libc::EACCES)),
+            ("io", io::Error::from_raw_os_error(libc::EIO)),
+            (
+                "malformed",
+                io::Error::new(io::ErrorKind::InvalidData, "malformed stat fixture"),
+            ),
+        ] {
+            inject_scan_stat_reader(mine.pid, move || Err(error));
+            let refused = capture_and_freeze_residuals(std::process::id(), 0, &token);
+            assert!(SCAN_STAT_READER.with(|slot| slot.borrow().is_none()));
+            assert!(!refused.complete, "{name} must not clear the census");
+            let readable = capture_and_freeze_residuals(std::process::id(), 0, &token);
+            assert!(readable.complete, "{name}: readable opposing control");
+            assert!(readable.identities.contains(&mine));
+            assert!(readable.unclassifiable.is_empty());
+        }
     }
 
     /// A descendant we cannot classify is REPORTED, never omitted.
