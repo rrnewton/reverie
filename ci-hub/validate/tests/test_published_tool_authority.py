@@ -77,7 +77,7 @@ VERIFIER_PATH = VALIDATE_ROOT / "immutable_tool_authority.py"
 # edits the verifier updates this line in the same commit, which is the whole
 # point of pinning it rather than computing it.
 PUBLISHED_VERIFIER_SHA256 = (
-    "cd9dbcb99d0cc8d8e9dfebeeaaa0546a6d0eae525477e858277cb7c1a6c28bdd"
+    "0859ba04aaf62e2410383eb3471265ff2cda9b35f2e5c4e98648d1b3bdd1cb8b"
 )
 
 # The interpreter production actually loads the verifier under. Not
