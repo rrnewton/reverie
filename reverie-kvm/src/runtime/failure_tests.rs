@@ -260,7 +260,7 @@ fn peer_failure_cancellation_preserves_thread_status_and_primary_cause() {
             "own execution error" => Err(Error::Reverie(Errno::ENOTSUPP.into())),
             "ordinary cancellation" => Ok(ToolProcessExit {
                 exit: executor.cancel_current_thread(),
-                cancelled: true,
+                disposition: ToolExitDisposition::ExplicitCancellation,
             }),
             "peer cleanup errors" => Err(Error::RunAborted.with_cleanup(vec![Error::HostIo(
                 std::io::Error::from_raw_os_error(libc::ENOSPC),

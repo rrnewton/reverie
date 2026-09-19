@@ -23,6 +23,7 @@ impl GlobalTool for TerminalLog {
 struct TerminalTool {
     pid: i32,
     mode: u8,
+    natural_retirement: bool,
     clone_count: AtomicU64,
     target: AtomicU64,
     completed_tids: Mutex<std::collections::BTreeSet<i32>>,
@@ -41,7 +42,8 @@ impl Tool for TerminalTool {
     fn new(pid: Pid, mode: &u8) -> Self {
         Self {
             pid: pid.as_raw(),
-            mode: *mode,
+            mode: *mode & 0x7f,
+            natural_retirement: mode & 0x80 != 0,
             ..Self::default()
         }
     }
@@ -65,7 +67,7 @@ impl Tool for TerminalTool {
         event(0, guest.tid().as_raw(), 0);
         if self.mode == 0 || (self.mode == 3 && self.is_target(guest.tid())) {
             event(3, guest.tid().as_raw(), 0);
-            guest.cancel_current_thread().await;
+            self.finish_thread(guest).await;
         }
         Ok(())
     }
@@ -74,7 +76,7 @@ impl Tool for TerminalTool {
         event(4, guest.tid().as_raw(), count);
         if self.mode == 2 || (self.mode == 12 && count == 2) {
             event(3, guest.tid().as_raw(), 2);
-            guest.cancel_current_thread().await;
+            self.finish_thread(guest).await;
         }
         Ok(())
     }
@@ -111,7 +113,7 @@ impl Tool for TerminalTool {
         }
         if self.mode == 1 && matches!(syscall, Syscall::Execve(_)) {
             event(3, guest.tid().as_raw(), 1);
-            guest.cancel_current_thread().await;
+            self.finish_thread(guest).await;
         }
         if matches!(syscall.number(), Sysno::clone | Sysno::clone3) {
             let request = reverie_kvm::SyscallRequest::from_syscall(syscall);
@@ -162,14 +164,14 @@ impl Tool for TerminalTool {
             }
             if self.mode == 9 && self.is_target(guest.tid()) {
                 event(3, guest.tid().as_raw(), 9);
-                guest.cancel_current_thread().await;
+                self.finish_thread(guest).await;
             }
             return Ok(child);
         }
         if self.is_target(guest.tid()) && matches!(syscall, Syscall::Getpid(_)) {
             if self.mode == 4 {
                 event(3, guest.tid().as_raw(), 4);
-                guest.cancel_current_thread().await;
+                self.finish_thread(guest).await;
             }
             if matches!(self.mode, 5 | 6 | 10 | 13) {
                 for sig in if self.mode == 6 {
@@ -234,7 +236,7 @@ impl Tool for TerminalTool {
             assert_eq!(registers.orig_rax, libc::SYS_getpid as u64);
         }
         event(3, guest.tid().as_raw(), self.mode as u64);
-        guest.cancel_current_thread().await
+        self.finish_thread(guest).await
     }
     async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
         &self,
@@ -244,7 +246,12 @@ impl Tool for TerminalTool {
         status: ExitStatus,
     ) -> Result<(), reverie::Error> {
         assert_eq!((state.0, state.1, state.2), (self.pid, tid.as_raw(), true));
-        assert_eq!(status, ExitStatus::SUCCESS);
+        let expected = if self.mode == 10 && tid.as_raw() == self.pid {
+            ExitStatus::Exited(255)
+        } else {
+            ExitStatus::SUCCESS
+        };
+        assert_eq!(status, expected, "mode={} tid={tid}", self.mode);
         if tid.as_raw() != self.pid {
             let address = *self
                 .child_tid
@@ -268,12 +275,15 @@ impl Tool for TerminalTool {
         }
         self.exits.fetch_add(1, Ordering::SeqCst);
         event(1, tid.as_raw(), state.3);
-        self.completed_tids.lock().unwrap().insert(tid.as_raw());
         if self.mode == 10
             && (self.is_target(tid) || self.peer.load(Ordering::SeqCst) == tid.as_raw() as u64)
         {
+            // Do not report successful completion to the guest's getpid
+            // wait. RunFailure must drop that wait before pthread_join or the
+            // later reuse-thread creation can execute.
             return Err(Errno::EIO.into());
         }
+        self.completed_tids.lock().unwrap().insert(tid.as_raw());
         Ok(())
     }
     async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
@@ -283,14 +293,39 @@ impl Tool for TerminalTool {
         status: ExitStatus,
     ) -> Result<(), reverie::Error> {
         assert_eq!(pid.as_raw(), self.pid);
-        assert_eq!(status, ExitStatus::SUCCESS);
+        let expected = if self.mode == 10 {
+            ExitStatus::Exited(255)
+        } else {
+            ExitStatus::SUCCESS
+        };
+        assert_eq!(status, expected, "mode={} pid={pid}", self.mode);
         let count = self.starts.load(Ordering::SeqCst);
+        if self.mode == 10 {
+            assert_eq!(
+                count, 3,
+                "failure must stop the guest before reuse creation"
+            );
+            assert_eq!(self.clone_count.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                *self.completed_tids.lock().unwrap(),
+                std::collections::BTreeSet::from([self.pid]),
+                "failed worker hooks must not release the guest continuation"
+            );
+        }
         assert_eq!(self.exits.load(Ordering::SeqCst), count);
         event(2, pid.as_raw(), count);
         Ok(())
     }
 }
 impl TerminalTool {
+    async fn finish_thread<G: Guest<Self>>(&self, guest: &mut G) -> reverie::Never {
+        if self.natural_retirement {
+            guest.retire_current_thread().await
+        } else {
+            guest.cancel_current_thread().await
+        }
+    }
+
     fn is_target(&self, tid: Pid) -> bool {
         self.target.load(Ordering::SeqCst) == tid.as_raw() as u64
     }
@@ -302,6 +337,19 @@ fn terminal_cancellation_consumes_all_callback_contexts_and_preserves_live_peers
     if !leader_self_exec_bounded(TEST) {
         return;
     }
+    check_terminal_contexts(false, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]);
+}
+
+#[test]
+fn natural_retirement_consumes_real_signal_contexts_and_preserves_live_peers() {
+    const TEST: &str = "terminal_cancellation::natural_retirement_consumes_real_signal_contexts_and_preserves_live_peers";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    check_terminal_contexts(true, &[0, 2, 3, 4, 5, 6, 7, 8, 10]);
+}
+
+fn check_terminal_contexts(natural_retirement: bool, modes: &[u8]) {
     let directory = TestDirectory::new();
     let executable = compile_c_program(
         &directory.0,
@@ -317,7 +365,7 @@ fn terminal_cancellation_consumes_all_callback_contexts_and_preserves_live_peers
         )
         .unwrap();
     }
-    for mode in [0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13] {
+    for &mode in modes {
         eprintln!("terminal callback mode={mode} starting");
         TERMINAL_EVENTS.lock().unwrap().clear();
         let argument = mode.to_string();
@@ -331,39 +379,74 @@ fn terminal_cancellation_consumes_all_callback_contexts_and_preserves_live_peers
             )
             .unwrap();
         *TERMINAL_MEMORY.lock().unwrap() = Some(backend.memory().clone());
-        let result = futures::executor::block_on(
-            backend.run_static_elf_with_tool::<TerminalTool>(mode, true),
-        );
+        let result = futures::executor::block_on(backend.run_static_elf_with_tool::<TerminalTool>(
+            mode | if natural_retirement { 0x80 } else { 0 },
+            true,
+        ));
         *TERMINAL_MEMORY.lock().unwrap() = None;
         let events = TERMINAL_EVENTS.lock().unwrap().clone();
         eprintln!("terminal callback mode={mode} events={events:?}");
         if mode == 10 {
             let error = result
                 .err()
-                .expect("both forced worker exit-hook errors must remain failures")
-                .to_string();
-            let mut worker_tids = events
+                .expect("both forced worker exit-hook errors must remain failures");
+            let worker_tids = events
                 .iter()
                 .filter(|e| e.0 == 0)
                 .map(|e| e.1)
                 .skip(1)
                 .take(2)
                 .collect::<Vec<_>>();
-            worker_tids.sort();
-            let positions = worker_tids
-                .iter()
-                .map(|tid| {
-                    error
-                        .find(&format!("thread {tid}:"))
-                        .expect("each failed worker must be reported")
-                })
-                .collect::<Vec<_>>();
+            assert_eq!(worker_tids.len(), 2, "both known workers must have started");
+            let peer = worker_tids[0];
+            let target = worker_tids[1];
+            assert_ne!(peer, target);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.0 == 3)
+                    .map(|e| e.1)
+                    .collect::<Vec<_>>(),
+                vec![target],
+                "the target retires before either cleanup error"
+            );
+            fn unshared(error: &reverie_kvm::Error) -> &reverie_kvm::Error {
+                match error {
+                    reverie_kvm::Error::SharedFailure(error) => unshared(error),
+                    error => error,
+                }
+            }
+            fn eio_worker(error: &reverie_kvm::Error) -> i32 {
+                let reverie_kvm::Error::WorkerFailure { tid, error } = unshared(error) else {
+                    panic!("missing exact worker context: {error:?}");
+                };
+                assert!(
+                    matches!(unshared(error), reverie_kvm::Error::Reverie(reverie::Error::Errno(errno)) if *errno == Errno::EIO),
+                    "the original typed EIO must remain intact: {error:?}"
+                );
+                *tid
+            }
+            let reverie_kvm::Error::WithCleanup { primary, cleanup } = unshared(&error) else {
+                panic!("both exact worker causes must be retained: {error:?}");
+            };
+            // RunFailure preserves the first published cause, even when its
+            // TID is higher. The target's EIO causes peer cancellation; the
+            // peer's later EIO is cleanup, never a replacement primary.
+            assert_eq!(eio_worker(primary), target);
+            assert_eq!(cleanup.len(), 1, "no cause lost, duplicated or invented");
+            assert_eq!(eio_worker(&cleanup[0]), peer);
+            let diagnostic = error.to_string();
+            let positions = [target, peer].map(|tid| {
+                diagnostic
+                    .find(&format!("thread {tid}:"))
+                    .expect("each failed worker must be reported")
+            });
             assert!(
                 positions[0] < positions[1],
-                "stable guest-TID order: {error}"
+                "causal target then peer: {diagnostic}"
             );
-            assert_eq!(error.matches("EIO").count(), 2, "{error}");
-            eprintln!("terminal forced hook error: {error}");
+            assert_eq!(diagnostic.matches("EIO").count(), 2, "{diagnostic}");
+            eprintln!("terminal forced hook error: {diagnostic}");
         } else {
             let (_, status, stdout, stderr) = result.unwrap();
             assert_eq!(
@@ -384,6 +467,10 @@ fn terminal_cancellation_consumes_all_callback_contexts_and_preserves_live_peers
             1
         } else if mode == 9 {
             5
+        } else if mode == 10 {
+            // The first failed target hook stops the guest before reuse.
+            // Both already-created workers must still consume their hooks.
+            3
         } else {
             4
         };

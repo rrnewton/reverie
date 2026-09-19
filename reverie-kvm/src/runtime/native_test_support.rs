@@ -293,7 +293,7 @@ where
                         } else {
                             Ok(ToolProcessExit {
                                 exit: child.executor.as_mut().unwrap().cancel_current_thread(),
-                                cancelled: true,
+                                disposition: ToolExitDisposition::ExplicitCancellation,
                             })
                         }
                     }

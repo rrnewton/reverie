@@ -14879,3 +14879,6 @@ fn timestamp_single_step_reports_the_retired_instruction_boundary() {
         );
     }
 }
+
+#[path = "support/natural_retirement.rs"]
+mod natural_retirement;
