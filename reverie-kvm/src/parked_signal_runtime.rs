@@ -242,25 +242,35 @@ async fn drive_signal_cleanup<T>(
     handler_signal: SharedHandlerSignal,
     pending_children: SharedChildStarts,
     failure: impl Future<Output = ()>,
-) -> HandlerOutcome<T> {
-    let mut cleanup = pin!(drive_handler(
+) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>> {
+    // Cancellation is selected by the owning driver, so it still catches
+    // destruction of the actual callback allocation before returning. Dropping
+    // a pending nested driver would bypass that completion protocol.
+    drive_handler_completion_inner(
         future,
         handler_signal,
         pending_children,
-        std::future::pending(),
-    ));
-    let mut failure = pin!(failure);
-    poll_fn(|cx| {
-        if let Poll::Ready(result) = cleanup.as_mut().poll(cx) {
-            return Poll::Ready(result);
-        }
-        if failure.as_mut().poll(cx).is_ready() {
-            Poll::Ready(HandlerOutcome::RunFailed)
-        } else {
-            Poll::Pending
-        }
-    })
+        failure,
+        None,
+        HandlerFailureOrder::AfterReadyCleanup,
+    )
     .await
+}
+
+/// Signal-dequeue notifications cannot create a child: the guest is under
+/// `SignalGuard::DequeueNotification`, and `signal_injection_allowed` rejects
+/// every injected syscall before `complete_injection` can publish a fork or
+/// thread start. Keep that production invariant explicit so a future producer
+/// cannot leave an unstarted child behind on any success, error, or cancellation
+/// arm below.
+fn assert_no_signal_cleanup_child_starts(pending_children: &SharedChildStarts) {
+    assert!(
+        pending_children
+            .lock()
+            .expect("KVM child-start lock poisoned")
+            .is_empty(),
+        "signal dequeue notification created a child start despite its injection guard"
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -292,6 +302,7 @@ where
     let failure = backend.failure_subscription(executor.is_traced_tree_root());
     let handler_signal = Arc::new(Mutex::new(None));
     let pending_children = Arc::new(Mutex::new(Vec::new()));
+    let pending_children_after_cleanup = pending_children.clone();
     let mut process_completed = false;
     let tool_stack_top = backend.tool_stack_top();
     let continuation_site = executor
@@ -337,9 +348,11 @@ where
         )
         .await
     };
+    assert_no_signal_cleanup_child_starts(&pending_children_after_cleanup);
+    let outcome = backend.finish_handler_completion(outcome, Ok(()), std::convert::identity)?;
     match outcome {
         HandlerOutcome::Returned(result) => result.map(|_| ()),
-        HandlerOutcome::RuntimeError(error) => Err(error),
+        HandlerOutcome::RuntimeError(error) => Err(executor.with_signal_effects(error, raw)),
         HandlerOutcome::ParkedCancelled(_) | HandlerOutcome::RunFailed => {
             Err(executor.with_signal_effects(Error::RunAborted, raw))
         }
@@ -382,13 +395,11 @@ mod signal_cleanup_tests {
         assert!(cleanup.as_mut().poll(&mut cx).is_pending());
         assert!(polled.load(Ordering::Acquire));
         context.publish("lost dequeue owner", Error::GuestWorkerPanic);
-        assert!(
-            matches!(
-                cleanup.as_mut().poll(&mut cx),
-                Poll::Ready(HandlerOutcome::RunFailed)
-            ),
-            "a published lost owner must terminate consuming cleanup, not leave it parked"
-        );
+        let Poll::Ready(completion) = cleanup.as_mut().poll(&mut cx) else {
+            panic!("a published lost owner must terminate consuming cleanup, not leave it parked");
+        };
+        assert!(matches!(completion.output, Some(HandlerOutcome::RunFailed)));
+        assert!(completion.panics.is_empty());
         assert!(matches!(
             run.primary().unwrap().primary(),
             Error::GuestWorkerPanic
@@ -405,8 +416,18 @@ mod signal_cleanup_tests {
                 Arc::new(Mutex::new(Vec::new())),
                 std::future::ready(()),
             ));
-            match outcome {
-                HandlerOutcome::Returned(result) => assert_eq!(result.is_err(), was_error),
+            assert!(outcome.panics.is_empty());
+            match outcome.output {
+                Some(HandlerOutcome::Returned(result)) => {
+                    assert_eq!(result.is_err(), was_error);
+                    if was_error {
+                        assert!(
+                            matches!(result, Err(Error::Reverie(reverie::Error::Errno(errno))) if errno == Errno::EFAULT)
+                        );
+                    } else {
+                        assert!(matches!(result, Ok(())));
+                    }
+                }
                 _ => panic!("already-ready cleanup/result was discarded"),
             }
         }
