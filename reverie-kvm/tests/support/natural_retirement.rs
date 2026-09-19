@@ -216,8 +216,7 @@ int main(void) { syscall(SYS_getpid, 0x72657469); return 87; }
         if mode == 3 {
             let error = completion
                 .result
-                .err()
-                .expect("retirement cannot acknowledge a removal from inside its notification");
+                .expect_err("retirement cannot acknowledge a removal from inside its notification");
             assert!(
                 matches!(error.primary(), reverie_kvm::Error::RunAborted),
                 "{error:?}"
@@ -416,8 +415,7 @@ int main(int argc, char **argv) {
         if failure {
             let error = completion
                 .result
-                .err()
-                .expect("late issuer failure cannot become a successful retired leader");
+                .expect_err("late issuer failure cannot become a successful retired leader");
             assert!(
                 matches!(
                     error.primary(),
