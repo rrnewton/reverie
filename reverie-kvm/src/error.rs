@@ -13,6 +13,15 @@ use thiserror::Error;
 /// Errors produced by the KVM backend prototype.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Admission or retirement of guest execution could not be completed.
+    #[error("KVM entry control failed during {operation}: {source}")]
+    EntryControl {
+        /// Host operation whose failure made admission terminal.
+        operation: &'static str,
+        /// Original host error, including its errno where one exists.
+        #[source]
+        source: std::io::Error,
+    },
     /// A process-pending operation committed before readiness failed.
     #[error("process signal publication committed {receipt:?}, then failed: {errno}")]
     ProcessSignalPublication {

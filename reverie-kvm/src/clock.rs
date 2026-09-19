@@ -28,6 +28,11 @@ use reverie::pmu::PmuProfile;
 
 use crate::Error;
 use crate::Result;
+use crate::entry::Participant;
+use crate::entry::RunEntry;
+use crate::entry::owner::OperationOrigin;
+use crate::failure::FailureContext;
+use crate::memory::GuestMemory;
 
 fn failure(message: impl Into<String>) -> Error {
     Error::GuestClock(message.into())
@@ -37,37 +42,158 @@ fn host_failure(operation: &str) -> Error {
     failure(format!("{operation}: {}", std::io::Error::last_os_error()))
 }
 
+#[cfg(test)]
+type BeforeRunHook = Box<dyn FnOnce(&RunProbe) + Send>;
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct RunProbe {
+    pub(crate) prepare: std::sync::Arc<crate::entry::PrepareProbe>,
+    pub(crate) shared_fd_accesses: std::sync::atomic::AtomicUsize,
+    pub(crate) untracked_runs: std::sync::atomic::AtomicUsize,
+    pub(crate) tracked_runs: std::sync::atomic::AtomicUsize,
+    pub(crate) clock_begins: std::sync::atomic::AtomicUsize,
+    pub(crate) intervals_created: std::sync::atomic::AtomicUsize,
+    before_run: std::sync::Mutex<Option<BeforeRunHook>>,
+}
+
+#[cfg(test)]
+impl RunProbe {
+    pub(crate) fn before_run(&self, hook: impl FnOnce(&RunProbe) + Send + 'static) {
+        let previous = self.before_run.lock().unwrap().replace(Box::new(hook));
+        assert!(previous.is_none(), "entry control replaced an armed hook");
+    }
+
+    pub(crate) fn arm(&self) {
+        self.prepare
+            .armed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn run_hook(&self) {
+        let hook = self.before_run.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook(self);
+        }
+    }
+}
+
+/// Read-only test observation of the actual private hypercall response slot.
+/// The handle does not own the KVM_RUN mapping or retain a VcpuFd reference.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) struct HypercallProbe {
+    run_address: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct HypercallSnapshot {
+    pub(crate) number: u64,
+    pub(crate) return_address: usize,
+    pub(crate) return_value: u64,
+}
+
+#[cfg(test)]
+impl HypercallProbe {
+    /// # Safety
+    /// The originating CountedVcpu must still own this mapping and be stopped
+    /// at an actual Hypercall exit. Call on its driver thread, or after physical
+    /// join has transferred exclusive backend ownership to the calling thread.
+    /// There must be no concurrent KVM_RUN, response write, or mutable mapping
+    /// access. The observer performs no ioctl and never changes the response.
+    pub(crate) unsafe fn snapshot(self) -> HypercallSnapshot {
+        let run = self.run_address as *const kvm_bindings::kvm_run;
+        // SAFETY: the caller establishes lifetime, exit kind and exclusion;
+        // check the kind before interpreting the active union field.
+        unsafe {
+            assert_eq!((*run).exit_reason, kvm_bindings::KVM_EXIT_HYPERCALL);
+            let hypercall = std::ptr::addr_of!((*run).__bindgen_anon_1.hypercall);
+            HypercallSnapshot {
+                number: (*hypercall).nr,
+                return_address: std::ptr::addr_of!((*hypercall).ret) as usize,
+                return_value: (*hypercall).ret,
+            }
+        }
+    }
+}
+
 /// Shared-fd configuration and register APIs remain available, but mutable fd
 /// access does not: VcpuFd::run can only be called inside this module.
 pub(crate) struct CountedVcpu {
     fd: VcpuFd,
+    participant: Participant,
+    // Keep the Mapping alive independently of the backend field's drop order.
+    memory: GuestMemory,
     clock: GuestClock,
     image_is_elf: bool,
     initial_elf_ran: bool,
+    #[cfg(test)]
+    run_probe: Option<std::sync::Arc<RunProbe>>,
 }
 
 impl Deref for CountedVcpu {
     type Target = VcpuFd;
 
     fn deref(&self) -> &Self::Target {
+        #[cfg(test)]
+        if let Some(probe) = &self.run_probe {
+            probe.prepare.increment(&probe.shared_fd_accesses);
+        }
         &self.fd
     }
 }
 
 impl CountedVcpu {
-    pub(crate) fn new(fd: VcpuFd) -> Self {
-        Self {
+    pub(crate) fn new(fd: VcpuFd, memory: GuestMemory) -> Result<Self> {
+        let participant = memory
+            .entry_gate()
+            .register()
+            .map_err(|failure| failure.error())?;
+        Ok(Self {
             fd,
+            participant,
+            memory,
             clock: GuestClock::default(),
             image_is_elf: false,
             initial_elf_ran: false,
+            #[cfg(test)]
+            run_probe: None,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_run_probe(&mut self, probe: std::sync::Arc<RunProbe>) {
+        self.participant.set_prepare_probe(probe.prepare.clone());
+        self.clock.run_probe = Some(probe.clone());
+        self.run_probe = Some(probe);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hypercall_probe(&mut self) -> HypercallProbe {
+        HypercallProbe {
+            run_address: std::ptr::from_mut(self.fd.get_kvm_run()) as usize,
         }
+    }
+
+    pub(crate) fn set_failure_context(&mut self, origin: Option<FailureContext>) {
+        self.memory.set_failure_context(origin);
+        self.participant.set_origin(self.memory.entry_origin());
+    }
+
+    pub(crate) fn set_operation_origin(&mut self, origin: Option<OperationOrigin>) {
+        self.memory.set_operation_origin(origin);
+        self.participant.set_origin(self.memory.entry_origin());
     }
 
     /// Only initial installation creates a new thread lifetime. Exec retains
     /// this vCPU and must not call this method.
     pub(crate) fn new_guest(&mut self) {
         self.clock = GuestClock::default();
+        #[cfg(test)]
+        {
+            self.clock.run_probe = self.run_probe.clone();
+        }
         self.image_is_elf = false;
     }
 
@@ -109,18 +235,68 @@ impl CountedVcpu {
         self.clock.read()
     }
 
-    pub(crate) fn run(&mut self) -> Result<VcpuExit<'_>> {
+    /// None means admission was closed: no clock interval or KVM_RUN occurred.
+    /// The caller retains its prepared continuation and waits outside this
+    /// method, with no signal-mask, CPU-affinity or borrowed-exit guard alive.
+    pub(crate) fn run(&mut self) -> Result<Option<VcpuExit<'_>>> {
+        #[cfg(test)]
+        if let Some(probe) = &self.run_probe {
+            probe.run_hook();
+        }
+        // Declare entry first: unwinding must retire the clock and restore CPU
+        // affinity before entry withdraws its target and restores the mask.
+        let Some(entry) = self
+            .participant
+            .prepare(&self.fd)
+            .map_err(|failure| failure.error())?
+        else {
+            return Ok(None);
+        };
         if !self.clock.tracking {
             self.clock.ran_untracked = true;
             self.initial_elf_ran |= self.image_is_elf;
-            return self.fd.run().map_err(Error::Kvm);
+            #[cfg(test)]
+            if let Some(probe) = &self.run_probe {
+                probe.prepare.increment(&probe.untracked_runs);
+            }
+            return finish_entry(self.fd.run().map_err(Error::Kvm), entry).map(Some);
         }
-        let interval = self.clock.begin()?;
+        let interval = match self.clock.begin() {
+            Ok(interval) => interval,
+            Err(error) => return finish_entry(Err(error), entry),
+        };
         self.initial_elf_ran |= self.image_is_elf;
+        #[cfg(test)]
+        if let Some(probe) = &self.run_probe {
+            probe.prepare.increment(&probe.tracked_runs);
+        }
         let result = self.fd.run();
         // VcpuExit borrows only fd. Always finish the separate clock interval,
         // including EINTR and other KVM errors, before exposing that exit.
-        finish_run(result, interval)
+        finish_entry(finish_run(result, interval), entry).map(Some)
+    }
+}
+
+fn finish_entry<T>(result: Result<T>, entry: RunEntry<'_>) -> Result<T> {
+    match result {
+        // An actual ioctl error, including EINTR, retains the caller's existing
+        // policy when clock and entry cleanup succeeded. Do not poison a whole
+        // address space merely because KVM_RUN was interrupted.
+        Err(Error::Kvm(error)) => match entry.finish(Ok(())) {
+            Ok(()) => Err(Error::Kvm(error)),
+            Err(failure) => Err(failure.error().with_cleanup(vec![Error::Kvm(error)])),
+        },
+        // A failed clock interval cannot publish trustworthy guest progress.
+        // Stop every participant and callback copy in this Mapping while the
+        // issuing owner retains and publishes the typed terminal failure.
+        Err(error) => match entry.finish(Err(error)) {
+            Err(failure) => Err(failure.error()),
+            Ok(()) => unreachable!("failed clock setup or cleanup admitted success"),
+        },
+        Ok(exit) => {
+            entry.finish(Ok(())).map_err(|failure| failure.error())?;
+            Ok(exit)
+        }
     }
 }
 
@@ -142,6 +318,8 @@ struct GuestClock {
     total: u64,
     binding: Option<CounterBinding>,
     poison: Option<String>,
+    #[cfg(test)]
+    run_probe: Option<std::sync::Arc<RunProbe>>,
 }
 
 impl GuestClock {
@@ -165,6 +343,10 @@ impl GuestClock {
     }
 
     fn begin(&mut self) -> Result<CountInterval<'_>> {
+        #[cfg(test)]
+        if let Some(probe) = &self.run_probe {
+            probe.prepare.increment(&probe.clock_begins);
+        }
         self.begin_with_raw_event(current_raw_event)
     }
 
@@ -199,6 +381,10 @@ impl GuestClock {
                 Err(cleanup) => format!("{error}; cleanup also failed: {cleanup}"),
             };
             return Err(self.poison(reason));
+        }
+        #[cfg(test)]
+        if let Some(probe) = &self.run_probe {
+            probe.prepare.increment(&probe.intervals_created);
         }
         Ok(CountInterval {
             clock: self,
@@ -558,6 +744,49 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+
+    #[test]
+    fn counted_vcpu_closed_admission_and_clock_failure_preserve_state() {
+        let original_affinity = affinity().unwrap();
+        let mut backend = crate::KvmBackend::new(0x10000).expect("this control requires /dev/kvm");
+        backend.install_real_mode_program(0, &[0xf4]).unwrap();
+        backend.vcpu.track_clock().unwrap();
+        let original_registers = backend.vcpu.get_regs().unwrap();
+        let gate = backend.memory.entry_gate();
+        let closed =
+            futures::executor::block_on(gate.try_close().unwrap().unwrap().finish()).unwrap();
+        assert!(backend.vcpu.run().unwrap().is_none());
+        assert_eq!(backend.vcpu.get_regs().unwrap(), original_registers);
+        assert_eq!(backend.vcpu.read_clock().unwrap(), 0);
+        assert!(!backend.vcpu.clock.ran_untracked);
+        assert!(same_affinity(&affinity().unwrap(), &original_affinity));
+        drop(closed);
+        assert!(matches!(backend.vcpu.run().unwrap(), Some(VcpuExit::Hlt)));
+        assert_eq!(backend.vcpu.get_regs().unwrap().rip, 1);
+        assert_eq!(backend.vcpu.read_clock().unwrap(), 0);
+        assert!(same_affinity(&affinity().unwrap(), &original_affinity));
+
+        // A refused admission must not even begin the clock. After reopening,
+        // the exact clock error becomes the gate cause, not an abandonment
+        // error produced by dropping an unacknowledged setup guard.
+        let closed =
+            futures::executor::block_on(gate.try_close().unwrap().unwrap().finish()).unwrap();
+        backend.vcpu.clock.poison("counted entry setup control");
+        let before = backend.vcpu.get_regs().unwrap();
+        assert!(backend.vcpu.run().unwrap().is_none());
+        assert!(gate.pending_failure().is_none());
+        drop(closed);
+        let error = backend.vcpu.run().unwrap_err();
+        assert!(
+            matches!(error.primary(), Error::GuestClock(message) if message.contains("counted entry setup control"))
+        );
+        assert_eq!(backend.vcpu.get_regs().unwrap(), before);
+        assert!(matches!(
+            gate.pending_failure().unwrap().error(),
+            Error::SharedFailure(_)
+        ));
+        assert!(same_affinity(&affinity().unwrap(), &original_affinity));
+    }
 
     fn counter_bytes(value: CounterRead) -> Vec<u8> {
         [value.value, value.enabled, value.running]
