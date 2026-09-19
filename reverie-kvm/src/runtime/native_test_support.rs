@@ -64,13 +64,16 @@ impl NativeChildGate {
     }
 }
 
-struct NoInstructions {
-    parent_pid: Option<Pid>,
+struct NoInstructions<'a> {
+    executor: &'a ElfExecutor,
     failure: FailureContext,
 }
-impl<T: Tool> GuestSyscallExecutor<T> for NoInstructions {
+impl<T: Tool> GuestSyscallExecutor<T> for NoInstructions<'_> {
     fn parent_pid(&self) -> Option<Pid> {
-        self.parent_pid
+        self.executor.parent_pid()
+    }
+    fn signal_task_identity(&self) -> Option<reverie::SignalTaskIdentity> {
+        self.executor.signal_task_identity()
     }
     fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
         Some(self.failure.run.subscribe())
@@ -80,6 +83,46 @@ impl<T: Tool> GuestSyscallExecutor<T> for NoInstructions {
     }
     fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
         panic!("native Tool control must not inject a guest instruction")
+    }
+}
+
+// Complete this synchronous preparation cleanup without entering LocalPool:
+// the caller may already be polling on one. This polls only the supplied
+// future; tasks that need the suspended caller's executor cannot make progress.
+pub(super) fn complete_native_cleanup<F: Future>(future: F) -> F::Output {
+    struct Notify {
+        notified: Mutex<bool>,
+        changed: std::sync::Condvar,
+    }
+
+    impl std::task::Wake for Notify {
+        fn wake(self: Arc<Self>) {
+            std::task::Wake::wake_by_ref(&self);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            *self.notified.lock().unwrap() = true;
+            self.changed.notify_one();
+        }
+    }
+
+    let notify = Arc::new(Notify {
+        notified: Mutex::new(false),
+        changed: std::sync::Condvar::new(),
+    });
+    let waker = std::task::Waker::from(notify.clone());
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut future = pin!(future);
+    loop {
+        // Poll without the wake lock: a future may wake inline before Pending.
+        if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
+            return result;
+        }
+        let mut notified = notify.notified.lock().unwrap();
+        while !*notified {
+            notified = notify.changed.wait(notified).unwrap();
+        }
+        *notified = false;
     }
 }
 
@@ -142,8 +185,30 @@ where
             pid.as_raw(),
             true,
         )));
-        Ok(Self {
-            executor: Some(ElfExecutor::with_output(state, None)),
+        Self::from_executor(
+            ElfExecutor::with_output(state, None),
+            pid,
+            tool,
+            thread,
+            global,
+            config,
+            failure,
+        )
+    }
+
+    // Keep the post-allocation path shared with controls that retain the actual
+    // lifecycle table to observe retirement during a rejected installation.
+    pub(super) fn from_executor(
+        executor: ElfExecutor,
+        pid: Pid,
+        tool: Arc<T>,
+        thread: T::ThreadState,
+        global: Arc<T::GlobalState>,
+        config: <T::GlobalState as GlobalTool>::Config,
+        failure: FailureContext,
+    ) -> Result<Self> {
+        let owner = Self {
+            executor: Some(executor),
             tool: Some(tool),
             thread: Some(thread),
             identity: (pid, pid),
@@ -152,7 +217,32 @@ where
             failure,
             workers: Arc::new(GuestThreadGroup::default()),
             starts: Arc::new(Mutex::new(Vec::new())),
-        })
+        };
+        // Like the installed-ELF path, install once for the run before its
+        // first callback. fork_child shares this registry and does not reinstall.
+        // The caller has already constructed Tool/thread state in this native API.
+        let mode = match owner.global.install_backend_signal_control(Some(
+            owner.executor.as_ref().unwrap().backend_signal_control(),
+        )) {
+            Ok(mode) => mode,
+            Err(error) => {
+                let error = owner
+                    .failure
+                    .publish("process signal control installation", Error::Reverie(error));
+                // This path owns an executor, unlike the earlier cwd refusal.
+                // Retire it before consuming hooks, retaining the setup cause.
+                return match complete_native_cleanup(owner.finish(Err(error))) {
+                    Err(error) => Err(error),
+                    Ok(_) => unreachable!("a refused signal installation cannot succeed"),
+                };
+            }
+        };
+        owner
+            .executor
+            .as_ref()
+            .unwrap()
+            .install_signal_control(mode, &owner.failure.run);
+        Ok(owner)
     }
 
     /// Borrow the actual owned thread state when constructing a child's state.
@@ -222,7 +312,7 @@ where
         let memory = GuestMemory::new(0, STACK_CAPACITY)?;
         let subscriptions = Subscription::none();
         let mut executor = NoInstructions {
-            parent_pid: self.executor.as_ref().unwrap().parent_pid(),
+            executor: self.executor.as_ref().unwrap(),
             failure: self.failure.clone(),
         };
         let failure_subscription = self
@@ -374,6 +464,15 @@ where
     #[cfg(test)]
     pub(super) fn failure_context_for_test(&self) -> FailureContext {
         self.failure.clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn signal_state_for_test(&self) -> (Option<reverie::SignalTaskIdentity>, bool) {
+        let executor = self.executor.as_ref().unwrap();
+        (
+            executor.signal_task_identity(),
+            executor.signal_controlled(),
+        )
     }
 
     fn retire(&mut self, result: Result<ExitStatus>) -> Result<ToolProcessExit> {
