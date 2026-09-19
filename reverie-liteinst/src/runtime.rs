@@ -1900,6 +1900,7 @@ fn vdso_callback(number: i64) -> io::Result<liteinst2::trampoline::HookCallback>
         libc::SYS_time => Ok(installed_vdso_time_hook),
         libc::SYS_clock_gettime => Ok(installed_vdso_clock_gettime_hook),
         libc::SYS_getcpu => Ok(installed_vdso_getcpu_hook),
+        libc::SYS_getrandom => Ok(installed_vdso_getrandom_hook),
         libc::SYS_gettimeofday => Ok(installed_vdso_gettimeofday_hook),
         libc::SYS_clock_getres => Ok(installed_vdso_clock_getres_hook),
         _ => Err(io::Error::new(
@@ -2743,6 +2744,10 @@ unsafe extern "C" fn installed_vdso_clock_gettime_hook(context: *mut HookContext
 
 unsafe extern "C" fn installed_vdso_getcpu_hook(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_getcpu)) }
+}
+
+unsafe extern "C" fn installed_vdso_getrandom_hook(context: *mut HookContext) {
+    unsafe { installed_syscall_hook_for(context, Some(libc::SYS_getrandom)) }
 }
 
 unsafe extern "C" fn installed_vdso_gettimeofday_hook(context: *mut HookContext) {
