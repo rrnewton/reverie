@@ -2685,6 +2685,7 @@ impl ElfExecutor {
         self.register_child_process_with_gate(pid, ChildStartGate::new(start), completion, handle);
     }
 
+    #[cfg(any(test, feature = "native-test-support"))]
     pub(crate) fn register_child_process_with_gate(
         &mut self,
         pid: i32,
