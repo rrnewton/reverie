@@ -31,6 +31,8 @@ static int (*initialize)(const struct host_config *);
 static struct host_config config = {1, 0};
 static struct host_frame saved_frame;
 static volatile sig_atomic_t begins, readies, reentry_result;
+static struct sigaction before_actions[NSIG];
+static int action_query_result[NSIG], action_query_errno[NSIG];
 
 /* No injected guest executes this site. A real successful installation proves
  * the initializer prepared both the site table and a usable trampoline arena. */
@@ -69,6 +71,39 @@ static void require(int condition, const char *message) {
     if (!condition) {
         fprintf(stderr, "%s\n", message);
         exit(1);
+    }
+}
+
+static void snapshot_dispositions(void) {
+    for (int sig = 1; sig < NSIG; ++sig) {
+        errno = 0;
+        action_query_result[sig] = sigaction(sig, NULL, &before_actions[sig]);
+        action_query_errno[sig] = errno;
+        require(action_query_result[sig] == 0 || action_query_errno[sig] == EINVAL,
+                "initial disposition query");
+    }
+}
+
+static void require_same_dispositions(void) {
+    for (int sig = 1; sig < NSIG; ++sig) {
+        struct sigaction after = {0};
+        errno = 0;
+        int result = sigaction(sig, NULL, &after);
+        int saved_errno = errno;
+        require(result == action_query_result[sig], "disposition query result changed");
+        if (result != 0) {
+            require(saved_errno == action_query_errno[sig], "disposition query error changed");
+            continue;
+        }
+        const struct sigaction *before = &before_actions[sig];
+        require(after.sa_sigaction == before->sa_sigaction &&
+                after.sa_flags == before->sa_flags &&
+                after.sa_restorer == before->sa_restorer,
+                "explicit host changed signal disposition");
+        for (int member = 1; member < NSIG; ++member)
+            require(sigismember(&after.sa_mask, member) ==
+                    sigismember(&before->sa_mask, member),
+                    "explicit host changed handler mask");
     }
 }
 
@@ -120,8 +155,10 @@ int main(int argc, char **argv) {
     require(begins == 0 && readies == 0, "invalid configuration consumed initialization");
     config.straddler_staleness_ticks = !strcmp(argv[1], "configured") ? 17000 : 0;
     int failure = !strcmp(argv[1], "preparation-failure");
+    snapshot_dispositions();
     if (failure) refuse_file_opens();
     int result = initialize(&config);
+    require_same_dispositions();
     require(begins == 1 && reentry_result == -EALREADY, "missing Begin or reentry guard");
     if (failure) {
         require(result == -EPERM && readies == 0, "preparation failure reported Ready");
@@ -139,9 +176,11 @@ int main(int argc, char **argv) {
                 installed->arena_writable_len && installed->arena_executable_len,
                 "missing initialized site/arena result");
         require((unsigned char)test_syscall_site[0] != 0x0f, "helper did not patch site");
+        require_same_dispositions();
     }
     require(initialize(&config) == -EALREADY, "host initialization ran twice");
     require(begins == 1 && readies == !failure, "repeat changed handshake counts");
+    require_same_dispositions();
     require(!strcmp(getenv("REVERIE_LITEINST_HOST_RUNTIME"), "not-selected"), "host env changed");
     require(!strcmp(getenv("REVERIE_LITEINST_TOOL"), "invalid-tool"), "tool env changed");
     require(!strcmp(getenv("REVERIE_LITEINST_STRADDLER_STALENESS_TICKS"), "invalid-ticks"),

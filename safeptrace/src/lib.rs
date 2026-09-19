@@ -16,6 +16,7 @@
 mod memory;
 #[cfg(feature = "notifier")]
 mod notifier;
+mod physical_observer;
 mod regs;
 mod waitid;
 
@@ -36,6 +37,9 @@ use thiserror::Error;
 
 #[cfg(feature = "notifier")]
 pub use crate::notifier::TerminalCleanup;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::TerminalCleanupContinue;
+pub use crate::physical_observer::*;
 pub use crate::regs::*;
 use crate::waitid::IdType;
 use crate::waitid::waitid;
@@ -45,6 +49,10 @@ use crate::waitid::waitid;
 struct TraceeToken {
     #[cfg(feature = "notifier")]
     event: notifier::EventHandle,
+    #[cfg(feature = "notifier")]
+    physical_status: Option<PhysicalStatusId>,
+    #[cfg(feature = "notifier")]
+    failed_resume_disposition_retained_for_cleanup: Option<PhysicalStatusId>,
 }
 
 impl TraceeToken {
@@ -52,6 +60,10 @@ impl TraceeToken {
         Self {
             #[cfg(feature = "notifier")]
             event: notifier::EventHandle::new(),
+            #[cfg(feature = "notifier")]
+            physical_status: None,
+            #[cfg(feature = "notifier")]
+            failed_resume_disposition_retained_for_cleanup: None,
         }
     }
 
@@ -61,6 +73,10 @@ impl TraceeToken {
         Ok(Self {
             #[cfg(feature = "notifier")]
             event: notifier::EventHandle::current_or_new(pid)?,
+            #[cfg(feature = "notifier")]
+            physical_status: None,
+            #[cfg(feature = "notifier")]
+            failed_resume_disposition_retained_for_cleanup: None,
         })
     }
 
@@ -70,17 +86,55 @@ impl TraceeToken {
         Self {
             #[cfg(feature = "notifier")]
             event: notifier::EventHandle::current_or_error(pid),
+            #[cfg(feature = "notifier")]
+            physical_status: None,
+            #[cfg(feature = "notifier")]
+            failed_resume_disposition_retained_for_cleanup: None,
         }
     }
 
     #[cfg(feature = "notifier")]
     fn from_event(event: notifier::EventHandle) -> Self {
-        Self { event }
+        Self {
+            event,
+            physical_status: None,
+            failed_resume_disposition_retained_for_cleanup: None,
+        }
+    }
+
+    #[cfg(feature = "notifier")]
+    fn from_observed_event(
+        event: notifier::EventHandle,
+        physical_status: Option<PhysicalStatusId>,
+    ) -> Self {
+        Self {
+            event,
+            physical_status,
+            failed_resume_disposition_retained_for_cleanup: None,
+        }
     }
 
     #[cfg(feature = "notifier")]
     fn event(&self) -> &notifier::EventHandle {
         &self.event
+    }
+
+    #[cfg(feature = "notifier")]
+    fn into_running(mut self) -> Self {
+        self.physical_status = None;
+        self.failed_resume_disposition_retained_for_cleanup = None;
+        self
+    }
+
+    #[cfg(feature = "notifier")]
+    fn into_observed_stopped(mut self, physical_status: PhysicalStatusId) -> Self {
+        self.physical_status = Some(physical_status);
+        self
+    }
+
+    #[cfg(not(feature = "notifier"))]
+    fn into_running(self) -> Self {
+        self
     }
 }
 
@@ -183,6 +237,17 @@ pub enum Event {
 }
 
 impl Event {
+    fn new_child(task: &Stopped, child_pid: Pid) -> Result<Running, Error> {
+        let child = Running::from_current_or_new(child_pid)?;
+        #[cfg(feature = "notifier")]
+        if let Some(observer) = task.physical_event_observer() {
+            child
+                .attach_physical_event_observer(&observer)
+                .map_err(|_| Errno::EPROTO)?;
+        }
+        Ok(child)
+    }
+
     /// Converts a raw i32 to a ptrace event and gets any associated data.
     fn from_ptrace_event(task: &Stopped, event: i32) -> Result<Self, Error> {
         // Note that there is no danger in calling ptrace here because the
@@ -197,7 +262,7 @@ impl Event {
                 notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid)?;
                 Ok(Self::NewChild(
                     ChildOp::Fork,
-                    Running::from_current_or_new(child_pid)?,
+                    Self::new_child(task, child_pid)?,
                 ))
             }
             libc::PTRACE_EVENT_VFORK => {
@@ -208,7 +273,7 @@ impl Event {
                 notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid)?;
                 Ok(Self::NewChild(
                     ChildOp::Vfork,
-                    Running::from_current_or_new(child_pid)?,
+                    Self::new_child(task, child_pid)?,
                 ))
             }
             libc::PTRACE_EVENT_CLONE => {
@@ -219,7 +284,7 @@ impl Event {
                 notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid)?;
                 Ok(Self::NewChild(
                     ChildOp::Clone,
-                    Running::from_current_or_new(child_pid)?,
+                    Self::new_child(task, child_pid)?,
                 ))
             }
             libc::PTRACE_EVENT_EXEC => {
@@ -374,6 +439,18 @@ impl Wait {
         }
     }
 
+    /// Returns the physical status identity retained by a stopped result.
+    ///
+    /// Final exit identities remain in the observer's retained terminal
+    /// records because the legacy `Wait::Exited` variant carries no token.
+    #[cfg(feature = "notifier")]
+    pub fn physical_status_id(&self) -> Option<PhysicalStatusId> {
+        match self {
+            Self::Stopped(stopped, _) => stopped.physical_status_id(),
+            Self::Exited(_, _) => None,
+        }
+    }
+
     /// Assumes the process is in a stopped state. Panics if it isn't.
     pub fn assume_stopped(self) -> (Stopped, Event) {
         match self {
@@ -525,6 +602,51 @@ bitflags::bitflags! {
 #[derive(Debug, Hash, Eq, PartialEq)]
 pub struct Stopped(Pid, TraceeToken);
 
+/// A non-resuming memory handle derived from an observed stopped state.
+///
+/// This handle deliberately exposes only [`reverie_memory::MemoryAccess`]. It
+/// cannot perform a ptrace state transition or create a second resume owner.
+#[cfg(feature = "memory")]
+#[derive(Debug)]
+pub struct StoppedMemory(Stopped);
+
+#[cfg(feature = "memory")]
+impl reverie_memory::MemoryAccess for StoppedMemory {
+    fn read_vectored(
+        &self,
+        remote: &[std::io::IoSlice],
+        local: &mut [std::io::IoSliceMut],
+    ) -> Result<usize, Errno> {
+        reverie_memory::MemoryAccess::read_vectored(&self.0, remote, local)
+    }
+
+    fn write_vectored(
+        &mut self,
+        local: &[std::io::IoSlice],
+        remote: &mut [std::io::IoSliceMut],
+    ) -> Result<usize, Errno> {
+        reverie_memory::MemoryAccess::write_vectored(&mut self.0, local, remote)
+    }
+
+    fn read<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<usize, Errno>
+    where
+        A: Into<reverie_memory::Addr<'a, u8>>,
+    {
+        reverie_memory::MemoryAccess::read(&self.0, addr, buf)
+    }
+
+    fn read_exact_with_user_access<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<(), Errno>
+    where
+        A: Into<reverie_memory::Addr<'a, u8>>,
+    {
+        reverie_memory::MemoryAccess::read_exact_with_user_access(&self.0, addr, buf)
+    }
+
+    fn write(&mut self, addr: reverie_memory::AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        reverie_memory::MemoryAccess::write(&mut self.0, addr, buf)
+    }
+}
+
 impl Stopped {
     /// Helper for converting from the Errno type.
     ///
@@ -593,6 +715,32 @@ impl Stopped {
         Self::from_token(pid, TraceeToken::current_or_error(pid))
     }
 
+    /// Creates an unchecked stopped state carrying an externally observed
+    /// physical status.
+    ///
+    /// This is the pre-notifier counterpart of [`Stopped::new_unchecked`]. The
+    /// caller must prove that `status` was returned for this exact unreaped
+    /// child and that no other stopped capability exists. The new Event is not
+    /// registered until the returned state is resumed and waited again.
+    #[cfg(feature = "notifier")]
+    pub fn new_observed_unchecked(
+        pid: Pid,
+        observer: &PhysicalEventObserver,
+        status: PhysicalStatusId,
+    ) -> Result<Self, PhysicalObserverAttachError> {
+        let mut token = TraceeToken::new();
+        token.event().attach_physical_observer(observer)?;
+        token.physical_status = Some(status);
+        let generation = token.event().physical_generation();
+        observer.link_pre_registration_task(PhysicalTaskIdentity::direct_child(pid), generation);
+        observer.record_status_published(
+            generation,
+            status,
+            PhysicalStatusPublication::DirectStopped,
+        );
+        Ok(Self::from_token(pid, token))
+    }
+
     /// Creates an unchecked stopped state joined to the currently registered
     /// proc generation for `pid`.
     ///
@@ -612,6 +760,126 @@ impl Stopped {
     /// Returns the process ID of the tracee.
     pub fn pid(&self) -> Pid {
         self.0
+    }
+
+    /// Attaches a bounded physical-event observer before this generation's
+    /// first kernel wait owner starts.
+    #[cfg(feature = "notifier")]
+    pub fn attach_physical_event_observer(
+        &self,
+        observer: &PhysicalEventObserver,
+    ) -> Result<(), PhysicalObserverAttachError> {
+        self.1.event().attach_physical_observer(observer)
+    }
+
+    /// Returns the observer attached to this immutable tracee generation.
+    #[cfg(feature = "notifier")]
+    pub fn physical_event_observer(&self) -> Option<PhysicalEventObserver> {
+        self.1.event().physical_observer()
+    }
+
+    /// Returns this immutable notifier generation's diagnostic identity.
+    #[cfg(feature = "notifier")]
+    pub fn physical_event_generation(&self) -> PhysicalEventGenerationId {
+        self.1.event().physical_generation()
+    }
+
+    /// Returns the physical status that produced this stopped capability.
+    #[cfg(feature = "notifier")]
+    pub fn physical_status_id(&self) -> Option<PhysicalStatusId> {
+        self.1.physical_status
+    }
+
+    /// Assigns any failed transition disposition to matching cancellation
+    /// cleanup ownership for this exact stopped state and physical status.
+    ///
+    /// The policy persists in this value when it is consumed by `resume`,
+    /// `step`, `syscall`, or `detach`. A failed transition then leaves the
+    /// physical status undisposed so the supplied cleanup generation can cite
+    /// it as [`PhysicalStatusDisposition::CancellationCleanup`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain independent, durable ownership of `cleanup` and
+    /// `status` until a failed transition is made unreachable and recorded as
+    /// [`PhysicalStatusDisposition::CancellationCleanup`]. The borrowed handle
+    /// alone does not establish that lifetime or disposition.
+    #[cfg(feature = "notifier")]
+    pub unsafe fn retain_failed_resume_disposition_for_cleanup(
+        &mut self,
+        cleanup: &TerminalCleanup,
+        status: PhysicalStatusId,
+    ) -> Result<(), Errno> {
+        if !cleanup.matches_stopped(self.0, &self.1) || self.1.physical_status != Some(status) {
+            return Err(Errno::EINVAL);
+        }
+        self.1.failed_resume_disposition_retained_for_cleanup = Some(status);
+        Ok(())
+    }
+
+    /// Returns memory access bound to this stopped generation without exposing
+    /// another ptrace transition capability.
+    #[cfg(feature = "memory")]
+    pub fn memory(&self) -> StoppedMemory {
+        StoppedMemory(Self::from_token(self.0, self.1.clone()))
+    }
+
+    #[cfg(feature = "notifier")]
+    fn begin_physical_resume(
+        &self,
+        operation: PhysicalResumeOperation,
+        signal: Option<Signal>,
+    ) -> Option<(PhysicalEventObserver, PhysicalResumeAttempt)> {
+        let observer = self.1.event().physical_observer()?;
+        let attempt = observer.begin_resume(PhysicalResumeContext {
+            generation: Some(self.1.event().physical_generation()),
+            task: self.1.event().physical_task_identity(self.0),
+            source_status: self.1.physical_status,
+            operation,
+            signal: signal.map(|signal| signal as i32),
+            owner: PhysicalResumeOwner::TypedStopped,
+        });
+        Some((observer, attempt))
+    }
+
+    #[cfg(not(feature = "notifier"))]
+    fn begin_physical_resume(
+        &self,
+        _operation: PhysicalResumeOperation,
+        _signal: Option<Signal>,
+    ) -> Option<(PhysicalEventObserver, PhysicalResumeAttempt)> {
+        None
+    }
+
+    #[cfg(feature = "notifier")]
+    fn finish_physical_resume(
+        &self,
+        observed: Option<(PhysicalEventObserver, PhysicalResumeAttempt)>,
+        result: &Result<(), nix::errno::Errno>,
+    ) {
+        if let Some((observer, attempt)) = observed {
+            observer.finish_resume(
+                attempt,
+                match result {
+                    Ok(()) => PhysicalResumeOutcome::Success,
+                    Err(error) => PhysicalResumeOutcome::Error(*error as i32),
+                },
+            );
+            if matches!(result, Err(nix::errno::Errno::ESRCH))
+                && let Some(status) = self.1.physical_status
+                && self.1.failed_resume_disposition_retained_for_cleanup != Some(status)
+            {
+                observer.finish_status(status, PhysicalStatusDisposition::OrdinaryHandled);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "notifier"))]
+    fn finish_physical_resume(
+        &self,
+        _observed: Option<(PhysicalEventObserver, PhysicalResumeAttempt)>,
+        _result: &Result<(), nix::errno::Errno>,
+    ) {
     }
 
     /// Sets the ptracer options.
@@ -751,22 +1019,34 @@ impl Stopped {
 
     /// Resumes the process and transitions it back to a running state.
     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::cont(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        let signal = sig.into();
+        let observed = self.begin_physical_resume(PhysicalResumeOperation::Continue, signal);
+        let result = ptrace::cont(self.0.into(), signal);
+        self.finish_physical_resume(observed, &result);
+        result.map_err(|err| self.map_nix_err(err))?;
+        Ok(Running::from_token(self.0, self.1.into_running()))
     }
 
     /// Advances the execution of the process by a single step optionally
     /// delivering a signal specified by `sig`.
     pub fn step<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::step(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        let signal = sig.into();
+        let observed = self.begin_physical_resume(PhysicalResumeOperation::SingleStep, signal);
+        let result = ptrace::step(self.0.into(), signal);
+        self.finish_physical_resume(observed, &result);
+        result.map_err(|err| self.map_nix_err(err))?;
+        Ok(Running::from_token(self.0, self.1.into_running()))
     }
 
     /// Like `step`, but arranges for the tracee to be stopped at the next
     /// entry to or exit from a system call.
     pub fn syscall<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::syscall(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        let signal = sig.into();
+        let observed = self.begin_physical_resume(PhysicalResumeOperation::Syscall, signal);
+        let result = ptrace::syscall(self.0.into(), signal);
+        self.finish_physical_resume(observed, &result);
+        result.map_err(|err| self.map_nix_err(err))?;
+        Ok(Running::from_token(self.0, self.1.into_running()))
     }
 
     /// Sets the syscall to be executed. Only available on `aarch64`.
@@ -831,8 +1111,12 @@ impl Stopped {
 
     /// Detaches from and then resumes the stopped tracee.
     pub fn detach<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
-        ptrace::detach(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        let signal = sig.into();
+        let observed = self.begin_physical_resume(PhysicalResumeOperation::Detach, signal);
+        let result = ptrace::detach(self.0.into(), signal);
+        self.finish_physical_resume(observed, &result);
+        result.map_err(|err| self.map_nix_err(err))?;
+        Ok(Running::from_token(self.0, self.1.into_running()))
     }
 }
 
@@ -1021,6 +1305,53 @@ impl Running {
     /// Returns the pid of the running process.
     pub fn pid(&self) -> Pid {
         self.0
+    }
+
+    /// Attaches a bounded observer before this generation's first wait owner.
+    #[cfg(feature = "notifier")]
+    pub fn attach_physical_event_observer(
+        &self,
+        observer: &PhysicalEventObserver,
+    ) -> Result<(), PhysicalObserverAttachError> {
+        self.1.event().attach_physical_observer(observer)
+    }
+
+    /// Returns the physical observer attached to this tracee generation.
+    #[cfg(feature = "notifier")]
+    pub fn physical_event_observer(&self) -> Option<PhysicalEventObserver> {
+        self.1.event().physical_observer()
+    }
+
+    /// Returns this immutable notifier generation's diagnostic identity.
+    #[cfg(feature = "notifier")]
+    pub fn physical_event_generation(&self) -> PhysicalEventGenerationId {
+        self.1.event().physical_generation()
+    }
+
+    /// Converts an externally observed stop into the stopped capability for
+    /// this exact generation.
+    ///
+    /// The caller must prove that `status` came from a successful kernel wait
+    /// for this unreaped child and that this [`Running`] value is the sole
+    /// typed capability for it. The observer must already have been attached
+    /// before that wait was attempted.
+    #[cfg(feature = "notifier")]
+    pub fn into_observed_stopped_unchecked(
+        self,
+        observer: &PhysicalEventObserver,
+        status: PhysicalStatusId,
+    ) -> Result<Stopped, PhysicalObserverAttachError> {
+        self.1.event().attach_physical_observer(observer)?;
+        let generation = self.1.event().physical_generation();
+        observer.record_status_published(
+            generation,
+            status,
+            PhysicalStatusPublication::DirectStopped,
+        );
+        Ok(Stopped::from_token(
+            self.0,
+            self.1.into_observed_stopped(status),
+        ))
     }
 
     /// Blocks until a state change occurs. This may transition the process to
@@ -1242,6 +1573,44 @@ mod test {
                 unsafe { ::libc::_exit(exit_code) };
             }
         }
+    }
+
+    #[cfg(feature = "notifier")]
+    fn stopped_with_observer(
+        observer: &PhysicalEventObserver,
+        pid: Pid,
+        status: PhysicalStatusId,
+    ) -> Stopped {
+        let mut token = TraceeToken::new();
+        token
+            .event()
+            .attach_physical_observer(observer)
+            .expect("attach resume disposition observer");
+        token.physical_status = Some(status);
+        Stopped::from_token(pid, token)
+    }
+
+    #[cfg(feature = "notifier")]
+    #[test]
+    fn direct_failed_resume_keeps_ordinary_disposition() {
+        let pid = Pid::from_raw(i32::MAX - 43);
+        let status = PhysicalStatusId::from_raw(19).expect("nonzero physical status");
+
+        let ordinary = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(8, 4))
+            .expect("create ordinary failed-resume observer");
+        let stopped = stopped_with_observer(&ordinary, pid, status);
+        let attempt = stopped
+            .begin_physical_resume(PhysicalResumeOperation::Continue, None)
+            .expect("attached observer produces a resume attempt");
+        stopped.finish_physical_resume(attempt.into(), &Err(nix::errno::Errno::ESRCH));
+        ordinary.close();
+        assert!(ordinary.snapshot().records().iter().any(|record| matches!(
+            record.kind(),
+            PhysicalEventRecordKind::StatusDisposition {
+                status: observed,
+                disposition: PhysicalStatusDisposition::OrdinaryHandled,
+            } if observed == status
+        )));
     }
 
     #[test]

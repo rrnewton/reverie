@@ -76,13 +76,50 @@ fn waitid_si(waitid_type: IdType, flags: WaitPidFlag) -> Result<libc::siginfo_t,
 /// must survive so the notifier can decode `PTRACE_EVENT_*` losslessly.
 #[cfg(feature = "notifier")]
 pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
-    let si = waitid_si(IdType::Pidfd(raw_fd), flags)?;
+    waitpidfd_raw(raw_fd, flags).map(|raw| raw.status())
+}
 
-    if unsafe { si.si_pid() } == 0 {
-        return Ok(None);
+/// A successful raw `waitid(P_PIDFD)` result retained before status
+/// conversion. Keeping the `siginfo_t` intact lets the optional physical
+/// observer record provenance even when the later conversion panics on an
+/// unexpected kernel code.
+#[cfg(feature = "notifier")]
+pub(crate) struct WaitPidfdRaw(libc::siginfo_t);
+
+#[cfg(feature = "notifier")]
+impl WaitPidfdRaw {
+    pub(crate) fn pid(&self) -> i32 {
+        unsafe { self.0.si_pid() }
     }
 
-    Ok(Some(siginfo_to_status(si)))
+    pub(crate) fn uid(&self) -> u32 {
+        unsafe { self.0.si_uid() }
+    }
+
+    pub(crate) fn status_value(&self) -> i32 {
+        unsafe { self.0.si_status() }
+    }
+
+    pub(crate) fn signo(&self) -> i32 {
+        self.0.si_signo
+    }
+
+    pub(crate) fn errno(&self) -> i32 {
+        self.0.si_errno
+    }
+
+    pub(crate) fn code(&self) -> i32 {
+        self.0.si_code
+    }
+
+    pub(crate) fn status(&self) -> Option<i32> {
+        (self.pid() != 0).then(|| siginfo_to_status(self.0))
+    }
+}
+
+#[cfg(feature = "notifier")]
+pub(crate) fn waitpidfd_raw(raw_fd: RawFd, flags: WaitPidFlag) -> Result<WaitPidfdRaw, Errno> {
+    waitid_si(IdType::Pidfd(raw_fd), flags).map(WaitPidfdRaw)
 }
 
 // Converts a siginfo to a more compact status code.

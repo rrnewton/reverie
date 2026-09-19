@@ -256,7 +256,6 @@ static EVENT_COOKIE: AtomicU64 = AtomicU64::new(0);
 static EVENT_DEVICE: AtomicU64 = AtomicU64::new(0);
 static EVENT_INODE: AtomicU64 = AtomicU64::new(0);
 static IN_GUEST_STAGE_STREAM: AtomicBool = AtomicBool::new(false);
-
 thread_local! {
     static CURRENT_EVENT: Cell<*mut SyscallEvent> = const { Cell::new(ptr::null_mut()) };
     // Reentry is a property of Tool execution, not of syscall-event storage:
@@ -307,6 +306,9 @@ fn tool_callback_active() -> bool {
 // process-global OnceLocks before returning an error. This does not claim the
 // other runtime installers or their reversible preflight work.
 static HOST_INITIALIZATION_STARTED: AtomicBool = AtomicBool::new(false);
+// Once explicit host preparation starts, every publication in this runtime
+// must remain controller-verified quiescent. No guard-trap router is installed.
+static EXPLICIT_HOST_QUIESCENT: AtomicBool = AtomicBool::new(false);
 static ARENAS: OnceLock<Vec<RuntimeArena>> = OnceLock::new();
 static SITES: OnceLock<Box<[SiteSlot]>> = OnceLock::new();
 static PAGE_SIZE: AtomicU64 = AtomicU64::new(0);
@@ -937,7 +939,7 @@ fn host_handshake_frame() -> HostHandshakeFrame {
 }
 
 fn initialize_host_runtime() -> io::Result<()> {
-    initialize_host_runtime_with(prepare_instrumentation)
+    initialize_host_runtime_with(false, prepare_instrumentation)
 }
 
 pub(crate) fn initialize_host_runtime_explicit(config: crate::HostRuntimeConfig) -> io::Result<()> {
@@ -945,13 +947,16 @@ pub(crate) fn initialize_host_runtime_explicit(config: crate::HostRuntimeConfig)
         return Err(io::Error::from_raw_os_error(libc::EINVAL));
     }
     let staleness = liteinst2::patcher::StalenessBudget::new(config.straddler_staleness_ticks);
-    initialize_host_runtime_with(|| {
+    initialize_host_runtime_with(true, || {
         crate::straddler::initialize(staleness)?;
         prepare_instrumentation_state()
     })
 }
 
-fn initialize_host_runtime_with(prepare: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+fn initialize_host_runtime_with(
+    explicit_quiescent: bool,
+    prepare: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     if reverie_preload::trap::has_dispatcher()
         || crate::straddler::is_initialized()
         || SITES.get().is_some()
@@ -962,6 +967,10 @@ fn initialize_host_runtime_with(prepare: impl FnOnce() -> io::Result<()>) -> io:
     HOST_INITIALIZATION_STARTED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| io::Error::from_raw_os_error(libc::EALREADY))?;
+    if explicit_quiescent {
+        EXPLICIT_HOST_QUIESCENT.store(true, Ordering::Release);
+        PATCH_PUBLICATION.store(PatchPublication::Quiescent as u8, Ordering::Release);
+    }
     let frame = host_handshake_frame();
     // SAFETY: the launcher validates this exact DSO/RIP/frame before suppressing
     // the trap. The function returns normally after ptrace resumes the tracee.
@@ -978,6 +987,9 @@ pub(crate) fn initialize_reverie_tool(
     instructions: InstructionSubscriptions,
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
 ) -> io::Result<()> {
+    if EXPLICIT_HOST_QUIESCENT.load(Ordering::Acquire) {
+        return Err(io::Error::from_raw_os_error(libc::EALREADY));
+    }
     let stage_stream = match std::env::var_os(IN_GUEST_STAGE_STREAM_ENV).as_deref() {
         None => false,
         Some(value) if value == OsStr::new("0") => false,
@@ -1012,6 +1024,9 @@ fn install_runtime(
     instructions: InstructionSubscriptions,
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
 ) -> io::Result<()> {
+    if EXPLICIT_HOST_QUIESCENT.load(Ordering::Acquire) {
+        return Err(io::Error::from_raw_os_error(libc::EALREADY));
+    }
     PATCH_PUBLICATION.store(publication as u8, Ordering::Release);
     prepare_instrumentation()?;
     install_vdso_sites(vdso_sites)?;
@@ -1196,11 +1211,11 @@ fn discover_arena_aliases(
 
 fn prepare_instrumentation() -> io::Result<()> {
     crate::straddler::initialize_from_environment()?;
+    prepare_live_patching().map_err(|error| io::Error::other(error.to_string()))?;
     prepare_instrumentation_state()
 }
 
 fn prepare_instrumentation_state() -> io::Result<()> {
-    prepare_live_patching().map_err(|error| io::Error::other(error.to_string()))?;
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     let page_size = u64::try_from(page_size)
         .ok()
@@ -1644,13 +1659,23 @@ unsafe fn set_mapping_protection(start: u64, len: u64, protection: i32) -> io::R
 
 struct InstallGuard;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub(crate) enum PatchPublication {
     /// The stopped-tracee helper is the only thread able to reach live code.
     Quiescent,
     /// Other application threads may fetch the site during publication.
     Concurrent,
+}
+
+fn validate_host_publication(
+    explicit_quiescent: bool,
+    requested: PatchPublication,
+) -> io::Result<()> {
+    if explicit_quiescent && requested != PatchPublication::Quiescent {
+        return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+    }
+    Ok(())
 }
 
 fn patch_publication() -> PatchPublication {
@@ -1682,6 +1707,7 @@ unsafe fn install_site_hook(
     expected_instruction: &[u8],
     manage_protection: bool,
 ) -> io::Result<HostInstallResult> {
+    validate_host_publication(EXPLICIT_HOST_QUIESCENT.load(Ordering::Acquire), publication)?;
     let _install_guard = lock_installation()?;
     let _allocation_scope = crate::patch_alloc::enter();
     let arena = arena_for(address)
@@ -3496,6 +3522,21 @@ impl StackLine {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn explicit_host_refuses_concurrent_publication_without_changing_legacy_policy() {
+        use super::PatchPublication;
+        use super::validate_host_publication;
+        assert!(validate_host_publication(true, PatchPublication::Quiescent).is_ok());
+        assert_eq!(
+            validate_host_publication(true, PatchPublication::Concurrent)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOTSUP)
+        );
+        assert!(validate_host_publication(false, PatchPublication::Concurrent).is_ok());
+        assert!(validate_host_publication(false, PatchPublication::Quiescent).is_ok());
+    }
+
     use core::sync::atomic::Ordering;
     use std::ffi::OsStr;
 

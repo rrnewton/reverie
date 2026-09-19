@@ -87,6 +87,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 #[cfg(test)]
@@ -109,6 +110,24 @@ use parking_lot::MutexGuard;
 
 use super::Errno;
 use super::Error;
+use super::PhysicalDecodeOutcome;
+use super::PhysicalDecodeOwner;
+use super::PhysicalEventGenerationId;
+use super::PhysicalEventObserver;
+use super::PhysicalExitCapabilityTransition;
+use super::PhysicalObserverAttachError;
+use super::PhysicalReservationId;
+use super::PhysicalResumeContext;
+use super::PhysicalResumeOperation;
+use super::PhysicalResumeOutcome;
+use super::PhysicalResumeOwner;
+use super::PhysicalStatusDisposition;
+use super::PhysicalStatusId;
+use super::PhysicalStatusPublication;
+use super::PhysicalTaskIdentity;
+use super::PhysicalWaitContext;
+use super::PhysicalWaitProducer;
+use super::PhysicalWaitSiginfo;
 use super::Pid;
 use super::Running;
 use super::Stopped;
@@ -419,6 +438,15 @@ impl ExitWaiters {
 
 #[derive(Debug)]
 struct Event {
+    /// Process-local diagnostic identity of this immutable generation.
+    generation: PhysicalEventGenerationId,
+
+    /// Optional preallocated observer installed before wait ownership starts.
+    observer: OnceLock<PhysicalEventObserver>,
+
+    /// Prevents duplicate identity records when attachment races capture.
+    identity_recorded: AtomicBool,
+
     /// Cancellation-safe weak registrations for every pending exit waiter.
     exit_waiters: ExitWaiters,
 
@@ -440,6 +468,9 @@ struct Event {
     /// separate prevents a following final wait status from stealing the exit
     /// event from a held [`ExitFuture`].
     exit_status: AtomicI32,
+
+    /// Physical status behind `exit_status`, or zero while unavailable.
+    exit_physical_status: AtomicU64,
 
     /// Linear claim for the one stopped-state capability represented by this
     /// exact Event generation's retained exit-stop observation.
@@ -470,18 +501,42 @@ struct Event {
 
 #[derive(Debug)]
 struct StatusState {
-    pending: VecDeque<i32>,
-    terminal: i32,
+    pending: VecDeque<ObservedStatus>,
+    terminal: ObservedStatus,
 }
 
 struct StatusReservation<'a> {
-    status: i32,
+    status: ObservedStatus,
+    reservation: Option<PhysicalReservationId>,
+    event: &'a Event,
     state: Option<MutexGuard<'a, StatusState>>,
+    completed: bool,
 }
 
 enum StatusReturn<T> {
     Returned(T),
-    Cancelled(i32),
+    Cancelled(ObservedStatus),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ObservedStatus {
+    raw: i32,
+    physical: Option<PhysicalStatusId>,
+}
+
+impl ObservedStatus {
+    const fn unobserved(raw: i32) -> Self {
+        Self {
+            raw,
+            physical: None,
+        }
+    }
+}
+
+impl From<i32> for ObservedStatus {
+    fn from(raw: i32) -> Self {
+        Self::unobserved(raw)
+    }
 }
 
 struct ReturnTransaction<'a> {
@@ -542,8 +597,9 @@ impl SyncWaitOwner<'_> {
         &mut self,
         _pid: Pid,
         reservation: StatusReservation<'_>,
-        decode: impl FnOnce(i32) -> Result<T, Error>,
+        decode: impl FnOnce(i32, Option<PhysicalStatusId>) -> Result<T, Error>,
     ) -> Result<StatusReturn<T>, Error> {
+        reservation.begin_decode(PhysicalDecodeOwner::Synchronous);
         let transaction = match self.event.begin_status_return(
             reservation.status,
             WAIT_OWNER_SYNC,
@@ -551,6 +607,10 @@ impl SyncWaitOwner<'_> {
         ) {
             ReturnTransactionStart::Begun(transaction) => transaction,
             ReturnTransactionStart::Cancelled => {
+                reservation.finish_decode(
+                    PhysicalDecodeOutcome::Cancelled,
+                    PhysicalDecodeOwner::Synchronous,
+                );
                 return Ok(StatusReturn::Cancelled(reservation.status));
             }
         };
@@ -573,7 +633,20 @@ impl SyncWaitOwner<'_> {
         // do not replace it with a blanket commit. (The ESRCH-spin liveness fix
         // lives on the async `Event`/notifier path below, which has no cleanup
         // claimant to hand off to and so must consume-on-error.)
-        let decoded = decode(reservation.status)?;
+        let decoded = match decode(reservation.raw(), reservation.physical()) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                reservation.finish_decode(
+                    PhysicalDecodeOutcome::RetryRolledBack,
+                    PhysicalDecodeOwner::Synchronous,
+                );
+                return Err(error);
+            }
+        };
+        reservation.finish_decode(
+            PhysicalDecodeOutcome::Returned,
+            PhysicalDecodeOwner::Synchronous,
+        );
         reservation.commit();
         transaction.commit(WAIT_OWNER_NONE);
         self.released = true;
@@ -650,10 +723,67 @@ enum CancellableNotifierWaitOwnership<'a> {
 }
 
 impl StatusReservation<'_> {
+    fn raw(&self) -> i32 {
+        self.status.raw
+    }
+
+    fn physical(&self) -> Option<PhysicalStatusId> {
+        self.status.physical
+    }
+
+    fn begin_decode(&self, owner: PhysicalDecodeOwner) {
+        if let (Some(observer), Some(reservation), Some(status)) =
+            (self.event.observer(), self.reservation, self.physical())
+        {
+            observer.record_decode_started(reservation, status, owner);
+        }
+    }
+
+    fn finish_decode(&self, outcome: PhysicalDecodeOutcome, owner: PhysicalDecodeOwner) {
+        if let (Some(observer), Some(reservation), Some(status)) =
+            (self.event.observer(), self.reservation, self.physical())
+        {
+            observer.record_decode_finished(reservation, status, outcome, owner);
+        }
+    }
+
     fn commit(mut self) {
+        let retained_terminal = self.state.is_none();
         if let Some(state) = self.state.as_mut() {
             let committed = state.pending.pop_front();
             debug_assert_eq!(committed, Some(self.status));
+        }
+        if let (Some(observer), Some(reservation), Some(status)) =
+            (self.event.observer(), self.reservation, self.physical())
+        {
+            if retained_terminal {
+                observer.record_terminal_replayed(reservation, status);
+            } else {
+                observer.record_reservation_committed(reservation, status);
+            }
+        }
+        self.completed = true;
+    }
+
+    fn replay(mut self) {
+        if let (Some(observer), Some(reservation), Some(status)) =
+            (self.event.observer(), self.reservation, self.physical())
+        {
+            observer.record_terminal_replayed(reservation, status);
+        }
+        self.completed = true;
+    }
+}
+
+impl Drop for StatusReservation<'_> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if let (Some(observer), Some(reservation), Some(status)) =
+            (self.event.observer(), self.reservation, self.physical())
+        {
+            observer.record_ordinary_reservation_rolled_back(reservation, status);
         }
     }
 }
@@ -661,15 +791,19 @@ impl StatusReservation<'_> {
 impl Event {
     pub fn new() -> Self {
         Self {
+            generation: PhysicalEventGenerationId::allocate(),
+            observer: OnceLock::new(),
+            identity_recorded: AtomicBool::new(false),
             exit_waiters: ExitWaiters::default(),
             exit_publication: Mutex::new(()),
             status_waker: WakerSlot::default(),
             status: Mutex::new(StatusState {
                 pending: VecDeque::new(),
-                terminal: INVALID_STATUS,
+                terminal: ObservedStatus::unobserved(INVALID_STATUS),
             }),
             status_changed: Condvar::new(),
             exit_status: AtomicI32::new(EXIT_PENDING),
+            exit_physical_status: AtomicU64::new(0),
             exit_capability: AtomicU8::new(EXIT_CAP_PENDING),
             registration_error: Mutex::new(None),
             worker_state: AtomicI32::new(WORKER_NOT_STARTED),
@@ -684,6 +818,61 @@ impl Event {
             new_child_decode_pause: Mutex::new(None),
             #[cfg(test)]
             cleanup_return_pause: Mutex::new(None),
+        }
+    }
+
+    fn observer(&self) -> Option<&PhysicalEventObserver> {
+        self.observer.get()
+    }
+
+    fn attach_observer(
+        &self,
+        observer: &PhysicalEventObserver,
+    ) -> Result<(), PhysicalObserverAttachError> {
+        if let Some(existing) = self.observer() {
+            return if existing.same_observer(observer) {
+                Ok(())
+            } else {
+                Err(PhysicalObserverAttachError::DifferentObserverAlreadyAttached)
+            };
+        }
+        if !observer.is_open() {
+            return Err(PhysicalObserverAttachError::ObserverClosed);
+        }
+        let _owner = self.wait_owner_lock.lock();
+        if self.wait_owner.load(Ordering::Acquire) != WAIT_OWNER_NONE
+            || self.worker_state.load(Ordering::Acquire) != WORKER_NOT_STARTED
+        {
+            return Err(PhysicalObserverAttachError::WaitAlreadyStarted);
+        }
+        match self.observer.set(observer.clone()) {
+            Ok(()) => {
+                observer.attach_generation(self.generation);
+                Ok(())
+            }
+            Err(_) => {
+                let existing = self
+                    .observer()
+                    .expect("observer OnceLock set failure retains existing observer");
+                if existing.same_observer(observer) {
+                    Ok(())
+                } else {
+                    Err(PhysicalObserverAttachError::DifferentObserverAlreadyAttached)
+                }
+            }
+        }
+    }
+
+    fn record_identity(&self, identity: &WorkerIdentity) {
+        let Some(observer) = self.observer() else {
+            return;
+        };
+        if self
+            .identity_recorded
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            observer.bind_identity(self.generation, identity.physical_identity());
         }
     }
 
@@ -702,6 +891,21 @@ impl Event {
                         .compare_exchange(state, replacement, Ordering::AcqRel, Ordering::Acquire)
                         .is_ok()
                     {
+                        if state == EXIT_CAP_AVAILABLE
+                            && let Some(status) = PhysicalStatusId::from_raw(
+                                self.exit_physical_status.load(Ordering::Acquire),
+                            )
+                            && let Some(observer) = self.observer()
+                        {
+                            observer.record_exit_capability(
+                                status,
+                                PhysicalExitCapabilityTransition::Expired,
+                            );
+                            observer.finish_status(
+                                status,
+                                PhysicalStatusDisposition::ExitCapabilityExpired,
+                            );
+                        }
                         return state == EXIT_CAP_PENDING;
                     }
                 }
@@ -727,6 +931,15 @@ impl Event {
                         )
                         .is_ok()
                     {
+                        if let Some(status) = PhysicalStatusId::from_raw(
+                            self.exit_physical_status.load(Ordering::Acquire),
+                        ) && let Some(observer) = self.observer()
+                        {
+                            observer.record_exit_capability(
+                                status,
+                                PhysicalExitCapabilityTransition::Revoked,
+                            );
+                        }
                         self.exit_waiters.wake_all();
                         return Ok(());
                     }
@@ -742,6 +955,15 @@ impl Event {
                         )
                         .is_ok()
                     {
+                        if let Some(status) = PhysicalStatusId::from_raw(
+                            self.exit_physical_status.load(Ordering::Acquire),
+                        ) && let Some(observer) = self.observer()
+                        {
+                            observer.record_exit_capability(
+                                status,
+                                PhysicalExitCapabilityTransition::TransferredToCleanup,
+                            );
+                        }
                         self.exit_waiters.wake_all();
                         return Ok(());
                     }
@@ -754,7 +976,11 @@ impl Event {
         }
     }
 
-    fn publish_exit_stop(&self, between_status_and_capability: impl FnOnce()) {
+    fn publish_exit_stop(
+        &self,
+        status: ObservedStatus,
+        between_status_and_capability: impl FnOnce(),
+    ) {
         // Publish STOPPED first. A waiter that observes this half-published
         // state is already registered and returns Pending until AVAILABLE is
         // released and wake_all runs below.
@@ -770,6 +996,16 @@ impl Event {
             Ok(EXIT_PENDING) | Err(EXIT_STOPPED | EXIT_ECHILD)
         ));
         if previous.is_ok() {
+            if let Some(id) = status.physical {
+                self.exit_physical_status.store(id.get(), Ordering::Release);
+                if let Some(observer) = self.observer() {
+                    observer.record_status_published(
+                        self.generation,
+                        id,
+                        PhysicalStatusPublication::ExitCapability,
+                    );
+                }
+            }
             between_status_and_capability();
             let capability = self.exit_capability.compare_exchange(
                 EXIT_CAP_PENDING,
@@ -784,6 +1020,11 @@ impl Event {
                 capability,
                 Ok(EXIT_CAP_PENDING) | Err(EXIT_CAP_EXPIRED)
             ));
+            if capability.is_ok()
+                && let (Some(observer), Some(id)) = (self.observer(), status.physical)
+            {
+                observer.record_exit_capability(id, PhysicalExitCapabilityTransition::Published);
+            }
         }
         drop(publication);
         self.status_changed.notify_all();
@@ -815,30 +1056,47 @@ impl Event {
 
     /// Replaces the status and notifies the notifier of the change. Returns the
     /// old status if there was one.
-    pub fn update(&self, status: i32) -> Option<i32> {
-        if status == PTRACE_EVENT_EXIT_STOP {
-            self.publish_exit_stop(|| {});
+    pub fn update(&self, status: impl Into<ObservedStatus>) -> Option<i32> {
+        let status = status.into();
+        if status.raw == PTRACE_EVENT_EXIT_STOP {
+            self.publish_exit_stop(status, || {});
             return None;
         }
 
-        let terminal = libc::WIFEXITED(status) || libc::WIFSIGNALED(status);
+        let terminal = libc::WIFEXITED(status.raw) || libc::WIFSIGNALED(status.raw);
         if terminal {
             self.publish_terminal_exit_state();
         }
         let mut state = self.status.lock();
-        let previous = if terminal {
+        let (previous, accepted) = if terminal {
             let previous = state.terminal;
-            if previous == INVALID_STATUS || previous == ECHILD_STATUS {
+            if previous.raw == INVALID_STATUS || previous.raw == ECHILD_STATUS {
                 state.terminal = status;
+                (previous, true)
             } else {
-                debug_assert_eq!(previous, status, "terminal publication changed");
+                debug_assert_eq!(previous.raw, status.raw, "terminal publication changed");
+                (previous, false)
             }
-            previous
         } else {
-            let previous = state.pending.back().copied().unwrap_or(INVALID_STATUS);
+            let previous = state
+                .pending
+                .back()
+                .copied()
+                .unwrap_or_else(|| ObservedStatus::unobserved(INVALID_STATUS));
             state.pending.push_back(status);
-            previous
+            (previous, true)
         };
+        if accepted && let (Some(observer), Some(id)) = (self.observer(), status.physical) {
+            observer.record_status_published(
+                self.generation,
+                id,
+                if terminal {
+                    PhysicalStatusPublication::RetainedTerminal
+                } else {
+                    PhysicalStatusPublication::RegularFifo
+                },
+            );
+        }
         drop(state);
         self.status_changed.notify_all();
         if terminal {
@@ -851,11 +1109,11 @@ impl Event {
             self.status_waker.wake();
         }
 
-        (previous != INVALID_STATUS).then_some(previous)
+        (previous.raw != INVALID_STATUS).then_some(previous.raw)
     }
 
-    fn update_sync_status(&self, status: i32) {
-        if status != PTRACE_EVENT_EXIT_STOP {
+    fn update_sync_status(&self, status: ObservedStatus) {
+        if status.raw != PTRACE_EVENT_EXIT_STOP {
             self.update(status);
             return;
         }
@@ -865,6 +1123,13 @@ impl Event {
         // minting an ExitFuture capability for the same consumed status.
         let mut state = self.status.lock();
         state.pending.push_back(status);
+        if let (Some(observer), Some(id)) = (self.observer(), status.physical) {
+            observer.record_status_published(
+                self.generation,
+                id,
+                PhysicalStatusPublication::SynchronousFifo,
+            );
+        }
         drop(state);
         self.status_changed.notify_all();
         self.status_waker.wake();
@@ -872,10 +1137,17 @@ impl Event {
 
     /// Publishes a terminal `ECHILD` observation to every kind of waiter.
     fn mark_echild(&self) {
+        self.mark_echild_with_cause(None);
+    }
+
+    fn mark_echild_with_cause(&self, cause: Option<super::PhysicalWaitAttemptId>) {
         self.publish_terminal_exit_state();
         let mut state = self.status.lock();
-        if state.terminal == INVALID_STATUS {
-            state.terminal = ECHILD_STATUS;
+        if state.terminal.raw == INVALID_STATUS {
+            state.terminal = ObservedStatus::unobserved(ECHILD_STATUS);
+        }
+        if let Some(observer) = self.observer() {
+            observer.record_synthetic_echild(self.generation, cause);
         }
         drop(state);
         self.status_changed.notify_all();
@@ -884,7 +1156,29 @@ impl Event {
     }
 
     fn is_terminal(&self) -> bool {
-        self.status.lock().terminal != INVALID_STATUS
+        self.status.lock().terminal.raw != INVALID_STATUS
+    }
+
+    fn reserve_status<'a>(
+        &'a self,
+        status: ObservedStatus,
+        state: Option<MutexGuard<'a, StatusState>>,
+    ) -> StatusReservation<'a> {
+        let reservation = match (self.observer(), status.physical) {
+            (Some(observer), Some(physical)) => {
+                let reservation = observer.next_reservation();
+                observer.record_reserved(self.generation, reservation, physical);
+                Some(reservation)
+            }
+            _ => None,
+        };
+        StatusReservation {
+            status,
+            reservation,
+            event: self,
+            state,
+            completed: false,
+        }
     }
 
     /// Reserves the next status without removing a fallibly decoded FIFO front.
@@ -894,21 +1188,17 @@ impl Event {
 
         let state = self.status.lock();
         if let Some(status) = state.pending.front().copied() {
-            return Poll::Ready(Ok(StatusReservation {
-                status,
-                state: Some(state),
-            }));
+            return Poll::Ready(Ok(self.reserve_status(status, Some(state))));
         }
-        match state.terminal {
+        match state.terminal.raw {
             INVALID_STATUS => Poll::Pending,
             ECHILD_STATUS => Poll::Ready(Err(Errno::ECHILD)),
-            status => {
+            _ => {
                 // Final status is immutable so old state generations retain
                 // the actual exit code or terminating signal after removal.
-                Poll::Ready(Ok(StatusReservation {
-                    status,
-                    state: None,
-                }))
+                let status = state.terminal;
+                drop(state);
+                Poll::Ready(Ok(self.reserve_status(status, None)))
             }
         }
     }
@@ -917,7 +1207,7 @@ impl Event {
     fn poll_status(&self, waker: &Waker) -> Poll<Result<i32, Errno>> {
         match self.poll_status_reservation(waker) {
             Poll::Ready(Ok(reservation)) => {
-                let status = reservation.status;
+                let status = reservation.raw();
                 reservation.commit();
                 Poll::Ready(Ok(status))
             }
@@ -935,7 +1225,7 @@ impl Event {
             if !state.pending.is_empty() {
                 return Some(state);
             }
-            if state.terminal != INVALID_STATUS {
+            if state.terminal.raw != INVALID_STATUS {
                 return None;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -962,13 +1252,13 @@ impl Event {
     /// commit or restore the prior owner.
     fn begin_status_return(
         &self,
-        status: i32,
+        status: ObservedStatus,
         current_owner: u8,
         returning_owner: u8,
     ) -> ReturnTransactionStart<'_> {
         let _guard = self.wait_owner_lock.lock();
-        if !libc::WIFEXITED(status)
-            && !libc::WIFSIGNALED(status)
+        if !libc::WIFEXITED(status.raw)
+            && !libc::WIFSIGNALED(status.raw)
             && (self.cleanup_cancel_requested.load(Ordering::Acquire)
                 || self.cleanup_claim_waiters.load(Ordering::Acquire) != 0)
         {
@@ -1117,8 +1407,9 @@ impl Event {
     fn decode_status_return<T>(
         &self,
         reservation: StatusReservation<'_>,
-        decode: impl FnOnce(i32) -> Result<T, Error>,
+        decode: impl FnOnce(i32, Option<PhysicalStatusId>) -> Result<T, Error>,
     ) -> Result<StatusReturn<T>, Error> {
+        reservation.begin_decode(PhysicalDecodeOwner::Notifier);
         let transaction = match self.begin_status_return(
             reservation.status,
             WAIT_OWNER_NOTIFIER,
@@ -1126,10 +1417,14 @@ impl Event {
         ) {
             ReturnTransactionStart::Begun(transaction) => transaction,
             ReturnTransactionStart::Cancelled => {
+                reservation.finish_decode(
+                    PhysicalDecodeOutcome::Cancelled,
+                    PhysicalDecodeOwner::Notifier,
+                );
                 return Ok(StatusReturn::Cancelled(reservation.status));
             }
         };
-        let decoded = match decode(reservation.status) {
+        let decoded = match decode(reservation.raw(), reservation.physical()) {
             Ok(decoded) => decoded,
             // "Death under ptrace" race (see `man 2 ptrace`): the tracee died
             // between the notifier's `waitid` latching this ptrace-event stop and
@@ -1147,6 +1442,13 @@ impl Event {
             // is the async-only liveness fix: unlike the synchronous path there
             // is no cleanup claimant to hand the tracee off to.
             Err(error @ Error::Died(_)) => {
+                reservation.finish_decode(
+                    PhysicalDecodeOutcome::DiedConsumed,
+                    PhysicalDecodeOwner::Notifier,
+                );
+                if let (Some(observer), Some(status)) = (self.observer(), reservation.physical()) {
+                    observer.finish_status(status, PhysicalStatusDisposition::DecodeDied);
+                }
                 reservation.commit();
                 transaction.commit(WAIT_OWNER_NOTIFIER);
                 return Err(error);
@@ -1164,8 +1466,18 @@ impl Event {
             // mirrors the synchronous path's rollback-and-wake-cleanup contract;
             // consuming ANY error was over-broad, symmetric to the original
             // blanket-commit bug on the sync path.
-            Err(error) => return Err(error),
+            Err(error) => {
+                reservation.finish_decode(
+                    PhysicalDecodeOutcome::RetryRolledBack,
+                    PhysicalDecodeOwner::Notifier,
+                );
+                return Err(error);
+            }
         };
+        reservation.finish_decode(
+            PhysicalDecodeOutcome::Returned,
+            PhysicalDecodeOwner::Notifier,
+        );
         reservation.commit();
         transaction.commit(WAIT_OWNER_NOTIFIER);
         Ok(StatusReturn::Returned(decoded))
@@ -1175,19 +1487,15 @@ impl Event {
         let mut state = self.status.lock();
         loop {
             if let Some(status) = state.pending.front().copied() {
-                return Ok(StatusReservation {
-                    status,
-                    state: Some(state),
-                });
+                return Ok(self.reserve_status(status, Some(state)));
             }
-            match state.terminal {
+            match state.terminal.raw {
                 INVALID_STATUS => self.status_changed.wait(&mut state),
                 ECHILD_STATUS => return Err(Errno::ECHILD),
-                status => {
-                    return Ok(StatusReservation {
-                        status,
-                        state: None,
-                    });
+                _ => {
+                    let status = state.terminal;
+                    drop(state);
+                    return Ok(self.reserve_status(status, None));
                 }
             }
         }
@@ -1196,30 +1504,29 @@ impl Event {
     fn try_status_reservation_sync(&self) -> Option<Result<StatusReservation<'_>, Errno>> {
         let state = self.status.lock();
         if let Some(status) = state.pending.front().copied() {
-            return Some(Ok(StatusReservation {
-                status,
-                state: Some(state),
-            }));
+            return Some(Ok(self.reserve_status(status, Some(state))));
         }
-        match state.terminal {
+        match state.terminal.raw {
             INVALID_STATUS => None,
             ECHILD_STATUS => Some(Err(Errno::ECHILD)),
-            status => Some(Ok(StatusReservation {
-                status,
-                state: None,
-            })),
+            _ => {
+                let status = state.terminal;
+                drop(state);
+                Some(Ok(self.reserve_status(status, None)))
+            }
         }
     }
 
     fn try_terminal_reservation_sync(&self) -> Option<Result<StatusReservation<'_>, Errno>> {
         let state = self.status.lock();
-        match state.terminal {
+        match state.terminal.raw {
             INVALID_STATUS => None,
             ECHILD_STATUS => Some(Err(Errno::ECHILD)),
-            status => Some(Ok(StatusReservation {
-                status,
-                state: None,
-            })),
+            _ => {
+                let status = state.terminal;
+                drop(state);
+                Some(Ok(self.reserve_status(status, None)))
+            }
         }
     }
 
@@ -1332,6 +1639,9 @@ impl Event {
                 Ordering::Acquire,
             )
             .expect("worker start state changed before publication");
+        if let Some(observer) = self.observer() {
+            observer.record_worker_started(self.generation);
+        }
         self.notify_wait_owner_change();
     }
 
@@ -1370,6 +1680,9 @@ impl Event {
     fn mark_worker_done(&self) {
         let previous = self.worker_state.swap(WORKER_DONE, Ordering::AcqRel);
         debug_assert!(matches!(previous, WORKER_RUNNING | WORKER_FINISHING));
+        if let Some(observer) = self.observer() {
+            observer.record_generation_finished(self.generation);
+        }
         self.worker_done_changed.notify_all();
         self.notify_wait_owner_change();
     }
@@ -1414,6 +1727,15 @@ impl Event {
                             )
                             .is_ok()
                         {
+                            if let Some(status) = PhysicalStatusId::from_raw(
+                                self.exit_physical_status.load(Ordering::Acquire),
+                            ) && let Some(observer) = self.observer()
+                            {
+                                observer.record_exit_capability(
+                                    status,
+                                    PhysicalExitCapabilityTransition::Claimed,
+                                );
+                            }
                             return Poll::Ready(Ok(()));
                         }
                     }
@@ -1511,7 +1833,39 @@ impl EventHandle {
     }
 
     fn bind_identity(&self, identity: Arc<WorkerIdentity>) -> Result<(), Arc<WorkerIdentity>> {
-        self.resolved().0.identity.set(identity)
+        let resolved = self.resolved();
+        let result = resolved.0.identity.set(identity);
+        if let Some(identity) = resolved.0.identity.get() {
+            resolved.0.event.record_identity(identity);
+        }
+        result
+    }
+
+    pub(super) fn attach_physical_observer(
+        &self,
+        observer: &PhysicalEventObserver,
+    ) -> Result<(), PhysicalObserverAttachError> {
+        let resolved = self.resolved();
+        resolved.0.event.attach_observer(observer)?;
+        if let Some(identity) = resolved.0.identity.get() {
+            resolved.0.event.record_identity(identity);
+        }
+        Ok(())
+    }
+
+    pub(super) fn physical_observer(&self) -> Option<PhysicalEventObserver> {
+        self.resolved().0.event.observer().cloned()
+    }
+
+    pub(super) fn physical_generation(&self) -> PhysicalEventGenerationId {
+        self.resolved().0.event.generation
+    }
+
+    pub(super) fn physical_task_identity(&self, pid: Pid) -> PhysicalTaskIdentity {
+        self.resolved().0.identity.get().map_or_else(
+            || PhysicalTaskIdentity::direct_child(pid),
+            |identity| identity.physical_identity(),
+        )
     }
 
     fn resolved(&self) -> &Self {
@@ -1553,6 +1907,17 @@ impl EventHandle {
                 return Ok(authoritative);
             }
             return Err(Errno::ELOOP);
+        }
+        if let Some(observer) = self.0.event.observer() {
+            authoritative
+                .0
+                .event
+                .attach_observer(observer)
+                .map_err(|_| Errno::EBUSY)?;
+            if let Some(identity) = authoritative.0.identity.get() {
+                authoritative.0.event.record_identity(identity);
+            }
+            observer.adopt_generation(self.0.event.generation, authoritative.0.event.generation);
         }
         match self.0.authoritative.set(authoritative.clone()) {
             Ok(()) => Ok(authoritative),
@@ -1606,6 +1971,16 @@ struct WorkerIdentity {
 }
 
 impl WorkerIdentity {
+    fn physical_identity(&self) -> PhysicalTaskIdentity {
+        PhysicalTaskIdentity::captured(
+            self.pid,
+            self.snapshot.tgid,
+            self.snapshot.start_time,
+            self.proc_inode,
+            self.pidfd.as_raw_fd(),
+        )
+    }
+
     fn capture(pid: Pid) -> Result<Self, Errno> {
         #[cfg(test)]
         if let Some(error) = CAPTURE_PERSISTENT_ERRORS.lock().get(&pid).copied() {
@@ -1802,18 +2177,92 @@ fn spawn_worker(
 /// Waits on one exact kernel task lifetime and returns its lossless raw status.
 /// Returns `None` once that pidfd is no longer waitable. There is deliberately
 /// no numeric-PID fallback after identity capture.
-fn wait_pidfd_status(identity: &WorkerIdentity) -> Option<i32> {
+fn wait_pidfd_once(
+    event: &Event,
+    identity: &WorkerIdentity,
+    flags: WaitPidFlag,
+    producer: PhysicalWaitProducer,
+) -> Result<Option<ObservedStatus>, (Errno, Option<super::PhysicalWaitAttemptId>)> {
+    let observer = event.observer();
+    let attempt = observer.map(|observer| {
+        observer.begin_wait(PhysicalWaitContext {
+            generation: Some(event.generation),
+            task: identity.physical_identity(),
+            producer,
+            flags: flags.bits(),
+        })
+    });
+    let result = waitid::waitpidfd_raw(identity.pidfd.as_raw_fd(), flags);
+    match result {
+        Ok(raw) => {
+            let siginfo = PhysicalWaitSiginfo {
+                signo: raw.signo(),
+                errno: raw.errno(),
+                code: raw.code(),
+                pid: raw.pid(),
+                uid: raw.uid(),
+                status: raw.status_value(),
+            };
+            let physical = if raw.pid() == 0 {
+                None
+            } else {
+                observer.map(PhysicalEventObserver::allocate_status)
+            };
+            if let (Some(observer), Some(attempt)) = (observer, attempt) {
+                observer.record_wait_siginfo(attempt, siginfo, physical);
+            }
+            // Conversion intentionally remains after the raw record. Existing
+            // unexpected-si_code behavior is preserved rather than changed by
+            // optional diagnostics.
+            match raw.status() {
+                Some(status) => {
+                    if let (Some(observer), Some(attempt), Some(physical)) =
+                        (observer, attempt, physical)
+                    {
+                        observer.finish_wait_status_with_id(
+                            attempt,
+                            physical,
+                            status,
+                            Some(siginfo),
+                        );
+                    }
+                    Ok(Some(ObservedStatus {
+                        raw: status,
+                        physical,
+                    }))
+                }
+                None => {
+                    if let (Some(observer), Some(attempt)) = (observer, attempt) {
+                        observer.finish_wait_no_status(attempt, Some(siginfo));
+                    }
+                    Ok(None)
+                }
+            }
+        }
+        Err(error) => {
+            if let (Some(observer), Some(attempt)) = (observer, attempt) {
+                observer.finish_wait_error(attempt, error.into_raw());
+            }
+            Err((error, attempt.map(|attempt| attempt.id())))
+        }
+    }
+}
+
+fn wait_pidfd_status(
+    event: &Event,
+    identity: &WorkerIdentity,
+) -> Result<ObservedStatus, Option<super::PhysicalWaitAttemptId>> {
     let flags = WaitPidFlag::from_bits_retain(
         WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
     );
     loop {
-        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags);
+        let result = wait_pidfd_once(event, identity, flags, PhysicalWaitProducer::NotifierWorker);
 
         return match result {
-            Ok(status) => Some(status.unwrap()),
-            Err(Errno::EINTR) => continue,
-            Err(Errno::ECHILD) => None,
-            Err(err) => {
+            Ok(status) => Ok(status.expect("blocking pidfd wait returned no status")),
+            Err((Errno::EINTR, _)) => continue,
+            Err((Errno::ECHILD, attempt)) => Err(attempt),
+            Err((err, _)) => {
                 panic!(
                     "waitid(P_PIDFD, {}) failed unexpectedly: {}",
                     identity.pid, err
@@ -1825,34 +2274,37 @@ fn wait_pidfd_status(identity: &WorkerIdentity) -> Option<i32> {
 
 /// A worker thread that simply wakes a future when a process changes state.
 fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
-    let mut retrying_echild = false;
+    let mut retrying_echild = None;
     loop {
         // Revalidate before retrying a transient ECHILD. The pidfd keeps the
         // wait bound to this exact task even if its numeric TID is later reused.
-        if retrying_echild && !identity.is_active_tracee() {
-            event.mark_echild();
+        if retrying_echild.is_some() && !identity.is_active_tracee() {
+            event.mark_echild_with_cause(retrying_echild);
             break;
         }
-        let Some(status) = wait_pidfd_status(&identity) else {
-            if identity.is_active_tracee() {
-                // A newborn auto-attached ptrace child can briefly exist with
-                // this exact procfs generation before its first wait status
-                // becomes visible. ECHILD is transient only in that window.
-                retrying_echild = true;
-                thread::sleep(Duration::from_millis(1));
-                continue;
+        let status = match wait_pidfd_status(&event, &identity) {
+            Ok(status) => status,
+            Err(cause) => {
+                if identity.is_active_tracee() {
+                    // A newborn auto-attached ptrace child can briefly exist with
+                    // this exact procfs generation before its first wait status
+                    // becomes visible. ECHILD is transient only in that window.
+                    retrying_echild = cause;
+                    thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                // Publish before unregistering so held and newly registered late
+                // waiters both receive a typed terminal result instead of hanging.
+                event.mark_echild_with_cause(cause);
+                break;
             }
-            // Publish before unregistering so held and newly registered late
-            // waiters both receive a typed terminal result instead of hanging.
-            event.mark_echild();
-            break;
         };
-        retrying_echild = false;
+        retrying_echild = None;
         event.update(status);
 
         // Try to avoid reaching an ECHILD error by terminating the loop on the
         // last event.
-        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+        if libc::WIFEXITED(status.raw) || libc::WIFSIGNALED(status.raw) {
             break;
         }
     }
@@ -1869,26 +2321,95 @@ fn try_replay_sync_terminal(pid: Pid, handle: &EventHandle) -> Option<Result<Wai
     let reservation = event.try_terminal_reservation_sync()?;
     Some(match reservation {
         Err(error) => Err(error.into()),
-        Ok(reservation) => Wait::from_raw_with_token(
-            pid,
-            reservation.status,
-            TraceeToken::from_event(handle.clone()),
-        ),
+        Ok(reservation) => {
+            reservation.begin_decode(PhysicalDecodeOwner::Synchronous);
+            let raw = reservation.raw();
+            let physical = reservation.physical();
+            let decoded = Wait::from_raw_with_token(
+                pid,
+                raw,
+                TraceeToken::from_observed_event(handle.clone(), physical),
+            );
+            match decoded {
+                Ok(wait) => {
+                    reservation.finish_decode(
+                        PhysicalDecodeOutcome::Returned,
+                        PhysicalDecodeOwner::Synchronous,
+                    );
+                    reservation.replay();
+                    Ok(wait)
+                }
+                Err(error) => {
+                    reservation.finish_decode(
+                        PhysicalDecodeOutcome::RetryRolledBack,
+                        PhysicalDecodeOwner::Synchronous,
+                    );
+                    Err(error)
+                }
+            }
+        }
     })
 }
 
-fn resume_cancelled_sync_status(pid: Pid, status: i32) -> Result<(), Error> {
-    if !libc::WIFSTOPPED(status) {
+fn resume_cancelled_sync_status(
+    pid: Pid,
+    status: ObservedStatus,
+    handle: &EventHandle,
+) -> Result<(), Error> {
+    if !libc::WIFSTOPPED(status.raw) {
+        if let (Some(observer), Some(physical)) = (handle.physical_observer(), status.physical) {
+            observer.finish_status(physical, PhysicalStatusDisposition::CancellationCleanup);
+        }
         return Ok(());
     }
-    match nix::sys::ptrace::cont(pid.into(), None) {
+    let observer = handle.physical_observer();
+    let attempt = observer.as_ref().map(|observer| {
+        observer.begin_resume(PhysicalResumeContext {
+            generation: Some(handle.physical_generation()),
+            task: handle.identity().map_or_else(
+                || PhysicalTaskIdentity::direct_child(pid),
+                |identity| identity.physical_identity(),
+            ),
+            source_status: status.physical,
+            operation: PhysicalResumeOperation::Continue,
+            signal: None,
+            owner: PhysicalResumeOwner::SynchronousCancellation,
+        })
+    });
+    let result = nix::sys::ptrace::cont(pid.into(), None);
+    if let (Some(observer), Some(attempt)) = (observer.as_ref(), attempt) {
+        observer.finish_resume(
+            attempt,
+            match result {
+                Ok(()) => PhysicalResumeOutcome::Success,
+                Err(error) => PhysicalResumeOutcome::Error(error as i32),
+            },
+        );
+    }
+    match result {
         Ok(()) => Ok(()),
         // An untraced job-control stop needs no resume for the already-pending
         // exact-pidfd SIGKILL to terminate it.
         // SIGKILL can advance an exit-stopped task before PTRACE_CONT reaches
         // it; the exact pidfd wait below still observes the terminal status.
-        Err(nix::errno::Errno::ESRCH) => Ok(()),
-        Err(nix::errno::Errno::EIO) if status != PTRACE_EVENT_EXIT_STOP => Ok(()),
+        Err(error @ nix::errno::Errno::ESRCH) => {
+            if let (Some(observer), Some(attempt), Some(physical)) =
+                (observer.as_ref(), attempt, status.physical)
+            {
+                observer.tolerate_resume_error(attempt, error as i32);
+                observer.finish_status(physical, PhysicalStatusDisposition::CancellationCleanup);
+            }
+            Ok(())
+        }
+        Err(error @ nix::errno::Errno::EIO) if status.raw != PTRACE_EVENT_EXIT_STOP => {
+            if let (Some(observer), Some(attempt), Some(physical)) =
+                (observer.as_ref(), attempt, status.physical)
+            {
+                observer.tolerate_resume_error(attempt, error as i32);
+                observer.finish_status(physical, PhysicalStatusDisposition::CancellationCleanup);
+            }
+            Ok(())
+        }
         Err(error) => Err(Errno::new(error as i32).into()),
     }
 }
@@ -1928,8 +2449,12 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
         match event.claim_sync_wait()? {
             SyncWaitOwnership::Notifier => {
                 let reservation = event.wait_status_reservation_sync()?;
-                match event.decode_status_return(reservation, |status| {
-                    Wait::from_raw_with_token(pid, status, TraceeToken::from_event(handle))
+                match event.decode_status_return(reservation, |status, physical| {
+                    Wait::from_raw_with_token(
+                        pid,
+                        status,
+                        TraceeToken::from_observed_event(handle, physical),
+                    )
                 })? {
                     StatusReturn::Returned(decoded) => return Ok(decoded),
                     StatusReturn::Cancelled(_) => return Err(Errno::ECANCELED.into()),
@@ -1948,16 +2473,16 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                 let mut cancelling = false;
                 if let Some(reservation) = event.try_status_reservation_sync() {
                     let reservation = reservation?;
-                    match owner.decode_status_return(pid, reservation, |status| {
+                    match owner.decode_status_return(pid, reservation, |status, physical| {
                         Wait::from_raw_with_token(
                             pid,
                             status,
-                            TraceeToken::from_event(handle.clone()),
+                            TraceeToken::from_observed_event(handle.clone(), physical),
                         )
                     })? {
                         StatusReturn::Returned(decoded) => return Ok(decoded),
                         StatusReturn::Cancelled(status) => {
-                            resume_cancelled_sync_status(pid, status)?;
+                            resume_cancelled_sync_status(pid, status, &handle)?;
                             cancelling = true;
                         }
                     }
@@ -1972,16 +2497,21 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                             NOTIFIER.remove(pid, &event);
                             return Err(Errno::ESRCH.into());
                         }
-                        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags);
+                        let result = wait_pidfd_once(
+                            &event,
+                            identity,
+                            flags,
+                            PhysicalWaitProducer::SynchronousWait,
+                        );
                         match result {
                             Ok(Some(status)) => break status,
                             Ok(None) => {
                                 unreachable!("blocking synchronous wait returned no status")
                             }
-                            Err(Errno::EINTR) => {}
-                            Err(error) => {
+                            Err((Errno::EINTR, _)) => {}
+                            Err((error, cause)) => {
                                 if error == Errno::ECHILD {
-                                    event.mark_echild();
+                                    event.mark_echild_with_cause(cause);
                                     event.finish_sync_terminal();
                                 }
                                 NOTIFIER.remove(pid, &event);
@@ -1995,15 +2525,15 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                         pause.captured.wait();
                         pause.resume.wait();
                     }
-                    if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                    if libc::WIFEXITED(status.raw) || libc::WIFSIGNALED(status.raw) {
                         event.finish_sync_terminal();
                         NOTIFIER.remove(pid, &event);
                         if cancelling {
                             drop(owner);
                             return Wait::from_raw_with_token(
                                 pid,
-                                status,
-                                TraceeToken::from_event(handle),
+                                status.raw,
+                                TraceeToken::from_observed_event(handle, status.physical),
                             );
                         }
                     }
@@ -2014,16 +2544,20 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                     let reservation = event
                         .try_status_reservation_sync()
                         .expect("published synchronous status is immediately reservable")?;
-                    match owner.decode_status_return(pid, reservation, |reserved_status| {
-                        Wait::from_raw_with_token(
-                            pid,
-                            reserved_status,
-                            TraceeToken::from_event(handle.clone()),
-                        )
-                    })? {
+                    match owner.decode_status_return(
+                        pid,
+                        reservation,
+                        |reserved_status, physical| {
+                            Wait::from_raw_with_token(
+                                pid,
+                                reserved_status,
+                                TraceeToken::from_observed_event(handle.clone(), physical),
+                            )
+                        },
+                    )? {
                         StatusReturn::Returned(decoded) => return Ok(decoded),
                         StatusReturn::Cancelled(reserved_status) => {
-                            resume_cancelled_sync_status(pid, reserved_status)?;
+                            resume_cancelled_sync_status(pid, reserved_status, &handle)?;
                             cancelling = true;
                         }
                     }
@@ -2241,10 +2775,15 @@ impl Notifier {
                 drop(pids);
                 continue;
             }
-            if let Some(occupied) = pids.get(&pid)
-                && occupied.identity.same_live_generation(&current)?
-            {
-                return requested.adopt_authoritative(&occupied.handle);
+            let authoritative = match pids.get(&pid) {
+                Some(occupied) if occupied.identity.same_live_generation(&current)? => {
+                    Some(occupied.handle.clone())
+                }
+                _ => None,
+            };
+            if let Some(authoritative) = authoritative {
+                drop(pids);
+                return requested.adopt_authoritative(&authoritative);
             }
             pids.insert(
                 pid,
@@ -2704,6 +3243,25 @@ pub struct TerminalCleanup {
     event: EventHandle,
 }
 
+/// Result of one generation-bound cancellation cleanup continuation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalCleanupContinue {
+    /// No exit stop is fully published, so no ptrace transition was attempted.
+    WaitingForExitStop,
+    /// This exact exit stop was already consumed by an earlier successful attempt.
+    AlreadyFinished {
+        /// Physical identity of the previously consumed exit stop, when observed.
+        source_status: Option<PhysicalStatusId>,
+    },
+    /// A raw `PTRACE_CONT` was attempted while exit publication was excluded.
+    Attempted {
+        /// Physical identity of the exit stop authorizing the attempt, when observed.
+        source_status: Option<PhysicalStatusId>,
+        /// Raw ptrace errno, or `None` when the kernel accepted the transition.
+        error: Option<Errno>,
+    },
+}
+
 impl TerminalCleanup {
     pub(super) fn new(pid: Pid, token: &TraceeToken) -> Self {
         let cleanup = Self::new_unregistered(pid, token);
@@ -2714,6 +3272,10 @@ impl TerminalCleanup {
     fn new_unregistered(pid: Pid, token: &TraceeToken) -> Self {
         let event = token.event().clone();
         Self { pid, event }
+    }
+
+    pub(super) fn matches_stopped(&self, pid: Pid, token: &TraceeToken) -> bool {
+        self.pid == pid && Arc::ptr_eq(self.event.event(), token.event().event())
     }
 
     /// Retries notifier registration and returns the exact capture/open error.
@@ -2732,6 +3294,29 @@ impl TerminalCleanup {
     /// Returns the last typed notifier registration error, if any.
     pub fn registration_error(&self) -> Option<Errno> {
         *self.event.event().registration_error.lock()
+    }
+
+    /// Attaches a bounded observer before notifier wait ownership starts.
+    pub fn attach_physical_event_observer(
+        &self,
+        observer: &PhysicalEventObserver,
+    ) -> Result<(), PhysicalObserverAttachError> {
+        self.event.attach_physical_observer(observer)
+    }
+
+    /// Returns the physical observer attached to this cleanup generation.
+    pub fn physical_event_observer(&self) -> Option<PhysicalEventObserver> {
+        self.event.physical_observer()
+    }
+
+    /// Returns this cleanup handle's immutable Event generation.
+    pub fn physical_event_generation(&self) -> PhysicalEventGenerationId {
+        self.event.physical_generation()
+    }
+
+    /// Returns the exact identity available for raw cleanup operations.
+    pub fn physical_task_identity(&self) -> PhysicalTaskIdentity {
+        self.event.physical_task_identity(self.pid)
     }
 
     #[cfg(test)]
@@ -2776,11 +3361,22 @@ impl TerminalCleanup {
             .pending
             .front()
             .expect("pending cleanup reservation requires a FIFO front");
+        let event = self.event.event();
+        let reservation = match (event.observer(), status.physical) {
+            (Some(observer), Some(physical)) => {
+                let reservation = observer.next_reservation();
+                observer.record_cleanup_reserved(event.generation, reservation, physical);
+                Some(reservation)
+            }
+            _ => None,
+        };
         Some(PendingStatusReservation {
             pid: self.pid,
             status,
+            reservation,
             event: self.event.resolved(),
             state,
+            completed: false,
         })
     }
 
@@ -2792,6 +3388,118 @@ impl TerminalCleanup {
     /// Returns true when this exact event observed a ptrace exit stop.
     pub fn exit_stop_observed(&self) -> bool {
         self.event.event().exit_status.load(Ordering::Acquire) == EXIT_STOPPED
+    }
+
+    /// Returns the physical status behind the retained exit-stop capability.
+    ///
+    /// A present value names the exact stop that cancellation cleanup must
+    /// cite before issuing a raw resume. It remains available after capability
+    /// revocation so the physical operation keeps its source identity.
+    pub fn exit_stop_physical_status_id(&self) -> Option<PhysicalStatusId> {
+        PhysicalStatusId::from_raw(
+            self.event
+                .event()
+                .exit_physical_status
+                .load(Ordering::Acquire),
+        )
+    }
+
+    /// Continues a fully published exit stop during whole-session cleanup.
+    ///
+    /// Exit-stop publication, capability revocation, physical source
+    /// selection, observer accounting, and the raw ptrace transition are one
+    /// critical section. If the exit stop has not been published, this method
+    /// does not transition an older retained stop.
+    pub fn continue_exit_stop_for_cleanup(
+        &self,
+        retained_status: Option<PhysicalStatusId>,
+        finished: bool,
+        finished_status: Option<PhysicalStatusId>,
+        owner: PhysicalResumeOwner,
+    ) -> Result<TerminalCleanupContinue, Errno> {
+        self.continue_exit_stop_for_cleanup_with(
+            retained_status,
+            finished,
+            finished_status,
+            owner,
+            || nix::sys::ptrace::cont(self.pid.into(), None),
+        )
+    }
+
+    fn continue_exit_stop_for_cleanup_with(
+        &self,
+        retained_status: Option<PhysicalStatusId>,
+        finished: bool,
+        finished_status: Option<PhysicalStatusId>,
+        owner: PhysicalResumeOwner,
+        transition: impl FnOnce() -> Result<(), nix::errno::Errno>,
+    ) -> Result<TerminalCleanupContinue, Errno> {
+        if matches!(owner, PhysicalResumeOwner::TypedStopped) {
+            return Err(Errno::EINVAL);
+        }
+        let event = self.event.event();
+        let _publication = event.exit_publication.lock();
+        event.prepare_exit_capability_for_cleanup(false)?;
+
+        if event.exit_status.load(Ordering::Acquire) != EXIT_STOPPED {
+            return Ok(TerminalCleanupContinue::WaitingForExitStop);
+        }
+        let exit_status =
+            PhysicalStatusId::from_raw(event.exit_physical_status.load(Ordering::Acquire));
+        if retained_status.is_some() && event.observer().is_some() && exit_status.is_none() {
+            return Err(Errno::EPROTO);
+        }
+        if let (Some(retained_status), Some(exit_status)) = (retained_status, exit_status)
+            && retained_status != exit_status
+            && !(finished && Some(retained_status) == finished_status)
+        {
+            event.observer().ok_or(Errno::EPROTO)?.finish_status(
+                retained_status,
+                PhysicalStatusDisposition::KernelSupersededByExitStop,
+            );
+        }
+        if finished && exit_status == finished_status {
+            return Ok(TerminalCleanupContinue::AlreadyFinished {
+                source_status: exit_status,
+            });
+        }
+
+        let observer = event.observer();
+        let attempt = observer.map(|observer| {
+            observer.begin_resume(PhysicalResumeContext {
+                generation: Some(event.generation),
+                task: self.event.physical_task_identity(self.pid),
+                source_status: exit_status,
+                operation: PhysicalResumeOperation::Continue,
+                signal: None,
+                owner,
+            })
+        });
+        let result = transition();
+        if let (Some(observer), Some(attempt)) = (observer, attempt) {
+            observer.finish_resume(
+                attempt,
+                match result {
+                    Ok(()) => PhysicalResumeOutcome::Success,
+                    Err(error) => PhysicalResumeOutcome::Error(error as i32),
+                },
+            );
+            if let Err(error) = result {
+                observer.tolerate_resume_error(attempt, error as i32);
+                if error == nix::errno::Errno::ESRCH
+                    && let Some(source_status) = exit_status
+                {
+                    observer.finish_status(
+                        source_status,
+                        PhysicalStatusDisposition::CancellationCleanup,
+                    );
+                }
+            }
+        }
+        Ok(TerminalCleanupContinue::Attempted {
+            source_status: exit_status,
+            error: result.err().map(|error| Errno::new(error as i32)),
+        })
     }
 
     /// Revokes any not-yet-claimed exit-stop capability before cancellation
@@ -2823,25 +3531,79 @@ impl TerminalCleanup {
 #[must_use = "drop rolls the reservation back; call commit after ownership is stored"]
 pub struct PendingStatusReservation<'a> {
     pid: Pid,
-    status: i32,
+    status: ObservedStatus,
+    reservation: Option<PhysicalReservationId>,
     event: &'a EventHandle,
     state: MutexGuard<'a, StatusState>,
+    completed: bool,
 }
 
 impl PendingStatusReservation<'_> {
     /// Decodes the reserved status without removing it from the FIFO.
     pub fn decode(&self) -> Result<Wait, Error> {
-        Wait::from_raw_with_token(
+        if let (Some(observer), Some(reservation), Some(status)) = (
+            self.event.physical_observer(),
+            self.reservation,
+            self.status.physical,
+        ) {
+            observer.record_decode_started(reservation, status, PhysicalDecodeOwner::Cleanup);
+        }
+        let decoded = Wait::from_raw_with_token(
             self.pid,
-            self.status,
-            TraceeToken::from_event(self.event.clone()),
-        )
+            self.status.raw,
+            TraceeToken::from_observed_event(self.event.clone(), self.status.physical),
+        );
+        if let (Some(observer), Some(reservation), Some(status)) = (
+            self.event.physical_observer(),
+            self.reservation,
+            self.status.physical,
+        ) {
+            observer.record_decode_finished(
+                reservation,
+                status,
+                if decoded.is_ok() {
+                    PhysicalDecodeOutcome::Returned
+                } else {
+                    PhysicalDecodeOutcome::RetryRolledBack
+                },
+                PhysicalDecodeOwner::Cleanup,
+            );
+        }
+        decoded
+    }
+
+    /// Returns the physical status reserved from the notifier FIFO.
+    pub fn physical_status_id(&self) -> Option<PhysicalStatusId> {
+        self.status.physical
     }
 
     /// Removes the reserved front after all associated ownership is durable.
     pub fn commit(mut self) {
         let committed = self.state.pending.pop_front();
         debug_assert_eq!(committed, Some(self.status));
+        if let (Some(observer), Some(reservation), Some(status)) = (
+            self.event.physical_observer(),
+            self.reservation,
+            self.status.physical,
+        ) {
+            observer.record_cleanup_reservation_committed(reservation, status);
+        }
+        self.completed = true;
+    }
+}
+
+impl Drop for PendingStatusReservation<'_> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if let (Some(observer), Some(reservation), Some(status)) = (
+            self.event.physical_observer(),
+            self.reservation,
+            self.status.physical,
+        ) {
+            observer.record_cleanup_reservation_rolled_back(reservation, status);
+        }
     }
 }
 
@@ -2871,8 +3633,12 @@ impl Future for WaitFuture {
             Ok(reservation) => reservation,
             Err(errno) => return Poll::Ready(Err(errno.into())),
         };
-        match event.decode_status_return(reservation, |status| {
-            Wait::from_raw_with_token(pid, status, TraceeToken::from_event(event_handle.clone()))
+        match event.decode_status_return(reservation, |status, physical| {
+            Wait::from_raw_with_token(
+                pid,
+                status,
+                TraceeToken::from_observed_event(event_handle.clone(), physical),
+            )
         }) {
             Ok(StatusReturn::Returned(decoded)) => Poll::Ready(Ok(decoded)),
             Ok(StatusReturn::Cancelled(_)) => Poll::Ready(Err(Errno::ECANCELED.into())),
@@ -2921,10 +3687,14 @@ impl Future for ExitFuture {
         };
         let event = event_handle.event();
         match futures::ready!(event.poll_exit(&this.waiter, cx.waker())) {
-            Ok(()) => Poll::Ready(Ok(Stopped::from_token(
-                this.pid,
-                TraceeToken::from_event(event_handle),
-            ))),
+            Ok(()) => {
+                let physical =
+                    PhysicalStatusId::from_raw(event.exit_physical_status.load(Ordering::Acquire));
+                Poll::Ready(Ok(Stopped::from_token(
+                    this.pid,
+                    TraceeToken::from_observed_event(event_handle, physical),
+                )))
+            }
             Err(errno) => Poll::Ready(Err(errno.into())),
         }
     }
@@ -2960,6 +3730,8 @@ mod test {
 
     use super::*;
     use crate::Options;
+    use crate::PhysicalEventObserverConfig;
+    use crate::PhysicalEventRecordKind;
 
     #[derive(Default)]
     struct WakeCounter(AtomicUsize);
@@ -4442,10 +5214,13 @@ mod test {
         let publisher_event = Arc::clone(&event);
 
         let publisher = thread::spawn(move || {
-            publisher_event.publish_exit_stop(|| {
-                paused_tx.send(()).expect("report exit publication gap");
-                resume_rx.recv().expect("resume exit publication");
-            });
+            publisher_event.publish_exit_stop(
+                ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP),
+                || {
+                    paused_tx.send(()).expect("report exit publication gap");
+                    resume_rx.recv().expect("resume exit publication");
+                },
+            );
         });
         paused_rx
             .recv_timeout(Duration::from_secs(1))
@@ -4473,10 +5248,13 @@ mod test {
         let (resume_tx, resume_rx) = mpsc::channel();
         let publisher_event = Arc::clone(&event);
         let publisher = thread::spawn(move || {
-            publisher_event.publish_exit_stop(|| {
-                paused_tx.send(()).expect("report exit publication gap");
-                resume_rx.recv().expect("resume exit publication");
-            });
+            publisher_event.publish_exit_stop(
+                ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP),
+                || {
+                    paused_tx.send(()).expect("report exit publication gap");
+                    resume_rx.recv().expect("resume exit publication");
+                },
+            );
         });
         paused_rx
             .recv_timeout(Duration::from_secs(1))
@@ -4516,6 +5294,200 @@ mod test {
             Poll::Ready(Err(Errno::EALREADY))
         );
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(42 << 8)));
+    }
+
+    #[test]
+    fn cleanup_continue_waits_for_complete_exit_stop_publication() {
+        let pid = Pid::from_raw(i32::MAX - 29);
+        let handle = EventHandle::new();
+        let event = Arc::clone(handle.event());
+        let observer = PhysicalEventObserver::new(PhysicalEventObserverConfig::new(64, 32))
+            .expect("create cleanup-publication observer");
+        handle
+            .attach_physical_observer(&observer)
+            .expect("attach cleanup-publication observer");
+        let generation = handle.physical_generation();
+        let context = |producer| PhysicalWaitContext {
+            generation: Some(generation),
+            task: PhysicalTaskIdentity::direct_child(pid.into()),
+            producer,
+            flags: libc::WSTOPPED,
+        };
+        let retained_wait = observer.begin_wait(context(PhysicalWaitProducer::SynchronousWait));
+        let retained_status =
+            observer.finish_wait_status(retained_wait, (libc::SIGSTOP << 8) | 0x7f, None);
+        observer.record_status_published(
+            generation,
+            retained_status,
+            PhysicalStatusPublication::SynchronousFifo,
+        );
+        let exit_wait = observer.begin_wait(context(PhysicalWaitProducer::NotifierWorker));
+        let exit_status = observer.finish_wait_status(exit_wait, PTRACE_EVENT_EXIT_STOP, None);
+
+        let (paused_tx, paused_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let publisher_event = Arc::clone(&event);
+        let publisher = thread::spawn(move || {
+            publisher_event.publish_exit_stop(
+                ObservedStatus {
+                    raw: PTRACE_EVENT_EXIT_STOP,
+                    physical: Some(exit_status),
+                },
+                || {
+                    paused_tx.send(()).expect("report exit-publication gap");
+                    release_rx.recv().expect("release exit publication");
+                },
+            );
+        });
+        paused_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("publisher did not enter exit-publication gap");
+
+        let terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: handle,
+        };
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let cleanup = thread::spawn(move || {
+            started_tx
+                .send(())
+                .expect("report cleanup continuation start");
+            let result = terminal.continue_exit_stop_for_cleanup(
+                Some(retained_status),
+                false,
+                None,
+                PhysicalResumeOwner::DescendantCleanup,
+            );
+            done_tx.send(result).expect("report cleanup continuation");
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cleanup continuation thread did not start");
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_millis(20)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "cleanup continuation crossed a half-published exit stop"
+        );
+
+        release_tx.send(()).expect("release exit publisher");
+        publisher.join().expect("join exit publisher");
+        let outcome = done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cleanup continuation stayed blocked")
+            .expect("cleanup continuation rejected unclaimed exit stop");
+        cleanup.join().expect("join cleanup continuation");
+        assert_eq!(
+            outcome,
+            TerminalCleanupContinue::Attempted {
+                source_status: Some(exit_status),
+                error: Some(Errno::ESRCH),
+            }
+        );
+
+        observer.record_generation_finished(generation);
+        observer.close();
+        let snapshot = observer.snapshot();
+        let validation = snapshot.validate();
+        assert_eq!(validation.physical_statuses, 2);
+        assert_eq!(validation.successful_resumes, 0);
+        assert_eq!(validation.explicit_dispositions, 2);
+        assert!(validation.is_valid(), "{validation:#?}");
+        let dispositions = snapshot
+            .records()
+            .iter()
+            .filter_map(|record| match record.kind() {
+                PhysicalEventRecordKind::StatusDisposition {
+                    status,
+                    disposition,
+                } => Some((status, disposition)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            dispositions,
+            [
+                (
+                    retained_status,
+                    PhysicalStatusDisposition::KernelSupersededByExitStop,
+                ),
+                (exit_status, PhysicalStatusDisposition::CancellationCleanup,),
+            ]
+        );
+    }
+
+    #[test]
+    fn unobserved_cleanup_continue_retries_then_stops_after_success() {
+        let pid = Pid::from_raw(i32::MAX - 31);
+        let handle = EventHandle::new();
+        handle.event().publish_exit_stop(
+            ObservedStatus::unobserved(PTRACE_EVENT_EXIT_STOP),
+            || {},
+        );
+        let terminal = TerminalCleanup {
+            pid: pid.into(),
+            event: handle,
+        };
+        let attempts = AtomicUsize::new(0);
+
+        let first = terminal
+            .continue_exit_stop_for_cleanup_with(
+                None,
+                false,
+                None,
+                PhysicalResumeOwner::RootCleanup,
+                || {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Err(nix::errno::Errno::EIO)
+                },
+            )
+            .expect("first unobserved cleanup attempt");
+        assert_eq!(
+            first,
+            TerminalCleanupContinue::Attempted {
+                source_status: None,
+                error: Some(Errno::EIO),
+            }
+        );
+
+        let second = terminal
+            .continue_exit_stop_for_cleanup_with(
+                None,
+                false,
+                None,
+                PhysicalResumeOwner::RootCleanup,
+                || {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .expect("retry unobserved cleanup attempt");
+        assert_eq!(
+            second,
+            TerminalCleanupContinue::Attempted {
+                source_status: None,
+                error: None,
+            }
+        );
+
+        let third = terminal
+            .continue_exit_stop_for_cleanup_with(
+                None,
+                true,
+                None,
+                PhysicalResumeOwner::RootCleanup,
+                || -> Result<(), nix::errno::Errno> {
+                    panic!("finished unobserved stop attempted another transition")
+                },
+            )
+            .expect("recognize finished unobserved cleanup stop");
+        assert_eq!(
+            third,
+            TerminalCleanupContinue::AlreadyFinished {
+                source_status: None,
+            }
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -4594,7 +5566,58 @@ mod test {
         let retry = cleanup
             .reserve_pending_for_cleanup(Duration::ZERO)
             .expect("decode failure removed FIFO front");
-        assert_eq!(retry.status, child_event);
+        assert_eq!(retry.status.raw, child_event);
+    }
+
+    #[test]
+    fn ordinary_rollback_overflow_preserves_full_cleanup_transaction() {
+        let pid = Pid::from_raw(i32::MAX - 33);
+        let handle = EventHandle::new();
+        let observer = PhysicalEventObserver::new(crate::PhysicalEventObserverConfig::new(3, 5))
+            .expect("create rollback classification observer");
+        handle
+            .attach_physical_observer(&observer)
+            .expect("attach rollback classification observer");
+        let event = handle.event();
+        let status = PhysicalStatusId::from_raw(19).expect("nonzero physical status");
+        let stopped = (Signal::SIGSTOP as i32) << 8 | 0x7f;
+        event.update(ObservedStatus {
+            raw: stopped,
+            physical: Some(status),
+        });
+
+        let ordinary = event
+            .try_status_reservation_sync()
+            .expect("ordinary status is reservable")
+            .expect("ordinary reservation succeeds");
+        drop(ordinary);
+
+        let cleanup = TerminalCleanup {
+            pid: pid.into(),
+            event: handle,
+        };
+        let reservation = cleanup
+            .reserve_pending_for_cleanup(Duration::ZERO)
+            .expect("cleanup reserves rolled-back ordinary status");
+        assert!(matches!(
+            reservation.decode(),
+            Ok(Wait::Stopped(_, crate::Event::Signal(Signal::SIGSTOP)))
+        ));
+        reservation.commit();
+        observer.close();
+
+        let snapshot = observer.snapshot();
+        assert_eq!(snapshot.ordinary_lost(), 1);
+        assert_eq!(snapshot.cleanup_lost(), 0);
+        assert!(snapshot.records().iter().any(|record| matches!(
+            record.kind(),
+            crate::PhysicalEventRecordKind::ReservationCommitted { status: observed, .. }
+                if observed == status
+        )));
+        assert!(snapshot.records().iter().any(|record| matches!(
+            record.kind(),
+            crate::PhysicalEventRecordKind::ObserverClosed
+        )));
     }
 
     #[test]
@@ -5182,7 +6205,7 @@ mod test {
                     .expect("rollback status is present")
                     .expect("rollback status is valid");
                 let result: Result<StatusReturn<()>, Error> =
-                    owner.decode_status_return(pid, reservation, |_| Err(Errno::EIO.into()));
+                    owner.decode_status_return(pid, reservation, |_, _| Err(Errno::EIO.into()));
                 decoded_tx
                     .send(result)
                     .expect("report decode-error rollback");
@@ -5240,7 +6263,13 @@ mod test {
         });
         assert_eq!(event.wait_owner.load(Ordering::Acquire), WAIT_OWNER_NONE);
         assert_eq!(
-            event.status.lock().pending.front().copied(),
+            event
+                .status
+                .lock()
+                .pending
+                .front()
+                .copied()
+                .map(|status| status.raw),
             Some((libc::SIGSTOP << 8) | 0x7f),
             "decode error consumed the rollback-safe FIFO reservation"
         );
@@ -5254,7 +6283,7 @@ mod test {
             .store(WAIT_OWNER_NOTIFIER, Ordering::Release);
         let stopped = (libc::SIGSTOP << 8) | 0x7f;
         let transaction = match event.begin_status_return(
-            stopped,
+            stopped.into(),
             WAIT_OWNER_NOTIFIER,
             WAIT_OWNER_NOTIFIER_RETURNING,
         ) {
@@ -5286,7 +6315,7 @@ mod test {
         for _ in 0..64 {
             assert!(matches!(
                 event.begin_status_return(
-                    stopped,
+                    stopped.into(),
                     WAIT_OWNER_NOTIFIER,
                     WAIT_OWNER_NOTIFIER_RETURNING,
                 ),
@@ -5317,7 +6346,7 @@ mod test {
             .store(WAIT_OWNER_SYNC, Ordering::Release);
         let stopped = (libc::SIGSTOP << 8) | 0x7f;
         let first_return = match first.event().begin_status_return(
-            stopped,
+            stopped.into(),
             WAIT_OWNER_SYNC,
             WAIT_OWNER_SYNC_RETURNING,
         ) {
@@ -5325,7 +6354,7 @@ mod test {
             ReturnTransactionStart::Cancelled => panic!("first chained return was cancelled"),
         };
         let second_return = match second.event().begin_status_return(
-            stopped,
+            stopped.into(),
             WAIT_OWNER_SYNC,
             WAIT_OWNER_SYNC_RETURNING,
         ) {
@@ -5470,7 +6499,14 @@ mod test {
         let (result, cleanup) = cleaning.join().expect("join pending-stop cleanup");
         result.expect("pending-stop cleanup reaches terminal state");
         assert_eq!(
-            retained.event().status.lock().pending.front().copied(),
+            retained
+                .event()
+                .status
+                .lock()
+                .pending
+                .front()
+                .copied()
+                .map(|status| status.raw),
             Some(stopped),
             "cancellation consumed the pending regular stop instead of transferring it"
         );
@@ -5539,7 +6575,14 @@ mod test {
         let (result, _cleanup) = coordinator.join().expect("join exit-stop coordinator");
         result.expect("exit-stop cancellation reaches terminal state");
         assert_eq!(
-            retained.event().status.lock().pending.front().copied(),
+            retained
+                .event()
+                .status
+                .lock()
+                .pending
+                .front()
+                .copied()
+                .map(|status| status.raw),
             Some(PTRACE_EVENT_EXIT_STOP),
             "cancellation consumed or duplicated the retained exit stop"
         );
@@ -6276,7 +7319,7 @@ mod test {
         reap_stopped_process(child_cleanup);
 
         assert_eq!(
-            terminal, INVALID_STATUS,
+            terminal.raw, INVALID_STATUS,
             "registry replacement terminalized an Event with its own active worker"
         );
     }

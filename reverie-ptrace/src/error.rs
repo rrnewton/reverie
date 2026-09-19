@@ -68,6 +68,7 @@ pub(crate) enum LiteinstActivationFailureReason {
     NewbornIdentity,
     VforkUnsupported,
     TerminatedBeforeHandshake,
+    AfterLoaderCall,
 }
 
 impl LiteinstActivationFailureReason {

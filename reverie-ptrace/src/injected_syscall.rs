@@ -75,6 +75,15 @@ impl InjectedSyscallFrame {
         Sysno::from(self.rax as i32)
     }
 
+    /// Returns the unvalidated Linux syscall number from the runtime frame.
+    ///
+    /// Strict all-syscall filters must classify unknown and x32 values before
+    /// calling [`Self::syscall_number`], whose legacy typed conversion panics
+    /// for values absent from `Sysno`.
+    pub(crate) fn raw_syscall_number(&self) -> u64 {
+        self.rax
+    }
+
     /// Decodes the syscall stored in this e9tool frame.
     pub fn syscall(&self) -> Syscall {
         Syscall::from_raw(

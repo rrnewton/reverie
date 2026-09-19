@@ -71,6 +71,11 @@ fn explicit_host_prepares_real_sites_with_disabled_and_explicit_policy() {
 }
 
 #[test]
+fn explicit_host_and_quiescent_site_install_preserve_all_signal_dispositions() {
+    run("dispositions", b"explicit-host-initialized\n");
+}
+
+#[test]
 fn explicit_host_retains_real_preparation_failure_without_a_second_handshake() {
     run("preparation-failure", b"preparation-failure-retained\n");
 }

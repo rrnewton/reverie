@@ -64,6 +64,7 @@ use safeptrace::Error as TraceError;
 use safeptrace::Event;
 use safeptrace::Running;
 use safeptrace::Stopped;
+use safeptrace::StoppedMemory;
 use safeptrace::Wait;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
@@ -84,7 +85,6 @@ use crate::error::LiteinstActivationFailureReason;
 use crate::error::LiteinstActivationOperation;
 use crate::error::LiteinstActivationStage;
 use crate::error::TraceResultExt;
-use crate::error::liteinst_activation_failure_reason;
 use crate::gdbstub::BreakpointType;
 use crate::gdbstub::CoreRegs;
 use crate::gdbstub::GdbRequest;
@@ -103,10 +103,14 @@ use crate::timer::HandleFailure;
 use crate::timer::Timer;
 use crate::timer::TimerEventRequest;
 use crate::tracer::HeldRootStop;
+use crate::tracer::HeldTaskStops;
 use crate::tracer::NewbornTracee;
 use crate::tracer::RootStopLease;
 use crate::tracer::TraceeIdentity;
 use crate::vdso;
+
+#[cfg(target_arch = "x86_64")]
+mod after_loader_task;
 
 fn validate_liteinst_user_regs_update(
     current: &libc::user_regs_struct,
@@ -527,12 +531,14 @@ impl InjectedSyscallTrap {
 #[derive(Clone)]
 pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) preload: PathBuf,
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) after_loader: Option<crate::LiteinstAfterLoaderConfig>,
     pub(crate) begin_marker: u64,
     pub(crate) ready_marker: u64,
     pub(crate) helper_return_marker: u64,
     pub(crate) syscall_marker: u64,
     pub(crate) newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
-    pub(crate) held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
+    pub(crate) held_task_stops: HeldTaskStops,
     /// Records a fail-closed LiteInst refusal raised by any task.
     ///
     /// A non-root task's error cannot reach the root's cleanup guard, so
@@ -545,7 +551,7 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) session_failure_changed: Arc<Notify>,
     /// Set once the guest has created a second task.
     ///
-    /// Hook installation is single-task-only (see `maybe_install_liteinst_site`).
+    /// Hook installation is single-task-only (see `maybe_install_preload_liteinst_site`).
     pub(crate) multi_task: Arc<AtomicBool>,
     /// TID of the session's root tracee, published once the guest is spawned.
     ///
@@ -607,24 +613,24 @@ pub(crate) enum RootStopPause {
 }
 
 #[derive(Clone)]
-struct LiteinstRootStopArmer {
-    root_tid: Pid,
-    held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
+struct LiteinstStopArmer {
+    task_tid: Pid,
+    held_task_stops: HeldTaskStops,
 }
 
-impl LiteinstRootStopArmer {
+impl LiteinstStopArmer {
     fn arm(&self, task: &Stopped, event: &Event) -> Result<(), TraceError> {
-        if task.pid() != self.root_tid {
+        if task.pid() != self.task_tid {
             return Ok(());
         }
-        HeldRootStop::arm_empty(&self.held_root_stop, task, event)
+        HeldRootStop::arm_empty(&self.held_task_stops, task, event)
     }
 
     fn ensure(&self, task: &Stopped, event: &Event) -> Result<(), TraceError> {
-        if task.pid() != self.root_tid {
+        if task.pid() != self.task_tid {
             return Ok(());
         }
-        HeldRootStop::ensure_current(&self.held_root_stop, task, event)
+        HeldRootStop::ensure_current(&self.held_task_stops, task, event)
     }
 }
 
@@ -753,12 +759,63 @@ enum LiteinstRuntimePhase {
     Ready,
 }
 
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LiteinstTrapSiteProvenance {
+    generation: u64,
+    rip: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl LiteinstTrapSiteProvenance {
+    fn validates_retired_runtime_trap(
+        self,
+        generation: u64,
+        observed_marker: u64,
+        expected_marker: u64,
+        observed_rip: u64,
+        si_code: i32,
+        trap_opcode: u8,
+        runtime_device: u64,
+        runtime_inode: u64,
+        mapping: &GuestMap,
+    ) -> bool {
+        let Some(trap_address) = self.rip.checked_sub(1) else {
+            return false;
+        };
+        let Some(trap_range) = GuestRange::new(trap_address, 2) else {
+            return false;
+        };
+        self.generation == generation
+            && observed_marker == expected_marker
+            && observed_rip == self.rip
+            && matches!(si_code, libc::TRAP_BRKPT | libc::SI_KERNEL)
+            && trap_opcode == 0xcc
+            && mapping.readable
+            && !mapping.writable
+            && mapping.executable
+            && !mapping.shared
+            && mapping.contains_range(trap_range)
+            && mapping.inode == runtime_inode
+            && libc::makedev(
+                mapping.device_major as libc::c_uint,
+                mapping.device_minor as libc::c_uint,
+            ) == runtime_device
+    }
+}
+
 #[derive(Clone, Debug)]
 struct LiteinstRuntimeState {
     phase: LiteinstRuntimePhase,
     frame: Option<LiteinstHandshakeFrame>,
     generation: u64,
     ready_generation: Option<u64>,
+    #[cfg(target_arch = "x86_64")]
+    after_loader_syscall_trap: Option<LiteinstTrapSiteProvenance>,
+    #[cfg(target_arch = "x86_64")]
+    after_loader_reference: Option<(u64, crate::target_loader::TargetHostInitializer)>,
+    #[cfg(target_arch = "x86_64")]
+    after_loader_guest_observed: bool,
     attempted_sites: HashSet<u64>,
     fallback_sites: HashMap<u64, LiteinstPatchOutcome>,
     active_hooks: HashMap<u64, ActiveHookFootprint>,
@@ -777,6 +834,12 @@ impl Default for LiteinstRuntimeState {
             frame: None,
             generation: 0,
             ready_generation: None,
+            #[cfg(target_arch = "x86_64")]
+            after_loader_syscall_trap: None,
+            #[cfg(target_arch = "x86_64")]
+            after_loader_reference: None,
+            #[cfg(target_arch = "x86_64")]
+            after_loader_guest_observed: false,
             attempted_sites: HashSet::new(),
             fallback_sites: HashMap::new(),
             active_hooks: HashMap::new(),
@@ -811,13 +874,17 @@ impl LiteinstRuntimeState {
             _ => None,
         };
         let source_mutates_active_hook = match operation_range {
-            Ok(Some(operation_range)) => self.active_hooks.values().any(|hook| {
-                hook.protected_ranges()
-                    .into_iter()
-                    .any(|(range, protection)| {
-                        range.overlaps(operation_range) && requested_protection != Some(protection)
-                    })
-            }),
+            Ok(Some(operation_range)) => {
+                let active_hook = self.active_hooks.values().any(|hook| {
+                    hook.protected_ranges()
+                        .into_iter()
+                        .any(|(range, protection)| {
+                            range.overlaps(operation_range)
+                                && requested_protection != Some(protection)
+                        })
+                });
+                active_hook
+            }
             Ok(None) => false,
             Err(()) => !self.active_hooks.is_empty(),
         };
@@ -831,11 +898,12 @@ impl LiteinstRuntimeState {
                 Ok(None) => return false,
                 Err(()) => return !self.active_hooks.is_empty(),
             };
-            return self.active_hooks.values().any(|hook| {
+            let active_hook = self.active_hooks.values().any(|hook| {
                 hook.protected_ranges()
                     .into_iter()
                     .any(|(range, _)| range.overlaps(destination))
             });
+            return active_hook;
         }
         false
     }
@@ -992,11 +1060,31 @@ pub struct TracedTask<L: Tool> {
     /// Address of the writable e9tool register frame for the active event.
     injected_syscall_frame: Option<usize>,
 
+    /// The exact physical stop owned by the Tool callback currently in flight.
+    ///
+    /// Tool syscall injection may advance the tracee through several kernel
+    /// stops.  Keeping the typed capability here lets the injection path
+    /// replace it with the final stop instead of reconstructing an unchecked
+    /// capability for the old stop and resuming that status twice.
+    active_tool_stop: Option<Stopped>,
+
     /// Per-process dynamic LiteInst handshake and patched-site state.
     liteinst_runtime: Arc<StdMutex<LiteinstRuntimeState>>,
 
     /// Controller-owned breakpoint preventing the executable entry before Ready.
     liteinst_entry_guard: Option<LiteinstEntryGuard>,
+    #[cfg(target_arch = "x86_64")]
+    liteinst_after_loader_guard: Option<crate::entry_call::EntryGuard>,
+    #[cfg(target_arch = "x86_64")]
+    liteinst_after_loader_syscall_permit: Option<after_loader_task::AfterLoaderSyscallPermit>,
+    #[cfg(target_arch = "x86_64")]
+    liteinst_after_loader_syscall_inflight: Option<after_loader_task::AfterLoaderSyscallPermit>,
+    #[cfg(target_arch = "x86_64")]
+    liteinst_after_loader_forward_inflight: Option<after_loader_task::AfterLoaderForwardInFlight>,
+    #[cfg(target_arch = "x86_64")]
+    liteinst_after_loader_private_call: Option<after_loader_task::AfterLoaderPrivateCall>,
+    #[cfg(target_arch = "x86_64")]
+    liteinst_after_loader_private_state: Option<after_loader_task::AfterLoaderPrivateState>,
 
     /// Original typed fail-closed error retained while the exit waiter reaps root.
     liteinst_failure: Option<LiteinstActivationFailure>,
@@ -1167,8 +1255,21 @@ impl<L: Tool> TracedTask<L> {
             pending_syscall: None,
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
+            active_tool_stop: None,
             liteinst_runtime: Arc::new(StdMutex::new(LiteinstRuntimeState::default())),
             liteinst_entry_guard: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_guard: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_syscall_permit: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_syscall_inflight: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_forward_inflight: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_private_call: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_private_state: None,
             liteinst_failure: None,
             next_state,
             next_state_rx: Some(next_state_rx),
@@ -1228,8 +1329,21 @@ impl<L: Tool> TracedTask<L> {
             pending_syscall: None,
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
+            active_tool_stop: None,
             liteinst_runtime: self.liteinst_runtime.clone(),
             liteinst_entry_guard: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_guard: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_syscall_permit: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_syscall_inflight: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_forward_inflight: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_private_call: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_private_state: None,
             liteinst_failure: None,
             next_state,
             next_state_rx: Some(next_state_rx),
@@ -1286,10 +1400,23 @@ impl<L: Tool> TracedTask<L> {
             pending_syscall: None,
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
+            active_tool_stop: None,
             liteinst_runtime: Arc::new(StdMutex::new(
                 self.liteinst_runtime.lock().unwrap().clone(),
             )),
             liteinst_entry_guard: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_guard: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_syscall_permit: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_syscall_inflight: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_forward_inflight: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_private_call: None,
+            #[cfg(target_arch = "x86_64")]
+            liteinst_after_loader_private_state: None,
             liteinst_failure: None,
             next_state,
             next_state_rx: Some(next_state_rx),
@@ -1340,8 +1467,8 @@ impl<L: Tool> TracedTask<L> {
         frame: &InjectedSyscallFrame,
     ) -> Result<(), TraceError> {
         let address = AddrMut::from_raw(address).ok_or(Errno::EFAULT)?;
-        let mut task = Stopped::new_unchecked(task.pid());
-        Ok(task.write_value(address, frame)?)
+        let mut memory = task.memory();
+        Ok(memory.write_value(address, frame)?)
     }
 
     fn write_injected_syscall_result(
@@ -1652,11 +1779,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         fields(pid = %task.pid())
     )]
     pub async fn tracee_preinit(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
-        // A forked child can initialize a replacement image too. It must not
-        // consume or overwrite the session root's held-stop cleanup lease.
-        let held_root_stop = self
-            .liteinst_root_runtime(&task)
-            .map(|runtime| Arc::clone(&runtime.held_root_stop));
+        #[cfg(target_arch = "x86_64")]
+        let bootstrap_before_exec = self.after_loader_config().is_some() && self.command_bootstrap;
+        #[cfg(not(target_arch = "x86_64"))]
+        let bootstrap_before_exec = false;
+
+        let held_task_stops = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.held_task_stops));
         let reject_activation_signals = self.global_state.liteinst_runtime.is_some();
         let unexpected_preinit_signal = Arc::new(StdMutex::new(None));
         #[cfg(test)]
@@ -1677,19 +1809,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             .flatten();
 
         fn arm_preinit_stop(
-            held_root_stop: &Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+            held_task_stops: &Option<HeldTaskStops>,
             task: &Stopped,
             event: &Event,
         ) {
-            if let Some(slot) = held_root_stop {
-                let previous = slot
-                    .lock()
-                    .unwrap()
-                    .replace(HeldRootStop::from_event(task, event));
-                debug_assert!(
-                    previous.is_none(),
-                    "rearmed an undisarmed preinit stop lease"
-                );
+            if let Some(slot) = held_task_stops {
+                HeldRootStop::arm_empty(slot, task, event)
+                    .expect("rearmed an undisarmed preinit task stop lease");
             }
         }
 
@@ -1720,10 +1846,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         type SavedInstructions = [u8; 8];
 
         /// Helper function for tracee_preinit that does the core work.
-        async fn setup_special_mmap_page(
+        async fn setup_special_mmap_page<L: Tool + 'static>(
+            owner: &mut TracedTask<L>,
             task: Stopped,
             saved_regs: &libc::user_regs_struct,
-            held_root_stop: &Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+            held_task_stops: &Option<HeldTaskStops>,
             reject_activation_signals: bool,
             unexpected_signal: &Arc<StdMutex<Option<Signal>>>,
             #[cfg(test)] pause_preinit_step: &Option<(usize, mpsc::UnboundedSender<Pid>)>,
@@ -1735,28 +1862,47 @@ impl<L: Tool + 'static> TracedTask<L> {
             let mut regs = *saved_regs;
 
             let page_addr = cp::PRIVATE_PAGE_OFFSET;
+            let mmap_args = [
+                page_addr as u64,
+                cp::PRIVATE_PAGE_SIZE as u64,
+                (libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) as u64,
+                (libc::MAP_PRIVATE | libc::MAP_FIXED | libc::MAP_ANONYMOUS) as u64,
+                u64::MAX,
+                0,
+            ];
 
             *regs.syscall_mut() = Sysno::mmap as Reg;
             *regs.orig_syscall_mut() = regs.syscall();
             regs.set_args((
-                page_addr as Reg,
-                cp::PRIVATE_PAGE_SIZE as Reg,
-                (libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) as Reg,
-                (libc::MAP_PRIVATE | libc::MAP_FIXED | libc::MAP_ANONYMOUS) as Reg,
-                -1i64 as Reg,
-                0,
+                mmap_args[0] as Reg,
+                mmap_args[1] as Reg,
+                mmap_args[2] as Reg,
+                mmap_args[3] as Reg,
+                mmap_args[4] as Reg,
+                mmap_args[5] as Reg,
             ));
 
+            #[cfg(target_arch = "x86_64")]
+            if owner.after_loader_config().is_some() && !owner.command_bootstrap {
+                owner.arm_after_loader_syscall_permit_with_instruction(
+                    &task,
+                    after_loader_task::AfterLoaderSyscallPurpose::TraceePreinit,
+                    Sysno::mmap as i64,
+                    mmap_args,
+                    saved_regs.ip(),
+                    [0x0f, 0x05, 0xcc, 0xcc],
+                )?;
+            }
             task.setregs(&regs)?;
             // Execute the injected mmap call.
-            let mut running = RootStopLease::new(task, held_root_stop.clone()).step(None)?;
+            let mut running = RootStopLease::new(task, held_task_stops.clone()).step(None)?;
 
             // loop until second breakpoint hit after injected syscall.
             #[cfg(test)]
             let mut step = 0;
             let task = loop {
                 let (task, event) = running.next_state().await?.assume_stopped();
-                arm_preinit_stop(held_root_stop, &task, &event);
+                arm_preinit_stop(held_task_stops, &task, &event);
                 #[cfg(test)]
                 let forced_external_sigtrap = event == Event::Signal(Signal::SIGTRAP)
                     && force_preinit_signal_once
@@ -1811,13 +1957,57 @@ impl<L: Tool + 'static> TracedTask<L> {
                             task.pid(),
                             event
                         );
-                        running = RootStopLease::new(task, held_root_stop.clone()).resume(sig)?;
+                        running = RootStopLease::new(task, held_task_stops.clone()).resume(sig)?;
                     }
                     Event::Seccomp => {
-                        // Injected mmap trapped. We may not necessarily
-                        // intercept a seccomp event here if the tool hasn't
-                        // subscribed to the mmap syscall.
-                        running = RootStopLease::new(task, held_root_stop.clone()).resume(None)?;
+                        #[cfg(target_arch = "x86_64")]
+                        if owner.after_loader_config().is_some() && !owner.command_bootstrap {
+                            let permit = owner
+                                .consume_after_loader_syscall_permit(&task)?
+                                .ok_or(Errno::EPROTO)?;
+                            if permit.purpose
+                                != after_loader_task::AfterLoaderSyscallPurpose::TraceePreinit
+                                || permit.number != Sysno::mmap as i64
+                                || permit.args != mmap_args
+                            {
+                                return Err(Errno::EPROTO.into());
+                            }
+                            let completion = RootStopLease::new(task, held_task_stops.clone())
+                                .syscall(None)?
+                                .next_state()
+                                .await?;
+                            let (completed, event) = completion.assume_stopped();
+                            arm_preinit_stop(held_task_stops, &completed, &event);
+                            if event != Event::Syscall {
+                                return Err(Errno::EPROTO.into());
+                            }
+                            let observed = completed.getregs()?;
+                            if observed.orig_syscall() as i64 != Sysno::mmap as i64
+                                || observed.args()
+                                    != (
+                                        mmap_args[0],
+                                        mmap_args[1],
+                                        mmap_args[2],
+                                        mmap_args[3],
+                                        mmap_args[4],
+                                        mmap_args[5],
+                                    )
+                            {
+                                return Err(Errno::EPROTO.into());
+                            }
+                            let completed_permit = owner
+                                .complete_after_loader_syscall_inflight(&completed)?
+                                .ok_or(Errno::EPROTO)?;
+                            if completed_permit != permit {
+                                return Err(Errno::EPROTO.into());
+                            }
+                            running = RootStopLease::new(completed, held_task_stops.clone())
+                                .resume(None)?;
+                            continue;
+                        }
+                        // The ordinary filter reports this setup mmap only
+                        // when the Tool subscribed to it.
+                        running = RootStopLease::new(task, held_task_stops.clone()).resume(None)?;
                     }
                     unknown => {
                         panic!("task {} returned unknown event {:?}", task.pid(), unknown);
@@ -1896,9 +2086,10 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         let (task, regs, prev_state) = establish_injection_state(task).await?;
         let task = setup_special_mmap_page(
+            self,
             task,
             &regs,
-            &held_root_stop,
+            &held_task_stops,
             reject_activation_signals,
             &unexpected_preinit_signal,
             #[cfg(test)]
@@ -1926,30 +2117,50 @@ impl<L: Tool + 'static> TracedTask<L> {
         // Restore registers after adding our temporary injection state.
         remove_injection_state(&mut task, regs, prev_state)?;
 
-        if vdso::is_patch_required(&self.global_state.subscriptions) {
+        // The command launcher still needs the private page before the
+        // thread-start Tool callback.  Exec discards this address space, so
+        // vDSO and architectural setup are performed only for the real image
+        // at its post-exec stop, where the strict all-syscall filter is active.
+        if bootstrap_before_exec {
+            return Ok(task);
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        let defer_vdso_until_after_loader = self.after_loader_config().is_some();
+        #[cfg(not(target_arch = "x86_64"))]
+        let defer_vdso_until_after_loader = false;
+        if !defer_vdso_until_after_loader
+            && vdso::is_patch_required(&self.global_state.subscriptions)
+        {
             let subscriptions = self.global_state.subscriptions.clone();
-            vdso::vdso_patch(self, &subscriptions)
-                .await
-                .expect("unable to patch vdso");
+            self.begin_tool_callback(task)?;
+            let patch_result = vdso::vdso_patch(self, &subscriptions).await;
+            task = self.take_tool_callback_stop()?;
+            patch_result.expect("unable to patch vdso");
         }
         #[cfg(test)]
         pause_preinit(&pause_preinit_step, 2, &task).await;
 
         // Protect our trampoline page from being written to. We won't need to
         // change this again for the lifetime of the guest process.
-        self.inject_with_retry(
-            Mprotect::new()
-                .with_addr(AddrMut::from_raw(cp::TRAMPOLINE_BASE))
-                .with_len(cp::TRAMPOLINE_SIZE)
-                .with_protection(ProtFlags::PROT_READ | ProtFlags::PROT_EXEC),
-        )
-        .await?;
+        self.begin_tool_callback(task)?;
+        let protect_result = self
+            .inject_with_retry(
+                Mprotect::new()
+                    .with_addr(AddrMut::from_raw(cp::TRAMPOLINE_BASE))
+                    .with_len(cp::TRAMPOLINE_SIZE)
+                    .with_protection(ProtFlags::PROT_READ | ProtFlags::PROT_EXEC),
+            )
+            .await;
+        task = self.take_tool_callback_stop()?;
+        protect_result?;
         #[cfg(test)]
         pause_preinit(&pause_preinit_step, 3, &task).await;
 
         // Try to intercept cpuid instructions on x86_64
         #[cfg(target_arch = "x86_64")]
         if self.global_state.subscriptions.has_cpuid() {
+            self.begin_tool_callback(task)?;
             self.has_cpuid_interception = match self.cpuid_state().await {
                 Ok(initial_state @ (0 | 1)) => match self.intercept_cpuid().await {
                     Ok(()) => match self.cpuid_state().await {
@@ -2005,6 +2216,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     false
                 }
             };
+            task = self.take_tool_callback_stop()?;
         }
         #[cfg(test)]
         pause_preinit(&pause_preinit_step, 4, &task).await;
@@ -2023,11 +2235,17 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> Result<libc::user_regs_struct, TraceError> {
         let eax = regs.rax as u32;
         let ecx = regs.rcx as u32;
-        let cpuid = self
-            .process_state
-            .clone()
-            .handle_cpuid_event(self, eax, ecx)
-            .await?;
+        #[cfg(target_arch = "x86_64")]
+        self.observe_after_loader_tool_callback("Tool::handle_cpuid_event")
+            .map_err(|_| Errno::EOVERFLOW)?;
+        let cpuid = cancellable(self.cancel_handler.clone(), async {
+            self.process_state
+                .clone()
+                .handle_cpuid_event(self, eax, ecx)
+                .await
+        })
+        .await
+        .ok_or(Errno::EPROTO)??;
         regs.rax = cpuid.eax as u64;
         regs.rbx = cpuid.ebx as u64;
         regs.rcx = cpuid.ecx as u64;
@@ -2043,11 +2261,20 @@ impl<L: Tool + 'static> TracedTask<L> {
         mut regs: libc::user_regs_struct,
         request: Rdtsc,
     ) -> Result<libc::user_regs_struct, TraceError> {
-        let retval = self
-            .process_state
-            .clone()
-            .handle_rdtsc_event(self, request)
-            .await?;
+        #[cfg(target_arch = "x86_64")]
+        self.observe_after_loader_tool_callback(match request {
+            Rdtsc::Tsc => "Tool::handle_rdtsc_event(RDTSC)",
+            Rdtsc::Tscp => "Tool::handle_rdtsc_event(RDTSCP)",
+        })
+        .map_err(|_| Errno::EOVERFLOW)?;
+        let retval = cancellable(self.cancel_handler.clone(), async {
+            self.process_state
+                .clone()
+                .handle_rdtsc_event(self, request)
+                .await
+        })
+        .await
+        .ok_or(Errno::EPROTO)??;
         regs.rax = retval.tsc & 0xffff_ffffu64;
         regs.rdx = retval.tsc >> 32;
         match request {
@@ -2066,11 +2293,11 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Returns `true` if the signal was actually meant for the timer, and
     /// therefore should not be forwarded to the tool / guest.
     async fn handle_timer(&mut self, task: Stopped) -> Result<(bool, Stopped), TraceError> {
-        let armer = self.liteinst_root_stop_armer(&task);
-        let held_root_stop = armer
+        let armer = self.liteinst_stop_armer(&task);
+        let held_task_stops = armer
             .as_ref()
-            .map(|armer| Arc::clone(&armer.held_root_stop));
-        let mut step = move |task| RootStopLease::new(task, held_root_stop.clone()).step(None);
+            .map(|armer| Arc::clone(&armer.held_task_stops));
+        let mut step = move |task| RootStopLease::new(task, held_task_stops.clone()).step(None);
         let mut observe = |wait: &Wait| {
             if let (Some(armer), Wait::Stopped(task, event)) = (armer.as_ref(), wait) {
                 armer.arm(task, event)?;
@@ -2098,7 +2325,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             let _ = sender.send(task.pid());
             future::pending::<()>().await;
         }
-        self.process_state.clone().handle_timer_event(self).await;
+        self.begin_tool_callback(task)?;
+        #[cfg(target_arch = "x86_64")]
+        self.observe_after_loader_tool_callback("Tool::handle_timer_event")
+            .map_err(|_| Errno::EOVERFLOW)?;
+        let _ = cancellable(self.cancel_handler.clone(), async {
+            self.process_state.clone().handle_timer_event(self).await
+        })
+        .await;
+        let task = self.take_tool_callback_stop()?;
         self.timer.finalize_requests();
         Ok((true, task))
     }
@@ -2112,6 +2347,96 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Postconditions:
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
+        #[cfg(target_arch = "x86_64")]
+        let stopped = if self.liteinst_after_loader_forward_inflight.is_some() {
+            match self
+                .route_after_loader_forward_inflight(stopped, &event)
+                .await?
+            {
+                after_loader_task::AfterLoaderForwardRoute::Continue(stopped) => stopped,
+                after_loader_task::AfterLoaderForwardRoute::Completed(wait) => return Ok(wait),
+            }
+        } else {
+            stopped
+        };
+        #[cfg(target_arch = "x86_64")]
+        if let (Some(config), Event::NewChild(_, child)) = (self.after_loader_config(), &event) {
+            let observer = stopped.physical_event_observer().ok_or_else(|| {
+                Error::runtime(
+                    self.tid(),
+                    "attach LiteInst child physical observer",
+                    "parent stopped capability has no physical observer",
+                )
+            })?;
+            if observer.id() != config.physical_observer.id() {
+                return Err(Error::runtime(
+                    self.tid(),
+                    "attach LiteInst child physical observer",
+                    "parent observer differs from the after-loader session observer",
+                ));
+            }
+            child
+                .attach_physical_event_observer(&observer)
+                .map_err(|error| {
+                    Error::runtime(
+                        child.pid(),
+                        "attach LiteInst child physical observer",
+                        format!("{error:?}"),
+                    )
+                })?;
+            config
+                .diagnostics
+                .record(
+                    "physical event observer attached to child",
+                    self.timer.diagnostic_clock(),
+                    format!(
+                        "parent={} child={} observer={:?} generation={:?}",
+                        stopped.pid(),
+                        child.pid(),
+                        observer.id(),
+                        child.physical_event_generation(),
+                    ),
+                )
+                .map_err(|error| {
+                    Error::runtime(
+                        child.pid(),
+                        "record LiteInst child physical observer attachment",
+                        error.to_string(),
+                    )
+                })?;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if self.after_loader_config().is_some()
+            && matches!(event, Event::Signal(Signal::SIGTRAP))
+            && self.liteinst_entry_guard.is_some_and(|guard| {
+                stopped
+                    .getregs()
+                    .is_ok_and(|registers| guard.address.checked_add(1) == Some(registers.ip()))
+            })
+        {
+            // This controller-installed breakpoint exists only to hold AT_ENTRY
+            // while the runtime is loaded. It was absent from the ordinary
+            // execution stream, so it must reach the caller without advancing
+            // Timer or consuming the first restored guest event.
+            return self
+                .handle_signal(stopped, Signal::SIGTRAP)
+                .await
+                .tracee_context(self.tid(), "handle after-loader entry guard");
+        }
+        #[cfg(target_arch = "x86_64")]
+        if matches!(event, Event::Seccomp)
+            && let Some(operation) = self.classify_after_loader_trace_only_syscall(&stopped)?
+        {
+            // The after-loader filter reports every syscall. Operations that
+            // the ordinary subscription never selected must retain the old
+            // no-callback/no-timer behavior. Admission and the single kernel
+            // completion happen before the common Tool event boundary.
+            return self
+                .forward_after_loader_trace_only_syscall(stopped, operation)
+                .await;
+        }
+        #[cfg(target_arch = "x86_64")]
+        self.observe_after_loader_stopped_event(&stopped, &event)?;
         self.timer.observe_event();
         let tid = self.tid();
 
@@ -2187,27 +2512,69 @@ impl<L: Tool + 'static> TracedTask<L> {
         *regs.orig_syscall_mut() = Sysno::rt_sigreturn as Reg;
 
         // rt_sigreturn consumes the signal frame at the original guest stack
-        // pointer and does not return to its caller. Run it from Reverie's
-        // seccomp-allowed private page, then follow the restored guest state.
+        // pointer and does not return to its caller. The after-loader all-Trace
+        // filter first authenticates this exact guest-frame operation; only
+        // then may the kernel consume the frame and follow the restored state.
         *regs.ip_mut() = cp::PRIVATE_PAGE_OFFSET as Reg;
+        #[cfg(target_arch = "x86_64")]
+        if self.after_loader_config().is_some() && !self.command_bootstrap {
+            self.arm_after_loader_syscall_permit(
+                &task,
+                after_loader_task::AfterLoaderSyscallPurpose::GuestRtSigreturn,
+                Sysno::rt_sigreturn as i64,
+                [regs.rdi, regs.rsi, regs.rdx, regs.r10, regs.r8, regs.r9],
+                cp::PRIVATE_PAGE_OFFSET as u64,
+            )?;
+        }
         task.setregs(&regs)?;
-        self.resume_stopped(task, None)?.next_state().await
+        let wait = self.resume_stopped(task, None)?.next_state().await?;
+        self.arm_liteinst_wait(&wait);
+        #[cfg(target_arch = "x86_64")]
+        if self.after_loader_config().is_some() && !self.command_bootstrap {
+            let stopped = match wait {
+                Wait::Stopped(stopped, Event::Seccomp) => stopped,
+                _ => return Err(Errno::EPROTO.into()),
+            };
+            let permit = self
+                .consume_after_loader_syscall_permit(&stopped)?
+                .ok_or(Errno::EPROTO)?;
+            let wait = self.resume_stopped(stopped, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            let successor = match &wait {
+                Wait::Stopped(stopped, _) => self
+                    .complete_after_loader_syscall_successor(stopped)?
+                    .ok_or(Errno::EPROTO)?,
+                Wait::Exited(_, _) => return Err(Errno::EPROTO.into()),
+            };
+            if successor != permit {
+                return Err(Errno::EPROTO.into());
+            }
+            return Ok(wait);
+        }
+        Ok(wait)
     }
 
     // TODO-HUMAN-REVIEW(PR-102): Review rewritten-syscall dispatch and result handling.
     async fn handle_injected_syscall(
         &mut self,
-        task: Stopped,
+        mut task: Stopped,
         frame_address: usize,
         trap_rflags: u64,
     ) -> Result<Wait, TraceError> {
+        #[cfg(target_arch = "x86_64")]
+        if self.after_loader_config().is_some() {
+            return Err(Errno::EPROTO.into());
+        }
         let mut frame = self.read_injected_syscall_frame(&task, frame_address)?;
-        let syscall = frame.syscall();
-        let (nr, args) = syscall.into_parts();
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        if nr == Sysno::rt_sigreturn {
+        let raw_number = frame.raw_syscall_number();
+        let known_number = u32::try_from(raw_number)
+            .ok()
+            .and_then(|raw| Sysno::new(raw as usize));
+        if known_number == Some(Sysno::rt_sigreturn) {
             return self.resume_injected_rt_sigreturn(task, &frame).await;
         }
+        let syscall = frame.syscall();
+        let (nr, args) = syscall.into_parts();
 
         frame.emulate_syscall_entry(trap_rflags);
         self.write_injected_syscall_frame(&task, frame_address, &frame)?;
@@ -2219,8 +2586,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             .any(|subscribed| subscribed == nr)
         {
             self.injected_syscall_frame = Some(frame_address);
-            let result = self.untraced_syscall(task, nr, args).await?;
-            let task = self.assume_stopped();
+            let (task, result) = self.untraced_syscall(task, nr, args).await?;
             self.write_injected_syscall_result(&task, result)?;
             self.injected_syscall_frame = None;
             let signal = self.take_pending_signal_for_resume(
@@ -2243,6 +2609,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.pending_syscall = Some((nr, args));
             self.pending_syscall_already_skipped = false;
 
+            self.begin_tool_callback(task)?;
+            #[cfg(target_arch = "x86_64")]
+            self.observe_after_loader_tool_callback("Tool::handle_syscall_event(installed trap)")
+                .map_err(|_| Errno::EOVERFLOW)?;
             let retval = cancellable(self.cancel_handler.clone(), async {
                 self.process_state
                     .clone()
@@ -2250,6 +2620,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .await
             })
             .await;
+            task = self.take_tool_callback_stop()?;
 
             self.timer.finalize_requests();
 
@@ -2303,6 +2674,18 @@ impl<L: Tool + 'static> TracedTask<L> {
         let maps = guest_maps(task.pid())?;
         let preload_code = |address| {
             maps.iter().any(|mapping| {
+                #[cfg(target_arch = "x86_64")]
+                if let Some(caller) = &config.after_loader {
+                    return mapping.readable
+                        && mapping.executable
+                        && !mapping.writable
+                        && !mapping.shared
+                        && after_loader_task::image_mapping_matches(
+                            &caller.sealed_runtime.image,
+                            mapping,
+                        )
+                        && mapping.contains(address);
+                }
                 mapping.executable
                     && mapping.path.as_ref() == Some(&config.preload)
                     && mapping.contains(address)
@@ -2376,6 +2759,17 @@ impl<L: Tool + 'static> TracedTask<L> {
             address,
             saved_instruction,
         });
+        #[cfg(target_arch = "x86_64")]
+        if self.after_loader_config().is_some() {
+            self.liteinst_after_loader_guard = Some(
+                crate::entry_call::EntryGuard::prepare(
+                    self.after_loader_identity(task)
+                        .map_err(|_| Errno::EPROTO)?,
+                    saved_instruction.to_ne_bytes(),
+                )
+                .map_err(|_| Errno::EPROTO)?,
+            );
+        }
         Ok(())
     }
 
@@ -2406,12 +2800,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         if regs.rax == config.begin_marker {
             let frame =
                 self.validate_liteinst_handshake(task, regs.rdi as usize, regs.ip(), false)?;
+            #[cfg(target_arch = "x86_64")]
+            let after_loader = self.after_loader_config().is_some();
             let mut state = self.liteinst_runtime.lock().unwrap();
             if state.phase != LiteinstRuntimePhase::Waiting {
                 return None;
             }
             state.phase = LiteinstRuntimePhase::Bootstrap;
             state.frame = Some(frame);
+            #[cfg(target_arch = "x86_64")]
+            if after_loader {
+                state.after_loader_syscall_trap = Some(LiteinstTrapSiteProvenance {
+                    generation: state.generation,
+                    rip: frame.syscall_trap_rip,
+                });
+            }
             return Some(LiteinstTrap::HandshakeBegin);
         }
         if regs.rax == config.ready_marker {
@@ -2425,6 +2828,47 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         if regs.rax != config.syscall_marker {
             return None;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(after_loader) = self.after_loader_config() {
+            let (phase, generation, trap) = {
+                let state = self.liteinst_runtime.lock().unwrap();
+                (
+                    state.phase,
+                    state.generation,
+                    state.after_loader_syscall_trap,
+                )
+            };
+            if phase == LiteinstRuntimePhase::Ready {
+                // After-loader mode never installs the runtime syscall hook and
+                // clears the live handshake frame before Ready. A marker value
+                // at any ordinary guest breakpoint is therefore just guest
+                // register state. Refuse only the authenticated runtime trap
+                // instruction retained from that cleared frame.
+                let trap = trap?;
+                let trap_address = trap.rip.checked_sub(1)?;
+                let trap_range = GuestRange::new(trap_address, 2)?;
+                let maps = guest_maps(task.pid())?;
+                let mapping = maps
+                    .iter()
+                    .find(|mapping| mapping.contains_range(trap_range))?;
+                let address = Addr::from_raw(trap_address as usize)?;
+                let trap_opcode: u8 = task.read_value(address).ok()?;
+                let si_code = task.getsiginfo().ok()?.si_code;
+                return trap
+                    .validates_retired_runtime_trap(
+                        generation,
+                        regs.rax,
+                        config.syscall_marker,
+                        regs.ip(),
+                        si_code,
+                        trap_opcode,
+                        after_loader.sealed_runtime.image.device,
+                        after_loader.sealed_runtime.image.inode,
+                        mapping,
+                    )
+                    .then_some(LiteinstTrap::Invalid);
+            }
         }
         let handshake = self.liteinst_runtime.lock().unwrap().frame?;
         if regs.ip() != handshake.syscall_trap_rip {
@@ -2461,11 +2905,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             Err(_) => return Some(LiteinstTrap::Invalid),
         };
         let state = self.liteinst_runtime.lock().unwrap();
+        let active_provenance = state
+            .active_hooks
+            .contains_key(&frame.instruction_pointer());
         if state.phase != LiteinstRuntimePhase::Ready
             || state.ready_generation != Some(state.generation)
-            || !state
-                .active_hooks
-                .contains_key(&frame.instruction_pointer())
+            || !active_provenance
         {
             return Some(LiteinstTrap::Invalid);
         }
@@ -2483,6 +2928,23 @@ impl<L: Tool + 'static> TracedTask<L> {
         if let Some(guard) = self.liteinst_entry_guard
             && regs.ip() == guard.address.saturating_add(1)
         {
+            #[cfg(target_arch = "x86_64")]
+            if self.after_loader_config().is_some() {
+                match self.run_after_loader(task).await {
+                    Ok(task) => {
+                        return Ok(HandleSignalResult::SignalSuppressed(
+                            self.resume_stopped(task, None)?.next_state().await?,
+                        ));
+                    }
+                    Err(error) => {
+                        self.record_liteinst_failure(
+                            LiteinstActivationFailureReason::AfterLoaderCall,
+                            error,
+                        );
+                        return Err(Errno::EPROTO.into());
+                    }
+                }
+            }
             let address = Addr::from_raw(guard.address as usize).ok_or(Errno::EFAULT)?;
             let observed: u64 = task.read_value(address)?;
             let guarded_instruction = (guard.saved_instruction & !0xff) | 0xcc;
@@ -2644,14 +3106,20 @@ impl<L: Tool + 'static> TracedTask<L> {
             Some(SegfaultTrapInfo::Cpuid)
                 if self.global_state.subscriptions.has_cpuid() && self.has_cpuid_interception =>
             {
-                let regs = self.handle_cpuid(regs).await?;
+                self.begin_tool_callback(task)?;
+                let register_result = self.handle_cpuid(regs).await;
+                let task = self.take_tool_callback_stop()?;
+                let regs = register_result?;
                 task.setregs(&regs)?;
                 HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
                 )
             }
             Some(SegfaultTrapInfo::Rdtscs(req)) if self.global_state.subscriptions.has_rdtsc() => {
-                let regs = self.handle_rdtscs(regs, req).await?;
+                self.begin_tool_callback(task)?;
+                let register_result = self.handle_rdtscs(regs, req).await;
+                let task = self.take_tool_callback_stop()?;
+                let regs = register_result?;
                 task.setregs(&regs)?;
                 HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
@@ -2835,11 +3303,22 @@ impl<L: Tool + 'static> TracedTask<L> {
         match result {
             HandleSignalResult::SignalSuppressed(wait) => Ok(wait),
             HandleSignalResult::SignalToDeliver(task, sig) => {
-                let sig = self
-                    .process_state
-                    .clone()
-                    .handle_signal_event(self, sig)
-                    .await?;
+                self.begin_tool_callback(task)?;
+                #[cfg(target_arch = "x86_64")]
+                self.observe_after_loader_tool_callback("Tool::handle_signal_event")
+                    .map_err(|_| Errno::EOVERFLOW)?;
+                let signal_result = cancellable(self.cancel_handler.clone(), async {
+                    self.process_state
+                        .clone()
+                        .handle_signal_event(self, sig)
+                        .await
+                })
+                .await;
+                let task = self.take_tool_callback_stop()?;
+                let sig = match signal_result {
+                    Some(result) => result?,
+                    None => Some(sig),
+                };
                 self.timer.finalize_requests();
                 Ok(self.resume_stopped(task, sig)?.next_state().await?)
             }
@@ -2877,6 +3356,19 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Err(self.reject_liteinst_nonleader_exec(former_tid));
             }
             let state = self.liteinst_runtime.lock().unwrap();
+            #[cfg(target_arch = "x86_64")]
+            if self.after_loader_config().is_some() && state.generation != 0 {
+                drop(state);
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::AfterLoaderCall,
+                    Error::runtime(
+                        self.tid(),
+                        "LiteInst after-loader call",
+                        "second exec is outside the fixed fixture",
+                    ),
+                );
+                return Err(Errno::ENOTSUPP.into());
+            }
             if state.phase != LiteinstRuntimePhase::PreExec
                 && !(state.phase == LiteinstRuntimePhase::Ready && self.is_main_thread())
             {
@@ -2911,11 +3403,28 @@ impl<L: Tool + 'static> TracedTask<L> {
                     return Err(error.into());
                 }
             };
+            #[cfg(target_arch = "x86_64")]
+            if self.after_loader_config().is_some() {
+                let observer = task.physical_event_observer().ok_or(Errno::EPROTO)?;
+                observer.bind_exec_generation(task.physical_event_generation(), next.generation);
+            }
             // The kernel has replaced this address space. Other holders of the
             // old image's state must not observe this reset, and no saved code
             // or controller-stack address may be reused by the new image.
             self.liteinst_runtime = Arc::new(StdMutex::new(next));
             self.liteinst_entry_guard = None;
+            #[cfg(target_arch = "x86_64")]
+            {
+                if self.liteinst_after_loader_syscall_permit.is_some()
+                    || self.liteinst_after_loader_syscall_inflight.is_some()
+                    || self.liteinst_after_loader_forward_inflight.is_some()
+                    || self.liteinst_after_loader_private_call.is_some()
+                    || self.liteinst_after_loader_private_state.is_some()
+                {
+                    return Err(Errno::EPROTO.into());
+                }
+                self.liteinst_after_loader_guard = None;
+            }
             self.injected_syscall_frame = None;
             self.pending_syscall_already_skipped = false;
         }
@@ -2998,7 +3507,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await?
                 .assume_stopped();
             assert_eq!(event, Event::Signal(Signal::SIGTRAP));
-            self.arm_liteinst_root_stop(&task, &event);
+            self.arm_liteinst_stop(&task, &event);
             task
         };
         let mut task = self.tracee_preinit(task).await?;
@@ -3039,7 +3548,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         }
 
-        self.process_state.clone().handle_post_exec(self).await?;
+        self.begin_tool_callback(task)?;
+        #[cfg(target_arch = "x86_64")]
+        self.observe_after_loader_tool_callback("Tool::handle_post_exec")
+            .map_err(|_| Errno::EOVERFLOW)?;
+        let post_exec = cancellable(self.cancel_handler.clone(), async {
+            self.process_state.clone().handle_post_exec(self).await
+        })
+        .await;
+        task = self.take_tool_callback_stop()?;
+        if let Some(post_exec) = post_exec {
+            post_exec?;
+        }
         self.timer.finalize_requests();
 
         if self.attached_by_gdb {
@@ -3101,10 +3621,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         syscall: S,
-    ) -> (Stopped, Result<Result<i64, Errno>, TraceError>) {
+    ) -> Result<(Stopped, Result<i64, Errno>), TraceError> {
         let (nr, args) = syscall.into_parts();
-        let result = self.untraced_syscall(task, nr, args).await;
-        (Stopped::new_unchecked(self.tid()), result)
+        self.untraced_syscall(task, nr, args).await
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -3113,15 +3632,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         option: libc::c_int,
         arg2: usize,
-    ) -> (Stopped, Result<Result<i64, Errno>, TraceError>) {
-        let result = self
-            .untraced_syscall(
-                task,
-                Sysno::prctl,
-                SyscallArgs::new(option as usize, arg2, 0, 0, 0, 0),
-            )
-            .await;
-        (Stopped::new_unchecked(self.tid()), result)
+    ) -> Result<(Stopped, Result<i64, Errno>), TraceError> {
+        self.untraced_syscall(
+            task,
+            Sysno::prctl,
+            SyscallArgs::new(option as usize, arg2, 0, 0, 0, 0),
+        )
+        .await
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -3129,27 +3646,26 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         scratch_address: usize,
-    ) -> (Stopped, Result<Result<libc::c_int, Errno>, String>) {
+    ) -> Result<(Stopped, Result<Result<libc::c_int, Errno>, String>), TraceError> {
         // PR_GET_TSC writes a c_int through a tracee pointer. Reuse the
         // already-validated helper return slot: its original eight bytes are
         // saved before this call, the helper return address replaces them
         // before execution, and every exit path restores them.
         let (task, result) = self
             .liteinst_prctl(task, libc::PR_GET_TSC, scratch_address)
-            .await;
+            .await?;
         let result = match result {
-            Ok(Ok(0)) => match Addr::<libc::c_int>::from_raw(scratch_address) {
+            Ok(0) => match Addr::<libc::c_int>::from_raw(scratch_address) {
                 Some(address) => task
                     .read_value(address)
                     .map(Ok)
                     .map_err(|error| format!("read PR_GET_TSC state: {error}")),
                 None => Err("PR_GET_TSC scratch address is null".to_owned()),
             },
-            Ok(Ok(result)) => Err(format!("PR_GET_TSC returned unexpected value {result}")),
-            Ok(Err(error)) => Ok(Err(error)),
-            Err(error) => Err(format!("inject PR_GET_TSC: {error}")),
+            Ok(result) => Err(format!("PR_GET_TSC returned unexpected value {result}")),
+            Err(error) => Ok(Err(error)),
         };
-        (task, result)
+        Ok((task, result))
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -3157,7 +3673,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         state: libc::c_int,
-    ) -> (Stopped, Result<Result<i64, Errno>, TraceError>) {
+    ) -> Result<(Stopped, Result<i64, Errno>), TraceError> {
         self.liteinst_prctl(task, libc::PR_SET_TSC, state as usize)
             .await
     }
@@ -3166,7 +3682,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn liteinst_get_cpuid_state(
         &mut self,
         task: Stopped,
-    ) -> (Stopped, Result<Result<i64, Errno>, TraceError>) {
+    ) -> Result<(Stopped, Result<i64, Errno>), TraceError> {
         use reverie::syscalls::ArchPrctl;
         use reverie::syscalls::ArchPrctlCmd;
 
@@ -3182,7 +3698,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         state: u64,
-    ) -> (Stopped, Result<Result<i64, Errno>, TraceError>) {
+    ) -> Result<(Stopped, Result<i64, Errno>), TraceError> {
         use reverie::syscalls::ArchPrctl;
         use reverie::syscalls::ArchPrctlCmd;
 
@@ -3198,20 +3714,19 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         state: u64,
-    ) -> (Stopped, Vec<String>) {
-        let (task, set_result) = self.liteinst_set_cpuid_state(task, state).await;
+    ) -> Result<(Stopped, Vec<String>), TraceError> {
+        let (task, set_result) = self.liteinst_set_cpuid_state(task, state).await?;
         let mut failures = Vec::new();
         match set_result {
-            Ok(Ok(0)) => {}
-            Ok(Ok(result)) => failures.push(format!(
+            Ok(0) => {}
+            Ok(result) => failures.push(format!(
                 "ARCH_SET_CPUID({state}) returned unexpected value {result}"
             )),
-            Ok(Err(error)) => failures.push(format!("ARCH_SET_CPUID({state}): {error}")),
-            Err(error) => failures.push(format!("inject ARCH_SET_CPUID({state}): {error}")),
+            Err(error) => failures.push(format!("ARCH_SET_CPUID({state}): {error}")),
         }
-        let (task, verify_failures) = self.verify_liteinst_cpuid_state(task, state).await;
+        let (task, verify_failures) = self.verify_liteinst_cpuid_state(task, state).await?;
         failures.extend(verify_failures);
-        (task, failures)
+        Ok((task, failures))
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -3219,36 +3734,35 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         state: u64,
-    ) -> (Stopped, Vec<String>) {
+    ) -> Result<(Stopped, Vec<String>), TraceError> {
         let mut failures = Vec::new();
-        let (task, get_result) = self.liteinst_get_cpuid_state(task).await;
+        let (task, get_result) = self.liteinst_get_cpuid_state(task).await?;
         match get_result {
-            Ok(Ok(observed)) if observed == state as i64 => {}
-            Ok(Ok(observed)) => failures.push(format!(
+            Ok(observed) if observed == state as i64 => {}
+            Ok(observed) => failures.push(format!(
                 "ARCH_GET_CPUID returned {observed} after setting {state}"
             )),
-            Ok(Err(error)) => failures.push(format!("verify ARCH_GET_CPUID({state}): {error}")),
-            Err(error) => failures.push(format!("inject verification ARCH_GET_CPUID: {error}")),
+            Err(error) => failures.push(format!("verify ARCH_GET_CPUID({state}): {error}")),
         }
-        (task, failures)
+        Ok((task, failures))
     }
 
     #[cfg(target_arch = "x86_64")]
     async fn prepare_liteinst_helper_cpuid(
         &mut self,
         task: Stopped,
-    ) -> (Stopped, Result<LiteinstCpuidPolicy, String>) {
-        let (task, result) = self.liteinst_get_cpuid_state(task).await;
+    ) -> Result<(Stopped, Result<LiteinstCpuidPolicy, String>), TraceError> {
+        let (task, result) = self.liteinst_get_cpuid_state(task).await?;
         match result {
-            Ok(Ok(1)) => (task, Ok(LiteinstCpuidPolicy::UnchangedEnabled)),
-            Ok(Ok(0)) => {
+            Ok(1) => Ok((task, Ok(LiteinstCpuidPolicy::UnchangedEnabled))),
+            Ok(0) => {
                 let (task, enable_failures) =
-                    self.set_and_verify_liteinst_cpuid_state(task, 1).await;
+                    self.set_and_verify_liteinst_cpuid_state(task, 1).await?;
                 if enable_failures.is_empty() {
-                    (task, Ok(LiteinstCpuidPolicy::RestoreDisabled))
+                    Ok((task, Ok(LiteinstCpuidPolicy::RestoreDisabled)))
                 } else {
                     let (task, restore_failures) =
-                        self.set_and_verify_liteinst_cpuid_state(task, 0).await;
+                        self.set_and_verify_liteinst_cpuid_state(task, 0).await?;
                     let mut message = format!(
                         "enable native CPUID for patch helper: {}",
                         enable_failures.join("; ")
@@ -3259,16 +3773,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                             restore_failures.join("; ")
                         ));
                     }
-                    (task, Err(message))
+                    Ok((task, Err(message)))
                 }
             }
-            Ok(Ok(state)) => (
+            Ok(state) => Ok((
                 task,
                 Err(format!("ARCH_GET_CPUID returned unexpected value {state}")),
-            ),
-            Ok(Err(Errno::ENODEV)) => (task, Ok(LiteinstCpuidPolicy::Unsupported)),
-            Ok(Err(error)) => (task, Err(format!("ARCH_GET_CPUID: {error}"))),
-            Err(error) => (task, Err(format!("inject ARCH_GET_CPUID: {error}"))),
+            )),
+            Err(Errno::ENODEV) => Ok((task, Ok(LiteinstCpuidPolicy::Unsupported))),
+            Err(error) => Ok((task, Err(format!("ARCH_GET_CPUID: {error}")))),
         }
     }
 
@@ -3278,24 +3791,23 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         scratch_address: usize,
         state: libc::c_int,
-    ) -> (Stopped, Vec<String>) {
-        let (task, set_result) = self.liteinst_set_tsc_state(task, state).await;
+    ) -> Result<(Stopped, Vec<String>), TraceError> {
+        let (task, set_result) = self.liteinst_set_tsc_state(task, state).await?;
         let mut failures = Vec::new();
         match set_result {
-            Ok(Ok(0)) => {}
-            Ok(Ok(result)) => {
+            Ok(0) => {}
+            Ok(result) => {
                 failures.push(format!(
                     "PR_SET_TSC({state}) returned unexpected value {result}"
                 ));
             }
-            Ok(Err(error)) => failures.push(format!("PR_SET_TSC({state}): {error}")),
-            Err(error) => failures.push(format!("inject PR_SET_TSC({state}): {error}")),
+            Err(error) => failures.push(format!("PR_SET_TSC({state}): {error}")),
         }
         let (task, verify_failures) = self
             .verify_liteinst_tsc_state(task, scratch_address, state)
-            .await;
+            .await?;
         failures.extend(verify_failures);
-        (task, failures)
+        Ok((task, failures))
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -3304,9 +3816,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         scratch_address: usize,
         state: libc::c_int,
-    ) -> (Stopped, Vec<String>) {
+    ) -> Result<(Stopped, Vec<String>), TraceError> {
         let mut failures = Vec::new();
-        let (task, get_result) = self.liteinst_get_tsc_state(task, scratch_address).await;
+        let (task, get_result) = self.liteinst_get_tsc_state(task, scratch_address).await?;
         match get_result {
             Ok(Ok(observed)) if observed == state => {}
             Ok(Ok(observed)) => failures.push(format!(
@@ -3315,7 +3827,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             Ok(Err(error)) => failures.push(format!("verify PR_GET_TSC({state}): {error}")),
             Err(error) => failures.push(format!("verify PR_GET_TSC({state}): {error}")),
         }
-        (task, failures)
+        Ok((task, failures))
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -3323,16 +3835,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         scratch_address: usize,
-    ) -> (Stopped, Result<LiteinstTscPolicy, String>) {
-        let (task, result) = self.liteinst_get_tsc_state(task, scratch_address).await;
+    ) -> Result<(Stopped, Result<LiteinstTscPolicy, String>), TraceError> {
+        let (task, result) = self.liteinst_get_tsc_state(task, scratch_address).await?;
         match result {
-            Ok(Ok(libc::PR_TSC_ENABLE)) => (task, Ok(LiteinstTscPolicy::UnchangedEnabled)),
+            Ok(Ok(libc::PR_TSC_ENABLE)) => Ok((task, Ok(LiteinstTscPolicy::UnchangedEnabled))),
             Ok(Ok(libc::PR_TSC_SIGSEGV)) => {
                 let (task, enable_failures) = self
                     .set_and_verify_liteinst_tsc_state(task, scratch_address, libc::PR_TSC_ENABLE)
-                    .await;
+                    .await?;
                 if enable_failures.is_empty() {
-                    (task, Ok(LiteinstTscPolicy::RestoreFaulting))
+                    Ok((task, Ok(LiteinstTscPolicy::RestoreFaulting)))
                 } else {
                     let (task, restore_failures) = self
                         .set_and_verify_liteinst_tsc_state(
@@ -3340,7 +3852,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             scratch_address,
                             libc::PR_TSC_SIGSEGV,
                         )
-                        .await;
+                        .await?;
                     let mut message = format!(
                         "enable native TSC for patch helper: {}",
                         enable_failures.join("; ")
@@ -3351,18 +3863,18 @@ impl<L: Tool + 'static> TracedTask<L> {
                             restore_failures.join("; ")
                         ));
                     }
-                    (task, Err(message))
+                    Ok((task, Err(message)))
                 }
             }
-            Ok(Ok(state)) => (
+            Ok(Ok(state)) => Ok((
                 task,
                 Err(format!("PR_GET_TSC returned unexpected state {state}")),
-            ),
+            )),
             // EINVAL is the documented prctl response when this option is not
             // supported by the running kernel/architecture.
-            Ok(Err(Errno::EINVAL)) => (task, Ok(LiteinstTscPolicy::Unsupported)),
-            Ok(Err(error)) => (task, Err(format!("PR_GET_TSC: {error}"))),
-            Err(error) => (task, Err(error)),
+            Ok(Err(Errno::EINVAL)) => Ok((task, Ok(LiteinstTscPolicy::Unsupported))),
+            Ok(Err(error)) => Ok((task, Err(format!("PR_GET_TSC: {error}")))),
+            Err(error) => Ok((task, Err(error))),
         }
     }
 
@@ -3371,7 +3883,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         saved: &LiteinstHelperSavedState,
-    ) -> (Stopped, Vec<String>) {
+    ) -> Result<(Stopped, Vec<String>), TraceError> {
         let (task, mut failures) = match saved.tsc_policy {
             LiteinstTscPolicy::Unsupported => (task, Vec::new()),
             LiteinstTscPolicy::RestoreFaulting => {
@@ -3381,7 +3893,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         saved.stack_address,
                         libc::PR_TSC_SIGSEGV,
                     )
-                    .await;
+                    .await?;
                 (
                     task,
                     failures
@@ -3393,7 +3905,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             LiteinstTscPolicy::UnchangedEnabled => {
                 let (task, failures) = self
                     .verify_liteinst_tsc_state(task, saved.stack_address, libc::PR_TSC_ENABLE)
-                    .await;
+                    .await?;
                 (
                     task,
                     failures
@@ -3406,7 +3918,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let (mut task, cpuid_failures) = match saved.cpuid_policy {
             LiteinstCpuidPolicy::Unsupported => (task, Vec::new()),
             LiteinstCpuidPolicy::RestoreDisabled => {
-                let (task, failures) = self.set_and_verify_liteinst_cpuid_state(task, 0).await;
+                let (task, failures) = self.set_and_verify_liteinst_cpuid_state(task, 0).await?;
                 (
                     task,
                     failures
@@ -3416,7 +3928,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 )
             }
             LiteinstCpuidPolicy::UnchangedEnabled => {
-                let (task, failures) = self.verify_liteinst_cpuid_state(task, 1).await;
+                let (task, failures) = self.verify_liteinst_cpuid_state(task, 1).await?;
                 (
                     task,
                     failures
@@ -3441,7 +3953,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         if let Err(error) = task.setregs(&saved.regs) {
             failures.push(format!("general registers: {error}"));
         }
-        (task, failures)
+        Ok((task, failures))
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -3451,8 +3963,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         saved: &LiteinstHelperSavedState,
         original: Error,
     ) -> Error {
-        let (_, rollback_failures) = self.restore_liteinst_helper_state(task, saved).await;
-        self.liteinst_helper_failure(original, rollback_failures)
+        match self.restore_liteinst_helper_state(task, saved).await {
+            Ok((_, rollback_failures)) => self.liteinst_helper_failure(original, rollback_failures),
+            Err(error) => Error::runtime(
+                self.tid(),
+                "restore LiteInst patch-helper state",
+                format!(
+                    "original failure: {original}; restoration lost the physical stopped capability: {error}"
+                ),
+            ),
+        }
     }
 
     fn liteinst_helper_failure(&self, original: Error, rollback_failures: Vec<String>) -> Error {
@@ -3692,7 +4212,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             stack_address,
             stack_value: saved_stack,
         };
-        let (task, cpuid_policy) = self.prepare_liteinst_helper_cpuid(task).await;
+        let (task, cpuid_policy) = self
+            .prepare_liteinst_helper_cpuid(task)
+            .await
+            .map_err(Error::Internal)?;
         saved.cpuid_policy = match cpuid_policy {
             Ok(policy) => policy,
             Err(message) => {
@@ -3701,11 +4224,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                     "prepare LiteInst patch-helper CPUID policy",
                     message,
                 );
-                let (_, rollback_failures) = self.restore_liteinst_helper_state(task, &saved).await;
-                return Err(self.liteinst_helper_failure(original, rollback_failures));
+                return Err(self
+                    .rollback_liteinst_helper_error(task, &saved, original)
+                    .await);
             }
         };
-        let (task, tsc_policy) = self.prepare_liteinst_helper_tsc(task, stack_address).await;
+        let (task, tsc_policy) = self
+            .prepare_liteinst_helper_tsc(task, stack_address)
+            .await
+            .map_err(Error::Internal)?;
         saved.tsc_policy = match tsc_policy {
             Ok(policy) => policy,
             Err(message) => {
@@ -3714,8 +4241,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                     "prepare LiteInst patch-helper TSC policy",
                     message,
                 );
-                let (_, rollback_failures) = self.restore_liteinst_helper_state(task, &saved).await;
-                return Err(self.liteinst_helper_failure(original, rollback_failures));
+                return Err(self
+                    .rollback_liteinst_helper_error(task, &saved, original)
+                    .await);
             }
         };
         let mut task = task;
@@ -3742,58 +4270,43 @@ impl<L: Tool + 'static> TracedTask<L> {
         let running = match self.resume_stopped(task, None) {
             Ok(running) => running,
             Err(error) => {
-                return Err(self
-                    .rollback_liteinst_helper_error(
-                        Stopped::new_unchecked(self.tid()),
-                        &saved,
-                        Error::Internal(error),
-                    )
-                    .await);
+                return Err(Error::runtime(
+                    self.tid(),
+                    "run LiteInst patch helper",
+                    format!(
+                        "resume failed before a replacement stopped capability was observed; helper state cannot be restored safely: {error}"
+                    ),
+                ));
             }
         };
         let mut wait = match running.next_state().await {
             Ok(wait) => wait,
             Err(error) => {
-                return Err(self
-                    .rollback_liteinst_helper_error(
-                        Stopped::new_unchecked(self.tid()),
-                        &saved,
-                        Error::Internal(error),
-                    )
-                    .await);
+                return Err(Error::runtime(
+                    self.tid(),
+                    "run LiteInst patch helper",
+                    format!(
+                        "wait failed before a replacement stopped capability was observed; helper state cannot be restored safely: {error}"
+                    ),
+                ));
             }
         };
         self.arm_liteinst_wait(&wait);
         loop {
             match wait {
                 Wait::Stopped(stopped, Event::Seccomp) => {
-                    // Controller-owned helper syscalls execute natively and are
-                    // never delivered to the user Tool.
-                    let running = match self.resume_stopped(stopped, None) {
-                        Ok(running) => running,
-                        Err(error) => {
-                            return Err(self
-                                .rollback_liteinst_helper_error(
-                                    Stopped::new_unchecked(self.tid()),
-                                    &saved,
-                                    Error::Internal(error),
-                                )
-                                .await);
-                        }
-                    };
-                    wait = match running.next_state().await {
-                        Ok(wait) => wait,
-                        Err(error) => {
-                            return Err(self
-                                .rollback_liteinst_helper_error(
-                                    Stopped::new_unchecked(self.tid()),
-                                    &saved,
-                                    Error::Internal(error),
-                                )
-                                .await);
-                        }
-                    };
-                    self.arm_liteinst_wait(&wait);
+                    // Arena preparation is complete before Ready. The fixed
+                    // post-Ready install helper has no admitted syscall. A
+                    // seccomp stop here is therefore an unreviewed runtime
+                    // effect, not permission to execute it behind the Tool.
+                    let original = Error::runtime(
+                        self.tid(),
+                        "run LiteInst patch helper",
+                        "the post-Ready install helper attempted an unadmitted syscall",
+                    );
+                    return Err(self
+                        .rollback_liteinst_helper_error(stopped, &saved, original)
+                        .await);
                 }
                 Wait::Stopped(stopped, Event::Signal(Signal::SIGTRAP)) => {
                     let regs = match stopped.getregs() {
@@ -3834,8 +4347,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                         self.record_liteinst_fallback_stats(&stopped, frame, site);
                         None
                     };
-                    let (stopped, rollback) =
-                        self.restore_liteinst_helper_state(stopped, &saved).await;
+                    let (stopped, rollback) = self
+                        .restore_liteinst_helper_state(stopped, &saved)
+                        .await
+                        .map_err(Error::Internal)?;
                     if rollback.is_empty() {
                         return Ok((stopped, install));
                     }
@@ -3875,13 +4390,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         ))
     }
 
-    async fn maybe_install_liteinst_site(
+    async fn maybe_install_preload_liteinst_site(
         &mut self,
         task: Stopped,
         nr: Sysno,
     ) -> Result<(Stopped, bool, Option<u64>), Error> {
         if self.global_state.liteinst_runtime.is_none() {
             return Ok((task, false, None));
+        }
+        #[cfg(target_arch = "x86_64")]
+        if self.after_loader_config().is_some() {
+            return Err(Error::runtime(
+                self.tid(),
+                "install preload-mode LiteInst syscall site",
+                "after-loader execution must stay on the raw seccomp path",
+            ));
         }
         // A task-creating syscall must not be patched. Patching overwrites the
         // instruction bytes AT the site, and the new task is resumed with the
@@ -4061,10 +4584,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         if is_liteinst_mapping_syscall(nr) && !tool_subscribed {
             return self.handle_liteinst_mapping_syscall(task, nr, args).await;
         }
-        self.record_retained_liteinst_fallback_hit(&task);
-        let (installed_task, syscall_already_skipped, liteinst_resume_rip) =
-            self.maybe_install_liteinst_site(task, nr).await?;
-        task = installed_task;
+        #[cfg(target_arch = "x86_64")]
+        let after_loader_raw = self.after_loader_config().is_some();
+        #[cfg(not(target_arch = "x86_64"))]
+        let after_loader_raw = false;
+        let (syscall_already_skipped, liteinst_resume_rip) = if after_loader_raw {
+            // Keep the guest's original instruction and register image intact.
+            // Linux then owns ERESTART, signal-frame and rt_sigreturn semantics.
+            (false, None)
+        } else {
+            self.record_retained_liteinst_fallback_hit(&task);
+            let (installed_task, skipped, resume_rip) =
+                self.maybe_install_preload_liteinst_site(task, nr).await?;
+            task = installed_task;
+            (skipped, resume_rip)
+        };
         #[cfg(target_arch = "x86_64")]
         let is_legacy_vsyscall = !syscall_already_skipped
             && is_legacy_vsyscall_ip(
@@ -4094,6 +4628,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.pending_syscall = Some((nr, args));
             self.pending_syscall_already_skipped = syscall_already_skipped;
 
+            self.begin_tool_callback(task)?;
+            #[cfg(target_arch = "x86_64")]
+            self.observe_after_loader_tool_callback("Tool::handle_syscall_event(seccomp)")?;
             let retval = cancellable(self.cancel_handler.clone(), async {
                 self.process_state
                     .clone()
@@ -4101,6 +4638,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .await
             })
             .await;
+            task = self.take_tool_callback_stop()?;
 
             let emulate_legacy_vsyscall = is_legacy_vsyscall && self.pending_syscall.is_some();
             if emulate_legacy_vsyscall {
@@ -4202,29 +4740,26 @@ impl<L: Tool + 'static> TracedTask<L> {
         (Some(&self.tid()) == runtime.root_tid.get()).then_some(runtime)
     }
 
-    fn liteinst_root_stop_slot(
-        &self,
-        task: &Stopped,
-    ) -> Option<Arc<StdMutex<Option<HeldRootStop>>>> {
-        self.liteinst_root_runtime(task)
-            .map(|runtime| Arc::clone(&runtime.held_root_stop))
+    fn liteinst_stop_slot(&self, task: &Stopped) -> Option<HeldTaskStops> {
+        let runtime = self.global_state.liteinst_runtime.as_ref()?;
+        (task.pid() == self.tid()).then(|| Arc::clone(&runtime.held_task_stops))
     }
 
-    fn liteinst_root_stop_armer(&self, task: &Stopped) -> Option<LiteinstRootStopArmer> {
-        let runtime = self.liteinst_root_runtime(task)?;
-        Some(LiteinstRootStopArmer {
-            root_tid: task.pid(),
-            held_root_stop: Arc::clone(&runtime.held_root_stop),
+    fn liteinst_stop_armer(&self, task: &Stopped) -> Option<LiteinstStopArmer> {
+        let runtime = self.global_state.liteinst_runtime.as_ref()?;
+        Some(LiteinstStopArmer {
+            task_tid: task.pid(),
+            held_task_stops: Arc::clone(&runtime.held_task_stops),
         })
     }
 
-    pub(crate) fn arm_liteinst_root_stop(&self, task: &Stopped, event: &Event) {
-        let Some(armer) = self.liteinst_root_stop_armer(task) else {
+    pub(crate) fn arm_liteinst_stop(&self, task: &Stopped, event: &Event) {
+        let Some(armer) = self.liteinst_stop_armer(task) else {
             return;
         };
         armer
             .arm(task, event)
-            .expect("rearmed an undisarmed or mismatched root stop lease");
+            .expect("rearmed an undisarmed or mismatched LiteInst task stop lease");
     }
 
     /// Gives the cleanup guard ownership of a newborn tracee's wait statuses.
@@ -4251,24 +4786,24 @@ impl<L: Tool + 'static> TracedTask<L> {
     fn arm_liteinst_wait(&self, wait: &Wait) {
         if let Wait::Stopped(task, event) = wait {
             self.register_liteinst_newborn(task, event);
-            self.arm_liteinst_root_stop(task, event);
+            self.arm_liteinst_stop(task, event);
         }
     }
 
     fn ensure_liteinst_wait(&self, wait: &Wait) {
         if let Wait::Stopped(task, event) = wait {
             self.register_liteinst_newborn(task, event);
-            let Some(armer) = self.liteinst_root_stop_armer(task) else {
+            let Some(armer) = self.liteinst_stop_armer(task) else {
                 return;
             };
             armer
                 .ensure(task, event)
-                .expect("run-loop stop mismatched its armed root lease");
+                .expect("run-loop stop mismatched its armed task lease");
         }
     }
 
-    fn lease_liteinst_root_stop(&self, task: Stopped) -> RootStopLease {
-        let slot = self.liteinst_root_stop_slot(&task);
+    fn lease_liteinst_stop(&self, task: Stopped) -> RootStopLease {
+        let slot = self.liteinst_stop_slot(&task);
         RootStopLease::new(task, slot)
     }
 
@@ -4277,7 +4812,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<Running, TraceError> {
-        self.lease_liteinst_root_stop(task).resume(signal)
+        #[cfg(target_arch = "x86_64")]
+        if self.liteinst_after_loader_forward_inflight.is_some() {
+            return self.lease_liteinst_stop(task).syscall(signal);
+        }
+        self.lease_liteinst_stop(task).resume(signal)
     }
 
     fn step_stopped<T: Into<Option<Signal>>>(
@@ -4285,7 +4824,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<Running, TraceError> {
-        self.lease_liteinst_root_stop(task).step(signal)
+        self.lease_liteinst_stop(task).step(signal)
     }
 
     fn syscall_stopped<T: Into<Option<Signal>>>(
@@ -4293,7 +4832,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<Running, TraceError> {
-        self.lease_liteinst_root_stop(task).syscall(signal)
+        self.lease_liteinst_stop(task).syscall(signal)
     }
 
     async fn dispatch_new_task(
@@ -4304,6 +4843,20 @@ impl<L: Tool + 'static> TracedTask<L> {
         context: Option<libc::user_regs_struct>,
         child_context: Option<libc::user_regs_struct>,
     ) -> Result<Wait, TraceError> {
+        #[cfg(target_arch = "x86_64")]
+        if self.after_loader_config().is_some() {
+            // The event consumer registered this exact newborn before reaching
+            // dispatch. Preserve it for the existing whole-session cleanup.
+            self.record_liteinst_failure(
+                LiteinstActivationFailureReason::AfterLoaderCall,
+                Error::runtime(
+                    self.tid(),
+                    "LiteInst after-loader call",
+                    format!("unexpected {op:?} child {} in fixed fixture", child.pid()),
+                ),
+            );
+            return Err(Errno::ENOTSUPP.into());
+        }
         #[cfg(test)]
         if let Some(sender) = self
             .global_state
@@ -4540,6 +5093,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
             };
 
+            child_task.arm_liteinst_stop(&child, &event);
             assert!(
                 event == Event::Signal(Signal::SIGSTOP) || event == Event::Exit,
                 "Got unexpected event {:?}",
@@ -4566,21 +5120,24 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
 
             let tid = child.pid();
-            let detach_held_root_stop = child_task
-                .liteinst_root_config()
-                .map(|runtime| Arc::clone(&runtime.held_root_stop));
+            let detach_held_task_stops = child_task
+                .global_state
+                .liteinst_runtime
+                .as_ref()
+                .map(|runtime| Arc::clone(&runtime.held_task_stops));
+            let liteinst_fail_closed = child_task.global_state.liteinst_runtime.is_some();
             match child_task.run(child).await {
                 Err(err) => {
                     tracing::error!("Error in tracee tid {}: {}", tid, err);
 
-                    if liteinst_activation_failure_reason(&err).is_some() {
-                        // Every typed LiteInst activation failure has already
-                        // notified the session root. Its cleanup guard owns the
-                        // exact pidfds and notifier handles for this tree.
-                        // Detaching here lets a guest parent consume the child
-                        // before that notifier acknowledges terminal status.
-                        // This includes failed reactivation after exec, as well
-                        // as a refused exec or a kernel-frozen vfork parent.
+                    if liteinst_fail_closed {
+                        // Every LiteInst failure returns to the session cleanup
+                        // guard. It owns the exact pidfds and notifier
+                        // generations for this tree; reconstructing a Stopped
+                        // capability here would lose the physical status that
+                        // authorized the transition, and detaching would let a
+                        // guest parent consume the child before cleanup sees
+                        // its terminal status.
                         return ExitStatus::Exited(1);
                     }
 
@@ -4597,7 +5154,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     let detach_guard = detach_span.enter();
                     let running = match RootStopLease::new(
                         Stopped::new_unchecked(tid),
-                        detach_held_root_stop,
+                        detach_held_task_stops,
                     )
                     .detach(None)
                     {
@@ -4712,14 +5269,14 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     async fn wait_after_exit_event(
         task: Stopped,
-        held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+        held_task_stops: Option<HeldTaskStops>,
     ) -> Result<Wait, TraceError> {
         // de_thread can replace the leader after its PTRACE_EVENT_EXIT, so
         // this wait may report Exec with the caller's former TID, not death.
-        if let Some(slot) = held_root_stop.as_ref() {
+        if let Some(slot) = held_task_stops.as_ref() {
             HeldRootStop::supersede_with_exit(slot, &task)?;
         }
-        RootStopLease::new(task, held_root_stop)
+        RootStopLease::new(task, held_task_stops)
             .resume(None)?
             .next_state()
             .await
@@ -4728,9 +5285,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     #[cfg(test)]
     pub(crate) async fn handle_exit_event(
         task: Stopped,
-        held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+        held_task_stops: Option<HeldTaskStops>,
     ) -> Result<ExitStatus, TraceError> {
-        let wait = Self::wait_after_exit_event(task, held_root_stop).await?;
+        let wait = Self::wait_after_exit_event(task, held_task_stops).await?;
         let (_pid, exit_status) = wait.assume_exited();
         Ok(exit_status)
     }
@@ -4768,6 +5325,8 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     /// Triggers the tool exit callbacks.
     async fn tool_exit(self, exit_status: ExitStatus) -> Result<(), reverie::Error> {
+        #[cfg(target_arch = "x86_64")]
+        let after_loader_exit_callbacks = self.after_loader_tool_callback_context();
         if self.is_main_thread() {
             // Wait for all child threads to fully exit. This *must* happen before
             // the main thread can exit.
@@ -4819,6 +5378,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             let wrapped = WrappedFrom(self.tid, &self.global_state);
 
             // Thread exit
+            #[cfg(target_arch = "x86_64")]
+            if let Some(context) = &after_loader_exit_callbacks {
+                context
+                    .record("Tool::on_exit_thread")
+                    .map_err(|error| reverie::Error::from(anyhow::Error::new(error)))?;
+            }
             self.process_state
                 .on_exit_thread(self.tid, &wrapped, self.thread_state, exit_status)
                 .await?;
@@ -4832,6 +5397,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                 panic!("Reverie internal invariant broken. try_unwrap on process state failed")
             });
             let wrapped = WrappedFrom(self.tid, &self.global_state);
+            #[cfg(target_arch = "x86_64")]
+            if let Some(context) = &after_loader_exit_callbacks {
+                context
+                    .record("Tool::on_exit_process")
+                    .map_err(|error| reverie::Error::from(anyhow::Error::new(error)))?;
+            }
             process_state
                 .on_exit_process(self.tid, &wrapped, exit_status)
                 .await?;
@@ -4863,6 +5434,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .retain(|child| child.id() != self.tid);
 
             // Thread exit
+            #[cfg(target_arch = "x86_64")]
+            if let Some(context) = &after_loader_exit_callbacks {
+                context
+                    .record("Tool::on_exit_thread")
+                    .map_err(|error| reverie::Error::from(anyhow::Error::new(error)))?;
+            }
             self.process_state
                 .on_exit_thread(self.tid, &wrapped, self.thread_state, exit_status)
                 .await?;
@@ -4880,7 +5457,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         match self.run_loop_internal(task).await {
             Ok(exit_status) => Ok(exit_status),
             Err(err) => {
-                if self.global_state.liteinst_runtime.is_some() {
+                if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
+                    let mut failure = runtime.session_failure.lock().unwrap();
+                    if failure.is_none() {
+                        *failure = Some(format!(
+                            "tracee {} failed while owning its exact notifier generation: {err}",
+                            self.tid()
+                        ));
+                        drop(failure);
+                        runtime.session_failure_changed.notify_waiters();
+                    }
                     // Return immediately to the outer LiteInst cleanup guard.
                     // It owns the original root pidfd and every generation-
                     // bound notifier handle; this task must not reopen or
@@ -4896,14 +5482,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
-    async fn run_loop_internal(&mut self, task: Stopped) -> Result<ExitStatus, Error> {
+    async fn run_loop_internal(&mut self, mut task: Stopped) -> Result<ExitStatus, Error> {
         // This is the beginning of the life of the guest. Allow the tool to
         // inject syscalls as soon as the thread starts.
-        if let Some(Err(err)) = cancellable(self.cancel_handler.clone(), async {
+        self.begin_tool_callback(task)
+            .tracee_context(self.tid(), "bind thread-start physical stop")?;
+        #[cfg(target_arch = "x86_64")]
+        self.observe_after_loader_tool_callback("Tool::handle_thread_start")?;
+        let callback = cancellable(self.cancel_handler.clone(), async {
             self.process_state.clone().handle_thread_start(self).await
         })
-        .await
-        {
+        .await;
+        task = self
+            .take_tool_callback_stop()
+            .tracee_context(self.tid(), "recover thread-start physical stop")?;
+        if let Some(Err(err)) = callback {
             // Propagate user errors. Don't care about the result of syscall injections.
             err.into_errno()?;
         }
@@ -4943,13 +5536,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         })?;
 
         loop {
+            // Bind every decoded stop before statistics, Tool dispatch, or any
+            // other common handler can inspect it.
+            self.ensure_liteinst_wait(&task_state);
             if let Some(stats) = &self.global_state.backend_stats {
                 stats.record_wait(&task_state);
             }
             // A nested handler may forward a stop it already armed before
             // inspecting the status. Accept only that exact generation/status;
             // every ordinary returned transition still requires an empty slot.
-            self.ensure_liteinst_wait(&task_state);
             match task_state {
                 Wait::Stopped(stopped, event) => {
                     // Allow short-circuiting of the event stream. This makes it
@@ -4977,6 +5572,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }?;
                 }
                 Wait::Exited(pid, exit_status) => {
+                    #[cfg(target_arch = "x86_64")]
+                    self.observe_after_loader_terminal_event(pid, exit_status)?;
                     self.notify_gdb_stop(StopReason::Exited(pid, exit_status))
                         .await?;
                     break Ok(exit_status);
@@ -4985,14 +5582,52 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    fn observe_after_loader_exit_stop(
+        &self,
+        generation: safeptrace::PhysicalEventGenerationId,
+        status: Option<safeptrace::PhysicalStatusId>,
+    ) -> Result<(), Error> {
+        let Some(config) = self.after_loader_config() else {
+            return Ok(());
+        };
+        let mut runtime = self.liteinst_runtime.lock().unwrap();
+        if runtime.phase != LiteinstRuntimePhase::Ready
+            || runtime.after_loader_guest_observed
+            || runtime.after_loader_reference.is_none()
+        {
+            return Ok(());
+        }
+        config
+            .diagnostics
+            .record(
+                "first ordinary guest event after restoration",
+                self.timer.diagnostic_clock(),
+                format!(
+                    "tid={} generation={} physical_generation={generation:?} physical_status={status:?} event=Exit registers=unavailable",
+                    self.tid(),
+                    runtime.generation,
+                ),
+            )
+            .map_err(|error| {
+                Error::runtime(
+                    self.tid(),
+                    "record first ordinary guest event after restoration",
+                    error.to_string(),
+                )
+            })?;
+        runtime.after_loader_guest_observed = true;
+        Ok(())
+    }
+
     /// Drive a single guest thread to completion. Returns the final exit code
     /// when that guest thread exits.
     pub async fn run(mut self, child: Stopped) -> Result<ExitStatus, reverie::Error> {
-        // Only the session root owns the shared root-stop lease; a child task
-        // that superseded it would strand the root's cleanup handoff.
-        let exit_held_root_stop = self
-            .liteinst_root_config()
-            .map(|runtime| Arc::clone(&runtime.held_root_stop));
+        let exit_held_task_stops = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.held_task_stops));
         let root_session_failure = self.liteinst_root_config().map(|runtime| {
             (
                 Arc::clone(&runtime.session_failure),
@@ -5019,8 +5654,17 @@ impl<L: Tool + 'static> TracedTask<L> {
 
             futures::select_biased! {
                 task = exit_event => match task {
-                    Ok(task) => Either::Left(Self::wait_after_exit_event(task, exit_held_root_stop).await),
-                    Err(err) => Either::Left(Err(err)),
+                    Ok(task) => {
+                        let observation = (
+                            task.physical_event_generation(),
+                            task.physical_status_id(),
+                        );
+                        Either::Left((
+                            Some(observation),
+                            Self::wait_after_exit_event(task, exit_held_task_stops).await,
+                        ))
+                    }
+                    Err(err) => Either::Left((None, Err(err))),
                 },
                 message = session_failure => Either::Right(Err(anyhow::anyhow!(
                     "LiteInst session failed closed in a non-root task: {message}"
@@ -5028,11 +5672,28 @@ impl<L: Tool + 'static> TracedTask<L> {
                 exit_status = run_loop => Either::Right(exit_status),
             }
         };
+        #[cfg(target_arch = "x86_64")]
+        if let Either::Left((observation, result)) = &completion {
+            if let Some((generation, status)) = observation {
+                self.observe_after_loader_exit_stop(*generation, *status)
+                    .map_err(|error| reverie::Error::from(anyhow::Error::new(error)))?;
+            }
+            if let Ok(Wait::Stopped(stopped, event)) = result {
+                self.observe_after_loader_stopped_event(stopped, event)
+                    .map_err(|source| {
+                        reverie::Error::from(anyhow::Error::new(Error::Tracee {
+                            operation: "observe first ordinary guest stop after restoration",
+                            pid: stopped.pid(),
+                            source,
+                        }))
+                    })?;
+            }
+        }
         // Drop the old run-loop future before mutating its owner. The stopped
         // event carries the existing notifier generation; re-arm that exact
         // stop before publishing failure so session cleanup can consume it.
         let outcome = match completion {
-            Either::Left(Ok(wait @ Wait::Stopped(_, Event::Exec(former_tid))))
+            Either::Left((_, Ok(wait @ Wait::Stopped(_, Event::Exec(former_tid)))))
                 if self.global_state.liteinst_runtime.is_some() && former_tid != self.tid() =>
             {
                 self.arm_liteinst_wait(&wait);
@@ -5050,8 +5711,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                     Err(error) => Err(error.into()),
                 }
             }
-            Either::Left(Ok(wait)) => Ok(wait.assume_exited().1),
-            Either::Left(Err(error)) => handle_internal_error(error.into()).await,
+            Either::Left((_, Ok(wait))) => {
+                let (pid, exit_status) = wait.assume_exited();
+                #[cfg(target_arch = "x86_64")]
+                self.observe_after_loader_terminal_event(pid, exit_status)
+                    .map_err(|error| reverie::Error::from(anyhow::Error::new(error)))?;
+                Ok(exit_status)
+            }
+            Either::Left((_, Err(error))) => handle_internal_error(error.into()).await,
             Either::Right(outcome) => outcome,
         };
         if outcome.is_ok() && self.global_state.liteinst_runtime.is_some() {
@@ -5278,7 +5945,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         nr: Sysno,
         args: SyscallArgs,
-    ) -> Result<Result<i64, Errno>, TraceError> {
+    ) -> Result<(Stopped, Result<i64, Errno>), TraceError> {
         self.validate_liteinst_mapping_execution(nr, args)?;
         tracing::trace!(
             "[scheduler/tool] (pid = {}) untraced syscall: {:?}",
@@ -5309,18 +5976,65 @@ impl<L: Tool + 'static> TracedTask<L> {
         // `populate_mmap_page` for details.
         *regs.ip_mut() = cp::PRIVATE_PAGE_OFFSET as Reg;
 
+        #[cfg(target_arch = "x86_64")]
+        if self.after_loader_config().is_some() {
+            let purpose =
+                if self.liteinst_runtime.lock().unwrap().phase == LiteinstRuntimePhase::Ready {
+                    after_loader_task::AfterLoaderSyscallPurpose::ToolInjection
+                } else {
+                    after_loader_task::AfterLoaderSyscallPurpose::TraceePreinit
+                };
+            self.arm_after_loader_syscall_permit(
+                &task,
+                purpose,
+                nr as i64,
+                [
+                    args.arg0 as u64,
+                    args.arg1 as u64,
+                    args.arg2 as u64,
+                    args.arg3 as u64,
+                    args.arg4 as u64,
+                    args.arg5 as u64,
+                ],
+                cp::PRIVATE_PAGE_OFFSET as u64,
+            )?;
+        }
+
         task.setregs(&regs)?;
 
         // Step to run the syscall instruction.
-        let wait = self.step_stopped(task, None)?.next_state().await?;
+        let mut wait = self.step_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait);
+        #[cfg(target_arch = "x86_64")]
+        if self.after_loader_config().is_some() {
+            let stopped = match wait {
+                Wait::Stopped(stopped, Event::Seccomp) => stopped,
+                _ => return Err(Errno::EPROTO.into()),
+            };
+            let permit = self
+                .consume_after_loader_syscall_permit(&stopped)?
+                .ok_or(Errno::EPROTO)?;
+            wait = self.syscall_stopped(stopped, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            match &wait {
+                Wait::Stopped(stopped, Event::Syscall) => {
+                    let completed = self
+                        .complete_after_loader_syscall_inflight(stopped)?
+                        .ok_or(Errno::EPROTO)?;
+                    if completed != permit {
+                        return Err(Errno::EPROTO.into());
+                    }
+                }
+                _ => return Err(Errno::EPROTO.into()),
+            }
+        }
 
         // Get the result of the syscall to return to the caller.
-        let result = self
+        let (task, result) = self
             .status_to_result(wait, Some(oldregs), child_context)
             .await?;
         self.observe_liteinst_mapping_result(nr, args, result);
-        Ok(result)
+        Ok((task, result))
     }
 
     // Helper function
@@ -5329,7 +6043,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         nr: Sysno,
         args: SyscallArgs,
-    ) -> Result<Result<i64, Errno>, TraceError> {
+    ) -> Result<(Stopped, Result<i64, Errno>), TraceError> {
         let task = self.skip_seccomp_syscall(task).await?;
 
         self.untraced_syscall(task, nr, args).await
@@ -5340,7 +6054,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         wait_status: Wait,
         context: Option<libc::user_regs_struct>,
         child_context: Option<libc::user_regs_struct>,
-    ) -> Result<Result<i64, Errno>, TraceError> {
+    ) -> Result<(Stopped, Result<i64, Errno>), TraceError> {
         #[cfg(test)]
         let forced_external_sigtrap = matches!(&wait_status, Wait::Stopped(_, _))
             && self.liteinst_runtime.lock().unwrap().phase == LiteinstRuntimePhase::Waiting
@@ -5381,7 +6095,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             let mut mutated_stub = [0; cp::SYSCALL_INSTR_SIZE * 2];
             stopped.read_exact(cp::PRIVATE_PAGE_OFFSET, &mut mutated_stub)?;
             mutated_stub[0] ^= 0xff;
-            let mut stopped_writer = Stopped::new_unchecked(stopped.pid());
+            let mut stopped_writer = stopped.memory();
             let address = AddrMut::from_raw(cp::PRIVATE_PAGE_OFFSET).ok_or(Errno::EFAULT)?;
             stopped_writer.write_value(address, &mutated_stub)?;
         }
@@ -5396,7 +6110,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         forced_external_sigtrap,
                     )?;
                     let regs = stopped.getregs()?;
-                    Ok(Ok(regs.ret() as i64))
+                    Ok((stopped, Ok(regs.ret() as i64)))
                 }
                 Event::Signal(sig) => {
                     self.validate_nested_liteinst_activation_signal(
@@ -5440,14 +6154,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                             restore_context(&stopped, context, None, false)?;
                         }
                     }
-                    Ok(result)
+                    Ok((stopped, result))
                 }
                 Event::NewChild(op, child) => {
                     let ret = child.pid().as_raw() as i64;
-                    let _ = self
+                    let wait = self
                         .dispatch_new_task(op, stopped, child, context, child_context)
                         .await?;
-                    Ok(Ok(ret))
+                    match wait {
+                        Wait::Stopped(stopped, _) => Ok((stopped, Ok(ret))),
+                        Wait::Exited(_, exit_status) => self.exit(exit_status).await,
+                    }
                 }
                 Event::Exec(former_tid) => {
                     // This should never return.
@@ -5456,7 +6173,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 Event::Syscall => {
                     let regs = stopped.getregs()?;
-                    Ok(Errno::from_ret(regs.ret() as usize).map(|x| x as i64))
+                    let result = Errno::from_ret(regs.ret() as usize).map(|x| x as i64);
+                    if let Some(context) = context {
+                        if child_context.is_some() {
+                            stopped.setregs(&context)?;
+                        } else {
+                            restore_context(&stopped, context, None, false)?;
+                        }
+                    }
+                    Ok((stopped, result))
                 }
                 st => panic!("untraced_syscall returned unknown state: {:?}", st),
             },
@@ -5476,7 +6201,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         nr: Sysno,
         args: SyscallArgs,
     ) -> Result<Result<i64, Errno>, TraceError> {
-        let task = self.assume_stopped();
+        let task = self.take_tool_callback_stop()?;
 
         tracing::debug!(
             "[tool] (tid {}) beginning inject of syscall: {}, args {:?}",
@@ -5485,20 +6210,28 @@ impl<L: Tool + 'static> TracedTask<L> {
             args,
         );
 
-        if self.injected_syscall_frame.is_some() || self.pending_syscall_already_skipped {
-            self.pending_syscall = None;
-            self.untraced_syscall(task, nr, args).await
-        } else if self.pending_syscall.take() == Some((nr, args)) {
-            // If we're reinjecting the same syscall with the same arguments,
-            // then we can just let the tracee continue and stop at sysexit.
-            self.validate_liteinst_mapping_execution(nr, args)?;
-            let wait = self.syscall_stopped(task, None)?.next_state().await?;
-            self.arm_liteinst_wait(&wait);
-            let result = self.status_to_result(wait, None, None).await?;
-            self.observe_liteinst_mapping_result(nr, args, result);
-            Ok(result)
-        } else {
-            self.private_inject(task, nr, args).await
+        let outcome =
+            if self.injected_syscall_frame.is_some() || self.pending_syscall_already_skipped {
+                self.pending_syscall = None;
+                self.untraced_syscall(task, nr, args).await
+            } else if self.pending_syscall.take() == Some((nr, args)) {
+                // If we're reinjecting the same syscall with the same arguments,
+                // then we can just let the tracee continue and stop at sysexit.
+                self.validate_liteinst_mapping_execution(nr, args)?;
+                let wait = self.syscall_stopped(task, None)?.next_state().await?;
+                self.arm_liteinst_wait(&wait);
+                let (task, result) = self.status_to_result(wait, None, None).await?;
+                self.observe_liteinst_mapping_result(nr, args, result);
+                Ok((task, result))
+            } else {
+                self.private_inject(task, nr, args).await
+            };
+        match outcome {
+            Ok((task, result)) => {
+                self.finish_tool_injection(task)?;
+                Ok(result)
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -5526,35 +6259,35 @@ impl<L: Tool + 'static> TracedTask<L> {
             nr,
         );
 
-        let task = self.assume_stopped();
+        let task = self.take_tool_callback_stop()?;
 
         if self.injected_syscall_frame.is_some() {
             self.pending_syscall = None;
-            let result = self.untraced_syscall(task, nr, args).await?;
-            let task = self.assume_stopped();
+            let (task, result) = self.untraced_syscall(task, nr, args).await?;
             self.write_injected_syscall_result(&task, result)?;
+            self.finish_tool_injection(task)?;
             return Ok(result);
         }
 
         if self.pending_syscall_already_skipped {
             self.pending_syscall = None;
-            let result = self.untraced_syscall(task, nr, args).await?;
-            let task = self.assume_stopped();
+            let (task, result) = self.untraced_syscall(task, nr, args).await?;
             set_ret(
                 &task,
                 result.unwrap_or_else(|errno| -(errno.into_raw() as i64)) as u64,
             )?;
+            self.finish_tool_injection(task)?;
             return Ok(result);
         }
 
         if is_liteinst_mapping_syscall(nr) && self.pending_syscall == Some((nr, args)) {
             self.pending_syscall = None;
-            let result = self.private_inject(task, nr, args).await?;
-            let task = self.assume_stopped();
+            let (task, result) = self.private_inject(task, nr, args).await?;
             set_ret(
                 &task,
                 result.unwrap_or_else(|errno| -(errno.into_raw() as i64)) as u64,
             )?;
+            self.finish_tool_injection(task)?;
             return Ok(result);
         }
 
@@ -5563,18 +6296,42 @@ impl<L: Tool + 'static> TracedTask<L> {
             // Nothing to actually do but let the tracee resume.
 
             // The return value here doesn't matter.
+            self.finish_tool_injection(task)?;
             Ok(Ok(0))
         } else {
             // Syscall has already been injected. Can't do the optimization.
-            self.private_inject(task, nr, args).await
+            let (task, result) = self.private_inject(task, nr, args).await?;
+            self.finish_tool_injection(task)?;
+            Ok(result)
         }
     }
 
-    /// Get a ptrace stub which can do ptrace operations
-    // Assumption: Task is in stopped state as long as we have a valid
-    // reference to `TracedTask`.
-    fn assume_stopped(&self) -> Stopped {
-        Stopped::new_unchecked(self.tid())
+    fn active_stopped(&self) -> Result<&Stopped, TraceError> {
+        self.active_tool_stop
+            .as_ref()
+            .ok_or_else(|| Errno::EPROTO.into())
+    }
+
+    fn begin_tool_callback(&mut self, task: Stopped) -> Result<(), TraceError> {
+        if self.active_tool_stop.is_some() {
+            return Err(Errno::EALREADY.into());
+        }
+        self.active_tool_stop = Some(task);
+        Ok(())
+    }
+
+    fn take_tool_callback_stop(&mut self) -> Result<Stopped, TraceError> {
+        self.active_tool_stop
+            .take()
+            .ok_or_else(|| Errno::EPROTO.into())
+    }
+
+    fn finish_tool_injection(&mut self, task: Stopped) -> Result<(), TraceError> {
+        if self.active_tool_stop.is_some() {
+            return Err(Errno::EALREADY.into());
+        }
+        self.active_tool_stop = Some(task);
+        Ok(())
     }
 
     async fn notify_gdb_stop(&self, reason: StopReason) -> Result<(), TraceError> {
@@ -5685,6 +6442,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             return self.resume_stopped(task, None);
         }
 
+        self.begin_tool_callback(task)?;
         let mut resume_rx = self.gdb_resume_rx.take().ok_or(Errno::EIO)?;
         let mut gdb_request_rx = self.gdb_request_rx.take().ok_or(Errno::EIO)?;
 
@@ -5699,6 +6457,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     resume_future = pending_resume_future;
                 }
                 Either::Right((resume_request, _)) => {
+                    let task = self.take_tool_callback_stop()?;
                     break self
                         .handle_gdb_resume(resume_request, task, resume_action)
                         .await?;
@@ -5809,7 +6568,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let wait = running.next_state().await?.assume_stopped();
         let mut task = wait.0;
         let mut event = wait.1;
-        self.arm_liteinst_root_stop(&task, &event);
+        self.arm_liteinst_stop(&task, &event);
 
         // Detached by client.
         if !self.attached_by_gdb {
@@ -5825,7 +6584,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     let wait = running.next_state().await?.assume_stopped();
                     task = wait.0;
                     event = wait.1;
-                    self.arm_liteinst_root_stop(&task, &event);
+                    self.arm_liteinst_stop(&task, &event);
                 }
                 // TODO: combine with handle_signal!
                 Event::Signal(Signal::SIGCHLD) => {
@@ -5833,7 +6592,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     let wait = running.next_state().await?.assume_stopped();
                     task = wait.0;
                     event = wait.1;
-                    self.arm_liteinst_root_stop(&task, &event);
+                    self.arm_liteinst_stop(&task, &event);
                 }
                 unknown => panic!("[pid = {}] got unexpected event {:?}", self.tid(), unknown),
             }
@@ -5878,10 +6637,11 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     async fn add_breakpoint(&mut self, addr: u64) -> Result<(), TraceError> {
         if let Some(bkpt_addr) = AddrMut::from_raw(addr as usize) {
-            let mut task = self.assume_stopped();
-            let saved_insn: u64 = task.read_value(bkpt_addr)?;
+            let task = self.active_stopped()?;
+            let mut memory = task.memory();
+            let saved_insn: u64 = memory.read_value(bkpt_addr)?;
             let insn = (saved_insn & !0xffu64) | 0xccu64;
-            task.write_value(bkpt_addr, &insn)?;
+            memory.write_value(bkpt_addr, &insn)?;
             self.breakpoints.insert(addr, saved_insn);
         }
         Ok(())
@@ -5926,16 +6686,17 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     async fn remove_breakpoint(&mut self, addr: u64) -> Result<(), TraceError> {
+        let mut memory = self.active_stopped()?.memory();
         let insn = self.breakpoints.remove(&addr).ok_or(Errno::ENOENT)?;
-        let mut task = self.assume_stopped();
         if let Some(bkpt_addr) = AddrMut::from_raw(addr as usize) {
-            task.write_value(bkpt_addr, &insn)?;
+            memory.write_value(bkpt_addr, &insn)?;
         }
         Ok(())
     }
 
     fn read_inferior_memory(&self, addr: u64, mut size: usize) -> Result<Vec<u8>, TraceError> {
-        let task = self.assume_stopped();
+        let task = self.active_stopped()?;
+        let memory = task.memory();
 
         // NB: dont' trust size to be sane blindly.
         if size > 0x8000 {
@@ -5944,7 +6705,7 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         let mut res = vec![0; size];
         if let Some(addr) = Addr::from_raw(addr as usize) {
-            let nb = task.read(addr, &mut res)?;
+            let nb = memory.read(addr, &mut res)?;
             res.resize(nb, 0);
         }
 
@@ -5970,15 +6731,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         size: usize,
         data: Vec<u8>,
     ) -> Result<(), TraceError> {
-        let mut task = self.assume_stopped();
+        let mut memory = self.active_stopped()?.memory();
         let size = std::cmp::min(size, data.len());
         let addr = AddrMut::from_raw(addr as usize).ok_or(Errno::EFAULT)?;
-        task.write(addr, &data[..size])?;
+        memory.write(addr, &data[..size])?;
         Ok(())
     }
 
     fn read_registers(&self) -> Result<CoreRegs, TraceError> {
-        let task = self.assume_stopped();
+        let task = self.active_stopped()?;
         let regs = task.getregs()?;
         let fpregs = task.getfpregs()?;
         let core_regs = CoreRegs::from_parts(regs, fpregs);
@@ -5986,7 +6747,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     fn write_registers(&self, core_regs: CoreRegs) -> Result<(), TraceError> {
-        let task = self.assume_stopped();
+        let task = self.active_stopped()?;
         let (regs, fpregs) = core_regs.into_parts();
         task.setregs(&regs)?;
         task.setfpregs(&fpregs)?;
@@ -5996,7 +6757,7 @@ impl<L: Tool + 'static> TracedTask<L> {
 
 #[async_trait]
 impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
-    type Memory = Stopped;
+    type Memory = StoppedMemory;
     type Stack = GuestStack;
 
     #[inline]
@@ -6019,22 +6780,30 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     }
 
     fn memory(&self) -> Self::Memory {
-        self.assume_stopped()
+        self.active_stopped()
+            .expect("tool memory access requires its observed stopped capability")
+            .memory()
     }
 
     async fn regs(&mut self) -> libc::user_regs_struct {
-        let task = self.assume_stopped();
+        let task = match self.active_stopped() {
+            Ok(task) => task,
+            Err(err) => self.abort(Err(err)).await,
+        };
 
-        match self.read_guest_registers(&task) {
+        match self.read_guest_registers(task) {
             Ok(ret) => ret,
             Err(err) => self.abort(Err(err)).await,
         }
     }
 
     async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), reverie::Error> {
-        let task = self.assume_stopped();
+        let task = match self.active_stopped() {
+            Ok(task) => task,
+            Err(err) => self.abort(Err(err)).await,
+        };
 
-        if let Err(err) = self.write_guest_registers(&task, &regs) {
+        if let Err(err) = self.write_guest_registers(task, &regs) {
             // Mirror `regs()`: a ptrace register access failure aborts the task.
             self.abort(Err(err)).await;
         }
@@ -6042,7 +6811,12 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     }
 
     async fn stack(&mut self) -> Self::Stack {
-        match GuestStack::new(self.tid, self.stack_checked_out.clone()) {
+        let checkout = self.stack_checked_out.clone();
+        let stack = match self.active_stopped() {
+            Ok(task) => GuestStack::new(task, checkout),
+            Err(err) => Err(err),
+        };
+        match stack {
             Ok(ret) => ret,
             Err(err) => self.abort(Err(err)).await,
         }
@@ -6304,6 +7078,122 @@ mod tests {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn retired_after_loader_trap_requires_exact_runtime_origin() {
+        let marker = 0x7265_766c_6900_0004;
+        let rip = 0x7f00_1234;
+        let generation = 7;
+        let runtime_inode = 42;
+        let runtime_device = libc::makedev(8, 2);
+        let provenance = LiteinstTrapSiteProvenance { generation, rip };
+        let mapping = |writable, inode| GuestMap {
+            start: 0x7f00_0000,
+            end: 0x7f00_2000,
+            offset: 0,
+            device_major: 8,
+            device_minor: 2,
+            readable: true,
+            writable,
+            executable: true,
+            shared: false,
+            inode,
+            path: Some(PathBuf::from("/sealed/liteinst-runtime.so")),
+        };
+
+        for si_code in [libc::TRAP_BRKPT, libc::SI_KERNEL] {
+            assert!(provenance.validates_retired_runtime_trap(
+                generation,
+                marker,
+                marker,
+                rip,
+                si_code,
+                0xcc,
+                runtime_device,
+                runtime_inode,
+                &mapping(false, runtime_inode),
+            ));
+        }
+
+        assert!(!provenance.validates_retired_runtime_trap(
+            generation,
+            marker,
+            marker,
+            rip + 0x20,
+            libc::TRAP_BRKPT,
+            0xcc,
+            runtime_device,
+            runtime_inode,
+            &mapping(false, runtime_inode),
+        ));
+        assert!(!provenance.validates_retired_runtime_trap(
+            generation,
+            marker ^ 1,
+            marker,
+            rip,
+            libc::TRAP_BRKPT,
+            0xcc,
+            runtime_device,
+            runtime_inode,
+            &mapping(false, runtime_inode),
+        ));
+        assert!(!provenance.validates_retired_runtime_trap(
+            generation,
+            marker,
+            marker,
+            rip,
+            libc::SI_USER,
+            0xcc,
+            runtime_device,
+            runtime_inode,
+            &mapping(false, runtime_inode),
+        ));
+        assert!(!provenance.validates_retired_runtime_trap(
+            generation,
+            marker,
+            marker,
+            rip,
+            libc::TRAP_BRKPT,
+            0x90,
+            runtime_device,
+            runtime_inode,
+            &mapping(false, runtime_inode),
+        ));
+        assert!(!provenance.validates_retired_runtime_trap(
+            generation,
+            marker,
+            marker,
+            rip,
+            libc::TRAP_BRKPT,
+            0xcc,
+            runtime_device,
+            runtime_inode,
+            &mapping(true, runtime_inode),
+        ));
+        assert!(!provenance.validates_retired_runtime_trap(
+            generation,
+            marker,
+            marker,
+            rip,
+            libc::TRAP_BRKPT,
+            0xcc,
+            runtime_device,
+            runtime_inode,
+            &mapping(false, runtime_inode + 1),
+        ));
+        assert!(!provenance.validates_retired_runtime_trap(
+            generation + 1,
+            marker,
+            marker,
+            rip,
+            libc::TRAP_BRKPT,
+            0xcc,
+            runtime_device,
+            runtime_inode,
+            &mapping(false, runtime_inode),
+        ));
+    }
+
     fn active_state() -> LiteinstRuntimeState {
         let mut state = LiteinstRuntimeState::default();
         state.active_hooks.insert(
@@ -6324,6 +7214,13 @@ mod tests {
         old.phase = LiteinstRuntimePhase::Ready;
         old.generation = 41;
         old.ready_generation = Some(41);
+        #[cfg(target_arch = "x86_64")]
+        {
+            old.after_loader_syscall_trap = Some(LiteinstTrapSiteProvenance {
+                generation: 41,
+                rip: 0x7000_1070,
+            });
+        }
         old.frame = Some(LiteinstHandshakeFrame {
             begin_rip: 0x7000_1000,
             ..Default::default()
@@ -6339,6 +7236,8 @@ mod tests {
         assert_eq!(next.phase, LiteinstRuntimePhase::Waiting);
         assert_eq!(next.generation, 42);
         assert!(next.ready_generation.is_none());
+        #[cfg(target_arch = "x86_64")]
+        assert!(next.after_loader_syscall_trap.is_none());
         assert!(next.frame.is_none());
         assert!(next.attempted_sites.is_empty());
         assert!(next.fallback_sites.is_empty());
@@ -6346,6 +7245,14 @@ mod tests {
         let mut old = holder.lock().unwrap();
         assert_eq!(old.phase, LiteinstRuntimePhase::Ready);
         assert_eq!(old.ready_generation, Some(41));
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(
+            old.after_loader_syscall_trap,
+            Some(LiteinstTrapSiteProvenance {
+                generation: 41,
+                rip: 0x7000_1070,
+            })
+        );
         assert_eq!(old.frame.unwrap().begin_rip, 0x7000_1000);
         assert!(old.attempted_sites.contains(&0x401005));
         assert_eq!(

@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["preload-constructor"]
 preload-constructor = []
+liteinst-after-loader-experiment = ["reverie-ptrace/liteinst-after-loader-experiment"]
 
 [[bin]]
 name = "reverie-liteinst-strace"
@@ -40,6 +41,8 @@ tempfile = "3.27.0"
 tracing = "0.1.41"
 
 [dev-dependencies]
+goblin = { version = "0.10.7", features = ["elf32", "elf64", "endian_fd"] }
+sha2 = "0.10.9"
 tokio = { version = "1.52.4", features = ["test-util"] }
 tracing-subscriber = "0.3.23"
 
