@@ -38,9 +38,14 @@ use std::io;
 
 pub use child::Child;
 pub use child::Output;
+pub use container::ChildStartContext;
 pub use container::Container;
 pub use container::DeferredContainerRun;
+pub use container::MAX_STARTUP_FDS;
+pub use container::ParentStartContext;
 pub use container::RunError;
+pub use container::StartupError;
+pub use container::StartupRunError;
 pub use error::Context;
 pub use error::Error;
 pub use exit_status::ExitStatus;

@@ -1,5 +1,4 @@
 use std::io;
-use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -12,6 +11,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 pub use ordered::RecordCommit;
+pub use plan::InertCapturePlan;
 pub use publication::Attempt as PublicationAttempt;
 pub use publication::Report as PublicationReport;
 
@@ -26,6 +26,7 @@ use super::RunState;
 use super::Stream;
 use super::ordered;
 
+mod plan;
 pub(crate) mod publication;
 
 #[derive(Clone, Copy, Debug)]
@@ -476,21 +477,9 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
     destination: D,
     spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
 ) -> Result<(CaptureOwner, LogSink, HostProducer), CaptureStartError> {
-    if options.limits.diagnostic_bytes == 0
-        || options.limits.diagnostic_bytes > 32 * 1024 * 1024
-        || [
-            options.timeouts.startup,
-            options.timeouts.blocked_publication,
-            options.timeouts.final_drain,
-        ]
-        .iter()
-        .any(|duration| duration.is_zero() || Instant::now().checked_add(*duration).is_none())
-    {
-        return Err(io::Error::other("invalid capture bounds/deadlines").into());
-    }
-    let deadline = Instant::now() + options.timeouts.startup;
-    let (host, guest) = unsafe { ordered::channel_pair(options.limits.ordered()) }?;
-    let buffer = unsafe { ordered::Buffer::receive(host.as_raw_fd()) }?;
+    let (plan, deadline) = unsafe { InertCapturePlan::for_startup(options) }?;
+    let (options, buffer, host, guest) = plan.into_local_parts();
+    let buffer = Arc::new(buffer);
     let writer = unsafe { buffer.activate(0, i64::from(std::process::id())) }
         .map_err(|_| io::Error::other("host registration failed"))?;
     let collector = buffer

@@ -646,6 +646,15 @@ impl Container {
         context: &ChildContext,
         pre_exec: &mut [Box<dyn FnMut() -> Result<(), Errno> + Send + Sync>],
     ) -> Result<(), Error> {
+        self.setup_before_filter(context, pre_exec)?;
+        self.setup_filter(context)
+    }
+
+    fn setup_before_filter(
+        &mut self,
+        context: &ChildContext,
+        pre_exec: &mut [Box<dyn FnMut() -> Result<(), Errno> + Send + Sync>],
+    ) -> Result<(), Error> {
         // NOTE: This function MUST NOT allocate or deallocate any memory! Doing
         // so can cause random, difficult to diagnose deadlocks.
 
@@ -746,6 +755,10 @@ impl Container {
             f().context(Context::PreExec)?;
         }
 
+        Ok(())
+    }
+
+    fn setup_filter(&self, context: &ChildContext) -> Result<(), Error> {
         // Set up the seccomp filter, if any.
         if let Some(filter) = &self.seccomp {
             use core::sync::atomic::Ordering;
@@ -918,6 +931,233 @@ impl Container {
         }
     }
 
+    /// Runs child setup and a parent readiness callback before installing the
+    /// unchanged seccomp filter and entering the child workload.
+    ///
+    /// `child_start` runs after namespace/filesystem setup, without creating a
+    /// helper task. It returns child-local state and may transfer up to
+    /// [`MAX_STARTUP_FDS`] owned descriptors through its context. `parent_start`
+    /// runs in the original process, with the actual owned child and received
+    /// descriptors, and must return only when its external resources are ready.
+    /// Its returned owner stays in the parent. Only then may `run` consume the
+    /// child state. Startup endpoint aliases close before seccomp is installed.
+    ///
+    /// The positive, representable `timeout` gives the entire protocol one
+    /// monotonic I/O deadline, including time spent in callbacks. It does not
+    /// preempt arbitrary callback code or destructors. Failure cancels and
+    /// reaps the owned child; actual cleanup errors remain errors. Kernel waits
+    /// for an uninterruptible child still require outer process supervision.
+    ///
+    /// Like [`Self::run`], call this before starting other threads. No signal
+    /// handler or other thread may reap this child; SIGCHLD auto-reaping is
+    /// rejected before clone. Callbacks must obey the existing fork-safety
+    /// rules, close unrelated inherited descriptors, and not fork workers in
+    /// the child. This API does not prove capture completion or guest teardown.
+    ///
+    /// Results are drained before wait, including large values. `run` returns
+    /// a deferred cleanup value just as [`Self::run_with_deferred_drop`] does;
+    /// the returned handle's [`DeferredContainerRun::finalize_with_status`]
+    /// checks the real terminal status before yielding the value.
+    pub fn run_with_startup<P, C, F, O, S, T, D>(
+        &mut self,
+        timeout: std::time::Duration,
+        parent_start: P,
+        mut child_start: C,
+        mut run: F,
+    ) -> Result<(O, DeferredContainerRun<T>), StartupRunError>
+    where
+        P: FnOnce(ParentStartContext<'_>) -> Result<O, StartupError>,
+        C: FnMut(&mut ChildStartContext) -> Result<S, StartupError>,
+        F: FnMut(S) -> (T, D),
+        T: Serialize + DeserializeOwned,
+    {
+        let deadline = std::time::Instant::now()
+            .checked_add(timeout)
+            .filter(|_| !timeout.is_zero())
+            .ok_or(StartupRunError::BeforeClone(StartupError::InvalidTimeout))?;
+        let mut disposition: libc::sigaction = unsafe { std::mem::zeroed() };
+        Errno::result(unsafe {
+            libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut disposition)
+        })
+        .map_err(|error| StartupRunError::BeforeClone(error.into()))?;
+        if disposition.sa_sigaction == libc::SIG_IGN
+            || disposition.sa_flags & libc::SA_NOCLDWAIT != 0
+        {
+            return Err(StartupRunError::BeforeClone(StartupError::Io(
+                Errno::ECHILD,
+            )));
+        }
+        let (parent_socket, child_socket) =
+            StartupSocket::pair(deadline).map_err(StartupRunError::BeforeClone)?;
+        let uid_map = &make_id_map(&self.uid_map);
+        let gid_map = &make_id_map(&self.gid_map);
+        let context = ChildContext {
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            uid_map,
+            gid_map,
+            seccomp_fd: None,
+        };
+        let (mut reader, writer) =
+            pipe().map_err(|error| StartupRunError::BeforeClone(error.into()))?;
+        let writer_fd = writer.as_raw_fd();
+        let reader_fd = reader.as_raw_fd();
+        let parent_fd = parent_socket.fd.as_raw_fd();
+        let child_fd = child_socket.fd.as_raw_fd();
+        let mut stack = child_stack();
+        let clone_flags = self.namespace.bits() | libc::SIGCHLD;
+        #[cfg(feature = "nightly")]
+        let output_capture = std::io::set_output_capture(None);
+        let result = clone_with_stack(
+            || {
+                // The outer Rust owners live only in the parent. This branch
+                // owns its inherited child endpoint and result writer only.
+                unsafe {
+                    libc::close(parent_fd);
+                    libc::close(reader_fd);
+                }
+                let socket = StartupSocket {
+                    fd: Fd::new(child_fd),
+                    deadline,
+                };
+                let startup = (|| {
+                    self.setup_before_filter(&context, &mut [])
+                        .map_err(StartupError::Setup)?;
+                    let mut child_context = ChildStartContext {
+                        deadline,
+                        descriptors: StartupFds::default(),
+                        failure: None,
+                    };
+                    let state = child_start(&mut child_context)?;
+                    if let Some(error) = child_context.failure {
+                        return Err(error);
+                    }
+                    socket.send(STARTUP_REQUEST, &child_context.descriptors, None)?;
+                    drop(child_context);
+                    socket.close_write()?;
+                    socket.receive(Some(STARTUP_READY))?;
+                    socket.receive(None)?; // Require completed final permission.
+
+                    Ok(state)
+                })();
+                let state = match startup {
+                    Ok(state) => state,
+                    Err(error) => {
+                        let _ = socket.send(STARTUP_FAILURE, &StartupFds::default(), Some(error));
+                        drop(socket);
+                        let mut writer = std::io::BufWriter::new(Fd::new(writer_fd));
+                        bincode::serde::encode_into_std_write(
+                            Err::<T, StartupError>(error),
+                            &mut writer,
+                            bincode::config::legacy(),
+                        )
+                        .expect("Failed to serialize startup refusal");
+                        writer.flush().expect("Failed to flush startup refusal");
+                        drop(writer);
+                        return 1;
+                    }
+                };
+                drop(socket);
+                let (value, deferred) = match self.setup_filter(&context) {
+                    Ok(()) => {
+                        let (value, deferred) = run(state);
+                        (Ok(value), Some(deferred))
+                    }
+                    Err(error) => (Err(StartupError::Setup(error)), None),
+                };
+                let mut writer = std::io::BufWriter::new(Fd::new(writer_fd));
+                bincode::serde::encode_into_std_write(
+                    &value,
+                    &mut writer,
+                    bincode::config::legacy(),
+                )
+                .expect("Failed to serialize return value");
+                writer.flush().expect("Failed to flush return value");
+                drop(writer);
+                drop(deferred);
+                0
+            },
+            clone_flags,
+            &mut stack,
+        );
+        #[cfg(feature = "nightly")]
+        std::io::set_output_capture(output_capture);
+        let pid = result.map_err(|error| StartupRunError::BeforeClone(error.into()))?;
+        let mut child = StartupChild {
+            wait: Some(WaitGuard::new(pid)),
+            pidfd: None,
+        };
+        drop(child_socket);
+        drop(writer);
+        child.pidfd = match Fd::pidfd_open(pid.as_raw(), 0) {
+            Ok(fd) => Some(fd),
+            Err(error) => return Err(child.fail(error.into())),
+        };
+        let descriptors =
+            match parent_socket
+                .receive(Some(STARTUP_REQUEST))
+                .and_then(|descriptors| {
+                    // Authorize nothing until the one request, including all ancillary
+                    // rights and its true stream EOF, has been validated.
+                    parent_socket.receive(None)?;
+                    Ok(descriptors)
+                }) {
+                Ok(descriptors) => descriptors,
+                Err(error) => return Err(child.fail(error)),
+            };
+        let owner = match parent_start(ParentStartContext {
+            child: &child,
+            deadline,
+            descriptors,
+        }) {
+            Ok(owner) => owner,
+            Err(error) => return Err(child.fail(error)),
+        };
+        let ready = (|| {
+            parent_socket.send(STARTUP_READY, &StartupFds::default(), None)?;
+            parent_socket.close_write()?;
+            // No fallible startup validation remains after final permission.
+            #[cfg(test)]
+            if STARTUP_TEST_FAULT.with(|fault| fault.get())
+                == StartupTestFault::ObservePermissionLate
+            {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Ok::<_, StartupError>(())
+        })();
+        if let Err(error) = ready {
+            // Reap before dropping the parent's resource owner.
+            return Err(child.fail(error));
+        }
+        drop(parent_socket);
+        let mut bytes = Vec::new();
+        match reader.read_to_end(&mut bytes) {
+            Ok(0) => return Err(child.fail(StartupError::MissingResult)),
+            Ok(_) => (),
+            Err(error) => {
+                return Err(child.fail(StartupError::Io(Errno::new(
+                    error.raw_os_error().unwrap_or(libc::EIO),
+                ))));
+            }
+        }
+        let value = match bincode::serde::decode_from_slice::<Result<T, StartupError>, _>(
+            &bytes,
+            bincode::config::legacy(),
+        ) {
+            Ok((Ok(value), used)) if used == bytes.len() => value,
+            Ok((Err(error), used)) if used == bytes.len() => return Err(child.fail(error)),
+            _ => return Err(child.fail(StartupError::Protocol)),
+        };
+        Ok((
+            owner,
+            DeferredContainerRun {
+                value: Some(value),
+                child: child.into_wait(),
+            },
+        ))
+    }
+
     /// Runs a function in a new process, publishes its result, and only then
     /// drops a child-owned cleanup value.
     ///
@@ -1009,6 +1249,546 @@ impl Container {
                 })
             }
             Err(error) => panic!("Got unexpected error: {error}"),
+        }
+    }
+}
+
+/// Maximum number of owned descriptors transferred by one container startup.
+pub const MAX_STARTUP_FDS: usize = 8;
+
+/// Failure of the finite container startup exchange.
+#[derive(
+    thiserror::Error,
+    Debug,
+    Copy,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    serde::Deserialize
+)]
+pub enum StartupError {
+    /// Container namespace/filesystem/filter setup failed.
+    #[error("container setup failed: {0}")]
+    Setup(Error),
+    /// A startup syscall failed.
+    #[error("startup syscall failed: {0}")]
+    Io(Errno),
+    /// The caller supplied a zero or unrepresentable startup timeout.
+    #[error("startup timeout must be positive and representable")]
+    InvalidTimeout,
+    /// The single monotonic startup deadline elapsed.
+    #[error("startup deadline elapsed")]
+    TimedOut,
+    /// A callback refused startup.
+    #[error("startup callback refused")]
+    Refused,
+    /// The peer closed its endpoint before completing the exchange.
+    #[error("startup peer closed prematurely")]
+    PeerClosed,
+    /// A frame, phase, descriptor count or result encoding was invalid.
+    #[error("invalid startup or result protocol")]
+    Protocol,
+    /// The child exited before publishing its ordinary result.
+    #[error("child exited before publishing its result")]
+    MissingResult,
+}
+
+impl From<Errno> for StartupError {
+    fn from(error: Errno) -> Self {
+        Self::Io(error)
+    }
+}
+
+/// A startup failure together with the actual owned-child cleanup outcome.
+#[derive(thiserror::Error, Debug, Eq, PartialEq)]
+pub enum StartupRunError {
+    /// Failure before a child was successfully cloned.
+    #[error("before clone: {0}")]
+    BeforeClone(StartupError),
+    /// Failure after clone; the child was reaped with this actual status.
+    #[error("{cause}; child terminal status: {status:?}")]
+    Child {
+        /// Original startup or result failure.
+        cause: StartupError,
+        /// Actual status returned by waitpid, not an inferred success.
+        status: ExitStatus,
+    },
+    /// Cleanup itself failed; no terminal status is claimed.
+    #[error("{cause}; child cleanup failed: {errno}")]
+    Cleanup {
+        /// Original startup or result failure.
+        cause: StartupError,
+        /// Actual cancellation/wait error.
+        errno: Errno,
+    },
+}
+
+#[derive(Default)]
+struct StartupFds {
+    values: [Option<std::os::fd::OwnedFd>; MAX_STARTUP_FDS],
+    len: usize,
+}
+
+impl StartupFds {
+    fn push(&mut self, fd: std::os::fd::OwnedFd) -> Result<(), StartupError> {
+        if self.len == MAX_STARTUP_FDS {
+            return Err(StartupError::Protocol);
+        }
+        self.values[self.len] = Some(fd);
+        self.len += 1;
+        Ok(())
+    }
+}
+
+/// Child-only setup context, constructed after namespace/filesystem setup.
+///
+/// It is neither clonable nor serializable. Transferred descriptors are sent
+/// once with SCM_RIGHTS, then the child's originals are closed before seccomp.
+/// This context creates no worker and carries no authority to emit capture data.
+pub struct ChildStartContext {
+    deadline: std::time::Instant,
+    descriptors: StartupFds,
+    failure: Option<StartupError>,
+}
+
+impl ChildStartContext {
+    /// The same finite monotonic deadline used by both endpoints.
+    pub fn deadline(&self) -> std::time::Instant {
+        self.deadline
+    }
+
+    /// Transfers ownership of a descriptor to the parent startup callback.
+    /// Exceeding [`MAX_STARTUP_FDS`] refuses startup and closes the supplied FD.
+    pub fn transfer_fd(&mut self, fd: std::os::fd::OwnedFd) -> Result<(), StartupError> {
+        let result = self.descriptors.push(fd);
+        if let Err(error) = result {
+            self.failure = Some(error);
+        }
+        result
+    }
+}
+
+/// Parent-only startup context bound to this invocation's unreaped child.
+///
+/// The PID is a locator; the borrowed pidfd and privately held wait guard bind
+/// the actual child generation. Constructors are private. No raw PID or FD
+/// supplied by a caller can manufacture this context.
+pub struct ParentStartContext<'a> {
+    child: &'a StartupChild,
+    deadline: std::time::Instant,
+    descriptors: StartupFds,
+}
+
+impl ParentStartContext<'_> {
+    /// The owned child PID in the parent's namespace; do not reap it separately.
+    pub fn child_pid(&self) -> Pid {
+        self.child.wait.as_ref().unwrap().0.unwrap()
+    }
+
+    /// Borrows the owned child generation's pidfd for identity-sensitive setup.
+    pub fn child_pidfd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::BorrowedFd;
+        // SAFETY: The context borrows StartupChild, which owns this descriptor.
+        unsafe { BorrowedFd::borrow_raw(self.child.pidfd.as_ref().unwrap().as_raw_fd()) }
+    }
+
+    /// The same finite monotonic deadline used by both endpoints.
+    pub fn deadline(&self) -> std::time::Instant {
+        self.deadline
+    }
+
+    /// Number of descriptors supplied by the child (at most [`MAX_STARTUP_FDS`]).
+    pub fn descriptor_count(&self) -> usize {
+        self.descriptors.len
+    }
+
+    /// Takes one received descriptor exactly once. Untaken descriptors close
+    /// when this context is dropped. An out-of-range index returns `None`.
+    pub fn take_fd(&mut self, index: usize) -> Option<std::os::fd::OwnedFd> {
+        self.descriptors.values.get_mut(index)?.take()
+    }
+}
+
+// A fixed, private readiness exchange, not an evidence/event transport. The
+// sole pair is created before clone; each branch closes the other endpoint.
+const STARTUP_REQUEST: u8 = 1;
+const STARTUP_READY: u8 = 2;
+const STARTUP_FAILURE: u8 = 4;
+const STARTUP_FRAME_SIZE: usize = 64;
+
+struct StartupSocket {
+    fd: Fd,
+    deadline: std::time::Instant,
+}
+
+impl StartupSocket {
+    fn pair(deadline: std::time::Instant) -> Result<(Self, Self), StartupError> {
+        let mut pair = [-1; 2];
+        Errno::result(unsafe {
+            libc::socketpair(
+                libc::AF_UNIX,
+                libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                0,
+                pair.as_mut_ptr(),
+            )
+        })?;
+        Ok((
+            Self {
+                fd: Fd::new(pair[0]),
+                deadline,
+            },
+            Self {
+                fd: Fd::new(pair[1]),
+                deadline,
+            },
+        ))
+    }
+
+    fn poll(&self, events: libc::c_short) -> Result<(), StartupError> {
+        loop {
+            let remaining = self
+                .deadline
+                .checked_duration_since(std::time::Instant::now())
+                .filter(|value| !value.is_zero())
+                .ok_or(StartupError::TimedOut)?;
+            let millis = remaining
+                .as_millis()
+                .saturating_add(1)
+                .min(i32::MAX as u128) as i32;
+            let mut fd = libc::pollfd {
+                fd: self.fd.as_raw_fd(),
+                events,
+                revents: 0,
+            };
+            match Errno::result(unsafe { libc::poll(&mut fd, 1, millis) }) {
+                Ok(0) | Err(Errno::EINTR) => continue,
+                Ok(_) if fd.revents & libc::POLLNVAL != 0 => {
+                    return Err(StartupError::Io(Errno::EBADF));
+                }
+                Ok(_) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    fn send_bytes(&self, bytes: &[u8], fds: &StartupFds) -> Result<(), StartupError> {
+        // The first successful send carries rights exactly once, even when its
+        // data is partial. Subsequent sends carry only remaining frame bytes.
+        let mut ancillary = [0usize; 16];
+        let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+        if fds.len != 0 {
+            message.msg_control = ancillary.as_mut_ptr().cast();
+            message.msg_controllen =
+                unsafe { libc::CMSG_SPACE((fds.len * std::mem::size_of::<i32>()) as u32) as usize };
+            assert!(message.msg_controllen <= std::mem::size_of_val(&ancillary));
+            unsafe {
+                let header = libc::CMSG_FIRSTHDR(&message);
+                (*header).cmsg_level = libc::SOL_SOCKET;
+                (*header).cmsg_type = libc::SCM_RIGHTS;
+                (*header).cmsg_len =
+                    libc::CMSG_LEN((fds.len * std::mem::size_of::<i32>()) as u32) as usize;
+                let data = libc::CMSG_DATA(header).cast::<i32>();
+                for index in 0..fds.len {
+                    data.add(index)
+                        .write(fds.values[index].as_ref().unwrap().as_raw_fd());
+                }
+            }
+        }
+        let mut offset = 0;
+        while offset < bytes.len() {
+            self.poll(libc::POLLOUT)?;
+            let mut iov = libc::iovec {
+                iov_base: bytes[offset..].as_ptr().cast_mut().cast(),
+                iov_len: bytes.len() - offset,
+            };
+            #[cfg(test)]
+            if STARTUP_TEST_FAULT.with(|fault| fault.get()) == StartupTestFault::Fragmented {
+                iov.iov_len = 1;
+            }
+            message.msg_iov = &mut iov;
+            message.msg_iovlen = 1;
+            match Errno::result(unsafe {
+                libc::sendmsg(self.fd.as_raw_fd(), &message, libc::MSG_NOSIGNAL)
+            }) {
+                Ok(0) => return Err(StartupError::Protocol),
+                Ok(size) => {
+                    offset += size as usize;
+                    message.msg_control = std::ptr::null_mut();
+                    message.msg_controllen = 0;
+                }
+                Err(Errno::EINTR | Errno::EAGAIN) => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn send(
+        &self,
+        phase: u8,
+        fds: &StartupFds,
+        failure: Option<StartupError>,
+    ) -> Result<(), StartupError> {
+        let mut frame = [0u8; STARTUP_FRAME_SIZE];
+        frame[..4].copy_from_slice(b"RVS1");
+        frame[4] = phase;
+        frame[5] = fds.len as u8;
+        if let Some(error) = failure {
+            frame[6] = bincode::serde::encode_into_slice(
+                error,
+                &mut frame[8..],
+                bincode::config::legacy(),
+            )
+            .map_err(|_| StartupError::Protocol)? as u8;
+        }
+        #[cfg(test)]
+        if let Some(result) = self.inject_test_fault(phase, &frame, fds) {
+            return result;
+        }
+        self.send_bytes(&frame, fds)
+    }
+
+    fn receive(&self, phase: Option<u8>) -> Result<StartupFds, StartupError> {
+        use std::os::fd::FromRawFd;
+        let mut frame = [0u8; STARTUP_FRAME_SIZE];
+        let mut offset = 0;
+        let mut fds = StartupFds::default();
+        loop {
+            self.poll(libc::POLLIN)?;
+            let mut ancillary = [0usize; 16];
+            let capacity = if phase.is_none() {
+                1
+            } else {
+                frame.len() - offset
+            };
+            let mut iov = libc::iovec {
+                iov_base: frame[offset..].as_mut_ptr().cast(),
+                iov_len: capacity,
+            };
+            let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+            message.msg_iov = &mut iov;
+            message.msg_iovlen = 1;
+            message.msg_control = ancillary.as_mut_ptr().cast();
+            message.msg_controllen = unsafe {
+                libc::CMSG_SPACE((MAX_STARTUP_FDS * std::mem::size_of::<i32>()) as u32) as usize
+            };
+            assert!(message.msg_controllen <= std::mem::size_of_val(&ancillary));
+            let size = match Errno::result(unsafe {
+                libc::recvmsg(self.fd.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC)
+            }) {
+                Ok(size) => size as usize,
+                Err(Errno::EINTR | Errno::EAGAIN) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            let mut malformed = message.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0;
+            let previous_fds = fds.len;
+            // Own every received FD before checking bytes/phase, including
+            // trailing data and EOF. Linux closes rights lost to MSG_CTRUNC.
+            unsafe {
+                let mut header = libc::CMSG_FIRSTHDR(&message);
+                while !header.is_null() {
+                    if (*header).cmsg_level == libc::SOL_SOCKET
+                        && (*header).cmsg_type == libc::SCM_RIGHTS
+                        && (*header).cmsg_len >= libc::CMSG_LEN(0) as usize
+                    {
+                        let bytes = (*header).cmsg_len - libc::CMSG_LEN(0) as usize;
+                        malformed |= !bytes.is_multiple_of(std::mem::size_of::<i32>());
+                        let data = libc::CMSG_DATA(header).cast::<i32>();
+                        for index in 0..bytes / std::mem::size_of::<i32>() {
+                            let fd = std::os::fd::OwnedFd::from_raw_fd(data.add(index).read());
+                            if fds.push(fd).is_err() {
+                                malformed = true;
+                            }
+                        }
+                    } else {
+                        malformed = true;
+                    }
+                    header = libc::CMSG_NXTHDR(&message, header);
+                }
+            }
+            if malformed
+                || (fds.len != previous_fds && (offset != 0 || phase != Some(STARTUP_REQUEST)))
+            {
+                return Err(StartupError::Protocol);
+            }
+            if size == 0 {
+                // SOCK_STREAM has no zero-length data messages. Unlike
+                // SEQPACKET, this is genuine EOF, never an empty packet.
+                return if phase.is_none() && fds.len == 0 {
+                    Ok(fds)
+                } else if offset == 0 && fds.len == 0 {
+                    Err(StartupError::PeerClosed)
+                } else {
+                    Err(StartupError::Protocol)
+                };
+            }
+            if phase.is_none() {
+                return Err(StartupError::Protocol);
+            }
+            offset += size;
+            if offset < frame.len() {
+                continue;
+            }
+            if &frame[..4] != b"RVS1" || frame[5] as usize != fds.len || frame[7] != 0 {
+                return Err(StartupError::Protocol);
+            }
+            if frame[4] == STARTUP_FAILURE
+                && fds.len == 0
+                && frame[6] != 0
+                && frame[6] as usize <= frame.len() - 8
+            {
+                let end = 8 + frame[6] as usize;
+                let (error, used) = bincode::serde::decode_from_slice::<StartupError, _>(
+                    &frame[8..end],
+                    bincode::config::legacy(),
+                )
+                .map_err(|_| StartupError::Protocol)?;
+                if used != end - 8 || frame[end..].iter().any(|byte| *byte != 0) {
+                    return Err(StartupError::Protocol);
+                }
+                return Err(error);
+            }
+            if phase != Some(frame[4])
+                || frame[6..].iter().any(|byte| *byte != 0)
+                || (frame[4] != STARTUP_REQUEST && fds.len != 0)
+            {
+                return Err(StartupError::Protocol);
+            }
+            return Ok(fds);
+        }
+    }
+
+    fn close_write(&self) -> Result<(), StartupError> {
+        Errno::result(unsafe { libc::shutdown(self.fd.as_raw_fd(), libc::SHUT_WR) })?;
+        Ok(())
+    }
+}
+
+// Test-only wire corruption. It substitutes bytes at the actual private send
+// boundary; it never bypasses the production decoder, readiness or workload
+// gate. Thread-local state keeps unrelated container tests independent.
+#[cfg(test)]
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum StartupTestFault {
+    None,
+    Fragmented,
+    RequestEmptyTrailing,
+    RequestDuplicate,
+    RequestMalformed,
+    RequestTrailingRights,
+    PermissionEmptyTrailing,
+    PermissionDuplicate,
+    PermissionMalformed,
+    PermissionTrailingRights,
+    ObservePermissionLate,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static STARTUP_TEST_FAULT: std::cell::Cell<StartupTestFault> = const { std::cell::Cell::new(StartupTestFault::None) };
+}
+
+#[cfg(test)]
+impl StartupSocket {
+    fn inject_test_fault(
+        &self,
+        phase: u8,
+        frame: &[u8],
+        fds: &StartupFds,
+    ) -> Option<Result<(), StartupError>> {
+        use StartupTestFault::*;
+        let fault = STARTUP_TEST_FAULT.with(|value| value.get());
+        let request = phase == STARTUP_REQUEST;
+        let permission = phase == STARTUP_READY;
+        if (request && fault == RequestEmptyTrailing)
+            || (permission && fault == PermissionEmptyTrailing)
+        {
+            return Some({
+                assert_eq!(
+                    unsafe {
+                        libc::send(self.fd.as_raw_fd(), std::ptr::null(), 0, libc::MSG_NOSIGNAL)
+                    },
+                    0
+                );
+                self.send_bytes(b"X", &StartupFds::default())
+            });
+        }
+        if (request && fault == RequestMalformed) || (permission && fault == PermissionMalformed) {
+            let mut bad = frame.to_vec();
+            bad[0] ^= 1;
+            return Some(self.send_bytes(&bad, fds));
+        }
+        if (request && fault == RequestDuplicate) || (permission && fault == PermissionDuplicate) {
+            return Some(
+                self.send_bytes(frame, fds)
+                    .and_then(|()| self.send_bytes(frame, fds)),
+            );
+        }
+        if (request && fault == RequestTrailingRights)
+            || (permission && fault == PermissionTrailingRights)
+        {
+            return Some((|| {
+                self.send_bytes(frame, fds)?;
+                let mut trailing = StartupFds::default();
+                trailing.push(std::fs::File::open("/dev/null").unwrap().into())?;
+                self.send_bytes(b"X", &trailing)
+            })());
+        }
+        Option::None
+    }
+}
+
+// Owns cancellation only during startup/result acquisition. Old WaitGuard and
+// deferred-result drop semantics remain unchanged after successful acquisition.
+struct StartupChild {
+    wait: Option<WaitGuard>,
+    pidfd: Option<Fd>,
+}
+
+impl StartupChild {
+    fn cancel(&mut self) -> Result<ExitStatus, Errno> {
+        let wait = self.wait.as_ref().unwrap();
+        let result = match &self.pidfd {
+            Some(fd) => Errno::result(unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    fd.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            })
+            .map(|_| ()),
+            // Before pidfd_open completes, this is still the unreaped child
+            // returned by clone. Callers must not install an auto-reaper or
+            // wait for this invocation's child from another thread/handler.
+            None => Errno::result(unsafe { libc::kill(wait.0.unwrap().as_raw(), libc::SIGKILL) })
+                .map(|_| ()),
+        };
+        match result {
+            Ok(()) | Err(Errno::ESRCH) => (),
+            Err(error) => return Err(error),
+        }
+        self.wait.take().unwrap().wait()
+    }
+
+    fn fail(&mut self, cause: StartupError) -> StartupRunError {
+        match self.cancel() {
+            Ok(status) => StartupRunError::Child { cause, status },
+            Err(errno) => StartupRunError::Cleanup { cause, errno },
+        }
+    }
+
+    fn into_wait(mut self) -> WaitGuard {
+        self.wait.take().unwrap()
+    }
+}
+
+impl Drop for StartupChild {
+    fn drop(&mut self) {
+        if self.wait.is_some() {
+            let _ = self.cancel();
         }
     }
 }
@@ -1122,12 +1902,22 @@ impl<T> DeferredContainerRun<T> {
     }
 
     /// Waits for cleanup and returns the value only after a successful exit.
-    pub fn finalize(mut self) -> Result<T, RunError> {
+    pub fn finalize(self) -> Result<T, RunError> {
+        self.finalize_with_status().map(|(value, _status)| value)
+    }
+
+    /// Waits for cleanup and returns the value and actual successful child
+    /// status. A nonzero/signal status remains [`RunError::ExitStatus`]. This
+    /// observes this container child only, not any guest's separate teardown.
+    pub fn finalize_with_status(mut self) -> Result<(T, ExitStatus), RunError> {
         let status = self.child.wait()?;
         if !status.success() {
             return Err(RunError::ExitStatus(status));
         }
-        Ok(self.value.take().expect("provisional value is present"))
+        Ok((
+            self.value.take().expect("provisional value is present"),
+            status,
+        ))
     }
 }
 
@@ -1162,6 +1952,598 @@ mod tests {
     use nix::sys::signal::sigaction;
 
     use super::*;
+
+    struct StartupFaultGuard;
+
+    impl StartupFaultGuard {
+        fn install(fault: StartupTestFault) -> Self {
+            STARTUP_TEST_FAULT.with(|value| {
+                assert!(value.get() == StartupTestFault::None);
+                value.set(fault);
+            });
+            Self
+        }
+    }
+
+    impl Drop for StartupFaultGuard {
+        fn drop(&mut self) {
+            STARTUP_TEST_FAULT.with(|value| value.set(StartupTestFault::None));
+        }
+    }
+
+    #[test]
+    fn startup_corrupt_request_or_permission_never_runs_workload() {
+        use StartupTestFault::*;
+        for fault in [
+            RequestEmptyTrailing,
+            RequestDuplicate,
+            RequestMalformed,
+            RequestTrailingRights,
+            PermissionEmptyTrailing,
+            PermissionDuplicate,
+            PermissionMalformed,
+            PermissionTrailingRights,
+        ] {
+            let _fault = StartupFaultGuard::install(fault);
+            let (mapping, shared) = new_shared_drop_state();
+            let mut parent_called = false;
+            let result = Container::new().run_with_startup(
+                Duration::from_secs(2),
+                |_| {
+                    parent_called = true;
+                    Ok(())
+                },
+                |_| Ok(()),
+                |()| {
+                    unsafe { &*shared }.started.store(true, Ordering::Release);
+                    ((), ())
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(StartupRunError::Child {
+                    cause: StartupError::Protocol,
+                    ..
+                })
+            ));
+            assert_eq!(
+                parent_called,
+                matches!(
+                    fault,
+                    PermissionEmptyTrailing
+                        | PermissionDuplicate
+                        | PermissionMalformed
+                        | PermissionTrailingRights
+                )
+            );
+            assert!(!unsafe { &*shared }.started.load(Ordering::Acquire));
+            unsafe { unmap_shared_drop_state(mapping, shared) };
+        }
+    }
+
+    #[test]
+    fn startup_fragmented_request_transfers_each_right_exactly_once() {
+        let _fault = StartupFaultGuard::install(StartupTestFault::Fragmented);
+        let (pid, handle) = Container::new()
+            .run_with_startup(
+                Duration::from_secs(2),
+                |mut context| {
+                    assert_eq!(context.descriptor_count(), MAX_STARTUP_FDS);
+                    for index in 0..MAX_STARTUP_FDS {
+                        assert!(context.take_fd(index).is_some());
+                    }
+                    Ok(context.child_pid())
+                },
+                |context| {
+                    for _ in 0..MAX_STARTUP_FDS {
+                        context.transfer_fd(std::fs::File::open("/dev/null").unwrap().into())?;
+                    }
+                    Ok(())
+                },
+                |()| (42, ()),
+            )
+            .unwrap();
+        assert_eq!(
+            handle.finalize_with_status(),
+            Ok((42, ExitStatus::Exited(0)))
+        );
+        assert_reaped(pid);
+    }
+
+    #[test]
+    fn startup_final_permission_has_no_later_parent_deadline_validation() {
+        // Deliberately delay the parent after final permission is sent and its
+        // write side closed. This models scheduling after release, without
+        // bypassing any protocol checks. The child's genuine result still must
+        // be drained and its actual terminal status checked.
+        let _fault = StartupFaultGuard::install(StartupTestFault::ObservePermissionLate);
+        let (pid, handle) = Container::new()
+            .run_with_startup(
+                Duration::from_millis(100),
+                |context| Ok(context.child_pid()),
+                |_| Ok(()),
+                |()| (42, ()),
+            )
+            .unwrap();
+        assert_eq!(
+            handle.finalize_with_status(),
+            Ok((42, ExitStatus::Exited(0)))
+        );
+        assert_reaped(pid);
+    }
+
+    #[test]
+    fn startup_ignored_descriptor_overflow_still_refuses_workload() {
+        let (mapping, shared) = new_shared_drop_state();
+        let result = Container::new().run_with_startup(
+            Duration::from_secs(2),
+            |_| Ok(()),
+            |context| {
+                for _ in 0..=MAX_STARTUP_FDS {
+                    let _ = context.transfer_fd(std::fs::File::open("/dev/null").unwrap().into());
+                }
+                Ok(())
+            },
+            |()| {
+                unsafe { &*shared }.started.store(true, Ordering::Release);
+                ((), ())
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(StartupRunError::Child {
+                cause: StartupError::Protocol,
+                ..
+            })
+        ));
+        assert!(!unsafe { &*shared }.started.load(Ordering::Acquire));
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    fn assert_reaped(pid: Pid) {
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid.as_raw(), &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(Errno::last(), Errno::ECHILD);
+    }
+
+    #[test]
+    fn startup_binds_parent_child_and_transfers_owned_descriptor_once() {
+        use std::os::fd::AsFd;
+        let parent = Pid::this();
+        let (mapping, shared) = new_shared_drop_state();
+        let (owner, handle) = Container::new()
+            .run_with_startup(
+                Duration::from_secs(2),
+                |mut context| {
+                    assert_eq!(Pid::this(), parent);
+                    assert_ne!(context.child_pid(), parent);
+                    assert!(context.child_pidfd().as_raw_fd() >= 0);
+                    assert_eq!(context.descriptor_count(), 1);
+                    let fd = context.take_fd(0).unwrap();
+                    assert!(context.take_fd(0).is_none());
+                    assert!(context.take_fd(MAX_STARTUP_FDS).is_none());
+                    assert_ne!(
+                        unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+                        0
+                    );
+                    let mut file = std::fs::File::from(fd);
+                    let mut contents = String::new();
+                    file.read_to_string(&mut contents).unwrap();
+                    assert!(contents.starts_with(&format!("{} ", context.child_pid())));
+                    unsafe { &*shared }.release.store(true, Ordering::Release);
+                    Ok(context.child_pid())
+                },
+                |context| {
+                    let file = std::fs::File::open("/proc/self/stat").unwrap();
+                    context.transfer_fd(file.as_fd().try_clone_to_owned().unwrap())?;
+                    Ok(Pid::this())
+                },
+                |pid| {
+                    assert!(unsafe { &*shared }.release.load(Ordering::Acquire));
+                    assert_eq!(pid, Pid::this());
+                    assert_eq!(Pid::parent(), parent);
+                    (pid, ())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            handle.finalize_with_status(),
+            Ok((owner, ExitStatus::Exited(0)))
+        );
+        assert_reaped(owner);
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    fn namespace_population_probe() -> (i32, i32, i32) {
+        let root = Pid::this().as_raw();
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            unsafe { libc::_exit(0) }
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert_eq!(ExitStatus::from_raw(status), ExitStatus::Exited(0));
+        let thread = std::thread::spawn(|| unsafe { libc::syscall(libc::SYS_gettid) as i32 })
+            .join()
+            .unwrap();
+        (root, child, thread)
+    }
+
+    #[test]
+    fn startup_does_not_allocate_a_child_namespace_helper_pid() {
+        let baseline = Container::new()
+            .unshare(Namespace::USER | Namespace::PID)
+            .run(namespace_population_probe)
+            .unwrap();
+        assert_eq!(baseline, (1, 2, 3));
+        let parent = Pid::this();
+        let ((), handle) = Container::new()
+            .unshare(Namespace::USER | Namespace::PID)
+            .run_with_startup(
+                Duration::from_secs(2),
+                |context| {
+                    assert_eq!(Pid::this(), parent);
+                    assert_ne!(context.child_pid(), Pid::from_raw(1));
+                    Ok(())
+                },
+                |_| {
+                    assert_eq!(Pid::this().as_raw(), 1);
+                    Ok(())
+                },
+                |()| (namespace_population_probe(), ()),
+            )
+            .unwrap();
+        assert_eq!(
+            handle.finalize_with_status(),
+            Ok((baseline, ExitStatus::Exited(0)))
+        );
+        // Opposing control: a genuine in-child helper consumes a PID and must
+        // change this exact observation. Do not normalize namespace identities.
+        let wrong = Container::new()
+            .unshare(Namespace::USER | Namespace::PID)
+            .run(|| {
+                std::thread::spawn(|| ()).join().unwrap();
+                namespace_population_probe()
+            })
+            .unwrap();
+        assert_eq!(wrong, (1, 3, 4));
+        assert_ne!(wrong, baseline);
+    }
+
+    #[test]
+    fn startup_precedes_seccomp_without_widening_the_filter() {
+        use syscalls::Sysno;
+
+        use super::seccomp::Action;
+        use super::seccomp::FilterBuilder;
+        let filter = || {
+            FilterBuilder::new()
+                .default_action(Action::Allow)
+                .syscalls([
+                    (Sysno::sendmsg, Action::Errno(Errno::EPERM)),
+                    (Sysno::recvmsg, Action::Errno(Errno::EPERM)),
+                    (Sysno::poll, Action::Errno(Errno::EPERM)),
+                    (Sysno::getppid, Action::Errno(Errno::EPERM)),
+                ])
+                .build()
+        };
+        let denied = || Errno::result(unsafe { libc::syscall(libc::SYS_getppid) });
+        assert_eq!(
+            Container::new().seccomp(filter()).run(denied),
+            Ok(Err(Errno::EPERM))
+        );
+        let ((), handle) = Container::new()
+            .seccomp(filter())
+            .run_with_startup(
+                Duration::from_secs(2),
+                |_| Ok(()),
+                |_| Ok(()),
+                |()| (denied(), ()),
+            )
+            .unwrap();
+        assert_eq!(
+            handle.finalize_with_status(),
+            Ok((Err(Errno::EPERM), ExitStatus::Exited(0)))
+        );
+    }
+
+    #[test]
+    fn startup_drains_large_result_before_deferred_cleanup_and_actual_wait() {
+        let (mapping, shared) = new_shared_drop_state();
+        let (pid, handle) = Container::new()
+            .run_with_startup(
+                Duration::from_secs(2),
+                |context| Ok(context.child_pid()),
+                |_| Ok(()),
+                |()| (vec![42u8; 10 * 1024 * 1024], BlockingDrop { shared }),
+            )
+            .unwrap();
+        assert_eq!(handle.provisional(), &vec![42u8; 10 * 1024 * 1024]);
+        let shared_ref = unsafe { &*shared };
+        while !shared_ref.started.load(Ordering::Acquire) {
+            unsafe { libc::sched_yield() };
+        }
+        assert!(!shared_ref.finished.load(Ordering::Acquire));
+        shared_ref.release.store(true, Ordering::Release);
+        let (value, status) = handle.finalize_with_status().unwrap();
+        assert_eq!(value, vec![42u8; 10 * 1024 * 1024]);
+        assert_eq!(status, ExitStatus::Exited(0));
+        assert!(shared_ref.finished.load(Ordering::Acquire));
+        assert_reaped(pid);
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn startup_keeps_cleanup_failure_and_drop_reap_semantics() {
+        let (pid, handle) = Container::new()
+            .run_with_startup(
+                Duration::from_secs(2),
+                |context| Ok(context.child_pid()),
+                |_| Ok(()),
+                |()| (42, ExitDuringDrop(71)),
+            )
+            .unwrap();
+        assert_eq!(handle.provisional(), &42);
+        assert_eq!(
+            handle.finalize_with_status(),
+            Err(RunError::ExitStatus(ExitStatus::Exited(71)))
+        );
+        assert_reaped(pid);
+        let (pid, handle) = Container::new()
+            .run_with_startup(
+                Duration::from_secs(2),
+                |context| Ok(context.child_pid()),
+                |_| Ok(()),
+                |()| (42, ()),
+            )
+            .unwrap();
+        drop(handle);
+        assert_reaped(pid);
+    }
+
+    #[test]
+    fn startup_parent_refusal_cancels_owned_child_without_running_workload() {
+        let (mapping, shared) = new_shared_drop_state();
+        let mut pid = None;
+        let result = Container::new().run_with_startup(
+            Duration::from_secs(2),
+            |context| {
+                pid = Some(context.child_pid());
+                Err::<(), _>(StartupError::Refused)
+            },
+            |_| Ok(()),
+            |()| {
+                unsafe { &*shared }.started.store(true, Ordering::Release);
+                ((), ())
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(StartupRunError::Child {
+                cause: StartupError::Refused,
+                status: ExitStatus::Signaled(Signal::SIGKILL, false)
+            })
+        ));
+        assert!(!unsafe { &*shared }.started.load(Ordering::Acquire));
+        assert_reaped(pid.unwrap());
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn startup_child_setup_and_callback_refusals_are_not_readiness() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("absent");
+        let result = Container::new().current_dir(missing).run_with_startup(
+            Duration::from_secs(2),
+            |_| -> Result<(), StartupError> {
+                panic!("parent hook must not see failed child setup")
+            },
+            |_| -> Result<(), StartupError> { panic!("child hook must not see failed setup") },
+            |()| -> ((), ()) { panic!("workload must not run") },
+        );
+        assert!(matches!(
+            result,
+            Err(StartupRunError::Child {
+                cause: StartupError::Setup(Error { .. }),
+                ..
+            })
+        ));
+        if let Err(StartupRunError::Child {
+            cause: StartupError::Setup(error),
+            ..
+        }) = result
+        {
+            assert_eq!(error, Error::new(Errno::ENOENT, Context::Chdir));
+        }
+        let result = Container::new().run_with_startup(
+            Duration::from_secs(2),
+            |_| -> Result<(), StartupError> {
+                panic!("parent hook must not see refused child setup")
+            },
+            |_| Err::<(), _>(StartupError::Refused),
+            |()| ((), ()),
+        );
+        assert!(matches!(
+            result,
+            Err(StartupRunError::Child {
+                cause: StartupError::Refused,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn startup_premature_child_exit_retains_actual_status() {
+        let result = Container::new().run_with_startup(
+            Duration::from_secs(2),
+            |_| Ok(()),
+            |_| -> Result<(), StartupError> { unsafe { libc::_exit(73) } },
+            |()| ((), ()),
+        );
+        assert!(matches!(
+            result,
+            Err(StartupRunError::Child {
+                cause: StartupError::PeerClosed,
+                status: ExitStatus::Exited(73)
+            })
+        ));
+    }
+
+    #[test]
+    fn startup_deadline_kills_a_child_stuck_before_readiness() {
+        let result = Container::new().run_with_startup(
+            Duration::from_millis(100),
+            |_| Ok(()),
+            |_| -> Result<(), StartupError> {
+                loop {
+                    unsafe { libc::pause() };
+                }
+            },
+            |()| ((), ()),
+        );
+        assert!(matches!(
+            result,
+            Err(StartupRunError::Child {
+                cause: StartupError::TimedOut,
+                status: ExitStatus::Signaled(Signal::SIGKILL, false)
+            })
+        ));
+    }
+
+    #[test]
+    fn startup_late_parent_callback_cannot_release_workload() {
+        let (mapping, shared) = new_shared_drop_state();
+        let mut pid = None;
+        let result = Container::new().run_with_startup(
+            Duration::from_millis(100),
+            |context| {
+                pid = Some(context.child_pid());
+                std::thread::sleep(Duration::from_millis(200));
+                Ok(())
+            },
+            |_| Ok(()),
+            |()| {
+                unsafe { &*shared }.started.store(true, Ordering::Release);
+                ((), ())
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(StartupRunError::Child {
+                cause: StartupError::TimedOut,
+                ..
+            })
+        ));
+        assert!(!unsafe { &*shared }.started.load(Ordering::Acquire));
+        assert_reaped(pid.unwrap());
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn startup_invalid_timeout_refuses_before_clone_or_callbacks() {
+        for timeout in [Duration::ZERO, Duration::MAX] {
+            let result = Container::new().run_with_startup(
+                timeout,
+                |_| -> Result<(), StartupError> { panic!("no parent callback") },
+                |_| -> Result<(), StartupError> { panic!("no child callback") },
+                |()| ((), ()),
+            );
+            assert!(matches!(
+                result,
+                Err(StartupRunError::BeforeClone(StartupError::InvalidTimeout))
+            ));
+        }
+    }
+
+    #[test]
+    fn startup_protocol_rejects_malformed_wrong_phase_and_trailing_frames() {
+        let good = {
+            let mut frame = [0u8; STARTUP_FRAME_SIZE];
+            frame[..4].copy_from_slice(b"RVS1");
+            frame[4] = STARTUP_READY;
+            frame
+        };
+        let mut cases = vec![
+            vec![0],
+            good[..STARTUP_FRAME_SIZE - 1].to_vec(),
+            [good.as_slice(), &[0]].concat(),
+        ];
+        let mut wrong = good;
+        wrong[4] = 3;
+        cases.push(wrong.to_vec());
+        let mut wrong = good;
+        wrong[5] = 1;
+        cases.push(wrong.to_vec());
+        let mut wrong = good;
+        wrong[7] = 1;
+        cases.push(wrong.to_vec());
+        for frame in cases {
+            let (a, b) = StartupSocket::pair(Instant::now() + Duration::from_secs(2)).unwrap();
+            assert_eq!(
+                unsafe {
+                    libc::send(
+                        a.fd.as_raw_fd(),
+                        frame.as_ptr().cast(),
+                        frame.len(),
+                        libc::MSG_NOSIGNAL,
+                    )
+                },
+                frame.len() as isize
+            );
+            a.close_write().unwrap();
+            let result = b.receive(Some(STARTUP_READY)).and_then(|_| b.receive(None));
+            assert!(matches!(result, Err(StartupError::Protocol)));
+        }
+        let (a, b) = StartupSocket::pair(Instant::now() + Duration::from_secs(2)).unwrap();
+        a.send(STARTUP_READY, &StartupFds::default(), None).unwrap();
+        a.send(STARTUP_READY, &StartupFds::default(), None).unwrap();
+        a.close_write().unwrap();
+        b.receive(Some(STARTUP_READY)).unwrap();
+        assert!(matches!(b.receive(None), Err(StartupError::Protocol)));
+        let (a, b) = StartupSocket::pair(Instant::now() + Duration::from_secs(2)).unwrap();
+        drop(a);
+        assert!(matches!(
+            b.receive(Some(STARTUP_READY)),
+            Err(StartupError::PeerClosed)
+        ));
+    }
+
+    #[test]
+    fn startup_descriptor_cardinality_is_finite_and_refusal_closes_rights() {
+        let mut context = ChildStartContext {
+            deadline: Instant::now() + Duration::from_secs(2),
+            descriptors: StartupFds::default(),
+            failure: None,
+        };
+        for _ in 0..MAX_STARTUP_FDS {
+            context
+                .transfer_fd(std::fs::File::open("/dev/null").unwrap().into())
+                .unwrap();
+        }
+        let extra: std::os::fd::OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        let extra_number = extra.as_raw_fd();
+        assert_eq!(context.transfer_fd(extra), Err(StartupError::Protocol));
+        assert_eq!(unsafe { libc::fcntl(extra_number, libc::F_GETFD) }, -1);
+        assert_eq!(Errno::last(), Errno::EBADF);
+        let (a, b) = StartupSocket::pair(context.deadline).unwrap();
+        a.send(STARTUP_REQUEST, &context.descriptors, None).unwrap();
+        let received = b.receive(Some(STARTUP_REQUEST)).unwrap();
+        assert_eq!(received.len, MAX_STARTUP_FDS);
+        let numbers: Vec<_> = received
+            .values
+            .iter()
+            .map(|fd| fd.as_ref().unwrap().as_raw_fd())
+            .collect();
+        drop(received);
+        for fd in numbers {
+            assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+            assert_eq!(Errno::last(), Errno::EBADF);
+        }
+    }
 
     #[test]
     fn can_panic() {

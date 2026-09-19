@@ -1,7 +1,316 @@
 use std::io::Write;
+use std::os::fd::AsRawFd;
 use std::sync::Condvar;
 
 use super::*;
+
+// Isolate process/FD observations and native clone controls from other tests.
+// This is a transport primitive fixture, not a split CaptureReport or a guest.
+fn inert_fixture(name: &str, body: impl FnOnce()) {
+    const FIXTURE: &str = "REVERIE_INERT_CAPTURE_NATIVE_FIXTURE";
+    if std::env::var(FIXTURE).ok().as_deref() == Some(name) {
+        body();
+        return;
+    }
+    let module = module_path!().split_once("::").unwrap().1;
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("{module}::{name}"),
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(FIXTURE, name)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "native fixture failed: {}\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+        "the exact native fixture must actually execute: {:?}",
+        output.stdout
+    );
+}
+
+fn inert_resources() -> (usize, usize, usize) {
+    (
+        std::fs::read_dir("/proc/self/task").unwrap().count(),
+        std::fs::read_dir("/proc/self/fd").unwrap().count(),
+        std::fs::read_to_string("/proc/self/maps")
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains("memfd:reverie-guest-log-v4"))
+            .count(),
+    )
+}
+
+struct InertChild(libc::pid_t);
+
+impl InertChild {
+    fn wait(mut self) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let mut status = 0;
+            let result = unsafe { libc::waitpid(self.0, &mut status, libc::WNOHANG) };
+            if result == self.0 {
+                self.0 = 0;
+                assert!(libc::WIFEXITED(status), "child status: {status}");
+                assert_eq!(libc::WEXITSTATUS(status), 0);
+                return;
+            }
+            assert!(
+                result == 0 || io::Error::last_os_error().kind() == io::ErrorKind::Interrupted,
+                "waitpid: {}",
+                io::Error::last_os_error()
+            );
+            assert!(Instant::now() < deadline, "native child did not terminate");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+impl Drop for InertChild {
+    fn drop(&mut self) {
+        if self.0 != 0 {
+            // Only this fixture's unreaped child, never a supplied/raw foreign PID.
+            unsafe {
+                libc::kill(self.0, libc::SIGKILL);
+                while libc::waitpid(self.0, std::ptr::null_mut(), 0) < 0
+                    && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+                {
+                }
+            }
+        }
+    }
+}
+
+fn inert_child_exit(body: impl FnOnce()) -> ! {
+    let status = i32::from(std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).is_err());
+    unsafe { libc::_exit(status) }
+}
+
+#[test]
+fn inert_plan_has_no_active_resources_and_preserves_one_guest_import() {
+    inert_fixture(
+        "inert_plan_has_no_active_resources_and_preserves_one_guest_import",
+        || {
+            let before = inert_resources();
+            let plan = unsafe { InertCapturePlan::new(options()) }.unwrap();
+            assert_eq!(inert_resources(), (before.0, before.1 + 2, before.2 + 1));
+            let (_, buffer, host, guest) = plan.into_local_parts();
+            for role in [ordered::Role::Host, ordered::Role::Guest] {
+                assert_eq!(
+                    buffer.admission(role),
+                    ordered::Admission {
+                        closed: false,
+                        entrants: 0,
+                    }
+                );
+                assert_eq!(buffer.used_bytes(role), 0);
+            }
+            let duplicate = host.try_clone().unwrap();
+            for fd in [host.as_raw_fd(), duplicate.as_raw_fd()] {
+                let error = unsafe { ordered::Buffer::receive(fd) }.err().unwrap();
+                assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            }
+            drop(duplicate);
+            let guest_buffer = unsafe { ordered::Buffer::receive(guest.as_raw_fd()) }.unwrap();
+            let error = unsafe { ordered::Buffer::receive(guest.as_raw_fd()) }
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            // Fresh local wrappers can acquire both roles and the collector:
+            // none was already acquired by construction.
+            let host_buffer = Arc::new(buffer);
+            let writer = unsafe { host_buffer.activate(0, i64::from(std::process::id())) }.unwrap();
+            let guest_writer =
+                unsafe { guest_buffer.activate(1, i64::from(std::process::id())) }.unwrap();
+            let mut collector = host_buffer.collector().unwrap();
+            assert!(collector.poll().unwrap().is_none());
+            drop((writer, guest_writer, collector, host_buffer, guest_buffer));
+            drop((host, guest));
+            assert_eq!(inert_resources(), before);
+        },
+    );
+}
+
+#[test]
+fn inert_plan_invalid_bounds_do_not_leak_descriptors_or_mappings() {
+    inert_fixture(
+        "inert_plan_invalid_bounds_do_not_leak_descriptors_or_mappings",
+        || {
+            let before = inert_resources();
+            drop(unsafe { InertCapturePlan::new(options()) }.unwrap());
+            assert_eq!(inert_resources(), before);
+            let mut cases = Vec::new();
+            for value in [0, 32 * 1024 * 1024 + 1] {
+                let mut invalid = options();
+                invalid.limits.diagnostic_bytes = value;
+                cases.push(invalid);
+            }
+            for duration in [Duration::ZERO, Duration::MAX] {
+                for field in 0..3 {
+                    let mut invalid = options();
+                    match field {
+                        0 => invalid.timeouts.startup = duration,
+                        1 => invalid.timeouts.blocked_publication = duration,
+                        _ => invalid.timeouts.final_drain = duration,
+                    }
+                    cases.push(invalid);
+                }
+            }
+            for slots in [0, usize::MAX, 1024 * 1024] {
+                let mut invalid = options();
+                invalid.limits.slots_per_producer = slots;
+                cases.push(invalid);
+            }
+            let mut invalid = options();
+            invalid.limits.host_pending_bytes = usize::MAX;
+            cases.push(invalid);
+            let mut invalid = options();
+            invalid.limits.producers = 1;
+            cases.push(invalid);
+            let mut invalid = options();
+            invalid.limits.max_record_bytes = 0;
+            cases.push(invalid);
+            let mut invalid = options();
+            invalid.limits.pending_records = 1;
+            cases.push(invalid);
+            for invalid in cases {
+                assert!(
+                    unsafe { InertCapturePlan::new(invalid) }.is_err(),
+                    "{invalid:?}"
+                );
+                assert_eq!(inert_resources(), before, "{invalid:?}");
+            }
+        },
+    );
+}
+
+#[test]
+fn inert_plan_clone_uses_fresh_wrappers_and_keeps_endpoint_aliases_observable() {
+    inert_fixture(
+        "inert_plan_clone_uses_fresh_wrappers_and_keeps_endpoint_aliases_observable",
+        || {
+            let mut settings = options();
+            settings.limits.slots_per_producer = 8;
+            let plan = unsafe { InertCapturePlan::new(settings) }.unwrap();
+            let (_, buffer, host, guest) = plan.into_local_parts();
+            // There is no Arc, producer, collector, lock or worker before fork.
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
+            if pid == 0 {
+                inert_child_exit(|| {
+                    drop((buffer, host));
+                    let buffer = unsafe { ordered::Buffer::receive(guest.as_raw_fd()) }.unwrap();
+                    let mut writer =
+                        unsafe { buffer.activate(1, i64::from(std::process::id())) }.unwrap();
+                    assert_eq!(writer.write_record(b"child record", wait).unwrap().order, 1);
+                    writer.finish(wait).unwrap();
+                    drop((writer, buffer, guest));
+                });
+            }
+            let child = InertChild(pid);
+            let alias = guest.try_clone().unwrap();
+            drop(guest);
+            let buffer = Arc::new(buffer);
+            let mut collector = buffer.collector().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let record = loop {
+                if let Some(record) = collector.poll().unwrap() {
+                    break record;
+                }
+                assert!(Instant::now() < deadline, "child record was not published");
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            assert_eq!(record.order(), 1);
+            assert_eq!(record.bytes(), b"child record");
+            record.release().unwrap();
+            child.wait();
+            // A leftover guest endpoint really prevents EOF; it is not evidence
+            // that a producer or child remains alive.
+            let mut byte = [0u8; 1];
+            assert_eq!(
+                unsafe {
+                    libc::recv(
+                        host.as_raw_fd(),
+                        byte.as_mut_ptr().cast(),
+                        1,
+                        libc::MSG_DONTWAIT,
+                    )
+                },
+                -1
+            );
+            assert_eq!(io::Error::last_os_error().kind(), io::ErrorKind::WouldBlock);
+            drop(alias);
+            assert_eq!(
+                unsafe {
+                    libc::recv(
+                        host.as_raw_fd(),
+                        byte.as_mut_ptr().cast(),
+                        1,
+                        libc::MSG_DONTWAIT,
+                    )
+                },
+                0
+            );
+            assert!(!buffer.order_failed());
+        },
+    );
+}
+
+#[test]
+fn inert_plan_parent_drop_does_not_unmap_child_storage() {
+    inert_fixture(
+        "inert_plan_parent_drop_does_not_unmap_child_storage",
+        || {
+            use std::io::Read;
+
+            let mut settings = options();
+            settings.limits.slots_per_producer = 8;
+            let plan = unsafe { InertCapturePlan::new(settings) }.unwrap();
+            let (_, buffer, host, guest) = plan.into_local_parts();
+            let (mut parent_signal, mut child_signal) = UnixStream::pair().unwrap();
+            child_signal
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
+            if pid == 0 {
+                inert_child_exit(|| {
+                    drop((host, parent_signal));
+                    let mut ready = [0];
+                    child_signal.read_exact(&mut ready).unwrap();
+                    assert_eq!(ready, [1]);
+                    // Only after the parent's mapping and aliases are gone do we
+                    // create this branch's local wrapper and activate its writer.
+                    let buffer = Arc::new(buffer);
+                    let mut writer =
+                        unsafe { buffer.activate(1, i64::from(std::process::id())) }.unwrap();
+                    assert_eq!(
+                        writer
+                            .write_record(b"after parent drop", wait)
+                            .unwrap()
+                            .order,
+                        1
+                    );
+                    writer.finish(wait).unwrap();
+                    assert_eq!(buffer.used_bytes(ordered::Role::Guest), 17);
+                    drop((writer, buffer, guest, child_signal));
+                });
+            }
+            let child = InertChild(pid);
+            drop((buffer, host, guest, child_signal));
+            parent_signal.write_all(&[1]).unwrap();
+            child.wait();
+        },
+    );
+}
 
 #[derive(Clone, Default)]
 struct Output {
