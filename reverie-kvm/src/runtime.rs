@@ -2045,6 +2045,7 @@ where
                 pending_child_starts,
                 failure,
                 watch,
+                HandlerFailureOrder::BeforeCallback,
             )
             .await
         }
@@ -2081,8 +2082,22 @@ async fn drive_handler_completion<T>(
     pending_child_starts: SharedChildStarts,
     failure: impl Future<Output = ()>,
 ) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>> {
-    drive_handler_completion_inner(future, handler_signal, pending_child_starts, failure, None)
-        .await
+    drive_handler_completion_inner(
+        future,
+        handler_signal,
+        pending_child_starts,
+        failure,
+        None,
+        HandlerFailureOrder::BeforeCallback,
+    )
+    .await
+}
+
+enum HandlerFailureOrder {
+    BeforeCallback,
+    // Consuming signal cleanup keeps an already-ready result after failure.
+    // A pending cleanup still cancels before releasing any child-start gate.
+    AfterReadyCleanup,
 }
 
 async fn drive_handler_completion_inner<T>(
@@ -2091,6 +2106,7 @@ async fn drive_handler_completion_inner<T>(
     pending_child_starts: SharedChildStarts,
     failure: impl Future<Output = ()>,
     watch: Option<crate::entry::driver::EntryDriverWatch>,
+    failure_order: HandlerFailureOrder,
 ) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>> {
     use std::panic::AssertUnwindSafe;
     use std::panic::catch_unwind;
@@ -2145,7 +2161,9 @@ async fn drive_handler_completion_inner<T>(
                 None => HandlerOutcome::RuntimeError(error),
             });
         }
-        if failure.as_mut().poll(context).is_ready() {
+        if matches!(failure_order, HandlerFailureOrder::BeforeCallback)
+            && failure.as_mut().poll(context).is_ready()
+        {
             return select(terminal());
         }
         let result = future.as_mut().poll(context);
@@ -2165,7 +2183,9 @@ async fn drive_handler_completion_inner<T>(
                 Poll::Pending => HandlerOutcome::RuntimeError(error),
             });
         }
-        if failure.as_mut().poll(context).is_ready() {
+        if matches!(failure_order, HandlerFailureOrder::BeforeCallback)
+            && failure.as_mut().poll(context).is_ready()
+        {
             return select(terminal());
         }
         // A callback can select another ready future after an operation records
@@ -2181,6 +2201,11 @@ async fn drive_handler_completion_inner<T>(
         match result {
             Poll::Ready(result) => select(HandlerOutcome::Returned(result)),
             Poll::Pending => {
+                if matches!(failure_order, HandlerFailureOrder::AfterReadyCleanup)
+                    && failure.as_mut().poll(context).is_ready()
+                {
+                    return select(terminal());
+                }
                 if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
                     return select(HandlerOutcome::RuntimeError(error));
                 }
@@ -6677,6 +6702,9 @@ mod captured_write_tests;
 
 #[cfg(test)]
 mod callback_completion_tests;
+
+#[cfg(test)]
+mod signal_cleanup_completion_tests;
 
 #[cfg(test)]
 mod consuming_panic_tests;
