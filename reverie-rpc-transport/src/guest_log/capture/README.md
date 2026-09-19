@@ -104,3 +104,49 @@ Initialized layout fields remain immutable; frame and credit access obeys the
 exclusive-incarnation/single-collector publication protocol. Size seals prevent
 resizing, not arbitrary writes. The unsafe API does not establish a memory
 sandbox, descriptor isolation, process ownership or an F1/F3 runtime repair.
+
+## Split coordinator capture (additive)
+
+`SplitCapturePlan` holds plain inactive mappings/endpoints. Call the unsafe
+`run_split_capture` before starting O threads, using borrowed `FnMut` parent and
+child factories. O retains both real factories; only C constructs and consumes
+its work closure. This deliberately also retains an invoked parent factory's
+captures until real cleanup. O starts the collector and output workers during
+the owned A2 startup permission exchange; C starts no capture helper worker.
+Each branch constructs fresh process-local wrappers and closes its unused peer.
+
+`CoordinatorContext` owns the sole finalizer. Its one guest import and cloneable
+emitter use V4's existing ordered records. An adapter must actually wait G,
+terminate the serving task, tear down the owned RPC runtime outside async while
+logging is open, and retain its real final issue snapshot before returning
+`after_teardown`. The API is not a verifier of arbitrary callback claims. It
+carries bounded typed failure classifications separately from the adapter's
+original detailed diagnostics. Planned cancellation without retained errors
+is not clean serving completion. Normal nonzero G exit and caught coordinator
+panic are separate nonqualifying facts, even if C itself exits zero.
+
+A2 serializes the result envelope by reference and drains its pipe before wait.
+U is then destroyed; the envelope explicitly destroys T before closing emitter
+entry and publishing FINISH. Only internal quiescence/locking/ring waits use the
+one final-drain deadline. Serialize/Deserialize, arbitrary callbacks/Drop and
+blocked destination I/O cannot be preempted by that deadline. Result acquisition
+has no finite execution timeout and no added arbitrary T size cap.
+
+`SplitCaptureRun` retains the atomic child capability, exact provisional bytes,
+collector/output join ownership, destination escrow and both factories. Explicit
+settlement may return `Unjoined`; retry or cancellation preserves the same
+owner. Its Drop settles the actual child, joins both workers and then reclaims
+factory resources, and may block. There is no detached reaper, leaked factory or
+second-clone permission on unknown cleanup. The immutable failure report never
+becomes a success because workers subsequently join; `actual_joins` records that
+later physical cleanup separately. Decode of generic T occurs only after child
+settlement, actual worker joins and factory reclamation.
+
+Split qualification additionally requires actual channel-zero FINISH, exact
+terminal cursor/sequence/registration state, checked lifecycle facts, actual C
+status and actual joins. Local capture's existing qualifier and activation order
+are preserved. Capture-owned quiescence is not global fork safety: user factory
+Drop or Deserialize may create unrelated threads. Re-establish the ordinary
+threadless/no-competing-reaper contract before another clone. No backend wiring,
+root identity policy, loader/fork-exec/signal/TLS implementation, deterministic
+scheduler proof, strict parity or harness flip is provided by this API.
