@@ -551,6 +551,8 @@ pub(crate) mod entry_action_tests {
             assert_eq!(raw(CHILD_TID, 4), ORIGINAL_CHILD.to_le_bytes());
             assert_eq!(raw(CHILD_RAN, 4), [0; 4]);
             assert_eq!(raw(0x20_0000, original_image.len()), original_image);
+            // park_process_action documents why terminal preparation leaves
+            // this retired thread's park byte installed instead of restoring.
             assert_eq!(
                 raw(SYSCALL_TRAMPOLINE_ADDRESS, 256),
                 prepared_bytes.lock().unwrap().as_ref().unwrap()

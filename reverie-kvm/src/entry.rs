@@ -309,6 +309,8 @@ struct State {
     retired_origins: Vec<EntryOrigin>,
     #[cfg(test)]
     copy_waits: usize,
+    #[cfg(test)]
+    copy_waiters: Vec<std::thread::ThreadId>,
 }
 
 struct ChangeSignal {
@@ -424,6 +426,25 @@ pub(crate) struct EntryGate {
     prepare_probe: Mutex<Option<Arc<PrepareProbe>>>,
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TestMemberState {
+    pub(crate) id: u64,
+    pub(crate) run: u64,
+    pub(crate) stopped: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TestGateState {
+    pub(crate) open: bool,
+    pub(crate) closed: bool,
+    pub(crate) copies: usize,
+    pub(crate) copy_waits: usize,
+    pub(crate) copy_waiters: Vec<std::thread::ThreadId>,
+    pub(crate) members: Vec<TestMemberState>,
+}
+
 impl std::fmt::Debug for EntryGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let state = self.state.lock().unwrap();
@@ -437,6 +458,27 @@ impl std::fmt::Debug for EntryGate {
 }
 
 impl EntryGate {
+    #[cfg(test)]
+    pub(crate) fn test_state(&self) -> TestGateState {
+        let state = self.state.lock().unwrap();
+        TestGateState {
+            open: state.admission == Admission::Open,
+            closed: matches!(state.admission, Admission::Closed(_)),
+            copies: state.copies,
+            copy_waits: state.copy_waits,
+            copy_waiters: state.copy_waiters.clone(),
+            members: state
+                .members
+                .iter()
+                .map(|(&id, member)| TestMemberState {
+                    id,
+                    run: member.run,
+                    stopped: member.activity == Activity::Stopped,
+                })
+                .collect(),
+        }
+    }
+
     pub(crate) fn new() -> Arc<Self> {
         let (sender, receiver) = oneshot::channel();
         Arc::new(Self {
@@ -456,6 +498,8 @@ impl EntryGate {
                 retired_origins: Vec::new(),
                 #[cfg(test)]
                 copy_waits: 0,
+                #[cfg(test)]
+                copy_waiters: Vec::new(),
             }),
         })
     }
@@ -576,8 +620,13 @@ impl EntryGate {
             #[cfg(test)]
             {
                 state.copy_waits += 1;
+                state.copy_waiters.push(std::thread::current().id());
             }
             state = changed.wait(state).unwrap();
+            #[cfg(test)]
+            state
+                .copy_waiters
+                .retain(|thread| *thread != std::thread::current().id());
         }
     }
 

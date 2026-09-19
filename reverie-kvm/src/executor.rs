@@ -63,6 +63,10 @@ mod process_signal_publication;
 #[path = "capture_identity.rs"]
 mod capture_identity;
 
+#[cfg(test)]
+#[path = "executor/entry_host_wait_tests.rs"]
+mod entry_host_wait_tests;
+
 use capture_identity::CaptureMetadata;
 use capture_identity::CaptureObjectIdentity;
 use capture_identity::CapturedPipeIdentities;
@@ -13528,6 +13532,8 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         let mut bytes = vec![0; length];
         let mut count = 0;
         while count < length {
+            #[cfg(test)]
+            entry_host_wait_tests::observe_mmap_file_read();
             match file.read_at(&mut bytes[count..], args[5].saturating_add(count as u64)) {
                 Ok(0) => break,
                 Ok(read) => count += read,

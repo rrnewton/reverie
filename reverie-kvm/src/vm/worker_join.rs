@@ -84,6 +84,10 @@ impl WorkerJoins {
     /// bootstrap destruction and launch rollback can describe one failure.
     /// Guest worker errors and opaque panic payloads are retained separately;
     /// this first-cause policy applies only to this helper-control ledger.
+    /// A recursive drain also keeps the earlier cause: its inner call must
+    /// return to avoid waiting on itself, while the same thread's outer drain
+    /// still owns physical collection. The original failure remains terminal;
+    /// this ledger does not promise a record of every later protocol violation.
     fn fail(state: &mut JoinLedger, error: Error) -> Arc<Error> {
         if let Some(error) = &state.failure {
             return error.clone();
