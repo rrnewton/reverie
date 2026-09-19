@@ -33,3 +33,7 @@ test-guest-log = []
 [[bin]]
 name = "guest_log_lifecycle_fixture"
 path = "tests/fixtures/guest_log_lifecycle_fixture.rs"
+
+[[bin]]
+name = "mapped_capture_fixture"
+path = "tests/fixtures/mapped_capture_fixture.rs"

@@ -13,9 +13,10 @@
 //! this includes descriptor duplicates, inherited descriptors and mapped aliases.
 //! A fork child must never reuse an inherited producer's private progress. Reserve
 //! its distinct incarnation before fork, resolve the actual result in the parent,
-//! and activate that incarnation in the child before writing. Retain the guest
-//! lifetime endpoint until all admitted writers are quiescent. Endpoint closure,
-//! FINISH, actual process reap and successful publication remain separate facts.
+//! and activate that incarnation in the child before writing. Socket variants
+//! retain the guest lifetime endpoint until all admitted writers are quiescent.
+//! Direct mappings instead require an independent process owner and actual reap.
+//! Endpoint closure, FINISH, process reap and publication remain separate facts.
 //!
 //! Creation, import and activation are unsafe where the library cannot enforce
 //! these requirements. Invalid version/layout checks do not remove the caller's
@@ -23,7 +24,8 @@
 //! runtime writer or provide a mapped process launcher.
 
 //! Buffered guest records, independent of synchronous GlobalTool RPC.
-//! A lifetime endpoint must outlive every admitted shared-memory writer.
+//! Socket lifetime endpoints outlive their admitted writers; direct mapped
+//! captures require the separate MappedProcessOwner completion contract.
 
 mod buffer;
 mod capture;

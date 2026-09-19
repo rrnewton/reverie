@@ -69,7 +69,8 @@ pub mod codec;
 mod client;
 mod envelope;
 mod error;
-/// Ordered capture for trusted cooperating processes using socket lifetime endpoints.
+/// Ordered capture for trusted cooperating processes, with socket lifetime
+/// endpoints or an independent mapped process owner.
 #[cfg(target_os = "linux")]
 pub mod guest_log;
 mod server;

@@ -14,6 +14,7 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -223,8 +224,17 @@ impl LiteinstBackendStatsSource {
     }
 }
 
+pub(crate) trait MappedStatsRpc: Send + Sync {
+    fn submit(&self, request: LiteinstProcessStats) -> io::Result<()>;
+}
+
+enum StatsCoordinator {
+    Socket(PathBuf),
+    Mapped(Arc<dyn MappedStatsRpc>),
+}
+
 struct GuestStatsCollector {
-    coordinator: PathBuf,
+    coordinator: StatsCoordinator,
     in_guest_sigsys: AtomicU64,
     in_guest_nested_sigsys: AtomicU64,
     cacheline_straddler_fallback: AtomicU64,
@@ -331,11 +341,16 @@ impl GuestStatsHooks {
             return Ok(());
         };
         let paths = stats.snapshot(direct_hooks);
-        let client = BlockingRpcClient::<LiteinstStatsGlobal>::connect(&stats.coordinator, tid)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        client
-            .try_send_rpc(LiteinstProcessStats { paths, sites })
-            .map_err(|error| io::Error::other(error.to_string()))
+        let request = LiteinstProcessStats { paths, sites };
+        match &stats.coordinator {
+            StatsCoordinator::Socket(path) => {
+                let client = BlockingRpcClient::<LiteinstStatsGlobal>::connect(path, tid)
+                    .map_err(|error| io::Error::other(error.to_string()))?;
+                client.try_send_rpc(request)
+                    .map_err(|error| io::Error::other(error.to_string()))
+            }
+            StatsCoordinator::Mapped(rpc) => rpc.submit(request),
+        }
     }
 }
 
@@ -371,9 +386,17 @@ fn enabled_reset_after_fork(collector: Option<&'static GuestStatsCollector>) {
 static ENABLED_STATS_PROBES: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<GuestStatsHooks> {
+    initialize_stats(StatsCoordinator::Socket(coordinator.to_path_buf()))
+}
+
+pub(crate) fn initialize_mapped_stats(rpc: Arc<dyn MappedStatsRpc>) -> io::Result<GuestStatsHooks> {
+    initialize_stats(StatsCoordinator::Mapped(rpc))
+}
+
+fn initialize_stats(coordinator: StatsCoordinator) -> io::Result<GuestStatsHooks> {
     GUEST_STATS
         .set(GuestStatsCollector {
-            coordinator: coordinator.to_path_buf(),
+            coordinator,
             in_guest_sigsys: AtomicU64::new(0),
             in_guest_nested_sigsys: AtomicU64::new(0),
             cacheline_straddler_fallback: AtomicU64::new(0),
@@ -419,6 +442,28 @@ pub(crate) struct LiteinstStatsGlobal {
 struct LiteinstStatsAggregation {
     next_process_identity: u64,
     processes: Vec<(u64, LiteinstProcessStats)>,
+}
+
+/// Host-side aggregation for explicitly owned mapped statistics streams.
+/// Stream completion and worker retirement remain the caller's responsibility.
+#[derive(Clone, Default)]
+pub struct MappedStatsCollector(Arc<LiteinstStatsGlobal>);
+
+impl MappedStatsCollector {
+    /// Serve one already authenticated statistics stream using the unchanged
+    /// shared codec and LiteInst process-statistics request type.
+    pub async fn serve(
+        &self,
+        stream: reverie_rpc_transport::mapped::AsyncMappedStream,
+    ) -> Result<(), reverie_rpc_transport::RpcError> {
+        reverie_rpc_transport::serve_stream(self.0.clone(), (), stream).await
+    }
+
+    /// Consume aggregation only after all serving owners have been released.
+    /// This does not certify process exit or mapped worker retirement.
+    pub fn try_into_source(self) -> Result<LiteinstBackendStatsSource, Self> {
+        Arc::try_unwrap(self.0).map(LiteinstStatsGlobal::into_source).map_err(Self)
+    }
 }
 
 #[reverie::global_tool]
