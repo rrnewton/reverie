@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd -- "$script_dir/.." && pwd)
+third_party_dir=$repo_root/shim/third-party/rust
+
+cd "$repo_root"
+
+if [[ ! -f Cargo.lock ]] || ! git ls-files --error-unmatch Cargo.lock >/dev/null 2>&1; then
+  echo "Cargo.lock must exist and be tracked before Buck dependencies are generated" >&2
+  exit 1
+fi
+if ! git diff --quiet HEAD -- Cargo.lock; then
+  echo "Cargo.lock must match HEAD before Buck dependencies are generated" >&2
+  exit 1
+fi
+
+cargo metadata --locked --format-version 1 --no-deps >/dev/null
+
+# A fresh checkout has none of these generated paths. Removing only paths that
+# Git confirms are excluded makes repeated local use take the same path.
+for generated in \
+  "$third_party_dir/.cargo" \
+  "$third_party_dir/BUCK" \
+  "$third_party_dir/vendor"
+do
+  relative=${generated#"$repo_root/"}
+  if [[ -e $generated ]] && ! git check-ignore -q "$relative"; then
+    echo "refusing to remove non-ignored path: $relative" >&2
+    exit 1
+  fi
+done
+rm -rf -- \
+  "$third_party_dir/.cargo" \
+  "$third_party_dir/BUCK" \
+  "$third_party_dir/vendor"
+
+reindeer_args=(
+  --third-party-dir "$third_party_dir"
+  --manifest-path "$repo_root/Cargo.toml"
+)
+
+# Reindeer's `vendor` subcommand deliberately uses a fresh Cargo home below
+# the generated tree. That makes every regeneration redownload the complete
+# graph and prevents an offline run from using Cargo's already-verified cache.
+# Use the pinned workspace Cargo to materialize the locked graph, then let the
+# pinned Reindeer consume the standard source-replacement configuration.
+mkdir -p "$third_party_dir/.cargo"
+(
+  cd "$third_party_dir"
+  cargo vendor \
+    --locked \
+    --manifest-path "$repo_root/Cargo.toml" \
+    --versioned-dirs \
+    vendor \
+    >.cargo/config.toml
+)
+
+first_output=$(mktemp)
+trap 'rm -f -- "$first_output"' EXIT
+"$script_dir/reindeer" "${reindeer_args[@]}" buckify --stdout >"$first_output"
+"$script_dir/reindeer" "${reindeer_args[@]}" buckify
+cmp --silent "$first_output" "$third_party_dir/BUCK" || {
+  echo "Reindeer produced different BUCK output across consecutive invocations" >&2
+  exit 1
+}
+
+git diff --exit-code HEAD -- Cargo.lock
+sha256sum Cargo.lock "$third_party_dir/BUCK"
