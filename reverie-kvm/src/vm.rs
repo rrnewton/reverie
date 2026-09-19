@@ -5255,6 +5255,89 @@ mod tests {
         )
     }
 
+    // Exercise real sibling dispatch and the production private-fork snapshot
+    // without entering KVM_RUN. Both thread VMs share the parent mapping; the
+    // forked VM must inherit its completed layout and then remain independent.
+    #[test]
+    fn fork_from_stale_sibling_inherits_completed_brk_growth() {
+        let mut parent =
+            KvmBackend::new(16 * 1024 * 1024).expect("fork cursor control requires KVM");
+        parent
+            .install_static_elf(&minimal_test_elf(&[0xf4]), "/bin/fork-cursor")
+            .unwrap();
+        let mut leader = ElfExecutor::new(parent.static_elf.take().unwrap(), false);
+        let query = SyscallRequest::new(libc::SYS_brk as u64, [0, 0, 0, 0, 0, 0]);
+        let initial = leader.execute(&query, &parent.memory);
+        assert!(initial > 0);
+        let mut sibling = leader.thread_child(2).unwrap();
+        let mut sibling_backend = KvmBackend::from_thread_state(
+            parent.memory.clone(),
+            parent.vcpu.get_regs().unwrap(),
+            parent.vcpu.get_xsave().unwrap(),
+            None,
+            parent.cpuid_policy,
+            2,
+            parent.thread_group.clone(),
+        )
+        .unwrap();
+        assert_eq!(sibling.execute(&query, &sibling_backend.memory), initial);
+        let registers = sibling_backend.vcpu.get_regs().unwrap();
+        stage_process_syscall_return(
+            &mut sibling_backend.memory,
+            &sibling_backend.vcpu,
+            sibling_backend.syscall_frame_address,
+            registers,
+        )
+        .unwrap();
+
+        let grown = initial as u64 + 2 * PAGE_SIZE;
+        assert_eq!(
+            leader.execute(
+                &SyscallRequest::new(libc::SYS_brk as u64, [grown, 0, 0, 0, 0, 0]),
+                &parent.memory,
+            ),
+            grown as i64
+        );
+        let word = initial as u64 + 64;
+        parent.memory.write(word, b"parent").unwrap();
+        // Do not refresh the sibling with another allocation syscall here:
+        // its local ELF fields predate the leader's completed brk growth.
+        let mut child = sibling_backend
+            .prepare_forked_process(
+                &sibling, 3, None, None, None, None, false, false, false, None,
+            )
+            .unwrap();
+        assert_eq!(
+            child.executor.execute(&query, &child.backend.memory),
+            grown as i64,
+            "forked child must inherit a completed sibling brk growth"
+        );
+        let mut inherited = [0; 6];
+        child.backend.memory.read(word, &mut inherited).unwrap();
+        assert_eq!(&inherited, b"parent");
+        child.backend.memory.write(word, b"child!").unwrap();
+        parent.memory.read(word, &mut inherited).unwrap();
+        assert_eq!(&inherited, b"parent");
+
+        let child_break = grown + PAGE_SIZE;
+        assert_eq!(
+            child.executor.execute(
+                &SyscallRequest::new(libc::SYS_brk as u64, [child_break, 0, 0, 0, 0, 0]),
+                &child.backend.memory,
+            ),
+            child_break as i64
+        );
+        assert_eq!(
+            child.executor.execute(&query, &child.backend.memory),
+            child_break as i64
+        );
+        assert_eq!(leader.execute(&query, &parent.memory), grown as i64);
+        assert_eq!(
+            sibling.execute(&query, &sibling_backend.memory),
+            grown as i64
+        );
+    }
+
     #[derive(Default)]
     struct ForkFailureIdentityLog {
         events: Mutex<Vec<reverie::BackendFailure>>,
