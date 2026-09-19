@@ -94,8 +94,8 @@ ci-hub/bin/wrkslots heartbeat <slot> --agent <agent> \
 ```
 
 Any later participant may reclaim after the exact owner is proven dead and the
-time-to-live has expired. `remove` first publishes unpushed commits and tracked,
-untracked, and ignored files outside configured cache paths, then verifies the
+time-to-live has expired. `remove` first publishes unpushed commits and ordinary
+tracked and untracked files (not ignored build/cache data), then verifies the
 remote receipt before deletion:
 
 ```bash
@@ -104,9 +104,29 @@ ci-hub/bin/wrkslots --allow-existing-unregistered-worktrees \
   --coordinator-pid "$CURRENT_COORDINATOR_PID" --expected-generation 1
 ```
 
-If an untracked `HANDOFF.md` exists, first run `wrkslots read-handoff`; unread
-or changed contents block removal. If process or registered-liveness evidence
-is unavailable, removal refuses instead of treating the slot as free. A
+Before finishing, an owner writes the handoff outside the checkout through the
+generation-bound sidecar API:
+
+```bash
+ci-hub/bin/wrkslots write-handoff <slot> --agent <agent> \
+  --owner-pid "$OWNER_PID" --expected-generation 1 \
+  --from-file /path/to/HANDOFF.md
+```
+
+A later coordinator reads it with:
+
+```bash
+ci-hub/bin/wrkslots read-handoff <slot> \
+  --coordinator-pid "$CURRENT_COORDINATOR_PID"
+```
+
+Reading prints the exact contents and durably enqueues that slot generation for
+a later bounded retirement pass;
+it never deletes the sidecar, checkout, or slot. A legacy on-disk `HANDOFF.md`
+must likewise be read before removal. Unread or changed contents block removal,
+and the scheduled cleanup only delegates queued candidates to the ordinary
+`wrkslots remove` safety state machine. If process or registered-liveness
+evidence is unavailable, removal refuses instead of treating the slot as free. A
 validate slot may use `remove --validate-complete` after its external logs and
 run record are durable; it never runs the agent-work salvage path.
 

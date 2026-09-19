@@ -240,11 +240,22 @@ survivable rather than merely known.
 
 # Compose multi-line notes in a quoted heredoc, never inline
 
-A resumption handoff goes in the agent's own worktree slot as untracked
-`HANDOFF.md`, so the handoff stays visibly associated with that slot. A slot
-containing an unread `HANDOFF.md` must not be removed or reclaimed. Durable
-investigation write-ups still belong in a suitable tracked path or TaskGraph
-note; they are not transient handoffs.
+Compose a resumption handoff outside the checkout, then copy it into the slot's
+generation-bound control sidecar:
+
+```bash
+ci-hub/bin/wrkslots write-handoff <slot> --agent <agent> \
+  --owner-pid "$OWNER_PID" --expected-generation <generation> \
+  --from-file /path/to/HANDOFF.md
+```
+
+Do not create a new checkout-local `HANDOFF.md`; legacy files already there
+remain protected. A coordinator reads
+either form with `wrkslots read-handoff`, which prints the exact contents and
+durably enqueues that generation for later safe retirement. Reading never
+deletes the handoff, checkout, or slot, and an unread or changed handoff must
+still block removal. Durable investigation write-ups belong in a suitable
+tracked path or TaskGraph note; they are not transient handoffs.
 
 `tg note` is the durable record -- panes are not -- and it is **quoting-safe for
 shell metacharacters**: text that reaches its argv survives `$(...)`, backticks,

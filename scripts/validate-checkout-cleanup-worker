@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Run potentially slow physical removals outside the 30-second health-gate
 # process. The Python worker limits each sweep to eight checkouts or one Cargo
-# home and repeats only while a later bounded batch is explicitly needed.
+# home and repeats only while a later bounded batch is explicitly needed. Once
+# that validation drain ends, the same worker runs exactly one bounded pending
+# agent-slot retirement batch; it never starts a parallel retirement worker.
 # Do not wrap this in hermit-box-run. wrkslots deliberately re-enters a
 # host-process-view user service for destructive work; a PID-namespace wrapper
 # makes the coordinator PID incomparable at that boundary. The fixed outer
-# service name prevents concurrent workers, while the provider's own journals
+# service name serializes both drains, while the provider's own journals
 # and process/path bounds continue to protect each mutation.
 set -euo pipefail
 

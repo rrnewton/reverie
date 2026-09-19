@@ -169,6 +169,23 @@ class WrkslotsLauncherTest(unittest.TestCase):
             "7",
         )
 
+    def retirement_arguments(self) -> tuple[str, ...]:
+        return (
+            "--project-root",
+            str(self.root),
+            "--allow-existing-unregistered-worktrees",
+            "--wait-lock",
+            "10",
+            "retire-pending",
+            "--limit",
+            "8",
+            "--coordinator-pid",
+            str(os.getpid()),
+            "--coordinator-authorized",
+            "--format",
+            "json",
+        )
+
     def frozen_recovery_arguments(self) -> tuple[str, ...]:
         return (
             "--project-root",
@@ -256,7 +273,9 @@ class WrkslotsLauncherTest(unittest.TestCase):
 
         self.assertEqual(3, completed.returncode)
         self.assertIn("state: UNKNOWN", completed.stderr)
-        self.assertNotIn("no worktree or lifecycle record was changed", completed.stderr)
+        self.assertNotIn(
+            "no worktree or lifecycle record was changed", completed.stderr
+        )
         self.assertTrue(self.record.exists())
 
     def test_validate_batch_uses_the_same_host_handoff(self) -> None:
@@ -278,6 +297,20 @@ class WrkslotsLauncherTest(unittest.TestCase):
         )
         coordinator = record["argv"][record["argv"].index("--coordinator-pid") + 1]
         self.assertEqual(str(os.getpid()), coordinator)
+
+    def test_retire_pending_uses_the_same_host_handoff(self) -> None:
+        completed = self.run_launcher(*self.retirement_arguments())
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        record = json.loads(self.record.read_text())
+        self.assertIn("retire-pending", record["argv"])
+        self.assertEqual("10", record["argv"][record["argv"].index("--wait-lock") + 1])
+        self.assertEqual("8", record["argv"][record["argv"].index("--limit") + 1])
+        coordinator = record["argv"][record["argv"].index("--coordinator-pid") + 1]
+        self.assertEqual(str(os.getpid()), coordinator)
+        self.assertIn("--coordinator-authorized", record["argv"])
+        self.assertEqual("json", record["argv"][record["argv"].index("--format") + 1])
+        self.assertTrue(self.systemd_record.exists())
 
     def test_frozen_recovery_forms_use_the_same_host_handoff(self) -> None:
         for arguments, command_name in (
@@ -301,7 +334,9 @@ class WrkslotsLauncherTest(unittest.TestCase):
                 self.assertIn("--property=ProtectProc=default", properties)
                 self.assertIn("--property=ProcSubset=all", properties)
 
-    def test_abbreviated_frozen_recovery_option_cannot_bypass_host_handoff(self) -> None:
+    def test_abbreviated_frozen_recovery_option_cannot_bypass_host_handoff(
+        self,
+    ) -> None:
         arguments = list(self.frozen_recovery_arguments())
         option = arguments.index("--frozen-validate-checkout")
         arguments[option] = "--frozen-v"
@@ -327,9 +362,7 @@ class WrkslotsLauncherTest(unittest.TestCase):
         )
 
         self.assertEqual(3, completed.returncode)
-        self.assertIn(
-            "does not have a verified full process view", completed.stderr
-        )
+        self.assertIn("does not have a verified full process view", completed.stderr)
         self.assertFalse(self.record.exists())
 
     def test_bare_recovery_never_falls_back_after_inner_refusal(self) -> None:
@@ -348,9 +381,7 @@ class WrkslotsLauncherTest(unittest.TestCase):
         ):
             with self.subTest(command=arguments[2]):
                 self.record.unlink(missing_ok=True)
-                completed = self.run_launcher(
-                    *arguments, FIXTURE_PROCESS_VIEW_RC="2"
-                )
+                completed = self.run_launcher(*arguments, FIXTURE_PROCESS_VIEW_RC="2")
 
                 self.assertEqual(3, completed.returncode)
                 self.assertIn(
@@ -418,9 +449,7 @@ class WrkslotsLauncherTest(unittest.TestCase):
 
     def test_argparse_global_abbreviation_cannot_bypass_handoff(self) -> None:
         arguments = self.removal_arguments()
-        completed = self.run_launcher(
-            *arguments[:2], "--wait-l", "0", *arguments[2:]
-        )
+        completed = self.run_launcher(*arguments[:2], "--wait-l", "0", *arguments[2:])
 
         self.assertEqual(0, completed.returncode, completed.stderr)
         record = json.loads(self.record.read_text())
@@ -444,7 +473,9 @@ class WrkslotsLauncherTest(unittest.TestCase):
         self.assertEqual(3, completed.returncode)
         self.assertIn("handoff or command failed with exit 19", completed.stderr)
         self.assertIn("state: UNKNOWN", completed.stderr)
-        self.assertNotIn("no worktree or lifecycle record was changed", completed.stderr)
+        self.assertNotIn(
+            "no worktree or lifecycle record was changed", completed.stderr
+        )
         self.assertFalse(self.record.exists())
 
     def test_changed_original_coordinator_generation_refuses(self) -> None:
@@ -463,7 +494,9 @@ class WrkslotsLauncherTest(unittest.TestCase):
         completed = self.run_launcher(*arguments)
 
         self.assertEqual(3, completed.returncode)
-        self.assertIn("cannot read the coordinator process generation", completed.stderr)
+        self.assertIn(
+            "cannot read the coordinator process generation", completed.stderr
+        )
         self.assertFalse(self.record.exists())
 
     def test_read_only_command_does_not_use_host_handoff(self) -> None:
@@ -501,9 +534,7 @@ class WrkslotsLauncherTest(unittest.TestCase):
         self.use_real_wrkslots_package()
         lifecycle_root = Path(self.temporary.name) / "lifecycle"
         lifecycle_root.mkdir()
-        project, _repository, _remote = lifecycle.make_project(
-            lifecycle_root
-        )
+        project, _repository, _remote = lifecycle.make_project(lifecycle_root)
         made = lifecycle.create(
             project,
             slot_type="validate",

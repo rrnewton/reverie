@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Remove terminal validation checkouts even when their launchers are gone."""
+"""Run the fixed-name host cleanup worker.
+
+Drain terminal validation checkouts, then consume one bounded agent retirement batch.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +26,9 @@ import start_unit  # noqa: E402
 WORKER_UNIT = "validate-checkout-cleanup-worker"
 RESULT_SCHEMA = 1
 MAX_SWEEPS_PER_WORKER = 64
+RETIREMENT_BATCH_LIMIT = 8
+RETIREMENT_WAIT_LOCK_SECONDS = 10
+RETIREMENT_RESULT_SCHEMA = 1
 STATE_RELATIVE = Path("ignored/ci-hub/validate-checkout-cleanup")
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -33,7 +39,11 @@ def now() -> str:
 
 def state_paths(state_root: Path) -> tuple[Path, Path, Path]:
     directory = state_root / STATE_RELATIVE
-    return directory / "latest.json", directory / "progress.json", directory / "worker.log"
+    return (
+        directory / "latest.json",
+        directory / "progress.json",
+        directory / "worker.log",
+    )
 
 
 def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -59,7 +69,9 @@ def read_result(path: Path) -> dict[str, Any] | None:
     except FileNotFoundError:
         return None
     except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"cannot read cleanup worker result {path}: {error}") from error
+        raise RuntimeError(
+            f"cannot read cleanup worker result {path}: {error}"
+        ) from error
     if not isinstance(value, dict) or value.get("schema") != RESULT_SCHEMA:
         raise RuntimeError(f"cleanup worker result has an unsupported shape: {path}")
     return value
@@ -98,8 +110,7 @@ def summarize(
     refusals = [
         row
         for row in retained
-        if row.get("reason") != "unit-running"
-        and row.get("cleanup_failed") is not True
+        if row.get("reason") != "unit-running" and row.get("cleanup_failed") is not True
     ]
     failures = [row for row in retained if row.get("cleanup_failed") is True]
     failures.extend(report.get("bookkeeping_errors", []))
@@ -111,6 +122,7 @@ def summarize(
         f"; refused {len(refusals)} path(s)"
         f"; deferred {len(deferred)} checkout(s) to a later bounded batch"
     )
+
     def one_line(value: object) -> str:
         return " ".join(str(value).split())
 
@@ -139,7 +151,9 @@ def summarize(
     return state, summary, refusals, failures
 
 
-def report_output(report: Mapping[str, Any]) -> tuple[dict[str, Any], list[Mapping[str, Any]]]:
+def report_output(
+    report: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[Mapping[str, Any]]]:
     state, summary, refusals, failures = summarize(report)
     discovery = report.get("discovery") or {}
     return (
@@ -182,6 +196,202 @@ def run_one_sweep(state_root: Path) -> tuple[int, dict[str, Any]]:
     return (1 if failures else 0), output
 
 
+def retirement_failure(
+    reason: str, *, provider_returncode: int | None = None
+) -> dict[str, Any]:
+    detail = " ".join(reason.split())
+    return {
+        "schema": RETIREMENT_RESULT_SCHEMA,
+        "limit": RETIREMENT_BATCH_LIMIT,
+        "state": "could-not-determine",
+        "summary": f"agent retirement could not be determined: {detail}",
+        "provider_returncode": provider_returncode,
+        "removed": [],
+        "retained": [],
+        "deferred": [],
+        "could_not_determine": [
+            {
+                "outcome": "could-not-determine",
+                "reason": detail,
+                "recovery_required": True,
+            }
+        ],
+        "recovery_required": True,
+    }
+
+
+def validate_retirement_result(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("retire-pending JSON root is not an object")
+    expected_top_level_fields = {
+        "schema",
+        "limit",
+        "removed",
+        "retained",
+        "deferred",
+        "could_not_determine",
+        "recovery_required",
+    }
+    if set(value) != expected_top_level_fields:
+        unknown = sorted(set(value) - expected_top_level_fields)
+        missing = sorted(expected_top_level_fields - set(value))
+        raise ValueError(
+            "retire-pending JSON fields disagree with the documented schema: "
+            f"unknown={unknown}, missing={missing}"
+        )
+
+    if (
+        type(value.get("schema")) is not int
+        or value["schema"] != RETIREMENT_RESULT_SCHEMA
+    ):
+        raise ValueError("retire-pending JSON has an unsupported schema")
+    if type(value.get("limit")) is not int or value["limit"] != RETIREMENT_BATCH_LIMIT:
+        raise ValueError("retire-pending JSON does not report the requested limit")
+
+    categories = {
+        "removed": "removed",
+        "retained": "retained",
+        "deferred": "deferred",
+        "could_not_determine": "could-not-determine",
+    }
+    common_fields = {"machine", "slot", "generation", "sha256", "outcome", "reason"}
+    deferred_optional_fields = {
+        "event_sequence",
+        "enqueued_at",
+        "last_attempt_sequence",
+        "artifact_path",
+        "artifact_source",
+        "blocked_reason",
+    }
+    seen: set[tuple[str, str, int, str]] = set()
+    for field, expected_outcome in categories.items():
+        rows = value.get(field)
+        if not isinstance(rows, list):
+            raise ValueError(f"retire-pending JSON field {field} is not a list")
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"retire-pending JSON {field}[{index}] is not an object"
+                )
+            expected_fields = common_fields | (
+                {"recovery_required"} if field == "could_not_determine" else set()
+            )
+            if field == "deferred":
+                expected_fields |= deferred_optional_fields
+            if not set(row) <= expected_fields:
+                unknown = sorted(set(row) - expected_fields)
+                raise ValueError(
+                    f"retire-pending JSON {field}[{index}] has unknown fields: {unknown}"
+                )
+            machine = row.get("machine")
+            slot = row.get("slot")
+            generation = row.get("generation")
+            digest = row.get("sha256")
+            reason = row.get("reason")
+            if not isinstance(machine, str) or not machine:
+                raise ValueError(f"retire-pending JSON {field}[{index}] has no machine")
+            if not isinstance(slot, str) or not slot:
+                raise ValueError(f"retire-pending JSON {field}[{index}] has no slot")
+            if type(generation) is not int or generation <= 0:
+                raise ValueError(
+                    f"retire-pending JSON {field}[{index}] has no generation"
+                )
+            if (
+                not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                raise ValueError(f"retire-pending JSON {field}[{index}] has no SHA-256")
+            if row.get("outcome") != expected_outcome:
+                raise ValueError(
+                    f"retire-pending JSON {field}[{index}] has the wrong outcome"
+                )
+            if not isinstance(reason, str) or not reason:
+                raise ValueError(f"retire-pending JSON {field}[{index}] has no reason")
+            if (
+                field == "could_not_determine"
+                and row.get("recovery_required") is not True
+            ):
+                raise ValueError(
+                    f"retire-pending JSON {field}[{index}] does not require recovery"
+                )
+            identity = (machine, slot, generation, digest)
+            if identity in seen:
+                raise ValueError("retire-pending JSON repeats one target outcome")
+            seen.add(identity)
+
+    attempted = sum(
+        len(value[field]) for field in ("removed", "retained", "could_not_determine")
+    )
+    if attempted > RETIREMENT_BATCH_LIMIT:
+        raise ValueError(
+            "retire-pending JSON reports more attempted outcomes than its limit"
+        )
+    recovery_required = value.get("recovery_required")
+    if type(recovery_required) is not bool:
+        raise ValueError("retire-pending JSON recovery_required is not boolean")
+    if recovery_required != bool(value["could_not_determine"]):
+        raise ValueError(
+            "retire-pending JSON recovery_required disagrees with its outcomes"
+        )
+    return dict(value)
+
+
+def run_retirement_batch(
+    state_root: Path, *, run: Runner = subprocess.run
+) -> tuple[int, dict[str, Any]]:
+    command = [
+        str(ROOT / "ci-hub" / "bin" / "wrkslots"),
+        "--project-root",
+        str(state_root.resolve()),
+        "--allow-existing-unregistered-worktrees",
+        "--wait-lock",
+        str(RETIREMENT_WAIT_LOCK_SECONDS),
+        "retire-pending",
+        "--limit",
+        str(RETIREMENT_BATCH_LIMIT),
+        "--coordinator-pid",
+        str(os.getpid()),
+        "--coordinator-authorized",
+        "--format",
+        "json",
+    ]
+    try:
+        completed = run(command, capture_output=True, text=True, check=False)
+    except OSError as error:
+        return start_unit.EXIT_COULD_NOT_DETERMINE, retirement_failure(
+            f"could not start retire-pending: {error}"
+        )
+    try:
+        parsed = json.loads(completed.stdout)
+        result = validate_retirement_result(parsed)
+    except (json.JSONDecodeError, ValueError) as error:
+        diagnostic = completed.stderr.strip() or completed.stdout.strip() or str(error)
+        return start_unit.EXIT_COULD_NOT_DETERMINE, retirement_failure(
+            f"invalid retire-pending result: {error}; provider said: {diagnostic[:1000]}",
+            provider_returncode=completed.returncode,
+        )
+    recovery_required = result["recovery_required"]
+    if (
+        completed.returncode not in {0, 3}
+        or (completed.returncode == 3) != recovery_required
+    ):
+        return start_unit.EXIT_COULD_NOT_DETERMINE, retirement_failure(
+            "retire-pending exit status disagrees with its structured recovery outcome",
+            provider_returncode=completed.returncode,
+        )
+    result["provider_returncode"] = completed.returncode
+    result["state"] = "could-not-determine" if recovery_required else "ok"
+    result["summary"] = (
+        f"agent retirement removed {len(result['removed'])} slot(s); "
+        f"retained {len(result['retained'])}; deferred {len(result['deferred'])}; "
+        f"could not determine {len(result['could_not_determine'])}"
+    )
+    return (
+        start_unit.EXIT_COULD_NOT_DETERMINE if recovery_required else 0,
+        result,
+    )
+
+
 def _extend_unique(target: list[str], values: object) -> None:
     if not isinstance(values, list):
         return
@@ -190,7 +400,12 @@ def _extend_unique(target: list[str], values: object) -> None:
             target.append(value)
 
 
-def drain(state_root: Path, *, as_json: bool) -> int:
+def drain(
+    state_root: Path,
+    *,
+    as_json: bool,
+    run: Runner = subprocess.run,
+) -> int:
     """Run bounded sweeps until this worker drains every deferred candidate."""
 
     latest_path, progress_path, _log_path = state_paths(state_root)
@@ -223,24 +438,21 @@ def drain(state_root: Path, *, as_json: bool) -> int:
         )
         stalled_sweeps = 0 if progress_made else stalled_sweeps + 1
         deferred = output.get("deferred")
-        terminal = (
-            not isinstance(deferred, list)
-            or not deferred
-            or stalled_sweeps >= 3
-        )
-        result_state = (
-            "failed"
-            if code != 0 or (isinstance(deferred, list) and deferred)
-            else "ok"
-        )
+        terminal = not isinstance(deferred, list) or not deferred or stalled_sweeps >= 3
+        if code == start_unit.EXIT_COULD_NOT_DETERMINE:
+            result_state = "could-not-determine"
+        else:
+            result_state = (
+                "failed"
+                if code != 0 or (isinstance(deferred, list) and deferred)
+                else "ok"
+            )
         progress = {
             "schema": RESULT_SCHEMA,
             "status": (
                 "running"
                 if not terminal
-                else "completed"
-                if result_state == "ok"
-                else "failed"
+                else "completed" if result_state == "ok" else "failed"
             ),
             "state": result_state if terminal else "running",
             "run_id": run_id,
@@ -267,14 +479,37 @@ def drain(state_root: Path, *, as_json: bool) -> int:
                     )
                 ),
             }
+            retirement_code, retirement = run_retirement_batch(state_root, run=run)
+            result["validation_state"] = result_state
+            result["retirement"] = retirement
+            result["retirement_removed"] = len(retirement["removed"])
+            result["retirement_retained"] = len(retirement["retained"])
+            result["retirement_deferred"] = len(retirement["deferred"])
+            result["retirement_could_not_determine"] = len(
+                retirement["could_not_determine"]
+            )
+            result["summary"] += f"; {retirement['summary']}"
+            if retirement_code != 0:
+                result["status"] = "failed"
+                result["state"] = "could-not-determine"
+            atomic_write_json(progress_path, result)
             atomic_write_json(latest_path, result)
             emit(result, as_json=as_json)
+            if retirement_code != 0:
+                return retirement_code
+            if result_state == "could-not-determine":
+                return start_unit.EXIT_COULD_NOT_DETERMINE
             return 0 if result_state == "ok" else 1
 
+    validation_state = (
+        "could-not-determine"
+        if code == start_unit.EXIT_COULD_NOT_DETERMINE
+        else "failed"
+    )
     result = {
         "schema": RESULT_SCHEMA,
         "status": "failed",
-        "state": "failed",
+        "state": validation_state,
         "run_id": run_id,
         "started_at": started_at,
         "completed_at": now(),
@@ -287,9 +522,23 @@ def drain(state_root: Path, *, as_json: bool) -> int:
             "bounded sweeps"
         ),
     }
+    retirement_code, retirement = run_retirement_batch(state_root, run=run)
+    result["validation_state"] = validation_state
+    result["retirement"] = retirement
+    result["retirement_removed"] = len(retirement["removed"])
+    result["retirement_retained"] = len(retirement["retained"])
+    result["retirement_deferred"] = len(retirement["deferred"])
+    result["retirement_could_not_determine"] = len(retirement["could_not_determine"])
+    result["summary"] += f"; {retirement['summary']}"
+    if retirement_code != 0:
+        result["state"] = "could-not-determine"
     atomic_write_json(progress_path, result)
     atomic_write_json(latest_path, result)
     emit(result, as_json=as_json)
+    if retirement_code != 0:
+        return retirement_code
+    if validation_state == "could-not-determine":
+        return start_unit.EXIT_COULD_NOT_DETERMINE
     return 1
 
 
@@ -339,7 +588,9 @@ def worker_observation(
     raise RuntimeError(f"cleanup worker has uncertain state: {properties}")
 
 
-def launch_worker(state_root: Path, log_path: Path, run: Runner = subprocess.run) -> None:
+def launch_worker(
+    state_root: Path, log_path: Path, run: Runner = subprocess.run
+) -> None:
     operational_tool = os.environ.get("DEV_HERMIT_OPERATIONAL_TOOL", "")
     parent_sha = os.environ.get("DEV_HERMIT_TOOL_PARENT_SHA", "")
     if (
@@ -381,8 +632,14 @@ def launch_worker(state_root: Path, log_path: Path, run: Runner = subprocess.run
     except (OSError, subprocess.TimeoutExpired) as error:
         raise RuntimeError(f"cannot launch cleanup worker: {error}") from error
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit {completed.returncode}"
-        raise RuntimeError(f"cleanup worker launch was refused: {' '.join(detail.split())}")
+        detail = (
+            completed.stderr.strip()
+            or completed.stdout.strip()
+            or f"exit {completed.returncode}"
+        )
+        raise RuntimeError(
+            f"cleanup worker launch was refused: {' '.join(detail.split())}"
+        )
 
 
 def controller(state_root: Path, *, as_json: bool, run: Runner = subprocess.run) -> int:

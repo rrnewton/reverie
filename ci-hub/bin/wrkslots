@@ -121,6 +121,7 @@ done
 
 host_removal=0
 if [[ $command_name == remove || $command_name == remove-validate-batch \
+      || $command_name == retire-pending \
       || $command_name == recover-ownerless-validate-batch \
       || $command_name == recover ]]; then
   host_removal=1
