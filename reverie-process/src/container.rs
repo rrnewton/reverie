@@ -1011,72 +1011,18 @@ impl Container {
         let output_capture = std::io::set_output_capture(None);
         let result = clone_with_stack(
             || {
-                // The outer Rust owners live only in the parent. This branch
-                // owns its inherited child endpoint and result writer only.
-                unsafe {
-                    libc::close(parent_fd);
-                    libc::close(reader_fd);
-                }
-                let socket = StartupSocket {
-                    fd: Fd::new(child_fd),
-                    deadline,
-                };
-                let startup = (|| {
-                    self.setup_before_filter(&context, &mut [])
-                        .map_err(StartupError::Setup)?;
-                    let mut child_context = ChildStartContext {
+                self.startup_child_run(
+                    &context,
+                    StartupChildIo {
+                        parent_fd,
+                        child_fd,
+                        reader_fd,
+                        writer_fd,
                         deadline,
-                        descriptors: StartupFds::default(),
-                        failure: None,
-                    };
-                    let state = child_start(&mut child_context)?;
-                    if let Some(error) = child_context.failure {
-                        return Err(error);
-                    }
-                    socket.send(STARTUP_REQUEST, &child_context.descriptors, None)?;
-                    drop(child_context);
-                    socket.close_write()?;
-                    socket.receive(Some(STARTUP_READY))?;
-                    socket.receive(None)?; // Require completed final permission.
-
-                    Ok(state)
-                })();
-                let state = match startup {
-                    Ok(state) => state,
-                    Err(error) => {
-                        let _ = socket.send(STARTUP_FAILURE, &StartupFds::default(), Some(error));
-                        drop(socket);
-                        let mut writer = std::io::BufWriter::new(Fd::new(writer_fd));
-                        bincode::serde::encode_into_std_write(
-                            Err::<T, StartupError>(error),
-                            &mut writer,
-                            bincode::config::legacy(),
-                        )
-                        .expect("Failed to serialize startup refusal");
-                        writer.flush().expect("Failed to flush startup refusal");
-                        drop(writer);
-                        return 1;
-                    }
-                };
-                drop(socket);
-                let (value, deferred) = match self.setup_filter(&context) {
-                    Ok(()) => {
-                        let (value, deferred) = run(state);
-                        (Ok(value), Some(deferred))
-                    }
-                    Err(error) => (Err(StartupError::Setup(error)), None),
-                };
-                let mut writer = std::io::BufWriter::new(Fd::new(writer_fd));
-                bincode::serde::encode_into_std_write(
-                    &value,
-                    &mut writer,
-                    bincode::config::legacy(),
+                    },
+                    &mut child_start,
+                    &mut run,
                 )
-                .expect("Failed to serialize return value");
-                writer.flush().expect("Failed to flush return value");
-                drop(writer);
-                drop(deferred);
-                0
             },
             clone_flags,
             &mut stack,
@@ -1107,7 +1053,11 @@ impl Container {
                 Err(error) => return Err(child.fail(error)),
             };
         let owner = match parent_start(ParentStartContext {
-            child: &child,
+            child_pid: child.wait.as_ref().unwrap().0.unwrap(),
+            // SAFETY: the context borrows this still-owned descriptor for the call.
+            child_pidfd: unsafe {
+                std::os::fd::BorrowedFd::borrow_raw(child.pidfd.as_ref().unwrap().as_raw_fd())
+            },
             deadline,
             descriptors,
         }) {
@@ -1156,6 +1106,204 @@ impl Container {
                 child: child.into_wait(),
             },
         ))
+    }
+
+    // Shared verbatim child exchange/setup/result path for both ownership APIs.
+    fn startup_child_run<C, F, S, T, U>(
+        &mut self,
+        context: &ChildContext<'_>,
+        io: StartupChildIo,
+        child_start: &mut C,
+        run: &mut F,
+    ) -> i32
+    where
+        C: FnMut(&mut ChildStartContext) -> Result<S, StartupError>,
+        F: FnMut(S) -> (T, U),
+        T: Serialize,
+    {
+        let StartupChildIo {
+            parent_fd,
+            child_fd,
+            reader_fd,
+            writer_fd,
+            deadline,
+        } = io;
+        // The outer Rust owners live only in the parent. This branch
+        // owns its inherited child endpoint and result writer only.
+        unsafe {
+            libc::close(parent_fd);
+            libc::close(reader_fd);
+        }
+        let socket = StartupSocket {
+            fd: Fd::new(child_fd),
+            deadline,
+        };
+        let startup = (|| {
+            self.setup_before_filter(context, &mut [])
+                .map_err(StartupError::Setup)?;
+            let mut child_context = ChildStartContext {
+                deadline,
+                descriptors: StartupFds::default(),
+                failure: None,
+            };
+            let state = child_start(&mut child_context)?;
+            if let Some(error) = child_context.failure {
+                return Err(error);
+            }
+            socket.send(STARTUP_REQUEST, &child_context.descriptors, None)?;
+            drop(child_context);
+            socket.close_write()?;
+            socket.receive(Some(STARTUP_READY))?;
+            socket.receive(None)?; // Require completed final permission.
+
+            Ok(state)
+        })();
+        let state = match startup {
+            Ok(state) => state,
+            Err(error) => {
+                let _ = socket.send(STARTUP_FAILURE, &StartupFds::default(), Some(error));
+                drop(socket);
+                let mut writer = std::io::BufWriter::new(Fd::new(writer_fd));
+                bincode::serde::encode_into_std_write(
+                    Err::<T, StartupError>(error),
+                    &mut writer,
+                    bincode::config::legacy(),
+                )
+                .expect("Failed to serialize startup refusal");
+                writer.flush().expect("Failed to flush startup refusal");
+                drop(writer);
+                return 1;
+            }
+        };
+        drop(socket);
+        let (value, deferred) = match self.setup_filter(context) {
+            Ok(()) => {
+                let (value, deferred) = run(state);
+                (Ok(value), Some(deferred))
+            }
+            Err(error) => (Err(StartupError::Setup(error)), None),
+        };
+        let mut writer = std::io::BufWriter::new(Fd::new(writer_fd));
+        bincode::serde::encode_into_std_write(&value, &mut writer, bincode::config::legacy())
+            .expect("Failed to serialize return value");
+        writer.flush().expect("Failed to flush return value");
+        drop(writer);
+        drop(deferred);
+        0
+    }
+
+    /// Runs the existing startup protocol with retained child/result ownership.
+    ///
+    /// Call before starting threads; no handler or other thread may reap this
+    /// child. The callbacks are borrowed. Parent setup returns unit: retain
+    /// initialized parent resources outside this call and pair them with every
+    /// returned owner, including errors. This API cannot clean external state.
+    /// Child callbacks obey the same fork-safety and no-child-worker contract
+    /// as [`Self::run_with_startup`]. Namespace/filter/signal policy is unchanged.
+    ///
+    /// Linux pidfd support is required and probed before clone. Startup uses
+    /// one finite timeout, without preempting callbacks. Result acquisition then
+    /// blocks draining the pipe before wait, with no workload deadline or value
+    /// size cap. On read failure the same FD and partial bytes remain owned.
+    /// Generic deserialization happens only after actual successful child wait.
+    /// Explicit cleanup observation is bounded; implicit Drop can block and
+    /// requires outer process supervision for uninterruptible/unknown cleanup.
+    pub fn run_with_startup_owned<P, C, F, S, T, U>(
+        &mut self,
+        timeout: std::time::Duration,
+        parent_start: &mut P,
+        child_start: &mut C,
+        run: &mut F,
+    ) -> Result<OwnedDeferredContainerRun<T>, StartupOwnedFailure<T>>
+    where
+        P: FnMut(ParentStartContext<'_>) -> Result<(), StartupError>,
+        C: FnMut(&mut ChildStartContext) -> Result<S, StartupError>,
+        F: FnMut(S) -> (T, U),
+        T: Serialize,
+    {
+        use std::os::fd::AsFd;
+        let before = |cause| StartupOwnedFailure::BeforeClone { cause };
+        let deadline = std::time::Instant::now()
+            .checked_add(timeout)
+            .filter(|_| !timeout.is_zero())
+            .ok_or_else(|| before(StartupError::InvalidTimeout))?;
+        let mut disposition: libc::sigaction = unsafe { std::mem::zeroed() };
+        Errno::result(unsafe {
+            libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut disposition)
+        })
+        .map_err(|error| before(error.into()))?;
+        if disposition.sa_sigaction == libc::SIG_IGN
+            || disposition.sa_flags & libc::SA_NOCLDWAIT != 0
+        {
+            return Err(before(StartupError::Io(Errno::ECHILD)));
+        }
+        let (parent_socket, child_socket) = StartupSocket::pair(deadline).map_err(before)?;
+        let uid_map = &make_id_map(&self.uid_map);
+        let gid_map = &make_id_map(&self.gid_map);
+        let context = ChildContext {
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            uid_map,
+            gid_map,
+            seccomp_fd: None,
+        };
+        let (reader, writer) = pipe().map_err(|error| before(error.into()))?;
+        #[cfg(test)]
+        OWNED_RESULT_PIPE_CAPACITY.with(|capacity| {
+            capacity.set(
+                Errno::result(unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETPIPE_SZ) }).ok(),
+            );
+        });
+        let io = StartupChildIo {
+            parent_fd: parent_socket.fd.as_raw_fd(),
+            child_fd: child_socket.fd.as_raw_fd(),
+            reader_fd: reader.as_raw_fd(),
+            writer_fd: writer.as_raw_fd(),
+            deadline,
+        };
+        let mut stack = child_stack();
+        #[cfg(feature = "nightly")]
+        let output_capture = std::io::set_output_capture(None);
+        let namespace = self.namespace;
+        let result = super::clone::clone_with_stack_owned(
+            || self.startup_child_run(&context, io, child_start, run),
+            namespace,
+            &mut stack,
+        );
+        #[cfg(feature = "nightly")]
+        std::io::set_output_capture(output_capture);
+        let child = OwnedContainerCleanup::new(result.map_err(|error| before(error.into()))?);
+        // Install the guard before any fallible parent step or user callback.
+        let mut owned = OwnedFinalization::new(child, reader);
+        drop(child_socket);
+        drop(writer);
+        if owned.cleanup().pidfd.is_none() {
+            return Err(owned.fail(OwnedRunFailure::Startup(StartupError::Protocol), deadline));
+        }
+        let ready = (|| {
+            let descriptors = parent_socket.receive(Some(STARTUP_REQUEST))?;
+            parent_socket.receive(None)?;
+            parent_start(ParentStartContext {
+                child_pid: owned.cleanup().pid,
+                child_pidfd: owned.cleanup().pidfd.as_ref().unwrap().as_fd(),
+                deadline,
+                descriptors,
+            })?;
+            parent_socket.send(STARTUP_READY, &StartupFds::default(), None)?;
+            parent_socket.close_write()?;
+            // As in the original path, no fallible startup check follows final
+            // permission. Work may already have started when O is rescheduled.
+            Ok::<_, StartupError>(())
+        })();
+        if let Err(error) = ready {
+            return Err(owned.fail(OwnedRunFailure::Startup(error), deadline));
+        }
+        drop(parent_socket);
+        if let Err(error) = owned.drain() {
+            return Err(owned.fail(error, deadline));
+        }
+        Ok(OwnedDeferredContainerRun { inner: owned })
     }
 
     /// Runs a function in a new process, publishes its result, and only then
@@ -1375,7 +1523,8 @@ impl ChildStartContext {
 /// the actual child generation. Constructors are private. No raw PID or FD
 /// supplied by a caller can manufacture this context.
 pub struct ParentStartContext<'a> {
-    child: &'a StartupChild,
+    child_pid: Pid,
+    child_pidfd: std::os::fd::BorrowedFd<'a>,
     deadline: std::time::Instant,
     descriptors: StartupFds,
 }
@@ -1383,14 +1532,12 @@ pub struct ParentStartContext<'a> {
 impl ParentStartContext<'_> {
     /// The owned child PID in the parent's namespace; do not reap it separately.
     pub fn child_pid(&self) -> Pid {
-        self.child.wait.as_ref().unwrap().0.unwrap()
+        self.child_pid
     }
 
     /// Borrows the owned child generation's pidfd for identity-sensitive setup.
     pub fn child_pidfd(&self) -> std::os::fd::BorrowedFd<'_> {
-        use std::os::fd::BorrowedFd;
-        // SAFETY: The context borrows StartupChild, which owns this descriptor.
-        unsafe { BorrowedFd::borrow_raw(self.child.pidfd.as_ref().unwrap().as_raw_fd()) }
+        self.child_pidfd
     }
 
     /// The same finite monotonic deadline used by both endpoints.
@@ -1408,6 +1555,15 @@ impl ParentStartContext<'_> {
     pub fn take_fd(&mut self, index: usize) -> Option<std::os::fd::OwnedFd> {
         self.descriptors.values.get_mut(index)?.take()
     }
+}
+
+#[derive(Clone, Copy)]
+struct StartupChildIo {
+    parent_fd: i32,
+    child_fd: i32,
+    reader_fd: i32,
+    writer_fd: i32,
+    deadline: std::time::Instant,
 }
 
 // A fixed, private readiness exchange, not an evidence/event transport. The
@@ -1739,6 +1895,538 @@ impl StartupSocket {
     }
 }
 
+/// An observation of the original child, never an inferred successful exit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChildCleanupObservation {
+    /// The original child has not yielded a terminal observation yet.
+    Pending,
+    /// The exclusive wait obtained this actual terminal status.
+    Reaped(ExitStatus),
+    /// The pidfd proves exit, but another reaper consumed the wait status.
+    ExitedWithoutWaitStatus,
+    /// Cleanup failed without proving physical termination.
+    Unknown,
+}
+
+/// Retains the atomically acquired child identity and exclusive wait obligation.
+///
+/// No other thread/handler may reap this child or close its private pidfd.
+/// Explicit waits are bounded; Drop cancels and waits and can block indefinitely
+/// on an uninterruptible child or persistent inability to observe its exit.
+/// Such failures require outer process supervision, never a detached reaper.
+#[derive(Debug)]
+pub struct OwnedContainerCleanup {
+    pid: Pid,
+    wait_owned: bool,
+    pidfd: Option<std::os::fd::OwnedFd>,
+    observation: ChildCleanupObservation,
+    last_error: Option<Errno>,
+    #[cfg(test)]
+    signal_error_once: Option<Errno>,
+    #[cfg(test)]
+    wait_error_once: Option<Errno>,
+    #[cfg(test)]
+    cancellation_observed: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl OwnedContainerCleanup {
+    fn new(child: super::clone::OwnedClone) -> Self {
+        Self {
+            pid: child.pid,
+            wait_owned: true,
+            pidfd: child.pidfd,
+            observation: ChildCleanupObservation::Pending,
+            last_error: None,
+            #[cfg(test)]
+            signal_error_once: OWNED_STARTUP_CANCEL_ERROR.with(|error| error.take()),
+            #[cfg(test)]
+            wait_error_once: None,
+            #[cfg(test)]
+            cancellation_observed: None,
+        }
+    }
+
+    /// The original PID, for diagnostics only; do not signal or reap it separately.
+    pub fn child_pid(&self) -> Pid {
+        self.pid
+    }
+    /// The last actual observation; a timeout does not fabricate a wait status.
+    pub fn observation(&self) -> ChildCleanupObservation {
+        self.observation
+    }
+    /// The most recent cleanup error, retained even after later physical exit.
+    pub fn last_error(&self) -> Option<Errno> {
+        self.last_error
+    }
+
+    fn settled(&self) -> bool {
+        matches!(
+            self.observation,
+            ChildCleanupObservation::Reaped(_) | ChildCleanupObservation::ExitedWithoutWaitStatus
+        )
+    }
+
+    fn observe_wait(&mut self) -> Result<(), Errno> {
+        if !self.wait_owned {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if let Some(error) = self.wait_error_once.take() {
+            return Err(error);
+        }
+        let mut status = 0;
+        match Errno::result(unsafe { libc::waitpid(self.pid.as_raw(), &mut status, libc::WNOHANG) })
+        {
+            Ok(0) => (),
+            Ok(pid) => {
+                assert_eq!(pid, self.pid.as_raw());
+                self.wait_owned = false;
+                self.observation = ChildCleanupObservation::Reaped(ExitStatus::from_raw(status));
+            }
+            Err(Errno::ECHILD) => {
+                // Never issue another numeric-PID wait after losing ownership.
+                self.wait_owned = false;
+                self.last_error = Some(Errno::ECHILD);
+                self.observation = ChildCleanupObservation::Unknown;
+            }
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+
+    /// Observes the actual child until the absolute deadline, retaining ownership.
+    pub fn wait_until(&mut self, deadline: std::time::Instant) -> ChildCleanupObservation {
+        loop {
+            if self.settled() {
+                return self.observation;
+            }
+            match self.observe_wait() {
+                Ok(()) => (),
+                Err(Errno::EINTR) => {
+                    self.last_error = Some(Errno::EINTR);
+                    if std::time::Instant::now() < deadline {
+                        continue;
+                    }
+                }
+                Err(error) => {
+                    self.last_error = Some(error);
+                    self.observation = ChildCleanupObservation::Unknown;
+                    return self.observation;
+                }
+            }
+            if self.settled() {
+                return self.observation;
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let milliseconds = remaining
+                .as_millis()
+                .saturating_add(u128::from(!remaining.is_zero()))
+                .min(10) as i32;
+            let mut poll = libc::pollfd {
+                fd: self.pidfd.as_ref().map_or(-1, AsRawFd::as_raw_fd),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            match Errno::result(unsafe { libc::poll(&mut poll, 1, milliseconds) }) {
+                Ok(_) => {
+                    if poll.revents & (libc::POLLNVAL | libc::POLLERR) != 0 {
+                        self.last_error = Some(Errno::EBADF);
+                        self.observation = ChildCleanupObservation::Unknown;
+                        return self.observation;
+                    }
+                    if !self.wait_owned && poll.revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+                        self.observation = ChildCleanupObservation::ExitedWithoutWaitStatus;
+                        return self.observation;
+                    }
+                }
+                Err(Errno::EINTR) => {
+                    self.last_error = Some(Errno::EINTR);
+                    #[cfg(test)]
+                    OWNED_POLL_INTERRUPTED.fetch_add(1, std::sync::atomic::Ordering::Release);
+                }
+                Err(error) => {
+                    self.last_error = Some(error);
+                    self.observation = ChildCleanupObservation::Unknown;
+                    return self.observation;
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                // One nonblocking wait after readiness keeps its real status
+                // when exit raced with the deadline. It never extends the wait.
+                if let Err(error) = self.observe_wait() {
+                    self.last_error = Some(error);
+                    self.observation = ChildCleanupObservation::Unknown;
+                }
+                return self.observation;
+            }
+        }
+    }
+
+    fn signal_cancel(&mut self) -> Result<(), Errno> {
+        #[cfg(test)]
+        if let Some(error) = self.signal_error_once.take() {
+            return Err(error);
+        }
+        let fd = self.pidfd.as_ref().ok_or(Errno::EBADF)?;
+        Errno::result(unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                fd.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        })
+        .map(|_| ())
+    }
+
+    /// Sends cancellation through the held pidfd, then observes until the deadline.
+    /// ESRCH alone is not evidence of termination. Errors retain this owner.
+    pub fn cancel_and_wait_until(
+        &mut self,
+        deadline: std::time::Instant,
+    ) -> ChildCleanupObservation {
+        if self.settled() {
+            return self.observation;
+        }
+        match self.signal_cancel() {
+            Ok(()) => (),
+            Err(error) => {
+                self.last_error = Some(error);
+                // A refused signal does not prevent independent child exit.
+                // Always observe the original wait/pidfd, retaining the errno.
+                // Missing atomic output never permits numeric signalling.
+            }
+        }
+        #[cfg(test)]
+        if let Some(observed) = &self.cancellation_observed {
+            observed.store(true, std::sync::atomic::Ordering::Release);
+        }
+        self.wait_until(deadline)
+    }
+}
+
+impl Drop for OwnedContainerCleanup {
+    fn drop(&mut self) {
+        while !self.settled() {
+            self.cancel_and_wait_until(
+                std::time::Instant::now() + std::time::Duration::from_millis(100),
+            );
+            if !self.settled() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static OWNED_STARTUP_CANCEL_ERROR: std::cell::Cell<Option<Errno>> = const { std::cell::Cell::new(None) };
+    static OWNED_RESULT_PIPE_CAPACITY: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(test)]
+static OWNED_POLL_INTERRUPTED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// The original failure, separate from subsequent cleanup observations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OwnedRunFailure {
+    /// The caller explicitly cancelled this run. External error details remain
+    /// with that caller; later successful child exit cannot erase cancellation.
+    Cancelled,
+    /// Startup or the child's encoded startup/setup refusal.
+    Startup(StartupError),
+    /// The actual result-reader syscall failed; partial bytes remain retained.
+    ResultRead(Errno),
+    /// The real child returned an unsuccessful terminal status.
+    ChildStatus(ExitStatus),
+    /// Cleanup failed before an actual terminal status could be obtained.
+    Cleanup(Errno),
+    /// Physical exit is established, but a competing reaper lost the status.
+    WaitStatusUnavailable,
+}
+
+/// An owned startup refusal. Every post-clone failure retains the real child.
+#[derive(Debug)]
+pub enum StartupOwnedFailure<T> {
+    /// The clone did not create a child.
+    BeforeClone {
+        /// The original refusal.
+        cause: StartupError,
+    },
+    /// A child exists; inspect/retry/dispose its retained owner explicitly.
+    AfterClone {
+        /// The original refusal, independent of cleanup success or failure.
+        cause: OwnedRunFailure,
+        /// Original child, open result FD if any, and exact partial bytes.
+        run: OwnedFinalization<T>,
+    },
+}
+
+/// Encoded bytes and the child, retained through pending or failed cleanup.
+/// No generic result value has been deserialized in the parent.
+#[must_use = "retain or settle the actual child before releasing external owners"]
+pub struct OwnedFinalization<T> {
+    child: Option<OwnedContainerCleanup>,
+    reader: Option<Fd>,
+    bytes: Vec<u8>,
+    eof: bool,
+    failure: Option<OwnedRunFailure>,
+    marker: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T> std::fmt::Debug for OwnedFinalization<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnedFinalization")
+            .field("child", &self.child)
+            .field("bytes", &self.bytes.len())
+            .field("eof", &self.eof)
+            .field("failure", &self.failure)
+            .finish()
+    }
+}
+
+impl<T> OwnedFinalization<T> {
+    fn new(child: OwnedContainerCleanup, reader: Fd) -> Self {
+        Self {
+            child: Some(child),
+            reader: Some(reader),
+            bytes: Vec::new(),
+            eof: false,
+            failure: None,
+            marker: std::marker::PhantomData,
+        }
+    }
+    /// Exact bytes received so far, which are not a decoded result or authority.
+    pub fn provisional_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    /// Whether an actual EOF completed result acquisition.
+    pub fn result_eof(&self) -> bool {
+        self.eof
+    }
+    /// Borrows diagnostic identity and cleanup observations without disarming ownership.
+    pub fn cleanup(&self) -> &OwnedContainerCleanup {
+        self.child.as_ref().unwrap()
+    }
+    /// The frozen original failure, if one was observed.
+    pub fn failure(&self) -> Option<OwnedRunFailure> {
+        self.failure
+    }
+
+    fn fail(
+        mut self,
+        cause: OwnedRunFailure,
+        deadline: std::time::Instant,
+    ) -> StartupOwnedFailure<T> {
+        self.failure = Some(cause);
+        self.child.as_mut().unwrap().cancel_and_wait_until(deadline);
+        StartupOwnedFailure::AfterClone { cause, run: self }
+    }
+    fn drain(&mut self) -> Result<(), OwnedRunFailure> {
+        match self.reader.as_mut().unwrap().read_to_end(&mut self.bytes) {
+            Ok(_) => {
+                self.eof = true;
+                self.reader.take();
+                if self.bytes.is_empty() {
+                    Err(OwnedRunFailure::Startup(StartupError::MissingResult))
+                } else {
+                    Ok(())
+                }
+            }
+            Err(error) => Err(OwnedRunFailure::ResultRead(Errno::new(
+                error.raw_os_error().unwrap_or(libc::EIO),
+            ))),
+        }
+    }
+    /// Retries observation/cancellation without losing bytes, FD or child identity.
+    /// A previously failed result stays failed even if cleanup later succeeds.
+    pub fn retry_until(mut self, deadline: std::time::Instant) -> OwnedFinalize<T> {
+        let child = self.child.as_mut().unwrap();
+        if let Some(cause) = self.failure {
+            child.cancel_and_wait_until(deadline);
+            return OwnedFinalize::Failed {
+                cause,
+                cleanup: self,
+            };
+        }
+        match child.wait_until(deadline) {
+            ChildCleanupObservation::Reaped(status) if status.success() => {
+                assert!(self.eof);
+                self.child.take();
+                OwnedFinalize::Complete(OwnedReapedResult {
+                    bytes: std::mem::take(&mut self.bytes),
+                    status,
+                    marker: std::marker::PhantomData,
+                })
+            }
+            ChildCleanupObservation::Reaped(status) => {
+                let cause = OwnedRunFailure::ChildStatus(status);
+                self.failure = Some(cause);
+                OwnedFinalize::Failed {
+                    cause,
+                    cleanup: self,
+                }
+            }
+            ChildCleanupObservation::ExitedWithoutWaitStatus => {
+                let cause = OwnedRunFailure::WaitStatusUnavailable;
+                self.failure = Some(cause);
+                OwnedFinalize::Failed {
+                    cause,
+                    cleanup: self,
+                }
+            }
+            ChildCleanupObservation::Unknown => {
+                if let Some(error) = child.last_error() {
+                    let cause = OwnedRunFailure::Cleanup(error);
+                    self.failure = Some(cause);
+                    OwnedFinalize::Failed {
+                        cause,
+                        cleanup: self,
+                    }
+                } else {
+                    OwnedFinalize::Pending(self)
+                }
+            }
+            ChildCleanupObservation::Pending => OwnedFinalize::Pending(self),
+        }
+    }
+
+    /// Cancels through the original owner up to the absolute deadline.
+    /// An earlier failure takes precedence; otherwise cancellation becomes the
+    /// sticky failure even if C subsequently exits successfully. A returned
+    /// failed owner can still be pending cleanup and must be retained or retried.
+    pub fn cancel_until(mut self, deadline: std::time::Instant) -> OwnedFinalize<T> {
+        self.failure.get_or_insert(OwnedRunFailure::Cancelled);
+        self.retry_until(deadline)
+    }
+}
+
+impl<T> Drop for OwnedFinalization<T> {
+    fn drop(&mut self) {
+        // Explicit, rather than relying on field order or generic T destruction.
+        drop(self.child.take());
+        self.reader.take();
+    }
+}
+
+/// A complete encoded result whose original child has not yet been settled.
+#[derive(Debug)]
+#[must_use = "the actual child must be finalized before decoding"]
+pub struct OwnedDeferredContainerRun<T> {
+    inner: OwnedFinalization<T>,
+}
+impl<T> OwnedDeferredContainerRun<T> {
+    /// Bytes are provisional until actual child settlement and decoding succeed.
+    pub fn provisional_bytes(&self) -> &[u8] {
+        self.inner.provisional_bytes()
+    }
+    /// Borrows the actual retained child's diagnostic identity.
+    pub fn cleanup(&self) -> &OwnedContainerCleanup {
+        self.inner.cleanup()
+    }
+    /// Observes the real child up to the deadline, retaining ownership on failure.
+    pub fn finalize_until(self, deadline: std::time::Instant) -> OwnedFinalize<T> {
+        self.inner.retry_until(deadline)
+    }
+
+    /// Records explicit cancellation and makes a bounded attempt through the
+    /// same child capability, retaining the complete result bytes on failure.
+    pub fn cancel_until(self, deadline: std::time::Instant) -> OwnedFinalize<T> {
+        self.inner.cancel_until(deadline)
+    }
+}
+
+/// The distinction between real completion, persistent failure and an owned pending wait.
+#[derive(Debug)]
+pub enum OwnedFinalize<T> {
+    /// Actual successful child status; result bytes are still encoded.
+    Complete(OwnedReapedResult<T>),
+    /// Frozen failure and the still-owned resources, including actual cleanup state.
+    Failed {
+        /// Original cause.
+        cause: OwnedRunFailure,
+        /// Owned child and result resources.
+        cleanup: OwnedFinalization<T>,
+    },
+    /// The observation deadline elapsed without relinquishing the original child.
+    Pending(OwnedFinalization<T>),
+}
+
+/// A successful child wait plus original encoded bytes. Decode is deliberately separate.
+#[derive(Debug)]
+pub struct OwnedReapedResult<T> {
+    bytes: Vec<u8>,
+    status: ExitStatus,
+    marker: std::marker::PhantomData<fn() -> T>,
+}
+impl<T> OwnedReapedResult<T> {
+    /// The actual successful child status.
+    pub fn status(&self) -> ExitStatus {
+        self.status
+    }
+    /// The original complete wire bytes.
+    pub fn encoded_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+impl<T: DeserializeOwned> OwnedReapedResult<T> {
+    /// Decodes the entire original value only after actual child termination.
+    /// Callers owning external workers/factories must settle those before this call.
+    pub fn decode(self) -> Result<T, OwnedDecodeFailure> {
+        let (cause, detail) = match bincode::serde::decode_from_slice::<Result<T, StartupError>, _>(
+            &self.bytes,
+            bincode::config::legacy(),
+        ) {
+            Ok((Ok(value), used)) if used == self.bytes.len() => return Ok(value),
+            Ok((Err(error), used)) if used == self.bytes.len() => {
+                (OwnedRunFailure::Startup(error), None)
+            }
+            Ok(_) => (
+                OwnedRunFailure::Startup(StartupError::Protocol),
+                Some("trailing result bytes".to_owned()),
+            ),
+            Err(error) => (
+                OwnedRunFailure::Startup(StartupError::Protocol),
+                Some(error.to_string()),
+            ),
+        };
+        Err(OwnedDecodeFailure {
+            cause,
+            detail,
+            bytes: self.bytes,
+            status: self.status,
+        })
+    }
+}
+
+/// Decode refusal retaining the complete bytes and genuine child status.
+#[derive(Debug)]
+pub struct OwnedDecodeFailure {
+    cause: OwnedRunFailure,
+    detail: Option<String>,
+    bytes: Vec<u8>,
+    status: ExitStatus,
+}
+impl OwnedDecodeFailure {
+    /// The original typed refusal.
+    pub fn cause(&self) -> OwnedRunFailure {
+        self.cause
+    }
+    /// An actual decoding diagnostic when available.
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
+    }
+    /// Unchanged bytes which caused the refusal.
+    pub fn encoded_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    /// Actual successful child status, which does not erase a decoding failure.
+    pub fn status(&self) -> ExitStatus {
+        self.status
+    }
+}
+
 // Owns cancellation only during startup/result acquisition. Old WaitGuard and
 // deferred-result drop semantics remain unchanged after successful acquisition.
 struct StartupChild {
@@ -1952,6 +2640,1441 @@ mod tests {
     use nix::sys::signal::sigaction;
 
     use super::*;
+
+    fn owned_complete<T>(handle: OwnedDeferredContainerRun<T>) -> OwnedReapedResult<T> {
+        match handle.finalize_until(Instant::now() + Duration::from_secs(2)) {
+            OwnedFinalize::Complete(result) => result,
+            other => panic!(
+                "expected actual successful child settlement: {:?}",
+                outcome_kind(&other)
+            ),
+        }
+    }
+
+    fn outcome_kind<T>(outcome: &OwnedFinalize<T>) -> &'static str {
+        match outcome {
+            OwnedFinalize::Complete(_) => "complete",
+            OwnedFinalize::Failed { .. } => "failed",
+            OwnedFinalize::Pending(_) => "pending",
+        }
+    }
+
+    struct OwnedCloneFaultGuard;
+    impl OwnedCloneFaultGuard {
+        fn install(fault: super::super::clone::OwnedCloneTestFault) -> Self {
+            super::super::clone::OWNED_CLONE_FAULT.with(|f| {
+                assert_eq!(f.get(), super::super::clone::OwnedCloneTestFault::None);
+                f.set(fault);
+            });
+            Self
+        }
+    }
+    impl Drop for OwnedCloneFaultGuard {
+        fn drop(&mut self) {
+            super::super::clone::OWNED_CLONE_FAULT
+                .with(|f| f.set(super::super::clone::OwnedCloneTestFault::None));
+        }
+    }
+
+    fn owned_test_pidfd_link(path: &Path) -> bool {
+        let Some(link) = path.to_str() else {
+            return false;
+        };
+        link == "anon_inode:[pidfd]"
+            || link
+                .strip_prefix("pidfd:[")
+                .and_then(|suffix| suffix.strip_suffix(']'))
+                .is_some_and(|inode| !inode.is_empty() && inode.bytes().all(|b| b.is_ascii_digit()))
+    }
+
+    #[test]
+    fn owned_startup_atomic_identity_and_complete_decode() {
+        use std::os::fd::AsFd;
+        let parent = Pid::this();
+        let mut actual_child = None;
+        let handle = Container::new()
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |mut context| {
+                    actual_child = Some(context.child_pid());
+                    assert_ne!(context.child_pid(), parent);
+                    let fd = context.child_pidfd().as_raw_fd();
+                    let pidfd_link = std::fs::read_link(format!("/proc/self/fd/{fd}")).unwrap();
+                    assert!(
+                        owned_test_pidfd_link(&pidfd_link),
+                        "live pidfd: {pidfd_link:?}"
+                    );
+                    eprintln!("owned pidfd anchor: {pidfd_link:?}");
+                    assert_ne!(
+                        unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC,
+                        0
+                    );
+                    let mut transferred = std::fs::File::from(context.take_fd(0).unwrap());
+                    assert!(context.take_fd(0).is_none());
+                    let mut text = String::new();
+                    transferred.read_to_string(&mut text).unwrap();
+                    assert!(text.starts_with(&format!("{} ", context.child_pid())));
+                    Ok(())
+                },
+                &mut |context| {
+                    // The freshly created parent pidfd is not an inherited C alias.
+                    let aliases = std::fs::read_dir("/proc/self/fd")
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .filter_map(|e| std::fs::read_link(e.path()).ok())
+                        .filter(|p| owned_test_pidfd_link(p))
+                        .count();
+                    eprintln!("owned child inherited pidfd aliases: {aliases}");
+                    let file = std::fs::File::open("/proc/self/stat").unwrap();
+                    context.transfer_fd(file.as_fd().try_clone_to_owned().unwrap())?;
+                    Ok((Pid::this(), aliases))
+                },
+                &mut |state| {
+                    assert_eq!(Pid::parent(), parent);
+                    (state, ())
+                },
+            )
+            .unwrap();
+        let pid = actual_child.unwrap();
+        assert_eq!(handle.cleanup().child_pid(), pid);
+        let result = owned_complete(handle);
+        assert_eq!(result.status(), ExitStatus::Exited(0));
+        assert_eq!(result.decode().unwrap(), (pid, 0));
+        assert_reaped(pid);
+    }
+
+    #[test]
+    fn owned_parent_callback_unwind_reaps_child_and_retains_factory() {
+        struct FactoryCapture {
+            shared: *mut SharedDropState,
+            parent: Pid,
+        }
+        impl Drop for FactoryCapture {
+            fn drop(&mut self) {
+                assert!(
+                    !unsafe { &*self.shared }
+                        .finished
+                        .swap(true, Ordering::SeqCst)
+                );
+                assert_eq!(Pid::this(), self.parent, "factory capture belongs to O");
+            }
+        }
+
+        let (mapping, shared) = new_shared_drop_state();
+        let capture = FactoryCapture {
+            shared,
+            parent: Pid::this(),
+        };
+        let actual_child = std::cell::Cell::new(None);
+        let original_pidfd = std::cell::Cell::new(None);
+        let observer_pidfd = std::cell::RefCell::new(None);
+        let child_ref = &actual_child;
+        let original_ref = &original_pidfd;
+        let observer_ref = &observer_pidfd;
+        let mut parent_start = move |context: ParentStartContext<'_>| -> Result<(), StartupError> {
+            let _keep = &capture;
+            child_ref.set(Some(context.child_pid()));
+            original_ref.set(Some(context.child_pidfd().as_raw_fd()));
+            // This duplicate observes actual exit; it never reaps or cancels C.
+            *observer_ref.borrow_mut() = Some(context.child_pidfd().try_clone_to_owned().unwrap());
+            panic!("owned startup parent panic");
+        };
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Container::new().run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut parent_start,
+                &mut |_| Ok(()),
+                &mut |()| {
+                    unsafe { &*shared }.started.store(true, Ordering::Release);
+                    ((), ())
+                },
+            )
+        }));
+        let panic = match caught {
+            Err(panic) => panic,
+            Ok(_) => panic!("the borrowed parent callback must unwind through the API"),
+        };
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"owned startup parent panic")
+        );
+        let pid = actual_child
+            .get()
+            .expect("real child recorded before panic");
+        let fd = original_pidfd.get().unwrap();
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+        assert_eq!(Errno::last(), Errno::EBADF, "library pidfd must be closed");
+        let observer = observer_pidfd.borrow_mut().take().unwrap();
+        let mut poll = libc::pollfd {
+            fd: observer.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut poll, 1, 0) }, 1);
+        assert_ne!(poll.revents & (libc::POLLIN | libc::POLLHUP), 0);
+        assert_eq!(poll.revents & libc::POLLNVAL, 0);
+        assert_reaped(pid);
+        assert!(!unsafe { &*shared }.started.load(Ordering::Acquire));
+        assert!(!unsafe { &*shared }.finished.load(Ordering::Acquire));
+        eprintln!(
+            "owned parent unwind: child={pid} exit_events={} reaped=true library_pidfd_closed=true factory_retained=true workload_started=false",
+            poll.revents
+        );
+        drop(parent_start);
+        assert!(unsafe { &*shared }.finished.load(Ordering::Acquire));
+        drop(observer);
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn owned_startup_namespace_and_filter_are_unchanged() {
+        let result = Container::new()
+            .unshare(Namespace::USER | Namespace::PID)
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |()| (namespace_population_probe(), ()),
+            )
+            .unwrap();
+        assert_eq!(owned_complete(result).decode().unwrap(), (1, 2, 3));
+        let filter = seccomp::FilterBuilder::new()
+            .default_action(seccomp::Action::Allow)
+            .syscalls([
+                (
+                    syscalls::Sysno::sendmsg,
+                    seccomp::Action::Errno(Errno::EPERM),
+                ),
+                (
+                    syscalls::Sysno::recvmsg,
+                    seccomp::Action::Errno(Errno::EPERM),
+                ),
+                (
+                    syscalls::Sysno::getppid,
+                    seccomp::Action::Errno(Errno::EPERM),
+                ),
+            ])
+            .build();
+        let result = Container::new()
+            .seccomp(filter)
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |()| {
+                    (
+                        Errno::result(unsafe { libc::syscall(libc::SYS_getppid) }),
+                        (),
+                    )
+                },
+            )
+            .unwrap();
+        assert_eq!(owned_complete(result).decode().unwrap(), Err(Errno::EPERM));
+    }
+
+    #[test]
+    fn owned_startup_large_result_drains_before_pending_teardown() {
+        let (mapping, shared) = new_shared_drop_state();
+        let handle = Container::new()
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |()| (vec![37_u8; 10 * 1024 * 1024], BlockingDrop { shared }),
+            )
+            .unwrap();
+        let bytes = handle.provisional_bytes().to_vec();
+        let capacity = OWNED_RESULT_PIPE_CAPACITY
+            .with(|capacity| capacity.get())
+            .unwrap();
+        assert!(capacity > 0);
+        assert!(bytes.len() > capacity as usize);
+        eprintln!(
+            "owned result pipe capacity={capacity} encoded_bytes={}",
+            bytes.len()
+        );
+        let pid = handle.cleanup().child_pid();
+        let pending = match handle.finalize_until(Instant::now() + Duration::from_millis(20)) {
+            OwnedFinalize::Pending(run) => run,
+            other => panic!("blocked teardown unexpectedly {}", outcome_kind(&other)),
+        };
+        assert_eq!(pending.cleanup().child_pid(), pid);
+        assert!(pending.result_eof());
+        assert_eq!(pending.provisional_bytes(), bytes);
+        unsafe { &*shared }.release.store(true, Ordering::Release);
+        let result = match pending.retry_until(Instant::now() + Duration::from_secs(2)) {
+            OwnedFinalize::Complete(result) => result,
+            other => panic!("released child unexpectedly {}", outcome_kind(&other)),
+        };
+        assert_eq!(result.encoded_bytes(), bytes);
+        assert_eq!(result.decode().unwrap(), vec![37_u8; 10 * 1024 * 1024]);
+        assert_reaped(pid);
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    static OWNED_DECODE_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    #[derive(Debug, serde::Serialize)]
+    struct OwnedDecodeProbe(u32);
+    impl<'de> serde::Deserialize<'de> for OwnedDecodeProbe {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            OWNED_DECODE_COUNT.fetch_add(1, Ordering::SeqCst);
+            Ok(Self(<u32 as serde::Deserialize>::deserialize(
+                deserializer,
+            )?))
+        }
+    }
+
+    #[test]
+    fn owned_pending_result_never_constructs_generic_value() {
+        OWNED_DECODE_COUNT.store(0, Ordering::SeqCst);
+        let (mapping, shared) = new_shared_drop_state();
+        let handle = Container::new()
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |()| (OwnedDecodeProbe(91), BlockingDrop { shared }),
+            )
+            .unwrap();
+        assert_eq!(OWNED_DECODE_COUNT.load(Ordering::SeqCst), 0);
+        let pending = match handle.finalize_until(Instant::now()) {
+            OwnedFinalize::Pending(run) => run,
+            _ => panic!("child should still own deferred teardown"),
+        };
+        assert_eq!(OWNED_DECODE_COUNT.load(Ordering::SeqCst), 0);
+        unsafe { &*shared }.release.store(true, Ordering::Release);
+        let result = match pending.retry_until(Instant::now() + Duration::from_secs(2)) {
+            OwnedFinalize::Complete(result) => result,
+            _ => panic!("actual child should complete"),
+        };
+        assert_eq!(OWNED_DECODE_COUNT.load(Ordering::SeqCst), 0);
+        assert_eq!(result.decode().unwrap().0, 91);
+        assert_eq!(OWNED_DECODE_COUNT.load(Ordering::SeqCst), 1);
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn owned_lost_wait_status_is_physical_exit_not_success() {
+        let handle = Container::new()
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |()| (42_u32, ()),
+            )
+            .unwrap();
+        let pid = handle.cleanup().child_pid();
+        let bytes = handle.provisional_bytes().to_vec();
+        // Deliberate opposing violation of the exclusive-reaper contract.
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid.as_raw(), &mut status, 0) },
+            pid.as_raw()
+        );
+        assert_eq!(ExitStatus::from_raw(status), ExitStatus::Exited(0));
+        match handle.finalize_until(Instant::now() + Duration::from_secs(2)) {
+            OwnedFinalize::Failed { cause, cleanup } => {
+                assert_eq!(cause, OwnedRunFailure::WaitStatusUnavailable);
+                assert_eq!(
+                    cleanup.cleanup().observation(),
+                    ChildCleanupObservation::ExitedWithoutWaitStatus
+                );
+                assert_eq!(cleanup.cleanup().last_error(), Some(Errno::ECHILD));
+                assert_eq!(cleanup.provisional_bytes(), bytes);
+                assert_reaped(pid);
+            }
+            _ => panic!("lost wait status must never qualify"),
+        }
+    }
+
+    #[test]
+    fn owned_startup_before_parent_failure_retains_cleanup_authority() {
+        let (mapping, shared) = new_shared_drop_state();
+        OWNED_STARTUP_CANCEL_ERROR.with(|v| v.set(Some(Errno::EPERM)));
+        let mut called = false;
+        let failed = Container::new()
+            .run_with_startup_owned(
+                Duration::from_millis(50),
+                &mut |_| {
+                    called = true;
+                    Ok(())
+                },
+                &mut |_| {
+                    while !unsafe { &*shared }.release.load(Ordering::Acquire) {
+                        unsafe { libc::sched_yield() };
+                    }
+                    Ok(())
+                },
+                &mut |()| ((), ()),
+            )
+            .unwrap_err();
+        assert!(!called);
+        match failed {
+            StartupOwnedFailure::AfterClone { cause, run } => {
+                assert_eq!(cause, OwnedRunFailure::Startup(StartupError::TimedOut));
+                assert_eq!(run.cleanup().last_error(), Some(Errno::EPERM));
+                assert_eq!(
+                    run.cleanup().observation(),
+                    ChildCleanupObservation::Pending
+                );
+                let pid = run.cleanup().child_pid();
+                assert_eq!(unsafe { libc::kill(pid.as_raw(), 0) }, 0);
+                let fd = run.cleanup().pidfd.as_ref().unwrap().as_raw_fd();
+                match run.retry_until(Instant::now() + Duration::from_secs(2)) {
+                    OwnedFinalize::Failed {
+                        cause: again,
+                        cleanup,
+                    } => {
+                        assert_eq!(cause, again);
+                        assert_eq!(cleanup.cleanup().pidfd.as_ref().unwrap().as_raw_fd(), fd);
+                        assert_eq!(
+                            cleanup.cleanup().observation(),
+                            ChildCleanupObservation::Reaped(ExitStatus::Signaled(
+                                Signal::SIGKILL,
+                                false
+                            ))
+                        );
+                        assert_reaped(pid);
+                    }
+                    _ => panic!("cleanup must not erase first refusal"),
+                }
+            }
+            _ => panic!("a real child was created"),
+        }
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn owned_signal_esrch_is_not_a_terminal_status() {
+        let (mapping, shared) = new_shared_drop_state();
+        let mut handle = Container::new()
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |()| (7_u32, BlockingDrop { shared }),
+            )
+            .unwrap();
+        let child = handle.inner.child.as_mut().unwrap();
+        child.signal_error_once = Some(Errno::ESRCH);
+        assert_eq!(
+            child.cancel_and_wait_until(Instant::now() + Duration::from_millis(20)),
+            ChildCleanupObservation::Pending
+        );
+        assert_eq!(child.last_error(), Some(Errno::ESRCH));
+        unsafe { &*shared }.release.store(true, Ordering::Release);
+        assert_eq!(owned_complete(handle).decode().unwrap(), 7);
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn owned_result_read_error_retains_same_fd_partial_bytes_and_child() {
+        let (mapping, shared) = new_shared_drop_state();
+        let (reader, writer) = pipe().unwrap();
+        let reader_fd = reader.as_raw_fd();
+        let writer_fd = writer.as_raw_fd();
+        let mut stack = child_stack();
+        let child = super::super::clone::clone_with_stack_owned(
+            || {
+                unsafe { libc::close(reader_fd) };
+                let mut out = Fd::new(writer_fd);
+                out.write_all(b"abc").unwrap();
+                unsafe { &*shared }.started.store(true, Ordering::Release);
+                while !unsafe { &*shared }.release.load(Ordering::Acquire) {
+                    unsafe { libc::sched_yield() };
+                }
+                0
+            },
+            Namespace::empty(),
+            &mut stack,
+        )
+        .unwrap();
+        drop(writer);
+        let mut owned = OwnedFinalization::<u32>::new(OwnedContainerCleanup::new(child), reader);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !unsafe { &*shared }.started.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(unsafe { &*shared }.started.load(Ordering::Acquire));
+        owned.reader.as_ref().unwrap().set_nonblocking().unwrap();
+        let identity = std::fs::read_link(format!("/proc/self/fd/{reader_fd}")).unwrap();
+        let cause = owned.drain().unwrap_err();
+        assert_eq!(cause, OwnedRunFailure::ResultRead(Errno::EAGAIN));
+        assert_eq!(owned.bytes, b"abc");
+        owned.child.as_mut().unwrap().signal_error_once = Some(Errno::EPERM);
+        let run = match owned.fail(cause, Instant::now()) {
+            StartupOwnedFailure::AfterClone { run, .. } => run,
+            _ => unreachable!(),
+        };
+        assert_eq!(run.reader.as_ref().unwrap().as_raw_fd(), reader_fd);
+        assert_eq!(
+            std::fs::read_link(format!("/proc/self/fd/{reader_fd}")).unwrap(),
+            identity
+        );
+        assert_eq!(run.provisional_bytes(), b"abc");
+        assert!(!run.result_eof());
+        match run.retry_until(Instant::now() + Duration::from_secs(2)) {
+            OwnedFinalize::Failed {
+                cause: again,
+                cleanup,
+            } => {
+                assert_eq!(again, cause);
+                assert_eq!(cleanup.provisional_bytes(), b"abc");
+                assert!(matches!(
+                    cleanup.cleanup().observation(),
+                    ChildCleanupObservation::Reaped(_)
+                ));
+                assert_eq!(cleanup.reader.as_ref().unwrap().as_raw_fd(), reader_fd);
+                drop(cleanup);
+            }
+            _ => panic!("partial failed result cannot become successful"),
+        }
+        assert_eq!(unsafe { libc::fcntl(reader_fd, libc::F_GETFD) }, -1);
+        assert_eq!(Errno::last(), Errno::EBADF);
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn owned_atomic_clone_refusals_do_not_start_work() {
+        use super::super::clone::OwnedCloneTestFault;
+        use super::super::clone::clone_with_stack_owned;
+        let _fault = OwnedCloneFaultGuard::install(OwnedCloneTestFault::Probe(Errno::ENOSYS));
+        let result = Container::new().run_with_startup_owned(
+            Duration::from_secs(2),
+            &mut |_| panic!("no parent callback"),
+            &mut |_| -> Result<(), StartupError> { panic!("no child callback") },
+            &mut |()| ((), ()),
+        );
+        assert!(matches!(
+            result,
+            Err(StartupOwnedFailure::BeforeClone {
+                cause: StartupError::Io(Errno::ENOSYS)
+            })
+        ));
+        drop(_fault);
+        for flag in [
+            libc::CLONE_VM,
+            libc::CLONE_FILES,
+            libc::CLONE_FS,
+            libc::CLONE_SIGHAND,
+            libc::CLONE_PARENT_SETTID,
+            libc::CLONE_THREAD,
+            libc::CLONE_VFORK,
+            libc::CLONE_PARENT,
+            libc::CLONE_DETACHED,
+        ] {
+            let mut stack = child_stack();
+            let result = clone_with_stack_owned(
+                || panic!("invalid flags must not clone"),
+                Namespace::from_bits_retain(flag),
+                &mut stack,
+            );
+            assert!(matches!(result, Err(Errno::EINVAL)));
+        }
+        // RLIMIT is changed ONLY inside this actual child subprocess. The
+        // shared libtest process and its threads retain their original limits.
+        for atomic in [false, true] {
+            let errno = Container::new()
+                .run(|| {
+                    if atomic {
+                        let _fault =
+                            OwnedCloneFaultGuard::install(OwnedCloneTestFault::ExhaustAtClone);
+                        let mut stack = child_stack();
+                        clone_with_stack_owned(|| 0, Namespace::empty(), &mut stack)
+                            .err()
+                            .unwrap()
+                    } else {
+                        let limit = libc::rlimit {
+                            rlim_cur: 0,
+                            rlim_max: 0,
+                        };
+                        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+                        let mut stack = child_stack();
+                        clone_with_stack_owned(|| 0, Namespace::empty(), &mut stack)
+                            .err()
+                            .unwrap()
+                    }
+                })
+                .unwrap();
+            assert_eq!(errno, Errno::EMFILE);
+        }
+    }
+
+    #[test]
+    fn owned_missing_atomic_pidfd_refuses_permission_without_fake_owner() {
+        let _fault =
+            OwnedCloneFaultGuard::install(super::super::clone::OwnedCloneTestFault::MissingPidfd);
+        let (mapping, shared) = new_shared_drop_state();
+        let result = Container::new().run_with_startup_owned(
+            Duration::from_millis(50),
+            &mut |_| panic!("invalid atomic owner must not authorize parent setup"),
+            &mut |_| Ok(()),
+            &mut |()| {
+                unsafe { &*shared }.started.store(true, Ordering::Release);
+                ((), ())
+            },
+        );
+        match result {
+            Err(StartupOwnedFailure::AfterClone { cause, run }) => {
+                assert_eq!(cause, OwnedRunFailure::Startup(StartupError::Protocol));
+                assert!(run.cleanup().pidfd.is_none());
+                let pid = run.cleanup().child_pid();
+                drop(run);
+                assert_reaped(pid);
+            }
+            _ => panic!("missing atomic output must refuse"),
+        }
+        assert!(!unsafe { &*shared }.started.load(Ordering::Acquire));
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    struct OwnedExitDrop(i32);
+    impl Drop for OwnedExitDrop {
+        fn drop(&mut self) {
+            unsafe { libc::_exit(self.0) }
+        }
+    }
+    struct OwnedSignalDrop;
+    impl Drop for OwnedSignalDrop {
+        fn drop(&mut self) {
+            unsafe { libc::raise(libc::SIGPIPE) };
+        }
+    }
+
+    #[test]
+    fn owned_nonzero_and_signal_after_result_remain_failures() {
+        let run = Container::new()
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |()| (123_u32, OwnedExitDrop(73)),
+            )
+            .unwrap();
+        match run.finalize_until(Instant::now() + Duration::from_secs(2)) {
+            OwnedFinalize::Failed { cause, cleanup } => {
+                assert_eq!(cause, OwnedRunFailure::ChildStatus(ExitStatus::Exited(73)));
+                assert!(!cleanup.provisional_bytes().is_empty());
+            }
+            _ => panic!("nonzero cleanup cannot yield the provisional result"),
+        }
+        let run = Container::new()
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |()| (123_u32, OwnedSignalDrop),
+            )
+            .unwrap();
+        match run.finalize_until(Instant::now() + Duration::from_secs(2)) {
+            OwnedFinalize::Failed { cause, .. } => assert_eq!(
+                cause,
+                OwnedRunFailure::ChildStatus(ExitStatus::Signaled(Signal::SIGPIPE, false))
+            ),
+            _ => panic!("SIGPIPE cannot become serde error or exit zero"),
+        }
+    }
+
+    #[test]
+    fn owned_closed_result_reader_observes_actual_sigpipe() {
+        let (reader, writer) = pipe().unwrap();
+        let rfd = reader.as_raw_fd();
+        let wfd = writer.as_raw_fd();
+        let (mapping, shared) = new_shared_drop_state();
+        let mut stack = child_stack();
+        let child = super::super::clone::clone_with_stack_owned(
+            || {
+                unsafe { libc::close(rfd) };
+                unsafe { reset_signal_handling() }.unwrap();
+                while !unsafe { &*shared }.release.load(Ordering::Acquire) {
+                    unsafe { libc::sched_yield() };
+                }
+                Fd::new(wfd)
+                    .write_all(b"ordinary serialized output")
+                    .unwrap();
+                0
+            },
+            Namespace::empty(),
+            &mut stack,
+        )
+        .unwrap();
+        let mut owner = OwnedContainerCleanup::new(child);
+        drop(reader);
+        drop(writer);
+        unsafe { &*shared }.release.store(true, Ordering::Release);
+        assert_eq!(
+            owner.wait_until(Instant::now() + Duration::from_secs(2)),
+            ChildCleanupObservation::Reaped(ExitStatus::Signaled(Signal::SIGPIPE, false))
+        );
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn owned_invalid_request_and_permission_never_enter_work() {
+        use StartupTestFault::*;
+        for fault in [
+            RequestEmptyTrailing,
+            RequestDuplicate,
+            RequestMalformed,
+            RequestTrailingRights,
+            PermissionEmptyTrailing,
+            PermissionDuplicate,
+            PermissionMalformed,
+            PermissionTrailingRights,
+        ] {
+            let _fault = StartupFaultGuard::install(fault);
+            let (mapping, shared) = new_shared_drop_state();
+            let result = Container::new().run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |()| {
+                    unsafe { &*shared }.started.store(true, Ordering::Release);
+                    ((), ())
+                },
+            );
+            match result {
+                Err(StartupOwnedFailure::AfterClone { run, .. }) => drop(run),
+                Ok(run) => match run.finalize_until(Instant::now() + Duration::from_secs(2)) {
+                    OwnedFinalize::Complete(_) => panic!("corrupt permission cannot complete"),
+                    OwnedFinalize::Failed { .. } => (),
+                    OwnedFinalize::Pending(_) => panic!("corrupt child did not settle"),
+                },
+                _ => panic!("real child must exist"),
+            }
+            assert!(!unsafe { &*shared }.started.load(Ordering::Acquire));
+            unsafe { unmap_shared_drop_state(mapping, shared) };
+        }
+    }
+
+    #[test]
+    fn owned_persistent_signal_refusal_still_observes_independent_exit() {
+        // Install the real policy ONLY in this isolated process. Both inner
+        // cancellation attempts must see EPERM; actual wait still obtains 17.
+        let filter = seccomp::FilterBuilder::new()
+            .default_action(seccomp::Action::Allow)
+            .syscalls([(
+                syscalls::Sysno::pidfd_send_signal,
+                seccomp::Action::Errno(Errno::EPERM),
+            )])
+            .build();
+        let observed = Container::new()
+            .seccomp(filter)
+            .run(|| {
+                let (mapping, shared) = new_shared_drop_state();
+                let mut stack = child_stack();
+                let child = super::super::clone::clone_with_stack_owned(
+                    || {
+                        while !unsafe { &*shared }.release.load(Ordering::Acquire) {
+                            unsafe { libc::sched_yield() };
+                        }
+                        17
+                    },
+                    Namespace::empty(),
+                    &mut stack,
+                )
+                .unwrap();
+                let pid = child.pid;
+                let mut owner = OwnedContainerCleanup::new(child);
+                let fd = owner.pidfd.as_ref().unwrap().as_raw_fd();
+                assert_ne!(
+                    unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC,
+                    0
+                );
+                assert_eq!(
+                    owner.cancel_and_wait_until(Instant::now() + Duration::from_millis(20)),
+                    ChildCleanupObservation::Pending
+                );
+                assert_eq!(owner.last_error(), Some(Errno::EPERM));
+                unsafe { &*shared }.release.store(true, Ordering::Release);
+                assert_eq!(
+                    owner.cancel_and_wait_until(Instant::now() + Duration::from_secs(2)),
+                    ChildCleanupObservation::Reaped(ExitStatus::Exited(17))
+                );
+                assert_eq!(owner.last_error(), Some(Errno::EPERM));
+                assert_eq!(owner.child_pid(), pid);
+                assert_reaped(pid);
+                drop(owner);
+                assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+                assert_eq!(Errno::last(), Errno::EBADF);
+                unsafe { unmap_shared_drop_state(mapping, shared) };
+                (17, Errno::EPERM)
+            })
+            .unwrap();
+        assert_eq!(observed, (17, Errno::EPERM));
+    }
+
+    #[test]
+    fn owned_atomic_immediate_exit_has_actual_status_and_reclaims_fd() {
+        let mut stack = child_stack();
+        let child =
+            super::super::clone::clone_with_stack_owned(|| 17, Namespace::empty(), &mut stack)
+                .unwrap();
+        let pid = child.pid;
+        let mut owner = OwnedContainerCleanup::new(child);
+        let fd = owner.pidfd.as_ref().unwrap().as_raw_fd();
+        assert_ne!(
+            unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+        assert_eq!(
+            owner.wait_until(Instant::now() + Duration::from_secs(2)),
+            ChildCleanupObservation::Reaped(ExitStatus::Exited(17))
+        );
+        assert_reaped(pid);
+        drop(owner);
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+        assert_eq!(Errno::last(), Errno::EBADF);
+    }
+
+    #[test]
+    fn owned_wait_retries_actual_interrupted_pidfd_poll() {
+        let _serial = WAITPID_SIGNAL_TEST.lock().unwrap();
+        OWNED_POLL_INTERRUPTED.store(0, Ordering::Release);
+        let previous = unsafe {
+            sigaction(
+                Signal::SIGUSR2,
+                &SigAction::new(
+                    SigHandler::Handler(ignore_test_signal),
+                    SaFlags::empty(),
+                    SigSet::empty(),
+                ),
+            )
+        }
+        .unwrap();
+        let (mapping, shared) = new_shared_drop_state();
+        let run = Container::new()
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |()| (52_u32, BlockingDrop { shared }),
+            )
+            .unwrap();
+        let pid = run.cleanup().child_pid();
+        let waiting_thread = unsafe { libc::pthread_self() };
+        let shared_address = shared as usize;
+        // The O helper is created only after clone; no worker is inherited.
+        let interrupter = std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(2);
+            while OWNED_POLL_INTERRUPTED.load(Ordering::Acquire) == 0 && Instant::now() < until {
+                assert_eq!(
+                    unsafe { libc::pthread_kill(waiting_thread, libc::SIGUSR2) },
+                    0
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            unsafe { &*(shared_address as *mut SharedDropState) }
+                .release
+                .store(true, Ordering::Release);
+        });
+        let result = owned_complete(run);
+        interrupter.join().unwrap();
+        unsafe { sigaction(Signal::SIGUSR2, &previous) }.unwrap();
+        assert!(OWNED_POLL_INTERRUPTED.load(Ordering::Acquire) > 0);
+        assert_eq!(result.decode().unwrap(), 52);
+        assert_reaped(pid);
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    struct OwnedFactoryDrop {
+        index: usize,
+        counters: *mut [std::sync::atomic::AtomicUsize; 8],
+        parent: Pid,
+    }
+    impl Drop for OwnedFactoryDrop {
+        fn drop(&mut self) {
+            assert_eq!(
+                Pid::this(),
+                self.parent,
+                "borrowed O factories must not be dropped in C"
+            );
+            let counters = unsafe { &*self.counters };
+            assert_eq!(
+                counters[3].load(Ordering::Acquire),
+                1,
+                "O worker must already be joined"
+            );
+            counters[self.index].fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    #[derive(Debug)]
+    struct OwnedLifecycleValue(*mut [std::sync::atomic::AtomicUsize; 8]);
+    impl serde::Serialize for OwnedLifecycleValue {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            (unsafe { &*self.0 })[0].fetch_add(1, Ordering::SeqCst);
+            serializer.serialize_u32(29)
+        }
+    }
+    impl Drop for OwnedLifecycleValue {
+        fn drop(&mut self) {
+            (unsafe { &*self.0 })[2].fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct OwnedLifecycleDeferred {
+        shared: *mut SharedDropState,
+        counters: *mut [std::sync::atomic::AtomicUsize; 8],
+    }
+    impl Drop for OwnedLifecycleDeferred {
+        fn drop(&mut self) {
+            drop(BlockingDrop {
+                shared: self.shared,
+            });
+            (unsafe { &*self.counters })[1].fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn owned_borrowed_factories_remain_in_parent_until_child_and_worker_settle() {
+        use std::sync::atomic::AtomicUsize;
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                std::mem::size_of::<[AtomicUsize; 8]>(),
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let counters = mapping.cast::<[AtomicUsize; 8]>();
+        unsafe { counters.write(std::array::from_fn(|_| AtomicUsize::new(0))) };
+        let state = unsafe { &*counters };
+        let (child_mapping, shared) = new_shared_drop_state();
+        let worker_release = std::sync::Arc::new(AtomicBool::new(false));
+        let worker = std::cell::RefCell::new(None);
+        let parent_guard = OwnedFactoryDrop {
+            index: 4,
+            counters,
+            parent: Pid::this(),
+        };
+        let child_guard = OwnedFactoryDrop {
+            index: 5,
+            counters,
+            parent: Pid::this(),
+        };
+        let run_guard = OwnedFactoryDrop {
+            index: 6,
+            counters,
+            parent: Pid::this(),
+        };
+        let worker_ref = &worker;
+        let release_ref = &worker_release;
+        let mut parent_start = move |_: ParentStartContext<'_>| {
+            let _keep = &parent_guard;
+            let release = std::sync::Arc::clone(release_ref);
+            *worker_ref.borrow_mut() = Some(std::thread::spawn(move || {
+                while !release.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+            }));
+            Ok(())
+        };
+        let mut child_start = move |_: &mut ChildStartContext| {
+            let _keep = &child_guard;
+            Ok(())
+        };
+        let mut run = move |()| {
+            let _keep = &run_guard;
+            (
+                OwnedLifecycleValue(counters),
+                OwnedLifecycleDeferred { shared, counters },
+            )
+        };
+        let handle = Container::new()
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut parent_start,
+                &mut child_start,
+                &mut run,
+            )
+            .unwrap();
+        let pending = match handle.finalize_until(Instant::now()) {
+            OwnedFinalize::Pending(pending) => pending,
+            _ => panic!("C is still in user teardown"),
+        };
+        assert_eq!(state[0].load(Ordering::Acquire), 1);
+        for counter in &state[1..] {
+            assert_eq!(counter.load(Ordering::Acquire), 0);
+        }
+        unsafe { &*shared }.release.store(true, Ordering::Release);
+        let result = match pending.retry_until(Instant::now() + Duration::from_secs(2)) {
+            OwnedFinalize::Complete(result) => result,
+            _ => panic!("original child should settle"),
+        };
+        assert_eq!(state[1].load(Ordering::Acquire), 1);
+        assert_eq!(state[2].load(Ordering::Acquire), 1);
+        for counter in &state[3..] {
+            assert_eq!(counter.load(Ordering::Acquire), 0);
+        }
+        worker_release.store(true, Ordering::Release);
+        worker.borrow_mut().take().unwrap().join().unwrap();
+        state[3].store(1, Ordering::Release);
+        drop(parent_start);
+        drop(child_start);
+        drop(run);
+        for counter in &state[..7] {
+            assert_eq!(counter.load(Ordering::Acquire), 1);
+        }
+        assert_eq!(state[7].load(Ordering::Acquire), 0);
+        // The result remains encoded throughout C/O settlement; a different
+        // decoding type here verifies the stable u32 wire, not user construction.
+        assert_eq!(
+            bincode::serde::decode_from_slice::<Result<u32, StartupError>, _>(
+                result.encoded_bytes(),
+                bincode::config::legacy()
+            )
+            .unwrap(),
+            (Ok(29), result.encoded_bytes().len())
+        );
+        unsafe { unmap_shared_drop_state(child_mapping, shared) };
+        unsafe {
+            std::ptr::drop_in_place(counters);
+            assert_eq!(
+                libc::munmap(mapping, std::mem::size_of::<[AtomicUsize; 8]>()),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn owned_decode_refusal_retains_exact_bytes_and_actual_status() {
+        for bytes in [
+            vec![255],
+            {
+                let mut bytes = bincode::serde::encode_to_vec(
+                    Ok::<u32, StartupError>(19),
+                    bincode::config::legacy(),
+                )
+                .unwrap();
+                bytes.push(88);
+                bytes
+            },
+            bincode::serde::encode_to_vec(
+                Err::<u32, StartupError>(StartupError::Protocol),
+                bincode::config::legacy(),
+            )
+            .unwrap(),
+        ] {
+            let run = Container::new()
+                .run_with_startup_owned(
+                    Duration::from_secs(2),
+                    &mut |_| Ok(()),
+                    &mut |_| Ok(()),
+                    &mut |()| (19_u32, ()),
+                )
+                .unwrap();
+            let mut result = owned_complete(run);
+            // Deliberately corrupt only the held wire after genuine C settlement.
+            result.bytes = bytes.clone();
+            let failure = result.decode().unwrap_err();
+            assert_eq!(failure.encoded_bytes(), bytes);
+            assert_eq!(failure.status(), ExitStatus::Exited(0));
+            assert_eq!(
+                failure.cause(),
+                OwnedRunFailure::Startup(StartupError::Protocol)
+            );
+        }
+    }
+
+    #[test]
+    fn owned_unknown_wait_retains_payload_and_same_child_on_retry() {
+        let (mapping, shared) = new_shared_drop_state();
+        let mut run = Container::new()
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |()| (93_u32, BlockingDrop { shared }),
+            )
+            .unwrap();
+        let bytes = run.provisional_bytes().to_vec();
+        let pid = run.cleanup().child_pid();
+        let fd = run.cleanup().pidfd.as_ref().unwrap().as_raw_fd();
+        // Inject only the wait syscall error: the real child remains alive,
+        // its real pidfd remains owned, and the retry performs real cancellation.
+        run.inner.child.as_mut().unwrap().wait_error_once = Some(Errno::EIO);
+        let cleanup = match run.finalize_until(Instant::now()) {
+            OwnedFinalize::Failed { cause, cleanup } => {
+                assert_eq!(cause, OwnedRunFailure::Cleanup(Errno::EIO));
+                assert_eq!(
+                    cleanup.cleanup().observation(),
+                    ChildCleanupObservation::Unknown
+                );
+                assert_eq!(cleanup.provisional_bytes(), bytes);
+                assert_eq!(cleanup.cleanup().pidfd.as_ref().unwrap().as_raw_fd(), fd);
+                assert_eq!(cleanup.cleanup().child_pid(), pid);
+                cleanup
+            }
+            _ => panic!("unknown wait must retain a failed owner"),
+        };
+        match cleanup.retry_until(Instant::now() + Duration::from_secs(2)) {
+            OwnedFinalize::Failed { cause, cleanup } => {
+                assert_eq!(cause, OwnedRunFailure::Cleanup(Errno::EIO));
+                assert_eq!(cleanup.provisional_bytes(), bytes);
+                assert_eq!(cleanup.cleanup().child_pid(), pid);
+                assert_eq!(cleanup.cleanup().pidfd.as_ref().unwrap().as_raw_fd(), fd);
+                assert_eq!(
+                    cleanup.cleanup().observation(),
+                    ChildCleanupObservation::Reaped(ExitStatus::Signaled(Signal::SIGKILL, false))
+                );
+                assert_reaped(pid);
+            }
+            _ => panic!("settlement must not erase original wait failure"),
+        }
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    struct OwnedExternalFactory {
+        parent: Pid,
+        joined: std::sync::Arc<AtomicBool>,
+        drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl Drop for OwnedExternalFactory {
+        fn drop(&mut self) {
+            assert_eq!(Pid::this(), self.parent);
+            assert!(
+                self.joined.load(Ordering::Acquire),
+                "factory dropped before O worker joined"
+            );
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    #[derive(Debug)]
+    struct OwnedSerializeExit;
+    impl serde::Serialize for OwnedSerializeExit {
+        fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+            // Die during serialization, before the buffered result can flush.
+            unsafe { libc::_exit(73) }
+        }
+    }
+
+    #[test]
+    fn owned_post_ready_serialization_death_keeps_external_worker_and_factory() {
+        use std::sync::Arc;
+        let release = Arc::new(AtomicBool::new(false));
+        let joined = Arc::new(AtomicBool::new(false));
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let factory = OwnedExternalFactory {
+            parent: Pid::this(),
+            joined: joined.clone(),
+            drops: drops.clone(),
+        };
+        let worker = std::cell::RefCell::new(None);
+        let worker_ref = &worker;
+        let release_ref = &release;
+        let mut parent_called = false;
+        let called_ref = &mut parent_called;
+        let mut parent = move |_: ParentStartContext<'_>| {
+            let _keep = &factory;
+            *called_ref = true;
+            let release = Arc::clone(release_ref);
+            *worker_ref.borrow_mut() = Some(std::thread::spawn(move || {
+                while !release.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+            }));
+            Ok(())
+        };
+        let failure = Container::new()
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut parent,
+                &mut |_| Ok(()),
+                &mut |()| (OwnedSerializeExit, ()),
+            )
+            .unwrap_err();
+        match failure {
+            StartupOwnedFailure::AfterClone { cause, run } => {
+                assert_eq!(cause, OwnedRunFailure::Startup(StartupError::MissingResult));
+                assert_eq!(
+                    run.cleanup().observation(),
+                    ChildCleanupObservation::Reaped(ExitStatus::Exited(73))
+                );
+                assert!(run.provisional_bytes().is_empty());
+                assert_eq!(drops.load(Ordering::Acquire), 0);
+                assert!(!joined.load(Ordering::Acquire));
+                assert!(!worker.borrow().as_ref().unwrap().is_finished());
+                let pid = run.cleanup().child_pid();
+                drop(run);
+                assert_reaped(pid);
+            }
+            _ => panic!("post-ready child death must retain actual cleanup"),
+        }
+        assert_eq!(drops.load(Ordering::Acquire), 0);
+        release.store(true, Ordering::Release);
+        worker.borrow_mut().take().unwrap().join().unwrap();
+        joined.store(true, Ordering::Release);
+        drop(parent);
+        assert!(parent_called);
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn owned_implicit_disposal_waits_before_worker_factory_and_second_clone() {
+        // Persistent cancellation refusal forces Drop to observe natural exit.
+        // The policy and all helper threads live only in this isolated process.
+        let filter = seccomp::FilterBuilder::new()
+            .default_action(seccomp::Action::Allow)
+            .syscalls([(
+                syscalls::Sysno::pidfd_send_signal,
+                seccomp::Action::Errno(Errno::EPERM),
+            )])
+            .build();
+        let result = Container::new()
+            .seccomp(filter)
+            .run(|| {
+                use std::sync::Arc;
+                let (mapping, shared) = new_shared_drop_state();
+                let release = Arc::new(AtomicBool::new(false));
+                let joined = Arc::new(AtomicBool::new(false));
+                let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let cancel_observed = Arc::new(AtomicBool::new(false));
+                let second_clone = Arc::new(AtomicBool::new(false));
+                let worker = std::cell::RefCell::new(None);
+                let worker_ref = &worker;
+                let release_ref = &release;
+                let factory = OwnedExternalFactory {
+                    parent: Pid::this(),
+                    joined: joined.clone(),
+                    drops: drops.clone(),
+                };
+                let mut parent = move |_: ParentStartContext<'_>| {
+                    let _keep = &factory;
+                    let release = Arc::clone(release_ref);
+                    *worker_ref.borrow_mut() = Some(std::thread::spawn(move || {
+                        while !release.load(Ordering::Acquire) {
+                            std::thread::yield_now();
+                        }
+                    }));
+                    Ok(())
+                };
+                let run = Container::new()
+                    .run_with_startup_owned(
+                        Duration::from_secs(2),
+                        &mut parent,
+                        &mut |_| Ok(()),
+                        &mut |()| (41_u32, BlockingDrop { shared }),
+                    )
+                    .unwrap();
+                let pid = run.cleanup().child_pid();
+                let mut pending = match run.finalize_until(Instant::now()) {
+                    OwnedFinalize::Pending(pending) => pending,
+                    _ => panic!("child must still hold its teardown gate"),
+                };
+                pending.child.as_mut().unwrap().cancellation_observed =
+                    Some(cancel_observed.clone());
+                let shared_address = shared as usize;
+                let observed = cancel_observed.clone();
+                let observer_joined = joined.clone();
+                let observer_drops = drops.clone();
+                let observer_second = second_clone.clone();
+                let controller = std::thread::spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    while !observed.load(Ordering::Acquire) && Instant::now() < deadline {
+                        std::thread::yield_now();
+                    }
+                    assert!(
+                        observed.load(Ordering::Acquire),
+                        "actual cancellation was not attempted"
+                    );
+                    assert!(!observer_joined.load(Ordering::Acquire));
+                    assert_eq!(observer_drops.load(Ordering::Acquire), 0);
+                    assert!(!observer_second.load(Ordering::Acquire));
+                    unsafe { &*(shared_address as *mut SharedDropState) }
+                        .release
+                        .store(true, Ordering::Release);
+                });
+                drop(pending); // implicit disposal retains ownership across EPERM
+                assert_reaped(pid);
+                assert!(unsafe { &*shared }.finished.load(Ordering::Acquire));
+                controller.join().unwrap();
+                assert_eq!(drops.load(Ordering::Acquire), 0);
+                assert!(!joined.load(Ordering::Acquire));
+                release.store(true, Ordering::Release);
+                worker.borrow_mut().take().unwrap().join().unwrap();
+                joined.store(true, Ordering::Release);
+                drop(parent);
+                assert_eq!(drops.load(Ordering::Acquire), 1);
+                // This native caller's ordering is explicit; the API does not
+                // certify arbitrary outside threads or supply an A3 clone token.
+                second_clone.store(true, Ordering::Release);
+                assert_eq!(Container::new().run(|| 23), Ok(23));
+                unsafe { unmap_shared_drop_state(mapping, shared) };
+                23
+            })
+            .unwrap();
+        assert_eq!(result, 23);
+    }
+
+    #[derive(Debug)]
+    struct OwnedStalledSerializer(*mut SharedDropState);
+    impl serde::Serialize for OwnedStalledSerializer {
+        fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+            unsafe { &*self.0 }.started.store(true, Ordering::Release);
+            loop {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    #[test]
+    fn owned_stalled_serializer_requires_outer_process_containment() {
+        let (mapping, shared) = new_shared_drop_state();
+        let mut stack = child_stack();
+        // The supervised outer process is PID-namespace init. Its forced death
+        // also terminates the intentionally stuck inner serializer; no orphan
+        // helper is left behind. This is a native control, not a guest run.
+        let outer = super::super::clone::clone_with_stack_owned(
+            || {
+                assert_eq!(Pid::this().as_raw(), 1);
+                let _never_returns = Container::new().run_with_startup_owned(
+                    Duration::from_millis(50),
+                    &mut |_| Ok(()),
+                    &mut |_| Ok(()),
+                    &mut |()| (OwnedStalledSerializer(shared), ()),
+                );
+                unsafe { &*shared }.finished.store(true, Ordering::Release);
+                99
+            },
+            Namespace::USER | Namespace::PID,
+            &mut stack,
+        )
+        .unwrap();
+        let mut outer = OwnedContainerCleanup::new(outer);
+        let pid = outer.child_pid();
+        let ready_deadline = Instant::now() + Duration::from_secs(2);
+        while !unsafe { &*shared }.started.load(Ordering::Acquire)
+            && Instant::now() < ready_deadline
+        {
+            std::thread::yield_now();
+        }
+        assert!(unsafe { &*shared }.started.load(Ordering::Acquire));
+        // Exceeds the expired startup deadline, which is NOT a result budget.
+        assert_eq!(
+            outer.wait_until(Instant::now() + Duration::from_millis(100)),
+            ChildCleanupObservation::Pending
+        );
+        assert!(!unsafe { &*shared }.finished.load(Ordering::Acquire));
+        assert_eq!(
+            outer.cancel_and_wait_until(Instant::now() + Duration::from_secs(2)),
+            ChildCleanupObservation::Reaped(ExitStatus::Signaled(Signal::SIGKILL, false))
+        );
+        assert_reaped(pid);
+        eprintln!(
+            "stalled serializer: outer_pid={pid} actual_exit=SIGKILL after actual Pending; library result acquisition did not return"
+        );
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn owned_provisional_cancel_reaps_actual_child_and_preserves_bytes() {
+        let (mapping, shared) = new_shared_drop_state();
+        let run = Container::new()
+            .run_with_startup_owned(
+                Duration::from_secs(2),
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+                &mut |()| (77_u32, BlockingDrop { shared }),
+            )
+            .unwrap();
+        let pid = run.cleanup().child_pid();
+        let fd = run.cleanup().pidfd.as_ref().unwrap().as_raw_fd();
+        let bytes = run.provisional_bytes().to_vec();
+        let failed = match run.cancel_until(Instant::now() + Duration::from_secs(2)) {
+            OwnedFinalize::Failed { cause, cleanup } => {
+                assert_eq!(cause, OwnedRunFailure::Cancelled);
+                assert_eq!(
+                    cleanup.cleanup().observation(),
+                    ChildCleanupObservation::Reaped(ExitStatus::Signaled(Signal::SIGKILL, false))
+                );
+                assert_eq!(cleanup.cleanup().child_pid(), pid);
+                assert_eq!(cleanup.cleanup().pidfd.as_ref().unwrap().as_raw_fd(), fd);
+                assert_eq!(cleanup.provisional_bytes(), bytes);
+                assert!(cleanup.result_eof());
+                cleanup
+            }
+            _ => panic!("explicit cancellation must remain failed"),
+        };
+        assert_reaped(pid);
+        match failed.retry_until(Instant::now()) {
+            OwnedFinalize::Failed { cause, cleanup } => {
+                assert_eq!(cause, OwnedRunFailure::Cancelled);
+                assert_eq!(cleanup.provisional_bytes(), bytes);
+            }
+            _ => panic!("cleanup must not erase cancellation"),
+        }
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn owned_pending_cancel_stays_failed_after_refused_signal_and_exit_zero() {
+        let filter = seccomp::FilterBuilder::new()
+            .default_action(seccomp::Action::Allow)
+            .syscalls([(
+                syscalls::Sysno::pidfd_send_signal,
+                seccomp::Action::Errno(Errno::EPERM),
+            )])
+            .build();
+        let result = Container::new()
+            .seccomp(filter)
+            .run(|| {
+                let (mapping, shared) = new_shared_drop_state();
+                let run = Container::new()
+                    .run_with_startup_owned(
+                        Duration::from_secs(2),
+                        &mut |_| Ok(()),
+                        &mut |_| Ok(()),
+                        &mut |()| (78_u32, BlockingDrop { shared }),
+                    )
+                    .unwrap();
+                let pid = run.cleanup().child_pid();
+                let fd = run.cleanup().pidfd.as_ref().unwrap().as_raw_fd();
+                let bytes = run.provisional_bytes().to_vec();
+                let pending = match run.finalize_until(Instant::now()) {
+                    OwnedFinalize::Pending(pending) => pending,
+                    _ => panic!("real child must remain held after result EOF"),
+                };
+                let failed = match pending.cancel_until(Instant::now() + Duration::from_millis(20))
+                {
+                    OwnedFinalize::Failed { cause, cleanup } => {
+                        assert_eq!(cause, OwnedRunFailure::Cancelled);
+                        assert_eq!(
+                            cleanup.cleanup().observation(),
+                            ChildCleanupObservation::Pending
+                        );
+                        assert_eq!(cleanup.cleanup().last_error(), Some(Errno::EPERM));
+                        assert_eq!(cleanup.cleanup().child_pid(), pid);
+                        assert_eq!(cleanup.cleanup().pidfd.as_ref().unwrap().as_raw_fd(), fd);
+                        assert_eq!(cleanup.provisional_bytes(), bytes);
+                        cleanup
+                    }
+                    _ => panic!("failed bounded cancellation must retain the pending owner"),
+                };
+                unsafe { &*shared }.release.store(true, Ordering::Release);
+                match failed.retry_until(Instant::now() + Duration::from_secs(2)) {
+                    OwnedFinalize::Failed { cause, cleanup } => {
+                        assert_eq!(cause, OwnedRunFailure::Cancelled);
+                        assert_eq!(
+                            cleanup.cleanup().observation(),
+                            ChildCleanupObservation::Reaped(ExitStatus::Exited(0))
+                        );
+                        assert_eq!(cleanup.cleanup().last_error(), Some(Errno::EPERM));
+                        assert_eq!(cleanup.cleanup().child_pid(), pid);
+                        assert_eq!(cleanup.cleanup().pidfd.as_ref().unwrap().as_raw_fd(), fd);
+                        assert_eq!(cleanup.provisional_bytes(), bytes);
+                    }
+                    _ => panic!("real exit zero cannot promote a cancelled run"),
+                }
+                assert_reaped(pid);
+                unsafe { unmap_shared_drop_state(mapping, shared) };
+                true
+            })
+            .unwrap();
+        assert!(result);
+    }
 
     struct StartupFaultGuard;
 
