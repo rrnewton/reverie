@@ -388,6 +388,32 @@ class ReverieValidateTest(unittest.TestCase):
                 temporary.assert_not_called()
                 mkdir.assert_not_called()
 
+    def test_safe_ci_state_symlink_loops_are_complete_no_result(self) -> None:
+        for inherited in (False, True):
+            with self.subTest(inherited=inherited), ExecutingAuthorityFixture() as fixture:
+                loop = fixture.base / "loop"
+                loop.symlink_to(loop.name)
+                state = fixture.state_root if inherited else loop
+                environment = {"DEV_HERMIT_PARENT": str(loop)} if inherited else {}
+                output, errors = StringIO(), StringIO()
+                with (
+                    mock.patch.object(reverie_safe_ci, "ROOT", fixture.code),
+                    mock.patch.dict(os.environ, environment, clear=True),
+                    mock.patch.object(reverie_safe_ci.subprocess, "run") as run,
+                    mock.patch.object(Path, "mkdir") as mkdir,
+                    redirect_stdout(output), redirect_stderr(errors),
+                ):
+                    result = reverie_safe_ci.main([
+                        "--root", str(fixture.code), "--state-root", str(state),
+                        "--checkout", str(fixture.base), "--target", "b" * 40,
+                        "--log", str(fixture.base / "log"),
+                    ])
+                self.assertEqual(75, result)
+                self.assertEqual("FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n", output.getvalue())
+                self.assertIn("cannot resolve authority path", errors.getvalue())
+                run.assert_not_called()
+                mkdir.assert_not_called()
+
     def test_safe_ci_unwritable_state_is_no_result_without_dagrun(self) -> None:
         with ExecutingAuthorityFixture() as fixture:
             fixture.state_root.chmod(0o555)

@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from immutable_tool_authority import read_executing_tool_authority
+from immutable_tool_authority import read_executing_tool_authority, resolve_authority_path
 
 from final_validate_status import (
     FINAL_VALIDATE_STATUS_EXIT_CODES,
@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     dag_path: Path | None = None
     status_path: Path | None = None
     try:
-        state_root = (args.state_root or args.root).resolve()
+        state_root = resolve_authority_path(args.state_root or args.root)
         authority = read_executing_tool_authority(
             ROOT, state_root, os.environ, tool_root=args.root
         )

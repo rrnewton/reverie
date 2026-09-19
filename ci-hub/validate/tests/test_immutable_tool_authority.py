@@ -295,6 +295,16 @@ else:
         self.assertEqual(fixture.record["root_ino"], observed.root_ino)
         self.assertEqual(fixture.record["target_ino"], observed.target_ino)
 
+    def test_symlink_loops_in_retained_authority_paths_are_typed_refusals(self) -> None:
+        for name in ("state_root", "target_root"):
+            with self.subTest(path=name):
+                fixture = self.fixture()
+                path = getattr(fixture, name)
+                path.rename(path.with_name(path.name + "-retained"))
+                path.symlink_to(path.name)
+                with self.assertRaisesRegex(ValueError, "cannot resolve authority path"):
+                    self.read(fixture)
+
     def test_protocol_and_typed_fields_still_refuse_mutations(self) -> None:
         cases = (
             ({"unknown": "field"}, "fields are incomplete or unknown"),

@@ -73,6 +73,15 @@ class ImmutableToolAuthority:
     bootstrap_sha256: str
 
 
+def resolve_authority_path(path: Path, *, strict: bool = False) -> Path:
+    """Make Python 3.12's symlink-loop exception a typed authority refusal."""
+    try:
+        return path.resolve(strict=strict)
+    except RuntimeError as error:
+        # Catch only Path.resolve, not arbitrary verifier/caller RuntimeErrors.
+        raise ValueError(f"cannot resolve authority path {path}: {error}") from error
+
+
 def proc_fd_identity(path: Path, *, role: str) -> tuple[int, int]:
     match = re.fullmatch(r"/proc/([1-9][0-9]*)/fd/([0-9]+)", str(path))
     if match is None:
@@ -334,7 +343,7 @@ def read_immutable_tool_authority(
         raise ValueError(
             "cached target descriptor identity does not match its authority"
         )
-    resolved_target = authority.target_root.resolve(strict=True)
+    resolved_target = resolve_authority_path(authority.target_root, strict=True)
     if (
         not authority.target_root.is_absolute()
         or resolved_target != authority.target_root
@@ -381,7 +390,7 @@ def read_immutable_tool_authority(
         raise ValueError(
             "retained state-root descriptor identity does not match its authority"
         )
-    resolved_state = state_root.resolve(strict=True)
+    resolved_state = resolve_authority_path(state_root, strict=True)
     if not authority.state_root.is_absolute() or resolved_state != authority.state_root:
         raise ValueError(
             "canonical DEV_HERMIT_PARENT does not match immutable tool authority state root"
@@ -462,7 +471,7 @@ def read_executing_tool_authority(
     if raw_state is not None and (
         not raw_state
         or not Path(raw_state).is_absolute()
-        or state_root.resolve() != Path(raw_state).resolve()
+        or resolve_authority_path(state_root) != resolve_authority_path(Path(raw_state))
     ):
         raise ValueError("state root does not match DEV_HERMIT_PARENT")
     if not fd_context:
