@@ -34,7 +34,11 @@ mod stdio;
 mod util;
 
 use std::ffi::CString;
+use std::fmt;
 use std::io;
+use std::os::fd::AsFd;
+use std::os::fd::BorrowedFd;
+use std::os::fd::OwnedFd;
 
 pub use child::Child;
 pub use child::Output;
@@ -60,10 +64,45 @@ pub use stdio::ChildStdout;
 pub use stdio::Stdio;
 use syscalls::Errno;
 
+/// Typed reason that a pathname-only consumer refused descriptor execution.
+///
+/// Consumers that inspect, rewrite, or wrap the path returned by
+/// [`Command::get_program`] cannot safely accept [`Command::executable`]
+/// unless they bind that work to the same open file description. This error
+/// preserves which consumer made that explicit capability decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DescriptorExecutionUnsupported {
+    consumer: &'static str,
+}
+
+impl DescriptorExecutionUnsupported {
+    fn new(consumer: &'static str) -> Self {
+        Self { consumer }
+    }
+
+    /// Returns the pathname-only consumer that refused descriptor execution.
+    pub fn consumer(&self) -> &'static str {
+        self.consumer
+    }
+}
+
+impl fmt::Display for DescriptorExecutionUnsupported {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} does not support descriptor-based execution",
+            self.consumer
+        )
+    }
+}
+
+impl std::error::Error for DescriptorExecutionUnsupported {}
+
 /// A builder for spawning a process.
 // See the builder.rs for documentation of each field.
 pub struct Command {
     program: CString,
+    executable: Option<OwnedFd>,
     args: util::CStringArray,
     pre_exec: Vec<Box<dyn FnMut() -> Result<(), Errno> + Send + Sync>>,
     container: Container,
@@ -111,8 +150,15 @@ impl Command {
     /// This fails if the command contains container configuration that cannot
     /// be represented by [`std::process::Command`], rather than silently
     /// discarding that configuration. This includes namespaces, mounts,
-    /// seccomp filters, pseudoterminals, and CPU affinity.
+    /// seccomp filters, pseudoterminals, CPU affinity, and descriptor-based
+    /// execution.
     pub fn try_into_std(self) -> io::Result<std::process::Command> {
+        if self.executable.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot convert to std::process::Command without losing: executable file descriptor",
+            ));
+        }
         let blockers = self.container.std_conversion_blockers();
         if !blockers.is_empty() {
             return Err(io::Error::new(
@@ -148,6 +194,7 @@ impl Command {
         // the standard-command conversion explicitly preserves or refuses it.
         let Self {
             program,
+            executable: _,
             args,
             pre_exec,
             container,
@@ -194,17 +241,460 @@ impl Command {
 
         result
     }
+
+    /// Returns the file descriptor selected for descriptor-based execution.
+    ///
+    /// When present, [`Command::spawn`] executes this open file description
+    /// with `execveat(AT_EMPTY_PATH)` and uses `program` only as argument zero.
+    pub fn get_executable(&self) -> Option<BorrowedFd<'_>> {
+        self.executable
+            .as_ref()
+            .map(|executable| executable.as_fd())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
+    use std::fs::File;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    use std::os::fd::FromRawFd;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::fs::MetadataExt;
     use std::path::Path;
     use std::str::from_utf8;
+    use std::time::Duration;
+    use std::time::Instant;
 
     use super::*;
     use crate::ExitStatus;
+
+    const DESCRIPTOR_CONTROL_ROLE: &str = "REVERIE_PROCESS_DESCRIPTOR_CONTROL_ROLE";
+    const DESCRIPTOR_CONTROL_CASE: &str = "REVERIE_PROCESS_DESCRIPTOR_CONTROL_CASE";
+    const DESCRIPTOR_CONTROL_RECORD: &str = "REVERIE_PROCESS_DESCRIPTOR_CONTROL_RECORD";
+    const DESCRIPTOR_CONTROL_INPUT: &str = "REVERIE_PROCESS_DESCRIPTOR_CONTROL_INPUT";
+    const DESCRIPTOR_CONTROL_LAUNCH: &str = "REVERIE_PROCESS_DESCRIPTOR_CONTROL_LAUNCH";
+    const DESCRIPTOR_CONTROL_SEALS: i32 =
+        libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum DescriptorControlInput {
+        Standard(i32),
+        Ordinary,
+    }
+
+    impl DescriptorControlInput {
+        fn name(self) -> &'static str {
+            match self {
+                Self::Standard(0) => "stdin",
+                Self::Standard(1) => "stdout",
+                Self::Standard(2) => "stderr",
+                Self::Standard(_) => unreachable!("only standard descriptors are named"),
+                Self::Ordinary => "ordinary",
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum StandardDescriptorSnapshot {
+        Open {
+            device: u64,
+            inode: u64,
+            mode: u32,
+            rdev: u64,
+            flags: i32,
+        },
+        Closed {
+            fstat_errno: Option<i32>,
+            fcntl_errno: Option<i32>,
+        },
+    }
+
+    fn standard_descriptor_snapshot(descriptor: i32) -> StandardDescriptorSnapshot {
+        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+        let fstat_result = unsafe { libc::fstat(descriptor, status.as_mut_ptr()) };
+        let fstat_errno = (fstat_result == -1)
+            .then(|| io::Error::last_os_error().raw_os_error())
+            .flatten();
+        let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+        let fcntl_errno = (flags == -1)
+            .then(|| io::Error::last_os_error().raw_os_error())
+            .flatten();
+        if fstat_result == 0 && flags != -1 {
+            let status = unsafe { status.assume_init() };
+            StandardDescriptorSnapshot::Open {
+                device: status.st_dev,
+                inode: status.st_ino,
+                mode: status.st_mode,
+                rdev: status.st_rdev,
+                flags,
+            }
+        } else {
+            StandardDescriptorSnapshot::Closed {
+                fstat_errno,
+                fcntl_errno,
+            }
+        }
+    }
+
+    fn standard_descriptors() -> [StandardDescriptorSnapshot; 3] {
+        [
+            standard_descriptor_snapshot(libc::STDIN_FILENO),
+            standard_descriptor_snapshot(libc::STDOUT_FILENO),
+            standard_descriptor_snapshot(libc::STDERR_FILENO),
+        ]
+    }
+
+    fn sealed_self_executable() -> File {
+        let descriptor = unsafe {
+            libc::memfd_create(
+                c"reverie-process-descriptor-control".as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        assert_ne!(
+            descriptor,
+            -1,
+            "failed to create descriptor-control memfd: {}",
+            io::Error::last_os_error()
+        );
+        let mut retained = unsafe { File::from_raw_fd(descriptor) };
+        let mut source = File::open(std::env::current_exe().unwrap()).unwrap();
+        let copied = io::copy(&mut source, &mut retained).unwrap();
+        assert!(copied > 0, "descriptor-control executable was empty");
+        assert_eq!(
+            unsafe { libc::fchmod(descriptor, 0o500) },
+            0,
+            "failed to make descriptor-control memfd executable: {}",
+            io::Error::last_os_error()
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(descriptor, libc::F_ADD_SEALS, DESCRIPTOR_CONTROL_SEALS) },
+            0,
+            "failed to seal descriptor-control executable: {}",
+            io::Error::last_os_error()
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(descriptor, libc::F_GET_SEALS) },
+            DESCRIPTOR_CONTROL_SEALS
+        );
+        retained
+    }
+
+    fn duplicate_to_control_input(retained: &File, input: DescriptorControlInput) -> OwnedFd {
+        let target = match input {
+            DescriptorControlInput::Standard(target) => {
+                assert_eq!(
+                    unsafe { libc::dup2(retained.as_raw_fd(), target) },
+                    target,
+                    "failed to install retained executable at descriptor {target}: {}",
+                    io::Error::last_os_error()
+                );
+                assert_eq!(
+                    unsafe { libc::fcntl(target, libc::F_SETFD, libc::FD_CLOEXEC) },
+                    0,
+                    "failed to set CLOEXEC on input descriptor {target}: {}",
+                    io::Error::last_os_error()
+                );
+                target
+            }
+            DescriptorControlInput::Ordinary => {
+                let target =
+                    unsafe { libc::fcntl(retained.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 64) };
+                assert!(
+                    target > libc::STDERR_FILENO,
+                    "failed to create ordinary descriptor-control input: {}",
+                    io::Error::last_os_error()
+                );
+                target
+            }
+        };
+        unsafe { OwnedFd::from_raw_fd(target) }
+    }
+
+    fn wait_reverie_child_bounded(child: &mut Child) -> ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return status;
+            }
+            if Instant::now() >= deadline {
+                let pid = child.id();
+                child.signal(Signal::SIGKILL).unwrap();
+                let status = child.wait_blocking().unwrap();
+                panic!("descriptor-control child {pid} timed out and was reaped as {status:?}");
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn wait_std_child_bounded(child: &mut std::process::Child) -> std::process::ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return status;
+            }
+            if Instant::now() >= deadline {
+                let pid = child.id();
+                child.kill().unwrap();
+                let status = child.wait().unwrap();
+                panic!("descriptor-control setup child {pid} timed out and was reaped as {status}");
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn descriptor_control_exec(input: DescriptorControlInput) {
+        assert_eq!(
+            std::env::var(DESCRIPTOR_CONTROL_CASE).unwrap(),
+            input.name()
+        );
+        let input_descriptor = std::env::var(DESCRIPTOR_CONTROL_INPUT)
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        let launch_descriptor = std::env::var(DESCRIPTOR_CONTROL_LAUNCH)
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        assert!(launch_descriptor > libc::STDERR_FILENO);
+        match input {
+            DescriptorControlInput::Standard(expected) => {
+                assert_eq!(input_descriptor, expected);
+                assert_ne!(launch_descriptor, input_descriptor);
+            }
+            DescriptorControlInput::Ordinary => {
+                assert!(input_descriptor > libc::STDERR_FILENO);
+                assert_eq!(launch_descriptor, input_descriptor);
+            }
+        }
+        assert_eq!(
+            unsafe { libc::fcntl(launch_descriptor, libc::F_GETFD) },
+            0,
+            "exec did not clear FD_CLOEXEC on the retained executable"
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(launch_descriptor, libc::F_GET_SEALS) },
+            DESCRIPTOR_CONTROL_SEALS,
+            "exec child observed the wrong retained executable seals"
+        );
+
+        let descriptor_path = format!("/proc/self/fd/{launch_descriptor}");
+        let descriptor_metadata = fs::metadata(&descriptor_path).unwrap();
+        let executable_metadata = fs::metadata("/proc/self/exe").unwrap();
+        assert_eq!(descriptor_metadata.dev(), executable_metadata.dev());
+        assert_eq!(descriptor_metadata.ino(), executable_metadata.ino());
+        assert_eq!(descriptor_metadata.mode(), executable_metadata.mode());
+        assert_eq!(descriptor_metadata.len(), executable_metadata.len());
+        let descriptor_bytes = fs::read(&descriptor_path).unwrap();
+        let executable_bytes = fs::read("/proc/self/exe").unwrap();
+        assert!(!descriptor_bytes.is_empty());
+        assert_eq!(descriptor_bytes, executable_bytes);
+
+        if let DescriptorControlInput::Standard(descriptor) = input {
+            let stdio_metadata = fs::metadata(format!("/proc/self/fd/{descriptor}")).unwrap();
+            assert_ne!(
+                (stdio_metadata.dev(), stdio_metadata.ino()),
+                (descriptor_metadata.dev(), descriptor_metadata.ino()),
+                "configured standard I/O did not replace descriptor {descriptor}"
+            );
+        }
+
+        let record = std::env::var_os(DESCRIPTOR_CONTROL_RECORD).unwrap();
+        let mut record = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(record)
+            .unwrap();
+        write!(
+            record,
+            "case={}\ninput={}\nlaunch={}\ncloexec=0\nbytes={}\n",
+            input.name(),
+            input_descriptor,
+            launch_descriptor,
+            descriptor_bytes.len()
+        )
+        .unwrap();
+        record.sync_all().unwrap();
+    }
+
+    fn descriptor_control_setup(input: DescriptorControlInput, test_name: &'static str) {
+        assert_eq!(
+            std::env::var(DESCRIPTOR_CONTROL_CASE).unwrap(),
+            input.name()
+        );
+        let retained = sealed_self_executable();
+        let executable = duplicate_to_control_input(&retained, input);
+        let input_descriptor = executable.as_raw_fd();
+        let mut command = Command::new("/diagnostic/path/must-not-be-executed");
+        command.executable(executable).unwrap();
+        let launch_descriptor = command.get_executable().unwrap().as_raw_fd();
+        assert!(launch_descriptor > libc::STDERR_FILENO);
+        match input {
+            DescriptorControlInput::Standard(expected) => {
+                assert_eq!(input_descriptor, expected);
+                assert_ne!(launch_descriptor, input_descriptor);
+            }
+            DescriptorControlInput::Ordinary => assert_eq!(launch_descriptor, input_descriptor),
+        }
+        assert_eq!(
+            unsafe { libc::fcntl(launch_descriptor, libc::F_GETFD) },
+            libc::FD_CLOEXEC,
+            "parent launch descriptor must remain close-on-exec before clone"
+        );
+
+        command
+            .arg("--exact")
+            .arg(test_name)
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(DESCRIPTOR_CONTROL_ROLE, "exec")
+            .env(DESCRIPTOR_CONTROL_INPUT, input_descriptor.to_string())
+            .env(DESCRIPTOR_CONTROL_LAUNCH, launch_descriptor.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().unwrap();
+        assert_eq!(
+            wait_reverie_child_bounded(&mut child),
+            ExitStatus::Exited(0)
+        );
+    }
+
+    fn parse_descriptor_control_record(bytes: &[u8], input: DescriptorControlInput) -> (i32, i32) {
+        let text = std::str::from_utf8(bytes).unwrap();
+        assert!(text.ends_with('\n'));
+        let mut lines = text.lines();
+        let expected_case = format!("case={}", input.name());
+        assert_eq!(lines.next(), Some(expected_case.as_str()));
+        let input_descriptor = lines
+            .next()
+            .and_then(|line| line.strip_prefix("input="))
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        let launch_descriptor = lines
+            .next()
+            .and_then(|line| line.strip_prefix("launch="))
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        assert_eq!(lines.next(), Some("cloexec=0"));
+        let bytes = lines
+            .next()
+            .and_then(|line| line.strip_prefix("bytes="))
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert!(bytes > 0);
+        assert_eq!(lines.next(), None);
+        (input_descriptor, launch_descriptor)
+    }
+
+    fn descriptor_execution_control(input: DescriptorControlInput, test_name: &'static str) {
+        match std::env::var(DESCRIPTOR_CONTROL_ROLE) {
+            Ok(role) if role == "setup" => {
+                descriptor_control_setup(input, test_name);
+                return;
+            }
+            Ok(role) if role == "exec" => {
+                descriptor_control_exec(input);
+                return;
+            }
+            Ok(role) => panic!("unknown descriptor-control role {role:?}"),
+            Err(std::env::VarError::NotPresent) => {}
+            Err(error) => panic!("invalid descriptor-control role: {error}"),
+        }
+
+        let standard_before = standard_descriptors();
+        let directory = tempfile::tempdir().unwrap();
+        let record = directory.path().join("descriptor-record");
+        let mut setup = std::process::Command::new(std::env::current_exe().unwrap());
+        setup
+            .arg("--exact")
+            .arg(test_name)
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(DESCRIPTOR_CONTROL_ROLE, "setup")
+            .env(DESCRIPTOR_CONTROL_CASE, input.name())
+            .env(DESCRIPTOR_CONTROL_RECORD, &record)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let mut setup = setup.spawn().unwrap();
+        assert!(wait_std_child_bounded(&mut setup).success());
+        assert_eq!(
+            standard_descriptors(),
+            standard_before,
+            "sacrificial descriptor setup changed the parent test process"
+        );
+
+        let (input_descriptor, launch_descriptor) =
+            parse_descriptor_control_record(&fs::read(record).unwrap(), input);
+        assert!(launch_descriptor > libc::STDERR_FILENO);
+        match input {
+            DescriptorControlInput::Standard(expected) => {
+                assert_eq!(input_descriptor, expected);
+                assert_ne!(launch_descriptor, input_descriptor);
+            }
+            DescriptorControlInput::Ordinary => {
+                assert!(input_descriptor > libc::STDERR_FILENO);
+                assert_eq!(launch_descriptor, input_descriptor);
+            }
+        }
+    }
+
+    #[test]
+    fn descriptor_execution_relocates_input_fd_zero() {
+        descriptor_execution_control(
+            DescriptorControlInput::Standard(libc::STDIN_FILENO),
+            "tests::descriptor_execution_relocates_input_fd_zero",
+        );
+    }
+
+    #[test]
+    fn descriptor_execution_relocates_input_fd_one() {
+        descriptor_execution_control(
+            DescriptorControlInput::Standard(libc::STDOUT_FILENO),
+            "tests::descriptor_execution_relocates_input_fd_one",
+        );
+    }
+
+    #[test]
+    fn descriptor_execution_relocates_input_fd_two() {
+        descriptor_execution_control(
+            DescriptorControlInput::Standard(libc::STDERR_FILENO),
+            "tests::descriptor_execution_relocates_input_fd_two",
+        );
+    }
+
+    #[test]
+    fn descriptor_execution_preserves_ordinary_input_fd() {
+        descriptor_execution_control(
+            DescriptorControlInput::Ordinary,
+            "tests::descriptor_execution_preserves_ordinary_input_fd",
+        );
+    }
+
+    #[test]
+    fn descriptor_execution_refuses_standard_command_conversion() {
+        let retained = sealed_self_executable();
+        let descriptor = unsafe { libc::fcntl(retained.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 64) };
+        assert!(descriptor > libc::STDERR_FILENO);
+        let mut command = Command::new("/diagnostic/path/must-not-be-executed");
+        command
+            .executable(unsafe { OwnedFd::from_raw_fd(descriptor) })
+            .unwrap();
+        let error = command.try_into_std().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "cannot convert to std::process::Command without losing: executable file descriptor"
+        );
+    }
 
     #[tokio::test]
     async fn spawn() {

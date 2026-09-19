@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::path::Path;
 
 use liteinst2::trampoline::HookContext;
@@ -64,6 +66,39 @@ trait ToolHandler: Send + Sync {
 }
 
 static HANDLER: std::sync::OnceLock<Box<dyn ToolHandler>> = std::sync::OnceLock::new();
+
+fn publish_handler_and_initialize(
+    handler: Box<dyn ToolHandler>,
+    initialize: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    HANDLER.set(handler).map_err(|_| {
+        io::Error::new(io::ErrorKind::AlreadyExists, "Reverie tool installed twice")
+    })?;
+    initialize()
+}
+
+fn plan_then_activate<Plan>(
+    plan: impl FnOnce() -> io::Result<Plan>,
+    activate: impl FnOnce(Plan) -> io::Result<()>,
+) -> io::Result<()> {
+    let plan = plan()?;
+    match catch_unwind(AssertUnwindSafe(move || activate(plan))) {
+        Ok(result) => runtime::finish_after_activation_started(result),
+        Err(_) => runtime::terminal_after_activation_started(),
+    }
+}
+
+fn plan_with_signals_blocked_then_activate<Plan>(
+    plan: impl FnOnce() -> io::Result<Plan>,
+    activate: impl FnOnce(Plan, &mut runtime::SignalInstallGuard) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut signal_state = runtime::block_all_signals_for_install()?;
+    plan_then_activate(plan, |plan| activate(plan, &mut signal_state))
+}
+
+fn construct_tool<T: Tool>(pid: Pid, config: &<T::GlobalState as GlobalTool>::Config) -> T {
+    T::new(pid, config)
+}
 
 // TODO-HUMAN-REVIEW(PR-127): Review generic in-guest Tool hosting.
 /// Install a concrete Reverie tool in this guest and connect it to its coordinator.
@@ -142,50 +177,67 @@ unsafe fn install_tool_inner<T>(
 where
     T: Tool + 'static,
 {
-    crate::syscall_fallback::initialize()?;
     let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
-    runtime::reserve_coordinator_fd(rpc.raw_fd())?;
-    let stats =
-        if let Some(stats_coordinator) = std::env::var_os(crate::backend::STATS_COORDINATOR_ENV) {
-            let stats = crate::stats::initialize_guest_stats(Path::new(&stats_coordinator))?;
-            // SAFETY: tool installation runs before application-created threads.
-            unsafe { std::env::remove_var(crate::backend::STATS_COORDINATOR_ENV) };
-            stats
-        } else {
-            crate::stats::GuestStatsHooks::DISABLED
-        };
-    runtime::initialize_rcb_clock()?;
-    COMMITTED_STACKS.lock().clear();
     let pid = Pid::from_raw(unsafe { libc::getpid() });
     let subscriptions = T::subscriptions(rpc.config());
     let instruction_subscriptions = runtime::InstructionSubscriptions {
         cpuid: subscriptions.has_cpuid(),
         rdtsc: subscriptions.has_rdtsc(),
     };
-    runtime::preflight_instruction_faulting(instruction_subscriptions)?;
-    let vdso_sites = reverie_ptrace::patch_current_vdso(&subscriptions)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let _signal_state = runtime::prepare_guest_signal_state(instruction_subscriptions)?;
-    let syscall_subscriptions = subscriptions.iter_syscalls().collect();
-    if remove_legacy_environment {
-        // SAFETY: legacy tool installation runs before application-created threads.
-        unsafe { std::env::remove_var(crate::backend::COORDINATOR_ENV) };
-    }
-    let tool = T::new(pid, rpc.config());
-    HANDLER
-        .set(Box::new(ToolHost::<T> {
-            tool: SpinMutex::new(Some(tool)),
-            rpc,
-            root_pid: pid,
-            subscriptions: syscall_subscriptions,
-            instruction_subscriptions,
-            states: SpinMutex::new(HashMap::new()),
-            stats,
-        }))
-        .map_err(|_| {
-            io::Error::new(io::ErrorKind::AlreadyExists, "Reverie tool installed twice")
-        })?;
-    runtime::initialize_reverie_tool(stats, publication, instruction_subscriptions, &vdso_sites)
+    // Keep every signal blocked from the first live vDSO byte read through the
+    // final publication. This makes the captured function and mapping range a
+    // current guarded observation rather than an unguarded plan.
+    plan_with_signals_blocked_then_activate(
+        || {
+            reverie_ptrace::patch_current_vdso(&subscriptions)
+                .map_err(|error| io::Error::other(error.to_string()))
+        },
+        |vdso_sites, signal_state| {
+            // Everything below this boundary may publish process-global state.
+            // Any error is terminal rather than a false public retry.
+            crate::syscall_fallback::initialize()?;
+            runtime::reserve_coordinator_fd(rpc.raw_fd())?;
+            let stats = if let Some(stats_coordinator) =
+                std::env::var_os(crate::backend::STATS_COORDINATOR_ENV)
+            {
+                let stats = crate::stats::initialize_guest_stats(Path::new(&stats_coordinator))?;
+                // SAFETY: tool installation runs before application-created threads.
+                unsafe { std::env::remove_var(crate::backend::STATS_COORDINATOR_ENV) };
+                stats
+            } else {
+                crate::stats::GuestStatsHooks::DISABLED
+            };
+            runtime::initialize_rcb_clock()?;
+            runtime::preflight_instruction_faulting(instruction_subscriptions)?;
+            runtime::prepare_guest_signal_actions(signal_state, instruction_subscriptions)?;
+            COMMITTED_STACKS.lock().clear();
+            let syscall_subscriptions = subscriptions.iter_syscalls().collect();
+            if remove_legacy_environment {
+                // SAFETY: legacy tool installation runs before application-created threads.
+                unsafe { std::env::remove_var(crate::backend::COORDINATOR_ENV) };
+            }
+            let tool = construct_tool::<T>(pid, rpc.config());
+            publish_handler_and_initialize(
+                Box::new(ToolHost::<T> {
+                    tool: SpinMutex::new(Some(tool)),
+                    rpc,
+                    root_pid: pid,
+                    subscriptions: syscall_subscriptions,
+                    instruction_subscriptions,
+                    states: SpinMutex::new(HashMap::new()),
+                    stats,
+                }),
+                || {
+                    runtime::initialize_reverie_tool(
+                        stats,
+                        publication,
+                        instruction_subscriptions,
+                        &vdso_sites,
+                    )
+                },
+            )
+        },
+    )
 }
 
 pub(crate) fn dispatch(event: &mut SyscallEvent) {
@@ -401,7 +453,9 @@ where
             instruction_pointer: context.instruction_pointer,
             result: 0,
             context: context as *mut HookContext as usize,
-            dispatch: runtime::SyscallDispatch::InstalledHook,
+            dispatch: runtime::SyscallDispatch::InstalledHook(
+                runtime::DirectHookSource::InstalledSite,
+            ),
             guest_pkru: None,
         };
         let mut guest = LiteinstGuest::<T> {
@@ -489,11 +543,10 @@ fn finish_fork_child<T: Tool>(
     states.clear();
     states.insert(child_tid.as_raw(), child_state);
     *tool_slot = Some(child_tool);
-    runtime::reset_fallback_observability();
-    stats.reset_after_fork();
     // Both installed hooks and deferred fallback carry a register context.
-    // Attribute the child's first event to the path that actually entered it.
-    runtime::record_fork_child_dispatch(event, stats);
+    // Reset inherited counters and attribute the child's first event to the
+    // exact installed source or fallback path that actually entered it.
+    runtime::reset_and_record_fork_child_dispatch(event, stats);
 
     let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
     let state = states
@@ -1094,5 +1147,282 @@ fn fatal(status: i32) -> ! {
     }
     loop {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ACTIVATION_BOUNDARY_CHILD_ENV: &str = "REVERIE_LITEINST_ACTIVATION_BOUNDARY_TEST_CHILD";
+    const BEFORE_HANDLER_MARKER: &[u8] = b"activation-before-handler-returned-error\n";
+    const BEFORE_CONSTRUCTOR_MARKER: &[u8] = b"activation-before-shared-tool-constructor\n";
+    const IN_CONSTRUCTOR_MARKER: &[u8] = b"activation-inside-panicking-tool-constructor\n";
+    const AFTER_HANDLER_ERROR_MARKER: &[u8] = b"activation-inside-post-handler-error\n";
+    const AFTER_HANDLER_PANIC_MARKER: &[u8] = b"activation-inside-post-handler-panic\n";
+    const NO_ACTIVATION_MARKERS: [&[u8]; 0] = [];
+    const BEFORE_HANDLER_MARKERS: [&[u8]; 1] = [BEFORE_HANDLER_MARKER];
+    const CONSTRUCTOR_MARKERS: [&[u8]; 2] = [BEFORE_CONSTRUCTOR_MARKER, IN_CONSTRUCTOR_MARKER];
+    const AFTER_HANDLER_ERROR_MARKERS: [&[u8]; 1] = [AFTER_HANDLER_ERROR_MARKER];
+    const AFTER_HANDLER_PANIC_MARKERS: [&[u8]; 1] = [AFTER_HANDLER_PANIC_MARKER];
+    const ALL_ACTIVATION_MARKERS: [&[u8]; 5] = [
+        BEFORE_HANDLER_MARKER,
+        BEFORE_CONSTRUCTOR_MARKER,
+        IN_CONSTRUCTOR_MARKER,
+        AFTER_HANDLER_ERROR_MARKER,
+        AFTER_HANDLER_PANIC_MARKER,
+    ];
+
+    fn emit_activation_test_marker(marker: &[u8]) {
+        let written = unsafe {
+            raw_syscall6(
+                libc::SYS_write,
+                [
+                    libc::STDERR_FILENO as u64,
+                    marker.as_ptr() as u64,
+                    marker.len() as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if written != marker.len() as i64 {
+            fatal(127);
+        }
+    }
+
+    fn current_signal_mask() -> u64 {
+        let mut mask = 0_u64;
+        let result = unsafe {
+            raw_syscall6(
+                libc::SYS_rt_sigprocmask,
+                [
+                    libc::SIG_SETMASK as u64,
+                    0,
+                    (&raw mut mask) as u64,
+                    core::mem::size_of::<u64>() as u64,
+                    0,
+                    0,
+                ],
+            )
+        };
+        assert_eq!(result, 0, "could not read activation test signal mask");
+        mask
+    }
+
+    fn replace_signal_mask(mask: u64) {
+        let result = unsafe {
+            raw_syscall6(
+                libc::SYS_rt_sigprocmask,
+                [
+                    libc::SIG_SETMASK as u64,
+                    (&raw const mask) as u64,
+                    0,
+                    core::mem::size_of::<u64>() as u64,
+                    0,
+                    0,
+                ],
+            )
+        };
+        assert_eq!(result, 0, "could not set activation test signal mask");
+    }
+
+    struct RestoreSignalMask(u64);
+
+    impl Drop for RestoreSignalMask {
+        fn drop(&mut self) {
+            replace_signal_mask(self.0);
+        }
+    }
+
+    fn assert_exact_marker_count(stderr: &[u8], marker: &[u8], expected: usize, scenario: &str) {
+        let count = stderr
+            .windows(marker.len())
+            .filter(|candidate| *candidate == marker)
+            .count();
+        assert_eq!(
+            count,
+            expected,
+            "activation scenario {scenario} emitted marker {:?} {count} times, expected {expected}; stderr:\n{}",
+            String::from_utf8_lossy(marker),
+            String::from_utf8_lossy(stderr),
+        );
+    }
+
+    struct TestHandler;
+
+    #[derive(Default)]
+    struct PanickingConstructorTool;
+
+    #[reverie::tool]
+    impl Tool for PanickingConstructorTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn new(_pid: Pid, _config: &()) -> Self {
+            emit_activation_test_marker(IN_CONSTRUCTOR_MARKER);
+            panic!("injected T::new panic before HANDLER publication");
+        }
+    }
+
+    impl ToolHandler for TestHandler {
+        fn dispatch(&self, _event: &mut SyscallEvent) {}
+
+        fn dispatch_instruction(
+            &self,
+            _kind: runtime::InstructionEventKind,
+            _context: &mut HookContext,
+        ) {
+        }
+    }
+
+    #[test]
+    fn public_planning_and_activation_boundaries_are_exact() {
+        if let Some(scenario) = std::env::var_os(ACTIVATION_BOUNDARY_CHILD_ENV) {
+            match scenario.to_str().unwrap() {
+                "planning" => {
+                    let original_mask = current_signal_mask();
+                    let _restore_original_mask = RestoreSignalMask(original_mask);
+                    let mut prior_mask =
+                        (1_u64 << (libc::SIGUSR1 - 1)) | (1_u64 << (libc::SIGCHLD - 1));
+                    if prior_mask == original_mask {
+                        prior_mask |= 1_u64 << (libc::SIGUSR2 - 1);
+                    }
+                    assert_ne!(prior_mask, 0);
+                    assert_ne!(prior_mask, original_mask);
+                    replace_signal_mask(prior_mask);
+                    assert_eq!(
+                        current_signal_mask().to_ne_bytes(),
+                        prior_mask.to_ne_bytes(),
+                    );
+                    let planning_ran = std::cell::Cell::new(false);
+                    let activation_ran = std::cell::Cell::new(false);
+                    let blocked_mask =
+                        !(1_u64 << (libc::SIGKILL - 1)) & !(1_u64 << (libc::SIGSTOP - 1));
+                    // The exact helper used by the production installer blocks
+                    // signals before planning. Its real guard must restore the
+                    // exact saved mask when planning returns cleanly.
+                    let result = plan_with_signals_blocked_then_activate(
+                        || {
+                            planning_ran.set(true);
+                            assert_eq!(
+                                current_signal_mask().to_ne_bytes(),
+                                blocked_mask.to_ne_bytes(),
+                            );
+                            Err::<(), _>(io::Error::other("injected vDSO planning failure"))
+                        },
+                        |_, _signal_state| {
+                            activation_ran.set(true);
+                            Ok(())
+                        },
+                    );
+                    assert!(result.is_err());
+                    assert!(planning_ran.get());
+                    assert!(!activation_ran.get());
+                    assert!(HANDLER.get().is_none());
+                    assert_eq!(
+                        current_signal_mask().to_ne_bytes(),
+                        prior_mask.to_ne_bytes(),
+                    );
+                    return;
+                }
+                "before-handler" => {
+                    let _ = plan_then_activate(
+                        || Ok(()),
+                        |_| {
+                            emit_activation_test_marker(BEFORE_HANDLER_MARKER);
+                            Err(io::Error::other("injected pre-HANDLER activation failure"))
+                        },
+                    );
+                    unreachable!("an activation error before HANDLER must terminate");
+                }
+                "panic-before-handler" => {
+                    let _ = plan_then_activate(
+                        || Ok(()),
+                        |_| {
+                            // Exercise one real early activation effect before
+                            // entering the same constructor helper as production.
+                            runtime::reserve_coordinator_fd(libc::STDERR_FILENO).unwrap();
+                            assert!(HANDLER.get().is_none());
+                            emit_activation_test_marker(BEFORE_CONSTRUCTOR_MARKER);
+                            let _ =
+                                construct_tool::<PanickingConstructorTool>(Pid::from_raw(1), &());
+                            Ok(())
+                        },
+                    );
+                    unreachable!("a Tool-construction panic must terminate");
+                }
+                "after-handler" => {
+                    let _ = plan_then_activate(
+                        || Ok(()),
+                        |_| {
+                            publish_handler_and_initialize(Box::new(TestHandler), || {
+                                assert!(HANDLER.get().is_some());
+                                emit_activation_test_marker(AFTER_HANDLER_ERROR_MARKER);
+                                Err(io::Error::other(
+                                    "injected initialization failure after HANDLER publication",
+                                ))
+                            })
+                        },
+                    );
+                    unreachable!("an error after HANDLER publication must terminate");
+                }
+                "panic-after-handler" => {
+                    let _ = plan_then_activate(
+                        || Ok(()),
+                        |_| {
+                            publish_handler_and_initialize(Box::new(TestHandler), || {
+                                assert!(HANDLER.get().is_some());
+                                emit_activation_test_marker(AFTER_HANDLER_PANIC_MARKER);
+                                panic!("injected initialization panic after HANDLER publication");
+                            })
+                        },
+                    );
+                    unreachable!("a post-HANDLER initialization panic must terminate");
+                }
+                other => panic!("unknown activation-boundary scenario {other}"),
+            }
+        }
+
+        for scenario in [
+            "planning",
+            "before-handler",
+            "panic-before-handler",
+            "after-handler",
+            "panic-after-handler",
+        ] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tool_host::tests::public_planning_and_activation_boundaries_are_exact",
+                    "--test-threads=1",
+                ])
+                .env(ACTIVATION_BOUNDARY_CHILD_ENV, scenario)
+                .output()
+                .unwrap();
+            if scenario == "planning" {
+                assert!(output.status.success());
+            } else {
+                assert_eq!(
+                    output.status.code(),
+                    Some(runtime::VDSO_PUBLICATION_FAILURE_STATUS),
+                    "activation scenario {scenario} produced stderr:\n{}",
+                    String::from_utf8_lossy(&output.stderr),
+                );
+            }
+            let expected_markers: &[&[u8]] = match scenario {
+                "planning" => &NO_ACTIVATION_MARKERS,
+                "before-handler" => &BEFORE_HANDLER_MARKERS,
+                "panic-before-handler" => &CONSTRUCTOR_MARKERS,
+                "after-handler" => &AFTER_HANDLER_ERROR_MARKERS,
+                "panic-after-handler" => &AFTER_HANDLER_PANIC_MARKERS,
+                _ => unreachable!(),
+            };
+            for marker in ALL_ACTIVATION_MARKERS {
+                let expected = usize::from(expected_markers.contains(&marker));
+                assert_exact_marker_count(&output.stderr, marker, expected, scenario);
+            }
+        }
     }
 }

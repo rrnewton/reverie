@@ -1,7 +1,24 @@
+#[cfg(target_arch = "x86_64")]
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
+#[cfg(target_arch = "x86_64")]
+use std::fs::File;
 use std::fs::OpenOptions;
+#[cfg(target_arch = "x86_64")]
+use std::io;
 use std::io::Write;
+#[cfg(target_arch = "x86_64")]
+use std::os::fd::AsRawFd;
+#[cfg(target_arch = "x86_64")]
+use std::os::fd::FromRawFd;
+#[cfg(target_arch = "x86_64")]
+use std::os::unix::fs::FileExt;
+#[cfg(target_arch = "x86_64")]
+use std::os::unix::fs::MetadataExt;
+#[cfg(target_arch = "x86_64")]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(target_arch = "x86_64")]
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::AtomicU64;
@@ -24,6 +41,10 @@ use reverie::Subscription;
 use reverie::Tid;
 use reverie::Tool;
 use reverie::process::Command;
+#[cfg(target_arch = "x86_64")]
+use reverie::process::Mount;
+#[cfg(target_arch = "x86_64")]
+use reverie::process::Stdio as ReverieStdio;
 use reverie::syscalls::Addr;
 use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Syscall;
@@ -461,7 +482,7 @@ async fn host_hybrid_exec_during_preinit_is_refused_and_reaped() {
     let marker = files.path().join("entered");
     let mut command = Command::new(guest);
     command.arg("start").arg(&ids).arg(&marker);
-    let error = run_fail_closed_and_assert_reaped(command, &ids).await;
+    let error = run_fail_closed_and_assert_reaped::<PassthroughGetpid>(command, &ids).await;
     let pid = fs::read_to_string(ids).unwrap();
     let pid = pid.trim().parse::<u32>().unwrap();
     assert!(
@@ -682,6 +703,59 @@ impl Tool for CountSyscalls {
         } else {
             guest.send_rpc(1).await;
         }
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, Default)]
+struct ConnectedGetrandomEvents {
+    delivered: AtomicU64,
+    logical_rip: AtomicU64,
+    length: AtomicU64,
+    flags: AtomicU64,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[reverie::global_tool]
+impl GlobalTool for ConnectedGetrandomEvents {
+    type Request = (u64, u64, u64);
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Tid, event: Self::Request) {
+        self.logical_rip.store(event.0, Ordering::SeqCst);
+        self.length.store(event.1, Ordering::SeqCst);
+        self.flags.store(event.2, Ordering::SeqCst);
+        self.delivered.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Default)]
+struct ConnectedGetrandom;
+
+#[cfg(target_arch = "x86_64")]
+#[reverie::tool]
+impl Tool for ConnectedGetrandom {
+    type GlobalState = ConnectedGetrandomEvents;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        [Sysno::getrandom].into_iter().collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        assert_eq!(syscall.number(), Sysno::getrandom);
+        let regs = guest.regs().await;
+        let (_, args) = syscall.into_parts();
+        guest
+            .send_rpc((regs.rip, args.arg1 as u64, args.arg2 as u64))
+            .await;
         Ok(guest.inject(syscall).await?)
     }
 }
@@ -1162,12 +1236,18 @@ async fn wait_for_pid_file(pid_file: &std::path::Path) -> u32 {
     }
 }
 
-async fn run_fail_closed_and_assert_reaped(command: Command, pid_file: &std::path::Path) -> Error {
-    let mut run = Box::pin(LiteinstBackend::run_host_with_output_and_preload::<
-        PassthroughGetpid,
-    >(command, (), preload_path()));
+async fn run_fail_closed_and_assert_reaped<T>(command: Command, pid_file: &std::path::Path) -> Error
+where
+    T: Tool + 'static,
+    T::GlobalState: GlobalTool<Config = ()>,
+{
+    let mut run = Box::pin(LiteinstBackend::run_host_with_output_and_preload::<T>(
+        command,
+        (),
+        preload_path(),
+    ));
     let mut early_result = None;
-    let pid = tokio::time::timeout(Duration::from_secs(3), async {
+    let pid_result = tokio::time::timeout(Duration::from_secs(3), async {
         tokio::select! {
             result = &mut run => {
                 early_result = Some(result);
@@ -1176,8 +1256,20 @@ async fn run_fail_closed_and_assert_reaped(command: Command, pid_file: &std::pat
             pid = wait_for_pid_file(pid_file) => pid,
         }
     })
-    .await
-    .expect("fail-closed fixture did not publish its pid");
+    .await;
+    let pid = match pid_result {
+        Ok(pid) => pid,
+        Err(_) => {
+            drop(run);
+            let pid = tokio::time::timeout(Duration::from_secs(3), wait_for_pid_file(pid_file))
+                .await
+                .expect("cancelled fail-closed fixture never published its pid");
+            assert_pid_reaped(pid);
+            panic!(
+                "fail-closed fixture did not publish its pid before timeout; cancellation cleanup reaped pid {pid}"
+            );
+        }
+    };
     let result = if let Some(result) = early_result {
         result
     } else {
@@ -1191,7 +1283,10 @@ async fn run_fail_closed_and_assert_reaped(command: Command, pid_file: &std::pat
         }
     };
     let error = match result {
-        Ok(_) => panic!("required LiteInst runtime unexpectedly remained active"),
+        Ok(_) => {
+            assert_pid_reaped(pid);
+            panic!("required LiteInst runtime unexpectedly remained active");
+        }
         Err(error) => error,
     };
     assert_pid_reaped(pid);
@@ -1215,6 +1310,1050 @@ async fn initial_dynamic_preload_handshake_activates_host_lifecycle() {
         "host lifecycle missed allocator/pre-constructor entropy: {output:?}"
     );
     assert!(output.status.success(), "{output:?}");
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, PartialEq, Eq)]
+struct FixtureDescriptorMetadata {
+    device: u64,
+    inode: u64,
+    mode: u32,
+    size: u64,
+    links: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl FixtureDescriptorMetadata {
+    fn read(file: &File) -> io::Result<Self> {
+        let metadata = file.metadata()?;
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            mode: metadata.mode(),
+            size: metadata.size(),
+            links: metadata.nlink(),
+            modified_seconds: metadata.mtime(),
+            modified_nanoseconds: metadata.mtime_nsec(),
+            changed_seconds: metadata.ctime(),
+            changed_nanoseconds: metadata.ctime_nsec(),
+        })
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn read_complete_descriptor(
+    file: &File,
+    metadata: &FixtureDescriptorMetadata,
+) -> io::Result<Vec<u8>> {
+    const MAX_FIXTURE_EXECUTABLE_BYTES: u64 = 16 * 1024 * 1024;
+    if metadata.size == 0 || metadata.size > MAX_FIXTURE_EXECUTABLE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "fixture executable size {} is outside the bound",
+                metadata.size
+            ),
+        ));
+    }
+    let size = usize::try_from(metadata.size).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "fixture executable size does not fit usize",
+        )
+    })?;
+    let mut bytes = vec![0; size];
+    file.read_exact_at(&mut bytes, 0)?;
+    let mut extra = [0_u8; 1];
+    if file.read_at(&mut extra, metadata.size)? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "fixture executable grew beyond its fstat size",
+        ));
+    }
+    Ok(bytes)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn read_descriptor_consistently(file: &File) -> io::Result<(FixtureDescriptorMetadata, Vec<u8>)> {
+    let before = FixtureDescriptorMetadata::read(file)?;
+    let bytes = read_complete_descriptor(file, &before)?;
+    let after = FixtureDescriptorMetadata::read(file)?;
+    if before != after {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "fixture descriptor metadata changed across its complete byte read",
+        ));
+    }
+    Ok((after, bytes))
+}
+
+#[cfg(target_arch = "x86_64")]
+struct RetainedFixtureExecutable {
+    file: File,
+    metadata: FixtureDescriptorMetadata,
+    bytes: Vec<u8>,
+    seals: i32,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl RetainedFixtureExecutable {
+    fn capture(compiled_path: &std::path::Path) -> Self {
+        let compiled = File::open(compiled_path)
+            .expect("failed to retain the compiled fixture for a consistent byte read");
+        let (compiled_metadata, compiled_bytes) = read_descriptor_consistently(&compiled)
+            .expect("failed to read the compiled fixture through one file description");
+        assert_eq!(
+            compiled_metadata.mode & libc::S_IFMT,
+            libc::S_IFREG,
+            "compiled fixture is not a regular file"
+        );
+        assert_eq!(
+            compiled_metadata.mode & 0o111,
+            0o111,
+            "compiled fixture does not have every execute bit set by compile_fixture"
+        );
+
+        let fd = unsafe {
+            libc::memfd_create(
+                b"liteinst-vdso-absent\0".as_ptr().cast(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        assert_ne!(
+            fd,
+            -1,
+            "failed to create the retained executable memfd: {}",
+            io::Error::last_os_error()
+        );
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        file.write_all(&compiled_bytes)
+            .expect("failed to copy the complete compiled fixture into the retained memfd");
+        assert_eq!(
+            unsafe { libc::fchmod(fd, 0o500) },
+            0,
+            "failed to make the retained memfd executable: {}",
+            io::Error::last_os_error()
+        );
+        let seals =
+            libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, seals) },
+            0,
+            "failed to seal the retained fixture executable: {}",
+            io::Error::last_os_error()
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_GET_SEALS) },
+            seals,
+            "retained fixture executable has the wrong seal set"
+        );
+        let (metadata, bytes) = read_descriptor_consistently(&file)
+            .expect("failed to verify the sealed retained executable bytes");
+        assert_eq!(
+            bytes, compiled_bytes,
+            "sealed retained executable does not equal the compiler output"
+        );
+
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_GETFD) },
+            libc::FD_CLOEXEC,
+            "memfd_create did not establish the exact closed-on-exec default"
+        );
+
+        Self {
+            file,
+            metadata,
+            bytes,
+            seals,
+        }
+    }
+
+    fn descriptor(&self) -> i32 {
+        self.file.as_raw_fd()
+    }
+
+    fn duplicate_for_launch(&self) -> File {
+        let executable = self
+            .file
+            .try_clone()
+            .expect("failed to duplicate the retained executable description");
+        let (metadata, bytes) = read_descriptor_consistently(&executable)
+            .expect("failed to verify the duplicated launch description");
+        assert_eq!(metadata, self.metadata);
+        assert_eq!(bytes, self.bytes);
+        executable
+    }
+
+    fn assert_unchanged(&self, boundary: &str) {
+        let (metadata, bytes) = read_descriptor_consistently(&self.file)
+            .expect("failed to reread the retained executable description");
+        assert_eq!(
+            metadata, self.metadata,
+            "retained executable fstat identity changed {boundary}"
+        );
+        assert_eq!(
+            bytes, self.bytes,
+            "retained executable bytes changed {boundary}"
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(self.descriptor(), libc::F_GET_SEALS) },
+            self.seals,
+            "retained executable seals changed {boundary}"
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(self.descriptor(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+            libc::FD_CLOEXEC,
+            "parent retained descriptor lost FD_CLOEXEC {boundary}"
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+struct ExecutablePathDecoy {
+    original_path: PathBuf,
+    saved_compiler_output: PathBuf,
+    compiler_bytes: Vec<u8>,
+    decoy_bytes: Vec<u8>,
+    decoy_metadata: FixtureDescriptorMetadata,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl ExecutablePathDecoy {
+    fn install(original_path: &std::path::Path, compiler_bytes: &[u8]) -> Self {
+        const DECOY: &[u8] = b"#!/bin/sh\nexit 97\n";
+        let saved_compiler_output = original_path.with_extension("compiled-before-decoy");
+        fs::rename(original_path, &saved_compiler_output)
+            .expect("failed to move the compiler output away from its original pathname");
+        let saved =
+            File::open(&saved_compiler_output).expect("failed to open the saved compiler output");
+        let (_, saved_bytes) = read_descriptor_consistently(&saved)
+            .expect("failed to verify the saved compiler output");
+        assert_eq!(saved_bytes, compiler_bytes);
+
+        let mut decoy = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(original_path)
+            .expect("failed to install the original-path decoy");
+        decoy
+            .write_all(DECOY)
+            .expect("failed to write the original-path decoy");
+        decoy
+            .flush()
+            .expect("failed to flush the original-path decoy");
+        fs::set_permissions(original_path, fs::Permissions::from_mode(0o500))
+            .expect("failed to make the original-path decoy executable");
+        drop(decoy);
+        let decoy = File::open(original_path).expect("failed to reopen the original-path decoy");
+        let (decoy_metadata, decoy_bytes) =
+            read_descriptor_consistently(&decoy).expect("failed to verify the original-path decoy");
+        assert_eq!(decoy_bytes, DECOY);
+        assert_ne!(decoy_bytes, compiler_bytes);
+
+        Self {
+            original_path: original_path.to_path_buf(),
+            saved_compiler_output,
+            compiler_bytes: compiler_bytes.to_vec(),
+            decoy_bytes,
+            decoy_metadata,
+        }
+    }
+
+    fn assert_unchanged(&self, boundary: &str) {
+        let decoy = File::open(&self.original_path)
+            .expect("the original-path decoy disappeared before a launch boundary");
+        let (decoy_metadata, decoy_bytes) =
+            read_descriptor_consistently(&decoy).expect("failed to reread the original-path decoy");
+        assert_eq!(
+            decoy_metadata, self.decoy_metadata,
+            "original-path decoy inode changed {boundary}"
+        );
+        assert_eq!(
+            decoy_bytes, self.decoy_bytes,
+            "original-path decoy bytes changed {boundary}"
+        );
+        let saved = File::open(&self.saved_compiler_output)
+            .expect("saved compiler output disappeared during the decoy control");
+        let (_, saved_bytes) = read_descriptor_consistently(&saved)
+            .expect("failed to reread the saved compiler output");
+        assert_eq!(
+            saved_bytes, self.compiler_bytes,
+            "saved compiler output changed {boundary}"
+        );
+    }
+
+    fn launch_label(&self) -> &std::path::Path {
+        &self.original_path
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+const CHILD_EXECUTABLE_IDENTITY_MAGIC: &[u8; 16] = b"LI-EXE-ID-V1\0\0\0\0";
+#[cfg(target_arch = "x86_64")]
+const CHILD_EXECUTABLE_IDENTITY_BYTES: usize = 16 + 11 * 8;
+#[cfg(target_arch = "x86_64")]
+const CHILD_RELEASE_BYTES: &[u8] = b"release-retained-executable\n";
+#[cfg(target_arch = "x86_64")]
+const FIXED_EMPTY_ETC_MOUNT_SOURCE: &str = "reverie-liteinst-empty-etc";
+
+#[cfg(target_arch = "x86_64")]
+struct FixtureEvidencePaths {
+    _directory: tempfile::TempDir,
+    pid: PathBuf,
+    armed: PathBuf,
+    success: PathBuf,
+    identity: PathBuf,
+    release: PathBuf,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl FixtureEvidencePaths {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        Self {
+            pid: directory.path().join("guest.pid"),
+            armed: directory.path().join("retained-entry-armed"),
+            success: directory.path().join("retained-entry-succeeded"),
+            identity: directory.path().join("child-executable-identity"),
+            release: directory.path().join("parent-validated-release"),
+            _directory: directory,
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Debug, PartialEq, Eq)]
+struct ChildExecutableIdentity {
+    pid: u64,
+    executable_device: u64,
+    executable_inode: u64,
+    executable_mode: u64,
+    executable_size: u64,
+    retained_device: u64,
+    retained_inode: u64,
+    retained_mode: u64,
+    retained_size: u64,
+    retained_descriptor: u64,
+    descriptor_flags: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+fn parse_child_executable_identity(bytes: &[u8]) -> Result<ChildExecutableIdentity, String> {
+    if bytes.len() != CHILD_EXECUTABLE_IDENTITY_BYTES
+        || bytes.get(..CHILD_EXECUTABLE_IDENTITY_MAGIC.len())
+            != Some(CHILD_EXECUTABLE_IDENTITY_MAGIC)
+    {
+        return Err(format!(
+            "invalid child executable identity record: {} bytes",
+            bytes.len()
+        ));
+    }
+    let mut fields = [0_u64; 11];
+    for (index, field) in fields.iter_mut().enumerate() {
+        let start = CHILD_EXECUTABLE_IDENTITY_MAGIC.len() + index * 8;
+        let raw: [u8; 8] = bytes[start..start + 8]
+            .try_into()
+            .map_err(|_| "truncated child executable identity field".to_owned())?;
+        *field = u64::from_le_bytes(raw);
+    }
+    Ok(ChildExecutableIdentity {
+        pid: fields[0],
+        executable_device: fields[1],
+        executable_inode: fields[2],
+        executable_mode: fields[3],
+        executable_size: fields[4],
+        retained_device: fields[5],
+        retained_inode: fields[6],
+        retained_mode: fields[7],
+        retained_size: fields[8],
+        retained_descriptor: fields[9],
+        descriptor_flags: fields[10],
+    })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn validate_held_child_executable(
+    pid: u32,
+    identity_bytes: &[u8],
+    retained: &RetainedFixtureExecutable,
+    launch_descriptor: i32,
+) -> Result<(), String> {
+    let record = parse_child_executable_identity(identity_bytes)?;
+    let expected = ChildExecutableIdentity {
+        pid: u64::from(pid),
+        executable_device: retained.metadata.device,
+        executable_inode: retained.metadata.inode,
+        executable_mode: u64::from(retained.metadata.mode),
+        executable_size: retained.metadata.size,
+        retained_device: retained.metadata.device,
+        retained_inode: retained.metadata.inode,
+        retained_mode: u64::from(retained.metadata.mode),
+        retained_size: retained.metadata.size,
+        retained_descriptor: u64::try_from(launch_descriptor)
+            .map_err(|_| "launch descriptor is negative".to_owned())?,
+        descriptor_flags: 0,
+    };
+    if record != expected {
+        return Err(format!(
+            "child preinit executable identity mismatch: actual={record:?} expected={expected:?}"
+        ));
+    }
+
+    let proc_executable = File::open(format!("/proc/{pid}/exe"))
+        .map_err(|error| format!("failed to open held child /proc/{pid}/exe: {error}"))?;
+    let (metadata, bytes) = read_descriptor_consistently(&proc_executable)
+        .map_err(|error| format!("failed to read held child executable: {error}"))?;
+    if metadata != retained.metadata {
+        return Err(format!(
+            "held child executable fstat differs from retained descriptor: actual={metadata:?} expected={:?}",
+            retained.metadata
+        ));
+    }
+    if bytes != retained.bytes {
+        return Err("held child executable bytes differ from retained descriptor".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+async fn wait_for_child_identity_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    loop {
+        match fs::read(path) {
+            Ok(bytes) if bytes.len() == CHILD_EXECUTABLE_IDENTITY_BYTES => return Ok(bytes),
+            Ok(bytes) if bytes.len() > CHILD_EXECUTABLE_IDENTITY_BYTES => {
+                return Err(format!(
+                    "child executable identity record is oversized: {} bytes",
+                    bytes.len()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("failed to read child executable identity: {error}"));
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn wait_for_child_identity_file_blocking(
+    child: &mut reverie::process::Child,
+    path: &std::path::Path,
+    deadline: std::time::Instant,
+) -> Result<Vec<u8>, String> {
+    loop {
+        match fs::read(path) {
+            Ok(bytes) if bytes.len() == CHILD_EXECUTABLE_IDENTITY_BYTES => return Ok(bytes),
+            Ok(bytes) if bytes.len() > CHILD_EXECUTABLE_IDENTITY_BYTES => {
+                return Err(format!(
+                    "child executable identity record is oversized: {} bytes",
+                    bytes.len()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("failed to read child executable identity: {error}")),
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("failed to poll held child: {error}"))?
+        {
+            return Err(format!(
+                "child exited before parent executable validation: {status:?}"
+            ));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("child executable identity publication timed out".to_owned());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn read_published_fixture_pid(path: &std::path::Path) -> Result<u32, String> {
+    let text =
+        fs::read_to_string(path).map_err(|error| format!("failed to read fixture pid: {error}"))?;
+    if text.len() < 2 || !text.ends_with('\n') || text[..text.len() - 1].contains('\n') {
+        return Err(format!("fixture pid has invalid framing: {text:?}"));
+    }
+    text[..text.len() - 1]
+        .parse::<u32>()
+        .map_err(|error| format!("fixture pid is not a positive decimal u32: {error}"))
+}
+
+#[cfg(target_arch = "x86_64")]
+fn publish_child_release(path: &std::path::Path) -> io::Result<()> {
+    let temporary = path.with_extension("complete-before-rename");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    file.write_all(CHILD_RELEASE_BYTES)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(temporary, path)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn build_held_fixture_command(
+    retained: &RetainedFixtureExecutable,
+    decoy: &ExecutablePathDecoy,
+    evidence: &FixtureEvidencePaths,
+) -> (Command, i32) {
+    let executable = retained.duplicate_for_launch();
+    let mut command = Command::new(decoy.launch_label());
+    command
+        .executable(executable.into())
+        .expect("failed to retain the executable descriptor in the child command");
+    let launch_descriptor = command
+        .get_executable()
+        .expect("child command lost its executable descriptor")
+        .as_raw_fd();
+    assert_eq!(
+        command
+            .get_executable()
+            .map(|executable| unsafe { libc::fcntl(executable.as_raw_fd(), libc::F_GETFD) }),
+        Some(libc::FD_CLOEXEC),
+        "parent launch descriptor lost its exact FD_CLOEXEC state before clone"
+    );
+    command
+        .arg(&evidence.pid)
+        .arg(&evidence.armed)
+        .arg(&evidence.success)
+        .arg(&evidence.identity)
+        .arg(&evidence.release)
+        .arg(launch_descriptor.to_string())
+        .map_root()
+        .mount(Mount::new("/").rprivate())
+        .mount(
+            Mount::tmpfs("/etc")
+                .source(FIXED_EMPTY_ETC_MOUNT_SOURCE)
+                .readonly(),
+        )
+        .stdout(ReverieStdio::piped())
+        .stderr(ReverieStdio::piped());
+    (command, launch_descriptor)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct MappedFileIdentity {
+    device_major: u64,
+    device_minor: u64,
+    inode: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl MappedFileIdentity {
+    fn from_descriptor(metadata: &FixtureDescriptorMetadata) -> Self {
+        Self {
+            device_major: u64::from(libc::major(metadata.device)),
+            device_minor: u64::from(libc::minor(metadata.device)),
+            inode: metadata.inode,
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn child_loaded_file_objects(pid: u32) -> Result<BTreeMap<MappedFileIdentity, bool>, String> {
+    let maps = fs::read_to_string(format!("/proc/{pid}/maps"))
+        .map_err(|error| format!("failed to read held child maps: {error}"))?;
+    if !maps.ends_with('\n') {
+        return Err("held child maps ended without a complete line".to_owned());
+    }
+    let mut objects = BTreeMap::new();
+    for line in maps.lines() {
+        let mut fields = line.split_whitespace();
+        let range = fields
+            .next()
+            .ok_or_else(|| "maps line lacks range".to_owned())?;
+        let permissions = fields
+            .next()
+            .ok_or_else(|| format!("maps line lacks permissions: {line}"))?;
+        let offset = fields
+            .next()
+            .ok_or_else(|| format!("maps line lacks offset: {line}"))?;
+        let device = fields
+            .next()
+            .ok_or_else(|| format!("maps line lacks device: {line}"))?;
+        let inode = fields
+            .next()
+            .ok_or_else(|| format!("maps line lacks inode: {line}"))?
+            .parse::<u64>()
+            .map_err(|error| format!("maps line has invalid inode: {line}: {error}"))?;
+        if !range.contains('-')
+            || permissions.len() != 4
+            || u64::from_str_radix(offset, 16).is_err()
+        {
+            return Err(format!("maps line has invalid fixed fields: {line}"));
+        }
+        let (major, minor) = device
+            .split_once(':')
+            .ok_or_else(|| format!("maps line has invalid device: {line}"))?;
+        let identity = MappedFileIdentity {
+            device_major: u64::from_str_radix(major, 16)
+                .map_err(|error| format!("invalid maps major: {line}: {error}"))?,
+            device_minor: u64::from_str_radix(minor, 16)
+                .map_err(|error| format!("invalid maps minor: {line}: {error}"))?,
+            inode,
+        };
+        if inode == 0 {
+            continue;
+        }
+        if fields.next().is_none() {
+            return Err(format!("file-backed maps line lacks pathname: {line}"));
+        }
+        objects
+            .entry(identity)
+            .and_modify(|executable| *executable |= permissions.as_bytes()[2] == b'x')
+            .or_insert(permissions.as_bytes()[2] == b'x');
+    }
+    Ok(objects)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn validate_native_loaded_object_set(
+    pid: u32,
+    retained: &RetainedFixtureExecutable,
+) -> Result<BTreeMap<MappedFileIdentity, bool>, String> {
+    let objects = child_loaded_file_objects(pid)?;
+    let main = MappedFileIdentity::from_descriptor(&retained.metadata);
+    if objects.len() != 3 {
+        return Err(format!(
+            "native loader admitted {} file-backed objects instead of main, loader, and one dependency: {objects:?}",
+            objects.len()
+        ));
+    }
+    if objects.get(&main) != Some(&true) {
+        return Err(format!(
+            "native loaded-object set lacks the executable retained main object: {objects:?}"
+        ));
+    }
+    if objects.values().any(|executable| !executable) {
+        return Err(format!(
+            "native loader retained a file-backed object without an executable mapping: {objects:?}"
+        ));
+    }
+    Ok(objects)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn validate_fixed_system_preload_view(pid: u32) -> Result<(), String> {
+    let mountinfo = fs::read_to_string(format!("/proc/{pid}/mountinfo"))
+        .map_err(|error| format!("failed to read held child mountinfo: {error}"))?;
+    if !mountinfo.ends_with('\n') {
+        return Err("held child mountinfo ended without a complete line".to_owned());
+    }
+    let mut matching_mounts = 0_usize;
+    let mut mount_device = None;
+    for line in mountinfo.lines() {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        let separator = fields
+            .iter()
+            .position(|field| *field == "-")
+            .ok_or_else(|| format!("mountinfo line lacks separator: {line}"))?;
+        if fields.len() < 10 || separator < 6 || separator + 3 >= fields.len() {
+            return Err(format!("mountinfo line has invalid field count: {line}"));
+        }
+        if fields[4] != "/etc" {
+            continue;
+        }
+        matching_mounts += 1;
+        let (device_major, device_minor) = fields[2]
+            .split_once(':')
+            .ok_or_else(|| format!("held child /etc mount has invalid device: {line}"))?;
+        mount_device = Some((
+            device_major
+                .parse::<u64>()
+                .map_err(|error| format!("invalid /etc mount major: {error}"))?,
+            device_minor
+                .parse::<u64>()
+                .map_err(|error| format!("invalid /etc mount minor: {error}"))?,
+        ));
+        if fields[3] != "/"
+            || !fields[5].split(',').any(|option| option == "ro")
+            || separator != 6
+            || fields[separator + 1] != "tmpfs"
+            || fields[separator + 2] != FIXED_EMPTY_ETC_MOUNT_SOURCE
+            || !fields[separator + 3]
+                .split(',')
+                .any(|option| option == "ro")
+        {
+            return Err(format!(
+                "held child /etc is not one private read-only tmpfs: {line}"
+            ));
+        }
+    }
+    if matching_mounts != 1 {
+        return Err(format!(
+            "held child has {matching_mounts} exact /etc mounts instead of one"
+        ));
+    }
+    let etc_metadata = fs::metadata(format!("/proc/{pid}/root/etc"))
+        .map_err(|error| format!("failed to fstat held child /etc: {error}"))?;
+    let observed_device = (
+        u64::from(libc::major(etc_metadata.dev())),
+        u64::from(libc::minor(etc_metadata.dev())),
+    );
+    if !etc_metadata.is_dir() || Some(observed_device) != mount_device {
+        return Err(format!(
+            "held child /etc metadata does not identify its exact tmpfs mount: metadata={etc_metadata:?} mount_device={mount_device:?}"
+        ));
+    }
+    match fs::metadata(format!("/proc/{pid}/root/etc/ld.so.preload")) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Ok(metadata) => Err(format!(
+            "fixed child /etc unexpectedly contains ld.so.preload: {metadata:?}"
+        )),
+        Err(error) => Err(format!(
+            "failed to inspect fixed child /etc/ld.so.preload: {error}"
+        )),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn validate_held_fixture(
+    pid: u32,
+    identity_bytes: &[u8],
+    launch_descriptor: i32,
+    retained: &RetainedFixtureExecutable,
+    evidence: &FixtureEvidencePaths,
+) -> Result<(), String> {
+    validate_held_child_executable(pid, identity_bytes, retained, launch_descriptor)?;
+    let published_pid = read_published_fixture_pid(&evidence.pid)?;
+    if published_pid != pid {
+        return Err(format!(
+            "fixture pid {published_pid} does not equal launched child {pid}"
+        ));
+    }
+    if evidence.armed.exists() || evidence.success.exists() || evidence.release.exists() {
+        return Err(
+            "held child crossed the release boundary or published a result marker".to_owned(),
+        );
+    }
+    validate_fixed_system_preload_view(pid)
+}
+
+#[cfg(target_arch = "x86_64")]
+async fn kill_and_reap_native_child(
+    child: reverie::process::Child,
+    pid: u32,
+) -> reverie::process::Output {
+    let kill_result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    let kill_error = io::Error::last_os_error();
+    let output = child
+        .wait_with_output()
+        .await
+        .expect("failed to drain and reap a killed native control");
+    assert_pid_reaped(pid);
+    assert_eq!(
+        kill_result, 0,
+        "failed to kill a held native control before reaping: {kill_error}"
+    );
+    output
+}
+
+#[cfg(target_arch = "x86_64")]
+async fn assert_liteinst_refuses_renamed_getrandom_fixture(
+    retained: &RetainedFixtureExecutable,
+    decoy: &ExecutablePathDecoy,
+) {
+    // Removing both dynamic names does not remove an address retained before
+    // preinit rewrites the string/hash tables. The parent first proves that
+    // execveat loaded the retained description while the fixture is held.
+    let evidence = FixtureEvidencePaths::new();
+    let (mut command, launch_descriptor) = build_held_fixture_command(retained, decoy, &evidence);
+    command
+        .env("LD_PRELOAD", "")
+        .env_remove("LD_AUDIT")
+        .env_remove("LD_LIBRARY_PATH");
+    let mut run = Box::pin(LiteinstBackend::run_host_with_output_and_preload::<
+        ConnectedGetrandom,
+    >(command, (), preload_path()));
+    let mut early_result = None;
+    let identity_result = tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::select! {
+            result = &mut run => {
+                early_result = Some(result);
+                Err(
+                    "LiteInst run ended before the held child published its executable identity"
+                        .to_owned(),
+                )
+            }
+            identity = wait_for_child_identity_file(&evidence.identity) => identity,
+        }
+    })
+    .await;
+    let identity_bytes = match identity_result {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => {
+            drop(run);
+            let pid =
+                tokio::time::timeout(Duration::from_secs(3), wait_for_pid_file(&evidence.pid))
+                    .await
+                    .expect("early LiteInst cleanup never exposed the fixture pid");
+            assert_pid_reaped(pid);
+            panic!("{error}; result={early_result:?}");
+        }
+        Err(_) => {
+            drop(run);
+            let pid =
+                tokio::time::timeout(Duration::from_secs(3), wait_for_pid_file(&evidence.pid))
+                    .await
+                    .expect("cancelled held LiteInst run never exposed the fixture pid");
+            assert_pid_reaped(pid);
+            panic!("held LiteInst child identity publication timed out");
+        }
+    };
+    let record = parse_child_executable_identity(&identity_bytes)
+        .expect("held LiteInst child published an invalid identity record");
+    let pid = u32::try_from(record.pid).expect("held LiteInst child pid does not fit u32");
+    if let Err(error) =
+        validate_held_fixture(pid, &identity_bytes, launch_descriptor, retained, &evidence)
+    {
+        drop(run);
+        assert_pid_reaped(pid);
+        panic!("held LiteInst executable validation failed: {error}");
+    }
+    if let Err(error) = publish_child_release(&evidence.release) {
+        drop(run);
+        assert_pid_reaped(pid);
+        panic!("failed to release the validated LiteInst child: {error}");
+    }
+
+    let result = match tokio::time::timeout(Duration::from_secs(3), &mut run).await {
+        Ok(result) => result,
+        Err(_) => {
+            drop(run);
+            assert_pid_reaped(pid);
+            panic!("validated LiteInst refusal timed out after child release");
+        }
+    };
+    let error = result.expect_err("required LiteInst route-free refusal remained active");
+    assert_pid_reaped(pid);
+    assert!(
+        error.to_string().contains(
+            "current vDSO lacks both getrandom ABI names and is not an exact reviewed route-free image"
+        ),
+        "renamed live image reached the wrong pre-activation refusal: {error}"
+    );
+    assert_eq!(
+        fs::read(&evidence.armed).expect("preinit did not arm the retained-entry control"),
+        b"retained-vdso-getrandom-armed\n"
+    );
+    assert!(
+        !evidence.success.exists(),
+        "the entry retained before the symbol rename executed after activation"
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+async fn assert_native_retained_getrandom_entry_is_callable(
+    retained: &RetainedFixtureExecutable,
+    decoy: &ExecutablePathDecoy,
+) {
+    // The child loader receives a private, read-only, initially empty tmpfs at
+    // /etc before exec. The held preinit and parent mountinfo inspection bind
+    // that view across loader consumption; inherited loader injection and
+    // search variables are removed from this exact child command.
+    let evidence = FixtureEvidencePaths::new();
+    let (mut command, launch_descriptor) = build_held_fixture_command(retained, decoy, &evidence);
+    command
+        .env_remove("LD_PRELOAD")
+        .env_remove("LD_AUDIT")
+        .env_remove("LD_LIBRARY_PATH");
+    let mut child = command
+        .spawn()
+        .expect("failed to start the native retained-entry sensitivity control");
+    let spawned_pid =
+        u32::try_from(child.id().as_raw()).expect("native retained-entry child has an invalid pid");
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let validation =
+        wait_for_child_identity_file_blocking(&mut child, &evidence.identity, deadline).and_then(
+            |identity_bytes| {
+                validate_held_fixture(
+                    spawned_pid,
+                    &identity_bytes,
+                    launch_descriptor,
+                    retained,
+                    &evidence,
+                )?;
+                validate_native_loaded_object_set(spawned_pid, retained)?;
+                Ok(())
+            },
+        );
+    if let Err(error) = validation {
+        let output = kill_and_reap_native_child(child, spawned_pid).await;
+        panic!("native held-child validation failed: {error}; output={output:?}");
+    }
+    if let Err(error) = publish_child_release(&evidence.release) {
+        let output = kill_and_reap_native_child(child, spawned_pid).await;
+        panic!("failed to release validated native child: {error}; output={output:?}");
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let observed_status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(None) => {
+                let output = kill_and_reap_native_child(child, spawned_pid).await;
+                panic!("native retained-entry sensitivity timed out: {output:?}");
+            }
+            Err(error) => {
+                let output = kill_and_reap_native_child(child, spawned_pid).await;
+                panic!("failed to poll native retained-entry sensitivity: {error}; {output:?}");
+            }
+        }
+    };
+    let output = child
+        .wait_with_output()
+        .await
+        .expect("failed to drain the native retained-entry sensitivity control");
+    assert_pid_reaped(spawned_pid);
+    assert_eq!(output.status, observed_status);
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(read_published_fixture_pid(&evidence.pid), Ok(spawned_pid));
+    assert_eq!(
+        fs::read(&evidence.armed).expect("native preinit did not arm the retained entry"),
+        b"retained-vdso-getrandom-armed\n"
+    );
+    assert_eq!(
+        fs::read(&evidence.success)
+            .expect("native main did not execute the retained getrandom entry"),
+        b"retained-vdso-getrandom-executed\n"
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+async fn assert_injected_native_object_is_refused_while_held(
+    retained: &RetainedFixtureExecutable,
+    decoy: &ExecutablePathDecoy,
+) {
+    let evidence = FixtureEvidencePaths::new();
+    let injected = File::open(preload_path()).expect("failed to open injected-object control DSO");
+    let injected_metadata = FixtureDescriptorMetadata::read(&injected)
+        .expect("failed to fstat injected-object control DSO");
+    let injected_identity = MappedFileIdentity::from_descriptor(&injected_metadata);
+    let (mut command, launch_descriptor) = build_held_fixture_command(retained, decoy, &evidence);
+    command
+        .env("LD_PRELOAD", preload_path())
+        .env_remove("LD_AUDIT")
+        .env_remove("LD_LIBRARY_PATH");
+    let mut child = command
+        .spawn()
+        .expect("failed to start injected-object negative control");
+    let spawned_pid =
+        u32::try_from(child.id().as_raw()).expect("injected-object child has an invalid pid");
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let validation =
+        wait_for_child_identity_file_blocking(&mut child, &evidence.identity, deadline).and_then(
+            |identity_bytes| {
+                validate_held_fixture(
+                    spawned_pid,
+                    &identity_bytes,
+                    launch_descriptor,
+                    retained,
+                    &evidence,
+                )?;
+                let objects = child_loaded_file_objects(spawned_pid)?;
+                if objects.len() <= 3 || objects.get(&injected_identity) != Some(&true) {
+                    return Err(format!(
+                        "injected DSO was not an extra executable loaded object: {objects:?}"
+                    ));
+                }
+                Ok(())
+            },
+        );
+    if let Err(error) = validation {
+        let output = kill_and_reap_native_child(child, spawned_pid).await;
+        panic!("injected-object negative control was unobservable: {error}; {output:?}");
+    }
+    let output = kill_and_reap_native_child(child, spawned_pid).await;
+    assert_eq!(output.status.signal(), Some(libc::SIGKILL), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(read_published_fixture_pid(&evidence.pid), Ok(spawned_pid));
+    assert!(!evidence.release.exists());
+    assert!(!evidence.armed.exists());
+    assert!(!evidence.success.exists());
+}
+
+#[cfg(target_arch = "x86_64")]
+#[tokio::test(flavor = "current_thread")]
+async fn renamed_getrandom_native_sensitivity_and_liteinst_refusal_share_one_executable() {
+    // Compile once and copy those exact bytes into one sealed open description.
+    // Each child is held before vDSO mutation, proves /proc/self/exe and the
+    // inherited execveat descriptor identify that object, and is released only
+    // after a complete parent byte comparison. The compiler-output pathname is
+    // a distinct executable decoy before any launch, so pathname resolution
+    // cannot earn native, injected-object, or LiteInst credit.
+    let (_fixture_directory, guest) = compile_fixture("hybrid_vdso_getrandom_absent.c");
+    let retained = RetainedFixtureExecutable::capture(&guest);
+    let decoy = ExecutablePathDecoy::install(&guest, &retained.bytes);
+    assert_ne!(
+        (decoy.decoy_metadata.device, decoy.decoy_metadata.inode),
+        (retained.metadata.device, retained.metadata.inode),
+        "original-path decoy unexpectedly identifies the retained executable"
+    );
+    retained.assert_unchanged("before the native sensitivity sub-run");
+    decoy.assert_unchanged("before the native sensitivity sub-run");
+    assert_native_retained_getrandom_entry_is_callable(&retained, &decoy).await;
+    retained.assert_unchanged("after the native sensitivity sub-run");
+    decoy.assert_unchanged("after the native sensitivity sub-run");
+    assert_injected_native_object_is_refused_while_held(&retained, &decoy).await;
+    retained.assert_unchanged("after the injected-object negative sub-run");
+    decoy.assert_unchanged("after the injected-object negative sub-run");
+    assert_liteinst_refuses_renamed_getrandom_fixture(&retained, &decoy).await;
+    retained.assert_unchanged("after the LiteInst refusal sub-run");
+    decoy.assert_unchanged("after the LiteInst refusal sub-run");
+}
+
+#[cfg(target_arch = "x86_64")]
+#[tokio::test(flavor = "current_thread")]
+async fn ordinary_raw_getrandom_reaches_the_tool_at_its_exact_site() {
+    let (_directory, guest) = compile_fixture("hybrid_raw_getrandom_connected.c");
+    let syscall_site = symbol_address(&guest, "ordinary_text_getrandom_syscall");
+    let (output, global) = LiteinstBackend::run_host_with_output_and_preload::<ConnectedGetrandom>(
+        Command::new(guest),
+        (),
+        preload_path(),
+    )
+    .await
+    .expect("ordinary raw getrandom control did not initialize through LiteInst");
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"raw-getrandom-connected\n", "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        global.delivered.load(Ordering::SeqCst),
+        1,
+        "the sole ordinary syscall 318 did not reach the Tool exactly once"
+    );
+    assert_eq!(
+        global.logical_rip.load(Ordering::SeqCst),
+        syscall_site + 2,
+        "the Tool callback did not come from the exact ordinary-text syscall instruction"
+    );
+    assert_eq!(
+        global.length.load(Ordering::SeqCst),
+        32,
+        "the connected getrandom callback did not retain the fixture's exact length"
+    );
+    assert_eq!(
+        global.flags.load(Ordering::SeqCst),
+        0,
+        "the connected getrandom callback did not retain the fixture's exact flags"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1320,7 +2459,7 @@ async fn exec_without_preload_reaches_application_entry_guard() {
     let mut command = Command::new(guest);
     command.arg(&pid_file);
 
-    let error = run_fail_closed_and_assert_reaped(command, &pid_file).await;
+    let error = run_fail_closed_and_assert_reaped::<PassthroughGetpid>(command, &pid_file).await;
     assert!(
         error
             .to_string()
