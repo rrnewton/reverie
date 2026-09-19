@@ -31,12 +31,76 @@ pub struct GuestMemory {
 }
 
 #[derive(Debug)]
+struct Backing {
+    fd: OwnedFd,
+    length: usize,
+    host_access: Mutex<()>,
+}
+
+impl Backing {
+    fn new(length: usize) -> io::Result<Self> {
+        if length == 0 || !length.is_multiple_of(PAGE_SIZE) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "backing length must be nonzero and page-aligned",
+            ));
+        }
+        let file_length = libc::off_t::try_from(length)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "backing exceeds off_t"))?;
+        let fd = create_memory_backing()?;
+        // SAFETY: fd is a live, writable memfd and file_length fits off_t.
+        if unsafe { libc::ftruncate(fd.as_raw_fd(), file_length) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            fd,
+            length,
+            host_access: Mutex::new(()),
+        })
+    }
+}
+
+/// An owned range of a fixed-size backing, independent of any mmap view.
+#[derive(Clone, Debug)]
+struct BackingSlice {
+    backing: Arc<Backing>,
+    offset: usize,
+    length: usize,
+}
+
+impl BackingSlice {
+    fn new(backing: Arc<Backing>, offset: usize, length: usize) -> io::Result<Self> {
+        if length == 0 || !length.is_multiple_of(PAGE_SIZE) || !offset.is_multiple_of(PAGE_SIZE) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "backing slice must be nonempty and page-aligned",
+            ));
+        }
+        let end = offset.checked_add(length).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "backing slice end overflows")
+        })?;
+        libc::off_t::try_from(offset).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "backing offset exceeds off_t")
+        })?;
+        if end > backing.length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "backing slice exceeds its backing",
+            ));
+        }
+        Ok(Self {
+            backing,
+            offset,
+            length,
+        })
+    }
+}
+
+#[derive(Debug)]
 struct Mapping {
     mapping: NonNull<u8>,
-    backing: OwnedFd,
+    slice: BackingSlice,
     guest_base: u64,
-    size: usize,
-    host_access: Mutex<()>,
     user_access: Mutex<UserAccess>,
 }
 
@@ -52,17 +116,26 @@ enum UserPageState {
     NoAccess,
 }
 
-// SAFETY: Mapping owns an mmap allocation, not a Rust reference. Host access
-// is serialized by host_access, and the KVM backend exposes handles only while
-// its single vCPU is stopped at an exit.
+// SAFETY: Mapping owns its mmap allocation until Drop, not a Rust reference.
+// Arc<Backing> retains the shared host_access mutex and the file descriptor
+// needed for backing operations. Host access through all views is serialized
+// by that mutex. The KVM backend exposes handles only while its single vCPU
+// is stopped at an exit; the host mutex does not stop vCPU access.
 unsafe impl Send for Mapping {}
 // SAFETY: See the Send implementation. All host reads and writes take the
-// mapping's mutex before dereferencing the pointer.
+// backing's mutex before dereferencing the pointer.
 unsafe impl Sync for Mapping {}
 
 impl GuestMemory {
     /// Allocates a shared, memfd-backed mapping for a guest-physical address range.
     pub fn new(guest_base: u64, size: usize) -> Result<Self> {
+        Self::validate_layout(guest_base, size)?;
+        let backing = Arc::new(Backing::new(size).map_err(Error::MemoryMapping)?);
+        let slice = BackingSlice::new(backing, 0, size).map_err(Error::MemoryMapping)?;
+        Self::from_backing_slice(guest_base, slice)
+    }
+
+    fn validate_layout(guest_base: u64, size: usize) -> Result<()> {
         let size_u64 = u64::try_from(size).expect("usize must fit in u64 on x86-64");
         if size == 0
             || !size.is_multiple_of(PAGE_SIZE)
@@ -73,22 +146,22 @@ impl GuestMemory {
             return Err(Error::InvalidMemoryLayout { guest_base, size });
         }
 
-        let backing = create_memory_backing().map_err(Error::MemoryMapping)?;
-        // SAFETY: backing is a live, writable memfd and size fits off_t.
-        if unsafe { libc::ftruncate(backing.as_raw_fd(), size as libc::off_t) } != 0 {
-            return Err(Error::MemoryMapping(io::Error::last_os_error()));
-        }
+        Ok(())
+    }
 
-        // SAFETY: mmap is called with the live memfd and validated below. The
-        // mapping is owned by this value and released exactly once in Drop.
+    fn from_backing_slice(guest_base: u64, slice: BackingSlice) -> Result<Self> {
+        Self::validate_layout(guest_base, slice.length)?;
+
+        // SAFETY: slice owns a live memfd and a validated page-aligned range;
+        // its offset fits off_t. The returned view is released once in Drop.
         let mapping = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
-                size,
+                slice.length,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED | libc::MAP_NORESERVE,
-                backing.as_raw_fd(),
-                0,
+                slice.backing.fd.as_raw_fd(),
+                slice.offset as libc::off_t,
             )
         };
         if mapping == libc::MAP_FAILED {
@@ -98,10 +171,8 @@ impl GuestMemory {
         Ok(Self {
             mapping: Arc::new(Mapping {
                 mapping: NonNull::new(mapping.cast()).expect("mmap returned a null mapping"),
-                backing,
+                slice,
                 guest_base,
-                size,
-                host_access: Mutex::new(()),
                 user_access: Mutex::new(UserAccess::default()),
             }),
         })
@@ -125,29 +196,40 @@ impl GuestMemory {
             .expect("guest memory access map lock poisoned")
             .clone();
 
-        let sparse_result = {
-            let _source_guard = self
-                .mapping
-                .host_access
-                .lock()
-                .expect("guest memory lock poisoned");
-            let _destination_guard = snapshot
-                .mapping
-                .host_access
-                .lock()
-                .expect("guest memory lock poisoned");
-            sparse_copy(
-                self.mapping.backing.as_raw_fd(),
-                snapshot.mapping.backing.as_raw_fd(),
-                self.len(),
-            )
-        };
+        // The sparse helper requires whole, equal-sized files at offset zero.
+        // A subset uses the existing view-relative copy without extending that
+        // contract or copying bytes outside the view.
+        let copied_sparse =
+            if self.mapping.slice.offset == 0 && self.len() == self.mapping.slice.backing.length {
+                let _source_guard = self
+                    .mapping
+                    .slice
+                    .backing
+                    .host_access
+                    .lock()
+                    .expect("guest memory lock poisoned");
+                let _destination_guard = snapshot
+                    .mapping
+                    .slice
+                    .backing
+                    .host_access
+                    .lock()
+                    .expect("guest memory lock poisoned");
+                sparse_copy(
+                    self.mapping.slice.backing.fd.as_raw_fd(),
+                    snapshot.mapping.slice.backing.fd.as_raw_fd(),
+                    self.len(),
+                )
+                .is_ok()
+            } else {
+                false
+            };
 
         // SEEK_DATA/SEEK_HOLE and copy_file_range are Linux optimizations, not
         // correctness requirements. If either is unavailable or cannot finish
         // an extent, overwrite the entire destination using the previous copy
         // path. This also replaces any prefix copied before the failure.
-        if sparse_result.is_err() {
+        if !copied_sparse {
             let mut buffer = vec![0; COPY_CHUNK.min(self.len())];
             let mut offset = 0;
             while offset < self.len() {
@@ -173,17 +255,17 @@ impl GuestMemory {
 
     /// Returns the mapping size in bytes.
     pub fn len(&self) -> usize {
-        self.mapping.size
+        self.mapping.slice.length
     }
 
     /// Returns the address immediately after this guest-memory region.
     pub fn guest_end(&self) -> u64 {
-        self.mapping.guest_base + self.mapping.size as u64
+        self.mapping.guest_base + self.mapping.slice.length as u64
     }
 
     /// Returns whether the mapping is empty.
     pub fn is_empty(&self) -> bool {
-        self.mapping.size == 0
+        self.mapping.slice.length == 0
     }
 
     // TODO-HUMAN-REVIEW(PR-132): Review the host-side KVM user mapping API.
@@ -381,6 +463,8 @@ impl GuestMemory {
         let offset = self.checked_offset(guest_address, destination.len())?;
         let _guard = self
             .mapping
+            .slice
+            .backing
             .host_access
             .lock()
             .expect("guest memory lock poisoned");
@@ -475,6 +559,8 @@ impl GuestMemory {
         let offset = self.checked_offset(guest_address, source.len())?;
         let _guard = self
             .mapping
+            .slice
+            .backing
             .host_access
             .lock()
             .expect("guest memory lock poisoned");
@@ -507,6 +593,8 @@ impl GuestMemory {
         let offset = self.checked_offset(guest_address, length)?;
         let _guard = self
             .mapping
+            .slice
+            .backing
             .host_access
             .lock()
             .expect("guest memory lock poisoned");
@@ -520,9 +608,10 @@ impl GuestMemory {
 
     /// Discards complete host pages while preserving this mapping's identity.
     ///
-    /// Every handle to this shared mapping observes zero-filled pages
-    /// after the discard. Callers must stop guest vCPUs that can access the
-    /// range, just as they must for [`Self::zero_raw`].
+    /// Every mapping of this backing range observes zero-filled pages after
+    /// the discard. Callers must stop all vCPUs in every VM that can access
+    /// the backing range, including through another mapping, just as they
+    /// must for [`Self::zero_raw`].
     pub(crate) fn discard_pages(&self, guest_address: u64, length: usize) -> Result<()> {
         let offset = self.checked_offset(guest_address, length)?;
         if length == 0 {
@@ -536,6 +625,8 @@ impl GuestMemory {
         }
         let _guard = self
             .mapping
+            .slice
+            .backing
             .host_access
             .lock()
             .expect("guest memory lock poisoned");
@@ -571,12 +662,12 @@ impl GuestMemory {
         let relative = guest_address.checked_sub(self.mapping.guest_base);
         let length_u64 = u64::try_from(length).expect("usize must fit in u64 on x86-64");
         let end = relative.and_then(|offset| offset.checked_add(length_u64));
-        if end.is_none_or(|end| end > self.mapping.size as u64) {
+        if end.is_none_or(|end| end > self.mapping.slice.length as u64) {
             return Err(Error::InvalidGuestAddress {
                 address: guest_address,
                 length,
                 guest_base: self.mapping.guest_base,
-                guest_end: self.mapping.guest_base + self.mapping.size as u64,
+                guest_end: self.mapping.guest_base + self.mapping.slice.length as u64,
             });
         }
         Ok(relative.unwrap() as usize)
@@ -787,10 +878,10 @@ fn copy_sparse_file(source: RawFd, destination: RawFd, length: usize) -> io::Res
 
 impl Drop for Mapping {
     fn drop(&mut self) {
-        // SAFETY: mapping and size are the exact values returned by mmap and
+        // SAFETY: mapping and slice length are the exact mmap view bounds and
         // this Drop is the unique owner of that mapping.
         unsafe {
-            libc::munmap(self.mapping.as_ptr().cast(), self.size);
+            libc::munmap(self.mapping.as_ptr().cast(), self.slice.length);
         }
     }
 }
@@ -966,6 +1057,215 @@ mod tests {
     }
 
     #[test]
+    fn independent_views_retain_shared_backing_after_drop() {
+        let backing = Arc::new(Backing::new(PAGE_SIZE).unwrap());
+        let weak_backing = Arc::downgrade(&backing);
+        let slice = BackingSlice::new(backing.clone(), 0, PAGE_SIZE).unwrap();
+        let first = GuestMemory::from_backing_slice(0x1000, slice.clone()).unwrap();
+        let second = GuestMemory::from_backing_slice(0x2000, slice).unwrap();
+        let weak_first = Arc::downgrade(&first.mapping);
+        assert_ne!(first.host_address(), second.host_address());
+        assert!(Arc::ptr_eq(
+            &first.mapping.slice.backing,
+            &second.mapping.slice.backing,
+        ));
+
+        first.write_raw(0x1100, b"first!").unwrap();
+        let mut bytes = [0; 6];
+        second.read_raw(0x2100, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"first!");
+        second.write_raw(0x2100, b"second").unwrap();
+        first.read_raw(0x1100, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"second");
+        {
+            let _guard = first.mapping.slice.backing.host_access.lock().unwrap();
+            assert!(matches!(
+                second.mapping.slice.backing.host_access.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            let unrelated = GuestMemory::new(0, PAGE_SIZE).unwrap();
+            assert!(
+                unrelated
+                    .mapping
+                    .slice
+                    .backing
+                    .host_access
+                    .try_lock()
+                    .is_ok()
+            );
+        }
+
+        drop(backing);
+        drop(first);
+        assert!(weak_first.upgrade().is_none());
+        assert!(weak_backing.upgrade().is_some());
+        second.read_raw(0x2100, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"second");
+        second.write_raw(0x2100, b"alive!").unwrap();
+        second.read_raw(0x2100, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"alive!");
+        drop(second);
+        assert!(weak_backing.upgrade().is_none());
+    }
+
+    #[test]
+    fn backing_slices_validate_alignment_bounds_and_overflow() {
+        let backing = Arc::new(Backing::new(PAGE_SIZE * 3).unwrap());
+        let whole = BackingSlice::new(backing.clone(), 0, PAGE_SIZE * 3).unwrap();
+        assert_eq!((whole.offset, whole.length), (0, PAGE_SIZE * 3));
+        let tail = BackingSlice::new(backing.clone(), PAGE_SIZE, PAGE_SIZE * 2).unwrap();
+        assert_eq!((tail.offset, tail.length), (PAGE_SIZE, PAGE_SIZE * 2));
+        let unrepresentable = libc::off_t::MAX as usize + 1;
+        for (offset, length) in [
+            (0, 0),
+            (1, PAGE_SIZE),
+            (0, PAGE_SIZE - 1),
+            (PAGE_SIZE * 2, PAGE_SIZE * 2),
+            (PAGE_SIZE * 4, PAGE_SIZE),
+            (usize::MAX - (PAGE_SIZE - 1), PAGE_SIZE),
+            (unrepresentable, PAGE_SIZE),
+        ] {
+            let error = BackingSlice::new(backing.clone(), offset, length).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+        for size in [0, PAGE_SIZE - 1, unrepresentable] {
+            assert_eq!(
+                Backing::new(size).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        for (guest_base, size) in [
+            (0, 0),
+            (0, PAGE_SIZE - 1),
+            (1, PAGE_SIZE),
+            (u64::MAX - (PAGE_SIZE as u64 - 1), PAGE_SIZE),
+            (0, unrepresentable),
+        ] {
+            assert!(matches!(
+                GuestMemory::new(guest_base, size),
+                Err(Error::InvalidMemoryLayout { .. })
+            ));
+        }
+        assert!(matches!(
+            GuestMemory::from_backing_slice(1, whole.clone()),
+            Err(Error::InvalidMemoryLayout { .. })
+        ));
+        assert!(matches!(
+            GuestMemory::from_backing_slice(u64::MAX - (PAGE_SIZE as u64 - 1), tail),
+            Err(Error::InvalidMemoryLayout { .. })
+        ));
+    }
+
+    #[test]
+    fn independent_view_permissions_do_not_alias_clone_permissions() {
+        let first = GuestMemory::new(0, PAGE_SIZE * 2).unwrap();
+        let second = GuestMemory::from_backing_slice(0, first.mapping.slice.clone()).unwrap();
+        let clone = first.clone();
+        first.write_raw(0, &[0xa5; PAGE_SIZE * 2]).unwrap();
+        first.map_user_range(0, PAGE_SIZE as u64, false).unwrap();
+        first
+            .map_user_permissions(PAGE_SIZE as u64, PAGE_SIZE as u64, true, false)
+            .unwrap();
+        first.enable_user_access();
+        second
+            .map_user_range(0, (PAGE_SIZE * 2) as u64, false)
+            .unwrap();
+        second.enable_user_access();
+
+        second.copy_to_user(PAGE_SIZE as u64, b"shared").unwrap();
+        let mut bytes = [0; 6];
+        first.read(PAGE_SIZE as u64, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"shared");
+        assert!(first.copy_to_user(PAGE_SIZE as u64, b"denied").is_err());
+        assert_eq!(
+            clone.copy_to_user_prefix(PAGE_SIZE as u64, b"x").unwrap(),
+            0
+        );
+        let boundary = PAGE_SIZE as u64 - 2;
+        assert!(clone.put_user_i32(boundary, 0).is_err());
+        let mut scalar_bytes = [0; 4];
+        second.read_raw(boundary, &mut scalar_bytes).unwrap();
+        assert_eq!(scalar_bytes, [0xa5, 0xa5, b's', b'h']);
+        assert_eq!(clone.copy_to_user_prefix(boundary, b"ABCD").unwrap(), 2);
+        second.read_raw(boundary, &mut scalar_bytes).unwrap();
+        assert_eq!(&scalar_bytes, b"ABsh");
+
+        clone
+            .map_user_permissions(0, PAGE_SIZE as u64, true, false)
+            .unwrap();
+        assert!(first.put_user_i32(0, 0).is_err());
+        second.put_user_i32(0, 0).unwrap();
+        clone
+            .map_user_range(PAGE_SIZE as u64, PAGE_SIZE as u64, true)
+            .unwrap();
+        assert!(first.read(PAGE_SIZE as u64, &mut bytes).is_err());
+        second.read(PAGE_SIZE as u64, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"shared");
+        first
+            .map_user_range(PAGE_SIZE as u64, PAGE_SIZE as u64, false)
+            .unwrap();
+        clone.copy_to_user(PAGE_SIZE as u64, b"cloned").unwrap();
+        second.read(PAGE_SIZE as u64, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"cloned");
+    }
+
+    #[test]
+    fn snapshot_of_nonzero_slice_copies_view_and_stays_private() {
+        // Both an offset-zero subset and an interior slice must bypass the
+        // whole-file sparse helper. The public allocation path remains whole.
+        for backing_offset in [0, PAGE_SIZE] {
+            let parent = GuestMemory::new(0, PAGE_SIZE * 4).unwrap();
+            let mut original = vec![0; PAGE_SIZE * 4];
+            for (page, bytes) in original.chunks_mut(PAGE_SIZE).enumerate() {
+                bytes.fill(0x11 * (page as u8 + 1));
+            }
+            parent.write_raw(0, &original).unwrap();
+            let slice = BackingSlice::new(
+                parent.mapping.slice.backing.clone(),
+                backing_offset,
+                PAGE_SIZE * 2,
+            )
+            .unwrap();
+            let base = 0x10000;
+            let view = GuestMemory::from_backing_slice(base, slice).unwrap();
+            view.map_user_range(base, PAGE_SIZE as u64, false).unwrap();
+            view.map_user_permissions(base + PAGE_SIZE as u64, PAGE_SIZE as u64, true, false)
+                .unwrap();
+            view.enable_user_access();
+            let snapshot = view
+                .snapshot_with_sparse_copy(|_, _, _| panic!("subset reached sparse file copy"))
+                .unwrap();
+            assert!(!Arc::ptr_eq(
+                &view.mapping.slice.backing,
+                &snapshot.mapping.slice.backing,
+            ));
+            assert_eq!(snapshot.guest_base(), base);
+            assert_eq!(snapshot.len(), PAGE_SIZE * 2);
+            let mut expected = original[backing_offset..backing_offset + PAGE_SIZE * 2].to_vec();
+            let mut actual = vec![0; PAGE_SIZE * 2];
+            snapshot.read(base, &mut actual).unwrap();
+            assert_eq!(actual, expected);
+            assert!(snapshot.read_raw(base - 1, &mut [0]).is_err());
+            assert!(snapshot.read_raw(snapshot.guest_end(), &mut [0]).is_err());
+            assert!(snapshot.put_user_i32(base + PAGE_SIZE as u64, 0).is_err());
+            snapshot.write_raw(base, &[0xa1]).unwrap();
+            expected[0] = 0xa1;
+            view.write_raw(base + PAGE_SIZE as u64, &[0xb2]).unwrap();
+            original[backing_offset + PAGE_SIZE] = 0xb2;
+            snapshot.read_raw(base, &mut actual).unwrap();
+            assert_eq!(actual, expected);
+            let mut parent_bytes = vec![0; original.len()];
+            parent.read_raw(0, &mut parent_bytes).unwrap();
+            assert_eq!(parent_bytes, original);
+            snapshot
+                .map_user_range(base + PAGE_SIZE as u64, PAGE_SIZE as u64, false)
+                .unwrap();
+            snapshot.put_user_i32(base + PAGE_SIZE as u64, 0).unwrap();
+            assert!(view.put_user_i32(base + PAGE_SIZE as u64, 0).is_err());
+        }
+    }
+
+    #[test]
     fn discarded_pages_are_lazy_zeroes_in_every_cloned_handle() {
         let memory = GuestMemory::new(0x1000, PAGE_SIZE * 3).unwrap();
         let clone = memory.clone();
@@ -1051,7 +1351,12 @@ mod tests {
         let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
         // SAFETY: stat points to writable storage and the backing descriptor is live.
         assert_eq!(
-            unsafe { libc::fstat(snapshot.mapping.backing.as_raw_fd(), stat.as_mut_ptr()) },
+            unsafe {
+                libc::fstat(
+                    snapshot.mapping.slice.backing.fd.as_raw_fd(),
+                    stat.as_mut_ptr(),
+                )
+            },
             0
         );
         // SAFETY: fstat succeeded and initialized the structure.
