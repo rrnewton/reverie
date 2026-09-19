@@ -2710,8 +2710,7 @@ impl KvmBackend {
             primary => (false, primary),
         };
         let primary = self.report_tool_failure("Tool callback", primary);
-        let children = self.cancel_unstarted_tool_children(starts, true);
-        let result = match self.discard_cancelled_tool_children(executor, children, true) {
+        let result = match self.settle_unstarted_tool_children_after_failure(executor, starts) {
             Ok(()) => primary,
             Err(cleanup) => {
                 primary.with_cleanup(vec![cleanup.cleanup("unstarted-child cleanup also failed")])
@@ -2722,6 +2721,18 @@ impl KvmBackend {
         } else {
             result
         }
+    }
+
+    /// Cancel and join an impossible child-start batch without publishing a
+    /// primary error yet. Signal-dequeue cleanup folds the violation into its
+    /// already-owned callback completion before outer failure publication.
+    pub(crate) fn settle_unstarted_tool_children_after_failure(
+        &mut self,
+        executor: &mut ElfExecutor,
+        starts: &SharedChildStarts,
+    ) -> Result<()> {
+        let children = self.cancel_unstarted_tool_children(starts, true);
+        self.discard_cancelled_tool_children(executor, children, true)
     }
 
     /// Runs one process action and restores the completed syscall transport
