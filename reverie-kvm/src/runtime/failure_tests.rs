@@ -1661,7 +1661,8 @@ fn native_signal_setup_refusal_retires_before_hooks_and_preserves_original_cause
 
     // Exercise the public constructor as well as its identical post-allocation
     // path with an independently retained actual lifecycle table.
-    for observe_lifecycle in [false, true] {
+    for (observe_lifecycle, nested) in [(false, false), (true, false), (false, true), (true, true)]
+    {
         let global = Arc::new(NativeSignalGlobal::default());
         global.reject.store(true, Ordering::Release);
         global.rpc.failure_required.store(true, Ordering::Release);
@@ -1670,24 +1671,31 @@ fn native_signal_setup_refusal_retires_before_hooks_and_preserves_original_cause
             drops: drops.clone(),
         });
         let pid = Pid::from_raw(1);
-        let result = if observe_lifecycle {
-            let state = crate::executor::native_loaded_state(&std::env::current_dir().unwrap());
-            let lifecycle = state.task_lifecycle.clone();
-            let executor = ElfExecutor::with_output(state, None);
-            let identity = executor.signal_task_identity().unwrap();
-            *global.retirement.lock().unwrap() = Some((lifecycle, identity));
-            let failure = FailureContext::new(RunFailure::new(&global), pid, pid);
-            NativeToolOwner::from_executor(
-                executor,
-                pid,
-                tool,
-                Box::new(1),
-                global.clone(),
-                false,
-                failure,
-            )
+        let construct = || {
+            if observe_lifecycle {
+                let state = crate::executor::native_loaded_state(&std::env::current_dir().unwrap());
+                let lifecycle = state.task_lifecycle.clone();
+                let executor = ElfExecutor::with_output(state, None);
+                let identity = executor.signal_task_identity().unwrap();
+                *global.retirement.lock().unwrap() = Some((lifecycle, identity));
+                let failure = FailureContext::new(RunFailure::new(&global), pid, pid);
+                NativeToolOwner::from_executor(
+                    executor,
+                    pid,
+                    tool,
+                    Box::new(1),
+                    global.clone(),
+                    false,
+                    failure,
+                )
+            } else {
+                NativeToolOwner::new(pid, tool, Box::new(1), global.clone(), false)
+            }
+        };
+        let result = if nested {
+            futures::executor::block_on(async move { construct() })
         } else {
-            NativeToolOwner::new(pid, tool, Box::new(1), global.clone(), false)
+            construct()
         };
         let error = match result {
             Err(error) => error,
@@ -1726,4 +1734,60 @@ fn native_signal_setup_refusal_retires_before_hooks_and_preserves_original_cause
             );
         }
     }
+}
+
+#[test]
+fn native_signal_cleanup_completion_preserves_inline_wake_and_nested_entry() {
+    let polls = AtomicUsize::new(0);
+    let mut retained_waker = None;
+    let result = futures::executor::block_on(async {
+        native_test_support::complete_native_cleanup(poll_fn(|context| {
+            match polls.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    retained_waker = Some(context.waker().clone());
+                    // Wake during poll, before the helper can wait. Duplicate
+                    // wakeups may coalesce, but must not lose the pending wake.
+                    context.waker().wake_by_ref();
+                    context.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                1 => Poll::Ready(37),
+                _ => panic!("completed native cleanup was polled again"),
+            }
+        }))
+    });
+    assert_eq!(result, 37);
+    assert_eq!(polls.load(Ordering::Acquire), 2);
+    // The Arc-owned wake state remains valid after the future has completed.
+    retained_waker.unwrap().wake_by_ref();
+    assert_eq!(polls.load(Ordering::Acquire), 2);
+
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_ready = ready.clone();
+    let (send_waker, receive_waker) = std::sync::mpsc::channel::<std::task::Waker>();
+    let worker = std::thread::spawn(move || {
+        let waker = receive_waker.recv().unwrap();
+        worker_ready.store(true, Ordering::Release);
+        // Exercise owned Wake from another thread, without relying on where
+        // the polling thread is scheduled relative to its condvar wait.
+        waker.wake();
+    });
+    let mut sent = false;
+    let result = futures::executor::block_on(async {
+        native_test_support::complete_native_cleanup(poll_fn(|context| {
+            if !sent {
+                sent = true;
+                send_waker.send(context.waker().clone()).unwrap();
+                return Poll::Pending;
+            }
+            if ready.load(Ordering::Acquire) {
+                Poll::Ready(37)
+            } else {
+                Poll::Pending
+            }
+        }))
+    });
+    worker.join().unwrap();
+    assert_eq!(result, 37);
+    assert!(ready.load(Ordering::Acquire));
 }

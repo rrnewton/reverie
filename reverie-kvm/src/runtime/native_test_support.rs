@@ -86,6 +86,46 @@ impl<T: Tool> GuestSyscallExecutor<T> for NoInstructions<'_> {
     }
 }
 
+// Complete this synchronous preparation cleanup without entering LocalPool:
+// the caller may already be polling on one. This polls only the supplied
+// future; tasks that need the suspended caller's executor cannot make progress.
+pub(super) fn complete_native_cleanup<F: Future>(future: F) -> F::Output {
+    struct Notify {
+        notified: Mutex<bool>,
+        changed: std::sync::Condvar,
+    }
+
+    impl std::task::Wake for Notify {
+        fn wake(self: Arc<Self>) {
+            std::task::Wake::wake_by_ref(&self);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            *self.notified.lock().unwrap() = true;
+            self.changed.notify_one();
+        }
+    }
+
+    let notify = Arc::new(Notify {
+        notified: Mutex::new(false),
+        changed: std::sync::Condvar::new(),
+    });
+    let waker = std::task::Waker::from(notify.clone());
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut future = pin!(future);
+    loop {
+        // Poll without the wake lock: a future may wake inline before Pending.
+        if let Poll::Ready(result) = future.as_mut().poll(&mut context) {
+            return result;
+        }
+        let mut notified = notify.notified.lock().unwrap();
+        while !*notified {
+            notified = notify.changed.wait(notified).unwrap();
+        }
+        *notified = false;
+    }
+}
+
 /// An actual executor lifecycle preparation kept alive by a native control.
 /// Dropping it uses ElfExecutor's ordinary exact-generation retirement.
 pub struct NativeTaskPreparation {
@@ -191,7 +231,7 @@ where
                     .publish("process signal control installation", Error::Reverie(error));
                 // This path owns an executor, unlike the earlier cwd refusal.
                 // Retire it before consuming hooks, retaining the setup cause.
-                return match futures::executor::block_on(owner.finish(Err(error))) {
+                return match complete_native_cleanup(owner.finish(Err(error))) {
                     Err(error) => Err(error),
                     Ok(_) => unreachable!("a refused signal installation cannot succeed"),
                 };
