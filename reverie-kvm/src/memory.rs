@@ -44,6 +44,8 @@ pub struct GuestMemory {
     test_vector_copy_observer: Option<Arc<dyn Fn(usize, EntryOrigin) + Send + Sync>>,
     #[cfg(test)]
     test_syscall_dispatch_observer: Option<SyscallDispatchObserver>,
+    #[cfg(test)]
+    test_backing_contention: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl std::fmt::Debug for GuestMemory {
@@ -362,11 +364,19 @@ impl GuestMemory {
             test_vector_copy_observer: None,
             #[cfg(test)]
             test_syscall_dispatch_observer: None,
+            #[cfg(test)]
+            test_backing_contention: None,
         })
     }
 
     pub(crate) fn entry_gate(&self) -> Arc<EntryGate> {
         self.mapping.entry_gate.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_mapping_owners(&self) -> impl Fn() -> usize + Send + Sync + 'static + use<> {
+        let mapping = Arc::downgrade(&self.mapping);
+        move || mapping.strong_count()
     }
 
     /// Attribution belongs to this handle, not to every alias of the Mapping.
@@ -957,6 +967,19 @@ impl GuestMemory {
         _copy: &CopyAccess,
     ) -> Result<()> {
         let offset = self.checked_offset(guest_address, destination.len())?;
+        #[cfg(test)]
+        if let Some(observe) = &self.test_backing_contention {
+            // Record a real failed lock attempt while the actual short-copy
+            // admission remains owned. The normal blocking lock below is
+            // unchanged; successful or poisoned probes do not report waiting.
+            let contended = matches!(
+                self.mapping.slice.backing.host_access.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            );
+            if contended {
+                observe();
+            }
+        }
         let _guard = self
             .mapping
             .slice
@@ -1921,6 +1944,10 @@ impl MemoryAccess for UserMemory {
         Ok(total)
     }
 }
+
+#[cfg(test)]
+#[path = "memory/entry_snapshot_tests.rs"]
+mod entry_snapshot_tests;
 
 #[cfg(test)]
 mod tests {

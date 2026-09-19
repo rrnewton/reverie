@@ -28,7 +28,10 @@ would outlive an execution whose accounting has already failed. The issuing
 owner retains the typed cause for terminal publication. A plain KVM_RUN error,
 including interruption, does not by itself poison the Mapping. This gate is
 currently used to test close and cleanup on unchanged mappings; no production
-mapping change or global fork snapshot is qualified by it.
+mapping change or global fork snapshot is qualified by it. This clock-failure
+rule supersedes the initial accepted design's narrower list of poison causes
+(kick, mask/drain restoration, abandoned close, and unwind). Admission and
+poison handling already operate in production even without a production closer.
 
 Guest-memory allocation also requires kernel support for `memfd_create` and
 permission to call it under the host's seccomp or container policy. Allocation

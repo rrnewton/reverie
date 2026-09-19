@@ -46,6 +46,9 @@ fn host_failure(operation: &str) -> Error {
 type BeforeRunHook = Box<dyn FnOnce(&RunProbe) + Send>;
 
 #[cfg(test)]
+type AfterIntervalHook = Box<dyn FnOnce(&GuestClock) + Send>;
+
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct RunProbe {
     pub(crate) prepare: std::sync::Arc<crate::entry::PrepareProbe>,
@@ -55,6 +58,8 @@ pub(crate) struct RunProbe {
     pub(crate) clock_begins: std::sync::atomic::AtomicUsize,
     pub(crate) intervals_created: std::sync::atomic::AtomicUsize,
     before_run: std::sync::Mutex<Option<BeforeRunHook>>,
+    after_prepare: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    after_interval: std::sync::Mutex<Option<AfterIntervalHook>>,
 }
 
 #[cfg(test)]
@@ -252,6 +257,13 @@ impl CountedVcpu {
         else {
             return Ok(None);
         };
+        #[cfg(test)]
+        if let Some(probe) = &self.run_probe {
+            let hook = probe.after_prepare.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
         if !self.clock.tracking {
             self.clock.ran_untracked = true;
             self.initial_elf_ran |= self.image_is_elf;
@@ -273,7 +285,15 @@ impl CountedVcpu {
         let result = self.fd.run();
         // VcpuExit borrows only fd. Always finish the separate clock interval,
         // including EINTR and other KVM errors, before exposing that exit.
-        finish_entry(finish_run(result, interval), entry).map(Some)
+        let result = finish_run(result, interval);
+        #[cfg(test)]
+        if let Some(probe) = &self.run_probe {
+            let hook = probe.after_interval.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook(&self.clock);
+            }
+        }
+        finish_entry(result, entry).map(Some)
     }
 }
 
@@ -1171,3 +1191,6 @@ mod tests {
         assert!(same_affinity(&affinity().unwrap(), &original));
     }
 }
+
+#[cfg(test)]
+mod entry_interrupt_tests;

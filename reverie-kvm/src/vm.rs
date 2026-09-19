@@ -1978,6 +1978,14 @@ impl KvmBackend {
 
     // The prepared action owns its frame and any earlier child state while
     // admission is closed. Only this one entry is retried; the action is not.
+    // A terminal stop deliberately abandons this thread's trampoline: a stop
+    // before preparation leaves its original byte, while a later stop leaves
+    // the park byte installed. The terminal caller never restores/resumes
+    // this guest continuation; siblings use separate per-thread trampolines,
+    // and a reused slot is rewritten during thread construction. Restoring
+    // here could wait on a closed gate and prevent terminal cleanup. Any
+    // future caller that resumes or observes this retired thread's trampoline
+    // must resolve that obligation before using this terminal path.
     async fn park_process_action(
         &mut self,
         phase: &'static str,
@@ -4916,6 +4924,9 @@ fn supported_hypercall_instruction(cpuid: &CpuId) -> Result<[u8; 3]> {
 mod worker_panic_tests;
 
 #[cfg(test)]
+pub(crate) use tests::minimal_test_elf;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -4924,6 +4935,7 @@ mod tests {
     include!("vm/entry_main_tests.rs");
     include!("vm/entry_spawn_tests.rs");
     include!("vm/entry_hypercall_tests.rs");
+    include!("vm/entry_construction_tests.rs");
     include!("vm/entry_race_tests.rs");
     include!("vm/entry_multi_owner_tests.rs");
     include!("vm/entry_action_tests.rs");
@@ -8236,7 +8248,7 @@ mod tests {
         }
     }
 
-    fn minimal_test_elf(code: &[u8]) -> Vec<u8> {
+    pub(crate) fn minimal_test_elf(code: &[u8]) -> Vec<u8> {
         const LOAD_ADDRESS: u64 = 0x20_0000;
         const CODE_OFFSET: usize = 0x1000;
         let mut image = vec![0; CODE_OFFSET + code.len()];
