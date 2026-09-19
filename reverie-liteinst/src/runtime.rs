@@ -1,4 +1,6 @@
+mod installed_callback;
 use core::arch::global_asm;
+use core::mem::size_of;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicI32;
 use core::sync::atomic::AtomicPtr;
@@ -8,9 +10,11 @@ use core::sync::atomic::Ordering;
 use std::cell::Cell;
 use std::ffi::OsStr;
 use std::io;
+use std::os::fd::AsRawFd;
 use std::ptr;
 use std::sync::OnceLock;
 
+use installed_callback::InstalledCallback;
 use liteinst2::patcher::PatchError;
 use liteinst2::patcher::prepare_live_patching;
 use liteinst2::scanner::InstructionScanner;
@@ -30,6 +34,22 @@ use reverie_preload::trap::raw_syscall6;
 
 use crate::COMPAT_EVENT_COOKIE_ENV;
 use crate::COMPAT_EVENT_FD_ENV;
+use crate::rcb;
+
+mod private_fd;
+
+#[cfg(feature = "rcb-qualification")]
+const PREPARED_FORK_PROBE_IDLE: i32 = -1;
+#[cfg(feature = "rcb-qualification")]
+const PREPARED_FORK_PROBE_CLAIMED: i32 = -2;
+#[cfg(feature = "rcb-qualification")]
+static PREPARED_FORK_PROBE_SEND: AtomicI32 = AtomicI32::new(PREPARED_FORK_PROBE_IDLE);
+#[cfg(feature = "rcb-qualification")]
+static PREPARED_FORK_PROBE_RECEIVE: AtomicI32 = AtomicI32::new(PREPARED_FORK_PROBE_IDLE);
+#[cfg(feature = "rcb-qualification")]
+static PREPARED_FORK_PROBE_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
+#[cfg(feature = "rcb-qualification")]
+static PREPARED_FORK_PROBE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) const HOST_RUNTIME_ENV: &str = "REVERIE_LITEINST_HOST_RUNTIME";
 pub(crate) const HOST_BEGIN_MARKER: u64 = 0x7265_766c_6900_0001;
@@ -265,12 +285,12 @@ thread_local! {
     static TOOL_CALLBACK_ACTIVE: AtomicBool = const { AtomicBool::new(false) };
 }
 
-struct ToolCallbackGuard {
+pub(crate) struct ToolCallbackGuard {
     previous: bool,
 }
 
 impl ToolCallbackGuard {
-    fn enter() -> Self {
+    pub(crate) fn enter() -> Self {
         let previous = TOOL_CALLBACK_ACTIVE.with(|active| active.swap(true, Ordering::Relaxed));
         Self { previous }
     }
@@ -337,79 +357,587 @@ pub(crate) struct InstructionSubscriptions {
     pub(crate) rdtsc: bool,
 }
 
+// This backend currently admits one Tool thread per process; ordinary fork
+// gives the child a private copy. This slot is an admitted-route safeguard,
+// not descriptor virtualization or protection from externally acquired aliases.
+static RCB_FD: AtomicI32 = AtomicI32::new(-1);
+// Linux _IOR('$', 7, __u64): read the stable kernel event identity.
+const PERF_EVENT_IOC_ID: u64 = 0x8008_2407;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RcbAccounting {
+    entry: u64,
+    deduction: u64,
+    last_sample: u64,
+    last_public: u64,
+    depth: u32,
+    error: i32,
+}
+
+impl RcbAccounting {
+    const fn new(depth: u32) -> Self {
+        Self {
+            entry: 0,
+            deduction: 0,
+            last_sample: 0,
+            last_public: 0,
+            depth,
+            error: 0,
+        }
+    }
+
+    fn live(&self) -> Result<(), i32> {
+        if self.error == 0 {
+            Ok(())
+        } else {
+            Err(self.error)
+        }
+    }
+
+    fn observe(&mut self, sample: u64) -> Result<(), i32> {
+        self.live()?;
+        if sample < self.last_sample {
+            return Err(libc::ESTALE);
+        }
+        self.last_sample = sample;
+        Ok(())
+    }
+
+    fn enter(&mut self, sample: Option<u64>) -> Result<(), i32> {
+        self.live()?;
+        let depth = self.depth.checked_add(1).ok_or(libc::EOVERFLOW)?;
+        if let Some(sample) = sample {
+            self.observe(sample)?;
+            if self.depth == 0 {
+                self.entry = sample;
+            }
+        }
+        self.depth = depth;
+        Ok(())
+    }
+
+    fn leave(&mut self, sample: Option<u64>) -> Result<(), i32> {
+        self.live()?;
+        let depth = self.depth.checked_sub(1).ok_or(libc::ESTALE)?;
+        if depth == 0 {
+            if let Some(sample) = sample {
+                self.observe(sample)?;
+                let elapsed = sample.checked_sub(self.entry).ok_or(libc::ESTALE)?;
+                self.deduction = self
+                    .deduction
+                    .checked_add(elapsed)
+                    .ok_or(libc::EOVERFLOW)?;
+            }
+            self.entry = 0;
+        }
+        self.depth = depth;
+        Ok(())
+    }
+
+    fn public(&mut self, sample: u64) -> Result<u64, i32> {
+        self.observe(sample)?;
+        let active = if self.depth == 0 {
+            0
+        } else {
+            sample.checked_sub(self.entry).ok_or(libc::ESTALE)?
+        };
+        let value = sample
+            .checked_sub(self.deduction)
+            .and_then(|value| value.checked_sub(active))
+            .ok_or(libc::EOVERFLOW)?;
+        if value < self.last_public {
+            return Err(libc::ESTALE);
+        }
+        self.last_public = value;
+        Ok(value)
+    }
+
+    fn break_with(&mut self, errno: i32) -> i32 {
+        if self.error == 0 {
+            self.error = if errno > 0 { errno } else { libc::EIO };
+        }
+        self.error
+    }
+}
+
 thread_local! {
     static RCB_CLOCK: Cell<*mut reverie_ptrace::InGuestRcbCounter> =
         const { Cell::new(ptr::null_mut()) };
     static RCB_CLOCK_OWNER: Cell<libc::pid_t> = const { Cell::new(0) };
+    static RCB_EVENT_ID: Cell<u64> = const { Cell::new(0) };
     static RCB_CLOCK_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
-    static RCB_HANDLER_ENTRY: Cell<u64> = const { Cell::new(0) };
-    static RCB_HANDLER_DEDUCTION: Cell<u64> = const { Cell::new(0) };
-    static RCB_HANDLER_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static RCB_ACCOUNTING: Cell<RcbAccounting> = const { Cell::new(RcbAccounting::new(0)) };
 }
 
-/// Install the current thread's in-guest RCB clock before seccomp is active.
-pub(crate) fn initialize_rcb_clock() -> io::Result<()> {
-    initialize_rcb_clock_with(|| unsafe {
-        reverie_ptrace::InGuestRcbCounter::current_thread_with_syscall_gate(raw_syscall6)
+#[cfg(feature = "rcb-qualification")]
+thread_local! {
+    // [phase, inherited mapping start, inherited mapping end, mincore errno,
+    // process_vm_readv errno, overlapping /proc/self/maps ranges].
+    static FORK_PERF_MAPPING_PROBE: Cell<[u64; 6]> = const { Cell::new([0; 6]) };
+}
+
+#[cfg(feature = "rcb-qualification")]
+pub(crate) fn arm_inherited_perf_mapping_probe_for_test(
+    start: u64,
+    end: u64,
+) -> io::Result<()> {
+    if start == 0 || start >= end || start & 4095 != 0 || end - start != 4096 {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    FORK_PERF_MAPPING_PROBE.with(|probe| {
+        if probe.get() != [0; 6] {
+            Err(io::Error::from_raw_os_error(libc::EALREADY))
+        } else {
+            probe.set([1, start, end, 0, 0, 0]);
+            Ok(())
+        }
     })
 }
 
+#[cfg(feature = "rcb-qualification")]
+pub(crate) fn inherited_perf_mapping_probe_for_test() -> io::Result<[u64; 5]> {
+    FORK_PERF_MAPPING_PROBE.with(|probe| {
+        let proof = probe.get();
+        if proof[0] != 2 {
+            Err(io::Error::from_raw_os_error(libc::ESTALE))
+        } else {
+            Ok([proof[1], proof[2], proof[3], proof[4], proof[5]])
+        }
+    })
+}
+
+#[cfg(feature = "rcb-qualification")]
+fn raw_errno(result: i64) -> i32 {
+    i32::try_from(-result)
+        .ok()
+        .filter(|errno| *errno > 0)
+        .unwrap_or(libc::EIO)
+}
+
+#[cfg(feature = "rcb-qualification")]
+fn parse_hex_address(bytes: &[u8]) -> Option<u64> {
+    let mut value = 0_u64;
+    if bytes.is_empty() {
+        return None;
+    }
+    for byte in bytes {
+        let digit = match *byte {
+            b'0'..=b'9' => u64::from(*byte - b'0'),
+            b'a'..=b'f' => u64::from(*byte - b'a' + 10),
+            b'A'..=b'F' => u64::from(*byte - b'A' + 10),
+            _ => return None,
+        };
+        value = value.checked_mul(16)?.checked_add(digit)?;
+    }
+    Some(value)
+}
+
+#[cfg(feature = "rcb-qualification")]
+fn raw_maps_overlap(start: u64, end: u64) -> io::Result<bool> {
+    const MAPS: &[u8] = b"/proc/self/maps\0";
+    let fd = unsafe {
+        raw_syscall6(
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as i64 as u64,
+                MAPS.as_ptr() as u64,
+                (libc::O_RDONLY | libc::O_CLOEXEC) as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::from_raw_os_error(raw_errno(fd)));
+    }
+    let mut buffer = [0_u8; 4096];
+    let mut prefix = [0_u8; 40];
+    let mut prefix_len = 0_usize;
+    let mut collecting = true;
+    let mut overlap = false;
+    let mut scan_error = None;
+    loop {
+        let result = unsafe {
+            raw_syscall6(
+                libc::SYS_read,
+                [
+                    fd as u64,
+                    buffer.as_mut_ptr() as u64,
+                    buffer.len() as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if result < 0 {
+            scan_error = Some(raw_errno(result));
+            break;
+        }
+        if result == 0 {
+            break;
+        }
+        for byte in &buffer[..result as usize] {
+            if *byte == b'\n' {
+                prefix_len = 0;
+                collecting = true;
+            } else if collecting && (*byte == b' ' || *byte == b'\t') {
+                collecting = false;
+                let Some(dash) = prefix[..prefix_len]
+                    .iter()
+                    .position(|byte| *byte == b'-')
+                else {
+                    scan_error = Some(libc::EIO);
+                    break;
+                };
+                let Some(map_start) = parse_hex_address(&prefix[..dash]) else {
+                    scan_error = Some(libc::EIO);
+                    break;
+                };
+                let Some(map_end) = parse_hex_address(&prefix[dash + 1..prefix_len]) else {
+                    scan_error = Some(libc::EIO);
+                    break;
+                };
+                overlap |= map_start < end && start < map_end;
+            } else if collecting {
+                if prefix_len == prefix.len() {
+                    scan_error = Some(libc::EOVERFLOW);
+                    break;
+                }
+                prefix[prefix_len] = *byte;
+                prefix_len += 1;
+            }
+        }
+        if scan_error.is_some() {
+            break;
+        }
+    }
+    let close_result = unsafe { raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) };
+    if let Some(errno) = scan_error {
+        return Err(io::Error::from_raw_os_error(errno));
+    }
+    if close_result != 0 {
+        return Err(io::Error::from_raw_os_error(raw_errno(close_result)));
+    }
+    Ok(overlap)
+}
+
+#[cfg(feature = "rcb-qualification")]
+fn verify_inherited_perf_mapping_absent() -> io::Result<()> {
+    FORK_PERF_MAPPING_PROBE.with(|probe| {
+        let mut proof = probe.get();
+        if proof[0] == 0 {
+            return Ok(());
+        }
+        if proof[0] != 1 {
+            return Err(io::Error::from_raw_os_error(libc::ESTALE));
+        }
+        let start = proof[1];
+        let end = proof[2];
+        let mut residency = 0_u8;
+        let mincore = unsafe {
+            raw_syscall6(
+                libc::SYS_mincore,
+                [start, end - start, (&raw mut residency) as u64, 0, 0, 0],
+            )
+        };
+        let mut byte = 0_u8;
+        let local = libc::iovec {
+            iov_base: (&raw mut byte).cast(),
+            iov_len: 1,
+        };
+        let remote = libc::iovec {
+            iov_base: start as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
+        if pid <= 0 {
+            return Err(io::Error::from_raw_os_error(libc::ESRCH));
+        }
+        let access = unsafe {
+            raw_syscall6(
+                libc::SYS_process_vm_readv,
+                [
+                    pid as u64,
+                    (&raw const local) as u64,
+                    1,
+                    (&raw const remote) as u64,
+                    1,
+                    0,
+                ],
+            )
+        };
+        let overlap = raw_maps_overlap(start, end)?;
+        if mincore != -i64::from(libc::ENOMEM)
+            || access != -i64::from(libc::EFAULT)
+            || overlap
+        {
+            return Err(io::Error::from_raw_os_error(libc::ESTALE));
+        }
+        proof[0] = 2;
+        proof[3] = libc::ENOMEM as u64;
+        proof[4] = libc::EFAULT as u64;
+        proof[5] = 0;
+        probe.set(proof);
+        Ok(())
+    })
+}
+
+/// Acquire the current thread's in-guest RCB clock while physically disabled.
+/// Root setup and each admitted child retain their distinct release authority.
+pub(crate) fn initialize_rcb_clock<G: reverie::GlobalTool>(
+    rpc: &crate::rpc::CoordinatorRpc<G>,
+) -> io::Result<()> {
+    rpc.verify_cpu_binding()?;
+    let cpu = rpc.bound_cpu();
+    let paused = crate::syscall_fallback::needs_paused_child_clock();
+    let mut reservation = None;
+    let mut event_id = 0;
+    let initialized = initialize_rcb_clock_with_mode(
+        || {
+            let (clock, protection, acquired_event_id) = rpc.acquire_clock()?;
+            reservation = protection;
+            event_id = acquired_event_id;
+            Ok(clock)
+        },
+        paused,
+        cpu,
+    );
+    if let Err(error) = initialized {
+        rcb::setup_failed(error.raw_os_error().unwrap_or(libc::EIO));
+        return Err(error);
+    }
+    if let Err(error) = rpc.verify_cpu_binding().and_then(|()| rpc.acknowledge_clock()) {
+        // Revoke boundary authority before dropping only this process's owner.
+        let clock = RCB_CLOCK.replace(ptr::null_mut());
+        let fd = RCB_FD.swap(-1, Ordering::AcqRel);
+        rcb::setup_failed(error.raw_os_error().unwrap_or(libc::EIO));
+        if fd >= 0 {
+            unsafe {
+                raw_syscall6(libc::SYS_ioctl, [fd as u64, 0x2401, 0, 0, 0, 0]);
+            }
+        }
+        if !clock.is_null() {
+            unsafe {
+                drop(Box::from_raw(clock));
+            }
+        }
+        RCB_CLOCK_UNAVAILABLE.set(false);
+        RCB_EVENT_ID.set(0);
+        return Err(error);
+    }
+    drop(reservation);
+    RCB_EVENT_ID.set(event_id);
+    Ok(())
+}
+
+/// Prove that no pre-existing asynchronous descriptor transport can race the
+/// creation of the first private slot. This covers numeric procfs entries and
+/// every per-task registered-only ring index. Callers own the single-threaded,
+/// signal-fenced installation boundary.
+pub(crate) fn refuse_inherited_io_uring() -> io::Result<()> {
+    private_fd::refuse_inherited_io_uring()
+}
+
+#[cfg(test)]
 fn initialize_rcb_clock_with(
     create: impl FnOnce() -> Result<reverie_ptrace::InGuestRcbCounter, reverie::Errno>,
 ) -> io::Result<()> {
+    initialize_rcb_clock_with_mode(
+        || {
+            create()
+                .map(Some)
+                .map_err(|e| io::Error::from_raw_os_error(e.into_raw()))
+        },
+        false,
+        0,
+    )
+}
+
+fn initialize_rcb_clock_with_mode(
+    create: impl FnOnce() -> io::Result<Option<reverie_ptrace::InGuestRcbCounter>>,
+    signal_paused: bool,
+    cpu: u32,
+) -> io::Result<()> {
+    let installed_child = rcb::callback::active();
+    if !RCB_CLOCK.get().is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "RCB clock already owned",
+        ));
+    }
+    rcb::begin_setup().map_err(io::Error::from_raw_os_error)?;
     let owner = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) } as libc::pid_t;
     if owner <= 0 {
-        return Err(io::Error::last_os_error());
+        return Err(io::Error::from_raw_os_error(libc::EIO));
     }
-    // A fork child can first discover that its inherited counter has the wrong
-    // owner from inside the still-active fork callback. Preserve that callback
-    // depth while replacing the counter; resetting it would make the outer
-    // leave underflow after child reconstruction completes.
-    let active_depth = RCB_HANDLER_DEPTH.get();
-    // Publish an unavailable sentinel before creating the perf event. When a
-    // fork child first initializes after seccomp is active, the builder's own
-    // syscalls can re-enter an already-patched syscall hook; that nested hook
-    // must observe this owner as initialized instead of recursively creating
-    // another counter.
+    let active_depth = RCB_ACCOUNTING.get().depth;
+    // Builder syscalls may encounter installed hooks. Publish the unavailable
+    // sentinel and BUILDING boundary before allocation or nested setup work.
     RCB_CLOCK.set(ptr::null_mut());
     RCB_CLOCK_OWNER.set(owner);
+    RCB_EVENT_ID.set(0);
     RCB_CLOCK_UNAVAILABLE.set(true);
-    RCB_HANDLER_ENTRY.set(0);
-    RCB_HANDLER_DEDUCTION.set(0);
-    RCB_HANDLER_DEPTH.set(active_depth);
+    RCB_ACCOUNTING.set(RcbAccounting::new(active_depth));
     let clock = match create() {
-        Ok(clock) => clock,
-        // The in-guest clock is optional. CPU discovery, perf-event setup,
-        // mmap, reset, and enable failures all mean unavailable, not a failed
-        // Tool installation.
-        Err(_) => return Ok(()),
+        Ok(Some(clock)) => clock,
+        Ok(None) => {
+            // An explicit shared unsupported-CPU decision, never an open,
+            // transport, identity, mmap, ACK or active-counter failure.
+            rcb::setup_unavailable().map_err(io::Error::from_raw_os_error)?;
+            if signal_paused {
+                crate::syscall_fallback::set_child_clock_pause(None);
+            } else if !installed_child {
+                crate::root::acquired(None)?;
+            }
+            return Ok(());
+        }
+        Err(error) => {
+            RCB_CLOCK_UNAVAILABLE.set(false);
+            rcb::setup_failed(error.raw_os_error().unwrap_or(libc::EIO));
+            return Err(error);
+        }
     };
-    let active_entry = if active_depth == 0 {
-        0
+    let fd = unsafe { clock.boundary_fd() }.as_raw_fd();
+    RCB_FD
+        .compare_exchange(-1, fd, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "RCB FD already protected"))?;
+    // Every imported event stays physically disabled. The root activation,
+    // outer installed child frame or held fallback continuation owns its token.
+    // No Rust setup/result/destructor path may start the counter.
+    let clock = Box::new(clock);
+    let pause = match unsafe { rcb::register(fd, true, cpu) } {
+        Ok(pause) => pause,
+        Err(errno) => {
+            // register validates every fallible condition before publication.
+            // Its error leaves BUILDING with no permission to control this FD.
+            RCB_FD.store(-1, Ordering::Release);
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+    };
+    if !signal_paused && installed_child {
+        let Some(token) = pause else {
+            RCB_FD.store(-1, Ordering::Release);
+            return Err(io::Error::from_raw_os_error(libc::ESTALE));
+        };
+        if let Err(errno) = rcb::callback::adopt_pause(token) {
+            RCB_FD.store(-1, Ordering::Release);
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+    } else if signal_paused {
+        crate::syscall_fallback::set_child_clock_pause(pause);
     } else {
-        clock
-            .read()
-            .map_err(|error| io::Error::from_raw_os_error(error.into_raw()))?
-    };
-    RCB_CLOCK.set(Box::into_raw(Box::new(clock)));
+        crate::root::acquired(pause).inspect_err(|_| {
+            RCB_FD.store(-1, Ordering::Release);
+        })?;
+    }
+    RCB_CLOCK.set(Box::into_raw(clock));
     RCB_CLOCK_OWNER.set(owner);
     RCB_CLOCK_UNAVAILABLE.set(false);
-    RCB_HANDLER_ENTRY.set(active_entry);
-    RCB_HANDLER_DEDUCTION.set(0);
-    RCB_HANDLER_DEPTH.set(active_depth);
+    RCB_ACCOUNTING.set(RcbAccounting::new(active_depth));
     Ok(())
+}
+
+/// First ordinary action after a successful native fork in the child. Revoke
+/// inherited permission before any RPC, allocator, libc or nested callback.
+/// Only close the child's inherited reference; never control the parent's PMU.
+pub(crate) fn begin_fork_child_rcb() -> io::Result<()> {
+    rcb::begin_setup().map_err(io::Error::from_raw_os_error)?;
+    let owner = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) } as libc::pid_t;
+    if owner <= 0 {
+        return Err(io::Error::from_raw_os_error(libc::EIO));
+    }
+    let inherited_clock = RCB_CLOCK.replace(ptr::null_mut());
+    RCB_CLOCK_OWNER.set(owner);
+    RCB_EVENT_ID.set(0);
+    RCB_CLOCK_UNAVAILABLE.set(true);
+    let active_depth = RCB_ACCOUNTING.get().depth;
+    RCB_ACCOUNTING.set(RcbAccounting::new(active_depth));
+    // Preserve depth: the physical fork is inside an existing callback.
+    let inherited = RCB_FD.load(Ordering::Acquire);
+    if inherited >= 0 {
+        let result = unsafe { raw_syscall6(libc::SYS_close, [inherited as u64, 0, 0, 0, 0, 0]) };
+        // Linux close releases the slot even when it reports a late error.
+        // Never retry it and risk closing a reused descriptor.
+        RCB_FD.store(-1, Ordering::Release);
+        if result != 0 {
+            let error = io::Error::from_raw_os_error(
+                i32::try_from(-result)
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .unwrap_or(libc::EIO),
+            );
+            rcb::setup_failed(error.raw_os_error().unwrap_or(libc::EIO));
+            return Err(error);
+        }
+    }
+    if inherited_clock.is_null() != (inherited < 0) {
+        let error = io::Error::from_raw_os_error(libc::ESTALE);
+        rcb::setup_failed(libc::ESTALE);
+        return Err(error);
+    }
+    // Linux perf mappings are VM_DONTCOPY. The qualification gate proves the
+    // exact parent address is absent in the child before another event is
+    // acquired. Do not reconstruct this copied Box: its Drop would try to
+    // unmap a nonexistent child VMA and close a descriptor number that may have
+    // been reused after the one close above. Moving the raw pointer out of TLS
+    // invalidates the inherited Rust owner; its small COW allocation is terminal
+    // process-lifetime storage.
+    #[cfg(feature = "rcb-qualification")]
+    if let Err(error) = verify_inherited_perf_mapping_absent() {
+        rcb::setup_failed(error.raw_os_error().unwrap_or(libc::EIO));
+        return Err(error);
+    }
+    if let Err(error) = private_fd::refuse_inherited_io_uring() {
+        rcb::setup_failed(error.raw_os_error().unwrap_or(libc::EIO));
+        return Err(error);
+    }
+    Ok(())
+}
+
+type RcbReader = unsafe fn(&reverie_ptrace::InGuestRcbCounter) -> Result<u64, reverie::Errno>;
+unsafe fn read_running_rcb(
+    clock: &reverie_ptrace::InGuestRcbCounter,
+) -> Result<u64, reverie::Errno> {
+    clock.read()
+}
+unsafe fn read_paused_rcb(
+    clock: &reverie_ptrace::InGuestRcbCounter,
+) -> Result<u64, reverie::Errno> {
+    unsafe { clock.read_paused_once() }
+}
+unsafe fn read_invalid_rcb(_: &reverie_ptrace::InGuestRcbCounter) -> Result<u64, reverie::Errno> {
+    Err(reverie::Errno::new(rcb::active_error()))
+}
+
+fn sample_rcb(clock: &reverie_ptrace::InGuestRcbCounter) -> io::Result<u64> {
+    // The selector itself uses direct initial-exec TLS and CMOV, not a new
+    // conditional branch before the existing running-path sample. The eventual
+    // optimized caller/read shims still require disassembly review.
+    let address = unsafe {
+        rcb::select_reader(
+            read_running_rcb as *const () as usize,
+            read_paused_rcb as *const () as usize,
+            read_invalid_rcb as *const () as usize,
+        )
+    };
+    let reader: RcbReader = unsafe { core::mem::transmute(address) };
+    unsafe { reader(clock) }.map_err(|error| io::Error::from_raw_os_error(error.into_raw()))
 }
 
 fn rcb_clock() -> io::Result<Option<&'static reverie_ptrace::InGuestRcbCounter>> {
     let owner = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) } as libc::pid_t;
     if RCB_CLOCK_OWNER.get() != owner {
-        // A fork/clone child inherits the parent's TLS bytes, including an fd
-        // that still measures the parent thread. Leak that inherited handle
-        // and bind a fresh PMU event to this calling thread.
-        initialize_rcb_clock()?;
+        // Every admitted fork must rebind before guest/Tool clock access.
+        // Never acquire over the network from a lazy reader or signal path.
+        return Err(io::Error::from_raw_os_error(libc::ESRCH));
     }
     let current = RCB_CLOCK.get();
     if current.is_null() {
+        if rcb::is_broken() {
+            return Err(io::Error::from_raw_os_error(rcb::active_error()));
+        }
         debug_assert!(RCB_CLOCK_UNAVAILABLE.get());
         Ok(None)
     } else {
@@ -417,44 +945,56 @@ fn rcb_clock() -> io::Result<Option<&'static reverie_ptrace::InGuestRcbCounter>>
     }
 }
 
+fn fail_rcb_accounting(mut state: RcbAccounting, errno: i32) -> io::Error {
+    let errno = state.break_with(errno);
+    RCB_ACCOUNTING.set(state);
+    // Every accounting entry is inside a root, installed or signal-owned
+    // physical pause. Make that failure terminal before ordinary code can
+    // return to an assembly epilogue which might otherwise enable the event.
+    rcb::accounting_failed(errno);
+    io::Error::from_raw_os_error(errno)
+}
+
+fn sampled_accounting(
+    clock: &reverie_ptrace::InGuestRcbCounter,
+    state: RcbAccounting,
+) -> Result<u64, io::Error> {
+    sample_rcb(clock).map_err(|error| {
+        fail_rcb_accounting(state, error.raw_os_error().unwrap_or(libc::EIO))
+    })
+}
+
 /// Mark entry into an ordinary-context tool callback.
 pub(crate) fn enter_rcb_handler() -> io::Result<()> {
-    let Some(clock) = rcb_clock()? else {
-        RCB_HANDLER_DEPTH.set(RCB_HANDLER_DEPTH.get().saturating_add(1));
-        return Ok(());
+    let clock = rcb_clock()?;
+    let mut state = RCB_ACCOUNTING.get();
+    let sample = match clock {
+        Some(clock) => Some(sampled_accounting(clock, state)?),
+        None => None,
     };
-    let sample = clock
-        .read()
-        .map_err(|error| io::Error::from_raw_os_error(error.into_raw()))?;
-    if RCB_HANDLER_DEPTH.get() == 0 {
-        RCB_HANDLER_ENTRY.set(sample);
+    if let Err(errno) = state.enter(sample) {
+        return Err(fail_rcb_accounting(state, errno));
     }
-    RCB_HANDLER_DEPTH.set(RCB_HANDLER_DEPTH.get().saturating_add(1));
+    RCB_ACCOUNTING.set(state);
     Ok(())
 }
 
 /// Deduct all RCBs retired while the outermost tool callback was active.
 pub(crate) fn leave_rcb_handler() -> io::Result<()> {
-    let depth = RCB_HANDLER_DEPTH.get();
-    if depth == 0 {
-        return Err(io::Error::other("LiteInst RCB handler depth underflow"));
-    }
-    RCB_HANDLER_DEPTH.set(depth - 1);
-    if depth != 1 {
-        return Ok(());
-    }
-    let Some(clock) = rcb_clock()? else {
-        return Ok(());
+    let clock = rcb_clock()?;
+    let mut state = RCB_ACCOUNTING.get();
+    let sample = if state.depth == 1 {
+        match clock {
+            Some(clock) => Some(sampled_accounting(clock, state)?),
+            None => None,
+        }
+    } else {
+        None
     };
-    let sample = clock
-        .read()
-        .map_err(|error| io::Error::from_raw_os_error(error.into_raw()))?;
-    RCB_HANDLER_DEDUCTION.set(
-        RCB_HANDLER_DEDUCTION
-            .get()
-            .saturating_add(sample.saturating_sub(RCB_HANDLER_ENTRY.get())),
-    );
-    RCB_HANDLER_ENTRY.set(0);
+    if let Err(errno) = state.leave(sample) {
+        return Err(fail_rcb_accounting(state, errno));
+    }
+    RCB_ACCOUNTING.set(state);
     Ok(())
 }
 
@@ -467,17 +1007,78 @@ pub(crate) fn read_guest_rcb_clock() -> io::Result<u64> {
             "LiteInst in-guest RCB clock is unavailable on this host",
         ));
     };
-    let sample = clock
-        .read()
-        .map_err(|error| io::Error::from_raw_os_error(error.into_raw()))?;
-    let active = if RCB_HANDLER_DEPTH.get() == 0 {
-        0
-    } else {
-        sample.saturating_sub(RCB_HANDLER_ENTRY.get())
+    let mut state = RCB_ACCOUNTING.get();
+    let sample = sampled_accounting(clock, state)?;
+    let value = match state.public(sample) {
+        Ok(value) => value,
+        Err(errno) => return Err(fail_rcb_accounting(state, errno)),
     };
-    Ok(sample
-        .saturating_sub(RCB_HANDLER_DEDUCTION.get())
-        .saturating_sub(active))
+    RCB_ACCOUNTING.set(state);
+    Ok(value)
+}
+
+/// Trusted identity and clock seam for the private-descriptor qualification.
+/// The runtime-owned descriptor number is never discovered through procfs: the
+/// returned event ID is the authenticated supervisor offer, checked again
+/// against the live file through the seccomp-whitelisted raw gate.
+#[cfg(feature = "rcb-qualification")]
+pub(crate) fn private_rcb_snapshot_for_test() -> io::Result<[u64; 4]> {
+    let owner = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) };
+    let fd = RCB_FD.load(Ordering::Acquire);
+    let event_id = RCB_EVENT_ID.get();
+    if owner <= 0 || owner != i64::from(RCB_CLOCK_OWNER.get()) || fd < 0 || event_id == 0 {
+        return Err(io::Error::from_raw_os_error(libc::ESTALE));
+    }
+    let mut kernel_id = 0_u64;
+    let result = unsafe {
+        raw_syscall6(
+            libc::SYS_ioctl,
+            [
+                fd as u64,
+                PERF_EVENT_IOC_ID,
+                (&raw mut kernel_id) as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if result != 0 || kernel_id != event_id {
+        return Err(io::Error::from_raw_os_error(if result < 0 {
+            i32::try_from(-result).unwrap_or(libc::EIO)
+        } else {
+            libc::ESTALE
+        }));
+    }
+    Ok([fd as u64, event_id, owner as u64, read_guest_rcb_clock()?])
+}
+
+/// The initial lifecycle cannot contain prior guest progress. An unsupported
+/// negotiated CPU remains an unavailable clock, never a fabricated zero read.
+pub(crate) fn verify_initial_rcb_clock() -> io::Result<()> {
+    if rcb_clock()?.is_some() {
+        let state = RCB_ACCOUNTING.get();
+        if state != RcbAccounting::new(0) {
+            return Err(io::Error::other("LiteInst initial RCB clock is not zero"));
+        }
+        if read_guest_rcb_clock()? != 0 {
+            return Err(io::Error::other("LiteInst initial guest clock is not zero"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn setup_snapshot() -> (bool, bool, u8, i32, usize, i32, bool) {
+    (
+        TOOL_BOOTSTRAP_STARTED.load(Ordering::Acquire),
+        TOOL_DISPATCHER.get().is_some(),
+        TOOL_MODE.load(Ordering::Acquire),
+        RCB_FD.load(Ordering::Acquire),
+        RCB_CLOCK.get() as usize,
+        RCB_CLOCK_OWNER.get(),
+        RCB_CLOCK_UNAVAILABLE.get(),
+    )
 }
 
 pub(crate) fn reserve_coordinator_fd(fd: libc::c_int) -> io::Result<()> {
@@ -705,27 +1306,9 @@ pub(crate) fn preflight_instruction_faulting(
     // controls. Keep inherited asynchronous handlers from running application
     // CPUID/RDTSC during that bounded window, and restore the caller's exact
     // signal mask on every return path.
-    let all_signals = u64::MAX;
-    let mut previous_mask = 0;
-    let masked = unsafe {
-        raw_syscall6(
-            libc::SYS_rt_sigprocmask,
-            [
-                libc::SIG_SETMASK as u64,
-                (&raw const all_signals) as u64,
-                (&raw mut previous_mask) as u64,
-                core::mem::size_of::<u64>() as u64,
-                0,
-                0,
-            ],
-        )
-    };
-    if masked != 0 {
-        return Err(io::Error::from_raw_os_error((-masked) as i32));
-    }
-    let _signal_mask = SignalInstallGuard {
-        restore_mask: previous_mask,
-    };
+    // Under bootstrap mediation, keep the reserved SIGSYS path usable even
+    // while an unavailable-control error is being allocated or formatted.
+    let _signal_mask = crate::control::SignalFence::block(raw_syscall6)?;
 
     if subscriptions.cpuid {
         const ARCH_GET_CPUID: u64 = 0x1011;
@@ -808,6 +1391,14 @@ fn install_instruction_signal_handler(
     subscriptions: InstructionSubscriptions,
     on_alt_stack: bool,
 ) -> io::Result<()> {
+    install_instruction_signal_handler_inner(subscriptions, on_alt_stack, None)
+}
+
+fn install_instruction_signal_handler_inner(
+    subscriptions: InstructionSubscriptions,
+    on_alt_stack: bool,
+    trusted_restorer: Option<u64>,
+) -> io::Result<()> {
     let mut bits = 0;
     if subscriptions.cpuid {
         bits |= INSTRUCTION_CPUID;
@@ -820,10 +1411,34 @@ fn install_instruction_signal_handler(
         return Ok(());
     }
 
+    if let Some(restorer) = trusted_restorer {
+        // Use the actual libc restorer read from the installed SIGSYS action.
+        // Only this raw installation bypasses the active bootstrap signal guard;
+        // no callback runs within a broad signal/I/O permission scope.
+        let action = KernelSigaction {
+            handler: instruction_sigsegv_entry as *const () as usize as u64,
+            flags: (libc::SA_SIGINFO | if on_alt_stack { libc::SA_ONSTACK } else { 0 }) as u64
+                | 0x0400_0000,
+            restorer,
+            mask: u64::MAX,
+        };
+        let result = unsafe {
+            raw_syscall6(
+                libc::SYS_rt_sigaction,
+                [libc::SIGSEGV as u64, (&raw const action) as u64, 0, 8, 0, 0],
+            )
+        };
+        return if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error((-result) as i32))
+        };
+    }
+
     let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
     action.sa_flags = libc::SA_SIGINFO | if on_alt_stack { libc::SA_ONSTACK } else { 0 };
-    action.sa_sigaction = instruction_sigsegv_handler as *const () as usize;
-    if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0 {
+    action.sa_sigaction = instruction_sigsegv_entry as *const () as usize;
+    if unsafe { libc::sigfillset(&mut action.sa_mask) } != 0 {
         return Err(io::Error::last_os_error());
     }
     if unsafe { libc::sigaction(libc::SIGSEGV, &action, ptr::null_mut()) } != 0 {
@@ -972,12 +1587,36 @@ fn initialize_host_runtime_with(prepare: impl FnOnce() -> io::Result<()>) -> io:
     Ok(())
 }
 
-pub(crate) fn initialize_reverie_tool(
+/// The one irreversible trap installation precedes all generic Config/Tool
+/// callbacks. Its initial policy enforces the existing nested-callback guards;
+/// it never publishes a patch site or dispatches an unconstructed Tool.
+pub(crate) struct ToolBootstrap {
+    config: RuntimeConfig,
     stats: crate::stats::GuestStatsHooks,
     publication: PatchPublication,
-    instructions: InstructionSubscriptions,
-    vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
-) -> io::Result<()> {
+    restorer: u64,
+}
+
+static TOOL_BOOTSTRAP_STARTED: AtomicBool = AtomicBool::new(false);
+static TOOL_DISPATCHER: OnceLock<LiteinstDispatcher> = OnceLock::new();
+static BOOTSTRAP_SIGSYS: AtomicU64 = AtomicU64::new(0);
+
+/// Physical SIGSYS entries observed while the initial Tool was being prepared.
+/// They are also included in enabled physical-signal statistics; they are not
+/// guest syscall, patch-site, installed-hook or completion classifications.
+pub(crate) fn bootstrap_sigsys_count() -> u64 {
+    BOOTSTRAP_SIGSYS.load(Ordering::Relaxed)
+}
+
+pub(crate) fn prepare_reverie_tool(
+    stats: crate::stats::GuestStatsHooks,
+    publication: PatchPublication,
+) -> io::Result<ToolBootstrap> {
+    TOOL_BOOTSTRAP_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| {
+            io::Error::new(io::ErrorKind::AlreadyExists, "Tool bootstrap started twice")
+        })?;
     let stage_stream = match std::env::var_os(IN_GUEST_STAGE_STREAM_ENV).as_deref() {
         None => false,
         Some(value) if value == OsStr::new("0") => false,
@@ -1002,8 +1641,151 @@ pub(crate) fn initialize_reverie_tool(
         }
     };
     PROCESS_FORKS_ALLOWED.store(process_forks_allowed, Ordering::Release);
+    PATCH_PUBLICATION.store(publication as u8, Ordering::Release);
+    prepare_instrumentation()?;
+    let config = runtime_config_from_env()?;
+    // The caller already holds the original mask. Reset inherited handlers and
+    // keep asynchronous signals blocked until installation is complete. This
+    // inner guard unblocks SIGSYS only after its real handler/filter exist.
+    let mut filter = reverie_preload::seccomp::SeccompFilter::for_trusted_gates(
+        reverie_preload::trap::trusted_gate(),
+        reverie_preload::trap::guest_syscall_gate(),
+    )?;
+    let signals = prepare_guest_signal_state(InstructionSubscriptions::default())?;
+    reverie_preload::trap::set_dispatcher(Box::new(ToolBootstrapDispatcher { stats }));
+    unsafe { reverie_preload::trap::install_handler(config.use_alt_stack) }?;
+    // Make SIGSYS deliverable before installing the filter: even dropping its
+    // allocation afterward is allowed to make a mediated allocator syscall.
+    // The outer failure/unwind path must also retain this reserved availability.
+    crate::root::unblock_on_restore(1_u64 << (libc::SIGSYS - 1))?;
+    drop(signals);
+    unsafe { filter.install() }?;
+    crate::control::runtime_signals_ready();
+    let mut action = KernelSigaction::default();
+    let result = unsafe {
+        raw_syscall6(
+            libc::SYS_rt_sigaction,
+            [libc::SIGSYS as u64, 0, (&raw mut action) as u64, 8, 0, 0],
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::from_raw_os_error((-result) as i32));
+    }
+    const SA_RESTORER: u64 = 0x0400_0000;
+    if action.flags & SA_RESTORER == 0 || action.restorer == 0 {
+        return Err(io::Error::other(
+            "installed SIGSYS action has no Linux x86-64 restorer",
+        ));
+    }
+    Ok(ToolBootstrap {
+        config,
+        stats,
+        publication,
+        restorer: action.restorer,
+    })
+}
+
+pub(crate) fn initialize_reverie_tool(
+    bootstrap: ToolBootstrap,
+    instructions: InstructionSubscriptions,
+    vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
+) -> io::Result<()> {
+    install_vdso_sites(vdso_sites)?;
+    install_instruction_signal_handler_inner(
+        instructions,
+        bootstrap.config.use_alt_stack,
+        Some(bootstrap.restorer),
+    )?;
+    if instructions.cpuid || instructions.rdtsc {
+        let mask = 1_u64 << (libc::SIGSEGV - 1);
+        let result = unsafe {
+            raw_syscall6(
+                libc::SYS_rt_sigprocmask,
+                [
+                    libc::SIG_UNBLOCK as u64,
+                    (&raw const mask) as u64,
+                    0,
+                    8,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::from_raw_os_error((-result) as i32));
+        }
+    }
+    enable_instruction_faulting(instructions)?;
     TOOL_MODE.store(TOOL_REVERIE, Ordering::Release);
-    install_runtime(stats, publication, instructions, vdso_sites)
+    TOOL_DISPATCHER
+        .set(LiteinstDispatcher::new(
+            bootstrap.stats,
+            bootstrap.publication,
+        ))
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Tool dispatcher published twice",
+            )
+        })
+}
+
+struct ToolBootstrapDispatcher {
+    stats: crate::stats::GuestStatsHooks,
+}
+
+impl SyscallDispatcher for ToolBootstrapDispatcher {
+    fn dispatch(&self, event: &mut PreloadSyscallEvent) {
+        if let Some(dispatcher) = TOOL_DISPATCHER.get() {
+            dispatcher.dispatch(event);
+        } else {
+            dispatch_bootstrap_syscall(event);
+        }
+    }
+
+    fn dispatch_private_signal(
+        &self,
+        frame: &mut reverie_preload::trap::frame::SignalFrame<'_>,
+    ) -> bool {
+        if let Some(dispatcher) = TOOL_DISPATCHER.get() {
+            return dispatcher.dispatch_private_signal(frame);
+        }
+        BOOTSTRAP_SIGSYS.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .record_path(crate::LiteinstDispatchPath::InGuestPhysicalSigsys);
+        false
+    }
+
+    fn dispatch_signal(
+        &self,
+        event: &mut PreloadSyscallEvent,
+        frame: &mut reverie_preload::trap::frame::SignalFrame<'_>,
+    ) {
+        if let Some(dispatcher) = TOOL_DISPATCHER.get() {
+            dispatcher.dispatch_signal(event, frame);
+        } else {
+            dispatch_bootstrap_syscall(event);
+        }
+    }
+}
+
+fn dispatch_bootstrap_syscall(event: &mut PreloadSyscallEvent) {
+    // Generic Deserialize/Clone/subscriptions/new code has no I/O exemption.
+    // Setup and ordinary RPC reads/writes alone use their trusted raw adapters.
+    let mut nested = SyscallEvent {
+        number: event.number(),
+        args: event.args(),
+        instruction_pointer: event.instruction_pointer(),
+        result: UNSET_RESULT,
+        context: 0,
+        dispatch: SyscallDispatch::Trap,
+        guest_pkru: event.guest_pkru(),
+    };
+    forward_nested_tool_syscall(&mut nested);
+    event.set_native_result(reverie_preload::trap::NativeSyscallResult {
+        result: nested.result,
+        pkru: nested.guest_pkru,
+    });
 }
 
 fn install_runtime(
@@ -1523,6 +2305,7 @@ fn reset_site_observability(sites: &[SiteSlot]) {
 }
 
 pub(crate) fn reset_fallback_observability() {
+    BOOTSTRAP_SIGSYS.store(0, Ordering::Relaxed);
     // AUTONOMOUS-BOT-IMPLEMENTED
     FALLBACK_COUNTERS.reset();
     FALLBACK_REFUSALS.reset();
@@ -1677,11 +2460,12 @@ fn lock_installation() -> io::Result<InstallGuard> {
 unsafe fn install_site_hook(
     address: u64,
     slot: &'static SiteSlot,
-    callback: liteinst2::trampoline::HookCallback,
+    callback: InstalledCallback,
     publication: PatchPublication,
     expected_instruction: &[u8],
     manage_protection: bool,
 ) -> io::Result<HostInstallResult> {
+    let callback = callback.entry();
     let _install_guard = lock_installation()?;
     let _allocation_scope = crate::patch_alloc::enter();
     let arena = arena_for(address)
@@ -1895,13 +2679,13 @@ fn install_vdso_sites(sites: &[reverie_ptrace::VdsoSyscallSite]) -> io::Result<(
     Ok(())
 }
 
-fn vdso_callback(number: i64) -> io::Result<liteinst2::trampoline::HookCallback> {
+fn vdso_callback(number: i64) -> io::Result<InstalledCallback> {
     match number {
-        libc::SYS_time => Ok(installed_vdso_time_hook),
-        libc::SYS_clock_gettime => Ok(installed_vdso_clock_gettime_hook),
-        libc::SYS_getcpu => Ok(installed_vdso_getcpu_hook),
-        libc::SYS_gettimeofday => Ok(installed_vdso_gettimeofday_hook),
-        libc::SYS_clock_getres => Ok(installed_vdso_clock_getres_hook),
+        libc::SYS_time => Ok(installed_callback::VDSO_TIME),
+        libc::SYS_clock_gettime => Ok(installed_callback::VDSO_CLOCK_GETTIME),
+        libc::SYS_getcpu => Ok(installed_callback::VDSO_GETCPU),
+        libc::SYS_gettimeofday => Ok(installed_callback::VDSO_GETTIMEOFDAY),
+        libc::SYS_clock_getres => Ok(installed_callback::VDSO_CLOCK_GETRES),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unsupported LiteInst vDSO syscall number {number}"),
@@ -1946,7 +2730,7 @@ pub unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace(address: u64) 
             install_site_hook(
                 address,
                 site,
-                host_syscall_hook,
+                installed_callback::HOST_SYSCALL,
                 PatchPublication::Quiescent,
                 &[0x0f, 0x05],
                 true,
@@ -2008,6 +2792,14 @@ struct KernelSigaction {
     restorer: u64,
     mask: u64,
 }
+
+const _: () = {
+    assert!(core::mem::size_of::<KernelSigaction>() == 32);
+    assert!(core::mem::offset_of!(KernelSigaction, handler) == 0);
+    assert!(core::mem::offset_of!(KernelSigaction, flags) == 8);
+    assert!(core::mem::offset_of!(KernelSigaction, restorer) == 16);
+    assert!(core::mem::offset_of!(KernelSigaction, mask) == 24);
+};
 
 pub(crate) struct SignalInstallGuard {
     restore_mask: u64,
@@ -2186,9 +2978,10 @@ fn forward_nested_tool_syscall(event: &mut SyscallEvent) {
         || event.number == libc::SYS_epoll_pwait2
         // AUTONOMOUS-BOT-IMPLEMENTED
         || event.number == SYS_IO_PGETEVENTS;
+    let unsupported_cpu_state = event.number == libc::SYS_sched_setaffinity;
     if unsupported_process {
         event.result = -i64::from(libc::ENOTSUP);
-    } else if unsupported_signal_state {
+    } else if unsupported_signal_state || unsupported_cpu_state {
         event.result = -i64::from(libc::EPERM);
     } else if !(protect_runtime_control(event) || unsafe { protect_coordinator_channel(event) }) {
         event.result = unsafe { event.forward() };
@@ -2305,7 +3098,7 @@ impl HostSyscallFrame {
     }
 }
 
-unsafe extern "C" fn host_syscall_hook(context: *mut HookContext) {
+unsafe extern "C" fn host_syscall_hook_body(context: *mut HookContext) {
     if context.is_null() {
         unsafe { exit_now(122) };
     }
@@ -2348,11 +3141,11 @@ fn instruction_is_subscribed(kind: InstructionEventKind) -> bool {
     }
 }
 
-fn instruction_callback(kind: InstructionEventKind) -> liteinst2::trampoline::HookCallback {
+fn instruction_callback(kind: InstructionEventKind) -> InstalledCallback {
     match kind {
-        InstructionEventKind::Cpuid => installed_cpuid_hook,
-        InstructionEventKind::Rdtsc => installed_rdtsc_hook,
-        InstructionEventKind::Rdtscp => installed_rdtscp_hook,
+        InstructionEventKind::Cpuid => installed_callback::CPUID,
+        InstructionEventKind::Rdtsc => installed_callback::RDTSC,
+        InstructionEventKind::Rdtscp => installed_callback::RDTSCP,
     }
 }
 
@@ -2392,7 +3185,184 @@ unsafe fn deliver_default_sigsegv() -> ! {
     unsafe { exit_now(128 + libc::SIGSEGV) }
 }
 
-unsafe extern "C" fn instruction_sigsegv_handler(
+unsafe extern "C" {
+    fn instruction_sigsegv_entry(
+        signal: libc::c_int,
+        info: *mut libc::siginfo_t,
+        context: *mut libc::c_void,
+    );
+    #[cfg(feature = "rcb-qualification")]
+    static reverie_liteinst_instruction_sigsegv_entry_end: u8;
+}
+
+// SIGSEGV is runtime-owned whenever instruction faulting is active. The kernel
+// action supplies a full sa_mask before this entry. The straight-line prefix
+// reaches initial-exec RCB state and performs a real DISABLE before the first
+// conditional branch can retire. Any failed RUNNING disable exits directly;
+// an unavailable or already-paused event takes the body without inventing an
+// enable. The current CPU is checked against the registered explicit event CPU
+// before both body entry and physical re-enable.
+global_asm!(r#"
+    .text
+    .p2align 4
+    .global reverie_liteinst_instruction_sigsegv_entry
+    .hidden reverie_liteinst_instruction_sigsegv_entry
+    .type reverie_liteinst_instruction_sigsegv_entry,@function
+reverie_liteinst_instruction_sigsegv_entry:
+    endbr64
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp,40
+    mov [rsp],rdi
+    mov [rsp+8],rsi
+    mov [rsp+16],rdx
+    call reverie_preload_rcb_record
+    mov r12,rax
+    mov edi,{ioctl}
+    movsxd rsi,dword ptr [r12]
+    mov edx,{disable}
+    xor ecx,ecx
+    xor r8d,r8d
+    xor r9d,r9d
+    call reverie_preload_trusted_syscall
+    mov r15,rax
+    cmp dword ptr [r12+16],{running}
+    sete al
+    test r15,r15
+    setne dl
+    and al,dl
+    lea r13,[rip+.Linstruction_select]
+    lea r14,[rip+.Linstruction_fatal]
+    test al,al
+    cmovne r13,r14
+    jmp r13
+.Linstruction_select:
+    lea r13,[rip+.Linstruction_body_only]
+    lea r14,[rip+.Linstruction_pause]
+    cmp dword ptr [r12+16],{running}
+    cmove r13,r14
+    jmp r13
+.Linstruction_pause:
+    mov edi,{gettid}
+    xor esi,esi
+    xor edx,edx
+    xor ecx,ecx
+    xor r8d,r8d
+    xor r9d,r9d
+    call reverie_preload_trusted_syscall
+    cmp eax,dword ptr [r12+4]
+    lea r13,[rip+.Linstruction_fatal]
+    lea r14,[rip+.Linstruction_cpu_before]
+    cmove r13,r14
+    jmp r13
+.Linstruction_cpu_before:
+    mov dword ptr [rsp+24],-1
+    mov edi,{getcpu}
+    lea rsi,[rsp+24]
+    xor edx,edx
+    xor ecx,ecx
+    xor r8d,r8d
+    xor r9d,r9d
+    call reverie_preload_trusted_syscall
+    test rax,rax
+    sete al
+    mov ecx,dword ptr [rsp+24]
+    cmp ecx,dword ptr [r12+{cpu_offset}]
+    sete dl
+    and al,dl
+    lea r13,[rip+.Linstruction_fatal]
+    lea r14,[rip+.Linstruction_paused]
+    test al,al
+    cmovne r13,r14
+    jmp r13
+.Linstruction_paused:
+    mov dword ptr [r12+16],{paused}
+    mov dword ptr [r12+20],1
+    add qword ptr [r12+48],1
+    add qword ptr [r12+40],1
+.Linstruction_body_only:
+    mov rdi,[rsp]
+    mov rsi,[rsp+8]
+    mov rdx,[rsp+16]
+    call {body}
+    lea r13,[rip+.Linstruction_return]
+    lea r14,[rip+.Linstruction_cpu_after]
+    cmp dword ptr [r12+20],1
+    cmove r13,r14
+    jmp r13
+.Linstruction_cpu_after:
+    mov dword ptr [rsp+24],-1
+    mov edi,{getcpu}
+    lea rsi,[rsp+24]
+    xor edx,edx
+    xor ecx,ecx
+    xor r8d,r8d
+    xor r9d,r9d
+    call reverie_preload_trusted_syscall
+    test rax,rax
+    sete al
+    mov ecx,dword ptr [rsp+24]
+    cmp ecx,dword ptr [r12+{cpu_offset}]
+    sete dl
+    and al,dl
+    lea r13,[rip+.Linstruction_fatal]
+    lea r14,[rip+.Linstruction_enable]
+    test al,al
+    cmovne r13,r14
+    jmp r13
+.Linstruction_enable:
+    mov edi,{ioctl}
+    movsxd rsi,dword ptr [r12]
+    mov edx,{enable}
+    xor ecx,ecx
+    xor r8d,r8d
+    xor r9d,r9d
+    call reverie_preload_trusted_syscall
+    test rax,rax
+    lea r13,[rip+.Linstruction_fatal]
+    lea r14,[rip+.Linstruction_enabled]
+    cmovz r13,r14
+    jmp r13
+.Linstruction_enabled:
+    mov dword ptr [r12+20],0
+    mov dword ptr [r12+16],{running}
+    add qword ptr [r12+56],1
+.Linstruction_return:
+    add rsp,40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    ret
+.Linstruction_fatal:
+    mov edi,{exit_group}
+    mov esi,125
+    xor edx,edx
+    xor ecx,ecx
+    xor r8d,r8d
+    xor r9d,r9d
+    call reverie_preload_trusted_syscall
+    ud2
+    .global reverie_liteinst_instruction_sigsegv_entry_end
+    .hidden reverie_liteinst_instruction_sigsegv_entry_end
+reverie_liteinst_instruction_sigsegv_entry_end:
+    .size reverie_liteinst_instruction_sigsegv_entry,.-reverie_liteinst_instruction_sigsegv_entry
+"#,
+    body = sym instruction_sigsegv_handler_body,
+    ioctl = const libc::SYS_ioctl,
+    disable = const 0x2401u32,
+    enable = const 0x2400u32,
+    gettid = const libc::SYS_gettid,
+    getcpu = const libc::SYS_getcpu,
+    exit_group = const libc::SYS_exit_group,
+    cpu_offset = const rcb::CPU_OFFSET,
+    running = const rcb::RUNNING_MODE,
+    paused = const 2u32,
+);
+
+unsafe extern "C" fn instruction_sigsegv_handler_body(
     signal: libc::c_int,
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
@@ -2635,15 +3605,15 @@ unsafe fn execute_native_instruction(kind: InstructionEventKind, context: &mut H
     }
 }
 
-unsafe extern "C" fn installed_cpuid_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_cpuid_hook_body(context: *mut HookContext) {
     unsafe { installed_instruction_hook(context, InstructionEventKind::Cpuid) }
 }
 
-unsafe extern "C" fn installed_rdtsc_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_rdtsc_hook_body(context: *mut HookContext) {
     unsafe { installed_instruction_hook(context, InstructionEventKind::Rdtsc) }
 }
 
-unsafe extern "C" fn installed_rdtscp_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_rdtscp_hook_body(context: *mut HookContext) {
     unsafe { installed_instruction_hook(context, InstructionEventKind::Rdtscp) }
 }
 
@@ -2729,27 +3699,27 @@ unsafe fn dispatch_syscall_context(
     }
 }
 
-unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_syscall_hook_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, None) }
 }
 
-unsafe extern "C" fn installed_vdso_time_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_time_hook_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_time)) }
 }
 
-unsafe extern "C" fn installed_vdso_clock_gettime_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_clock_gettime_hook_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_clock_gettime)) }
 }
 
-unsafe extern "C" fn installed_vdso_getcpu_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_getcpu_hook_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_getcpu)) }
 }
 
-unsafe extern "C" fn installed_vdso_gettimeofday_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_gettimeofday_hook_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_gettimeofday)) }
 }
 
-unsafe extern "C" fn installed_vdso_clock_getres_hook(context: *mut HookContext) {
+unsafe extern "C" fn installed_vdso_clock_getres_hook_body(context: *mut HookContext) {
     unsafe { installed_syscall_hook_for(context, Some(libc::SYS_clock_getres)) }
 }
 
@@ -2916,7 +3886,7 @@ impl LiteinstDispatcher {
                     install_site_hook(
                         instruction_pointer,
                         site,
-                        installed_syscall_hook,
+                        installed_callback::SYSCALL,
                         self.publication,
                         &[0x0f, 0x05],
                         true,
@@ -2989,10 +3959,11 @@ fn protect_runtime_control(event: &mut SyscallEvent) -> bool {
         || (event.number == libc::SYS_sigaltstack && event.args[0] != 0)
         // AUTONOMOUS-BOT-IMPLEMENTED
         || (event.number == libc::SYS_rt_sigprocmask && event.args[1] != 0);
+    let protected_cpu = event.number == libc::SYS_sched_setaffinity;
 
     if unsupported_process {
         event.result = -i64::from(libc::ENOTSUP);
-    } else if protected_signal {
+    } else if protected_signal || protected_cpu {
         event.result = -i64::from(libc::EPERM);
     } else {
         return false;
@@ -3043,51 +4014,83 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
         return;
     }
 
-    if event.number == libc::SYS_clone && !clone_is_fork_like(event.args[0], event.args[1]) {
-        event.result = if TOOL_MODE.load(Ordering::Relaxed) == TOOL_COMPAT {
-            -i64::from(libc::EPERM)
-        } else {
-            -i64::from(libc::ENOTSUP)
-        };
-        unsafe {
-            trace_event(event, Some(event.result));
+    let admitted = with_non_tool_process_admission(event, tool_mode, |event, cow_fork| {
+        if event.number == libc::SYS_exit || event.number == libc::SYS_exit_group {
+            unsafe {
+                trace_event(event, None);
+            }
         }
-        return;
-    }
 
-    if event.number == libc::SYS_exit || event.number == libc::SYS_exit_group {
-        unsafe {
-            trace_event(event, None);
+        let compatibility_fork = tool_mode == TOOL_COMPAT && cow_fork;
+        if compatibility_fork {
+            unsafe {
+                trace_event(event, None);
+            }
         }
-    }
-
-    let compatibility_fork = TOOL_MODE.load(Ordering::Relaxed) == TOOL_COMPAT
-        && matches!(event.number, libc::SYS_clone | libc::SYS_fork);
-    if compatibility_fork {
-        unsafe {
-            trace_event(event, None);
+        event.result = unsafe { event.forward() };
+        if cow_fork && event.result == 0 {
+            // Built-in/compatibility execution has no typed Tool counter to acquire.
+            // Its copied installed stack still needs the new actual owner before
+            // any nested callback. This path refuses every active/incomplete clock.
+            rcb::callback::rebind_unavailable_fork_child();
         }
-    }
-    event.result = unsafe { event.forward() };
-    observe_mapping_generation(event);
+        observe_mapping_generation(event);
 
-    // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-260): Review the fork-following observability reset call.
-    // In the child of a successful fork-like syscall (`result == 0`), the
-    // COW-inherited observability counters describe the parent, not this child.
-    // Reset them through the shared ForkHook seam so per-process attribution
-    // starts clean. Gating on a zero result is sufficient and mirrors
-    // e9patch's child-side reset.
-    if is_fork_like(event.number) && event.result == 0 {
-        FORK_HOOK.run_in_child();
-    }
-
-    if event.number != libc::SYS_exit && event.number != libc::SYS_exit_group && !compatibility_fork
-    {
-        unsafe {
-            trace_event(event, Some(event.result));
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-260): Review the fork-following observability reset call.
+        // In the child of an admitted COW fork/clone (`result == 0`), the
+        // COW-inherited observability counters describe the parent, not this child.
+        // Reset them through the shared ForkHook seam so per-process attribution
+        // starts clean. The admission below excludes shared-stack and shared-memory
+        // creation before either the physical syscall or this child mutation.
+        if cow_fork && event.result == 0 {
+            FORK_HOOK.run_in_child();
         }
+
+        if event.number != libc::SYS_exit
+            && event.number != libc::SYS_exit_group
+            && !compatibility_fork
+        {
+            unsafe {
+                trace_event(event, Some(event.result));
+            }
+        }
+    });
+    if !admitted {
+        unsafe { trace_event(event, Some(event.result)) };
     }
+}
+
+/// Run the forwarding continuation only after non-Tool process admission.
+/// The shared preload dispatcher already refuses raw vfork/clone3: they need
+/// a controller-owned bootstrap. LiteInst's custom dispatcher must retain that
+/// guard too. A positive COW classification admits only bare fork or the exact
+/// existing null-stack clone allowlist. Typed Tool parsing/translation happens
+/// earlier in process_syscall and never uses this continuation.
+fn with_non_tool_process_admission(
+    event: &mut SyscallEvent,
+    tool_mode: u8,
+    forward: impl FnOnce(&mut SyscallEvent, bool),
+) -> bool {
+    let cow_fork = match event.number {
+        libc::SYS_fork => true,
+        libc::SYS_clone if clone_is_fork_like(event.args[0], event.args[1]) => true,
+        libc::SYS_clone => {
+            event.result = -i64::from(if tool_mode == TOOL_COMPAT {
+                libc::EPERM
+            } else {
+                libc::ENOTSUP
+            });
+            return false;
+        }
+        libc::SYS_vfork | libc::SYS_clone3 => {
+            event.result = -i64::from(libc::ENOTSUP);
+            return false;
+        }
+        _ => false,
+    };
+    forward(event, cow_fork);
+    true
 }
 
 fn clone_is_fork_like(flags: u64, child_stack: u64) -> bool {
@@ -3099,22 +4102,162 @@ fn clone_is_fork_like(flags: u64, child_stack: u64) -> bool {
         && flags & !(SIGNAL_MASK | allowed_flags) == 0
 }
 
+/// Apply the same safeguard to original, nested and runtime-private injection
+/// routes. This function executes no physical original syscall on `None`.
+pub(crate) unsafe fn private_descriptor_result(number: i64, args: [u64; 6]) -> Option<i64> {
+    private_fd::apply(
+        number,
+        args,
+        {
+            let mut descriptors = [-1; crate::control::PROTECTED_SLOTS + 2];
+            descriptors[..crate::control::PROTECTED_SLOTS]
+                .copy_from_slice(&crate::control::protected_fds());
+            descriptors[crate::control::PROTECTED_SLOTS] = COORDINATOR_FD.load(Ordering::Acquire);
+            descriptors[crate::control::PROTECTED_SLOTS + 1] = RCB_FD.load(Ordering::Acquire);
+            descriptors
+        },
+        |number, args| unsafe { raw_syscall6(number, args) },
+    )
+}
+
+/// Arm one qualification probe for the actual endpoint prepared by the next
+/// fork. The endpoint remains runtime-owned; callers provide an ordinary
+/// datagram pair used only to prove that no alias was published.
+#[cfg(feature = "rcb-qualification")]
+pub(crate) fn arm_prepared_fork_probe_for_test(sender: i32, receiver: i32) -> io::Result<()> {
+    if sender < 0 || receiver < 0 || sender == receiver {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    PREPARED_FORK_PROBE_RECEIVE
+        .compare_exchange(
+            PREPARED_FORK_PROBE_IDLE,
+            receiver,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map_err(|_| io::Error::from_raw_os_error(libc::EALREADY))?;
+    if PREPARED_FORK_PROBE_SEND
+        .compare_exchange(
+            PREPARED_FORK_PROBE_IDLE,
+            sender,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        PREPARED_FORK_PROBE_RECEIVE.store(PREPARED_FORK_PROBE_IDLE, Ordering::Release);
+        return Err(io::Error::from_raw_os_error(libc::EALREADY));
+    }
+    PREPARED_FORK_PROBE_RESULT.store(i32::MIN, Ordering::Release);
+    PREPARED_FORK_PROBE_GENERATION.store(0, Ordering::Release);
+    Ok(())
+}
+
+#[cfg(feature = "rcb-qualification")]
+pub(crate) fn probe_prepared_fork_endpoint_for_test(
+    endpoint: i32,
+    generation: u64,
+) -> io::Result<()> {
+    let sender = PREPARED_FORK_PROBE_SEND.swap(PREPARED_FORK_PROBE_CLAIMED, Ordering::AcqRel);
+    if sender == PREPARED_FORK_PROBE_IDLE {
+        return Ok(());
+    }
+    if sender < 0 || endpoint < 0 || generation == 0 {
+        return Err(io::Error::from_raw_os_error(libc::ESTALE));
+    }
+    let receiver = PREPARED_FORK_PROBE_RECEIVE.swap(
+        PREPARED_FORK_PROBE_CLAIMED,
+        Ordering::AcqRel,
+    );
+    if receiver < 0 {
+        return Err(io::Error::from_raw_os_error(libc::ESTALE));
+    }
+
+    let mut byte = 0x5a_u8;
+    let mut vector = libc::iovec {
+        iov_base: (&raw mut byte).cast(),
+        iov_len: 1,
+    };
+    let mut control = [0_usize; 3];
+    let mut message: libc::msghdr = unsafe { core::mem::zeroed() };
+    message.msg_iov = &raw mut vector;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = unsafe { libc::CMSG_SPACE(size_of::<i32>() as u32) } as usize;
+    unsafe {
+        let header = libc::CMSG_FIRSTHDR(&message);
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = libc::CMSG_LEN(size_of::<i32>() as u32) as usize;
+        libc::CMSG_DATA(header).cast::<i32>().write_unaligned(endpoint);
+    }
+    let result = unsafe {
+        private_descriptor_result(
+            libc::SYS_sendmsg,
+            [
+                sender as u64,
+                (&raw mut message) as u64,
+                libc::MSG_NOSIGNAL as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    }
+    .ok_or_else(|| io::Error::from_raw_os_error(libc::EACCES))?;
+    if result != -i64::from(libc::ENOTSUP) {
+        return Err(io::Error::from_raw_os_error(libc::EACCES));
+    }
+
+    let mut received = 0_u8;
+    let mut received_vector = libc::iovec {
+        iov_base: (&raw mut received).cast(),
+        iov_len: 1,
+    };
+    let mut received_control = [0_usize; 3];
+    let mut received_message: libc::msghdr = unsafe { core::mem::zeroed() };
+    received_message.msg_iov = &raw mut received_vector;
+    received_message.msg_iovlen = 1;
+    received_message.msg_control = received_control.as_mut_ptr().cast();
+    received_message.msg_controllen = received_control.len() * size_of::<usize>();
+    let received = unsafe {
+        raw_syscall6(
+            libc::SYS_recvmsg,
+            [
+                receiver as u64,
+                (&raw mut received_message) as u64,
+                libc::MSG_DONTWAIT as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if received != -i64::from(libc::EAGAIN) {
+        return Err(io::Error::from_raw_os_error(libc::EIO));
+    }
+    PREPARED_FORK_PROBE_RESULT.store(result as i32, Ordering::Release);
+    PREPARED_FORK_PROBE_GENERATION.store(generation, Ordering::Release);
+    Ok(())
+}
+
+#[cfg(feature = "rcb-qualification")]
+pub(crate) fn prepared_fork_probe_for_test() -> io::Result<[i64; 2]> {
+    let result = PREPARED_FORK_PROBE_RESULT.load(Ordering::Acquire);
+    let generation = PREPARED_FORK_PROBE_GENERATION.load(Ordering::Acquire);
+    if result != -libc::ENOTSUP || generation == 0 {
+        return Err(io::Error::from_raw_os_error(libc::ESTALE));
+    }
+    Ok([i64::from(result), generation as i64])
+}
+
 unsafe fn protect_coordinator_channel(event: &mut SyscallEvent) -> bool {
-    let fd = COORDINATOR_FD.load(Ordering::Acquire);
-    if fd < 0 {
-        return false;
-    }
-    let fd = fd as u64;
-    if event.number == libc::SYS_close && event.args[0] == fd {
-        event.result = 0;
-    } else if event.number == libc::SYS_close_range && event.args[0] <= fd && fd <= event.args[1] {
-        event.result = unsafe { close_range_preserving_event_fd(event, fd) };
-    } else if syscall_targets_event_fd(event, fd) {
-        event.result = -i64::from(libc::EBADF);
+    if let Some(result) = unsafe { private_descriptor_result(event.number, event.args) } {
+        event.result = result;
+        true
     } else {
-        return false;
+        false
     }
-    true
 }
 
 unsafe fn protect_compatibility_event_channel(event: &mut SyscallEvent) -> bool {
@@ -3494,6 +4637,41 @@ impl StackLine {
     }
 }
 
+#[cfg(feature = "rcb-qualification")]
+pub(crate) fn installed_callback_table() -> (u64, Vec<[u64; 4]>) {
+    installed_callback::table()
+}
+
+#[cfg(feature = "rcb-qualification")]
+pub(crate) fn instruction_signal_boundary() -> (u64, usize) {
+    let start = instruction_sigsegv_entry as *const () as usize;
+    let end = core::ptr::addr_of!(reverie_liteinst_instruction_sigsegv_entry_end) as usize;
+    (start as u64, end.checked_sub(start).expect("instruction signal boundary end"))
+}
+
+/// The caller owns mapping lifetime/quiescence while reading these addresses.
+#[cfg(feature = "rcb-qualification")]
+pub(crate) unsafe fn installed_trampoline_layout(address: u64) -> Option<[u64; 6]> {
+    let site = find_site(address)?;
+    if site.state.load(Ordering::Acquire) != SITE_ACTIVE {
+        return None;
+    }
+    let pointer = site.hook.load(Ordering::Acquire);
+    if pointer.is_null() {
+        return None;
+    }
+    let trampoline = unsafe { (*pointer).trampoline() };
+    let layout = trampoline.layout();
+    Some([
+        trampoline.address(),
+        trampoline.code_len() as u64,
+        layout.instrumentation_len as u64,
+        layout.restore_len as u64,
+        layout.relocated_len as u64,
+        layout.return_len as u64,
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::Ordering;
@@ -3510,6 +4688,7 @@ mod tests {
     use super::RCB_CLOCK;
     use super::RCB_CLOCK_OWNER;
     use super::RCB_CLOCK_UNAVAILABLE;
+    use super::RcbAccounting;
     use super::SITE_ACTIVE;
     use super::SITE_FALLBACK;
     use super::SITE_INSTALLING;
@@ -3532,7 +4711,51 @@ mod tests {
     use super::reset_site_observability;
 
     #[test]
-    fn every_optional_rcb_setup_error_takes_the_real_unavailable_path() {
+    fn rcb_accounting_rejects_regression_without_returning_zero() {
+        let mut accounting = RcbAccounting::new(0);
+        assert_eq!(accounting.public(7), Ok(7));
+        let before = accounting;
+        assert_eq!(accounting.public(6), Err(libc::ESTALE));
+        assert_eq!(accounting, before, "a rejected sample changed accounting");
+        assert_eq!(accounting.break_with(libc::ESTALE), libc::ESTALE);
+        assert_eq!(accounting.break_with(libc::EOVERFLOW), libc::ESTALE);
+        assert_eq!(accounting.public(8), Err(libc::ESTALE));
+
+        // Causal negative control: the replaced saturating expression turns an
+        // impossible regression into a plausible zero clock.
+        assert_eq!(6_u64.saturating_sub(7), 0);
+        assert_eq!(6_u64.checked_sub(7), None);
+    }
+
+    #[test]
+    fn rcb_accounting_rejects_deduction_and_depth_overflow() {
+        let mut depth = RcbAccounting::new(u32::MAX);
+        assert_eq!(depth.enter(None), Err(libc::EOVERFLOW));
+        assert_eq!(depth.depth, u32::MAX);
+
+        let mut deduction = RcbAccounting::new(1);
+        deduction.entry = 1;
+        deduction.last_sample = 1;
+        deduction.deduction = u64::MAX;
+        assert_eq!(deduction.leave(Some(2)), Err(libc::EOVERFLOW));
+        assert_eq!(deduction.depth, 1);
+        assert_eq!(deduction.deduction, u64::MAX);
+    }
+
+    #[test]
+    fn rcb_accounting_accepts_last_representable_value_and_rejects_wrap() {
+        let mut accounting = RcbAccounting::new(0);
+        assert_eq!(accounting.public(u64::MAX), Ok(u64::MAX));
+        assert_eq!(accounting.public(0), Err(libc::ESTALE));
+        assert_eq!(accounting.last_public, u64::MAX);
+        assert_eq!(accounting.last_sample, u64::MAX);
+    }
+
+    #[test]
+    fn acquisition_errors_never_become_an_unavailable_clock() {
+        // The public API must refuse outside an authenticated root entry
+        // before installing handlers, seccomp, RPC or a counter.
+        crate::root::assert_unwrapped_install_has_no_effects();
         let owner = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) } as libc::pid_t;
         assert!(owner > 0);
         for error in [
@@ -3546,10 +4769,25 @@ mod tests {
             reverie::Errno::EBUSY,
             reverie::Errno::EIO,
         ] {
-            initialize_rcb_clock_with(|| Err(error)).unwrap();
-            assert!(RCB_CLOCK.get().is_null());
-            assert!(RCB_CLOCK_UNAVAILABLE.get());
-            assert_eq!(RCB_CLOCK_OWNER.get(), owner);
+            let raw_error = error.into_raw();
+            std::thread::spawn(move || {
+                let owner = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) } as libc::pid_t;
+                assert!(owner > 0);
+                let actual = initialize_rcb_clock_with(|| Err(reverie::Errno::new(raw_error)))
+                    .unwrap_err();
+                assert_eq!(actual.raw_os_error(), Some(raw_error));
+                assert!(RCB_CLOCK.get().is_null());
+                assert!(!RCB_CLOCK_UNAVAILABLE.get());
+                assert_eq!(RCB_CLOCK_OWNER.get(), owner);
+                assert!(rcb::is_broken());
+                assert_eq!(
+                    rcb::begin_setup(),
+                    Err(raw_error),
+                    "a later setup must retain the first terminal error"
+                );
+            })
+            .join()
+            .unwrap();
         }
     }
 
@@ -3797,5 +5035,84 @@ mod tests {
                 "accepted unsafe clone flag {rejected:#x}"
             );
         }
+
+        let event = |number, args| super::SyscallEvent {
+            number,
+            args,
+            instruction_pointer: 0x1234,
+            result: super::UNSET_RESULT,
+            context: 0x5678,
+            dispatch: super::SyscallDispatch::Trap,
+            guest_pkru: None,
+        };
+        for mode in [0, super::TOOL_STRACE, super::TOOL_COMPAT] {
+            for (number, args, errno) in [
+                (libc::SYS_vfork, [0; 6], libc::ENOTSUP),
+                (libc::SYS_clone3, [0; 6], libc::ENOTSUP),
+                (libc::SYS_clone3, [u64::MAX; 6], libc::ENOTSUP),
+                (
+                    libc::SYS_clone,
+                    [libc::CLONE_VM as u64 | libc::SIGCHLD as u64, 0, 0, 0, 0, 0],
+                    if mode == super::TOOL_COMPAT {
+                        libc::EPERM
+                    } else {
+                        libc::ENOTSUP
+                    },
+                ),
+            ] {
+                let mut request = event(number, args);
+                // This is the same admission function around the production
+                // event.forward and both child mutations. Any invocation of
+                // that continuation invalidates this refusal control.
+                let parent_before = [100_u64, 9, 3];
+                let mut parent_after = parent_before;
+                let mut forwarded = 0;
+                let admitted = super::with_non_tool_process_admission(
+                    &mut request,
+                    mode,
+                    |request, _cow_fork| {
+                        forwarded += 1;
+                        request.result = 0;
+                        parent_after = [200, 10, 4];
+                    },
+                );
+                assert!(!admitted);
+                assert_eq!(
+                    forwarded, 0,
+                    "refusal reached the forwarding/child continuation"
+                );
+                assert_eq!(parent_after, parent_before);
+                assert_eq!(request.number, number);
+                assert_eq!(request.args, args);
+                assert_eq!(request.instruction_pointer, 0x1234);
+                assert_eq!(request.context, 0x5678);
+                assert_eq!(request.result, -i64::from(errno));
+            }
+            for (number, args, expected_cow) in [
+                (libc::SYS_fork, [0; 6], true),
+                (
+                    libc::SYS_clone,
+                    [libc::SIGCHLD as u64 | bookkeeping, 0, 0, 0, 0, 0],
+                    true,
+                ),
+                (libc::SYS_getpid, [0; 6], false),
+            ] {
+                let mut request = event(number, args);
+                let mut forwarded = 0;
+                assert!(super::with_non_tool_process_admission(
+                    &mut request,
+                    mode,
+                    |_, cow_fork| {
+                        forwarded += 1;
+                        assert_eq!(cow_fork, expected_cow);
+                    },
+                ));
+                assert_eq!(forwarded, 1);
+            }
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "runtime/fd_signal_tests.rs"]
+mod fd_signal_tests;

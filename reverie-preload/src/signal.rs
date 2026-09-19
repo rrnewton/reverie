@@ -46,7 +46,10 @@ pub unsafe fn install_sigsys_handler(
     let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
     action.sa_flags = libc::SA_SIGINFO | if on_alt_stack { libc::SA_ONSTACK } else { 0 };
     action.sa_sigaction = handler as *const () as usize;
-    if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0 {
+    // The kernel applies this mask before the first handler instruction. It is
+    // the asynchronous fence for the straight-line RCB DISABLE prologue; the
+    // synchronous SIGSYS itself remains deliverable for the current fault.
+    if unsafe { libc::sigfillset(&mut action.sa_mask) } != 0 {
         return Err(io::Error::last_os_error());
     }
     if unsafe { libc::sigaction(libc::SIGSYS, &action, ptr::null_mut()) } != 0 {

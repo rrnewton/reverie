@@ -1,6 +1,7 @@
 name: Rust
 
 on:
+  pull_request:
   workflow_dispatch:
 
 env:
@@ -38,6 +39,36 @@ jobs:
       run: cargo build --workspace --all-features
     - name: DBT virtual identity and pidfd_open policy
       run: reverie-dbt/scripts/test-identity-policy.sh
+    # These exact methods require real cross-task perf_event_open. Selection
+    # happens before execution; an actual acquisition failure is never a pass.
+    - name: Report LiteInst cases requiring the self-hosted job
+      run: |
+        cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+        LiteInst hardware cases unmeasured in this regular job (not selected):
+
+        - `rpc_tool::fallback_uses_owned_frames_after_guest_stack_revocation`
+        - `rpc_tool::fork_child_accounts_for_fallback_and_installed_dispatch`
+        - `rpc_tool::initial_and_child_config_callbacks_keep_private_sockets_protected`
+        - `rpc_tool::installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc`
+        - `rpc_tool::ordinary_tool_memory_and_scratch_work_with_protected_guest_state`
+        - `rpc_tool::unpatchable_syscall_dispatches_tool_after_signal_return`
+        - `rpc_tool::unpatchable_syscall_preserves_protection_keys`
+        - `rpc_tool::unpatchable_syscall_preserves_protection_keys_without_alt_stack`
+        - `rpc_tool::unpatchable_syscall_preserves_xstate_with_native_controls`
+        - `rcb_acquisition::supervisor_counter_fallback_on_alt_stack`
+        - `rcb_acquisition::supervisor_counter_fallback_without_alt_stack`
+        - `rcb_acquisition::supervisor_counter_installed_on_alt_stack`
+        - `rcb_acquisition::supervisor_counter_installed_without_alt_stack`
+        - `rcb_acquisition::private_counter_scm_rights_transport_is_refused_before_alias`
+        - `rcb_acquisition::private_counter_pidfd_getfd_transport_is_refused_before_alias`
+        - `rcb_acquisition::private_counter_io_uring_transport_and_inherited_sqpoll_are_refused`
+
+        All 16 remain required in Host-dependent tests (self-hosted). That job
+        runs the full workspace without these filters. The Required CI aggregate
+        job below fails unless both job results are exactly `success`; a missing,
+        skipped, cancelled, or failed hardware result cannot make this workflow
+        green.
+        EOF
     - name: Test regular workspace cases
       run: >-
         cargo test --workspace --all-features --
@@ -62,6 +93,22 @@ jobs:
         --skip tests::port_isolation
         --skip tests::seccomp_notify
         --skip tests::uid_namespace
+        --skip fallback_uses_owned_frames_after_guest_stack_revocation
+        --skip fork_child_accounts_for_fallback_and_installed_dispatch
+        --skip initial_and_child_config_callbacks_keep_private_sockets_protected
+        --skip installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc
+        --skip ordinary_tool_memory_and_scratch_work_with_protected_guest_state
+        --skip unpatchable_syscall_dispatches_tool_after_signal_return
+        --skip unpatchable_syscall_preserves_protection_keys
+        --skip unpatchable_syscall_preserves_protection_keys_without_alt_stack
+        --skip unpatchable_syscall_preserves_xstate_with_native_controls
+        --skip supervisor_counter_fallback_on_alt_stack
+        --skip supervisor_counter_fallback_without_alt_stack
+        --skip supervisor_counter_installed_on_alt_stack
+        --skip supervisor_counter_installed_without_alt_stack
+        --skip private_counter_scm_rights_transport_is_refused_before_alias
+        --skip private_counter_pidfd_getfd_transport_is_refused_before_alias
+        --skip private_counter_io_uring_transport_and_inherited_sqpoll_are_refused
     - name: Documentation tests
       run: cargo test --workspace --doc
     - name: Clippy
@@ -150,6 +197,11 @@ jobs:
         fi
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@nightly
+    # No LiteInst filter: the 16 methods excluded from regular are required
+    # here. Each selected method joins its own supervisor acquisition records
+    # to live in-guest counter snapshots; zero or unavailable events, an
+    # unsupported PMU, duplicate evidence, or a mismatched method/CPU/profile
+    # fails that method rather than receiving hardware result credit.
     - name: Host-dependent workspace tests
       env:
         REVERIE_REQUIRE_KVM: "1"
@@ -173,3 +225,18 @@ jobs:
         kill "$watchdog" 2>/dev/null || true
         wait "$watchdog" 2>/dev/null || true
         exit "$status"
+
+  required:
+    name: Required CI aggregate
+    if: ${{ always() }}
+    needs: [regular, hardware]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Require measured regular and hardware jobs
+      env:
+        REGULAR_RESULT: ${{ needs.regular.result }}
+        HARDWARE_RESULT: ${{ needs.hardware.result }}
+      run: |
+        set -euo pipefail
+        test "$REGULAR_RESULT" = success
+        test "$HARDWARE_RESULT" = success

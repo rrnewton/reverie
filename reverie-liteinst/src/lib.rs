@@ -10,9 +10,13 @@ use std::process::Command;
 compile_error!("reverie-liteinst requires Linux x86-64");
 
 mod backend;
+mod control;
+mod coordinator;
 mod patch_alloc;
+mod rcb;
 mod stats;
 mod straddler;
+mod supervisor;
 mod syscall_fallback;
 
 pub use backend::COORDINATOR_ENV;
@@ -56,6 +60,90 @@ pub use straddler::straddler_staleness_from_env_value;
 pub use tool_host::install_tool;
 pub use tool_host::install_tool_from_bootstrap;
 pub use tool_host::install_tool_quiescent;
+
+/// Runtime-owned counter identity and current guest clock used by the bounded
+/// private-descriptor qualification. The identity is authenticated against the
+/// supervisor offer and the live kernel event before it is returned.
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub fn private_rcb_snapshot_for_test() -> std::io::Result<[u64; 4]> {
+    runtime::private_rcb_snapshot_for_test()
+}
+
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub fn arm_prepared_fork_probe_for_test(sender: i32, receiver: i32) -> std::io::Result<()> {
+    runtime::arm_prepared_fork_probe_for_test(sender, receiver)
+}
+
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub fn prepared_fork_probe_for_test() -> std::io::Result<[i64; 2]> {
+    runtime::prepared_fork_probe_for_test()
+}
+
+/// Queue one qualification signal at the first Rust instruction after root
+/// assembly has captured and blocked the entry mask.
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub fn arm_root_entry_signal_probe_for_test(signal: i32) -> std::io::Result<()> {
+    root::arm_entry_signal_probe(signal)
+}
+
+/// Arm one qualification-only asynchronously generated SIGSYS. Its ordinary
+/// provenance rejection is replaced only for this one private-capability use;
+/// the runtime-owned assembly fence must have paused the event first.
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub fn arm_async_sigsys_probe_for_test() -> std::io::Result<()> {
+    rcb::arm_async_sigsys_probe().map_err(std::io::Error::from_raw_os_error)
+}
+
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub fn async_sigsys_probe_for_test() -> [u64; 2] {
+    rcb::async_sigsys_snapshot()
+}
+
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub fn running_signal_probe_for_test() -> std::io::Result<(i32, [u64; 8])> {
+    rpc::CoordinatorRpc::<()>::running_signal_probe_for_test()
+}
+
+/// Bind the exact parent perf metadata address whose VM_DONTCOPY behavior the
+/// first fork-child RCB transition must prove before acquiring a child event.
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub fn arm_inherited_perf_mapping_probe_for_test(
+    start: u64,
+    end: u64,
+) -> std::io::Result<()> {
+    runtime::arm_inherited_perf_mapping_probe_for_test(start, end)
+}
+
+/// Return the child-only VM_DONTCOPY proof: start, end, ENOMEM from mincore,
+/// EFAULT from process_vm_readv, and zero overlapping maps at the exact gap.
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub fn inherited_perf_mapping_probe_for_test() -> std::io::Result<[u64; 5]> {
+    runtime::inherited_perf_mapping_probe_for_test()
+}
+
+mod root;
+#[doc(hidden)]
+pub use root::ConstructorArgs as __RootConstructorArgs;
+#[doc(hidden)]
+pub use root::reverie_liteinst_root_activation as __root_activation;
+#[doc(hidden)]
+pub use root::reverie_liteinst_root_constructor as __root_constructor;
+#[doc(hidden)]
+pub use root::setup as __root_setup;
+#[cfg(feature = "rcb-qualification")]
+pub use root::boundary as root_activation_boundary;
+#[doc(hidden)]
+#[cfg(feature = "rcb-qualification")]
+pub use root::constructor_boundary as root_constructor_boundary;
 
 #[global_allocator]
 static PATCH_ALLOCATOR: patch_alloc::PatchAllocator = patch_alloc::PatchAllocator;
@@ -298,6 +386,15 @@ pub extern "C" fn reverie_liteinst_fallback_dispatch_count() -> u64 {
     runtime::fallback_dispatch_count()
 }
 
+/// Actual SIGSYS entries during this process's initial guarded Tool bootstrap.
+/// These are physical setup costs, not guest-site or fallback classifications.
+/// A plain fork child starts at zero; its config rebind is an ordinary nested
+/// Tool callback and is counted by the existing nested/physical counters.
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_liteinst_bootstrap_sigsys_count() -> u64 {
+    runtime::bootstrap_sigsys_count()
+}
+
 // TODO-HUMAN-REVIEW(PR-249): Review public fallback-surface observability counters.
 /// Number of times syscall `number` reached LiteInst's fallback dispatch path.
 ///
@@ -330,6 +427,30 @@ pub extern "C" fn reverie_liteinst_fallback_syscall_refusal_count(number: i64) -
 #[used]
 #[unsafe(link_section = ".init_array")]
 static REVERIE_LITEINST_INIT: unsafe extern "C" fn() = reverie_liteinst_initialize;
+
+/// The loaded production callback table and each entry/body/entry-byte count.
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub fn installed_callback_table() -> (u64, Vec<[u64; 4]>) {
+    runtime::installed_callback_table()
+}
+
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub fn instruction_signal_boundary() -> (u64, usize) {
+    runtime::instruction_signal_boundary()
+}
+
+/// The live trampoline address, initialized byte length, and section lengths.
+///
+/// # Safety
+/// The caller must keep this site's mapping alive and prevent concurrent
+/// instrumentation, mapping replacement or reclamation until inspection ends.
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub unsafe fn installed_trampoline_layout(address: u64) -> Option<[u64; 6]> {
+    unsafe { runtime::installed_trampoline_layout(address) }
+}
 
 #[cfg(test)]
 mod tests {

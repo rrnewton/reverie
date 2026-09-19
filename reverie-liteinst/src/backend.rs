@@ -3,6 +3,7 @@
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs::File;
+#[cfg(test)]
 use std::future::Future;
 use std::io;
 use std::io::Write;
@@ -20,6 +21,7 @@ use std::process::Output;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+#[cfg(test)]
 use std::time::Duration;
 
 use reverie::Backend;
@@ -33,7 +35,9 @@ use reverie::process::Command;
 use reverie::process::Output as ReverieOutput;
 use reverie::process::Stdio as ReverieStdio;
 use reverie_ptrace::TracerBuilder;
+#[cfg(test)]
 use reverie_rpc_transport::ConnectionMonitor;
+#[cfg(test)]
 use reverie_rpc_transport::RpcError;
 use reverie_rpc_transport::RpcServer;
 
@@ -49,7 +53,103 @@ pub const STATS_COORDINATOR_ENV: &str = "REVERIE_LITEINST_STATS_COORDINATOR";
 const PRELOAD_BOOTSTRAP_MAGIC: &[u8; 16] = b"REVERIE-LI-V1\0\0\0";
 const PRELOAD_BOOTSTRAP_HEADER_BYTES: usize = PRELOAD_BOOTSTRAP_MAGIC.len() + 4;
 const PRELOAD_BOOTSTRAP_MAX_BYTES: usize = 4096;
-const RPC_CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const RPC_CONNECTION_DRAIN_TIMEOUT: Duration = crate::coordinator::DRAIN_TIMEOUT;
+
+/// Choose the lowest CPU from the launcher's allowed set. Selection never uses
+/// the launcher's current scheduling placement, so two executions under the
+/// same admitted mask bind the same core even on a heterogeneous machine. The
+/// child installs this singleton mask in `pre_exec`, before the preload can
+/// capture CPUID or a supervisor can create its event. Fork/clone inherit the
+/// mask; exec retains it.
+fn select_launch_cpu(allowed: &libc::cpu_set_t) -> Option<usize> {
+    (0..libc::CPU_SETSIZE as usize)
+        .find(|cpu| unsafe { libc::CPU_ISSET(*cpu, allowed) })
+}
+
+fn affinity_query_error(error: io::Error) -> io::Error {
+    if error.raw_os_error() == Some(libc::EINVAL) {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "kernel CPU affinity mask exceeds libc::cpu_set_t",
+        )
+    } else {
+        error
+    }
+}
+
+fn selected_cpu_error(error: io::Error) -> io::Error {
+    if error.raw_os_error() == Some(libc::EINVAL) {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "selected LiteInst CPU became unavailable before child exec",
+        )
+    } else {
+        error
+    }
+}
+
+fn launch_cpu() -> io::Result<usize> {
+    let mut allowed: libc::cpu_set_t = unsafe { core::mem::zeroed() };
+    if unsafe {
+        libc::sched_getaffinity(
+            0,
+            core::mem::size_of::<libc::cpu_set_t>(),
+            &raw mut allowed,
+        )
+    } != 0
+    {
+        return Err(affinity_query_error(io::Error::last_os_error()));
+    }
+    select_launch_cpu(&allowed)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "empty launcher CPU affinity"))
+}
+
+fn pin_launched_child(cpu: usize) -> io::Result<()> {
+    if cpu >= libc::CPU_SETSIZE as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selected LiteInst CPU is outside cpu_set_t",
+        ));
+    }
+    let mut singleton: libc::cpu_set_t = unsafe { core::mem::zeroed() };
+    unsafe { libc::CPU_SET(cpu, &mut singleton) };
+    if unsafe {
+        libc::sched_setaffinity(
+            0,
+            core::mem::size_of::<libc::cpu_set_t>(),
+            &raw const singleton,
+        )
+    } != 0
+    {
+        return Err(selected_cpu_error(io::Error::last_os_error()));
+    }
+    let mut installed: libc::cpu_set_t = unsafe { core::mem::zeroed() };
+    if unsafe {
+        libc::sched_getaffinity(
+            0,
+            core::mem::size_of::<libc::cpu_set_t>(),
+            &raw mut installed,
+        )
+    } != 0
+    {
+        return Err(affinity_query_error(io::Error::last_os_error()));
+    }
+    let installed_count = (0..libc::CPU_SETSIZE as usize)
+        .filter(|candidate| unsafe { libc::CPU_ISSET(*candidate, &installed) })
+        .count();
+    if installed_count != 1 || !unsafe { libc::CPU_ISSET(cpu, &installed) } {
+        Err(io::Error::other(
+            "LiteInst child did not retain the selected singleton CPU affinity",
+        ))
+    } else if unsafe { libc::sched_getcpu() } != cpu as i32 {
+        Err(io::Error::other(
+            "LiteInst child did not enter its singleton CPU before exec",
+        ))
+    } else {
+        Ok(())
+    }
+}
 
 // TODO-HUMAN-REVIEW(PR-139): Review the public inherited preload bootstrap contract.
 /// Coordinator path and tool-specific bytes consumed by a preload constructor.
@@ -649,6 +749,7 @@ enum ChildWait {
     Output(Output),
 }
 
+#[cfg(test)]
 async fn serve_rpc_until<G, F, T>(
     server: RpcServer<G>,
     stats_server: Option<RpcServer<crate::stats::LiteinstStatsGlobal>>,
@@ -669,6 +770,7 @@ where
     .await
 }
 
+#[cfg(test)]
 async fn serve_rpc_until_with_timeout<G, F, T>(
     server: RpcServer<G>,
     stats_server: Option<RpcServer<crate::stats::LiteinstStatsGlobal>>,
@@ -693,20 +795,9 @@ where
         .await
 }
 
-fn rpc_server_stopped(
-    result: Option<Result<Result<(), RpcError>, tokio::task::JoinError>>,
-) -> io::Error {
-    let message = match result {
-        Some(Ok(Ok(()))) => "LiteInst coordinator stopped unexpectedly".to_owned(),
-        Some(Ok(Err(error))) => error.to_string(),
-        Some(Err(error)) => error.to_string(),
-        None => "LiteInst coordinator task disappeared".to_owned(),
-    };
-    io::Error::other(message)
-}
-
+#[cfg(test)]
 async fn serve_rpc_tasks_until_with_timeout<F, T>(
-    mut serving: tokio::task::JoinSet<Result<(), RpcError>>,
+    serving: tokio::task::JoinSet<Result<(), RpcError>>,
     connection_monitors: Vec<ConnectionMonitor>,
     completion: F,
     drain_timeout: Duration,
@@ -714,61 +805,17 @@ async fn serve_rpc_tasks_until_with_timeout<F, T>(
 where
     F: Future<Output = io::Result<T>>,
 {
-    tokio::pin!(completion);
-
-    let mut result = tokio::select! {
-        biased;
-        result = &mut completion => result,
-        result = serving.join_next() => return Err(rpc_server_stopped(result)),
-    };
-
-    // A fork child inherits the parent's connected socket. If it later needs
-    // its own identity, the client opens the replacement before dropping the
-    // inherited descriptor. Consequently this count cannot transiently reach
-    // zero while a supported descendant still owns coordinator state. Block
-    // on last-close notifications instead of keeping this task runnable, but
-    // fail closed after a finite interval if a descriptor is leaked.
-    let drain = async {
-        for monitor in &connection_monitors {
-            monitor.wait_for_idle().await;
-        }
-    };
-    tokio::pin!(drain);
-    let drain_result = tokio::select! {
-        biased;
-        result = serving.join_next() => return Err(rpc_server_stopped(result)),
-        result = tokio::time::timeout(drain_timeout, &mut drain) => result,
-    };
-    if drain_result.is_err() {
-        let active_connections = connection_monitors
-            .iter()
-            .map(ConnectionMonitor::active_connections)
-            .sum::<usize>();
-        let timeout_message = format!(
-            "LiteInst coordinator retained {active_connections} active RPC connection(s) for {}ms after guest exit",
-            drain_timeout.as_millis()
-        );
-        if result.is_ok() {
-            result = Err(io::Error::new(io::ErrorKind::TimedOut, timeout_message));
-        } else {
-            tracing::warn!("{timeout_message}; preserving guest completion error");
-        }
-    }
-
-    serving.abort_all();
-    while let Some(server_result) = serving.join_next().await {
-        match server_result {
-            Err(error) if error.is_cancelled() => {}
-            Ok(Ok(())) => {
-                return Err(io::Error::other(
-                    "LiteInst coordinator stopped unexpectedly",
-                ));
-            }
-            Ok(Err(error)) => return Err(io::Error::other(error.to_string())),
-            Err(error) => return Err(io::Error::other(error.to_string())),
-        }
-    }
-    result
+    crate::coordinator::run_tasks_until(
+        serving,
+        connection_monitors
+            .into_iter()
+            .map(crate::coordinator::Lifetime::Rpc)
+            .collect(),
+        completion,
+        drain_timeout,
+    )
+    .await
+    .result
 }
 
 async fn unwrap_global_after_connections<G>(mut global: Arc<G>) -> io::Result<G> {
@@ -824,14 +871,7 @@ where
     let socket = directory.path().join("coordinator.sock");
     let global = Arc::new(T::GlobalState::init_global_state(&config).await);
     let connected = Arc::new(AtomicBool::new(false));
-    let server = RpcServer::bind_with_connection_readiness(
-        &socket,
-        global.clone(),
-        config,
-        connected.clone(),
-    )
-    .map_err(|error| io::Error::other(error.to_string()))?;
-    let mut connection_monitors = vec![server.connection_monitor()];
+    let mut connection_monitors = Vec::new();
     let (stats_global, stats_server, stats_socket) = if stats_request.is_enabled() {
         let socket = directory.path().join("stats.sock");
         let global = Arc::new(crate::stats::LiteinstStatsGlobal::default());
@@ -845,60 +885,54 @@ where
 
     configure_in_guest_command_preload(&mut command, preload);
 
-    let wait = match tool_data {
-        Some(tool_data) => {
-            let mut child_command = command.try_into_std()?;
-            child_command.env_remove(STATS_COORDINATOR_ENV);
-            if let Some(stats_socket) = &stats_socket {
-                child_command.env(STATS_COORDINATOR_ENV, stats_socket);
-            }
-
-            let bootstrap = create_preload_bootstrap(&socket, &tool_data)?;
-            let bootstrap_fd = bootstrap.as_raw_fd();
-            unsafe {
-                child_command.pre_exec(move || {
-                    if libc::fcntl(bootstrap_fd, libc::F_SETFD, 0) == -1 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-            let mut child = child_command.spawn()?;
-            drop(bootstrap);
-            let wait = tokio::task::spawn_blocking(move || {
-                if capture_output {
-                    child.wait_with_output().map(ChildWait::Output)
-                } else {
-                    child.wait().map(ChildWait::Status)
+    let cpu = launch_cpu()?;
+    let mut child_command = command.try_into_std()?;
+    unsafe {
+        child_command.pre_exec(move || pin_launched_child(cpu));
+    }
+    child_command.env_remove(STATS_COORDINATOR_ENV);
+    if let Some(stats_socket) = &stats_socket {
+        child_command.env(STATS_COORDINATOR_ENV, stats_socket);
+    }
+    let bootstrap = if let Some(tool_data) = tool_data {
+        let bootstrap = create_preload_bootstrap(&socket, &tool_data)?;
+        let bootstrap_fd = bootstrap.as_raw_fd();
+        unsafe {
+            child_command.pre_exec(move || {
+                if libc::fcntl(bootstrap_fd, libc::F_SETFD, 0) == -1 {
+                    return Err(io::Error::last_os_error());
                 }
+                Ok(())
             });
-            serve_rpc_until(server, stats_server, connection_monitors, async move {
-                wait.await
-                    .map_err(|error| io::Error::other(error.to_string()))?
-            })
-            .await?
         }
-        None => {
-            let mut child_command = command.try_into_std()?;
-            child_command.env(COORDINATOR_ENV, &socket);
-            child_command.env_remove(STATS_COORDINATOR_ENV);
-            if let Some(stats_socket) = &stats_socket {
-                child_command.env(STATS_COORDINATOR_ENV, stats_socket);
-            }
-            let mut child = child_command.spawn()?;
-            let wait = tokio::task::spawn_blocking(move || {
-                if capture_output {
-                    child.wait_with_output().map(ChildWait::Output)
-                } else {
-                    child.wait().map(ChildWait::Status)
-                }
-            });
-            serve_rpc_until(server, stats_server, connection_monitors, async move {
-                wait.await
-                    .map_err(|error| io::Error::other(error.to_string()))?
-            })
-            .await?
-        }
+        Some(bootstrap)
+    } else {
+        child_command.env(COORDINATOR_ENV, &socket);
+        None
+    };
+    let (supervisor, waiter) = crate::supervisor::Supervisor::spawn(
+        child_command,
+        &socket,
+        global.clone(),
+        config,
+        connected.clone(),
+        cpu as u32,
+        None,
+    )?;
+    drop(bootstrap);
+    let mut serving = tokio::task::JoinSet::new();
+    if let Some(stats_server) = stats_server {
+        serving.spawn(stats_server.serve());
+    }
+    let report = supervisor
+        .run(waiter, capture_output, serving, connection_monitors)
+        .await;
+    let waited = report.wait?;
+    report.service?;
+    waited.setup?;
+    let wait = match waited.result {
+        crate::supervisor::WaitResult::Status(status) => ChildWait::Status(status),
+        crate::supervisor::WaitResult::Output(output) => ChildWait::Output(output),
     };
     if !connected.load(Ordering::Acquire) {
         return Err(io::Error::new(
@@ -933,6 +967,7 @@ fn tool_preload_path() -> io::Result<PathBuf> {
 mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::AtomicU64;
+    #[cfg(test)]
     use std::time::Duration;
 
     use reverie::Tid;
@@ -1385,6 +1420,35 @@ mod tests {
 
     #[test]
     fn rejects_and_closes_multiple_matching_bootstraps() {
+        // Keep the frozen method population while exercising the launch CPU
+        // policy causally. Observed scheduler placement is deliberately absent
+        // from the selector, so either possible placement chooses CPU 2.
+        let mut allowed: libc::cpu_set_t = unsafe { core::mem::zeroed() };
+        unsafe {
+            libc::CPU_SET(7, &mut allowed);
+            libc::CPU_SET(2, &mut allowed);
+        }
+        let choices = [7_usize, 2].map(|observed_current| {
+            (observed_current, select_launch_cpu(&allowed))
+        });
+        assert_eq!(choices, [(7, Some(2)), (2, Some(2))]);
+        let empty: libc::cpu_set_t = unsafe { core::mem::zeroed() };
+        assert_eq!(select_launch_cpu(&empty), None);
+        assert_eq!(
+            affinity_query_error(io::Error::from_raw_os_error(libc::EINVAL)).kind(),
+            io::ErrorKind::InvalidData,
+        );
+        assert_eq!(
+            selected_cpu_error(io::Error::from_raw_os_error(libc::EINVAL)).kind(),
+            io::ErrorKind::NotFound,
+        );
+        assert_eq!(
+            pin_launched_child(libc::CPU_SETSIZE as usize)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput,
+        );
+
         let expected = [
             (
                 PathBuf::from("/tmp/reverie-liteinst-fd-reuse-test-1.sock"),

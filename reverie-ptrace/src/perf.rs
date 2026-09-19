@@ -25,6 +25,9 @@
 use core::ptr::NonNull;
 #[allow(unused_imports)] // only used if we have an error
 use std::compile_error;
+use std::os::fd::FromRawFd;
+use std::os::fd::IntoRawFd;
+use std::os::fd::OwnedFd;
 use std::sync::LazyLock;
 
 use nix::sys::signal::Signal;
@@ -91,7 +94,7 @@ pub struct PerfCounter {
 }
 
 impl Event {
-    fn attr_type(self) -> u32 {
+    pub(crate) fn attr_type(self) -> u32 {
         match self {
             Event::Hardware(_) => perf::PERF_TYPE_HARDWARE,
             Event::Software(_) => perf::PERF_TYPE_SOFTWARE,
@@ -99,7 +102,7 @@ impl Event {
         }
     }
 
-    fn attr_config(self) -> u64 {
+    pub(crate) fn attr_config(self) -> u64 {
         match self {
             Event::Raw(x) => x,
             Event::Hardware(HardwareEvent::Instructions) => perf::PERF_COUNT_HW_INSTRUCTIONS.into(),
@@ -320,6 +323,75 @@ impl PerfCounter {
     /// setting their period to this large value effectively disables overflows
     /// and sampling.
     pub const DISABLE_SAMPLE_PERIOD: u64 = 1 << 60;
+
+    /// Transfer the file without leaving a second owner or a creator mapping.
+    pub(crate) fn into_owned_fd(self) -> OwnedFd {
+        let counter = core::mem::ManuallyDrop::new(self);
+        if let Some(mapping) = counter.mmap {
+            close_mmap(mapping.as_ptr(), counter.raw_syscall);
+        }
+        unsafe { OwnedFd::from_raw_fd(counter.fd) }
+    }
+
+    /// Import only an authenticated, never-enabled event for this thread.
+    /// The caller owns the target/configuration and exclusive-control proof.
+    pub(crate) unsafe fn import_disabled(
+        fd: OwnedFd,
+        expected_id: u64,
+        gate: unsafe fn(i64, [u64; 6]) -> i64,
+    ) -> Result<Self, Errno> {
+        let mut counter = Self {
+            fd: fd.into_raw_fd(),
+            mmap: None,
+            raw_syscall: Some(gate),
+        };
+        let mut id = 0_u64;
+        let result = unsafe {
+            gate(
+                libc::SYS_ioctl,
+                [
+                    counter.fd as u64,
+                    0x8008_2407,
+                    (&raw mut id) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        Errno::from_ret(result as usize)?;
+        if id != expected_id || id == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let address = Errno::from_ret(unsafe {
+            gate(
+                libc::SYS_mmap,
+                [
+                    0,
+                    get_mmap_size() as u64,
+                    libc::PROT_READ as u64,
+                    libc::MAP_SHARED as u64,
+                    counter.fd as u64,
+                    0,
+                ],
+            )
+        } as usize)?;
+        let Some(mapping) = NonNull::new(address as *mut perf::perf_event_mmap_page) else {
+            // A successful address-zero mapping still needs its sole cleanup.
+            unsafe {
+                gate(
+                    libc::SYS_munmap,
+                    [address as u64, get_mmap_size() as u64, 0, 0, 0, 0],
+                );
+            }
+            return Err(Errno::ENOMEM);
+        };
+        counter.mmap = Some(mapping);
+        if counter.ctr_value_paused_once()? != 0 {
+            return Err(Errno::EINVAL);
+        }
+        Ok(counter)
+    }
 
     /// Call the `PERF_EVENT_IOC_ENABLE` ioctl. Enables increments of the
     /// counter and event generation.
