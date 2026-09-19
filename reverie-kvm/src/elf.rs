@@ -39,6 +39,8 @@ use crate::Result;
 use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::PROGRAM_HEADERS_ADDRESS;
 use crate::bootstrap::VDSO_ADDRESS;
+use crate::memory::AllocationCursors;
+use crate::memory::RegionKind;
 use crate::signal::ProcessSignalState;
 use crate::signal::SharedThreadSignalState;
 
@@ -1059,8 +1061,14 @@ pub(crate) fn load_static_elf(
     cwd: &Path,
 ) -> Result<LoadedStaticElf> {
     // TODO-HUMAN-REVIEW(PR-132): Review ELF user-map construction.
-    memory.clear_user_access();
-    load_executable(memory, image, argv, envp, cwd, 0, None)
+    let owner = memory.clone();
+    let _transaction = owner.allocation_guard();
+    begin_image(memory)?;
+    let result = load_executable(memory, image, argv, envp, cwd, 0, None);
+    if result.is_err() {
+        memory.clear_user_access();
+    }
+    result
 }
 
 pub(crate) fn load_static_elf_file(
@@ -1072,8 +1080,17 @@ pub(crate) fn load_static_elf_file(
 ) -> Result<LoadedStaticElf> {
     let image = read_file_image(&file)?;
     let invoked_path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
-    memory.clear_user_access();
-    let mut loaded = load_executable(memory, &image, argv, envp, cwd, 0, Some(Arc::new(file)))?;
+    let owner = memory.clone();
+    let _transaction = owner.allocation_guard();
+    begin_image(memory)?;
+    let result = load_executable(memory, &image, argv, envp, cwd, 0, Some(Arc::new(file)));
+    let mut loaded = match result {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            memory.clear_user_access();
+            return Err(error);
+        }
+    };
     let thread_name = initial_thread_name(&invoked_path);
     loaded.thread_name = thread_name;
     *loaded
@@ -1081,6 +1098,42 @@ pub(crate) fn load_static_elf_file(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = thread_name;
     Ok(loaded)
+}
+
+// Construction is serialized with allocation but does not promise byte
+// rollback. Initial-install errors release tentative ownership. Exec invokes
+// this only after its existing fatal point of no return.
+fn begin_image(memory: &GuestMemory) -> Result<()> {
+    memory.clear_user_access();
+    let end = memory.guest_end().min(BOOT_RESERVED_END);
+    if end > memory.guest_base() {
+        memory
+            .reserve_region(
+                memory.guest_base(),
+                end - memory.guest_base(),
+                RegionKind::Bootstrap,
+            )?
+            .commit();
+    }
+    for (start, end) in [
+        (
+            crate::bootstrap::TOOL_STACK_TOP - crate::bootstrap::TOOL_STACK_SIZE,
+            crate::bootstrap::TOOL_STACK_TOP,
+        ),
+        (
+            crate::bootstrap::THREAD_TOOL_STACK_AREA_START,
+            BOOT_RESERVED_END,
+        ),
+    ] {
+        let start = start.max(memory.guest_base());
+        let end = end.min(memory.guest_end());
+        if start < end {
+            memory
+                .reserve_region(start, end - start, RegionKind::ToolScratch)?
+                .commit();
+        }
+    }
+    Ok(())
 }
 
 fn read_file_image(file: &File) -> std::io::Result<Vec<u8>> {
@@ -1229,10 +1282,24 @@ fn load_executable(
         .find(|header| header.p_type == goblin::elf::program_header::PT_PHDR)
         .and_then(|header| main_bias.checked_add(header.p_vaddr))
         .unwrap_or(PROGRAM_HEADERS_ADDRESS);
+    memory
+        .reserve_region(
+            PROGRAM_HEADERS_ADDRESS,
+            PAGE_SIZE,
+            RegionKind::ProgramHeaders,
+        )?
+        .commit();
     copy_program_headers(memory, image, &elf)?;
     if program_headers_address == PROGRAM_HEADERS_ADDRESS {
         memory.map_user_range(PROGRAM_HEADERS_ADDRESS, PAGE_SIZE, false)?;
     }
+    let stack_start = memory
+        .guest_end()
+        .checked_sub(STACK_LIMIT)
+        .ok_or(Error::LongModeMemoryTooSmall)?;
+    memory
+        .reserve_region(stack_start, STACK_LIMIT, RegionKind::Stack)?
+        .commit();
     let (stack_pointer, auxv) = build_initial_stack(
         memory,
         &elf,
@@ -1280,6 +1347,12 @@ fn load_executable(
     let thread_name = initial_thread_name(&executable_path);
     let argv0 = argv0.as_bytes().to_vec();
 
+    memory.set_allocation_cursors(AllocationCursors {
+        program_break,
+        mmap_base: mmap_next,
+        mmap_next,
+        mmap_limit,
+    });
     Ok(LoadedStaticElf {
         entry_point,
         stack_pointer,
@@ -1573,7 +1646,16 @@ fn load_segments(
             Error::UnsupportedElf("PT_LOAD extends past the ELF image".to_string())
         })?;
 
-        memory.write(segment_start, contents)?;
+        let reserved_start = segment_start & !(PAGE_SIZE - 1);
+        let reserved_end = align_up(segment_end, PAGE_SIZE)?;
+        memory
+            .reserve_region(
+                reserved_start,
+                reserved_end - reserved_start,
+                RegionKind::Elf,
+            )?
+            .commit();
+        memory.write_raw(segment_start, contents)?;
         let zero_start = segment_start + header.p_filesz;
         let zero_len = usize::try_from(header.p_memsz - header.p_filesz)
             .map_err(|_| Error::UnsupportedElf("PT_LOAD memsz is too large".to_string()))?;
@@ -1628,7 +1710,7 @@ fn copy_program_headers(memory: &mut GuestMemory, image: &[u8], elf: &Elf<'_>) -
     let headers = image.get(start..end).ok_or_else(|| {
         Error::UnsupportedElf("program-header table extends past the image".to_string())
     })?;
-    memory.write(PROGRAM_HEADERS_ADDRESS, headers)
+    memory.write_raw(PROGRAM_HEADERS_ADDRESS, headers)
 }
 
 fn build_initial_stack(
@@ -1665,7 +1747,7 @@ fn build_initial_stack(
     cursor = cursor
         .checked_sub(random.len() as u64)
         .ok_or(Error::LongModeMemoryTooSmall)?;
-    memory.write(cursor, &random)?;
+    memory.write_raw(cursor, &random)?;
     let random_address = cursor;
 
     // Build the SysV initial stack image, low to high:
@@ -1713,7 +1795,7 @@ fn build_initial_stack(
     for word in words {
         stack.extend_from_slice(&word.to_le_bytes());
     }
-    memory.write(cursor, &stack)?;
+    memory.write_raw(cursor, &stack)?;
     Ok((cursor, auxv))
 }
 
@@ -1723,8 +1805,8 @@ fn push_c_string(memory: &mut GuestMemory, cursor: u64, bytes: &[u8]) -> Result<
     let start = cursor
         .checked_sub((bytes.len() + 1) as u64)
         .ok_or(Error::LongModeMemoryTooSmall)?;
-    memory.write(start, bytes)?;
-    memory.write(start + bytes.len() as u64, &[0])?;
+    memory.write_raw(start, bytes)?;
+    memory.write_raw(start + bytes.len() as u64, &[0])?;
     Ok(start)
 }
 
@@ -1800,6 +1882,105 @@ mod tests {
             .filter(|(key, _)| *key == 17)
             .map(|&(key, value)| (key, value))
             .collect()
+    }
+
+    #[test]
+    fn loader_reserves_identity_image_and_preserves_overlapping_load_pages() {
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let mut image = test_static_elf(&[0x90, 0xc3]);
+        // A second admitted PT_LOAD covers the same two pages and overwrites
+        // them in the same order. Ownership must count physical pages once.
+        let header = image[64..120].to_vec();
+        image[120..176].copy_from_slice(&header);
+        image[56..58].copy_from_slice(&2_u16.to_le_bytes());
+        image[68..72].copy_from_slice(&7_u32.to_le_bytes());
+        image[124..128].copy_from_slice(&5_u32.to_le_bytes());
+        let loaded = load_static_elf(
+            &mut memory,
+            &image,
+            &["identity", "argument"],
+            &["A=B"],
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(loaded.entry_point, TEST_LOAD_ADDRESS);
+        assert_eq!(loaded.program_break, TEST_LOAD_ADDRESS + 0x2000);
+        assert_eq!(loaded.stack_pointer & 15, 0);
+        assert_eq!(
+            memory.reservation_kind(TEST_LOAD_ADDRESS),
+            Some(RegionKind::Elf)
+        );
+        assert_eq!(
+            memory.reservation_kind(TEST_LOAD_ADDRESS + PAGE_SIZE),
+            Some(RegionKind::Elf)
+        );
+        assert_eq!(
+            memory.reservation_kind(PROGRAM_HEADERS_ADDRESS),
+            Some(RegionKind::ProgramHeaders)
+        );
+        assert_eq!(
+            memory.reservation_kind(memory.guest_end() - PAGE_SIZE),
+            Some(RegionKind::Stack)
+        );
+        assert_eq!(
+            memory.reserved_pages() as u64,
+            BOOT_RESERVED_END / PAGE_SIZE + 2 + STACK_LIMIT / PAGE_SIZE
+        );
+        assert_eq!(
+            memory.allocation_cursors().unwrap().mmap_next,
+            loaded.mmap_next
+        );
+        let mut code = [0; 2];
+        memory.read_raw(TEST_LOAD_ADDRESS, &mut code).unwrap();
+        assert_eq!(code, [0x90, 0xc3]);
+        let mut argc = [0; 8];
+        memory.read_raw(loaded.stack_pointer, &mut argc).unwrap();
+        assert_eq!(u64::from_le_bytes(argc), 2);
+        memory.enable_user_access();
+        // Later overlapping headers replace policy; they do not union it.
+        assert_eq!(
+            memory
+                .user()
+                .user_writable_prefix(TEST_LOAD_ADDRESS, 2)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            memory
+                .user()
+                .user_accessible_prefix(TEST_LOAD_ADDRESS, 2)
+                .unwrap(),
+            2
+        );
+        assert!(memory.user().read(BOOT_RESERVED_END, &mut [0]).is_err());
+        assert!(
+            memory
+                .user()
+                .read(PROGRAM_HEADERS_ADDRESS, &mut [0])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn failed_initial_image_releases_reservations_without_claiming_byte_rollback() {
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let mut image = test_static_elf(&[0x90, 0xc3]);
+        image[24..32].copy_from_slice(&(TEST_LOAD_ADDRESS + 0x4000).to_le_bytes());
+        assert!(
+            load_static_elf(
+                &mut memory,
+                &image,
+                &["bad-entry"],
+                &[],
+                &std::env::current_dir().unwrap()
+            )
+            .is_err()
+        );
+        assert_eq!(memory.reserved_pages(), 0);
+        assert_eq!(memory.allocation_cursors(), None);
+        let mut bytes = [0; 2];
+        memory.read_raw(TEST_LOAD_ADDRESS, &mut bytes).unwrap();
+        assert_eq!(bytes, [0x90, 0xc3]);
     }
 
     #[test]

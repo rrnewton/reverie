@@ -1636,6 +1636,7 @@ impl KvmBackend {
         write_tid_best_effort(&mut self.memory, parent_tid, child_pid);
 
         let mut child = Self::from_process_snapshot(child_snapshot)?;
+        child_executor.bind_address_space(&child.memory);
         // Forked children inherit the parent's thread ownership so execution and
         // `is_backend_owned_syscall`'s futex classification stay consistent.
         child.thread_ownership = self.thread_ownership;
@@ -3162,10 +3163,12 @@ impl KvmBackend {
         };
         if self
             .memory
+            .user()
             .copy_to_user(layout.frame_address, &frame.encode())
             .is_err()
             || self
                 .memory
+                .user()
                 .copy_to_user(layout.xsave_address, xsave.bytes())
                 .is_err()
         {
@@ -3209,18 +3212,23 @@ impl KvmBackend {
             return;
         };
         debug_assert!(self.thread_slot.is_none());
-        let _ = self.memory.put_user_i32(address, 0);
-        if self.memory.user_accessible_prefix(address, 4).ok() != Some(4) {
+        let _ = self.memory.user().put_user_i32(address, 0);
+        if self.memory.user().user_accessible_prefix(address, 4).ok() != Some(4) {
             return;
         }
-        let Some(offset) = address.checked_sub(self.memory.guest_base()) else {
-            return;
-        };
-        let Some(host_address) = self.memory.host_address().checked_add(offset) else {
+        let Ok(operand) = self.memory.user().retain_translated_range(address, 4) else {
             return;
         };
         unsafe {
-            libc::syscall(libc::SYS_futex, host_address, libc::FUTEX_WAKE, 1, 0, 0, 0);
+            libc::syscall(
+                libc::SYS_futex,
+                operand.address(),
+                libc::FUTEX_WAKE,
+                1,
+                0,
+                0,
+                0,
+            );
         }
     }
 
@@ -3243,6 +3251,7 @@ impl KvmBackend {
         let mut frame_bytes = [0; RT_SIGFRAME_SIZE];
         if self
             .memory
+            .user()
             .read(frame_address, &mut frame_bytes[..RT_SIGRETURN_SIZE])
             .is_err()
         {
@@ -3259,7 +3268,7 @@ impl KvmBackend {
             XsaveImage::initialized_kvm()
         } else {
             let mut prefix = [0; LEGACY_FPSTATE_SIZE];
-            if self.memory.read(fpstate, &mut prefix).is_err() {
+            if self.memory.user().read(fpstate, &mut prefix).is_err() {
                 executor.force_signal_exit(libc::SIGSEGV);
                 return Ok(None);
             }
@@ -3284,6 +3293,7 @@ impl KvmBackend {
             if size > LEGACY_FPSTATE_SIZE
                 && self
                     .memory
+                    .user()
                     .read(
                         fpstate + LEGACY_FPSTATE_SIZE as u64,
                         &mut bytes[LEGACY_FPSTATE_SIZE..],
@@ -3767,7 +3777,7 @@ impl Drop for KvmBackend {
 fn write_tid_best_effort(memory: &mut GuestMemory, address: Option<u64>, tid: i32) {
     if let Some(address) = address {
         // Linux creates the child even if a clone TID store faults.
-        let _ = memory.write(address, &tid.to_le_bytes());
+        let _ = memory.user().write(address, &tid.to_le_bytes());
     }
 }
 
@@ -3778,13 +3788,10 @@ pub(crate) fn clear_tid_and_wake(memory: &mut GuestMemory, address: Option<u64>)
     };
     // Linux treats a failed CHILD_CLEARTID store as best-effort and skips the
     // wake when the user address is invalid.
-    if memory.write(address, &0_i32.to_le_bytes()).is_err() {
+    if memory.user().write(address, &0_i32.to_le_bytes()).is_err() {
         return;
     }
-    let Some(offset) = address.checked_sub(memory.guest_base()) else {
-        return;
-    };
-    let Some(host_address) = memory.host_address().checked_add(offset) else {
+    let Ok(operand) = memory.user().retain_translated_range(address, 4) else {
         return;
     };
     // SAFETY: the successful write above validates the complete futex word,
@@ -3792,7 +3799,7 @@ pub(crate) fn clear_tid_and_wake(memory: &mut GuestMemory, address: Option<u64>)
     unsafe {
         libc::syscall(
             libc::SYS_futex,
-            host_address,
+            operand.address(),
             1, // FUTEX_WAKE; the kernel's CHILD_CLEARTID wake is not private.
             1,
             0,
@@ -8168,6 +8175,186 @@ mod tests {
         assert!(cancelled.load(Ordering::Acquire));
         assert!(group.worker_handles.lock().unwrap().is_empty());
     }
+    #[test]
+    fn both_clear_tid_paths_keep_distinct_store_and_queued_wake_contracts() {
+        use std::time::Duration;
+        use std::time::Instant;
+        const PARK: u64 = 0x1000;
+        const WORD: u64 = 0x2000;
+        const PAGE: u64 = 0x1000;
+        fn host_futex(
+            address: usize,
+            operation: i32,
+            value: u32,
+            fourth: usize,
+            second: usize,
+            compare: u32,
+        ) -> i64 {
+            unsafe {
+                libc::syscall(
+                    libc::SYS_futex,
+                    address,
+                    operation,
+                    value,
+                    fourth,
+                    second,
+                    compare,
+                ) as i64
+            }
+        }
+        // This creates a stopped VM only. No guest/vCPU is run by this control.
+        let mut backend = KvmBackend::new(0x1_0000).expect("clear-TID path control requires KVM");
+        let mut executor = ElfExecutor::new(
+            crate::executor::test_loaded_state_for_vm(std::path::Path::new("/")),
+            false,
+        );
+        for registered_worker in [false, true] {
+            for policy in [0, 1, 2] {
+                // writable, readonly, inaccessible
+                backend.memory.clear_user_access();
+                backend
+                    .memory
+                    .map_user_range(PARK, 3 * PAGE, false)
+                    .unwrap();
+                backend
+                    .memory
+                    .write_raw(PARK, &0_i32.to_ne_bytes())
+                    .unwrap();
+                backend
+                    .memory
+                    .write_raw(WORD, &7_i32.to_ne_bytes())
+                    .unwrap();
+                if policy == 1 {
+                    backend
+                        .memory
+                        .map_user_permissions(WORD, PAGE, true, false)
+                        .unwrap();
+                } else if policy == 2 {
+                    backend.memory.unmap_user_range(WORD, PAGE).unwrap();
+                }
+                backend.memory.enable_user_access();
+                let parking = backend
+                    .memory
+                    .user()
+                    .retain_translated_range(PARK, 4)
+                    .unwrap();
+                let word = backend
+                    .memory
+                    .user()
+                    .retain_translated_range(WORD, 4)
+                    .unwrap();
+                let waiting = backend
+                    .memory
+                    .user()
+                    .retain_translated_range(PARK, 4)
+                    .unwrap();
+                let waiter = std::thread::spawn(move || {
+                    let timeout = libc::timespec {
+                        tv_sec: 5,
+                        tv_nsec: 0,
+                    };
+                    host_futex(
+                        waiting.address(),
+                        libc::FUTEX_WAIT,
+                        0,
+                        std::ptr::from_ref(&timeout) as usize,
+                        0,
+                        0,
+                    )
+                });
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    let moved = host_futex(
+                        parking.address(),
+                        libc::FUTEX_CMP_REQUEUE,
+                        0,
+                        1,
+                        word.address(),
+                        0,
+                    );
+                    assert!(moved == 0 || moved == 1);
+                    if moved == 1 {
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "clear-TID waiter was not queued");
+                    std::thread::yield_now();
+                }
+                // Requeue's return of one establishes the actual kernel waiter
+                // on WORD before either production clear function is invoked.
+                if registered_worker {
+                    executor.set_clear_child_tid(Some(WORD));
+                    backend.clear_registered_worker_tid_before_exit(&mut executor);
+                    assert_eq!(executor.take_clear_child_tid(), None);
+                } else {
+                    clear_tid_and_wake(&mut backend.memory, Some(WORD));
+                }
+                let mut bytes = [0; 4];
+                backend.memory.read_raw(WORD, &mut bytes).unwrap();
+                let stored = policy != 2 && (!registered_worker || policy == 0);
+                assert_eq!(i32::from_ne_bytes(bytes), if stored { 0 } else { 7 });
+                if policy == 2 {
+                    // No wake: prove the same waiter is still queued, then
+                    // drain it explicitly so no host worker survives the test.
+                    assert_eq!(
+                        host_futex(
+                            word.address(),
+                            libc::FUTEX_CMP_REQUEUE,
+                            0,
+                            1,
+                            parking.address(),
+                            7
+                        ),
+                        1
+                    );
+                    assert_eq!(
+                        host_futex(parking.address(), libc::FUTEX_WAKE, 1, 0, 0, 0),
+                        1
+                    );
+                }
+                assert_eq!(
+                    waiter.join().unwrap(),
+                    0,
+                    "expected an actual wake, never a timeout"
+                );
+            }
+            // An unaligned word crosses writable and readonly pages. Futex
+            // itself rejects the alignment, but the two full-store contracts
+            // remain distinct; neither may accidentally write only a prefix.
+            backend.memory.clear_user_access();
+            backend.memory.map_user_range(WORD, PAGE, false).unwrap();
+            backend
+                .memory
+                .map_user_permissions(WORD + PAGE, PAGE, true, false)
+                .unwrap();
+            backend.memory.enable_user_access();
+            let address = WORD + PAGE - 2;
+            backend.memory.write_raw(address, &[0xa5; 4]).unwrap();
+            if registered_worker {
+                executor.set_clear_child_tid(Some(address));
+                backend.clear_registered_worker_tid_before_exit(&mut executor);
+                assert_eq!(executor.take_clear_child_tid(), None);
+            } else {
+                clear_tid_and_wake(&mut backend.memory, Some(address));
+            }
+            let mut bytes = [0; 4];
+            backend.memory.read_raw(address, &mut bytes).unwrap();
+            assert_eq!(bytes, if registered_worker { [0xa5; 4] } else { [0; 4] });
+            let unaligned = backend
+                .memory
+                .user()
+                .retain_translated_range(address, 4)
+                .unwrap();
+            assert_eq!(
+                host_futex(unaligned.address(), libc::FUTEX_WAKE, 1, 0, 0, 0),
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EINVAL)
+            );
+        }
+    }
+
     #[test]
     fn clone_tid_stores_and_clear_are_best_effort() {
         const TID_ADDRESS: u64 = 0x100;
