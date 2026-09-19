@@ -291,6 +291,11 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
         }
     }
 
+    fn signal_controlled(&self) -> bool {
+        false
+    }
+    fn finish_parked_delivery(&mut self) {}
+
     fn signal_task_identity(&self) -> Option<reverie::SignalTaskIdentity> {
         None
     }
@@ -705,6 +710,13 @@ where
                 errno: Errno::ENOSYS,
             }
         }
+    }
+
+    fn signal_controlled(&self) -> bool {
+        self.executor.signal_controlled()
+    }
+    fn finish_parked_delivery(&mut self) {
+        self.executor.finish_parked_delivery();
     }
 
     fn signal_task_identity(&self) -> Option<reverie::SignalTaskIdentity> {
@@ -2164,6 +2176,29 @@ async fn finish_tool_process_after_workers<T: Tool>(
 }
 
 impl KvmBackend {
+    async fn finish_signal_boundary<G: GlobalTool>(
+        &mut self,
+        executor: &mut ElfExecutor,
+        global: &G,
+        outcome: reverie::SignalBoundaryOutcome,
+    ) -> Result<()> {
+        let Some(permit) = executor.owned_delivery_permit() else {
+            return Ok(());
+        };
+        // Consuming notification is after the actual frame/register/mask commit,
+        // or on owned terminal/image cleanup. It is never an ordinary posthook
+        // request and never waits for a guest rt_sigreturn.
+        global
+            .on_backend_signal_boundary(reverie::SignalBoundaryReceipt { permit, outcome })
+            .await
+            .map_err(Error::Reverie)?;
+        executor
+            .backend_signal_control()
+            .process
+            .release_delivery(permit)
+            .map_err(|errno| Error::Reverie(errno.into()))
+    }
+
     fn cancelled_tool_thread_status(&self, executor: &mut ElfExecutor) -> ToolProcessExit {
         let exit = if let Some(status) = self.guest_thread_group_exit_status() {
             executor.retire_current_thread(status, true)
@@ -2197,6 +2232,22 @@ impl KvmBackend {
         let (outcome, exec_worker_failure) = match outcome {
             Err(Error::ExecWorkerTeardown(primary)) => (Err(*primary), true),
             outcome => (outcome, false),
+        };
+        let settlement = self
+            .finish_signal_boundary(
+                executor,
+                global_state,
+                match &outcome {
+                    Err(_) => reverie::SignalBoundaryOutcome::Failed,
+                    Ok(exit) if exit.cancelled => reverie::SignalBoundaryOutcome::Cancelled,
+                    Ok(_) => reverie::SignalBoundaryOutcome::Terminated,
+                },
+            )
+            .await;
+        let outcome = match (outcome, settlement) {
+            (Ok(exit), Ok(())) => Ok(exit),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(settlement)) => Err(error.with_cleanup(vec![settlement])),
         };
         let outcome = outcome.map_err(|error| executor.with_signal_effects(error, None));
         let outcome = outcome.map_err(|error| self.report_tool_failure("execution", error));
@@ -2364,6 +2415,9 @@ impl KvmBackend {
         let tool_stack_top = self.tool_stack_top();
         let pid = Pid::from_raw(self.root_pid);
         let global_state = T::GlobalState::init_global_state(&config).await;
+        global_state
+            .install_backend_signal_control(None)
+            .map_err(Error::Reverie)?;
         let tool = Arc::new(T::new(pid, &config));
         let subscriptions = T::subscriptions(&config);
         let mut thread_state = tool.init_thread_state(pid, None);
@@ -2628,10 +2682,31 @@ impl KvmBackend {
         let global_state = Arc::new(T::GlobalState::init_global_state(&config).await);
         let failure = RunFailure::new(&global_state);
         self.tool_failure = Some(FailureContext::new(failure.clone(), pid, pid));
+        let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
+        // Atomic run-level installation precedes Tool/thread construction and
+        // the first handle_thread_start. No capability is inferred from a PID.
+        let mode = match global_state
+            .install_backend_signal_control(Some(executor.backend_signal_control()))
+        {
+            Ok(mode) => mode,
+            Err(error) => {
+                let context = FailureContext::new(failure.clone(), pid, pid);
+                let error =
+                    context.publish("process signal control installation", Error::Reverie(error));
+                self.tool_failure = None;
+                let global_state = Arc::try_unwrap(global_state).map_err(|_| {
+                    Error::UnexpectedVcpuExit("signal setup retained GlobalState".to_owned())
+                })?;
+                return Ok(ToolRunCompletion {
+                    global_state,
+                    result: Err(error),
+                });
+            }
+        };
+        executor.install_signal_control(mode, &failure);
         let tool = Arc::new(T::new(pid, &config));
         let subscriptions = T::subscriptions(&config);
         let thread_state = tool.init_thread_state(pid, None);
-        let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
         let result = self
             .run_static_elf_process_with_tool(
                 &mut executor,
@@ -2646,6 +2721,11 @@ impl KvmBackend {
                 true,
             )
             .await;
+        let result = match (result, executor.take_process_publication_failure()) {
+            (result, None) => result,
+            (Ok(_), Some(publication)) => Err(publication),
+            (Err(error), Some(publication)) => Err(error.with_cleanup(vec![publication])),
+        };
         // All owned children have returned. Do not leave the backend holding
         // a reporter whose Weak owner is about to be consumed or released.
         self.tool_failure = None;
@@ -2761,6 +2841,22 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
+        if fault.is_none() && executor.signal_controlled() && executor.delivery_permit().is_none() {
+            let identity = executor.signal_task_identity().ok_or_else(|| {
+                Error::UnexpectedVcpuExit("signal return lost task generation".to_owned())
+            })?;
+            let permit = global_state
+                .authorize_backend_signal_boundary(identity)
+                .map_err(Error::Reverie)?;
+            if permit.is_none() {
+                return Ok(CallbackOutcome::Completed(None));
+            }
+            if executor.delivery_permit() != permit {
+                return Err(Error::UnexpectedVcpuExit(
+                    "unregistered signal return permit".to_owned(),
+                ));
+            }
+        }
         let selected = if let Some(fault) = fault {
             Ok(Some(fault.pending()))
         } else {
@@ -3133,15 +3229,26 @@ impl KvmBackend {
                         return Ok(self.cancelled_tool_thread_status(executor));
                     }
                 };
-                if !executor.has_pending_exit()
+                let delivered = if !executor.has_pending_exit()
                     && let Some(pending) = pending
                 {
                     self.deliver_selected_signal_before_thread_entry(
                         executor,
                         entry_registers,
                         pending,
-                    )?;
-                }
+                    )?
+                } else {
+                    false
+                };
+                let outcome = if executor.has_pending_exit() {
+                    reverie::SignalBoundaryOutcome::Terminated
+                } else if delivered {
+                    reverie::SignalBoundaryOutcome::Caught
+                } else {
+                    reverie::SignalBoundaryOutcome::NoHandler
+                };
+                self.finish_signal_boundary(executor, global_state.as_ref(), outcome)
+                    .await?;
             }
 
             if let Some((segment, address)) = executor.take_segment() {
@@ -3400,6 +3507,7 @@ impl KvmBackend {
                     // is the register file restored from the guest frame, not an
                     // ordinary scalar return value that a Tool can replace.
                     let mut signal_exit = None;
+                    let mut signal_delivered = false;
                     if let Some(restored) = self.restore_rt_sigreturn(executor, frame_address)? {
                         executor.set_current_user_stack_pointer(restored.rsp);
                         let pending = self
@@ -3444,6 +3552,7 @@ impl KvmBackend {
                             false
                         };
                         signal_exit = signal_exit.or_else(|| executor.take_exit());
+                        signal_delivered = delivered;
                         if !delivered && signal_exit.is_none() {
                             stage_process_syscall_return(
                                 &mut memory,
@@ -3453,6 +3562,15 @@ impl KvmBackend {
                             )?;
                         }
                     }
+                    let outcome = if signal_exit.is_some() || executor.has_pending_exit() {
+                        reverie::SignalBoundaryOutcome::Terminated
+                    } else if signal_delivered {
+                        reverie::SignalBoundaryOutcome::Caught
+                    } else {
+                        reverie::SignalBoundaryOutcome::NoHandler
+                    };
+                    self.finish_signal_boundary(executor, global_state.as_ref(), outcome)
+                        .await?;
                     signal_exit = signal_exit.or_else(|| executor.take_exit());
                     if let Some(exit) = signal_exit {
                         self.discard_process_clear_tid_at_signal_return(executor);
@@ -3617,6 +3735,12 @@ impl KvmBackend {
                                         "fatal parked selection did not terminate".to_owned(),
                                     )
                                 })?;
+                                self.finish_signal_boundary(
+                                    executor,
+                                    global_state.as_ref(),
+                                    reverie::SignalBoundaryOutcome::Terminated,
+                                )
+                                .await?;
                                 executor.finish_parked_delivery();
                                 if exit.group {
                                     self.request_guest_thread_group_exit(exit.status);
@@ -3734,6 +3858,14 @@ impl KvmBackend {
                     self.start_pending_tool_children(executor, &pending_child_starts)?;
                 }
                 if replaced_image {
+                    self.finish_signal_boundary(
+                        executor,
+                        global_state.as_ref(),
+                        reverie::SignalBoundaryOutcome::ImageReplaced,
+                    )
+                    .await?;
+                }
+                if replaced_image {
                     auxv = executor.auxv().to_vec();
                     let post_exec_outcome = run_post_exec_handler(
                         self,
@@ -3763,6 +3895,7 @@ impl KvmBackend {
                 if let Some((segment, address)) = executor.take_segment() {
                     set_user_segment_base(&self.vcpu, segment, address)?;
                 }
+                let mut signal_boundary_outcome = reverie::SignalBoundaryOutcome::NoHandler;
                 if !replaced_image && pending_exit.is_none() {
                     let pending = if let Some(prepared) = executor
                         .take_prepared_signal()
@@ -3818,6 +3951,13 @@ impl KvmBackend {
                         )?;
                     }
                     pending_exit = pending_exit.or_else(|| executor.take_exit());
+                    signal_boundary_outcome = if pending_exit.is_some() {
+                        reverie::SignalBoundaryOutcome::Terminated
+                    } else if delivered {
+                        reverie::SignalBoundaryOutcome::Caught
+                    } else {
+                        reverie::SignalBoundaryOutcome::NoHandler
+                    };
                     if restart_requested && !delivered && pending_exit.is_none() {
                         // Suppression, an ignored replacement, or a replacement
                         // newly blocked by its signal number means no handler ran;
@@ -3831,6 +3971,15 @@ impl KvmBackend {
                         )?;
                     }
                 }
+                if pending_exit.is_some() {
+                    signal_boundary_outcome = reverie::SignalBoundaryOutcome::Terminated;
+                }
+                self.finish_signal_boundary(
+                    executor,
+                    global_state.as_ref(),
+                    signal_boundary_outcome,
+                )
+                .await?;
                 executor.finish_parked_delivery();
                 pending_exit = pending_exit.or_else(|| executor.take_exit());
                 if let Some(exit) = pending_exit {

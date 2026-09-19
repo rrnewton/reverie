@@ -34,7 +34,7 @@ impl StaticElfSyscallExecutor<'_> {
             )
             && !*self.process_completed
             && !self.executor.has_prepared_signal()
-            && self.executor.sole_signal_receiver())
+            && (self.executor.signal_controlled() || self.executor.sole_signal_receiver()))
         .then_some(self.callback_site)
         .flatten()
     }
@@ -202,7 +202,21 @@ impl<T: Tool> KvmGuest<'_, T> {
         self.executor.set_signal_guard(previous);
         self.observation_lease = None;
         match result {
-            Ok(observation) => Ok(observation),
+            Ok(observation) => {
+                if self.executor.signal_controlled()
+                    && matches!(
+                        observation.stop,
+                        reverie::SignalObservationStop::NoEligibleSignal
+                    )
+                {
+                    // Every removal was acknowledged and there is no prepared
+                    // frame. End this observation's effect ownership before
+                    // reenrolling the original wait; a long ignored interval
+                    // must not accumulate one ledger across all expirations.
+                    self.executor.finish_parked_delivery();
+                }
+                Ok(observation)
+            }
             Err(error) => {
                 // Dropping the outer future cannot erase acknowledged removals.
                 let error = self.executor.with_signal_effects(error, None);

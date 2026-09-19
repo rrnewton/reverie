@@ -132,6 +132,34 @@ pub trait GlobalTool: Send + Sync + Default {
         Default::default()
     }
 
+    /// Install one run-scoped backend capability before the first guest hook.
+    /// The default preserves backend-owned selection. A Tool that requires
+    /// controlled process signals must reject missing capabilities here.
+    fn install_backend_signal_control(
+        &self,
+        _control: Option<crate::BackendSignalControl>,
+    ) -> Result<crate::BackendSignalControlMode, Error> {
+        Ok(crate::BackendSignalControlMode::Unchanged)
+    }
+
+    /// Authorize the current real user-return boundary. The backend calls
+    /// this outside signal locks; host callback arrival is not authorization.
+    fn authorize_backend_signal_boundary(
+        &self,
+        _task: crate::SignalTaskIdentity,
+    ) -> Result<Option<crate::SignalDeliveryPermit>, Error> {
+        Ok(None)
+    }
+
+    /// Consume a real signal boundary before user entry. This hook must retain
+    /// ownership across cancellation; it is not an ordinary grant or syscall.
+    async fn on_backend_signal_boundary(
+        &self,
+        _receipt: crate::SignalBoundaryReceipt,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// Receive a (potentially) inter-process upcall on the global state object.
     /// This intended to be IPC, inter-process communication, in some backends,
     /// and a local method call in others, but never truly a communication

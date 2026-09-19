@@ -57,6 +57,7 @@ mod error;
 mod guest;
 #[cfg(target_arch = "x86_64")]
 pub mod pmu;
+mod process_signal_control;
 #[cfg(target_arch = "x86_64")]
 mod rdtsc;
 mod regs;
@@ -121,3 +122,6 @@ pub use reverie_syscalls as syscalls;
 
 /// `Never` type is a stopgap for the unstable `!` type (i.e., the never type).
 pub type Never = never_say_never::Never;
+
+// Run-owned process signal control; no borrowed Guest is retained.
+pub use process_signal_control::*;
