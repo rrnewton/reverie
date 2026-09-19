@@ -1,5 +1,13 @@
 target/
-Cargo.lock
+
+# Buck2 output and Reindeer-generated dependency sources. These must stay at
+# the repository root: Reindeer reads ignore files through the shim cell and a
+# shim-local vendor ignore would make generated crates empty.
+buck-out/
+/ignored/
+/shim/third-party/rust/.cargo/
+/shim/third-party/rust/BUCK
+/shim/third-party/rust/vendor/
 
 # Local backup and Python cache files.
 *.orig

@@ -50,7 +50,7 @@ struct Args {
     plugin: Option<PathBuf>,
 
     /// The program and arguments.
-    #[clap(required = true, multiple_values = true)]
+    #[clap(required = true, num_args = 1..)]
     command: Vec<String>,
 }
 

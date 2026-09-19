@@ -9,14 +9,17 @@
 use std::io;
 use std::io::Write;
 
-use bincode::Options;
 use serde::Deserialize;
 use serde::Serialize;
 
-fn bincode_options() -> impl bincode::Options {
-    // NOTE: Both the server and client must agree on these bincode options.
-    // Otherwise, we'll get deserialization errors.
-    bincode::DefaultOptions::new().with_limit(16 * (1 << 20) /* 16MB */)
+/// Maximum accepted frame size (16 MiB).
+const MAX_FRAME_LEN: usize = 16 * (1 << 20);
+
+// NOTE: Both the server and client must agree on this configuration. Otherwise,
+// we'll get deserialization errors. `standard` retains bincode 1's variable-
+// length integer encoding while moving this workspace onto bincode 2.
+fn bincode_config() -> impl bincode::config::Config {
+    bincode::config::standard().with_limit::<MAX_FRAME_LEN>()
 }
 
 pub fn encode<T>(item: &T, buf: &mut Vec<u8>) -> io::Result<()>
@@ -47,8 +50,8 @@ where
     T: Serialize + ?Sized,
     W: Write,
 {
-    bincode_options()
-        .serialize_into(writer, item)
+    bincode::serde::encode_into_std_write(item, &mut { writer }, bincode_config())
+        .map(|_written| ())
         .map_err(|e| io::Error::other(format!("failed to encode frame: {}", e)))
 }
 
@@ -57,9 +60,15 @@ pub fn decode_frame<'a, T>(frame: &'a [u8]) -> io::Result<T>
 where
     T: Deserialize<'a>,
 {
-    bincode_options()
-        .deserialize(frame)
-        .map_err(|e| io::Error::other(format!("failed to decode frame: {}", e)))
+    let (value, consumed) = bincode::serde::borrow_decode_from_slice(frame, bincode_config())
+        .map_err(|e| io::Error::other(format!("failed to decode frame: {}", e)))?;
+    if consumed != frame.len() {
+        return Err(io::Error::other(format!(
+            "failed to decode frame: consumed {consumed} of {} bytes",
+            frame.len()
+        )));
+    }
+    Ok(value)
 }
 
 pub fn decode_from<'a, T, R>(mut reader: R, buf: &'a mut Vec<u8>) -> io::Result<T>
@@ -77,4 +86,27 @@ where
     reader.read_exact(buf)?;
 
     decode_frame(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_round_trip_preserves_length_prefix_and_varint_encoding() {
+        let mut frame = Vec::new();
+        encode(&300_u16, &mut frame).unwrap();
+
+        assert_eq!(frame, [0, 0, 0, 3, 251, 44, 1]);
+        assert_eq!(decode_frame::<u16>(&frame[4..]).unwrap(), 300);
+    }
+
+    #[test]
+    fn decode_rejects_trailing_bytes_like_bincode_one() {
+        let err = decode_frame::<u8>(&[42, 99]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "failed to decode frame: consumed 1 of 2 bytes"
+        );
+    }
 }

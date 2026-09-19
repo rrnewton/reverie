@@ -11,6 +11,6 @@ license = "BSD-2-Clause"
 
 [dependencies]
 async-trait = "0.1.71"
-bincode = "1.3.3"
+bincode = { version = "2", features = ["serde"] }
 reverie-rpc-macros = { version = "0.2.0", path = "../reverie-rpc-macros" }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
