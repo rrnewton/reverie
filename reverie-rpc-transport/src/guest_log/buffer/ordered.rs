@@ -248,9 +248,15 @@ impl Buffer {
     /// }
     /// ```
     pub unsafe fn receive(fd: i32) -> io::Result<Arc<Self>> {
-        Ok(Arc::new(Self {
+        unsafe { Self::receive_unshared(fd) }.map(Arc::new)
+    }
+
+    /// Import under the same contract without creating process-local sharing.
+    /// The setup message is still consumed once; the endpoint remains borrowed.
+    pub(crate) unsafe fn receive_unshared(fd: i32) -> io::Result<Self> {
+        Ok(Self {
             mapping: unsafe { SharedBuffer::receive_version(fd, true)? },
-        }))
+        })
     }
 
     pub fn admission(&self, role: Role) -> Admission {
