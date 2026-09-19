@@ -242,25 +242,110 @@ async fn drive_signal_cleanup<T>(
     handler_signal: SharedHandlerSignal,
     pending_children: SharedChildStarts,
     failure: impl Future<Output = ()>,
-) -> HandlerOutcome<T> {
-    let mut cleanup = pin!(drive_handler(
+) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>> {
+    // Cancellation is selected by the owning driver, so it still catches
+    // destruction of the actual callback allocation before returning. Dropping
+    // a pending nested driver would bypass that completion protocol.
+    drive_handler_completion_inner(
         future,
         handler_signal,
         pending_children,
-        std::future::pending(),
-    ));
-    let mut failure = pin!(failure);
-    poll_fn(|cx| {
-        if let Poll::Ready(result) = cleanup.as_mut().poll(cx) {
-            return Poll::Ready(result);
-        }
-        if failure.as_mut().poll(cx).is_ready() {
-            Poll::Ready(HandlerOutcome::RunFailed)
-        } else {
-            Poll::Pending
-        }
-    })
+        failure,
+        None,
+        HandlerFailureOrder::AfterReadyCleanup,
+    )
     .await
+}
+
+/// Signal-dequeue notifications cannot create a child: the guest is under
+/// `SignalGuard::DequeueNotification`, and `signal_injection_allowed` rejects
+/// every injected syscall before `complete_injection` can publish a fork or
+/// thread start. The lifecycle process context independently rejects fork and
+/// clone actions before they can spawn. Keep that production invariant
+/// explicit. Detect and recover it here without joining: `CancelAfterFailure`
+/// is a terminal command, so the finalized parent error must be published
+/// before any child receives it.
+fn signal_cleanup_child_start_violation(
+    pending_children: &SharedChildStarts,
+) -> Option<Error> {
+    let poisoned = pending_children.is_poisoned();
+    let has_children = !pending_children
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_empty();
+    if poisoned {
+        // The completion driver already caught the panic that poisoned this
+        // lock. Recovery must not replace or obscure that owned payload.
+        pending_children.clear_poison();
+    }
+    if !has_children && !poisoned {
+        return None;
+    }
+    Some(Error::UnexpectedVcpuExit(
+        match (has_children, poisoned) {
+            (true, true) => {
+                "signal dequeue notification created a child start and poisoned its child-start state"
+            }
+            (true, false) => {
+                "signal dequeue notification created a child start despite its injection guard"
+            }
+            (false, true) => "signal dequeue notification poisoned its child-start state",
+            (false, false) => unreachable!(),
+        }
+        .to_owned(),
+    ))
+}
+
+fn finish_signal_cleanup<T>(
+    backend: &mut KvmBackend,
+    executor: &mut ElfExecutor,
+    completion: crate::failure::owned_future::CaughtFuture<HandlerOutcome<Result<T>>>,
+    pending_children: &SharedChildStarts,
+    raw: Option<i64>,
+) -> Result<()> {
+    let violation = signal_cleanup_child_start_violation(pending_children);
+    let outcome = backend.finish_handler_completion(
+        completion,
+        Ok(()),
+        std::convert::identity,
+    );
+    let result = match outcome {
+        Err(error) => Err(error),
+        Ok(HandlerOutcome::Returned(result)) => result.map(|_| ()),
+        Ok(HandlerOutcome::RuntimeError(error)) => Err(error),
+        Ok(HandlerOutcome::ParkedCancelled(_)) | Ok(HandlerOutcome::RunFailed) => {
+            Err(Error::RunAborted)
+        }
+        Ok(_) => Err(Error::UnexpectedVcpuExit(
+            "nonlocal operation during dequeue acknowledgment".to_owned(),
+        )),
+    };
+    let Some(violation) = violation else {
+        return result.map_err(|error| executor.with_signal_effects(error, raw));
+    };
+
+    // A real selected error or panic remains primary. A derived RunAborted
+    // cannot publish a terminal transition, so promote the invariant failure
+    // ahead of it. Attach the signal ledger/raw errno exactly once and before
+    // publication.
+    let error = match result {
+        Ok(()) => violation,
+        Err(error) if matches!(error.primary(), Error::RunAborted) => {
+            violation.with_cleanup(vec![error])
+        }
+        Err(error) => error.with_cleanup(vec![violation]),
+    };
+    let error = executor.with_signal_effects(error, raw);
+    let error = backend.report_tool_failure("Tool callback", error);
+    let error = match backend
+        .settle_unstarted_tool_children_after_failure(executor, pending_children)
+    {
+        Ok(()) => error,
+        Err(cleanup) => error.with_cleanup(vec![
+            cleanup.cleanup("signal-cleanup child retirement failed")
+        ]),
+    };
+    Err(error)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -292,6 +377,7 @@ where
     let failure = backend.failure_subscription(executor.is_traced_tree_root());
     let handler_signal = Arc::new(Mutex::new(None));
     let pending_children = Arc::new(Mutex::new(Vec::new()));
+    let pending_children_after_cleanup = pending_children.clone();
     let mut process_completed = false;
     let tool_stack_top = backend.tool_stack_top();
     let continuation_site = executor
@@ -337,19 +423,13 @@ where
         )
         .await
     };
-    match outcome {
-        HandlerOutcome::Returned(result) => result.map(|_| ()),
-        HandlerOutcome::RuntimeError(error) => Err(error),
-        HandlerOutcome::ParkedCancelled(_) | HandlerOutcome::RunFailed => {
-            Err(executor.with_signal_effects(Error::RunAborted, raw))
-        }
-        _ => Err(executor.with_signal_effects(
-            Error::UnexpectedVcpuExit(
-                "nonlocal operation during dequeue acknowledgment".to_owned(),
-            ),
-            raw,
-        )),
-    }
+    finish_signal_cleanup(
+        backend,
+        executor,
+        outcome,
+        &pending_children_after_cleanup,
+        raw,
+    )
 }
 
 #[cfg(test)]
@@ -382,13 +462,11 @@ mod signal_cleanup_tests {
         assert!(cleanup.as_mut().poll(&mut cx).is_pending());
         assert!(polled.load(Ordering::Acquire));
         context.publish("lost dequeue owner", Error::GuestWorkerPanic);
-        assert!(
-            matches!(
-                cleanup.as_mut().poll(&mut cx),
-                Poll::Ready(HandlerOutcome::RunFailed)
-            ),
-            "a published lost owner must terminate consuming cleanup, not leave it parked"
-        );
+        let Poll::Ready(completion) = cleanup.as_mut().poll(&mut cx) else {
+            panic!("a published lost owner must terminate consuming cleanup, not leave it parked");
+        };
+        assert!(matches!(completion.output, Some(HandlerOutcome::RunFailed)));
+        assert!(completion.panics.is_empty());
         assert!(matches!(
             run.primary().unwrap().primary(),
             Error::GuestWorkerPanic
@@ -405,8 +483,18 @@ mod signal_cleanup_tests {
                 Arc::new(Mutex::new(Vec::new())),
                 std::future::ready(()),
             ));
-            match outcome {
-                HandlerOutcome::Returned(result) => assert_eq!(result.is_err(), was_error),
+            assert!(outcome.panics.is_empty());
+            match outcome.output {
+                Some(HandlerOutcome::Returned(result)) => {
+                    assert_eq!(result.is_err(), was_error);
+                    if was_error {
+                        assert!(
+                            matches!(result, Err(Error::Reverie(reverie::Error::Errno(errno))) if errno == Errno::EFAULT)
+                        );
+                    } else {
+                        assert!(matches!(result, Ok(())));
+                    }
+                }
                 _ => panic!("already-ready cleanup/result was discarded"),
             }
         }
