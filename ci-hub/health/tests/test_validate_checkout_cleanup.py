@@ -526,6 +526,109 @@ def test_retirement_could_not_determine_fails_with_structured_outcome(
     assert json.loads(progress.read_text()) == rendered
 
 
+def test_retirement_phase_remains_running_until_terminal_result(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    report = {
+        "removed": [],
+        "removed_cargo_homes": [],
+        "retained": [],
+        "deferred": [],
+        "bookkeeping_errors": [],
+    }
+    observed_progress: dict = {}
+
+    class SimulatedWorkerCrash(BaseException):
+        pass
+
+    def crash_during_retirement(
+        state_root: Path, **_kwargs: object
+    ) -> tuple[int, dict]:
+        _latest, progress, _log = cleanup.state_paths(state_root)
+        observed_progress.update(json.loads(progress.read_text()))
+        raise SimulatedWorkerCrash
+
+    with (
+        mock.patch.object(
+            cleanup.start_unit, "sweep_completed_checkouts", return_value=report
+        ),
+        mock.patch.object(
+            cleanup, "run_retirement_batch", side_effect=crash_during_retirement
+        ),
+    ):
+        try:
+            cleanup.drain(tmp_path, as_json=True)
+        except SimulatedWorkerCrash:
+            pass
+        else:
+            raise AssertionError("simulated retirement crash did not escape")
+
+    latest, progress, _log = cleanup.state_paths(tmp_path)
+    assert not latest.exists()
+    assert json.loads(progress.read_text()) == observed_progress
+    assert observed_progress["status"] == "running"
+    assert observed_progress["state"] == "running"
+    assert observed_progress["phase"] == "retirement"
+    assert observed_progress["validation_state"] == "ok"
+
+    operational_tool = tmp_path / "operational-tool"
+    operational_tool.write_text("#!/bin/sh\nexit 0\n")
+    operational_tool.chmod(0o755)
+    monkeypatch.setenv("DEV_HERMIT_OPERATIONAL_TOOL", str(operational_tool))  # type: ignore[attr-defined]
+    monkeypatch.setenv("DEV_HERMIT_TOOL_PARENT_SHA", "c" * 40)  # type: ignore[attr-defined]
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "systemctl":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "LoadState=loaded\nActiveState=failed\nSubState=failed\nMainPID=0\n",
+                "",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        code = cleanup.controller(tmp_path, as_json=True, run=run)
+
+    assert code == 1
+    rendered = json.loads(output.getvalue())
+    assert rendered["state"] == "failed"
+    assert "prior cleanup worker ended without a terminal result" in rendered["summary"]
+
+
+def test_retirement_exit_status_must_match_structured_recovery(tmp_path: Path) -> None:
+    indeterminate = {
+        "machine": "testhost",
+        "slot": "slot-f",
+        "generation": 4,
+        "sha256": "f" * 64,
+        "outcome": "could-not-determine",
+        "reason": "partial state update",
+        "recovery_required": True,
+    }
+    cases = [
+        (0, provider_report(could_not_determine=[indeterminate])),
+        (3, provider_report()),
+    ]
+    for provider_returncode, provider in cases:
+
+        def run(
+            command: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                command, provider_returncode, json.dumps(provider), ""
+            )
+
+        code, rendered = cleanup.run_retirement_batch(tmp_path, run=run)
+
+        assert code == cleanup.start_unit.EXIT_COULD_NOT_DETERMINE
+        assert rendered["state"] == "could-not-determine"
+        assert rendered["recovery_required"] is True
+        assert rendered["provider_returncode"] == provider_returncode
+        assert "exit status disagrees" in rendered["could_not_determine"][0]["reason"]
+
+
 def test_malformed_retirement_result_is_could_not_determine(tmp_path: Path) -> None:
     malformed = retirement_report(
         removed=[

@@ -449,12 +449,12 @@ def drain(
             )
         progress = {
             "schema": RESULT_SCHEMA,
-            "status": (
-                "running"
-                if not terminal
-                else "completed" if result_state == "ok" else "failed"
-            ),
-            "state": result_state if terminal else "running",
+            # Validation reaching a terminal state is not the terminal boundary
+            # for this combined worker. Keep the durable run marker live until
+            # the serial retirement phase also returns so a kill in that window
+            # is detected and reported by the controller.
+            "status": "running",
+            "state": "running",
             "run_id": run_id,
             "started_at": started_at,
             "updated_at": now(),
@@ -463,12 +463,16 @@ def drain(
             "removed_cargo_homes": removed_cargo_homes,
             "last": output,
         }
+        if terminal:
+            progress["phase"] = "retirement"
+            progress["validation_state"] = result_state
         atomic_write_json(progress_path, progress)
         if terminal:
             stopped_without_progress = bool(deferred) and stalled_sweeps >= 3
             result = {
                 **progress,
-                "completed_at": now(),
+                "status": "completed" if result_state == "ok" else "failed",
+                "state": result_state,
                 "summary": (
                     f"processed {sweep} bounded sweep(s); removed {len(removed)} "
                     f"checkout(s) and {len(removed_cargo_homes)} Cargo home(s); "
@@ -480,7 +484,8 @@ def drain(
                 ),
             }
             retirement_code, retirement = run_retirement_batch(state_root, run=run)
-            result["validation_state"] = result_state
+            result["completed_at"] = now()
+            result["updated_at"] = result["completed_at"]
             result["retirement"] = retirement
             result["retirement_removed"] = len(retirement["removed"])
             result["retirement_retained"] = len(retirement["retained"])
