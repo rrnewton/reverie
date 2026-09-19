@@ -38,6 +38,18 @@ pub struct LifecycleSnapshot {
     pub rpc_issues: u64,
 }
 impl LifecycleSnapshot {
+    pub(super) fn integrity_ready(self) -> bool {
+        self.version_valid
+            && self.started
+            && self.finished
+            && self.closed
+            && self.entrants == 0
+            && self.late_writes == 0
+            && !self.faulted
+            && self.disposition == 1
+            && self.rpc_issues == 0
+    }
+
     pub(super) fn qualifies(self) -> bool {
         self.version_valid
             && self.started

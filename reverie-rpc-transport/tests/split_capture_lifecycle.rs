@@ -245,3 +245,25 @@ fn split_implicit_held_output_disposal_and_factory_panic_keep_ownership() {
     std::fs::remove_file(marker).unwrap();
     lifecycle("factory-drop-panic");
 }
+
+#[test]
+fn split_integrity_preserves_nonzero_status_and_independent_real_faults() {
+    for mode in [
+        "complete-guest7",
+        "flush-eio",
+        "flush-eio-guest7",
+        "output-ceiling",
+        "output-ceiling-guest7",
+        "rpc-panic-guest7",
+        "rpc-drop-panic-guest7",
+        "rpc-truncated-header-guest7",
+        "missing-finish-guest7",
+        "held-publication-guest7",
+        "decode-error",
+        "decode-error-guest7",
+        "held-endpoint",
+        "held-endpoint-guest7",
+    ] {
+        lifecycle(mode);
+    }
+}

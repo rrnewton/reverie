@@ -284,3 +284,196 @@ fn split_wire_facts_refuse_missing_unknown_oversized_and_trailing_claims() {
     // a successful inner decoder alone is not full result acceptance.
     assert_ne!(used, trailing.len());
 }
+
+#[test]
+fn terminal_status_preserves_actual_realtime_deaths_and_refuses_nonterminal_bits() {
+    use std::os::unix::process::ExitStatusExt;
+    for signal in [libc::SIGRTMIN(), libc::SIGRTMAX()] {
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("kill -{signal} $$")])
+            .status()
+            .unwrap();
+        assert_eq!(status.signal(), Some(signal));
+        assert_eq!(terminal_guest_status(status.into_raw()), Some(status));
+    }
+    for code in [0, 7, 255] {
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("exit {code}")])
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(code));
+        assert_eq!(terminal_guest_status(status.into_raw()), Some(status));
+    }
+    for raw in [
+        -1,
+        0xffff,
+        (libc::SIGSTOP << 8) | 0x7f,
+        0x10000,
+        0x80,
+        libc::SIGRTMAX() + 1,
+        (7 << 8) | libc::SIGTERM,
+    ] {
+        assert_eq!(terminal_guest_status(raw), None, "raw={raw:#x}");
+    }
+}
+
+#[test]
+fn real_publication_eio_is_sticky_in_both_first_failure_orders() {
+    use std::os::fd::AsRawFd;
+    use std::sync::Condvar;
+    struct Eio {
+        gate: Arc<(Mutex<(bool, bool)>, Condvar)>,
+    }
+    impl Write for Eio {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            let (lock, changed) = &*self.gate;
+            let mut state = lock.lock().unwrap();
+            state.0 = true;
+            changed.notify_all();
+            while !state.1 {
+                state = changed.wait(state).unwrap();
+            }
+            Err(io::Error::from_raw_os_error(libc::EIO))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl CaptureDestination for Eio {
+        fn progress(&self) -> DestinationProgress {
+            DestinationProgress::default()
+        }
+    }
+    for policy_first in [true, false] {
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let options = CaptureOptions {
+            limits: CaptureLimits {
+                producers: 2,
+                slots_per_producer: 8,
+                max_record_bytes: 64,
+                host_pending_bytes: 256,
+                guest_pending_bytes: 256,
+                pending_records: 8,
+                diagnostic_bytes: 128,
+            },
+            timeouts: CaptureTimeouts {
+                startup: Duration::from_secs(2),
+                blocked_publication: Duration::from_secs(2),
+                final_drain: Duration::from_secs(2),
+            },
+        };
+        let (mut owner, mut sink, host) =
+            unsafe { prepared_capture(options, Eio { gate: gate.clone() }) }.unwrap();
+        let endpoint = sink.take_prepared_endpoint().unwrap().unwrap();
+        let buffer = unsafe { ordered::Buffer::receive(endpoint.as_raw_fd()) }.unwrap();
+        let mut guest = unsafe { buffer.activate(1, i64::from(std::process::id())) }.unwrap();
+        guest.finish(|_, _| Ok(())).unwrap();
+        drop((guest, buffer, endpoint));
+        host.write_record(b"actual publication EIO").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !gate.0.lock().unwrap().0 {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        if policy_first {
+            owner.shared.record_guest_outcome_policy_failure();
+        }
+        {
+            let mut state = gate.0.lock().unwrap();
+            state.1 = true;
+            gate.1.notify_all();
+        }
+        while owner.shared.publication.snapshot().error.is_none()
+            || owner.shared.integrity_faults.load(Ordering::Acquire) == 0
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        if !policy_first {
+            owner.shared.record_guest_outcome_policy_failure();
+        }
+        let report = owner.finish_until(deadline);
+        assert_eq!(
+            report.publication.error.as_deref(),
+            Some("destination write failed")
+        );
+        assert_eq!(
+            report.error.as_deref(),
+            Some(if policy_first {
+                "split coordinator facts/teardown do not qualify"
+            } else {
+                "canonical destination publication failed"
+            })
+        );
+        let faults = IntegrityFaultSet(owner.shared.integrity_faults.load(Ordering::Acquire));
+        assert!(faults.contains(IntegrityFault::Publication));
+        assert!(faults.contains(IntegrityFault::SharedFailure));
+        assert!(!report.qualifies());
+        assert_eq!(*owner.shared.collector_join.lock().unwrap(), Some(true));
+        assert_eq!(owner.shared.publication.joined(), Some(true));
+    }
+}
+
+#[test]
+fn decoded_envelope_binds_actual_wait_to_authoritative_lifecycle() {
+    use std::os::unix::process::ExitStatusExt;
+    for command in [
+        "exit 0".to_string(),
+        "exit 7".to_string(),
+        format!("kill -{} $$", libc::SIGRTMIN()),
+    ] {
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", &command])
+            .status()
+            .unwrap();
+        let life = Lifecycle::new().unwrap();
+        assert!(life.start());
+        life.facts(1, status.success(), 0);
+        life.close();
+        life.finish();
+        assert!(life.snapshot().integrity_ready());
+        let envelope = SplitChildResult {
+            value: Some(37u8),
+            facts: CoordinatorFacts {
+                disposition: CoordinatorDisposition::Completed,
+                guest_wait_status: status.into_raw(),
+                rpc_issues: vec![],
+            },
+            finalizer: None,
+        };
+        let bytes = bincode::serde::encode_to_vec(&envelope, bincode::config::legacy()).unwrap();
+        let (decoded, used): (SplitChildResult<u8>, _) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy()).unwrap();
+        assert_eq!(used, bytes.len());
+        let facts = decoded.facts.clone();
+        assert_eq!(
+            facts.bound_terminal_status(Some(life.snapshot())),
+            Some(status)
+        );
+        assert_eq!(facts.bound_terminal_status(None), None);
+        let mut opposite = facts.clone();
+        opposite.guest_wait_status = if status.success() {
+            ExitStatus::Exited(7).into_raw()
+        } else {
+            0
+        };
+        assert_eq!(opposite.bound_terminal_status(Some(life.snapshot())), None);
+        opposite = facts.clone();
+        opposite.disposition = CoordinatorDisposition::CaughtPanic;
+        assert_eq!(opposite.bound_terminal_status(Some(life.snapshot())), None);
+        opposite = facts.clone();
+        opposite.rpc_issues.push(SplitRpcIssue {
+            connection: 1,
+            failure: SplitRpcFailure::Transport,
+        });
+        assert_eq!(opposite.bound_terminal_status(Some(life.snapshot())), None);
+        opposite = facts;
+        opposite.guest_wait_status = (libc::SIGSTOP << 8) | 0x7f;
+        assert_eq!(opposite.bound_terminal_status(Some(life.snapshot())), None);
+        // A real late emitter entry faults the authoritative lifecycle even
+        // though its previous serialized disposition/status/count still agree.
+        assert!(!life.enter());
+        assert!(!life.snapshot().integrity_ready());
+        assert!(life.snapshot().faulted);
+    }
+}

@@ -86,6 +86,12 @@ pub struct Issue {
     pub message: String,
 }
 
+#[derive(Clone, Copy)]
+enum IssueOrigin {
+    Integrity,
+    GuestOutcomePolicy,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Phase {
     NotStarted,
@@ -329,11 +335,31 @@ impl LogHandle {
         self.0.state.lock().unwrap().stop_at.is_some()
     }
     pub fn issue(&self, kind: IssueKind, message: impl ToString) {
+        self.issue_with_origin(kind, message, IssueOrigin::Integrity);
+    }
+    fn issue_with_origin(&self, kind: IssueKind, message: impl ToString, origin: IssueOrigin) {
+        // Latch before conversion, deduplication or bounded diagnostic omission.
+        if let Some(capture) = self.0.capture.get() {
+            if matches!(origin, IssueOrigin::Integrity) {
+                capture.latch_integrity_fault(match kind {
+                    IssueKind::Startup | IssueKind::Child => IntegrityFault::OwnedChild,
+                    IssueKind::Cancelled | IssueKind::Interrupted | IssueKind::Cutoff => {
+                        IntegrityFault::CancellationOrDeadline
+                    }
+                    IssueKind::Protocol => IntegrityFault::Collector,
+                    IssueKind::Producer => IntegrityFault::Lifecycle,
+                    IssueKind::Rpc => IntegrityFault::Rpc,
+                    IssueKind::Publication | IssueKind::Truncated => IntegrityFault::Publication,
+                    IssueKind::Cleanup => IntegrityFault::Teardown,
+                });
+            }
+        }
         let mut state = self.0.state.lock().unwrap();
         {
             let mut message = message.to_string();
             if let Some(capture) = self.0.capture.get() {
                 if state.report.issues.len() >= 32 {
+                    capture.latch_integrity_fault(IntegrityFault::MissingEvidence);
                     let _ = capture.omitted_issues.try_update(
                         Ordering::AcqRel,
                         Ordering::Acquire,
@@ -342,6 +368,7 @@ impl LogHandle {
                     return;
                 }
                 if message.len() > 1024 {
+                    capture.latch_integrity_fault(IntegrityFault::MissingEvidence);
                     let mut boundary = 1024;
                     while !message.is_char_boundary(boundary) {
                         boundary -= 1;
@@ -383,7 +410,10 @@ impl LogHandle {
 
     /// Synchronous and level-triggered, including before queued workers run.
     pub fn stop(&self, kind: IssueKind, message: impl ToString) {
-        self.issue(kind, message);
+        self.stop_with_origin(kind, message, IssueOrigin::Integrity);
+    }
+    fn stop_with_origin(&self, kind: IssueKind, message: impl ToString, origin: IssueOrigin) {
+        self.issue_with_origin(kind, message, origin);
         if let Some(capture) = self.0.capture.get() {
             self.0
                 .state

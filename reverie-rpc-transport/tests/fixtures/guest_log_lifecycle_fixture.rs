@@ -596,6 +596,9 @@ struct SplitOutput {
     bytes: u64,
     gate: Option<std::os::unix::net::UnixStream>,
     drop_marker: Option<std::path::PathBuf>,
+    flush_failure: bool,
+    output_ceiling: bool,
+    discarded: u64,
 }
 impl Drop for SplitOutput {
     fn drop(&mut self) {
@@ -612,11 +615,21 @@ impl std::io::Write for SplitOutput {
             std::io::Read::read_exact(&mut gate, &mut byte)?;
             assert_eq!(byte, [b'R']);
         }
+        if self.output_ceiling {
+            let retained = bytes.len().min(12usize.saturating_sub(self.bytes as usize));
+            self.file.write_all(&bytes[..retained])?;
+            self.bytes += retained as u64;
+            self.discarded += (bytes.len() - retained) as u64;
+            return Ok(bytes.len());
+        }
         let count = self.file.write(bytes)?;
         self.bytes += count as u64;
         Ok(count)
     }
     fn flush(&mut self) -> std::io::Result<()> {
+        if self.flush_failure {
+            return Err(std::io::Error::from_raw_os_error(libc::EIO));
+        }
         self.file.flush()
     }
 }
@@ -624,6 +637,8 @@ impl reverie_rpc_transport::guest_log::CaptureDestination for SplitOutput {
     fn progress(&self) -> reverie_rpc_transport::guest_log::DestinationProgress {
         reverie_rpc_transport::guest_log::DestinationProgress {
             acknowledged_data_bytes: self.bytes,
+            output_ceiling: self.discarded != 0,
+            discarded_bytes: self.discarded,
             ..Default::default()
         }
     }
@@ -653,15 +668,25 @@ impl Drop for SplitFactoryDrop {
         );
     }
 }
-#[derive(serde::Deserialize)]
 struct SplitLoggedValue {
     value: Vec<u8>,
-    #[serde(skip)]
     emitter: Option<reverie_rpc_transport::guest_log::CoordinatorEmitter>,
-    #[serde(skip)]
     behavior: String,
-    #[serde(skip)]
     field: Option<SplitRecordDrop>,
+}
+impl<'de> serde::Deserialize<'de> for SplitLoggedValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Vec::<u8>::deserialize(deserializer)?;
+        if value == [255] {
+            return Err(serde::de::Error::custom("actual result decoder refusal"));
+        }
+        Ok(Self {
+            value,
+            emitter: None,
+            behavior: String::new(),
+            field: None,
+        })
+    }
 }
 impl serde::Serialize for SplitLoggedValue {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -737,6 +762,8 @@ impl Drop for SplitDeferredDrop {
     }
 }
 fn split_ordered_guest(fd: i32, mode: &str, expected_parent: i32) {
+    let guest7 = mode.ends_with("-guest7");
+    let mode = mode.strip_suffix("-guest7").unwrap_or(mode);
     assert_eq!(unsafe { libc::getppid() }, expected_parent);
     assert_eq!(
         unsafe { libc::getpid() },
@@ -792,7 +819,7 @@ fn split_ordered_guest(fd: i32, mode: &str, expected_parent: i32) {
     drop(writer);
     drop(buffer);
     drop(endpoint);
-    if mode == "guest-nonzero" {
+    if mode == "guest-nonzero" || guest7 {
         std::process::exit(7);
     }
 }
@@ -880,7 +907,69 @@ fn split_composed_rpc_guest(
     );
     (guest_pid, status, final_issues)
 }
-fn split_lifecycle(mode: &str) {
+// A real O-held alias, transferred by C, keeps the transport endpoint open
+// after C and G have both exited. No helper process or guessed PID is needed.
+fn send_endpoint_alias(socket: &std::os::unix::net::UnixDatagram, fd: i32) {
+    unsafe {
+        let mut byte = b'A';
+        let mut vector = libc::iovec {
+            iov_base: (&mut byte as *mut u8).cast(),
+            iov_len: 1,
+        };
+        let mut control = [0usize; 4];
+        let mut message: libc::msghdr = std::mem::zeroed();
+        message.msg_iov = &mut vector;
+        message.msg_iovlen = 1;
+        message.msg_control = control.as_mut_ptr().cast();
+        message.msg_controllen = libc::CMSG_SPACE(std::mem::size_of::<i32>() as _) as usize;
+        let header = libc::CMSG_FIRSTHDR(&message);
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<i32>() as _) as usize;
+        std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<i32>(), fd);
+        assert_eq!(libc::sendmsg(socket.as_raw_fd(), &message, 0), 1);
+    }
+}
+fn receive_endpoint_alias(socket: &std::os::unix::net::UnixDatagram) -> std::os::fd::OwnedFd {
+    use std::os::fd::FromRawFd;
+    socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    unsafe {
+        let mut byte = 0u8;
+        let mut vector = libc::iovec {
+            iov_base: (&mut byte as *mut u8).cast(),
+            iov_len: 1,
+        };
+        let mut control = [0usize; 4];
+        let mut message: libc::msghdr = std::mem::zeroed();
+        message.msg_iov = &mut vector;
+        message.msg_iovlen = 1;
+        message.msg_control = control.as_mut_ptr().cast();
+        message.msg_controllen = std::mem::size_of_val(&control);
+        assert_eq!(
+            libc::recvmsg(socket.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC),
+            1
+        );
+        assert_eq!(byte, b'A');
+        assert_eq!(message.msg_flags & (libc::MSG_CTRUNC | libc::MSG_TRUNC), 0);
+        let header = libc::CMSG_FIRSTHDR(&message);
+        assert!(!header.is_null());
+        assert_eq!((*header).cmsg_level, libc::SOL_SOCKET);
+        assert_eq!((*header).cmsg_type, libc::SCM_RIGHTS);
+        assert_eq!(
+            (*header).cmsg_len,
+            libc::CMSG_LEN(std::mem::size_of::<i32>() as _) as usize
+        );
+        let fd = std::ptr::read_unaligned(libc::CMSG_DATA(header).cast::<i32>());
+        assert!(fd >= 0);
+        assert!(libc::CMSG_NXTHDR(&message, header).is_null());
+        std::os::fd::OwnedFd::from_raw_fd(fd)
+    }
+}
+fn split_lifecycle(case: &str) {
+    let guest7 = case.ends_with("-guest7");
+    let mode = case.strip_suffix("-guest7").unwrap_or(case);
     use std::os::unix::process::ExitStatusExt;
     use std::time::Instant;
 
@@ -918,7 +1007,11 @@ fn split_lifecycle(mode: &str) {
             "T-panic",
             "field-panic",
             "U-panic",
-            "W-panic"
+            "W-panic",
+            "flush-eio",
+            "output-ceiling",
+            "decode-error",
+            "held-endpoint"
         ]
         .contains(&mode)
     );
@@ -987,6 +1080,7 @@ fn split_lifecycle(mode: &str) {
         let child_hold = matches!(mode, "cancel-pending" | "drop-pending").then_some(child_hold);
         let marker = root.join(format!("C-deferred-{turn}"));
         let child_marker = marker.clone();
+        let (alias_receiver, alias_sender) = std::os::unix::net::UnixDatagram::pair().unwrap();
         let actual_pid = std::cell::Cell::new(0i32);
         let observer = std::cell::Cell::<Option<std::os::fd::OwnedFd>>::new(None);
         let actual_pid_ref = &actual_pid;
@@ -1031,6 +1125,9 @@ fn split_lifecycle(mode: &str) {
                         bytes: 0,
                         gate: gate_reader.take(),
                         drop_marker: destination_marker.clone(),
+                        flush_failure: mode == "flush-eio",
+                        output_ceiling: mode == "output-ceiling",
+                        discarded: 0,
                     })
                 },
                 move |_| {
@@ -1039,6 +1136,7 @@ fn split_lifecycle(mode: &str) {
                     let mut work_drop = SplitRecordDrop(None, selected == "W-panic"); // Newly C-created W capture.
                     let child_hold = child_hold.as_ref().map(|fd| fd.try_clone().unwrap());
                     let child_marker = child_marker.clone();
+                    let alias_sender = alias_sender.try_clone().unwrap();
                     Ok(move |mut context: g::CoordinatorContext| {
                         assert_eq!(std::fs::read_dir("/proc/self/task").unwrap().count(), 1);
                         assert_eq!(libc::getpid(), libc::syscall(libc::SYS_gettid) as i32);
@@ -1087,12 +1185,19 @@ fn split_lifecycle(mode: &str) {
                         }
                         let endpoint = context.guest_endpoint().unwrap();
                         let fd = endpoint.as_raw_fd();
+                        if selected == "held-endpoint" {
+                            send_endpoint_alias(&alias_sender, fd);
+                        }
                         let mut command =
                             std::process::Command::new(std::env::current_exe().unwrap());
                         command.args([
                             "--split-ordered-guest",
                             &fd.to_string(),
-                            &selected,
+                            &if guest7 {
+                                format!("{selected}-guest7")
+                            } else {
+                                selected.clone()
+                            },
                             &libc::getpid().to_string(),
                         ]);
                         command.pre_exec(move || {
@@ -1153,7 +1258,7 @@ fn split_lifecycle(mode: &str) {
                         emitter.write_record(b"work-return\n").unwrap();
                         let value = SplitLoggedValue {
                             value: vec![
-                                37;
+                                if selected == "decode-error" { 255 } else { 37 };
                                 if selected == "large" {
                                     10 * 1024 * 1024
                                 } else {
@@ -1201,6 +1306,10 @@ fn split_lifecycle(mode: &str) {
                     panic!("bounded cancellation did not join");
                 };
                 assert!(!joined.report.qualifies());
+                assert!(matches!(
+                    joined.integrity,
+                    g::TerminalCaptureIntegrity::Incomplete { .. }
+                ));
                 assert!(
                     joined
                         .report
@@ -1275,7 +1384,19 @@ fn split_lifecycle(mode: &str) {
             );
             continue;
         }
+        let alias = (mode == "held-endpoint").then(|| receive_endpoint_alias(&alias_receiver));
         let outcome = run.settle_until(Instant::now() + Duration::from_secs(2));
+        drop(alias);
+        let outcome = if mode == "held-endpoint" {
+            match outcome {
+                g::SplitCaptureOutcome::Unjoined(run) => {
+                    run.settle_until(Instant::now() + Duration::from_secs(2))
+                }
+                joined => joined,
+            }
+        } else {
+            outcome
+        };
         if mode == "drop-publication" {
             let g::SplitCaptureOutcome::Unjoined(run) = outcome else {
                 panic!("held output was declared joined before implicit disposal");
@@ -1322,17 +1443,82 @@ fn split_lifecycle(mode: &str) {
             g::SplitCaptureOutcome::Joined(joined) => joined,
             g::SplitCaptureOutcome::Unjoined(_) => panic!("split fixture did not actually join"),
         };
-        let expected = matches!(
-            mode,
-            "complete"
-                | "large"
-                | "second-clone"
-                | "namespace"
-                | "namespace-helper"
-                | "namespace-double-reservation"
-                | "rpc-complete"
-        );
+        let expected = !guest7
+            && matches!(
+                mode,
+                "complete"
+                    | "large"
+                    | "second-clone"
+                    | "namespace"
+                    | "namespace-helper"
+                    | "namespace-double-reservation"
+                    | "rpc-complete"
+            );
         assert_eq!(joined.report.qualifies(), expected, "{:?}", joined.report);
+        let intact = expected || mode == "guest-nonzero" || (guest7 && mode == "complete");
+        if intact {
+            assert_eq!(
+                joined.integrity,
+                g::TerminalCaptureIntegrity::Complete {
+                    guest_status: std::process::ExitStatus::from(ExitStatus::Exited(
+                        if guest7 || mode == "guest-nonzero" {
+                            7
+                        } else {
+                            0
+                        }
+                    )),
+                },
+                "{case}: {:?}",
+                joined.report
+            );
+        } else {
+            let g::TerminalCaptureIntegrity::Incomplete { faults } = joined.integrity else {
+                panic!(
+                    "{case}: faulted capture declared complete: {:?}",
+                    joined.report
+                );
+            };
+            assert!(!faults.is_empty());
+            if matches!(mode, "flush-eio" | "output-ceiling" | "held-publication") {
+                assert!(
+                    faults.contains(g::IntegrityFault::Publication),
+                    "{faults:?}"
+                );
+            }
+            if mode.starts_with("rpc-") && mode != "rpc-complete" {
+                assert!(faults.contains(g::IntegrityFault::Rpc), "{faults:?}");
+            }
+            if matches!(mode, "held-endpoint" | "missing-finish") {
+                assert!(faults.contains(g::IntegrityFault::Collector), "{faults:?}");
+            }
+            if mode == "decode-error" {
+                assert!(
+                    faults.contains(g::IntegrityFault::DecodeBinding),
+                    "{faults:?}"
+                );
+                assert!(joined.facts.is_none());
+                assert!(joined.value.is_none());
+                assert_eq!(joined.actual_joins, (true, true));
+                assert_eq!(joined.actual_coordinator_status, Some(ExitStatus::SUCCESS));
+                assert!(!joined.encoded_bytes.is_empty());
+                println!(
+                    "actual split {case}: decoder refusal retained: {:?}",
+                    joined.report
+                );
+                continue;
+            }
+        }
+        if guest7 || mode == "guest-nonzero" {
+            assert_eq!(
+                joined.facts.as_ref().unwrap().guest_wait_status,
+                ExitStatus::Exited(7).into_raw()
+            );
+            assert_eq!(
+                joined.report.capture.as_ref().unwrap().guest.run,
+                g::RunState::Failed
+            );
+            assert!(joined.report.capture.as_ref().unwrap().error.is_some());
+        }
         if matches!(
             mode,
             "serialize-error"
@@ -1374,9 +1560,11 @@ fn split_lifecycle(mode: &str) {
         }
         assert_eq!(joined.report.coordinator_status, Some(ExitStatus::SUCCESS));
         assert_eq!(joined.actual_joins, (true, true));
-        if mode != "held-publication" {
+        if !matches!(mode, "held-publication" | "held-endpoint") {
             assert_eq!(joined.report.collector_join, Some(true));
             assert_eq!(joined.report.publication_join, Some(true));
+        } else if mode == "held-endpoint" {
+            assert!(!joined.report.capture.as_ref().unwrap().guest.peer_closed);
         } else {
             assert_eq!(
                 joined
@@ -1397,6 +1585,19 @@ fn split_lifecycle(mode: &str) {
         }
         if mode == "held-publication" {
             assert_eq!(std::fs::read(&output_path).unwrap(), b"work\n");
+        } else if mode == "output-ceiling" {
+            assert_eq!(std::fs::read(&output_path).unwrap(), b"work\nguest\nw");
+            assert!(
+                joined
+                    .report
+                    .capture
+                    .as_ref()
+                    .unwrap()
+                    .publication
+                    .progress
+                    .discarded_bytes
+                    > 0
+            );
         } else if mode.starts_with("rpc-") {
             let expected = if mode == "rpc-truncated-header" {
                 b"work\nguest\nserving-task-joined\nruntime-dropped\nglobal-drop\nwork-return\nW-drop\nserialize\nU-drop\nT-drop\nfield-drop\n".as_slice()
@@ -1419,7 +1620,10 @@ fn split_lifecycle(mode: &str) {
                     }
                 );
                 assert_eq!(joined.actual_coordinator_status, Some(ExitStatus::SUCCESS));
-                assert_eq!(joined.facts.as_ref().unwrap().guest_wait_status, 0);
+                assert_eq!(
+                    joined.facts.as_ref().unwrap().guest_wait_status,
+                    ExitStatus::Exited(if guest7 { 7 } else { 0 }).into_raw()
+                );
             }
         } else {
             assert_eq!(
@@ -1445,7 +1649,7 @@ fn split_lifecycle(mode: &str) {
         "actual O descriptor population: before={original_fds}, after={final_fds}; runs={repetitions}"
     );
     std::fs::remove_dir_all(root).unwrap();
-    println!("split lifecycle completed: {mode}");
+    println!("split lifecycle completed: {case}");
 }
 
 fn split_startup_failure(mode: &str) {
@@ -1538,6 +1742,10 @@ fn split_startup_failure(mode: &str) {
             panic!("startup child not settled");
         };
         assert!(!joined.report.qualifies());
+        assert!(matches!(
+            joined.integrity,
+            g::TerminalCaptureIntegrity::Incomplete { .. }
+        ));
         assert!(joined.report.failure.is_some());
         assert!(joined.value.is_none());
         assert!(joined.actual_coordinator_status.is_some());
