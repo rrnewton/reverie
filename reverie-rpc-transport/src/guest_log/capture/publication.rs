@@ -52,6 +52,7 @@ pub struct Publication {
     sender: Mutex<Option<mpsc::SyncSender<Record>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
     blocked_budget: Duration,
+    join_result: Mutex<Option<bool>>,
 }
 
 fn failure(state: &mut State, message: &str) {
@@ -177,6 +178,7 @@ impl Publication {
             sender: Mutex::new(Some(sender)),
             thread: Mutex::new(Some(thread)),
             blocked_budget,
+            join_result: Mutex::new(None),
         })
     }
 
@@ -263,9 +265,26 @@ impl Publication {
     fn join_finished(&self) -> bool {
         let mut thread = self.thread.lock().unwrap();
         if thread.as_ref().is_some_and(|thread| thread.is_finished()) {
-            let _ = thread.take().unwrap().join();
+            let succeeded = thread.take().unwrap().join().is_ok();
+            *self.join_result.lock().unwrap() = Some(succeeded);
         }
         thread.is_none()
+    }
+
+    // Split owners retain the actual join result independently of the immutable
+    // publication snapshot. A late join must never promote a frozen failure.
+    pub(super) fn joined(&self) -> Option<bool> {
+        self.join_finished();
+        *self.join_result.lock().unwrap()
+    }
+
+    pub(super) fn join_blocking(&self) -> bool {
+        self.close();
+        let mut thread = self.thread.lock().unwrap();
+        if let Some(handle) = thread.take() {
+            *self.join_result.lock().unwrap() = Some(handle.join().is_ok());
+        }
+        self.join_result.lock().unwrap().unwrap_or(false)
     }
 
     pub fn finish_until(&self, deadline: Instant) -> Report {

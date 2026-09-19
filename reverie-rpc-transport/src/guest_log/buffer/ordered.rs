@@ -728,6 +728,26 @@ impl Collector {
             })
     }
 
+    /// Split capture requires an actual channel-zero FINISH, unlike the local API.
+    pub(crate) fn host_complete(&self) -> bool {
+        if self.buffer.order_failed()
+            || self.buffer.mapping.failure() != 0
+            || self.buffer.mapping.allocated() == 0
+        {
+            return false;
+        }
+        let channel = self.buffer.mapping.channel(0);
+        channel.state.load(Ordering::Acquire) == super::FINISHED
+            && channel.pid.load(Ordering::Acquire) != 0
+            && channel.fork_result.load(Ordering::Acquire) == channel.pid.load(Ordering::Acquire)
+            && channel.head.load(Ordering::Acquire) == channel.tail.load(Ordering::Acquire)
+            && channel.head.load(Ordering::Acquire) == channel.terminal_head.load(Ordering::Acquire)
+            && self.finished[0]
+            && self.partial[0].is_none()
+            && self.rejected[0].is_none()
+            && channel.terminal_sequence.load(Ordering::Acquire) == self.sequences[0]
+    }
+
     pub fn host_partial(&self) -> bool {
         self.partial[0].is_some()
     }
@@ -945,3 +965,76 @@ impl Collector {
 #[cfg(test)]
 #[path = "ordered_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod split_host_tests {
+    use std::os::fd::AsRawFd;
+
+    use super::*;
+    #[test]
+    fn split_host_finish_requires_every_terminal_component() {
+        let limits = Limits {
+            producers: 2,
+            slots: 8,
+            max_record_bytes: 32,
+            host_pending_bytes: 64,
+            guest_pending_bytes: 64,
+            pending_records: 4,
+        };
+        let (host, _guest) = unsafe { channel_pair(limits) }.unwrap();
+        let buffer = unsafe { Buffer::receive(host.as_raw_fd()) }.unwrap();
+        let mut writer = unsafe { buffer.activate(0, 17) }.unwrap();
+        let mut collector = buffer.collector().unwrap();
+        assert!(!collector.host_complete());
+        writer.finish(|_, _| panic!("unexpected wait")).unwrap();
+        assert!(!collector.host_complete(), "undecoded FINISH");
+        assert!(collector.poll().unwrap().is_none());
+        assert!(collector.host_complete());
+        let channel = buffer.mapping.channel(0);
+        macro_rules! atomic_opposition {
+            ($field:expr, $bad:expr) => {{
+                let old = $field.swap($bad, Ordering::AcqRel);
+                assert!(!collector.host_complete());
+                $field.store(old, Ordering::Release);
+                assert!(collector.host_complete());
+            }};
+        }
+        atomic_opposition!(channel.state, super::super::CANCELLED_FORK);
+        atomic_opposition!(channel.pid, 0);
+        atomic_opposition!(channel.fork_result, 18);
+        atomic_opposition!(channel.head, 77);
+        atomic_opposition!(channel.tail, 77);
+        atomic_opposition!(channel.terminal_head, 77);
+        atomic_opposition!(channel.terminal_sequence, 77);
+        atomic_opposition!(header(&buffer.mapping).order_fault, 1);
+        atomic_opposition!(buffer.mapping.header().failure, 1);
+        collector.finished[0] = false;
+        assert!(!collector.host_complete());
+        collector.finished[0] = true;
+        collector.sequences[0] += 1;
+        assert!(!collector.host_complete());
+        collector.sequences[0] -= 1;
+        collector.rejected[0] = Some(Frame {
+            ordinal: 0,
+            kind: 0,
+            length: 0,
+            sequence: 0,
+            offset: 0,
+            total: 0,
+            payload: [0; PAYLOAD],
+        });
+        assert!(!collector.host_complete());
+        collector.rejected[0] = None;
+        collector.partial[0] = Some(Partial {
+            ticket: Ticket {
+                index: 0,
+                generation: 0,
+            },
+            length: 0,
+            bytes: vec![],
+        });
+        assert!(!collector.host_complete());
+        collector.partial[0] = None;
+        assert!(collector.host_complete());
+    }
+}

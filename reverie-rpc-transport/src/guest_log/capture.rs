@@ -27,6 +27,8 @@ use super::Stream;
 use super::ordered;
 
 mod plan;
+mod split;
+pub use split::*;
 pub(crate) mod publication;
 
 #[derive(Clone, Copy, Debug)]
@@ -203,7 +205,10 @@ pub(super) struct Shared {
     buffer: Arc<ordered::Buffer>,
     publication: publication::Publication,
     state: Mutex<State>,
-    host: Mutex<ordered::Writer>,
+    host: Option<Mutex<ordered::Writer>>,
+    split: Option<Arc<split::lifecycle::Lifecycle>>,
+    collector_join: Mutex<Option<bool>>,
+    host_complete: std::sync::atomic::AtomicBool,
     active_host_calls: AtomicUsize,
     late_host_writes: AtomicU64,
     pub(super) omitted_issues: AtomicU64,
@@ -259,7 +264,7 @@ impl Shared {
     fn join_finished(&self) -> bool {
         let mut thread = self.collector.lock().unwrap();
         if thread.as_ref().is_some_and(|thread| thread.is_finished()) {
-            let _ = thread.take().unwrap().join();
+            *self.collector_join.lock().unwrap() = Some(thread.take().unwrap().join().is_ok());
         }
         thread.is_none()
     }
@@ -313,7 +318,13 @@ impl HostProducer {
             if self.shared.buffer.admission(ordered::Role::Host).closed {
                 return Err(PublishError::Stopped);
             }
-            match self.shared.host.try_lock() {
+            match self
+                .shared
+                .host
+                .as_ref()
+                .expect("local host writer")
+                .try_lock()
+            {
                 Ok(writer) => break writer,
                 Err(std::sync::TryLockError::Poisoned(_)) => return Err(PublishError::Invalid),
                 Err(std::sync::TryLockError::WouldBlock) => {
@@ -520,7 +531,10 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
             streams: Vec::new(),
             omitted_diagnostic_bytes: 0,
         }),
-        host: Mutex::new(writer),
+        host: Some(Mutex::new(writer)),
+        split: None,
+        collector_join: Mutex::new(None),
+        host_complete: std::sync::atomic::AtomicBool::new(false),
         active_host_calls: AtomicUsize::new(0),
         late_host_writes: AtomicU64::new(0),
         omitted_issues: AtomicU64::new(0),
@@ -643,6 +657,19 @@ fn collect(shared: &Shared, socket: UnixStream, mut collector: ordered::Collecto
                 state.deadline,
             )
         };
+        if let Some(lifecycle) = &shared.split {
+            let observed = lifecycle.snapshot();
+            shared.active_host_calls.store(
+                observed.entrants.try_into().unwrap_or(usize::MAX),
+                Ordering::Release,
+            );
+            shared
+                .late_host_writes
+                .store(observed.late_writes, Ordering::Release);
+            if observed.faulted {
+                shared.fail("split coordinator lifecycle fault");
+            }
+        }
         let complete = closed && collector.guest_complete();
         let drained = closed && collector.guest_drained();
         if guest_cutoff && shared.buffer.unresolved_guest_commit() {
@@ -677,6 +704,11 @@ fn collect(shared: &Shared, socket: UnixStream, mut collector: ordered::Collecto
         if finalizing && ((observed && pending.is_none() && (drained || guest_cutoff)) || expired) {
             if expired && !(observed && pending.is_none() && complete) {
                 shared.fail("capture final drain deadline exceeded");
+            }
+            let host_complete = collector.host_complete();
+            shared.host_complete.store(host_complete, Ordering::Release);
+            if shared.split.is_some() && !host_complete {
+                shared.fail("split host has no complete FINISH");
             }
             if collector.host_partial() || shared.active_host_calls.load(Ordering::Acquire) != 0 {
                 shared.fail("host emission incomplete at close");

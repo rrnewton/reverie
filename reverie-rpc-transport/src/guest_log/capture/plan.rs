@@ -81,8 +81,11 @@ impl InertCapturePlan {
         ))
     }
 
-    // The old local capture is the only production activation user in this
-    // prerequisite. A public split lifecycle needs its own completion contract.
+    pub(super) fn options(&self) -> CaptureOptions {
+        self.options
+    }
+
+    // Activation remains private to the local and split ownership facades.
     pub(super) fn into_local_parts(
         self,
     ) -> (CaptureOptions, ordered::Buffer, UnixStream, UnixStream) {
