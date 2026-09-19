@@ -10,6 +10,26 @@ and `utimensat(AT_EMPTY_PATH)` (Linux 5.8 or newer) for full filesystem
 metadata compatibility. Hosts before `fchmodat2` use a held-descriptor procfs
 fallback rather than re-resolving guest paths.
 
+The embedding process must reserve Linux real-time signal 64 exclusively for
+the backend. On first vCPU entry, the backend installs a process-wide handler;
+it does not restore that handler when a backend is dropped. Other libraries
+must not send this signal or replace its handler for the rest of the process's
+lifetime. An existing handler or `SIG_IGN` prevents entry. A changed handler or
+an unexplained pending instance before a later entry also causes an error.
+These checks detect visible conflicts; they do not coordinate ownership with
+another signal user. Each entry restores the calling thread's original signal
+mask after draining its own notifications. The existing `SIGURG` worker
+cancellation mechanism remains separate and unchanged.
+
+The private entry gate also stops every participant and callback memory copy
+sharing a Mapping when clock-interval setup or cleanup fails. That interval
+cannot provide trustworthy guest progress; allowing siblings to continue
+would outlive an execution whose accounting has already failed. The issuing
+owner retains the typed cause for terminal publication. A plain KVM_RUN error,
+including interruption, does not by itself poison the Mapping. This gate is
+currently used to test close and cleanup on unchanged mappings; no production
+mapping change or global fork snapshot is qualified by it.
+
 Guest-memory allocation also requires kernel support for `memfd_create` and
 permission to call it under the host's seccomp or container policy. Allocation
 errors propagate as `Error::MemoryMapping`. Retrying `EINVAL` without

@@ -468,6 +468,7 @@ fn joined_rpc_control_with_panic(fail: bool, cleanup_fails: bool, worker_panics:
             Ok((status, Vec::new(), Vec::new()))
         }
     });
+    let worker_host_id = worker.thread().id();
     group.add_worker_handle(2, worker);
     let panic_retired = Arc::new(AtomicBool::new(false));
     if worker_panics {
@@ -519,9 +520,13 @@ fn joined_rpc_control_with_panic(fail: bool, cleanup_fails: bool, worker_panics:
         join_group.join_workers();
         joined.send(()).unwrap();
     }));
+    let joining_host_id = cleanup.joiner.as_ref().unwrap().thread().id();
     // The worker is parked in the actual Tool RPC, and the actual production
-    // joiner has taken its OS JoinHandle out of the group's registry.
-    wait_until(|| !group.has_worker_handles());
+    // joiner owns its exact OS JoinHandle outside the group's registry. Other
+    // workers can remain registered while this physical join is pending.
+    wait_until(|| group.worker_join_owns_target(2, worker_host_id, joining_host_id));
+    assert!(group.has_worker_handles());
+    assert_eq!(global.failures.load(Ordering::SeqCst), 0);
     assert!(matches!(
         joined_receiver.try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty)
@@ -547,6 +552,7 @@ fn joined_rpc_control_with_panic(fail: bool, cleanup_fails: bool, worker_panics:
         completed,
         "fatal publication did not release the actual join"
     );
+    assert!(!group.worker_join_owns_target(2, worker_host_id, joining_host_id));
     let result = group.teardown_result();
     if fail {
         let error = result.unwrap_err();

@@ -113,10 +113,12 @@ impl<T: Tool> KvmGuest<'_, T> {
         let previous = self.executor.set_signal_guard(SignalGuard::Observation);
         let result: Result<reverie::ParkedSignalObservation> = async {
             for _ in 0..64 {
+                self.resume_ordinary_operation(None).await;
                 let pending = self.executor.take_signal_for_observation();
                 // Even readiness failure after removal must flush before propagating.
                 let effect = self.complete_signal_effects(None).await?;
                 let pending = pending.map_err(|errno| Error::Reverie(errno.into()))?;
+                self.resume_ordinary_operation(None).await;
                 let Some(pending) = pending else {
                     return Ok(reverie::ParkedSignalObservation {
                         steps,
@@ -150,6 +152,10 @@ impl<T: Tool> KvmGuest<'_, T> {
                     .handle_structured_signal_event(self, pending.event)
                     .await
                     .map_err(|errno| Error::Reverie(errno.into()))?;
+                // A nested hook may catch a fatal MemoryAccess errno and
+                // complete within this same poll. No further removal or
+                // delivery reservation may follow that private failure.
+                self.resume_ordinary_operation(None).await;
                 let Some(event) = replacement else {
                     steps.push(Step::Suppressed { dequeue: id });
                     continue;

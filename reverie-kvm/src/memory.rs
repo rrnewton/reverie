@@ -21,13 +21,52 @@ use reverie::syscalls::MemoryAccess;
 
 use crate::Error;
 use crate::Result;
+use crate::entry::CopyAccess;
+use crate::entry::EntryGate;
+use crate::entry::EntryOrigin;
+use crate::entry::owner::OperationOrigin;
+use crate::failure::FailureContext;
 
 const PAGE_SIZE: usize = 4096;
 
+#[cfg(test)]
+type SyscallDispatchObserver = Arc<dyn Fn(&crate::SyscallRequest) + Send + Sync>;
+
 /// A contiguous, page-aligned guest-physical memory region.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct GuestMemory {
     mapping: Arc<Mapping>,
+    failure_context: Option<FailureContext>,
+    operation_origin: Option<OperationOrigin>,
+    #[cfg(test)]
+    after_vector_copy: Option<Arc<dyn Fn(usize) + Send + Sync>>,
+    #[cfg(test)]
+    test_vector_copy_observer: Option<Arc<dyn Fn(usize, EntryOrigin) + Send + Sync>>,
+    #[cfg(test)]
+    test_syscall_dispatch_observer: Option<SyscallDispatchObserver>,
+}
+
+impl std::fmt::Debug for GuestMemory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuestMemory")
+            .field("mapping", &self.mapping)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A read accessor for one already admitted synchronous preparation. Its
+/// private fields bind the memory and token; callers cannot substitute another
+/// Mapping or retain the token beyond try_read_with's closure.
+pub(crate) struct RawMemoryRead<'a> {
+    memory: &'a GuestMemory,
+    copy: &'a CopyAccess,
+}
+
+impl RawMemoryRead<'_> {
+    pub(crate) fn read_raw(&self, address: u64, destination: &mut [u8]) -> Result<()> {
+        self.memory
+            .read_raw_admitted(address, destination, self.copy)
+    }
 }
 
 #[derive(Debug)]
@@ -103,6 +142,7 @@ struct Mapping {
     guest_base: u64,
     address_space: Mutex<AddressSpaceState>,
     allocation: Mutex<()>,
+    entry_gate: Arc<EntryGate>,
 }
 
 #[derive(Clone, Debug)]
@@ -312,8 +352,138 @@ impl GuestMemory {
                 guest_base,
                 address_space: Mutex::new(AddressSpaceState::new(guest_base, size)),
                 allocation: Mutex::new(()),
+                entry_gate: EntryGate::new(),
             }),
+            failure_context: None,
+            operation_origin: None,
+            #[cfg(test)]
+            after_vector_copy: None,
+            #[cfg(test)]
+            test_vector_copy_observer: None,
+            #[cfg(test)]
+            test_syscall_dispatch_observer: None,
         })
+    }
+
+    pub(crate) fn entry_gate(&self) -> Arc<EntryGate> {
+        self.mapping.entry_gate.clone()
+    }
+
+    /// Attribution belongs to this handle, not to every alias of the Mapping.
+    pub(crate) fn set_failure_context(&mut self, context: Option<FailureContext>) {
+        self.failure_context = context;
+    }
+
+    /// Retained clones keep this exact generation. Rebinding this handle does
+    /// not change any other view of the Mapping.
+    pub(crate) fn set_operation_origin(&mut self, origin: Option<OperationOrigin>) {
+        self.operation_origin = origin;
+    }
+
+    pub(crate) fn entry_origin(&self) -> EntryOrigin {
+        EntryOrigin {
+            failure: self.failure_context.clone(),
+            operation: self.operation_origin.clone(),
+        }
+    }
+
+    fn copy_access(&self) -> Result<CopyAccess> {
+        self.mapping
+            .entry_gate
+            .copy_blocking(self.entry_origin())
+            .map_err(|failure| failure.error())
+    }
+
+    fn check_copy_failure(&self) -> Result<()> {
+        match self.mapping.entry_gate.pending_failure() {
+            Some(failure) => Err(failure.error()),
+            None => Ok(()),
+        }
+    }
+
+    fn with_copy<T>(&self, operation: impl FnOnce(&CopyAccess) -> Result<T>) -> Result<T> {
+        // Admission precedes translation, permission and backing locks. An
+        // enclosing allocation transaction (snapshot/mmap) may remain owned;
+        // no admitted helper acquires allocation, and close never needs it.
+        let copy = self.copy_access()?;
+        let result = operation(&copy);
+        // An admitted operation may have effects before poison. Keep them,
+        // but do not turn an observed backend failure into ordinary success.
+        self.check_copy_failure()?;
+        result
+    }
+
+    /// Attempts a whole synchronous read preparation under one short token.
+    /// The closure must not wait for admission or acquire allocation. It runs
+    /// only after open admission, and neither accessor nor token can escape.
+    pub(crate) fn try_read_with<T>(
+        &self,
+        operation: impl FnOnce(&RawMemoryRead<'_>) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let Some(copy) = self
+            .mapping
+            .entry_gate
+            .try_copy(self.entry_origin())
+            .map_err(|failure| failure.error())?
+        else {
+            return Ok(None);
+        };
+        let result = operation(&RawMemoryRead {
+            memory: self,
+            copy: &copy,
+        });
+        self.check_copy_failure()?;
+        result.map(Some)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_vector_copy_observer(
+        &mut self,
+        observer: Arc<dyn Fn(usize, EntryOrigin) + Send + Sync>,
+    ) {
+        self.test_vector_copy_observer = Some(observer);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_syscall_dispatch_observer(&mut self, observer: SyscallDispatchObserver) {
+        self.test_syscall_dispatch_observer = Some(observer);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_test_syscall_dispatch(&self, request: &crate::SyscallRequest) {
+        if let Some(observer) = &self.test_syscall_dispatch_observer {
+            observer(request);
+        }
+    }
+
+    #[cfg(test)]
+    fn before_vector_copy(&self, total: usize) {
+        if total == 0 {
+            crate::entry::driver::test_observation::current(
+                crate::entry::driver::test_observation::Event::Copy(
+                    self.entry_gate(),
+                    self.entry_origin(),
+                ),
+            );
+            self.observe_test_vector_copy(total);
+        }
+    }
+
+    #[cfg(test)]
+    fn observe_test_vector_copy(&self, total: usize) {
+        if let Some(observer) = &self.test_vector_copy_observer {
+            // Use this issuing handle's binding, not the binding that existed
+            // when a public-driver fixture installed the observer.
+            observer(total, self.entry_origin());
+        }
+    }
+
+    #[cfg(test)]
+    fn after_vector_copy(&self, total: usize) {
+        if let Some(hook) = &self.after_vector_copy {
+            hook(total);
+        }
+        self.observe_test_vector_copy(total);
     }
 
     pub(crate) fn snapshot(&self) -> Result<Self> {
@@ -326,6 +496,7 @@ impl GuestMemory {
     ) -> Result<Self> {
         const COPY_CHUNK: usize = 1024 * 1024;
 
+        self.check_copy_failure()?;
         let _allocation = self.allocation_guard();
         let snapshot = Self::new(self.guest_base(), self.len())?;
         let user_access = self
@@ -384,6 +555,9 @@ impl GuestMemory {
             .address_space
             .lock()
             .expect("guest memory access map lock poisoned") = user_access;
+        // The sparse fd operation is not a copy lease or a global snapshot
+        // fence. Fallback byte copies each take their own short admission.
+        self.check_copy_failure()?;
         Ok(snapshot)
     }
 
@@ -754,18 +928,34 @@ impl GuestMemory {
     /// Copies bytes from guest memory into a host buffer.
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn read(&self, guest_address: u64, destination: &mut [u8]) -> Result<()> {
-        self.checked_offset(guest_address, destination.len())?;
-        if self.user_accessible_prefix(guest_address, destination.len())? != destination.len() {
-            return Err(Error::GuestMemoryAccessDenied {
-                address: guest_address,
-                length: destination.len(),
-            });
-        }
-        self.read_raw(guest_address, destination)
+        self.with_copy(|copy| {
+            self.checked_offset(guest_address, destination.len())?;
+            if self.user().user_accessible_prefix_admitted(
+                guest_address,
+                destination.len(),
+                copy,
+            )? != destination.len()
+            {
+                return Err(Error::GuestMemoryAccessDenied {
+                    address: guest_address,
+                    length: destination.len(),
+                });
+            }
+            self.read_raw_admitted(guest_address, destination, copy)
+        })
     }
 
     // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
     pub(crate) fn read_raw(&self, guest_address: u64, destination: &mut [u8]) -> Result<()> {
+        self.with_copy(|copy| self.read_raw_admitted(guest_address, destination, copy))
+    }
+
+    fn read_raw_admitted(
+        &self,
+        guest_address: u64,
+        destination: &mut [u8],
+        _copy: &CopyAccess,
+    ) -> Result<()> {
         let offset = self.checked_offset(guest_address, destination.len())?;
         let _guard = self
             .mapping
@@ -789,14 +979,20 @@ impl GuestMemory {
     /// Copies bytes from a host slice into guest memory.
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn write(&mut self, guest_address: u64, source: &[u8]) -> Result<()> {
-        self.checked_offset(guest_address, source.len())?;
-        if self.user_accessible_prefix(guest_address, source.len())? != source.len() {
-            return Err(Error::GuestMemoryAccessDenied {
-                address: guest_address,
-                length: source.len(),
-            });
-        }
-        self.write_raw(guest_address, source)
+        self.with_copy(|copy| {
+            self.checked_offset(guest_address, source.len())?;
+            if self
+                .user()
+                .user_accessible_prefix_admitted(guest_address, source.len(), copy)?
+                != source.len()
+            {
+                return Err(Error::GuestMemoryAccessDenied {
+                    address: guest_address,
+                    length: source.len(),
+                });
+            }
+            self.write_raw_admitted(guest_address, source, copy)
+        })
     }
 
     #[cfg(test)]
@@ -819,6 +1015,33 @@ impl GuestMemory {
 
     // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
     pub(crate) fn write_raw(&self, guest_address: u64, source: &[u8]) -> Result<()> {
+        self.with_copy(|copy| self.write_raw_admitted(guest_address, source, copy))
+    }
+
+    /// Attempts one short copy without parking the calling executor. A closed
+    /// gate returns None before inspecting layout or taking a backing lock.
+    /// The owner must subscribe, recheck its stop predicates and await before
+    /// retrying; None is neither a completed copy nor a guest memory fault.
+    pub(crate) fn try_write_raw(&self, guest_address: u64, source: &[u8]) -> Result<Option<()>> {
+        let Some(copy) = self
+            .mapping
+            .entry_gate
+            .try_copy(self.entry_origin())
+            .map_err(|failure| failure.error())?
+        else {
+            return Ok(None);
+        };
+        let result = self.write_raw_admitted(guest_address, source, &copy);
+        self.check_copy_failure()?;
+        result.map(Some)
+    }
+
+    fn write_raw_admitted(
+        &self,
+        guest_address: u64,
+        source: &[u8],
+        _copy: &CopyAccess,
+    ) -> Result<()> {
         let offset = self.checked_offset(guest_address, source.len())?;
         let _guard = self
             .mapping
@@ -841,18 +1064,33 @@ impl GuestMemory {
     /// Zeros a guest-physical address range.
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn zero(&mut self, guest_address: u64, length: usize) -> Result<()> {
-        self.checked_offset(guest_address, length)?;
-        if self.user_accessible_prefix(guest_address, length)? != length {
-            return Err(Error::GuestMemoryAccessDenied {
-                address: guest_address,
-                length,
-            });
-        }
-        self.zero_raw(guest_address, length)
+        self.with_copy(|copy| {
+            self.checked_offset(guest_address, length)?;
+            if self
+                .user()
+                .user_accessible_prefix_admitted(guest_address, length, copy)?
+                != length
+            {
+                return Err(Error::GuestMemoryAccessDenied {
+                    address: guest_address,
+                    length,
+                });
+            }
+            self.zero_raw_admitted(guest_address, length, copy)
+        })
     }
 
     // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
     pub(crate) fn zero_raw(&self, guest_address: u64, length: usize) -> Result<()> {
+        self.with_copy(|copy| self.zero_raw_admitted(guest_address, length, copy))
+    }
+
+    fn zero_raw_admitted(
+        &self,
+        guest_address: u64,
+        length: usize,
+        _copy: &CopyAccess,
+    ) -> Result<()> {
         let offset = self.checked_offset(guest_address, length)?;
         let _guard = self
             .mapping
@@ -876,6 +1114,15 @@ impl GuestMemory {
     /// the backing range, including through another mapping, just as they
     /// must for [`Self::zero_raw`].
     pub(crate) fn discard_pages(&self, guest_address: u64, length: usize) -> Result<()> {
+        self.with_copy(|copy| self.discard_pages_admitted(guest_address, length, copy))
+    }
+
+    fn discard_pages_admitted(
+        &self,
+        guest_address: u64,
+        length: usize,
+        _copy: &CopyAccess,
+    ) -> Result<()> {
         let offset = self.checked_offset(guest_address, length)?;
         if length == 0 {
             return Ok(());
@@ -953,6 +1200,7 @@ impl GuestMemory {
     }
 
     // TODO-HUMAN-REVIEW(PR-132): Review partial user-range validation.
+    #[cfg(test)]
     pub(crate) fn user_accessible_prefix(
         &self,
         guest_address: u64,
@@ -976,7 +1224,7 @@ impl UserMemory {
         self.memory.guest_end()
     }
 
-    fn translate(&self, address: u64, length: usize) -> Result<u64> {
+    fn translate_admitted(&self, address: u64, length: usize, _copy: &CopyAccess) -> Result<u64> {
         self.memory
             .mapping
             .address_space
@@ -985,28 +1233,49 @@ impl UserMemory {
             .translate(address, length)
     }
 
-    fn read_translated_raw(&self, address: u64, destination: &mut [u8]) -> Result<()> {
-        let physical = self.translate(address, destination.len())?;
-        self.memory.read_raw(physical, destination)
+    fn read_translated_raw_admitted(
+        &self,
+        address: u64,
+        destination: &mut [u8],
+        copy: &CopyAccess,
+    ) -> Result<()> {
+        let physical = self.translate_admitted(address, destination.len(), copy)?;
+        self.memory.read_raw_admitted(physical, destination, copy)
     }
 
-    fn write_translated_raw(&self, address: u64, source: &[u8]) -> Result<()> {
-        let physical = self.translate(address, source.len())?;
-        self.memory.write_raw(physical, source)
+    fn write_translated_raw_admitted(
+        &self,
+        address: u64,
+        source: &[u8],
+        copy: &CopyAccess,
+    ) -> Result<()> {
+        let physical = self.translate_admitted(address, source.len(), copy)?;
+        self.memory.write_raw_admitted(physical, source, copy)
     }
 
     /// Tool scratch is initialized before it is temporarily exposed to the
     /// injected syscall. Preserve that existing privileged staging operation.
     pub(crate) fn write_injection(&self, address: u64, source: &[u8]) -> Result<()> {
-        self.write_translated_raw(address, source)
+        self.memory
+            .with_copy(|copy| self.write_translated_raw_admitted(address, source, copy))
     }
 
     pub(crate) fn host_operand(&self, address: u64, length: usize) -> Result<HostMemoryOperand> {
+        self.memory
+            .with_copy(|copy| self.host_operand_admitted(address, length, copy))
+    }
+
+    fn host_operand_admitted(
+        &self,
+        address: u64,
+        length: usize,
+        copy: &CopyAccess,
+    ) -> Result<HostMemoryOperand> {
         // Preserve the existing Accessible probe, including its actual read;
         // PI/requeue operands do not gain a new permission policy here.
         let mut probe = vec![0; length];
-        self.read(address, &mut probe)?;
-        self.retain_translated_range(address, length)
+        self.read_admitted(address, &mut probe, copy)?;
+        self.retain_translated_range_admitted(address, length, copy)
     }
 
     /// Retain a range already admitted by the caller's exact copy/check. This
@@ -1016,7 +1285,17 @@ impl UserMemory {
         address: u64,
         length: usize,
     ) -> Result<HostMemoryOperand> {
-        let physical = self.translate(address, length)?;
+        self.memory
+            .with_copy(|copy| self.retain_translated_range_admitted(address, length, copy))
+    }
+
+    fn retain_translated_range_admitted(
+        &self,
+        address: u64,
+        length: usize,
+        copy: &CopyAccess,
+    ) -> Result<HostMemoryOperand> {
+        let physical = self.translate_admitted(address, length, copy)?;
         let offset = self.memory.checked_offset(physical, length)?;
         Ok(HostMemoryOperand {
             _memory: self.memory.clone(),
@@ -1024,25 +1303,43 @@ impl UserMemory {
         })
     }
     pub fn read(&self, guest_address: u64, destination: &mut [u8]) -> Result<()> {
-        self.translate(guest_address, destination.len())?;
-        if self.user_accessible_prefix(guest_address, destination.len())? != destination.len() {
+        self.memory
+            .with_copy(|copy| self.read_admitted(guest_address, destination, copy))
+    }
+
+    fn read_admitted(
+        &self,
+        guest_address: u64,
+        destination: &mut [u8],
+        copy: &CopyAccess,
+    ) -> Result<()> {
+        self.translate_admitted(guest_address, destination.len(), copy)?;
+        if self.user_accessible_prefix_admitted(guest_address, destination.len(), copy)?
+            != destination.len()
+        {
             return Err(Error::GuestMemoryAccessDenied {
                 address: guest_address,
                 length: destination.len(),
             });
         }
-        self.read_translated_raw(guest_address, destination)
+        self.read_translated_raw_admitted(guest_address, destination, copy)
     }
 
     pub fn write(&mut self, guest_address: u64, source: &[u8]) -> Result<()> {
-        self.translate(guest_address, source.len())?;
-        if self.user_accessible_prefix(guest_address, source.len())? != source.len() {
+        self.memory
+            .with_copy(|copy| self.write_admitted(guest_address, source, copy))
+    }
+
+    fn write_admitted(&self, guest_address: u64, source: &[u8], copy: &CopyAccess) -> Result<()> {
+        self.translate_admitted(guest_address, source.len(), copy)?;
+        if self.user_accessible_prefix_admitted(guest_address, source.len(), copy)? != source.len()
+        {
             return Err(Error::GuestMemoryAccessDenied {
                 address: guest_address,
                 length: source.len(),
             });
         }
-        self.write_translated_raw(guest_address, source)
+        self.write_translated_raw_admitted(guest_address, source, copy)
     }
 
     pub(crate) fn copy_to_user(&self, guest_address: u64, source: &[u8]) -> Result<()> {
@@ -1068,10 +1365,21 @@ impl UserMemory {
     }
 
     fn write_user_prefix(&self, guest_address: u64, source: &[u8], partial: bool) -> Result<usize> {
+        self.memory
+            .with_copy(|copy| self.write_user_prefix_admitted(guest_address, source, partial, copy))
+    }
+
+    fn write_user_prefix_admitted(
+        &self,
+        guest_address: u64,
+        source: &[u8],
+        partial: bool,
+        copy: &CopyAccess,
+    ) -> Result<usize> {
         if source.is_empty() {
             return Ok(0);
         }
-        self.translate(guest_address, 1)?;
+        self.translate_admitted(guest_address, 1, copy)?;
         let requested_end = guest_address.checked_add(source.len() as u64).ok_or(
             Error::GuestMemoryAccessDenied {
                 address: guest_address,
@@ -1100,27 +1408,46 @@ impl UserMemory {
         let length = usize::try_from(cursor - guest_address).expect("copyout prefix fits usize");
         if length == source.len() || (partial && length != 0) {
             let physical = access.translate(guest_address, length)?;
-            self.memory.write_raw(physical, &source[..length])?;
+            self.memory
+                .write_raw_admitted(physical, &source[..length], copy)?;
         }
         Ok(length)
     }
 
     pub fn zero(&mut self, guest_address: u64, length: usize) -> Result<()> {
-        self.translate(guest_address, length)?;
-        if self.user_accessible_prefix(guest_address, length)? != length {
+        self.memory
+            .with_copy(|copy| self.zero_admitted(guest_address, length, copy))
+    }
+
+    fn zero_admitted(&self, guest_address: u64, length: usize, copy: &CopyAccess) -> Result<()> {
+        self.translate_admitted(guest_address, length, copy)?;
+        if self.user_accessible_prefix_admitted(guest_address, length, copy)? != length {
             return Err(Error::GuestMemoryAccessDenied {
                 address: guest_address,
                 length,
             });
         }
-        self.memory
-            .zero_raw(self.translate(guest_address, length)?, length)
+        self.memory.zero_raw_admitted(
+            self.translate_admitted(guest_address, length, copy)?,
+            length,
+            copy,
+        )
     }
 
     pub(crate) fn user_accessible_prefix(
         &self,
         guest_address: u64,
         length: usize,
+    ) -> Result<usize> {
+        self.memory
+            .with_copy(|copy| self.user_accessible_prefix_admitted(guest_address, length, copy))
+    }
+
+    fn user_accessible_prefix_admitted(
+        &self,
+        guest_address: u64,
+        length: usize,
+        _copy: &CopyAccess,
     ) -> Result<usize> {
         if length == 0 {
             return Ok(0);
@@ -1162,6 +1489,16 @@ impl UserMemory {
     }
 
     pub(crate) fn user_writable_prefix(&self, guest_address: u64, length: usize) -> Result<usize> {
+        self.memory
+            .with_copy(|copy| self.user_writable_prefix_admitted(guest_address, length, copy))
+    }
+
+    fn user_writable_prefix_admitted(
+        &self,
+        guest_address: u64,
+        length: usize,
+        _copy: &CopyAccess,
+    ) -> Result<usize> {
         if length == 0 {
             return Ok(0);
         }
@@ -1226,12 +1563,20 @@ impl MemoryAccess for GuestMemory {
                 continue;
             }
 
+            // Admission errors are backend failures, never ordinary faults.
+            // The admitted helpers below can only produce layout/access
+            // faults; poison is checked separately even after a real prefix.
+            #[cfg(test)]
+            self.before_vector_copy(total);
+            let copy = self.copy_access().map_err(|_| Errno::EIO)?;
             let requested = (read_from[source_index].len() - source_offset)
                 .min(write_to[destination_index].len() - destination_offset);
             let address = read_from[source_index].as_ptr() as u64 + source_offset as u64;
             let count = self
-                .user_accessible_prefix(address, requested)
+                .user()
+                .user_accessible_prefix_admitted(address, requested, &copy)
                 .unwrap_or_default();
+            self.check_copy_failure().map_err(|_| Errno::EIO)?;
             if count == 0 {
                 return if total == 0 {
                     Err(Errno::EFAULT)
@@ -1241,7 +1586,8 @@ impl MemoryAccess for GuestMemory {
             }
             let destination =
                 &mut write_to[destination_index][destination_offset..destination_offset + count];
-            if self.read_raw(address, destination).is_err() {
+            if self.read_raw_admitted(address, destination, &copy).is_err() {
+                self.check_copy_failure().map_err(|_| Errno::EIO)?;
                 return if total == 0 {
                     Err(Errno::EFAULT)
                 } else {
@@ -1251,6 +1597,9 @@ impl MemoryAccess for GuestMemory {
             source_offset += count;
             destination_offset += count;
             total += count;
+            #[cfg(test)]
+            self.after_vector_copy(total);
+            self.check_copy_failure().map_err(|_| Errno::EIO)?;
             if count < requested {
                 return Ok(total);
             }
@@ -1281,14 +1630,19 @@ impl MemoryAccess for GuestMemory {
                 continue;
             }
 
+            #[cfg(test)]
+            self.before_vector_copy(total);
+            let copy = self.copy_access().map_err(|_| Errno::EIO)?;
             let count = (read_from[source_index].len() - source_offset)
                 .min(write_to[destination_index].len() - destination_offset);
             let address =
                 write_to[destination_index].as_mut_ptr() as u64 + destination_offset as u64;
             let requested = count;
             let count = self
-                .user_accessible_prefix(address, requested)
+                .user()
+                .user_accessible_prefix_admitted(address, requested, &copy)
                 .unwrap_or_default();
+            self.check_copy_failure().map_err(|_| Errno::EIO)?;
             if count == 0 {
                 return if total == 0 {
                     Err(Errno::EFAULT)
@@ -1297,7 +1651,8 @@ impl MemoryAccess for GuestMemory {
                 };
             }
             let source = &read_from[source_index][source_offset..source_offset + count];
-            if self.write_raw(address, source).is_err() {
+            if self.write_raw_admitted(address, source, &copy).is_err() {
+                self.check_copy_failure().map_err(|_| Errno::EIO)?;
                 return if total == 0 {
                     Err(Errno::EFAULT)
                 } else {
@@ -1307,6 +1662,9 @@ impl MemoryAccess for GuestMemory {
             source_offset += count;
             destination_offset += count;
             total += count;
+            #[cfg(test)]
+            self.after_vector_copy(total);
+            self.check_copy_failure().map_err(|_| Errno::EIO)?;
             if count < requested {
                 return Ok(total);
             }
@@ -1452,12 +1810,17 @@ impl MemoryAccess for UserMemory {
                 continue;
             }
 
+            // Keep gate failure out of the ordinary EFAULT/partial mapping.
+            #[cfg(test)]
+            self.memory.before_vector_copy(total);
+            let copy = self.memory.copy_access().map_err(|_| Errno::EIO)?;
             let requested = (read_from[source_index].len() - source_offset)
                 .min(write_to[destination_index].len() - destination_offset);
             let address = read_from[source_index].as_ptr() as u64 + source_offset as u64;
             let count = self
-                .user_accessible_prefix(address, requested)
+                .user_accessible_prefix_admitted(address, requested, &copy)
                 .unwrap_or_default();
+            self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
             if count == 0 {
                 return if total == 0 {
                     Err(Errno::EFAULT)
@@ -1467,7 +1830,11 @@ impl MemoryAccess for UserMemory {
             }
             let destination =
                 &mut write_to[destination_index][destination_offset..destination_offset + count];
-            if self.read_translated_raw(address, destination).is_err() {
+            if self
+                .read_translated_raw_admitted(address, destination, &copy)
+                .is_err()
+            {
+                self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
                 return if total == 0 {
                     Err(Errno::EFAULT)
                 } else {
@@ -1477,6 +1844,9 @@ impl MemoryAccess for UserMemory {
             source_offset += count;
             destination_offset += count;
             total += count;
+            #[cfg(test)]
+            self.memory.after_vector_copy(total);
+            self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
             if count < requested {
                 return Ok(total);
             }
@@ -1507,14 +1877,18 @@ impl MemoryAccess for UserMemory {
                 continue;
             }
 
+            #[cfg(test)]
+            self.memory.before_vector_copy(total);
+            let copy = self.memory.copy_access().map_err(|_| Errno::EIO)?;
             let count = (read_from[source_index].len() - source_offset)
                 .min(write_to[destination_index].len() - destination_offset);
             let address =
                 write_to[destination_index].as_mut_ptr() as u64 + destination_offset as u64;
             let requested = count;
             let count = self
-                .user_accessible_prefix(address, requested)
+                .user_accessible_prefix_admitted(address, requested, &copy)
                 .unwrap_or_default();
+            self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
             if count == 0 {
                 return if total == 0 {
                     Err(Errno::EFAULT)
@@ -1523,7 +1897,11 @@ impl MemoryAccess for UserMemory {
                 };
             }
             let source = &read_from[source_index][source_offset..source_offset + count];
-            if self.write_translated_raw(address, source).is_err() {
+            if self
+                .write_translated_raw_admitted(address, source, &copy)
+                .is_err()
+            {
+                self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
                 return if total == 0 {
                     Err(Errno::EFAULT)
                 } else {
@@ -1533,6 +1911,9 @@ impl MemoryAccess for UserMemory {
             source_offset += count;
             destination_offset += count;
             total += count;
+            #[cfg(test)]
+            self.memory.after_vector_copy(total);
+            self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
             if count < requested {
                 return Ok(total);
             }
@@ -1546,6 +1927,631 @@ mod tests {
     use reverie::syscalls::AddrMut;
 
     use super::*;
+
+    mod entry_copy_tests {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        use futures::FutureExt;
+        use reverie::syscalls::Addr;
+        use reverie::syscalls::AddrSlice;
+        use reverie::syscalls::AddrSliceMut;
+
+        use super::*;
+
+        const BASE: u64 = 0x1000;
+
+        fn cause() -> Arc<Error> {
+            Arc::new(Error::EntryControl {
+                operation: "controlled memory-copy poison",
+                source: io::Error::other("controlled memory-copy poison"),
+            })
+        }
+
+        fn assert_cause<T>(result: Result<T>, cause: &Arc<Error>) {
+            match result {
+                Err(error) => assert!(error.retains_primary(cause), "{error}"),
+                Ok(_) => panic!("poison became typed success"),
+            }
+        }
+
+        #[test]
+        fn clones_share_gate_but_new_views_and_snapshots_do_not() {
+            let mut memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
+            memory.write_raw(BASE, b"data").unwrap();
+            let mut clone = memory.clone();
+            let global = Arc::new(());
+            let run = crate::failure::RunFailure::new(&global);
+            clone.set_failure_context(Some(FailureContext::new(
+                run.clone(),
+                reverie::Pid::from_raw(3),
+                reverie::Pid::from_raw(4),
+            )));
+            assert!(memory.failure_context.is_none());
+            assert!(clone.clone().failure_context.is_some());
+            assert!(Arc::ptr_eq(&memory.entry_gate(), &clone.entry_gate()));
+            assert!(format!("{clone:?}").contains("GuestMemory"));
+
+            let view = GuestMemory::from_backing_slice(BASE, memory.mapping.slice.clone()).unwrap();
+            let sparse = clone.snapshot().unwrap();
+            let fallback = clone
+                .snapshot_with_sparse_copy(|_, _, _| Err(io::Error::other("forced fallback")))
+                .unwrap();
+            for fresh in [&view, &sparse, &fallback] {
+                assert!(!Arc::ptr_eq(&memory.entry_gate(), &fresh.entry_gate()));
+                assert!(fresh.failure_context.is_none());
+            }
+            let original = cause();
+            let pending = clone
+                .entry_gate()
+                .poison(None, Error::SharedFailure(original.clone()));
+            assert!(Arc::ptr_eq(
+                &pending,
+                &memory.entry_gate().pending_failure().unwrap()
+            ));
+            assert_cause(memory.write(BASE, b"stop"), &original);
+            for fresh in [&view, &sparse, &fallback] {
+                let mut bytes = [0; 4];
+                fresh.read_raw(BASE, &mut bytes).unwrap();
+                assert_eq!(&bytes, b"data");
+            }
+            assert!(
+                run.primary().is_none(),
+                "memory must not publish Tool failure"
+            );
+        }
+
+        #[test]
+        fn typed_access_poison_preserves_cause_bytes_and_empty_distinctions() {
+            let mut memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
+            memory.write_raw(BASE, b"keep").unwrap();
+            // A separate test view observes effects without bypassing the
+            // poisoned Mapping's admission. No production shared-view claim.
+            let observer =
+                GuestMemory::from_backing_slice(BASE, memory.mapping.slice.clone()).unwrap();
+            let original = cause();
+            memory
+                .entry_gate()
+                .poison(None, Error::SharedFailure(original.clone()));
+            let mut user = memory.user();
+            assert_cause(memory.read(BASE, &mut [0; 4]), &original);
+            assert_cause(memory.read_raw(BASE, &mut [0; 4]), &original);
+            assert_cause(memory.write(BASE, b"lost"), &original);
+            assert_cause(memory.write_raw(BASE, b"lost"), &original);
+            assert_cause(memory.zero(BASE, 4), &original);
+            assert_cause(memory.zero_raw(BASE, 4), &original);
+            assert_cause(memory.discard_pages(BASE, PAGE_SIZE), &original);
+            assert_cause(user.read(BASE, &mut [0; 4]), &original);
+            assert_cause(user.write(BASE, b"lost"), &original);
+            assert_cause(user.zero(BASE, 4), &original);
+            assert_cause(user.write_injection(BASE, b"lost"), &original);
+            assert_cause(user.copy_to_user(BASE, b"lost"), &original);
+            assert_cause(user.copy_to_user_prefix(BASE, b"lost"), &original);
+            assert_cause(user.put_user_i32(BASE, 0), &original);
+            assert_cause(user.user_accessible_prefix(BASE, 4), &original);
+            assert_cause(user.user_writable_prefix(BASE, 4), &original);
+            assert_cause(user.host_operand(BASE, 4), &original);
+            assert_cause(user.retain_translated_range(BASE, 4), &original);
+            assert_cause(memory.snapshot(), &original);
+            assert_cause(memory.read(u64::MAX, &mut []), &original);
+            assert_cause(user.copy_to_user_prefix(u64::MAX, &[]), &original);
+            assert_cause(user.user_accessible_prefix(u64::MAX, 0), &original);
+            let mut bytes = [0; 4];
+            observer.read_raw(BASE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"keep");
+        }
+
+        fn vector_poison_case<M: MemoryAccess>(
+            mut adapter: M,
+            memory: &GuestMemory,
+            observer: &GuestMemory,
+            original: &Arc<Error>,
+            poison_after: usize,
+            write: bool,
+        ) {
+            let mut output = [0xa5; 4];
+            let result = if write {
+                let source = [io::IoSlice::new(b"AB"), io::IoSlice::new(b"CD")];
+                // SAFETY: MemoryAccess treats these guest addresses only as
+                // remote operands; this caller never dereferences the slice.
+                let mut destination = unsafe {
+                    AddrSliceMut::from_raw_parts(AddrMut::from_raw(BASE as usize).unwrap(), 4)
+                };
+                adapter.write_vectored(&source, &mut [unsafe { destination.as_ioslice_mut() }])
+            } else {
+                // SAFETY: as above, this is an address descriptor for the
+                // actual adapter, not a host dereference of the guest address.
+                let source =
+                    unsafe { AddrSlice::from_raw_parts(Addr::from_raw(BASE as usize).unwrap(), 4) };
+                let (left, right) = output.split_at_mut(2);
+                adapter.read_vectored(
+                    &[unsafe { source.as_ioslice() }],
+                    &mut [io::IoSliceMut::new(left), io::IoSliceMut::new(right)],
+                )
+            };
+            assert_eq!(result, Err(Errno::EIO));
+            let mut expected = [0xa5; 4];
+            expected[..poison_after].copy_from_slice(&b"ABCD"[..poison_after]);
+            if write {
+                observer.read_raw(BASE, &mut output).unwrap();
+            }
+            assert_eq!(
+                output, expected,
+                "actual prefix must remain; suffix must not change"
+            );
+            assert_cause(memory.read(BASE, &mut [0]), original);
+            assert_eq!(
+                MemoryAccess::read(&adapter, Addr::from_raw(BASE as usize).unwrap(), &mut [0]),
+                Err(Errno::EIO)
+            );
+            assert_eq!(
+                MemoryAccess::write(
+                    &mut adapter,
+                    AddrMut::from_raw(BASE as usize).unwrap(),
+                    b"x"
+                ),
+                Err(Errno::EIO)
+            );
+            // Empty trait transfers do not acquire admission or erase poison.
+            assert_eq!(adapter.read_vectored(&[], &mut []), Ok(0));
+            assert_eq!(adapter.write_vectored(&[], &mut []), Ok(0));
+            assert_eq!(
+                MemoryAccess::read(&adapter, Addr::from_raw(usize::MAX).unwrap(), &mut []),
+                Ok(0)
+            );
+            assert_eq!(
+                MemoryAccess::write(&mut adapter, AddrMut::from_raw(usize::MAX).unwrap(), &[]),
+                Ok(0)
+            );
+            assert!(memory.entry_gate().pending_failure().is_some());
+        }
+
+        #[test]
+        fn both_vectored_adapters_return_eio_before_between_and_after_actual_portions() {
+            for user in [false, true] {
+                for write in [false, true] {
+                    for poison_after in [0, 2, 4] {
+                        let mut memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
+                        memory
+                            .write_raw(BASE, if write { &[0xa5; 4] } else { b"ABCD" })
+                            .unwrap();
+                        let observer =
+                            GuestMemory::from_backing_slice(BASE, memory.mapping.slice.clone())
+                                .unwrap();
+                        let original = cause();
+                        let gate = memory.entry_gate();
+                        let calls = Arc::new(AtomicUsize::new(0));
+                        let hook_calls = calls.clone();
+                        let hook_cause = original.clone();
+                        memory.after_vector_copy = Some(Arc::new(move |total| {
+                            hook_calls.fetch_add(1, Ordering::Relaxed);
+                            if total == poison_after {
+                                gate.poison(None, Error::SharedFailure(hook_cause.clone()));
+                            }
+                        }));
+                        if poison_after == 0 {
+                            memory
+                                .entry_gate()
+                                .poison(None, Error::SharedFailure(original.clone()));
+                        }
+                        if user {
+                            vector_poison_case(
+                                memory.user(),
+                                &memory,
+                                &observer,
+                                &original,
+                                poison_after,
+                                write,
+                            );
+                        } else {
+                            vector_poison_case(
+                                memory.clone(),
+                                &memory,
+                                &observer,
+                                &original,
+                                poison_after,
+                                write,
+                            );
+                        }
+                        assert_eq!(calls.load(Ordering::Relaxed), poison_after / 2);
+                    }
+                }
+            }
+        }
+
+        fn healthy_adapter<M: MemoryAccess>(mut adapter: M) {
+            let address = AddrMut::from_raw(BASE as usize).unwrap();
+            assert_eq!(MemoryAccess::write(&mut adapter, address, b"RO"), Ok(2));
+            let boundary = BASE as usize + PAGE_SIZE - 2;
+            assert_eq!(
+                MemoryAccess::write(&mut adapter, AddrMut::from_raw(boundary).unwrap(), b"ABCD"),
+                Ok(2)
+            );
+            let mut bytes = [0xa5; 4];
+            assert_eq!(
+                MemoryAccess::read(&adapter, Addr::from_raw(boundary).unwrap(), &mut bytes),
+                Ok(2)
+            );
+            assert_eq!(bytes, [b'A', b'B', 0xa5, 0xa5]);
+            assert_eq!(
+                MemoryAccess::read(
+                    &adapter,
+                    Addr::from_raw(BASE as usize - 1).unwrap(),
+                    &mut [0]
+                ),
+                Err(Errno::EFAULT)
+            );
+            assert_eq!(
+                MemoryAccess::write(
+                    &mut adapter,
+                    AddrMut::from_raw(BASE as usize - 1).unwrap(),
+                    b"x"
+                ),
+                Err(Errno::EFAULT)
+            );
+            assert_eq!(adapter.read_vectored(&[], &mut []), Ok(0));
+            assert_eq!(adapter.write_vectored(&[], &mut []), Ok(0));
+        }
+
+        #[test]
+        fn healthy_adapters_keep_accessible_writes_faults_and_partial_counts() {
+            for user in [false, true] {
+                let memory = GuestMemory::new(BASE, 2 * PAGE_SIZE).unwrap();
+                memory
+                    .map_user_permissions(BASE, PAGE_SIZE as u64, true, false)
+                    .unwrap();
+                memory
+                    .map_user_range(BASE + PAGE_SIZE as u64, PAGE_SIZE as u64, true)
+                    .unwrap();
+                memory.enable_user_access();
+                if user {
+                    healthy_adapter(memory.user());
+                } else {
+                    healthy_adapter(memory.clone());
+                }
+                assert!(memory.user().copy_to_user(BASE, b"denied").is_err());
+                assert!(memory.user().put_user_i32(BASE, 0).is_err());
+                let mut bytes = [0; 2];
+                memory.read_raw(BASE, &mut bytes).unwrap();
+                assert_eq!(&bytes, b"RO");
+                assert!(memory.user().read(memory.guest_end(), &mut []).is_ok());
+                assert!(memory.user().read(u64::MAX, &mut []).is_err());
+                assert_eq!(memory.user().copy_to_user_prefix(u64::MAX, &[]).unwrap(), 0);
+            }
+        }
+
+        #[test]
+        fn admitted_nested_copies_finish_while_close_waits_and_operands_hold_no_lease() {
+            let memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
+            memory.write_raw(BASE, b"data").unwrap();
+            let gate = memory.entry_gate();
+            let copy = memory.copy_access().unwrap();
+            let closing = gate.try_close().unwrap().unwrap();
+            let mut finish = Box::pin(closing.finish());
+            assert!(finish.as_mut().now_or_never().is_none());
+            let user = memory.user();
+            let mut bytes = [0; 4];
+            user.read_admitted(BASE, &mut bytes, &copy).unwrap();
+            assert_eq!(&bytes, b"data");
+            assert_eq!(
+                user.write_user_prefix_admitted(BASE, b"next", true, &copy)
+                    .unwrap(),
+                4
+            );
+            user.zero_admitted(BASE + 4, 4, &copy).unwrap();
+            assert!(finish.as_mut().now_or_never().is_none());
+            drop(copy);
+            let closed = finish
+                .now_or_never()
+                .expect("last copy did not retire")
+                .unwrap();
+            assert!(gate.try_copy(None).unwrap().is_none());
+            drop(closed);
+            let operand = user.host_operand(BASE, 4).unwrap();
+            let closed = gate
+                .try_close()
+                .unwrap()
+                .unwrap()
+                .finish()
+                .now_or_never()
+                .expect("retained operand held a copy lease")
+                .unwrap();
+            assert!(memory.mapping.address_space.try_lock().is_ok());
+            assert!(memory.mapping.slice.backing.host_access.try_lock().is_ok());
+            assert_eq!(operand.address(), memory.host_address() as usize);
+            drop(closed);
+            memory.read_raw(BASE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"next");
+        }
+
+        #[test]
+        fn copy_unwind_captures_handle_origin_without_publishing_tool_failure() {
+            let mut memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
+            let global = Arc::new(());
+            let run = crate::failure::RunFailure::new(&global);
+            memory.set_failure_context(Some(FailureContext::new(
+                run.clone(),
+                reverie::Pid::from_raw(3),
+                reverie::Pid::from_raw(5),
+            )));
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _copy = memory.copy_access().unwrap();
+                    panic!("controlled admitted-copy unwind");
+                }))
+                .is_err()
+            );
+            let failure = memory.entry_gate().pending_failure().unwrap();
+            assert!(failure.origin.is_some());
+            assert!(matches!(
+                failure.error().primary(),
+                Error::EntryControl {
+                    operation: "host copy unwound",
+                    ..
+                }
+            ));
+            assert!(
+                run.primary().is_none(),
+                "memory helpers must capture, never publish"
+            );
+        }
+
+        #[test]
+        fn retained_memory_copy_keeps_its_issuing_callback_generation() {
+            use crate::entry::owner::DriverScope;
+
+            let driver = DriverScope::new();
+            let owner = driver.owner();
+            let first = owner.begin_callback(None).unwrap();
+            let first_origin = first.origin();
+            let mut memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
+            memory.set_operation_origin(Some(first_origin.clone()));
+            let retained = memory.clone();
+            drop(first);
+            let second = owner.begin_callback(None).unwrap();
+            let second_origin = second.origin();
+            memory.set_operation_origin(Some(second_origin.clone()));
+            let snapshot = memory.snapshot().unwrap();
+            assert!(snapshot.operation_origin.is_none());
+
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _copy = retained.copy_access().unwrap();
+                    panic!("retained callback copy unwind");
+                }))
+                .is_err()
+            );
+            let pending = memory.entry_gate().pending_failure().unwrap();
+            let captured = pending.operation.as_ref().unwrap();
+            assert!(captured.same_callback(&first_origin));
+            assert!(!captured.same_callback(&second_origin));
+            assert!(captured.callback_dropped());
+            assert!(!second_origin.callback_dropped());
+            assert!(Arc::ptr_eq(&owner.pending()[0], &pending));
+            assert!(matches!(
+                memory.read_raw(BASE, &mut [0]).unwrap_err().primary(),
+                Error::EntryControl {
+                    operation: "host copy unwound",
+                    ..
+                }
+            ));
+            drop(second);
+            let retirement = driver.retire();
+            retirement.result.unwrap();
+            assert_eq!(retirement.pending.len(), 1);
+            assert!(Arc::ptr_eq(&retirement.pending[0], &pending));
+            retirement.notification.notify();
+        }
+
+        #[test]
+        fn retired_memory_origin_retains_cause_without_expired_publisher() {
+            use crate::entry::owner::DriverLifecycle;
+            use crate::entry::owner::DriverScope;
+
+            let driver = DriverScope::new();
+            let owner = driver.owner();
+            let callback = owner.begin_callback(None).unwrap();
+            let origin = callback.origin();
+            let mut memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
+            let global = Arc::new(());
+            let run = crate::failure::RunFailure::new(&global);
+            memory.set_failure_context(Some(FailureContext::new(
+                run.clone(),
+                reverie::Pid::from_raw(7),
+                reverie::Pid::from_raw(9),
+            )));
+            memory.set_operation_origin(Some(origin.clone()));
+            drop(callback);
+            let retirement = driver.retire();
+            retirement.result.unwrap();
+            assert!(retirement.pending.is_empty());
+            retirement.notification.notify();
+            drop(global);
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _copy = memory.copy_access().unwrap();
+                    panic!("copy after owner retirement");
+                }))
+                .is_err()
+            );
+            let pending = memory.entry_gate().pending_failure().unwrap();
+            assert_eq!(
+                pending.operation.as_ref().unwrap().lifecycle(),
+                DriverLifecycle::Retired
+            );
+            assert!(pending.operation.as_ref().unwrap().same_callback(&origin));
+            assert!(
+                owner.pending().is_empty(),
+                "closed registration accepted a cause"
+            );
+            assert!(
+                run.primary().is_none(),
+                "copy called an expired Tool publisher"
+            );
+            assert!(matches!(
+                pending.error().primary(),
+                Error::EntryControl {
+                    operation: "host copy unwound",
+                    ..
+                }
+            ));
+            assert!(matches!(
+                memory.read_raw(BASE, &mut [0]).unwrap_err().primary(),
+                Error::EntryControl {
+                    operation: "host copy unwound",
+                    ..
+                }
+            ));
+        }
+
+        #[test]
+        fn snapshot_fallback_refuses_a_retained_failure_before_copying() {
+            let memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
+            memory.write_raw(BASE, b"keep").unwrap();
+            let original = cause();
+            let result = memory.snapshot_with_sparse_copy(|_, _, _| {
+                memory
+                    .entry_gate()
+                    .poison(None, Error::SharedFailure(original.clone()));
+                Err(io::Error::other("force fallback after poison"))
+            });
+            assert_cause(result, &original);
+            assert!(memory.mapping.allocation.try_lock().is_ok());
+            assert!(memory.mapping.address_space.try_lock().is_ok());
+            assert!(memory.mapping.slice.backing.host_access.try_lock().is_ok());
+        }
+
+        #[test]
+        fn try_raw_write_defers_closed_copy_and_retains_poison_and_bounds() {
+            let memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
+            memory.write_raw(BASE, b"keep").unwrap();
+            // This separate test view observes the bytes while the original
+            // Mapping is closed; it grants no production shared-view policy.
+            let observer =
+                GuestMemory::from_backing_slice(BASE, memory.mapping.slice.clone()).unwrap();
+            let gate = memory.entry_gate();
+            let closed = gate
+                .try_close()
+                .unwrap()
+                .unwrap()
+                .finish()
+                .now_or_never()
+                .expect("idle Mapping did not close")
+                .unwrap();
+            // Holding these locks makes any premature backing/state access a
+            // test deadlock rather than a falsely successful admission check.
+            {
+                let _state = memory.mapping.address_space.lock().unwrap();
+                let _backing = memory.mapping.slice.backing.host_access.lock().unwrap();
+                assert_eq!(memory.try_write_raw(BASE, b"lost").unwrap(), None);
+                assert_eq!(memory.try_write_raw(u64::MAX, b"x").unwrap(), None);
+            }
+            let mut bytes = [0; 4];
+            observer.read_raw(BASE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"keep");
+            drop(closed);
+            assert_eq!(memory.try_write_raw(BASE, b"next").unwrap(), Some(()));
+            observer.read_raw(BASE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"next");
+            assert_eq!(
+                memory.try_write_raw(memory.guest_end(), &[]).unwrap(),
+                Some(())
+            );
+            for (address, source) in [
+                (BASE - 1, b"x".as_slice()),
+                (memory.guest_end() - 1, b"xy".as_slice()),
+            ] {
+                let expected = memory.write_raw(address, source).unwrap_err();
+                let actual = memory.try_write_raw(address, source).unwrap_err();
+                assert_eq!(actual.to_string(), expected.to_string());
+                assert!(matches!(
+                    actual,
+                    Error::InvalidGuestAddress {
+                        address: found_address,
+                        length,
+                        guest_base,
+                        guest_end,
+                    } if found_address == address
+                        && length == source.len()
+                        && guest_base == BASE
+                        && guest_end == memory.guest_end()
+                ));
+            }
+            observer.read_raw(BASE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"next");
+            let original = cause();
+            gate.poison(None, Error::SharedFailure(original.clone()));
+            assert_cause(memory.try_write_raw(BASE, b"lost"), &original);
+            assert_cause(memory.try_write_raw(u64::MAX, &[]), &original);
+            observer.read_raw(BASE, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"next");
+        }
+
+        #[test]
+        fn read_preparation_runs_once_with_one_token_and_preserves_poison() {
+            let memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
+            memory.write_raw(BASE, b"data").unwrap();
+            let gate = memory.entry_gate();
+            let closed = gate
+                .try_close()
+                .unwrap()
+                .unwrap()
+                .finish()
+                .now_or_never()
+                .unwrap()
+                .unwrap();
+            let calls = std::cell::Cell::new(0);
+            assert_eq!(
+                memory
+                    .try_read_with(|_| {
+                        calls.set(calls.get() + 1);
+                        Ok(())
+                    })
+                    .unwrap(),
+                None
+            );
+            assert_eq!(calls.get(), 0);
+            drop(closed);
+            let mut closing = None;
+            let result = memory
+                .try_read_with(|access| {
+                    calls.set(calls.get() + 1);
+                    // A nested read must use this token even after close starts.
+                    closing = Some(gate.try_close().unwrap().unwrap());
+                    let mut bytes = [0; 4];
+                    access.read_raw(BASE, &mut bytes)?;
+                    access.read_raw(BASE, &mut bytes)?;
+                    Ok(bytes)
+                })
+                .unwrap();
+            assert_eq!(result, Some(*b"data"));
+            assert_eq!(calls.get(), 1);
+            let closed = closing
+                .unwrap()
+                .finish()
+                .now_or_never()
+                .expect("read token escaped")
+                .unwrap();
+            drop(closed);
+            let original = cause();
+            assert_cause(
+                memory.try_read_with(|access| {
+                    let mut bytes = [0; 4];
+                    access.read_raw(BASE, &mut bytes)?;
+                    assert_eq!(&bytes, b"data");
+                    gate.poison(None, Error::SharedFailure(original.clone()));
+                    Ok(bytes)
+                }),
+                &original,
+            );
+            assert_cause(
+                memory.try_read_with(|_| -> Result<()> {
+                    panic!("poison ran the preparation closure")
+                }),
+                &original,
+            );
+        }
+    }
 
     #[test]
     fn identity_view_preserves_tool_writes_copyout_faults_and_partial_reads() {

@@ -29,7 +29,14 @@ mod cpuid_runtime_controls {
                 )
                 .unwrap();
             backend.set_cpuid_interception(true).unwrap();
-            assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
+            assert!(matches!(
+                backend
+                    .vcpu
+                    .run()
+                    .unwrap()
+                    .expect("test entry admission was unexpectedly closed"),
+                VcpuExit::Hlt
+            ));
             let fault = backend.static_elf_exception().unwrap().unwrap();
             assert_eq!(fault.instruction_pointer, BOUNDARY - 2);
             assert_eq!(fault.vector, if crosses_page { 14 } else { 13 });

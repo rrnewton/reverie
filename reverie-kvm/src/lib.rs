@@ -12,14 +12,23 @@
 //! long-mode process personality for fixed-address static ELF executables. The
 //! latter implements only a bounded, single-process subset of Linux semantics;
 //! see the crate README for its explicit limits.
+//!
+//! The embedding process must reserve Linux real-time signal 64 exclusively
+//! for this backend. First vCPU entry installs a process-wide handler that is
+//! not restored when a backend is dropped. Existing or later signal ownership
+//! conflicts cause entry errors; these checks do not make concurrent use by
+//! another library safe. SIGURG remains the separate worker-cancellation signal.
+//! See the crate README for the complete host signal requirements.
 
 #![cfg(target_arch = "x86_64")]
+#![cfg_attr(test, feature(thread_spawn_hook))]
 
 mod bootstrap;
 mod clock;
 mod cpuid;
 mod cpuid_instruction;
 mod elf;
+mod entry;
 mod error;
 mod executor;
 mod failure;

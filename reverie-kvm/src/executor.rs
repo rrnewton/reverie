@@ -8,6 +8,7 @@
 
 use std::ffi::CStr;
 use std::ffi::CString;
+use std::future::Future;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
@@ -15,6 +16,7 @@ use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::FileExt;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -1174,7 +1176,11 @@ pub(crate) struct ElfExecutor {
     sigchld_auto_reap: Arc<AtomicBool>,
     // TODO-HUMAN-REVIEW(PR-235): Review concurrent KVM process lifecycle ownership.
     pending_processes: std::collections::BTreeMap<i32, PendingProcess>,
-    completed_processes: Vec<std::thread::JoinHandle<crate::Result<()>>>,
+    completed_processes: Vec<ChildProcessHandle>,
+    // Failed host spawns still own constructed child Tool state. Retain its
+    // consuming cleanup without polling inside the parent's borrowed callback.
+    // Mutex makes the executor Sync while each owned future only needs Send.
+    unstarted_tool_cleanup: Mutex<Vec<UnstartedToolCleanup>>,
     // Exiting workers transfer forks to their process owner before returning.
     transferred_processes: Arc<Mutex<std::collections::BTreeMap<i32, Vec<OwnedChildProcesses>>>>,
     child_completion_sender: std::sync::mpsc::Sender<i32>,
@@ -1190,6 +1196,9 @@ pub(crate) struct ElfExecutor {
     completed_signal_effects: Vec<reverie::SignalDequeue>,
     signal_effect_raw_result: Option<i64>,
 }
+
+pub(crate) type UnstartedToolCleanup =
+    Pin<Box<dyn Future<Output = crate::Result<()>> + Send + 'static>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ChildStartCommand {
@@ -1295,13 +1304,87 @@ impl ChildStartGate {
 #[derive(Default)]
 struct OwnedChildProcesses {
     pending: std::collections::BTreeMap<i32, PendingProcess>,
-    completed: Vec<std::thread::JoinHandle<crate::Result<()>>>,
+    completed: Vec<ChildProcessHandle>,
 }
 
 struct PendingProcess {
     start: ChildStartGate,
     completion: Arc<Mutex<Option<ChildCompletion>>>,
+    handle: ChildProcessHandle,
+}
+
+/// Shared only by one concrete fork owner and its physical join handle.
+/// A nonblocking wait or transfer to the leader keeps the same owner intact.
+pub(crate) struct ChildProcessPanicOwner {
+    run: Arc<crate::failure::RunFailure>,
+    error: Mutex<Option<Arc<crate::Error>>>,
+}
+
+impl ChildProcessPanicOwner {
+    pub(crate) fn new(run: Arc<crate::failure::RunFailure>) -> Arc<Self> {
+        Arc::new(Self {
+            run,
+            error: Mutex::new(None),
+        })
+    }
+
+    pub(crate) fn record(&self, error: Arc<crate::Error>) {
+        let previous = {
+            self.error
+                .lock()
+                .expect("KVM child panic owner lock poisoned")
+                .replace(error)
+        };
+        assert!(previous.is_none(), "KVM child panic cause recorded twice");
+    }
+
+    fn retain_joined(&self, payload: crate::failure::owned_future::PanicPayload) -> crate::Error {
+        let error = {
+            self.error
+                .lock()
+                .expect("KVM child panic owner lock poisoned")
+                .clone()
+        }
+        .unwrap_or_else(|| Arc::new(crate::Error::GuestWorkerPanic));
+        // The exact joined allocation is transferred after releasing the
+        // per-child guard. Completion deduplicates this same diagnostic Arc.
+        self.run
+            .retain_panic_cleanup(crate::Error::SharedFailure(error.clone()), vec![payload]);
+        crate::Error::SharedFailure(error)
+    }
+}
+
+struct ChildProcessHandle {
     handle: std::thread::JoinHandle<crate::Result<()>>,
+    panic_owner: Option<Arc<ChildProcessPanicOwner>>,
+}
+
+impl From<std::thread::JoinHandle<crate::Result<()>>> for ChildProcessHandle {
+    fn from(handle: std::thread::JoinHandle<crate::Result<()>>) -> Self {
+        Self {
+            handle,
+            panic_owner: None,
+        }
+    }
+}
+
+impl ChildProcessHandle {
+    fn join(self, unowned_panic: impl FnOnce() -> crate::Error) -> crate::Result<()> {
+        #[cfg(test)]
+        let target = self.handle.thread().id();
+        #[cfg(test)]
+        crate::entry::driver::test_observation::join(target, true, false);
+        let joined = self.handle.join();
+        #[cfg(test)]
+        crate::entry::driver::test_observation::join(target, true, true);
+        match joined {
+            Ok(result) => result,
+            Err(payload) => Err(match self.panic_owner {
+                Some(owner) => owner.retain_joined(payload),
+                None => unowned_panic(),
+            }),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1906,6 +1989,25 @@ impl AllocationCursors {
 }
 
 impl ElfExecutor {
+    /// Retain an unpolled child consumer. The outer owner must publish the
+    /// parent failure before taking and polling these futures outside callbacks.
+    pub(crate) fn retain_unstarted_tool_cleanup(&mut self, cleanup: UnstartedToolCleanup) {
+        self.unstarted_tool_cleanup
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(cleanup);
+    }
+
+    /// Transfer every retained consumer exactly once; no future is polled or
+    /// dropped while a registry guard is held. Each result remains typed.
+    pub(crate) fn take_unstarted_tool_cleanup(&mut self) -> Vec<UnstartedToolCleanup> {
+        std::mem::take(
+            self.unstarted_tool_cleanup
+                .get_mut()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
     pub(crate) fn bind_address_space(&mut self, memory: &GuestMemory) {
         self.address_space = Some(memory.clone());
     }
@@ -1981,6 +2083,7 @@ impl ElfExecutor {
             sigchld_auto_reap,
             pending_processes: std::collections::BTreeMap::new(),
             completed_processes: Vec::new(),
+            unstarted_tool_cleanup: Mutex::new(Vec::new()),
             transferred_processes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             child_completion_sender,
             child_completion_receiver: Mutex::new(child_completion_receiver),
@@ -2415,6 +2518,7 @@ impl ElfExecutor {
             sigchld_auto_reap: Arc::new(AtomicBool::new(sigchld_auto_reap)),
             pending_processes: std::collections::BTreeMap::new(),
             completed_processes: Vec::new(),
+            unstarted_tool_cleanup: Mutex::new(Vec::new()),
             transferred_processes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             child_completion_sender,
             child_completion_receiver: Mutex::new(child_completion_receiver),
@@ -2514,6 +2618,7 @@ impl ElfExecutor {
             sigchld_auto_reap: self.sigchld_auto_reap.clone(),
             pending_processes: std::collections::BTreeMap::new(),
             completed_processes: Vec::new(),
+            unstarted_tool_cleanup: Mutex::new(Vec::new()),
             transferred_processes: self.transferred_processes.clone(),
             child_completion_sender,
             child_completion_receiver: Mutex::new(child_completion_receiver),
@@ -2583,12 +2688,26 @@ impl ElfExecutor {
         completion: Arc<Mutex<Option<ChildCompletion>>>,
         handle: std::thread::JoinHandle<crate::Result<()>>,
     ) {
+        self.register_child_process_with_panic_owner(pid, start, completion, handle, None);
+    }
+
+    pub(crate) fn register_child_process_with_panic_owner(
+        &mut self,
+        pid: i32,
+        start: ChildStartGate,
+        completion: Arc<Mutex<Option<ChildCompletion>>>,
+        handle: std::thread::JoinHandle<crate::Result<()>>,
+        panic_owner: Option<Arc<ChildProcessPanicOwner>>,
+    ) {
         let previous = self.pending_processes.insert(
             pid,
             PendingProcess {
                 start,
                 completion,
-                handle,
+                handle: ChildProcessHandle {
+                    handle,
+                    panic_owner,
+                },
             },
         );
         debug_assert!(previous.is_none(), "duplicate KVM child pid {pid}");
@@ -2627,10 +2746,9 @@ impl ElfExecutor {
             .pending_processes
             .remove(&pid)
             .expect("checked unstarted KVM child disappeared");
-        let child_result = process.handle.join().map_err(|_| {
+        process.handle.join(|| {
             crate::Error::UnexpectedVcpuExit(format!("unstarted KVM child process {pid} panicked"))
         })?;
-        child_result?;
         if delivery_failed {
             return Err(crate::Error::UnexpectedVcpuExit(format!(
                 "unstarted KVM child process {pid} lost its parent start gate"
@@ -2666,9 +2784,9 @@ impl ElfExecutor {
             .remove(&pid)
             .expect("KVM child disappeared during collection");
         if block {
-            handle.join().map_err(|_| {
+            handle.join(|| {
                 crate::Error::UnexpectedVcpuExit(format!("KVM child process {pid} panicked"))
-            })??;
+            })?;
         } else {
             self.completed_processes.push(handle);
         }
@@ -2787,10 +2905,10 @@ impl ElfExecutor {
                     "KVM child process {pid} lost its parent start gate"
                 )));
             }
-            let result = process.handle.join().map_err(|_| {
+            let result = process.handle.join(|| {
                 crate::Error::UnexpectedVcpuExit(format!("KVM child process {pid} panicked"))
             });
-            match result.and_then(|result| result) {
+            match result {
                 Err(error) => errors.push(error),
                 Ok(()) => {
                     let completion = process
@@ -2817,10 +2935,10 @@ impl ElfExecutor {
             }
         }
         for handle in completed {
-            let result = handle.join().map_err(|_| {
+            let result = handle.join(|| {
                 crate::Error::UnexpectedVcpuExit("completed KVM child process panicked".to_owned())
             });
-            if let Err(error) = result.and_then(|result| result) {
+            if let Err(error) = result {
                 errors.push(error);
             }
         }
@@ -4513,6 +4631,8 @@ impl Drop for ElfExecutor {
 
 impl SyscallExecutor for ElfExecutor {
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        #[cfg(test)]
+        memory.observe_test_syscall_dispatch(request);
         self.bind_address_space(memory);
         let _retirement = self.state.file_retirement.hold();
         if let Some(result) = self.synchronize_wait4(request) {
@@ -37599,12 +37719,15 @@ mod tests {
                 });
                 worker.register_child_process(pid, start, Arc::new(Mutex::new(None)), handle);
                 let child_lifetime = lifetime.clone();
-                worker.completed_processes.push(std::thread::spawn(move || {
-                    let _lifetime = child_lifetime;
-                    Err(crate::Error::UnexpectedVcpuExit(format!(
-                        "transferred completed {pid}"
-                    )))
-                }));
+                worker.completed_processes.push(
+                    std::thread::spawn(move || {
+                        let _lifetime = child_lifetime;
+                        Err(crate::Error::UnexpectedVcpuExit(format!(
+                            "transferred completed {pid}"
+                        )))
+                    })
+                    .into(),
+                );
                 worker.transfer_child_processes_to_owner();
                 assert!(worker.pending_processes.is_empty());
                 assert!(worker.completed_processes.is_empty());
@@ -37635,6 +37758,86 @@ mod tests {
             }
         }
         owner.join_all_child_processes().unwrap();
+    }
+
+    #[test]
+    fn unstarted_tool_cleanup_retains_children_unpolled_and_transfers_once() {
+        fn require_send_sync<T: Send + Sync>() {}
+        require_send_sync::<ElfExecutor>();
+
+        let root = TestDir::new();
+        let mut parent = ElfExecutor::new(test_state(&root.0), false);
+        assert!(parent.take_unstarted_tool_cleanup().is_empty());
+        let child_tid = parent.state.pid + 1;
+        let child_pid = child_tid + 1;
+        let mut worker = parent.thread_child(child_tid).unwrap();
+        let mut process = parent.fork_child(child_pid, false, false).unwrap();
+        assert!(worker.take_unstarted_tool_cleanup().is_empty());
+        assert!(process.take_unstarted_tool_cleanup().is_empty());
+        let observed = [
+            (worker.state.task_lifecycle.clone(), child_tid),
+            (process.state.task_lifecycle.clone(), child_pid),
+        ];
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let primary = Arc::new(crate::Error::RunAborted);
+        let hook_error = Arc::new(crate::Error::UnexpectedVcpuExit(
+            "controlled deferred child consuming failure".to_owned(),
+        ));
+        for (index, child) in [worker, process].into_iter().enumerate() {
+            let polls = polls.clone();
+            let primary = primary.clone();
+            let hook_error = hook_error.clone();
+            // Deliberately Send but not Sync: only the queue's mutex supplies
+            // the executor's Sync bound. It must never poll this inline.
+            let not_sync = std::cell::Cell::new(0);
+            parent.retain_unstarted_tool_cleanup(Box::pin(async move {
+                not_sync.set(1);
+                std::future::ready(()).await;
+                assert_eq!(not_sync.get(), 1);
+                polls.fetch_add(1, Ordering::SeqCst);
+                drop(child);
+                if index == 0 {
+                    Err(crate::Error::RunAborted)
+                } else {
+                    Err(crate::Error::WithCleanup {
+                        primary,
+                        cleanup: vec![hook_error],
+                    })
+                }
+            }));
+        }
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+        for (lifecycle, tid) in &observed {
+            assert!(lifecycle.lock().unwrap().get(*tid).is_some());
+        }
+        // Retained consumers belong to this exact executor, not a copied child.
+        let mut next_worker = parent.thread_child(child_pid + 1).unwrap();
+        let mut next_process = parent.fork_child(child_pid + 2, false, false).unwrap();
+        assert!(next_worker.take_unstarted_tool_cleanup().is_empty());
+        assert!(next_process.take_unstarted_tool_cleanup().is_empty());
+        let mut retained = parent.take_unstarted_tool_cleanup().into_iter();
+        assert!(parent.take_unstarted_tool_cleanup().is_empty());
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            futures::executor::block_on(retained.next().unwrap()),
+            Err(crate::Error::RunAborted)
+        ));
+        let error = futures::executor::block_on(retained.next().unwrap()).unwrap_err();
+        let crate::Error::WithCleanup {
+            primary: actual,
+            cleanup,
+        } = error
+        else {
+            panic!("deferred cleanup lost its typed aggregate");
+        };
+        assert!(Arc::ptr_eq(&actual, &primary));
+        assert_eq!(cleanup.len(), 1);
+        assert!(Arc::ptr_eq(&cleanup[0], &hook_error));
+        assert!(retained.next().is_none());
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+        for (lifecycle, tid) in &observed {
+            assert!(lifecycle.lock().unwrap().get(*tid).is_none());
+        }
     }
 
     #[test]
@@ -37689,9 +37892,8 @@ mod tests {
         let (finished, wait_finished) = std::sync::mpsc::channel();
         for index in 0..2 {
             let child_lifetime = lifetime.clone();
-            executor
-                .completed_processes
-                .push(std::thread::spawn(move || {
+            executor.completed_processes.push(
+                std::thread::spawn(move || {
                     let _lifetime = child_lifetime;
                     if index == 0 {
                         Err(crate::Error::UnexpectedVcpuExit(
@@ -37700,19 +37902,22 @@ mod tests {
                     } else {
                         panic!("forced completed child panic");
                     }
-                }));
+                })
+                .into(),
+            );
         }
         let child_lifetime = lifetime.clone();
-        executor
-            .completed_processes
-            .push(std::thread::spawn(move || {
+        executor.completed_processes.push(
+            std::thread::spawn(move || {
                 let _lifetime = child_lifetime;
                 wait_release
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap();
                 finished.send(()).unwrap();
                 Ok(())
-            }));
+            })
+            .into(),
+        );
         let release_thread = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(100));
             release.send(()).unwrap();
@@ -37728,10 +37933,10 @@ mod tests {
         release_thread.join().unwrap();
         for (_, process) in std::mem::take(&mut executor.pending_processes) {
             let _ = process.start.start();
-            let _ = process.handle.join();
+            let _ = process.handle.handle.join();
         }
         for handle in executor.completed_processes.drain(..) {
-            let _ = handle.join();
+            let _ = handle.handle.join();
         }
         wait_finished
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -37961,7 +38166,7 @@ mod tests {
 
         sibling_release_sender.send(()).unwrap();
         let sibling = executor.pending_processes.remove(&3).unwrap();
-        sibling.handle.join().unwrap().unwrap();
+        sibling.handle.handle.join().unwrap().unwrap();
         assert!(sibling_finished.load(Ordering::Acquire));
     }
 
@@ -41668,5 +41873,144 @@ mod tests {
             observed,
             vec![(negative_errno(libc::EOPNOTSUPP), 4096, true, true); 12]
         );
+    }
+}
+
+#[cfg(test)]
+mod child_panic_owner_tests {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    use super::*;
+
+    struct JoinedPayload {
+        dropped: Arc<Mutex<Vec<usize>>>,
+        _send_only: Cell<u8>,
+    }
+
+    impl Drop for JoinedPayload {
+        fn drop(&mut self) {
+            self.dropped
+                .lock()
+                .unwrap()
+                .push(std::ptr::from_ref(self) as usize);
+        }
+    }
+
+    fn payload(
+        dropped: &Arc<Mutex<Vec<usize>>>,
+    ) -> (crate::failure::owned_future::PanicPayload, usize) {
+        let payload = Box::new(JoinedPayload {
+            dropped: dropped.clone(),
+            _send_only: Cell::new(0),
+        });
+        let address = std::ptr::from_ref(payload.as_ref()) as usize;
+        (payload, address)
+    }
+
+    #[test]
+    fn fork_join_routes_retain_exact_payload_and_typed_owner() {
+        // Exercise actual registered host handles through every production
+        // join route. This constructs terminal fork outcomes; it does not run
+        // a guest or inject a Tool callback into the fork execution loop.
+        for route in ["discard", "blocking", "pending", "completed", "transferred"] {
+            let mut leader =
+                ElfExecutor::new(native_loaded_state(std::path::Path::new("/")), false);
+            let mut worker = leader.thread_child(7).unwrap();
+            let global = Arc::new(());
+            let run = crate::failure::RunFailure::new(&global);
+            let context = crate::failure::FailureContext::new(
+                run.clone(),
+                reverie::Pid::from_raw(2),
+                reverie::Pid::from_raw(2),
+            );
+            let message = format!("typed fork cleanup through {route}");
+            context.publish("fork cleanup", crate::Error::GuestClock(message.clone()));
+            let cause = run.primary().unwrap();
+            let panic_owner = ChildProcessPanicOwner::new(run.clone());
+            let child_owner = panic_owner.clone();
+            let child_cause = cause.clone();
+            let dropped = Arc::new(Mutex::new(Vec::new()));
+            let (original, original_address) = payload(&dropped);
+            let (secondary, secondary_address) = payload(&dropped);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let gate = ChildStartGate::new(sender);
+            let completion = Arc::new(Mutex::new(None));
+            let child_completion = completion.clone();
+            let (ready, wait_ready) = std::sync::mpsc::channel();
+            let handle = std::thread::spawn(move || -> crate::Result<()> {
+                let command = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert_eq!(
+                    command,
+                    match route {
+                        "discard" => ChildStartCommand::Cancel,
+                        "pending" => ChildStartCommand::CancelAfterFailure,
+                        _ => ChildStartCommand::Start,
+                    }
+                );
+                child_owner.record(child_cause.clone());
+                child_owner.run.retain_panic_cleanup(
+                    crate::Error::SharedFailure(child_cause),
+                    vec![secondary],
+                );
+                *child_completion.lock().unwrap() = Some(ChildCompletion::Failed);
+                let _ = ready.send(());
+                std::panic::resume_unwind(original)
+            });
+            worker.register_child_process_with_panic_owner(
+                2,
+                gate.clone(),
+                completion,
+                handle,
+                Some(panic_owner.clone()),
+            );
+            let mut nonblocking_failed = true;
+            let result = match route {
+                "discard" => worker.discard_unstarted_child_process(2).map(|_| ()),
+                "blocking" => worker.collect_child_process(2, true).map(|_| ()),
+                "pending" => worker.join_child_processes_after_failure(),
+                "completed" => {
+                    let _ = gate.start();
+                    let announced = wait_ready.recv_timeout(Duration::from_secs(5)).is_ok();
+                    nonblocking_failed =
+                        worker.collect_child_process(2, false).is_err() && announced;
+                    worker.join_all_child_processes()
+                }
+                "transferred" => {
+                    worker.transfer_child_processes_to_owner();
+                    leader.join_all_child_processes()
+                }
+                _ => unreachable!(),
+            };
+            // All route assertions follow physical joining, including a failed
+            // nonblocking collection's completed-handle rescue.
+            let error = result.expect_err("panicked fork must remain a typed failure");
+            assert!(nonblocking_failed);
+            assert!(
+                matches!(&error, crate::Error::SharedFailure(actual)
+                if Arc::ptr_eq(actual, &cause)),
+                "wrong owner through {route}: {error:?}"
+            );
+            assert!(worker.pending_processes.is_empty());
+            assert!(worker.completed_processes.is_empty());
+            assert!(leader.pending_processes.is_empty());
+            assert!(leader.transferred_processes.lock().unwrap().is_empty());
+            assert!(dropped.lock().unwrap().is_empty());
+            let completed = run.complete::<()>(Err(error)).unwrap_err();
+            assert!(completed.retains_primary(&cause));
+            assert_eq!(completed.to_string().matches(message.as_str()).count(), 1);
+            assert!(dropped.lock().unwrap().is_empty());
+            drop(panic_owner);
+            drop(context);
+            drop(run);
+            let mut actual = dropped.lock().unwrap().clone();
+            actual.sort_unstable();
+            let mut expected = vec![original_address, secondary_address];
+            expected.sort_unstable();
+            assert_eq!(
+                actual, expected,
+                "original joined allocation lost through {route}"
+            );
+        }
     }
 }
