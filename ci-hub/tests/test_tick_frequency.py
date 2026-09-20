@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[2]
 TICK_MINUTES = 30
@@ -150,14 +152,26 @@ def test_disk_writer_has_a_durable_fifteen_minute_systemd_schedule() -> None:
     assert "--population-timeout 180" in service
 
 
-def test_no_tick_hub_reminder_claims_a_faster_cadence_than_the_outer_tick() -> None:
-    config = read("ci-hub/health/tick-hub.yaml")
-    cadences = [
-        int(match.group(1))
-        for match in re.finditer(r"^    cadence_secs: (\d+)$", config, re.MULTILINE)
-    ]
-    assert cadences
-    assert min(cadences) >= TICK_MINUTES * 60
+def test_only_bounded_transition_gates_use_an_inner_eligibility_window() -> None:
+    config = yaml.safe_load(read("ci-hub/health/tick-hub.yaml"))
+    reminders = {row["name"]: row for row in config["reminders"]}
+    outer_seconds = TICK_MINUTES * 60
+    accelerated = {
+        name: row["cadence_secs"]
+        for name, row in reminders.items()
+        if row["cadence_secs"] < outer_seconds
+    }
+    assert accelerated == {
+        "host_resource_audit": 900,
+        "operational_input_freshness": 900,
+        "stale_tick_processes": 900,
+        "orphaned_hermit_reaper": 900,
+    }
+
+    service = read("scripts/systemd/hermit-health-tick.service")
+    timeout = re.search(r"^TimeoutStartSec=(\d+)$", service, re.MULTILINE)
+    assert timeout is not None
+    assert 900 < outer_seconds - int(timeout.group(1))
 
 
 def test_expensive_wrkslots_audit_has_a_persistent_calendar_schedule() -> None:
@@ -165,10 +179,10 @@ def test_expensive_wrkslots_audit_has_a_persistent_calendar_schedule() -> None:
     service = read("scripts/systemd/hermit-wrkslots-audit.service")
     config = read("ci-hub/health/tick-hub.yaml")
 
-    assert "OnCalendar=hourly" in timer
-    assert "OnActiveSec=30s" in timer
+    assert "OnCalendar=*:07" in timer
     assert "Persistent=true" in timer
     assert "OnUnitActiveSec" not in timer
+    assert re.search(r"^[ \t]*OnActiveSec[ \t]*=", timer, re.MULTILINE) is None
     assert "Unit=hermit-wrkslots-audit.service" in timer
     assert "operational-tool --run-current-tool" in service
     assert "--tool-relative ci-hub/bin/wrkslots-audit" in service

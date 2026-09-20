@@ -93,8 +93,8 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
         self.assertIn("KillMode=control-group", service)
         self.assertIn("Nice=19", service)
         self.assertIn("IOSchedulingClass=idle", service)
-        self.assertIn("OnCalendar=hourly", timer)
-        self.assertIn("OnActiveSec=30s", timer)
+        self.assertIn("OnCalendar=*:07", timer)
+        self.assertNotIn("OnActiveSec=", timer)
         self.assertIn("Persistent=true", timer)
         self.assertNotIn("OnUnitActiveSec", timer)
         self.assertIn(

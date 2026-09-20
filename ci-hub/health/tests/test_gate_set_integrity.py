@@ -19,6 +19,7 @@ from pathlib import Path
 import yaml
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[2]
 LIVE_CONFIG = HERE.parent / "tick-hub.yaml"
 SPEC = importlib.util.spec_from_file_location("gsi", HERE.parent / "gate_set_integrity.py")
 gsi = importlib.util.module_from_spec(SPEC)
@@ -204,7 +205,7 @@ def test_orphan_reaper_schedule_is_detection_only_and_bounded():
     reminder = {row["name"]: row for row in config["reminders"]}[
         "orphaned_hermit_reaper"
     ]
-    assert reminder["cadence_secs"] == 1800
+    assert reminder["cadence_secs"] == 900
     assert reminder["gate"] == {
         "timeout_secs": 60,
         "cmd": "python3 scripts/orphaned-hermit-reaper.py --report-orphans",
@@ -246,10 +247,31 @@ def test_transition_resource_schedules_share_the_existing_tick_and_only_report()
     }
     for name, gate in expected.items():
         reminder = reminders[name]
-        assert reminder["cadence_secs"] == 1800
+        assert reminder["cadence_secs"] == 900
         assert reminder["gate"] == gate
         assert reminder["emit"]["kind"] == "action"
         assert reminder["emit"]["title"].endswith("{summary}")
         command = reminder["gate"]["cmd"]
         for mutator in ("--apply", " kill ", " remove ", " delete "):
             assert mutator not in f" {command} "
+
+
+def test_transition_resource_schedules_remain_eligible_on_every_outer_tick():
+    config = yaml.safe_load(LIVE_CONFIG.read_text())
+    reminders = {row["name"]: row for row in config["reminders"]}
+    names = {
+        "host_resource_audit",
+        "operational_input_freshness",
+        "stale_tick_processes",
+        "orphaned_hermit_reaper",
+    }
+    timer = (ROOT / "scripts/systemd/hermit-health-tick.timer").read_text()
+    service = (ROOT / "scripts/systemd/hermit-health-tick.service").read_text()
+    assert "OnUnitActiveSec=30min" in timer
+    assert "TimeoutStartSec=650" in service
+    # Two tick starts are at least 1,800 seconds apart. Even if a gate moves
+    # from the very end of one complete service window to the start of the
+    # next, its observations remain at least 1,150 seconds apart. A 900-second
+    # inner throttle therefore cannot alias away the next scheduled check.
+    assert 900 < 30 * 60 - 650
+    assert {reminders[name]["cadence_secs"] for name in names} == {900}

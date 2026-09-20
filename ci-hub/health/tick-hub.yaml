@@ -1197,9 +1197,12 @@ reminders:
   # HOST RESOURCE PRESSURE, DETECTION ONLY. This is the existing read-only
   # heartbeat audit, exposed as captured key=value fields rather than adding a
   # second timer. WARN and CRIT both fail the gate; neither path kills, unmounts,
-  # cleans, or throttles anything.
+  # cleans, or throttles anything. The inner 15-minute eligibility window does
+  # not schedule extra runs: the outer timer remains 30 minutes. It keeps this
+  # gate eligible on every tick even when its position within two bounded ticks
+  # shifts; an equal 30-minute inner cadence was observed skipping a whole tick.
   - name: host_resource_audit
-    cadence_secs: 1800
+    cadence_secs: 900
     gate:
       timeout_secs: 30
       cmd: scripts/resource_audit.sh --tick-gate
@@ -1216,9 +1219,10 @@ reminders:
   # during coordinator transition their files can remain well-formed while the
   # observations age indefinitely. Content timestamps, never mtimes, are read.
   # The 45-minute disk bound is three missed 15-minute producer periods; the
-  # agent snapshot retains its existing ten-minute authority window.
+  # agent snapshot retains its existing ten-minute authority window. The
+  # 15-minute inner window only prevents outer-timer aliasing, as above.
   - name: operational_input_freshness
-    cadence_secs: 1800
+    cadence_secs: 900
     gate:
       timeout_secs: 10
       cmd: python3 ci-hub/health/operational_health.py input-freshness --state-root "$DEV_HERMIT_PARENT"
@@ -1237,7 +1241,7 @@ reminders:
   # excludes the exact ancestor chain running this probe. There is no signal or
   # process-removal option in the probe.
   - name: stale_tick_processes
-    cadence_secs: 1800
+    cadence_secs: 900
     gate:
       timeout_secs: 10
       cmd: python3 ci-hub/health/stale_tick_processes.py --gate --root "$DEV_HERMIT_PARENT" --max-age-secs 900
@@ -1259,7 +1263,7 @@ reminders:
   # parser. Keeping this reminder in gate_set_integrity below means deleting the
   # schedule produces an alarm rather than silence.
   - name: orphaned_hermit_reaper
-    cadence_secs: 1800
+    cadence_secs: 900
     gate:
       timeout_secs: 60
       cmd: python3 scripts/orphaned-hermit-reaper.py --report-orphans

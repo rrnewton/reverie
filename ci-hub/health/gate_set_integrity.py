@@ -106,7 +106,7 @@ REQUIRED: dict[str, str] = {
 # disabling capture must be as loud as deleting the reminder itself.
 REQUIRED_GATE_SHAPES: dict[str, dict[str, object]] = {
     "host_resource_audit": {
-        "cadence_secs": 1800,
+        "cadence_secs": 900,
         "gate": {
             "timeout_secs": 30,
             "cmd": "scripts/resource_audit.sh --tick-gate",
@@ -122,7 +122,7 @@ REQUIRED_GATE_SHAPES: dict[str, dict[str, object]] = {
         ),
     },
     "operational_input_freshness": {
-        "cadence_secs": 1800,
+        "cadence_secs": 900,
         "gate": {
             "timeout_secs": 10,
             "cmd": (
@@ -141,7 +141,7 @@ REQUIRED_GATE_SHAPES: dict[str, dict[str, object]] = {
         ),
     },
     "stale_tick_processes": {
-        "cadence_secs": 1800,
+        "cadence_secs": 900,
         "gate": {
             "timeout_secs": 10,
             "cmd": (
@@ -156,6 +156,21 @@ REQUIRED_GATE_SHAPES: dict[str, dict[str, object]] = {
         "emit_skill": "hard-warn-coordinator",
         "emit_title": (
             "health-tick invocations outlived their complete-run bound: {summary}"
+        ),
+    },
+    "orphaned_hermit_reaper": {
+        "cadence_secs": 900,
+        "gate": {
+            "timeout_secs": 60,
+            "cmd": "python3 scripts/orphaned-hermit-reaper.py --report-orphans",
+            "when": "failure",
+            "capture": True,
+        },
+        "emit_kind": "action",
+        "emit_component": "orphaned-hermit-reaper",
+        "emit_skill": "hard-warn-coordinator",
+        "emit_title": (
+            "orphaned Hermit/test processes are running unowned: {summary}"
         ),
     },
 }

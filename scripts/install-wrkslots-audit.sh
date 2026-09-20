@@ -129,10 +129,14 @@ grep -Fxq 'Persistent=true' "$unit_dir/$health_timer" || {
     printf 'wrkslots-audit install: health timer lacks persistent catch-up\n' >&2
     exit 1
 }
-grep -Fxq 'OnCalendar=hourly' "$unit_dir/$timer" || {
-    printf 'wrkslots-audit install: timer lacks the hourly calendar schedule\n' >&2
+grep -Fxq 'OnCalendar=*:07' "$unit_dir/$timer" || {
+    printf 'wrkslots-audit install: timer lacks the minute-07 hourly calendar schedule\n' >&2
     exit 1
 }
+if grep -Eq '^[[:space:]]*OnActiveSec[[:space:]]*=' "$unit_dir/$timer"; then
+    printf 'wrkslots-audit install: timer retains an independent activation edge\n' >&2
+    exit 1
+fi
 grep -Fxq 'Persistent=true' "$unit_dir/$timer" || {
     printf 'wrkslots-audit install: timer lacks persistent catch-up\n' >&2
     exit 1

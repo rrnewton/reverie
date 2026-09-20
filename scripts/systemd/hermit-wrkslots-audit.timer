@@ -3,11 +3,15 @@ Description=Run the wrkslots lifecycle audit hourly, independently of ORC
 Documentation=https://github.com/rrnewton/dev-hermit/blob/main/ci-hub/bin/wrkslots-audit
 
 [Timer]
-# Calendar persistence, unlike a monotonic unit-active timer, schedules one
-# catch-up after downtime. systemd never starts a second instance while this
-# service is active.
-OnActiveSec=30s
-OnCalendar=hourly
+# Phase regular starts seven minutes after the hour instead of sharing the
+# disk producer's 00-minute edge. This reduces overlap; it is not mutual
+# exclusion, because a bounded disk run can still extend past minute 07. The
+# observed overlap began on the old independent OnActiveSec edge, 30 seconds
+# after an active disk scan: removing that second trigger prevents an install
+# or restart from creating another unphased scan. Calendar persistence
+# schedules one catch-up after downtime. systemd never starts a second instance
+# while this service is active.
+OnCalendar=*:07
 Persistent=true
 AccuracySec=30s
 Unit=hermit-wrkslots-audit.service
