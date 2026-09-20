@@ -253,12 +253,326 @@
       "digest_algorithm": "sha256"
     }
   },
-  "plan_receipt": null,
-  "attempt_state": "PLANNED",
+  "plan_receipt": {
+    "commit": "f01506ff239965e466bcba2cc387c317cbf54ffa",
+    "path": "services/manifold/manifold-client-tests--ffb0d3de4eb5/experiment.json",
+    "blob": "97e07e402ac57f6020d06dd9bb5dcdfcc01e3ea5"
+  },
+  "attempt_state": "MATERIAL",
   "cells": [],
-  "events": [],
+  "events": [
+    {
+      "event_id": "event-launch-seed-000-pre-guest",
+      "kind": "LAUNCH",
+      "plan_sha256": "9ea5bf5456217bf3d0e9ed2f419000fabbd095785b2713ce318af6fcc30f82f9",
+      "route_id": "manifold-dev-direct-elf",
+      "route_sha256": "67675955da22bf049bd0a52022d2fbfc15a977e427e3720ab22735044c31314d",
+      "canonical_target": "fbcode//manifold/clients/rust:manifold_client_tests",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//manifold/clients/rust:manifold_client_tests - test_real_create_then_delete_dir"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": null,
+      "cell_sha256": null,
+      "measurement_role": null,
+      "started_at": "2026-09-20T05:25:45Z",
+      "finished_at": "2026-09-20T05:25:53Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "{SAFEHERMIT_REPORT}",
+        "--sh-deadline",
+        "180",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-seed",
+        "{SWEEP}",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/manifold/clients/rust/__manifold_client_tests__/manifold_client_tests",
+        "test_real_create_then_delete_dir",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "result": {
+        "exit_code": 127,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": false,
+        "selected_test_executed_count": 0,
+        "target_oracle": "NOT_RUN",
+        "failure_class_id": null,
+        "harness_status": "ERROR",
+        "diagnostic": "safehermit exited 127 before guest start: the dynamic loader could not open libprivacy_enforcer_fci_fci_policy_enforcer.so; independently, safehermit reported bound.disk=NOT_APPLIED because btrfs qgroup quota was disabled."
+      },
+      "invocation_id": null,
+      "replica_index": null,
+      "seed": null,
+      "effective_config_sha256": null,
+      "artifacts": [
+        {
+          "artifact_id": "seed-000-discovery-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/manifold/manifold-client-tests--ffb0d3de4eb5/evidence/seed-000-discovery.stdout.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "seed-000-discovery-stderr",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/manifold/manifold-client-tests--ffb0d3de4eb5/evidence/seed-000-discovery.stderr.txt",
+          "sha256": "7aca58a321613afa50bce635483b2c72a010bce13f98c16040ad70a185f7faf5",
+          "bytes": 993,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "seed-000-discovery-safehermit-report",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/manifold/manifold-client-tests--ffb0d3de4eb5/evidence/seed-000-discovery.safehermit.txt",
+          "sha256": "902c7afb703c0fbea24c2b06678875251b982a531841d2261e3f6e1d621a7565",
+          "bytes": 2019,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "seed-000-discovery-unbounded-marker",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/manifold/manifold-client-tests--ffb0d3de4eb5/evidence/seed-000-discovery.unbounded.txt",
+          "sha256": "2c0a445c9fbdabb2f7d55ff57bf5ee6a7109d36dc64f137c79bafd4f959af045",
+          "bytes": 508,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "seed-000-discovery-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/manifold/manifold-client-tests--ffb0d3de4eb5/evidence/seed-000-discovery.result.json",
+          "sha256": "ed4d631e78b1e42e681b204fbb3011f0fadf70524e72d4174a54278d0fb1b396",
+          "bytes": 1754,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        }
+      ]
+    }
+  ],
   "samples": [],
   "matchers": [],
-  "outcome_history": [],
-  "current_outcome": null
+  "outcome_history": [
+    {
+      "classification_id": "classification-not-determinable-20260920T053141Z",
+      "classified_at": "2026-09-20T05:31:41Z",
+      "supersedes": null,
+      "evidence_refs": [
+        "event-launch-seed-000-pre-guest",
+        "seed-000-discovery-stderr",
+        "seed-000-discovery-safehermit-report",
+        "seed-000-discovery-unbounded-marker",
+        "seed-000-discovery-result"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "manifold-dev-direct-elf",
+          "cell_ids": [
+            "manifold-dev-direct-elf-ptrace-strict-chaos"
+          ],
+          "evidence_event_ids": [
+            "event-launch-seed-000-pre-guest"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "180",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/manifold/clients/rust/__manifold_client_tests__/manifold_client_tests",
+          "test_real_create_then_delete_dir",
+          "--exact",
+          "--nocapture",
+          "--test-threads=1"
+        ]
+      ],
+      "inspected_artifacts": [
+        "seed-000-discovery-stderr",
+        "seed-000-discovery-safehermit-report",
+        "seed-000-discovery-unbounded-marker",
+        "seed-000-discovery-result"
+      ],
+      "missing_or_ambiguous_facts": [
+        "The frozen route produced no guest-started Hermit execution because its dynamic loader could not resolve a host-present shared library through the Buck symlink tree.",
+        "The requested 8G disk guard was not applied because btrfs qgroup quotas are disabled on the selected log filesystem, so the safehermit report cannot qualify as HERMIT_EXECUTION evidence.",
+        "No valid scheduler-seed tuple has established either the PASS or predeclared target-owned FAIL arm."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Predeclare a dated follow-on route that supplies a bounded safehermit log filesystem and preserves the Buck shared-library symlink targets in the Hermit guest namespace, then execute the sealed seed prefix."
+      ]
+    }
+  ],
+  "current_outcome": {
+    "classification_id": "classification-not-determinable-20260920T053141Z",
+    "classified_at": "2026-09-20T05:31:41Z",
+    "supersedes": null,
+    "evidence_refs": [
+      "event-launch-seed-000-pre-guest",
+      "seed-000-discovery-stderr",
+      "seed-000-discovery-safehermit-report",
+      "seed-000-discovery-unbounded-marker",
+      "seed-000-discovery-result"
+    ],
+    "kind": "NOT-DETERMINABLE",
+    "route_evidence": [
+      {
+        "route_id": "manifold-dev-direct-elf",
+        "cell_ids": [
+          "manifold-dev-direct-elf-ptrace-strict-chaos"
+        ],
+        "evidence_event_ids": [
+          "event-launch-seed-000-pre-guest"
+        ]
+      }
+    ],
+    "inspected_commands": [
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "{SAFEHERMIT_REPORT}",
+        "--sh-deadline",
+        "180",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-seed",
+        "{SWEEP}",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/manifold/clients/rust/__manifold_client_tests__/manifold_client_tests",
+        "test_real_create_then_delete_dir",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ]
+    ],
+    "inspected_artifacts": [
+      "seed-000-discovery-stderr",
+      "seed-000-discovery-safehermit-report",
+      "seed-000-discovery-unbounded-marker",
+      "seed-000-discovery-result"
+    ],
+    "missing_or_ambiguous_facts": [
+      "The frozen route produced no guest-started Hermit execution because its dynamic loader could not resolve a host-present shared library through the Buck symlink tree.",
+      "The requested 8G disk guard was not applied because btrfs qgroup quotas are disabled on the selected log filesystem, so the safehermit report cannot qualify as HERMIT_EXECUTION evidence.",
+      "No valid scheduler-seed tuple has established either the PASS or predeclared target-owned FAIL arm."
+    ],
+    "measurement_budget_exhausted": false,
+    "pending_in_scope_measurements": [
+      "Predeclare a dated follow-on route that supplies a bounded safehermit log filesystem and preserves the Buck shared-library symlink targets in the Hermit guest namespace, then execute the sealed seed prefix."
+    ]
+  }
 }
