@@ -8,13 +8,13 @@
 //! Run-scoped callback-independent process publication and recipient permits.
 //!
 //! Installation precedes guest startup. A permit authorizes one actual task
-//! continuation, not a host wake or an unrelated borrowed Guest. Child
-//! completion publication remains private and inactive.
+//! continuation, not a host wake or an unrelated borrowed Guest. Generation-
+//! bound child completion is published through this same run-scoped control.
 //!
 //! Active publication uses only transaction -> lifecycle -> run failure ->
 //! process signals and pinned private eventfd carriers. It never acquires or
-//! pins the ordinary file table. The inactive private endpoint additionally
-//! takes file table first, retaining its original negative controls.
+//! pins the ordinary file table. The retained inactive alarm test endpoint
+//! additionally takes file table first, preserving its negative controls.
 //! Image validation briefly reacquires image below transaction;
 //! child lookup briefly reacquires registry below lifecycle. Those guards are
 //! released before failure/process acquisition. The run failure guard remains
@@ -192,6 +192,7 @@ pub(super) struct PublicationReceipt {
     pending_generation: u64,
     change: PendingChange,
     disposition: PublicationDisposition,
+    child_completion: Option<reverie::ChildExitCompletion>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -205,19 +206,6 @@ pub(super) enum ProcessPublication {
     Rejected(PublicationRejection),
     Committed(PublicationReceipt),
     FailedAfterCommit(PublicationFailure),
-}
-
-/// A future completion rendezvous must construct this only from committed
-/// child accounting, before retiring the owned child completion. There is no
-/// production constructor or child publication caller in this prerequisite.
-/// Normal exits only; killed/core exits require their own provenance support.
-pub(super) struct CommittedChildExit {
-    parent: SignalProcessId,
-    child: SignalProcessId,
-    status: u8,
-    uid: u32,
-    user_time: i64,
-    system_time: i64,
 }
 
 impl ProcessSignalControl {
@@ -262,25 +250,35 @@ impl ProcessSignalControl {
         self.publish(target, event, None, true)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "inactive private entry point; child completion rendezvous is separate"
-        )
-    )]
-    pub(super) fn publish_child_exit(&self, completion: CommittedChildExit) -> ProcessPublication {
-        if completion.user_time < 0 || completion.system_time < 0 {
+    fn publish_child_completion(
+        &self,
+        completion: reverie::ChildExitCompletion,
+    ) -> ProcessPublication {
+        if completion.user_ticks < 0 || completion.system_ticks < 0 {
             return ProcessPublication::Rejected(PublicationRejection::InvalidCompletion);
         }
+        let (code, status) = match completion.status {
+            reverie::ExitStatus::Exited(status) if (0..=i32::from(u8::MAX)).contains(&status) => {
+                (libc::CLD_EXITED, status)
+            }
+            reverie::ExitStatus::Exited(_) => {
+                return ProcessPublication::Rejected(PublicationRejection::InvalidCompletion);
+            }
+            reverie::ExitStatus::Signaled(signal, true) => {
+                (libc::CLD_DUMPED, signal as libc::c_int)
+            }
+            reverie::ExitStatus::Signaled(signal, false) => {
+                (libc::CLD_KILLED, signal as libc::c_int)
+            }
+        };
         let mut info = [0; reverie::SIGNAL_INFO_SIZE];
         info[..4].copy_from_slice(&libc::SIGCHLD.to_ne_bytes());
-        info[8..12].copy_from_slice(&libc::CLD_EXITED.to_ne_bytes());
+        info[8..12].copy_from_slice(&code.to_ne_bytes());
         info[16..20].copy_from_slice(&completion.child.tgid.as_raw().to_ne_bytes());
         info[20..24].copy_from_slice(&completion.uid.to_ne_bytes());
-        info[24..28].copy_from_slice(&i32::from(completion.status).to_ne_bytes());
-        info[32..40].copy_from_slice(&completion.user_time.to_ne_bytes());
-        info[40..48].copy_from_slice(&completion.system_time.to_ne_bytes());
+        info[24..28].copy_from_slice(&status.to_ne_bytes());
+        info[32..40].copy_from_slice(&completion.user_ticks.to_ne_bytes());
+        info[40..48].copy_from_slice(&completion.system_ticks.to_ne_bytes());
         let event = SignalEvent::new(
             libc::SIGCHLD,
             info,
@@ -291,14 +289,14 @@ impl ProcessSignalControl {
         let Ok(event) = event else {
             return ProcessPublication::Rejected(PublicationRejection::InvalidCompletion);
         };
-        self.publish(completion.parent, event, Some(&completion), false)
+        self.publish(completion.parent, event, Some(&completion), true)
     }
 
     fn publish(
         &self,
         target: SignalProcessId,
         event: SignalEvent,
-        completion: Option<&CommittedChildExit>,
+        completion: Option<&reverie::ChildExitCompletion>,
         independent_carriers: bool,
     ) -> ProcessPublication {
         use ProcessPublication::Rejected;
@@ -364,7 +362,7 @@ impl ProcessSignalControl {
                 || lifecycle.process_exit_status(
                     completion.child.tgid.as_raw(),
                     completion.child.generation,
-                ) != Some(reverie::ExitStatus::Exited(i32::from(completion.status)))
+                ) != Some(completion.status)
             {
                 return Rejected(InvalidCompletion);
             }
@@ -390,6 +388,12 @@ impl ProcessSignalControl {
         } else {
             PublicationDisposition::Caught
         };
+        if let Some(completion) = completion {
+            let auto_reap = action.is_ignored() || action.flags & libc::SA_NOCLDWAIT as u64 != 0;
+            if completion.waitable == auto_reap {
+                return Rejected(InvalidCompletion);
+            }
+        }
         let mut receipt = PublicationReceipt {
             process: target,
             image: image.revision,
@@ -397,6 +401,7 @@ impl ProcessSignalControl {
             pending_generation: process.pending_generation(signal),
             change: PendingChange::Suppressed,
             disposition,
+            child_completion: completion.copied(),
         };
         if signal == libc::SIGCHLD && action.is_ignored() {
             return ProcessPublication::Committed(receipt);
@@ -525,6 +530,7 @@ impl ProcessSignalRegistry {
 }
 
 fn public_receipt(receipt: &PublicationReceipt) -> reverie::ProcessSignalPublication {
+    debug_assert!(receipt.child_completion.is_none());
     reverie::ProcessSignalPublication {
         process: receipt.process,
         pending_generation: receipt.pending_generation,
@@ -535,6 +541,48 @@ fn public_receipt(receipt: &PublicationReceipt) -> reverie::ProcessSignalPublica
             PublicationDisposition::Default => reverie::ProcessAlarmSignalDisposition::DefaultFatal,
         },
     }
+}
+
+fn public_child_receipt(receipt: &PublicationReceipt) -> reverie::ChildExitPublication {
+    reverie::ChildExitPublication {
+        completion: receipt
+            .child_completion
+            .expect("child publication retained its completion"),
+        pending_generation: receipt.pending_generation,
+        effect: match receipt.change {
+            PendingChange::Queued => reverie::ChildExitPublicationEffect::Queued,
+            PendingChange::Coalesced => reverie::ChildExitPublicationEffect::Coalesced,
+            PendingChange::Suppressed => {
+                reverie::ChildExitPublicationEffect::SuppressedExplicitIgnore
+            }
+        },
+    }
+}
+
+fn report_publication_failure(
+    registry: &ProcessSignalRegistry,
+    process: SignalProcessId,
+    phase: &'static str,
+    error: crate::Error,
+) -> Result<(), Errno> {
+    let run = registry
+        .run_failure
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .upgrade()
+        .ok_or(Errno::ESRCH)?;
+    // No scheduler, registry, image or signal lock survives this call.
+    let context = crate::failure::FailureContext::new(run, process.tgid, process.tgid);
+    let published = context.publish(phase, error);
+    // The first run cause may be a concurrent independent failure. Keep this
+    // returned Error too, so root completion retains the committed publication
+    // receipt as secondary cleanup rather than losing it.
+    registry
+        .reported_failure
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_or_insert(published);
+    Ok(())
 }
 
 impl reverie::ProcessSignalControl for ProcessSignalControl {
@@ -562,10 +610,39 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
         }
     }
 
-    fn alarm_recipients(
+    fn publish_child_exit(
+        &self,
+        completion: reverie::ChildExitCompletion,
+    ) -> reverie::ChildExitPublicationResult {
+        use reverie::ChildExitPublicationResult as Outcome;
+        match self.publish_child_completion(completion) {
+            ProcessPublication::Committed(receipt) => {
+                Outcome::Committed(public_child_receipt(&receipt))
+            }
+            ProcessPublication::FailedAfterCommit(failure) => Outcome::FailedAfterCommit {
+                receipt: public_child_receipt(&failure.receipt),
+                errno: failure.errno,
+            },
+            ProcessPublication::Rejected(reason) => Outcome::RejectedBeforeCommit(match reason {
+                PublicationRejection::Backend(errno) => errno,
+                PublicationRejection::Closed | PublicationRejection::StaleProcess => Errno::ESRCH,
+                PublicationRejection::ChangedImage => Errno::EAGAIN,
+                PublicationRejection::InvalidEvent | PublicationRejection::InvalidCompletion => {
+                    Errno::EINVAL
+                }
+                PublicationRejection::Terminal => Errno::EIO,
+            }),
+        }
+    }
+
+    fn signal_recipients(
         &self,
         process: SignalProcessId,
+        signal: i32,
     ) -> Result<Vec<reverie::SignalRecipient>, Errno> {
+        if !(1..=64).contains(&signal) {
+            return Err(Errno::EINVAL);
+        }
         let registry = self.0.upgrade().ok_or(Errno::ESRCH)?;
         let binding = registry.lookup(process).ok_or(Errno::ESRCH)?;
         let image = binding
@@ -588,11 +665,11 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
         }
         let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
         let signals = signals.lock().unwrap_or_else(|p| p.into_inner());
-        let mut alarm_mask = crate::signal::KernelSigset::default();
-        alarm_mask.insert(libc::SIGALRM);
+        let mut signal_mask = crate::signal::KernelSigset::default();
+        signal_mask.insert(signal);
         if !signals
             .shared_pending
-            .any_matching(alarm_mask, &signals.pending_generations)
+            .any_matching(signal_mask, &signals.pending_generations)
         {
             return Ok(Vec::new());
         }
@@ -601,11 +678,19 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
             let Some(thread) = lifecycle.signal_target(task.tid.as_raw()) else {
                 continue;
             };
-            if !thread.lock().blocked.contains(libc::SIGALRM) {
+            if !thread.lock().blocked.contains(signal) {
                 recipients.push(reverie::SignalRecipient { task });
             }
         }
+        recipients.sort_by_key(|recipient| recipient.task.tid);
         Ok(recipients)
+    }
+
+    fn alarm_recipients(
+        &self,
+        process: SignalProcessId,
+    ) -> Result<Vec<reverie::SignalRecipient>, Errno> {
+        <Self as reverie::ProcessSignalControl>::signal_recipients(self, process, libc::SIGALRM)
     }
 
     fn reserve_delivery(&self, permit: reverie::SignalDeliveryPermit) -> Result<(), Errno> {
@@ -670,33 +755,45 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
             .unwrap_or_else(|p| p.into_inner())
             .clone()
             .ok_or(Errno::EINVAL)?;
-        if failure.receipt.process != process {
+        if failure.receipt.process != process || failure.receipt.child_completion.is_some() {
             return Err(Errno::EINVAL);
         }
-        let run = registry
-            .run_failure
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .upgrade()
-            .ok_or(Errno::ESRCH)?;
-        // No scheduler, registry, image or signal lock survives this call.
-        let context = crate::failure::FailureContext::new(run, process.tgid, process.tgid);
-        let published = context.publish(
+        report_publication_failure(
+            &registry,
+            process,
             "process signal publication",
             crate::Error::ProcessSignalPublication {
                 receipt: public_receipt(&failure.receipt),
                 errno: failure.errno,
             },
-        );
-        // The first run cause may be a concurrent independent failure. Keep
-        // this returned Error too, so root completion retains the committed
-        // publication receipt as secondary cleanup rather than losing it.
-        registry
-            .reported_failure
+        )
+    }
+
+    fn finish_child_exit_publication_failure(
+        &self,
+        receipt: reverie::ChildExitPublication,
+    ) -> Result<(), Errno> {
+        let registry = self.0.upgrade().ok_or(Errno::ESRCH)?;
+        let failure = registry
+            .failure
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get_or_insert(published);
-        Ok(())
+            .clone()
+            .ok_or(Errno::EINVAL)?;
+        if failure.receipt.child_completion.is_none()
+            || public_child_receipt(&failure.receipt) != receipt
+        {
+            return Err(Errno::EINVAL);
+        }
+        report_publication_failure(
+            &registry,
+            receipt.completion.parent,
+            "child-exit signal publication",
+            crate::Error::ChildExitPublication {
+                receipt,
+                errno: failure.errno,
+            },
+        )
     }
 }
 
@@ -738,8 +835,12 @@ mod tests {
     }
 
     fn signalfd(executor: &mut ElfExecutor, memory: &mut GuestMemory) -> i32 {
+        signalfd_for(executor, memory, libc::SIGALRM)
+    }
+
+    fn signalfd_for(executor: &mut ElfExecutor, memory: &mut GuestMemory, signal: i32) -> i32 {
         let mut mask = KernelSigset::default();
-        mask.insert(libc::SIGALRM);
+        mask.insert(signal);
         memory.write(0x80, &mask.to_bytes()).unwrap();
         let fd = call(
             executor,
@@ -766,6 +867,32 @@ mod tests {
         match outcome {
             ProcessPublication::Committed(receipt) => receipt,
             other => panic!("publication did not commit: {other:?}"),
+        }
+    }
+
+    fn child_completion(
+        parent: SignalProcessId,
+        child: SignalProcessId,
+        status: reverie::ExitStatus,
+        waitable: bool,
+    ) -> reverie::ChildExitCompletion {
+        reverie::ChildExitCompletion {
+            parent,
+            child,
+            status,
+            waitable,
+            uid: 65_534,
+            user_ticks: 11,
+            system_ticks: 13,
+        }
+    }
+
+    fn child_receipt(
+        outcome: reverie::ChildExitPublicationResult,
+    ) -> reverie::ChildExitPublication {
+        match outcome {
+            reverie::ChildExitPublicationResult::Committed(receipt) => receipt,
+            other => panic!("child publication did not commit: {other:?}"),
         }
     }
 
@@ -1738,70 +1865,379 @@ mod tests {
     }
 
     #[test]
-    fn inactive_publication_child_requires_committed_generation_and_parent() {
+    fn child_publication_requires_exact_generation_parent_status_and_waitability() {
+        use reverie::ChildExitPublicationResult::RejectedBeforeCommit;
+
         let mut parent = executor();
-        let id = identity(&parent);
+        let parent_id = identity(&parent);
         let mut child = parent.fork_child(2, false, false).unwrap();
         let child_id = identity(&child);
-        let control = parent.signal_registry.control();
-        let completion = || CommittedChildExit {
-            parent: id,
-            child: child_id,
-            status: 23,
-            uid: 0,
-            user_time: 11,
-            system_time: 13,
-        };
+        let wrong_parent = parent.fork_child(3, false, false).unwrap();
+        let wrong_parent_id = identity(&wrong_parent);
+        let control = parent.backend_signal_control().process;
+        let completion =
+            child_completion(parent_id, child_id, reverie::ExitStatus::Exited(23), true);
+
         assert_eq!(
-            control.publish_child_exit(completion()),
-            ProcessPublication::Rejected(PublicationRejection::InvalidCompletion)
+            control.publish_child_exit(completion),
+            RejectedBeforeCommit(Errno::EINVAL),
+            "a live child has no committed terminal status"
         );
         child.retire_current_thread(reverie::ExitStatus::Exited(23), false);
-        let first = receipt(control.publish_child_exit(completion()));
-        assert_eq!(first.change, PendingChange::Queued);
-        let pending = parent.take_pending_signal_for_delivery().unwrap().unwrap();
-        let info = pending.event.siginfo();
-        assert_eq!(pending.event.signal(), libc::SIGCHLD);
-        assert_eq!(
-            i32::from_ne_bytes(info[8..12].try_into().unwrap()),
-            libc::CLD_EXITED
-        );
+
+        for (wrong, expected) in [
+            (
+                reverie::ChildExitCompletion {
+                    child: SignalProcessId {
+                        generation: child_id.generation + 1,
+                        ..child_id
+                    },
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    parent: SignalProcessId {
+                        generation: parent_id.generation + 1,
+                        ..parent_id
+                    },
+                    ..completion
+                },
+                Errno::ESRCH,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    parent: wrong_parent_id,
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    status: reverie::ExitStatus::Exited(24),
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    waitable: false,
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    status: reverie::ExitStatus::Exited(256),
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    user_ticks: -1,
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    system_ticks: -1,
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+        ] {
+            assert_eq!(
+                control.publish_child_exit(wrong),
+                RejectedBeforeCommit(expected)
+            );
+        }
+
+        let receipt = child_receipt(control.publish_child_exit(completion));
+        assert_eq!(receipt.completion, completion);
+        assert_eq!(receipt.effect, reverie::ChildExitPublicationEffect::Queued);
+        let event = parent
+            .take_pending_signal_for_delivery()
+            .unwrap()
+            .unwrap()
+            .event;
+        let info = event.siginfo();
+        assert_eq!(event.signal(), libc::SIGCHLD);
         assert_eq!(i32::from_ne_bytes(info[16..20].try_into().unwrap()), 2);
-        assert_eq!(i32::from_ne_bytes(info[24..28].try_into().unwrap()), 23);
+        assert_eq!(u32::from_ne_bytes(info[20..24].try_into().unwrap()), 65_534);
         assert_eq!(i64::from_ne_bytes(info[32..40].try_into().unwrap()), 11);
         assert_eq!(i64::from_ne_bytes(info[40..48].try_into().unwrap()), 13);
-        let mut wrong = completion();
-        wrong.child.generation += 1;
+
+        drop(child);
+        drop(wrong_parent);
+        let replacement = parent.fork_child(2, false, false).unwrap();
+        assert_ne!(identity(&replacement).generation, child_id.generation);
         assert_eq!(
-            control.publish_child_exit(wrong),
-            ProcessPublication::Rejected(PublicationRejection::InvalidCompletion)
+            control.publish_child_exit(completion),
+            RejectedBeforeCommit(Errno::EINVAL),
+            "numeric PID reuse must not revive an old process generation"
         );
-        let other = parent.fork_child(3, false, false).unwrap();
-        let mut wrong = completion();
-        wrong.parent = identity(&other);
-        assert_eq!(
-            control.publish_child_exit(wrong),
-            ProcessPublication::Rejected(PublicationRejection::InvalidCompletion)
-        );
-        parent
-            .state
-            .process_signals
-            .lock()
-            .unwrap()
-            .dispositions
-            .insert(
-                libc::SIGCHLD,
+        assert!(parent.state.children.is_empty());
+    }
+
+    #[test]
+    fn child_publication_encodes_exited_killed_and_core_statuses() {
+        for (status, expected_code, expected_status) in [
+            (reverie::ExitStatus::Exited(37), libc::CLD_EXITED, 37),
+            (
+                reverie::ExitStatus::Signaled(reverie::Signal::SIGTERM, false),
+                libc::CLD_KILLED,
+                libc::SIGTERM,
+            ),
+            (
+                reverie::ExitStatus::Signaled(reverie::Signal::SIGABRT, true),
+                libc::CLD_DUMPED,
+                libc::SIGABRT,
+            ),
+        ] {
+            let mut parent = executor();
+            let mut child = parent.fork_child(2, false, false).unwrap();
+            let completion = child_completion(identity(&parent), identity(&child), status, true);
+            child.retire_current_thread(status, false);
+            let receipt = child_receipt(
+                parent
+                    .backend_signal_control()
+                    .process
+                    .publish_child_exit(completion),
+            );
+            assert_eq!(receipt.completion.status, status);
+            let event = parent
+                .take_pending_signal_for_delivery()
+                .unwrap()
+                .unwrap()
+                .event;
+            let info = event.siginfo();
+            assert_eq!(
+                i32::from_ne_bytes(info[8..12].try_into().unwrap()),
+                expected_code
+            );
+            assert_eq!(
+                i32::from_ne_bytes(info[24..28].try_into().unwrap()),
+                expected_status
+            );
+        }
+    }
+
+    #[test]
+    fn child_publication_distinguishes_explicit_ignore_from_no_cldwait() {
+        for (action, expected_effect, pending) in [
+            (
                 KernelSigaction {
                     handler: libc::SIG_IGN as u64,
                     ..Default::default()
                 },
+                reverie::ChildExitPublicationEffect::SuppressedExplicitIgnore,
+                false,
+            ),
+            (
+                KernelSigaction {
+                    handler: libc::SIG_DFL as u64,
+                    flags: libc::SA_NOCLDWAIT as u64,
+                    ..Default::default()
+                },
+                reverie::ChildExitPublicationEffect::Queued,
+                true,
+            ),
+        ] {
+            let parent = executor();
+            parent
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .dispositions
+                .insert(libc::SIGCHLD, action);
+            let mut child = parent.fork_child(2, false, false).unwrap();
+            let completion = child_completion(
+                identity(&parent),
+                identity(&child),
+                reverie::ExitStatus::Exited(7),
+                false,
             );
+            child.retire_current_thread(completion.status, false);
+            let receipt = child_receipt(
+                parent
+                    .backend_signal_control()
+                    .process
+                    .publish_child_exit(completion),
+            );
+            assert_eq!(receipt.effect, expected_effect);
+            assert_eq!(
+                parent
+                    .state
+                    .process_signals
+                    .lock()
+                    .unwrap()
+                    .shared_pending
+                    .contains(libc::SIGCHLD),
+                pending
+            );
+        }
+    }
+
+    #[test]
+    fn child_publication_coalesces_and_retains_first_complete_siginfo() {
+        let mut parent = executor();
+        let parent_id = identity(&parent);
+        let mut first = parent.fork_child(2, false, false).unwrap();
+        let mut second = parent.fork_child(3, false, false).unwrap();
+        let first_completion = child_completion(
+            parent_id,
+            identity(&first),
+            reverie::ExitStatus::Exited(7),
+            true,
+        );
+        let second_completion = reverie::ChildExitCompletion {
+            uid: 42,
+            user_ticks: 17,
+            system_ticks: 19,
+            ..child_completion(
+                parent_id,
+                identity(&second),
+                reverie::ExitStatus::Exited(9),
+                true,
+            )
+        };
+        first.retire_current_thread(first_completion.status, false);
+        second.retire_current_thread(second_completion.status, false);
+        let control = parent.backend_signal_control().process;
         assert_eq!(
-            receipt(control.publish_child_exit(completion())).change,
-            PendingChange::Suppressed
+            child_receipt(control.publish_child_exit(first_completion)).effect,
+            reverie::ChildExitPublicationEffect::Queued
+        );
+        assert_eq!(
+            child_receipt(control.publish_child_exit(second_completion)).effect,
+            reverie::ChildExitPublicationEffect::Coalesced
+        );
+        let info = parent
+            .take_pending_signal_for_delivery()
+            .unwrap()
+            .unwrap()
+            .event
+            .siginfo();
+        assert_eq!(i32::from_ne_bytes(info[16..20].try_into().unwrap()), 2);
+        assert_eq!(i32::from_ne_bytes(info[24..28].try_into().unwrap()), 7);
+        assert_eq!(u32::from_ne_bytes(info[20..24].try_into().unwrap()), 65_534);
+        assert_eq!(i64::from_ne_bytes(info[32..40].try_into().unwrap()), 11);
+        assert_eq!(i64::from_ne_bytes(info[40..48].try_into().unwrap()), 13);
+    }
+
+    #[test]
+    fn generic_recipients_are_sorted_live_and_mask_aware() {
+        let parent = executor();
+        let high = parent.thread_child(9).unwrap();
+        let low = parent.thread_child(3).unwrap();
+        parent
+            .state
+            .thread_signals
+            .lock()
+            .blocked
+            .insert(libc::SIGCHLD);
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let completion = child_completion(
+            identity(&parent),
+            identity(&child),
+            reverie::ExitStatus::Exited(7),
+            true,
+        );
+        child.retire_current_thread(completion.status, false);
+        let control = parent.backend_signal_control().process;
+        child_receipt(control.publish_child_exit(completion));
+        assert_eq!(
+            control
+                .signal_recipients(completion.parent, libc::SIGCHLD)
+                .unwrap()
+                .into_iter()
+                .map(|recipient| recipient.task.tid.as_raw())
+                .collect::<Vec<_>>(),
+            vec![3, 9]
+        );
+        high.state
+            .thread_signals
+            .lock()
+            .blocked
+            .insert(libc::SIGCHLD);
+        assert_eq!(
+            control
+                .signal_recipients(completion.parent, libc::SIGCHLD)
+                .unwrap()
+                .into_iter()
+                .map(|recipient| recipient.task.tid.as_raw())
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+        assert_eq!(
+            control.signal_recipients(completion.parent, 0),
+            Err(Errno::EINVAL)
+        );
+        drop(low);
+        assert!(
+            control
+                .signal_recipients(completion.parent, libc::SIGCHLD)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn child_publication_uses_independent_carriers_and_refuses_a_missing_one() {
+        let mut parent = executor();
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let fd = signalfd_for(&mut parent, &mut memory, libc::SIGCHLD);
+        let completion = child_completion(
+            identity(&parent),
+            identity(&child),
+            reverie::ExitStatus::Exited(7),
+            true,
+        );
+        child.retire_current_thread(completion.status, false);
+        let control = parent.backend_signal_control().process;
+        let table = parent.file_table.clone();
+        let held = table.lock().unwrap();
+        assert_eq!(
+            child_receipt(control.publish_child_exit(completion)).effect,
+            reverie::ChildExitPublicationEffect::Queued,
+            "publication must not acquire the ordinary file table"
+        );
+        drop(held);
+        assert!(ready(&parent, fd));
+
+        let mut other_parent = executor();
+        let mut other_child = other_parent.fork_child(2, false, false).unwrap();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let fd = signalfd_for(&mut other_parent, &mut memory, libc::SIGCHLD);
+        let other_completion = child_completion(
+            identity(&other_parent),
+            identity(&other_child),
+            reverie::ExitStatus::Exited(8),
+            true,
+        );
+        other_child.retire_current_thread(other_completion.status, false);
+        let carrier = other_parent
+            .state
+            .process_signals
+            .lock()
+            .unwrap()
+            .signalfd_carriers
+            .remove(&fd)
+            .unwrap();
+        assert_eq!(
+            other_parent
+                .backend_signal_control()
+                .process
+                .publish_child_exit(other_completion),
+            reverie::ChildExitPublicationResult::RejectedBeforeCommit(Errno::EBADF)
         );
         assert!(
-            parent
+            other_parent
                 .state
                 .process_signals
                 .lock()
@@ -1809,9 +2245,91 @@ mod tests {
                 .shared_pending
                 .is_empty()
         );
-        assert!(
-            parent.state.children.is_empty(),
-            "publication must not manufacture waitability"
+        drop(carrier);
+    }
+
+    #[test]
+    fn child_signalfd_failure_retains_exact_receipt_and_is_not_retryable() {
+        let mut parent = executor();
+        let parent_id = identity(&parent);
+        let global = Arc::new(());
+        let run = crate::failure::RunFailure::new(&global);
+        parent
+            .signal_registry
+            .install(reverie::BackendSignalControlMode::ToolControlled, &run);
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let fd = signalfd_for(&mut parent, &mut memory, libc::SIGCHLD);
+        let completion = child_completion(
+            parent_id,
+            identity(&child),
+            reverie::ExitStatus::Signaled(reverie::Signal::SIGABRT, true),
+            true,
         );
+        child.retire_current_thread(completion.status, false);
+        parent
+            .state
+            .process_signals
+            .lock()
+            .unwrap()
+            .signalfd_carriers
+            .insert(
+                fd,
+                crate::signal::SignalFdCarrier::pin_eventfd(
+                    &std::fs::File::open("/dev/null").unwrap(),
+                )
+                .unwrap(),
+            );
+        let control = parent.backend_signal_control().process;
+        let reverie::ChildExitPublicationResult::FailedAfterCommit { receipt, errno } =
+            control.publish_child_exit(completion)
+        else {
+            panic!("missing child post-commit failure")
+        };
+        assert_eq!(errno, Errno::EBADF);
+        assert_eq!(receipt.completion, completion);
+        assert_eq!(receipt.effect, reverie::ChildExitPublicationEffect::Queued);
+        assert_eq!(
+            control.publish_child_exit(completion),
+            reverie::ChildExitPublicationResult::RejectedBeforeCommit(Errno::EIO),
+            "a committed child effect must never be retried"
+        );
+        assert_eq!(
+            control.finish_publication_failure(parent_id),
+            Err(Errno::EINVAL),
+            "the alarm-shaped finisher must not acknowledge a child receipt"
+        );
+        assert_eq!(
+            control.finish_child_exit_publication_failure(reverie::ChildExitPublication {
+                pending_generation: receipt.pending_generation + 1,
+                ..receipt
+            }),
+            Err(Errno::EINVAL),
+            "failure forwarding is bound to the exact retained receipt"
+        );
+        control
+            .finish_child_exit_publication_failure(receipt)
+            .unwrap();
+        let retained = parent
+            .take_process_publication_failure()
+            .expect("root-owned child publication failure");
+        assert!(
+            matches!(retained.primary(), crate::Error::ChildExitPublication { receipt: actual, errno: Errno::EBADF } if *actual == receipt)
+        );
+    }
+
+    #[test]
+    fn process_binding_guard_retains_exact_generation_until_ack_scope_ends() {
+        let parent = executor();
+        let process = identity(&parent);
+        let registry = parent.signal_registry.clone();
+        let guard = parent.retain_signal_process_binding();
+        drop(parent);
+        assert!(
+            registry.lookup(process).is_some(),
+            "the callback guard must retain the exact weak registry binding"
+        );
+        drop(guard);
+        assert!(registry.lookup(process).is_none());
     }
 }

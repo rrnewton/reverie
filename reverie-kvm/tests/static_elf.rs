@@ -31,6 +31,7 @@ use reverie::Pid;
 use reverie::Rdtsc;
 use reverie::RdtscResult;
 use reverie::SignalEvent;
+use reverie::SignalProcessId;
 use reverie::SignalTarget;
 use reverie::Stack;
 use reverie::Subscription;
@@ -7884,24 +7885,42 @@ int main(void) {
         events,
         vec![
             BackendChildWaitEvent {
-                parent: Pid::from_raw(1),
-                child: Pid::from_raw(2),
+                parent: SignalProcessId {
+                    tgid: Pid::from_raw(1),
+                    generation: 1,
+                },
+                child: SignalProcessId {
+                    tgid: Pid::from_raw(2),
+                    generation: 2,
+                },
                 state: BackendChildWaitState::Exited {
                     status: ExitStatus::Exited(7),
                     waitable: true
                 },
             },
             BackendChildWaitEvent {
-                parent: Pid::from_raw(1),
-                child: Pid::from_raw(3),
+                parent: SignalProcessId {
+                    tgid: Pid::from_raw(1),
+                    generation: 1,
+                },
+                child: SignalProcessId {
+                    tgid: Pid::from_raw(3),
+                    generation: 3,
+                },
                 state: BackendChildWaitState::Exited {
                     status: ExitStatus::Exited(8),
                     waitable: false
                 },
             },
             BackendChildWaitEvent {
-                parent: Pid::from_raw(1),
-                child: Pid::from_raw(4),
+                parent: SignalProcessId {
+                    tgid: Pid::from_raw(1),
+                    generation: 1,
+                },
+                child: SignalProcessId {
+                    tgid: Pid::from_raw(4),
+                    generation: 4,
+                },
                 state: BackendChildWaitState::Exited {
                     status: ExitStatus::Exited(9),
                     waitable: false

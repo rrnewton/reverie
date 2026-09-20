@@ -30,6 +30,14 @@ pub enum Error {
         /// Original carrier error.
         errno: reverie::syscalls::Errno,
     },
+    /// A child-completion operation committed before readiness failed.
+    #[error("child-exit publication committed {receipt:?}, then failed: {errno}")]
+    ChildExitPublication {
+        /// Exact irreversible child-completion receipt.
+        receipt: reverie::ChildExitPublication,
+        /// Original carrier error.
+        errno: reverie::syscalls::Errno,
+    },
     /// A peer or the Tool scheduler has made this run terminal. This internal
     /// outcome is never a successful guest status or a syscall errno.
     #[error("KVM execution stopped after a fatal run failure")]

@@ -243,10 +243,10 @@ pub enum BackendChildWaitState {
 /// A backend-observed child waitability decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BackendChildWaitEvent {
-    /// The process whose wait syscalls may observe the transition.
-    pub parent: Pid,
-    /// The child process that changed state.
-    pub child: Pid,
+    /// Exact process lifetime whose wait syscalls may observe the transition.
+    pub parent: crate::SignalProcessId,
+    /// Exact child process lifetime that changed state.
+    pub child: crate::SignalProcessId,
     /// The observed child state and whether it remains waitable.
     pub state: BackendChildWaitState,
 }
