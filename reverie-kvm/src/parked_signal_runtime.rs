@@ -242,24 +242,15 @@ async fn drive_signal_cleanup<T>(
     handler_signal: SharedHandlerSignal,
     pending_children: SharedChildStarts,
     failure: impl Future<Output = ()>,
-) -> HandlerOutcome<T> {
-    let mut cleanup = pin!(drive_handler(
+) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>> {
+    drive_handler_completion_inner(
         future,
         handler_signal,
         pending_children,
-        std::future::pending(),
-    ));
-    let mut failure = pin!(failure);
-    poll_fn(|cx| {
-        if let Poll::Ready(result) = cleanup.as_mut().poll(cx) {
-            return Poll::Ready(result);
-        }
-        if failure.as_mut().poll(cx).is_ready() {
-            Poll::Ready(HandlerOutcome::RunFailed)
-        } else {
-            Poll::Pending
-        }
-    })
+        failure,
+        None,
+        HandlerFailurePriority::CallbackFirst,
+    )
     .await
 }
 
@@ -297,7 +288,7 @@ where
     let continuation_site = executor
         .signal_failure_context()
         .map(|context| context.site);
-    let outcome = {
+    let completion = {
         let mut adapter = StaticElfSyscallExecutor {
             backend,
             executor,
@@ -337,9 +328,10 @@ where
         )
         .await
     };
+    let outcome = backend.finish_handler_completion(completion, Ok(()), |error| error)?;
     match outcome {
         HandlerOutcome::Returned(result) => result.map(|_| ()),
-        HandlerOutcome::RuntimeError(error) => Err(error),
+        HandlerOutcome::RuntimeError(error) => Err(executor.with_signal_effects(error, raw)),
         HandlerOutcome::ParkedCancelled(_) | HandlerOutcome::RunFailed => {
             Err(executor.with_signal_effects(Error::RunAborted, raw))
         }
@@ -359,6 +351,32 @@ mod signal_cleanup_tests {
     use futures::task::noop_waker;
 
     use super::*;
+
+    #[derive(Default)]
+    struct PendingDequeuePanicTool;
+
+    #[reverie::tool]
+    impl Tool for PendingDequeuePanicTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        async fn handle_signal_dequeue<G: Guest<Self>>(
+            &self,
+            _guest: &mut G,
+            _dequeue: reverie::SignalDequeue,
+        ) -> std::result::Result<(), Errno> {
+            struct PanicOnDrop;
+
+            impl Drop for PanicOnDrop {
+                fn drop(&mut self) {
+                    panic!("cancelled Tool signal-dequeue future destructor");
+                }
+            }
+
+            let _panic_on_drop = PanicOnDrop;
+            std::future::pending().await
+        }
+    }
 
     #[test]
     fn signal_cleanup_pending_callback_observes_published_peer_failure() {
@@ -382,13 +400,11 @@ mod signal_cleanup_tests {
         assert!(cleanup.as_mut().poll(&mut cx).is_pending());
         assert!(polled.load(Ordering::Acquire));
         context.publish("lost dequeue owner", Error::GuestWorkerPanic);
-        assert!(
-            matches!(
-                cleanup.as_mut().poll(&mut cx),
-                Poll::Ready(HandlerOutcome::RunFailed)
-            ),
-            "a published lost owner must terminate consuming cleanup, not leave it parked"
-        );
+        let Poll::Ready(completion) = cleanup.as_mut().poll(&mut cx) else {
+            panic!("a published lost owner must terminate consuming cleanup, not leave it parked");
+        };
+        assert!(matches!(completion.output, Some(HandlerOutcome::RunFailed)));
+        assert!(completion.panics.is_empty());
         assert!(matches!(
             run.primary().unwrap().primary(),
             Error::GuestWorkerPanic
@@ -399,18 +415,254 @@ mod signal_cleanup_tests {
     fn signal_cleanup_ready_result_precedes_terminal_cancellation() {
         for result in [Ok(()), Err(Error::Reverie(Errno::EFAULT.into()))] {
             let was_error = result.is_err();
-            let outcome = futures::executor::block_on(drive_signal_cleanup(
+            let completion = futures::executor::block_on(drive_signal_cleanup(
                 std::future::ready(result),
                 Arc::new(Mutex::new(None)),
                 Arc::new(Mutex::new(Vec::new())),
                 std::future::ready(()),
             ));
-            match outcome {
-                HandlerOutcome::Returned(result) => assert_eq!(result.is_err(), was_error),
+            assert!(completion.panics.is_empty());
+            match completion.output {
+                Some(HandlerOutcome::Returned(result)) => {
+                    assert_eq!(result.is_err(), was_error)
+                }
                 _ => panic!("already-ready cleanup/result was discarded"),
             }
         }
     }
+
+    #[test]
+    fn signal_cleanup_callback_first_starts_child_before_ready_failure() {
+        let (cleanup_sender, cleanup_receiver) = std::sync::mpsc::channel();
+        let cleanup_starts = Arc::new(Mutex::new(vec![PendingChildStart::tool_thread(
+            3,
+            ChildStartGate::new(cleanup_sender),
+        )]));
+        let completion = futures::executor::block_on(drive_signal_cleanup(
+            std::future::pending::<()>(),
+            Arc::new(Mutex::new(None)),
+            cleanup_starts.clone(),
+            std::future::ready(()),
+        ));
+        assert!(matches!(completion.output, Some(HandlerOutcome::RunFailed)));
+        assert!(completion.panics.is_empty());
+        assert!(cleanup_starts.lock().unwrap().is_empty());
+        assert_eq!(cleanup_receiver.recv().unwrap(), ChildStartCommand::Start);
+
+        let (ordinary_sender, ordinary_receiver) = std::sync::mpsc::channel();
+        let ordinary_starts = Arc::new(Mutex::new(vec![PendingChildStart::tool_thread(
+            4,
+            ChildStartGate::new(ordinary_sender),
+        )]));
+        let completion = futures::executor::block_on(drive_handler_completion(
+            std::future::pending::<()>(),
+            Arc::new(Mutex::new(None)),
+            ordinary_starts.clone(),
+            std::future::ready(()),
+        ));
+        assert!(matches!(completion.output, Some(HandlerOutcome::RunFailed)));
+        assert!(completion.panics.is_empty());
+        assert_eq!(ordinary_starts.lock().unwrap().len(), 1);
+        assert!(matches!(
+            ordinary_receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        ordinary_starts.lock().unwrap().pop().unwrap().cancel();
+        assert_eq!(
+            ordinary_receiver.recv().unwrap(),
+            ChildStartCommand::Cancel
+        );
+    }
+
+    #[test]
+    fn signal_cleanup_retains_ready_error_and_destruction_panic() {
+        struct ReadyThenPanic;
+
+        impl Future for ReadyThenPanic {
+            type Output = Result<()>;
+
+            fn poll(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Self::Output> {
+                Poll::Ready(Err(Error::Reverie(Errno::EFAULT.into())))
+            }
+        }
+
+        impl Drop for ReadyThenPanic {
+            fn drop(&mut self) {
+                panic!("cleanup future destructor");
+            }
+        }
+
+        let completion = futures::executor::block_on(drive_signal_cleanup(
+            ReadyThenPanic,
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(Vec::new())),
+            std::future::ready(()),
+        ));
+
+        assert!(matches!(
+            completion.output,
+            Some(HandlerOutcome::Returned(Err(Error::Reverie(
+                reverie::Error::Errno(Errno::EFAULT)
+            ))))
+        ));
+        assert_eq!(completion.panics.len(), 1);
+
+        let backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        let outcome = backend
+            .finish_handler_completion(completion, Ok(()), |error| error)
+            .unwrap();
+        let HandlerOutcome::RuntimeError(error) = outcome else {
+            panic!("cleanup panic was not converted into a retained runtime error");
+        };
+        assert!(matches!(
+            error.primary(),
+            Error::Reverie(reverie::Error::Errno(Errno::EFAULT))
+        ));
+        let Error::WithCleanup { cleanup, .. } = error else {
+            panic!("cleanup panic did not remain attached to the returned error");
+        };
+        assert_eq!(cleanup.len(), 1);
+        assert!(matches!(
+            cleanup[0].as_ref(),
+            Error::Cleanup {
+                phase: "Tool callback",
+                error
+            } if matches!(error.as_ref(), Error::GuestWorkerPanic)
+        ));
+        assert_eq!(backend.tool_panic_owner().take().len(), 1);
+    }
+
+    #[test]
+    fn signal_cleanup_retains_destructor_panic_when_failure_cancels_pending_work() {
+        struct PendingThenPanic;
+
+        impl Future for PendingThenPanic {
+            type Output = Result<()>;
+
+            fn poll(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Self::Output> {
+                Poll::Pending
+            }
+        }
+
+        impl Drop for PendingThenPanic {
+            fn drop(&mut self) {
+                panic!("cancelled cleanup future destructor");
+            }
+        }
+
+        let completion = futures::executor::block_on(drive_signal_cleanup(
+            PendingThenPanic,
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(Vec::new())),
+            std::future::ready(()),
+        ));
+        assert!(matches!(completion.output, Some(HandlerOutcome::RunFailed)));
+        assert_eq!(completion.panics.len(), 1);
+
+        let backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        let outcome = backend
+            .finish_handler_completion(completion, Ok(()), |error| error)
+            .unwrap();
+        let HandlerOutcome::RuntimeError(error) = outcome else {
+            panic!("cancelled cleanup panic was not converted into a runtime error");
+        };
+        assert!(matches!(error.primary(), Error::GuestWorkerPanic));
+        let Error::WithCleanup { cleanup, .. } = error else {
+            panic!("run cancellation was not retained behind the cleanup panic");
+        };
+        assert!(matches!(cleanup[0].as_ref(), Error::RunAborted));
+        assert_eq!(backend.tool_panic_owner().take().len(), 1);
+    }
+
+    #[test]
+    fn signal_cleanup_cancellation_panic_transfers_real_dequeue_effects() {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        let mut executor = ElfExecutor::new(
+            crate::executor::native_loaded_state(std::path::Path::new(".")),
+            false,
+        );
+        executor.enable_signal_dequeues();
+        let pid = Pid::from_raw(1);
+        let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+        info[..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
+        info[8..12].copy_from_slice(&libc::SI_TKILL.to_ne_bytes());
+        let event = SignalEvent::new(
+            libc::SIGUSR1,
+            info,
+            reverie::SignalTarget::Thread { pid, tid: pid },
+        )
+        .unwrap();
+        executor.defer_signal_delivery(event).unwrap();
+        executor
+            .take_pending_signal_for_delivery()
+            .unwrap()
+            .unwrap();
+        let effect = executor.signal_dequeue_front().unwrap();
+
+        let global = Arc::new(());
+        let failure = RunFailure::new(&global);
+        let context = FailureContext::new(failure, pid, pid);
+        backend.tool_failure = Some(context.clone());
+        let tool = Arc::new(PendingDequeuePanicTool);
+        let memory = GuestMemory::new(0, STACK_CAPACITY).unwrap();
+        let stack = Arc::new(AtomicBool::new(false));
+        let mut thread_state = ();
+        let config = ();
+        let subscriptions = Subscription::none();
+        let error = {
+            let mut cleanup = pin!(flush_pending_signal_effects_with_tool(
+                &mut backend,
+                &mut executor,
+                pid,
+                pid,
+                &tool,
+                &memory,
+                &[],
+                unsafe { std::mem::zeroed() },
+                &mut thread_state,
+                &global,
+                &config,
+                &subscriptions,
+                &stack,
+                Some(-i64::from(libc::EFAULT)),
+            ));
+            let waker = noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            assert!(cleanup.as_mut().poll(&mut cx).is_pending());
+            context.publish("cancel pending signal cleanup", Error::GuestWorkerPanic);
+            match cleanup.as_mut().poll(&mut cx) {
+                Poll::Ready(Err(error)) => error,
+                _ => panic!("published failure did not cancel signal cleanup"),
+            }
+        };
+
+        // A second boundary pass has no local effects left and must return the
+        // existing ledger rather than nesting or erasing it.
+        let error = executor.with_signal_effects(error, None);
+        let Error::SignalEffects {
+            cause,
+            dequeues,
+            acknowledged_through,
+            raw_result,
+            ..
+        } = error
+        else {
+            panic!("destructor panic lost the owned signal-effect ledger");
+        };
+        assert!(matches!(cause.primary(), Error::GuestWorkerPanic));
+        assert_eq!(dequeues, vec![effect]);
+        assert_eq!(acknowledged_through, 0);
+        assert_eq!(raw_result, Some(-i64::from(libc::EFAULT)));
+        assert!(executor.signal_dequeue_front().is_none());
+        assert_eq!(backend.tool_panic_owner().take().len(), 1);
+    }
+
     #[test]
     fn signal_bookkeeping_failure_cannot_resume_injected_or_unsubscribed_syscall() {
         for signalfd in [false, true] {

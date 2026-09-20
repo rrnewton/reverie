@@ -1802,6 +1802,15 @@ enum HandlerOutcome<T> {
     RuntimeError(Error),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HandlerFailurePriority {
+    /// Stop before admitting any ordinary callback progress.
+    FailureFirst,
+    /// Let this consuming callback and its child-start handoff make one poll's
+    /// progress before observing a simultaneously ready run failure.
+    CallbackFirst,
+}
+
 /// Map only a completed callback value, after the actual Tool future has been
 /// polled and destroyed by the driver. Nonlocal outcomes and payloads stay owned.
 fn map_handler_completion<T, U>(
@@ -2045,6 +2054,7 @@ where
                 pending_child_starts,
                 failure,
                 watch,
+                HandlerFailurePriority::FailureFirst,
             )
             .await
         }
@@ -2081,8 +2091,15 @@ async fn drive_handler_completion<T>(
     pending_child_starts: SharedChildStarts,
     failure: impl Future<Output = ()>,
 ) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>> {
-    drive_handler_completion_inner(future, handler_signal, pending_child_starts, failure, None)
-        .await
+    drive_handler_completion_inner(
+        future,
+        handler_signal,
+        pending_child_starts,
+        failure,
+        None,
+        HandlerFailurePriority::FailureFirst,
+    )
+    .await
 }
 
 async fn drive_handler_completion_inner<T>(
@@ -2091,6 +2108,7 @@ async fn drive_handler_completion_inner<T>(
     pending_child_starts: SharedChildStarts,
     failure: impl Future<Output = ()>,
     watch: Option<crate::entry::driver::EntryDriverWatch>,
+    failure_priority: HandlerFailurePriority,
 ) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>> {
     use std::panic::AssertUnwindSafe;
     use std::panic::catch_unwind;
@@ -2099,8 +2117,8 @@ async fn drive_handler_completion_inner<T>(
     use crate::failure::owned_future::catch_owned_future;
 
     // The callback may already have moved irreversible effects into this
-    // terminal error. Failure still wins over ordinary values/child starts,
-    // but must not replace the owned error with an empty cancellation marker.
+    // terminal error. At the configured failure checkpoint it must not replace
+    // the owned error with an empty cancellation marker.
     let terminal = || match handler_signal
         .lock()
         .expect("KVM handler signal lock poisoned")
@@ -2145,7 +2163,9 @@ async fn drive_handler_completion_inner<T>(
                 None => HandlerOutcome::RuntimeError(error),
             });
         }
-        if failure.as_mut().poll(context).is_ready() {
+        if failure_priority == HandlerFailurePriority::FailureFirst
+            && failure.as_mut().poll(context).is_ready()
+        {
             return select(terminal());
         }
         let result = future.as_mut().poll(context);
@@ -2165,7 +2185,9 @@ async fn drive_handler_completion_inner<T>(
                 Poll::Pending => HandlerOutcome::RuntimeError(error),
             });
         }
-        if failure.as_mut().poll(context).is_ready() {
+        if failure_priority == HandlerFailurePriority::FailureFirst
+            && failure.as_mut().poll(context).is_ready()
+        {
             return select(terminal());
         }
         // A callback can select another ready future after an operation records
@@ -2193,6 +2215,11 @@ async fn drive_handler_completion_inner<T>(
                     )));
                 }
                 starts.clear();
+                if failure_priority == HandlerFailurePriority::CallbackFirst
+                    && failure.as_mut().poll(context).is_ready()
+                {
+                    return select(terminal());
+                }
                 Poll::Pending
             }
         }
