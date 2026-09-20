@@ -22,6 +22,7 @@ use reverie::Subscription;
 use reverie::Tid;
 use reverie::Tool;
 use reverie::syscalls::ExitGroup;
+use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
@@ -55,6 +56,11 @@ static RCB_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 static RCB_ENTRIES: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 static RCB_AVAILABLE: AtomicBool = AtomicBool::new(false);
 static VDSO_CLOCK_CALLS: AtomicU64 = AtomicU64::new(0);
+static VDSO_RANDOM_CALLS: AtomicU64 = AtomicU64::new(0);
+static VDSO_RANDOM_FUNCTION: AtomicU64 = AtomicU64::new(0);
+static VDSO_RANDOM_STATE: AtomicU64 = AtomicU64::new(0);
+static VDSO_RANDOM_STATE_SIZE: AtomicU64 = AtomicU64::new(0);
+static VDSO_RANDOM_PREHOOK: AtomicBool = AtomicBool::new(false);
 static CHILD_NESTED_CPUID_NATIVE: AtomicBool = AtomicBool::new(false);
 static CHILD_NESTED_RDTSC_NATIVE: AtomicBool = AtomicBool::new(false);
 static CHILD_NESTED_RDTSCP_NATIVE: AtomicBool = AtomicBool::new(false);
@@ -288,6 +294,151 @@ impl Tool for NestedInstructionForkTool {
 
 #[derive(Default)]
 struct ClockAndVdsoTool;
+
+type VdsoGetrandom =
+    unsafe extern "C" fn(*mut libc::c_void, usize, libc::c_uint, *mut libc::c_void, usize) -> isize;
+
+#[repr(C)]
+#[derive(Default)]
+struct GetrandomAllocationParameters {
+    state_size: u32,
+    mmap_prot: u32,
+    mmap_flags: u32,
+    reserved: [u32; 13],
+}
+
+struct InitializedGetrandomVdso {
+    function: VdsoGetrandom,
+    library: *mut libc::c_void,
+    state: *mut libc::c_void,
+    state_size: usize,
+}
+
+impl InitializedGetrandomVdso {
+    fn new() -> Self {
+        unsafe {
+            let library = libc::dlopen(
+                c"linux-vdso.so.1".as_ptr(),
+                libc::RTLD_NOW | libc::RTLD_LOCAL,
+            );
+            assert!(!library.is_null(), "open actual host vDSO");
+            let symbol = libc::dlsym(library, c"__vdso_getrandom".as_ptr());
+            assert!(
+                !symbol.is_null(),
+                "this regression needs the actual getrandom vDSO"
+            );
+            let function: VdsoGetrandom = std::mem::transmute(symbol);
+            let mut params = GetrandomAllocationParameters::default();
+            assert_eq!(std::mem::size_of_val(&params), 64);
+            assert_eq!(
+                function(
+                    std::ptr::null_mut(),
+                    0,
+                    0,
+                    (&mut params as *mut GetrandomAllocationParameters).cast(),
+                    usize::MAX
+                ),
+                0
+            );
+            assert!(params.state_size > 0);
+            let state_size = params.state_size as usize;
+            // Preserve the actual kernel-specified state allocation contract.
+            let state = libc::mmap(
+                std::ptr::null_mut(),
+                state_size,
+                params.mmap_prot as i32,
+                params.mmap_flags as i32,
+                -1,
+                0,
+            );
+            assert_ne!(state, libc::MAP_FAILED);
+            let mut bytes = [0_u8; 16];
+            assert_eq!(
+                function(bytes.as_mut_ptr().cast(), bytes.len(), 0, state, state_size),
+                16
+            );
+            Self {
+                function,
+                library,
+                state,
+                state_size,
+            }
+        }
+    }
+}
+
+impl Drop for InitializedGetrandomVdso {
+    fn drop(&mut self) {
+        unsafe {
+            assert_eq!(libc::munmap(self.state, self.state_size), 0);
+            assert_eq!(libc::dlclose(self.library), 0);
+        }
+    }
+}
+
+#[derive(Default)]
+struct GetrandomVdsoTool;
+
+#[reverie::tool]
+impl Tool for GetrandomVdsoTool {
+    type GlobalState = CounterGlobal;
+    type ThreadState = ();
+
+    fn subscriptions(_cfg: &()) -> Subscription {
+        [Sysno::getrandom].into_iter().collect()
+    }
+
+    fn new(_pid: Pid, _cfg: &()) -> Self {
+        // patch_current_vdso has run, but HANDLER and the LiteInst hook have
+        // not. The retained prefix must supply SYS_getrandom on this path.
+        let function: VdsoGetrandom =
+            unsafe { std::mem::transmute(VDSO_RANDOM_FUNCTION.load(Ordering::Relaxed) as usize) };
+        let mut bytes = [0_u8; 3];
+        assert_eq!(
+            unsafe {
+                function(
+                    bytes.as_mut_ptr().cast(),
+                    bytes.len(),
+                    libc::GRND_NONBLOCK,
+                    VDSO_RANDOM_STATE.load(Ordering::Relaxed) as usize as *mut libc::c_void,
+                    VDSO_RANDOM_STATE_SIZE.load(Ordering::Relaxed) as usize,
+                )
+            },
+            3
+        );
+        assert_eq!(VDSO_RANDOM_CALLS.load(Ordering::Relaxed), 0);
+        VDSO_RANDOM_PREHOOK.store(true, Ordering::Relaxed);
+        Self
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let Syscall::Getrandom(call) = syscall else {
+            panic!("unexpected getrandom subscription: {syscall:?}");
+        };
+        let index = VDSO_RANDOM_CALLS.fetch_add(1, Ordering::Relaxed);
+        match index {
+            0 => {
+                assert_eq!(
+                    (call.buflen(), call.flags()),
+                    (16, libc::GRND_NONBLOCK as usize)
+                );
+                guest
+                    .memory()
+                    .write_exact(call.buf().expect("ordinary buffer"), &[0x42; 16])?;
+                Ok(16)
+            }
+            1 => {
+                assert_eq!((call.buflen(), call.flags()), (0, u32::MAX as usize));
+                Ok(-i64::from(libc::EINVAL))
+            }
+            _ => panic!("unexpected extra getrandom callback"),
+        }
+    }
+}
 
 #[reverie::tool]
 impl Tool for ClockAndVdsoTool {
@@ -1043,6 +1194,91 @@ fn clock_and_vdso_guest(path: &Path) {
     }
 }
 
+fn getrandom_vdso_guest(path: &Path) {
+    // Initialize the actual five-argument state before LiteInst installation,
+    // as happens when the loader has already enabled libc's vDSO route.
+    let initialized = InitializedGetrandomVdso::new();
+    VDSO_RANDOM_FUNCTION.store(initialized.function as usize as u64, Ordering::Relaxed);
+    VDSO_RANDOM_STATE.store(initialized.state as usize as u64, Ordering::Relaxed);
+    VDSO_RANDOM_STATE_SIZE.store(initialized.state_size as u64, Ordering::Relaxed);
+    unsafe { reverie_liteinst::install_tool::<GetrandomVdsoTool>(path) }.unwrap();
+    assert!(VDSO_RANDOM_PREHOOK.load(Ordering::Relaxed));
+    assert_eq!(VDSO_RANDOM_CALLS.load(Ordering::Relaxed), 0);
+    let mut guarded_params = [0xa5_u8; 80];
+    assert_eq!(
+        unsafe {
+            (initialized.function)(
+                std::ptr::null_mut(),
+                0,
+                0,
+                guarded_params.as_mut_ptr().add(8).cast(),
+                usize::MAX,
+            )
+        },
+        -(libc::ENOSYS as isize)
+    );
+    assert_eq!(guarded_params, [0xa5; 80]);
+    assert_eq!(VDSO_RANDOM_CALLS.load(Ordering::Relaxed), 0);
+
+    let mut guarded_bytes = [0xa5_u8; 32];
+    assert_eq!(
+        unsafe {
+            (initialized.function)(
+                guarded_bytes.as_mut_ptr().add(8).cast(),
+                16,
+                libc::GRND_NONBLOCK,
+                initialized.state,
+                initialized.state_size,
+            )
+        },
+        16
+    );
+    assert_eq!(&guarded_bytes[..8], &[0xa5; 8]);
+    assert_eq!(&guarded_bytes[8..24], &[0x42; 16]);
+    assert_eq!(&guarded_bytes[24..], &[0xa5; 8]);
+    assert_eq!(
+        unsafe {
+            (initialized.function)(
+                std::ptr::null_mut(),
+                0,
+                u32::MAX,
+                initialized.state,
+                initialized.state_size,
+            )
+        },
+        -(libc::EINVAL as isize)
+    );
+    assert_eq!(VDSO_RANDOM_CALLS.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_site_hook_count(initialized.function as usize as u64),
+        0
+    );
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_site_hook_count(
+            initialized.function as usize as u64 + 48
+        ),
+        2
+    );
+    // Query rejection must still bypass the installed ordinary-call hook.
+    assert_eq!(
+        unsafe {
+            (initialized.function)(
+                std::ptr::null_mut(),
+                0,
+                0,
+                guarded_params.as_mut_ptr().add(8).cast(),
+                usize::MAX,
+            )
+        },
+        -(libc::ENOSYS as isize)
+    );
+    assert_eq!(guarded_params, [0xa5; 80]);
+    assert_eq!(VDSO_RANDOM_CALLS.load(Ordering::Relaxed), 2);
+    println!(
+        "getrandom-vdso: state=kernel-allocated prehook=3 query=ENOSYS canaries=unchanged callbacks=16/1,0/4294967295 hook-offset=48"
+    );
+}
+
 fn unsubscribed_lifecycle_guest(path: &Path) -> ! {
     unsafe { reverie_liteinst::install_tool::<UnsubscribedLifecycleTool>(path) }.unwrap();
     let flags = libc::CLONE_VM | libc::CLONE_VFORK | libc::SIGCHLD;
@@ -1336,6 +1572,7 @@ fn main() {
             instruction_guest(Path::new(&path), InstructionPublication::Quiescent)
         }
         Some("clock-and-vdso-guest") => clock_and_vdso_guest(Path::new(&path)),
+        Some("getrandom-vdso-guest") => getrandom_vdso_guest(Path::new(&path)),
         Some("unsubscribed-lifecycle") => unsubscribed_lifecycle_guest(Path::new(&path)),
         Some("injected-exit") => injected_exit_guest(Path::new(&path)),
         Some("fork-guest") => fork_guest(Path::new(&path)),
