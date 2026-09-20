@@ -132,10 +132,10 @@ DEFAULT_DISK_PATH_PREVIOUS_STATE = (
 )
 DISK_PATH_INSTRUMENT = "compsize -b -x"
 DEFAULT_DISK_PATH_TIMEOUT_SECS = 180.0
-# The systemd producer has a 512 MiB soft memory boundary. Even two concurrent
-# compsize processes drove the live cgroup to about 584 MiB, exhausted its
-# 128 MiB swap allowance, and spent sustained time in full memory pressure.
-# Measure one population at a time so scans do not compete for that boundary.
+# Even one serialized compsize process crossed the former 512 MiB soft memory
+# boundary, exhausted the unit's 128 MiB swap allowance, and spent sustained
+# time in full memory pressure. Keep population scans serialized; the unit's
+# independently sized soft threshold must not become permission for concurrency.
 DISK_PATH_MAX_WORKERS = 1
 _BTRFS_FREE_ESTIMATED = re.compile(
     r"^\s*Free \(estimated\):\s*([0-9]+)(?:\s|$)", re.MULTILINE

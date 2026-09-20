@@ -26,7 +26,11 @@ ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --sta
 TimeoutStartSec=540
 TimeoutStopSec=5s
 KillMode=control-group
-MemoryHigh=512M
+# A live one-worker scan under the former 512M soft threshold reached about
+# 670 MiB of concurrent resident-plus-swap charge and sustained heavy reclaim.
+# 704M is the first 64-MiB step above that observation and still leaves 64 MiB
+# below the unchanged hard maximum. This widens only the soft reclaim boundary.
+MemoryHigh=704M
 MemoryMax=768M
 MemorySwapMax=128M
 TasksMax=512

@@ -70,10 +70,19 @@ def test_unit_uses_one_exact_bounded_serial_producer() -> None:
     assert "TimeoutStartSec=540" in service
     assert "TimeoutStopSec=5s" in service
     assert "KillMode=control-group" in service
-    assert "MemoryHigh=512M" in service
-    assert "MemoryMax=768M" in service
-    assert "MemorySwapMax=128M" in service
-    assert "TasksMax=512" in service
+    resource_limits = [
+        line
+        for line in service.splitlines()
+        if line.startswith(
+            ("MemoryHigh=", "MemoryMax=", "MemorySwapMax=", "TasksMax=")
+        )
+    ]
+    assert resource_limits == [
+        "MemoryHigh=704M",
+        "MemoryMax=768M",
+        "MemorySwapMax=128M",
+        "TasksMax=512",
+    ]
     assert "Nice=19" in service
     assert "IOSchedulingClass=idle" in service
     assert "OnCalendar=*:0/15" in timer

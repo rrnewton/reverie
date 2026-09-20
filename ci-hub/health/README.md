@@ -89,9 +89,25 @@ the preceding published path run at
 `ignored/ops-state/disk-paths.previous.json`. The path scan runs at idle I/O and
 lowest normal CPU priority, with exactly one population measured at a time and
 a 180-second bound per population. The observed small populations clear
-rapidly. If every population instead consumes its full bound, their serialized
-worst case exceeds `TimeoutStartSec=540`; that unchanged complete-service wall
-then fails closed rather than relaxing the memory, swap, or task caps or
+rapidly. A 2026-09-20 devbig014 run showed that serialization alone does not
+make the former 512 MiB soft memory threshold usable: the unit finished with a
+569,753,600-byte `memory.peak` and a 134,217,728-byte swap peak. At 03:33:10
+PDT, a concurrent sample showed 568,283,136 bytes of `memory.current` plus the
+full 134,217,728 bytes of swap (about 670 MiB), 30,648 `memory.high` events, and
+full memory-pressure PSI `avg10=90.78`. The last sample before cgroup removal
+recorded 31,194 high events and 98.84 seconds of total full pressure. The
+`registered_slots` population still reached its 180-second timeout; the
+complete path scan finished in 216.62 seconds with the other four populations
+complete.
+
+`MemoryHigh=704M` is the first 64-MiB-aligned soft threshold above that observed
+resident-plus-swap footprint and leaves 64 MiB before the unchanged
+`MemoryMax=768M`. This is a real widening of the soft reclaim threshold, not
+evidence that the scan's footprint decreased. The hard 768 MiB memory maximum,
+128 MiB swap maximum, 512-task maximum, one-worker cap, 180-second population
+timeout, and 540-second complete-service wall remain unchanged. If every
+population consumes its full bound, their serialized worst case exceeds that
+wall; the service then fails closed rather than relaxing a hard resource cap or
 publishing a partly assembled path document. The wall includes immutable-tool
 setup and both publications; no measured cold-run component is treated as a
 code-enforced sub-bound. The producer ordinarily attempts both independent
