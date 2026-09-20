@@ -183,7 +183,14 @@ def test_herdr_snapshot_producer_runs_independently_inside_freshness_bound() -> 
     assert "herdr_agent_snapshot.py" in service
     assert "--bindings %h/work/dev-hermit/.tick-hub/herdr-agent-bindings.json" in service
     assert "--output %h/work/dev-hermit/ignored/ci-hub/agent-snapshot.json" in service
-    assert "MemoryMax=1G" in service
+    assert "Environment=GOMAXPROCS=4" in service
+    assert "Environment=MALLOC_CONF=background_thread:false,narenas:4" in service
+    bootstrap = (ROOT / "scripts/hermit-health-tick.sh").read_text()
+    assert "-c pack.threads=2" in bootstrap
+    assert "-c pack.windowMemory=64m" in bootstrap
+    assert "-c pack.deltaCacheSize=64m" in bootstrap
+    assert "MemoryHigh=512M" in service
+    assert "MemoryMax=768M" in service
     assert "MemorySwapMax=128M" in service
     assert "TasksMax=512" in service
     assert "--herdr-bin %h/bin/herdr" in service

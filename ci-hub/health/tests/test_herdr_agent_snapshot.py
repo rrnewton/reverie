@@ -496,6 +496,89 @@ def agentctl_list(tmp_path: Path, *, token: str = "generation-token") -> list[di
     ]
 
 
+def coordinator_binding(tmp_path: Path) -> producer.Bindings:
+    return producer.Bindings(
+        "chat-bridge",
+        (tmp_path / "registry").resolve(),
+        (tmp_path / "taskgraph.db").resolve(),
+        (
+            producer.Binding(
+                "hermit-coordinator",
+                "hermit-coordinator",
+                "wK:p1",
+                tmp_path.resolve(),
+                "codex",
+                None,
+                "coordinator",
+                "coordinator",
+                "coordinator-token",
+                "coordinator-session",
+                None,
+            ),
+        ),
+        hashlib.sha256(b"coordinator-binding").hexdigest(),
+    )
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        {
+            "source": "native",
+            "native_status": "absent",
+            "goal": None,
+            "native": None,
+        },
+        {
+            "source": "native",
+            "native_status": "active",
+            "goal": "Coordinate Hermit",
+            "native": {
+                "threadId": "coordinator-session",
+                "status": "active",
+                "objective": "Coordinate Hermit",
+            },
+        },
+    ],
+)
+def test_coordinator_accepts_only_an_exact_absent_or_active_native_session(
+    tmp_path: Path, monkeypatch, goal: dict[str, object],
+) -> None:
+    monkeypatch.setattr(producer, "read_agentctl", lambda *_args: goal)
+    producer.verify_agentctl_goals(coordinator_binding(tmp_path), Path("agentctl"))
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        {
+            "source": "requested",
+            "native_status": "unverified",
+            "goal": None,
+            "native": None,
+        },
+        {
+            "source": "native",
+            "native_status": "active",
+            "goal": "Coordinate Hermit",
+            "native": {
+                "threadId": "replacement-session",
+                "status": "active",
+                "objective": "Coordinate Hermit",
+            },
+        },
+    ],
+)
+def test_coordinator_refuses_unverified_or_reassigned_native_session(
+    tmp_path: Path, monkeypatch, goal: dict[str, object],
+) -> None:
+    monkeypatch.setattr(producer, "read_agentctl", lambda *_args: goal)
+    with pytest.raises(producer.SnapshotUnavailable, match="exact absent or active"):
+        producer.verify_agentctl_goals(
+            coordinator_binding(tmp_path), Path("agentctl")
+        )
+
+
 def test_generation_goal_and_taskgraph_owner_are_reproved_on_every_refresh(
     tmp_path: Path, monkeypatch,
 ) -> None:

@@ -5,6 +5,11 @@ Documentation=https://github.com/rrnewton/dev-hermit/blob/main/ci-hub/health/her
 [Service]
 Type=oneshot
 Environment=PATH=%h/.local/libexec/dev-hermit:%h/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+# Bound the immutable-checkout bootstrap's internal concurrency. On this
+# high-core host, unconstrained Git pack and allocator worker counts consumed
+# every tested 512 MiB, 1 GiB, and 1.5 GiB cgroup before useful work completed.
+Environment=GOMAXPROCS=4
+Environment=MALLOC_CONF=background_thread:false,narenas:4
 WorkingDirectory=%h
 # Current origin/main supplies the producer; the mutable parent supplies only
 # coordinator-owned bindings and the atomically replaced evidence artifact.
@@ -12,16 +17,19 @@ ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --sta
 TimeoutStartSec=90
 TimeoutStopSec=2s
 KillMode=control-group
-MemoryMax=1G
+MemoryHigh=512M
+MemoryMax=768M
 MemorySwapMax=128M
 # `operational-tool` may refresh its immutable checkout before the tiny Python
 # producer starts. The GitHub credential helper is a Go binary and initializes
 # more than 32 runtime threads on this host; TasksMax=32 made it abort before
 # authentication with `pthread_create failed`. Keep a bound, but cover the
-# cold checkout bootstrap, Git repack, helper, and producer. The exact cold
-# path needed 1,012 MiB peak and 236 KiB swap; cached runs are much smaller.
-# Keep finite RAM and swap bounds so neither path can consume the host without
-# limit.
+# cold checkout bootstrap, Git repack, helper, and producer. `run_git` pins pack
+# concurrency at its scrubbed authority boundary; with allocator concurrency
+# bounded here too, an exact current-origin materialization
+# reached the producer under 512 MiB with zero swap; the full cached refresh
+# then published all four agents under the same bound. Retain extra finite
+# headroom for tree-to-tree variation without allowing unbounded host use.
 TasksMax=512
 
 [Install]

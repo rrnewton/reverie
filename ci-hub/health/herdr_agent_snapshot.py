@@ -368,16 +368,29 @@ def verify_agentctl_goals(bindings: Bindings, agentctl_bin: Path) -> None:
                 f"agentctl goal for {binding.agentctl_name!r} does not prove "
                 "the exact active objective"
             )
-        if binding.role == "coordinator" and (
-            goal.get("source") != "native"
-            or goal.get("native_status") != "absent"
-            or goal.get("goal") is not None
-            or native is not None
-        ):
-            raise SnapshotUnavailable(
-                f"agentctl coordinator {binding.agentctl_name!r} unexpectedly "
-                "carries a native goal"
+        if binding.role == "coordinator":
+            native_status = goal.get("native_status")
+            absent = (
+                native_status == "absent"
+                and goal.get("goal") is None
+                and native is None
             )
+            active = (
+                native_status == "active"
+                and isinstance(goal.get("goal"), str)
+                and bool(goal.get("goal"))
+                and isinstance(native, dict)
+                and native.get("threadId") == binding.agentctl_session_id
+                and native.get("status") == "active"
+                and native.get("objective") == goal.get("goal")
+            )
+            if goal.get("source") != "native" or not (absent or active):
+                raise SnapshotUnavailable(
+                    f"agentctl coordinator {binding.agentctl_name!r} native "
+                    f"goal state is not one exact absent or active session: "
+                    f"source={goal.get('source')!r}, "
+                    f"status={native_status!r}"
+                )
 
 
 def _agentctl_identity(records: dict[str, dict[str, Any]]) -> dict[str, tuple[object, ...]]:

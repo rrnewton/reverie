@@ -2075,7 +2075,16 @@ PY
 
 run_git() {
     local network=0 name
-    local -a git_command=(git --no-replace-objects)
+    # These are command-line configuration, not inherited GIT_* environment.
+    # The latter is deliberately scrubbed below because it can redirect Git's
+    # executable authority. Pinning pack concurrency here keeps cold immutable
+    # checkout materialization bounded even on hosts with hundreds of CPUs.
+    local -a git_command=(
+        git --no-replace-objects
+        -c pack.threads=2
+        -c pack.windowMemory=64m
+        -c pack.deltaCacheSize=64m
+    )
     if [[ ${1:-} == --network ]]; then
         network=1
         shift
