@@ -16,6 +16,7 @@ struct Event {
 struct State {
     events: Vec<Event>,
     parent_ready: bool,
+    release_first_error: bool,
     release_child: bool,
     global_dropped: bool,
 }
@@ -112,6 +113,10 @@ impl GlobalTool for Log {
         );
         self.control.record("wait-event", event.child.as_raw(), 0);
         if self.mode == 2 {
+            // The backend publishes the waitable status before invoking this
+            // callback. Hold its failure until the parent has collected that
+            // status and reached the intended cancellation point.
+            self.control.wait_for(|state| state.release_child).await;
             return Err(if event.child.as_raw() == 2 {
                 Errno::EIO
             } else {
@@ -198,13 +203,13 @@ impl Tool for ForkTool {
                             state
                                 .events
                                 .iter()
-                                .any(|event| event.kind == "host-exit" && event.pid == *pid)
+                                .any(|event| event.kind == "wait-event" && event.pid == *pid)
                         })
                     })
                     .await;
                 for child in &children {
-                    // Completion is already published and the worker has exited.
-                    // This actual wait moves its handle into completed_processes.
+                    // Waitable completion is published before the held callback.
+                    // This actual wait moves its live handle into completed_processes.
                     let wait = Syscall::from_raw(
                         Sysno::wait4,
                         SyscallArgs::new(*child as usize, 0, libc::WNOHANG as usize, 0, 0, 0),
@@ -224,7 +229,7 @@ impl Tool for ForkTool {
                                 || state
                                     .events
                                     .iter()
-                                    .any(|event| event.kind == "host-exit" && event.pid == 2))
+                                    .any(|event| event.kind == "process-exit" && event.pid == 2))
                     })
                     .await;
             }
@@ -246,7 +251,7 @@ impl Tool for ForkTool {
         }
         if syscall.number() == Sysno::gettid {
             assert_ne!(self.pid, 1);
-            if self.mode != 2 && (self.mode < 3 || self.pid == 3) {
+            if self.mode < 2 {
                 self.control.record("blocked", self.pid, 0);
                 let state = self.control.state.lock().unwrap();
                 let (state, timeout) = self
@@ -304,7 +309,19 @@ impl Tool for ForkTool {
         assert_eq!(status, ExitStatus::SUCCESS);
         self.control.record("process-exit", self.pid, 0);
         if self.mode >= 3 && self.pid == 2 {
+            // Failure is run-wide. Inject it only after the parent reaches the
+            // intended terminal path and the sibling has captured its output.
+            self.control
+                .wait_for(|state| state.release_first_error)
+                .await;
             return Err(Errno::EIO.into());
+        }
+        if self.mode >= 3 && self.pid == 3 {
+            // Keep the later worker alive after its output and success status
+            // are known. The controller releases it after the first error's
+            // worker has exited, preserving the ordered cleanup obligation.
+            self.control.record("blocked", self.pid, 0);
+            self.control.wait_for(|state| state.release_child).await;
         }
         if self.mode == 4 {
             return Err(if self.pid == 1 {
@@ -469,6 +486,24 @@ fn run_case(test: &str, mode: u8) {
     } else {
         receiver.recv_timeout(Duration::from_millis(100)).ok()
     };
+    if mode >= 3 {
+        let mut state = control.state.lock().unwrap();
+        state.release_first_error = true;
+        control.changed.notify_all();
+        let (state, timeout) = control
+            .changed
+            .wait_timeout_while(state, Duration::from_secs(5), |state| {
+                !state
+                    .events
+                    .iter()
+                    .any(|event| event.kind == "host-exit" && event.pid == 2)
+            })
+            .unwrap();
+        assert!(
+            !timeout.timed_out(),
+            "first child error did not finish before sibling release: {state:?}"
+        );
+    }
     {
         let mut state = control.state.lock().unwrap();
         state.release_child = true;

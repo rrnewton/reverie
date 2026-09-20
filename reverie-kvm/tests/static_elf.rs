@@ -6482,8 +6482,14 @@ int main(int argc, char **argv) {
                 true,
             ))
             .expect_err("eligible post-exec signal must stop before running the new image");
+        // Shared ownership preserves the same failure. Additional worker or
+        // cleanup errors must still fail this exact-cause assertion.
+        let cause = match &error {
+            Error::SharedFailure(cause) => cause.as_ref(),
+            cause => cause,
+        };
         assert!(
-            matches!(error, Error::PostExec(Errno::ENOSYS)),
+            matches!(cause, Error::PostExec(Errno::ENOSYS)),
             "scope={scope}, recursive={recursive}, error={error}",
         );
         assert_eq!(
@@ -11268,10 +11274,15 @@ fn check_page_fault_filter(name: &str, mode: u8) {
         backend.run_static_elf_with_tool::<PageFaultFilterTool>(mode, true),
     );
     if mode == 4 {
-        match result {
-            Err(Error::Reverie(error)) => assert_eq!(error.into_errno().unwrap(), Errno::EIO),
-            other => panic!("unexpected fault filter error: {other:?}"),
-        }
+        let error = result.expect_err("the fault filter must retain its injected failure");
+        let cause = match &error {
+            Error::SharedFailure(cause) => cause.as_ref(),
+            cause => cause,
+        };
+        assert!(
+            matches!(cause, Error::Reverie(reverie::Error::Errno(Errno::EIO))),
+            "unexpected fault filter error: {error:?}",
+        );
         return;
     }
     let (log, code, stdout, stderr) = result.unwrap();
