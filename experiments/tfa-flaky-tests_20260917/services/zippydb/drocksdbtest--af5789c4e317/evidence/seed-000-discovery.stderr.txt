@@ -1,0 +1,18 @@
+:: Run1...
+Deadlock detected: thread(s) waiting on futex, but no runnable threads left.
+  turn 1476360, committed time 1_767_226_014.902_027_085s
+  run queue: 0 runnable
+  threads (1), by dettid:
+    dtid 3: FutexWait: R
+  futex waiters (1), by futex:
+    private MmId { creator: DetPid(3), generation: 1 } address 0x7fffbb29fbd8: dtid 3 (bitset 0xffffffff)
+  timed-out futex waiters: none
+  timed waiters: none
+  external IO blockers: none
+  rt_sigsuspend blockers: none
+  sigchld deferred: none; sigchld ready: none
+
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-drocksdb-verify-3482641-1789884345113574049/run1_log_Wigm7
+HERMIT_INTERNAL_FAILURE class=container-child-exit status=Exited(1)
+Error: Sandbox container exited unexpectedly: Exited(1)
