@@ -108,6 +108,7 @@ verified_installed_operational_tool() { :; }
             result.stdout, '{"verdict":"fixture","arg":"requested-argument"}\n'
         )
         self.assertIn(PROGRESS, result.stderr)
+        self.assertIn("payload diagnostic", result.stderr)
 
     def test_payload_help_and_literal_arguments_remain_child_owned(self):
         arguments = ("--help", "two words", "", "$(not-a-command)", "--unknown")
@@ -118,7 +119,7 @@ verified_installed_operational_tool() { :; }
                 self.assertEqual(result.stdout, '{"verdict":"fixture","arg":"--help"}\n')
                 self.assertEqual(result.forwarded_arguments,
                                  b"".join(arg.encode() + b"\0" for arg in arguments))
-        self.assertIn("payload diagnostic", result.stderr)
+                self.assertIn("payload diagnostic", result.stderr)
 
 
 class OperationalToolEntryTests(unittest.TestCase):
