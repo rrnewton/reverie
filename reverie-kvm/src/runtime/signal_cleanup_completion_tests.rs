@@ -409,7 +409,7 @@ fn signal_cleanup_publishes_effects_before_cancelling_and_joining_registered_chi
     executor.register_child_process_with_gate(
         child_pid,
         gate.clone(),
-        Arc::new(Mutex::new(None)),
+        Arc::new(crate::executor::ChildCompletionSlot::default()),
         child,
     );
     starts

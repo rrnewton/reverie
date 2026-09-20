@@ -8,19 +8,28 @@
 
 #![cfg(target_arch = "x86_64")]
 
+use std::collections::BTreeMap;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Barrier;
 use std::sync::Condvar;
+use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::task::Poll;
+use std::task::Waker;
 
+use futures::future::poll_fn;
 use kvm_ioctls::Kvm;
 use reverie::BackendChildWaitEvent;
 use reverie::BackendChildWaitState;
+use reverie::BackendSignalControl;
+use reverie::BackendSignalControlMode;
 use reverie::BackendStatsRequest;
 use reverie::BackendStatsSource;
 use reverie::ExitStatus;
@@ -30,7 +39,9 @@ use reverie::Guest;
 use reverie::Pid;
 use reverie::Rdtsc;
 use reverie::RdtscResult;
+use reverie::SignalDeliveryPermit;
 use reverie::SignalEvent;
+use reverie::SignalProcessId;
 use reverie::SignalTarget;
 use reverie::Stack;
 use reverie::Subscription;
@@ -7753,23 +7764,161 @@ int main(void) {
     );
 }
 
-#[derive(Default)]
+type SharedChildWaitEvents = Arc<Mutex<Vec<BackendChildWaitEvent>>>;
+
+static CHILD_WAIT_EVENT_CONFIGS: LazyLock<Mutex<BTreeMap<u64, ChildWaitEventConfig>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+static NEXT_CHILD_WAIT_EVENT_CONFIG: AtomicU64 = AtomicU64::new(1);
+
+fn child_wait_event_config(events: &SharedChildWaitEvents) -> u64 {
+    child_wait_event_config_with_block(events, None)
+}
+
+#[derive(Clone)]
+struct ChildWaitEventConfig {
+    events: Weak<Mutex<Vec<BackendChildWaitEvent>>>,
+    blocked_getpid: Option<i32>,
+}
+
+fn child_wait_event_config_with_block(
+    events: &SharedChildWaitEvents,
+    blocked_getpid: Option<i32>,
+) -> u64 {
+    let id = NEXT_CHILD_WAIT_EVENT_CONFIG.fetch_add(1, Ordering::SeqCst);
+    CHILD_WAIT_EVENT_CONFIGS.lock().unwrap().insert(
+        id,
+        ChildWaitEventConfig {
+            events: Arc::downgrade(events),
+            blocked_getpid,
+        },
+    );
+    id
+}
+
+#[derive(Debug, Default)]
 struct ChildWaitEventLog {
-    events: Mutex<Vec<BackendChildWaitEvent>>,
+    events: SharedChildWaitEvents,
+    control: Mutex<Option<BackendSignalControl>>,
+    publications: Mutex<Vec<reverie::ChildExitPublicationResult>>,
+    delivery_sequence: AtomicU64,
+    failed: AtomicBool,
+    failure_waiters: Mutex<Vec<Waker>>,
 }
 
 #[reverie::global_tool]
 impl GlobalTool for ChildWaitEventLog {
     type Request = ();
     type Response = ();
-    type Config = ();
+    type Config = u64;
+
+    async fn init_global_state(events: &Self::Config) -> Self {
+        Self {
+            events: CHILD_WAIT_EVENT_CONFIGS
+                .lock()
+                .unwrap()
+                .get(events)
+                .and_then(|config| config.events.upgrade())
+                .expect("child wait event config disappeared"),
+            ..Self::default()
+        }
+    }
 
     async fn receive_rpc(&self, _from: Pid, (): ()) {}
+
+    fn report_backend_failure(&self, _event: reverie::BackendFailure) {
+        self.failed.store(true, Ordering::Release);
+        for waiter in std::mem::take(
+            &mut *self
+                .failure_waiters
+                .lock()
+                .expect("child failure waiters poisoned"),
+        ) {
+            waiter.wake();
+        }
+    }
+
+    async fn wait_for_backend_failure(&self) {
+        poll_fn(|context| {
+            if self.failed.load(Ordering::Acquire) {
+                return Poll::Ready(());
+            }
+            let mut waiters = self
+                .failure_waiters
+                .lock()
+                .expect("child failure waiters poisoned");
+            if !waiters
+                .iter()
+                .any(|waiter| waiter.will_wake(context.waker()))
+            {
+                waiters.push(context.waker().clone());
+            }
+            if self.failed.load(Ordering::Acquire) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
+    }
+
+    fn install_backend_signal_control(
+        &self,
+        control: Option<BackendSignalControl>,
+    ) -> Result<BackendSignalControlMode, reverie::Error> {
+        *self.control.lock().expect("child signal control poisoned") =
+            Some(control.ok_or(Errno::ENOSYS)?);
+        Ok(BackendSignalControlMode::ToolControlled)
+    }
+
+    fn authorize_backend_signal_boundary(
+        &self,
+        task: reverie::SignalTaskIdentity,
+    ) -> Result<Option<SignalDeliveryPermit>, reverie::Error> {
+        let control = self
+            .control
+            .lock()
+            .expect("child signal control poisoned")
+            .clone()
+            .expect("backend signal control was installed");
+        let eligible = control
+            .process
+            .signal_recipients(task.process, libc::SIGCHLD)?
+            .into_iter()
+            .any(|recipient| recipient.task == task);
+        if !eligible {
+            return Ok(None);
+        }
+        let permit = SignalDeliveryPermit {
+            task,
+            sequence: self.delivery_sequence.fetch_add(1, Ordering::SeqCst) + 1,
+            site: None,
+        };
+        control.process.reserve_delivery(permit)?;
+        Ok(Some(permit))
+    }
 
     async fn on_backend_child_wait_event(
         &self,
         event: BackendChildWaitEvent,
     ) -> Result<(), reverie::Error> {
+        // Make the binding-lifetime claim observable on the real backend: the
+        // callback yields the host thread and then uses the installed weak
+        // facade to validate and publish this exact generation-bound event.
+        std::thread::yield_now();
+        if let Some(completion) = event.child_exit_completion() {
+            let publication = self
+                .control
+                .lock()
+                .expect("child signal control poisoned")
+                .as_ref()
+                .expect("backend signal control was installed")
+                .process
+                .publish_child_exit(completion);
+            self.publications
+                .lock()
+                .expect("child publication log poisoned")
+                .push(publication);
+        }
         self.events
             .lock()
             .expect("child wait-event log poisoned")
@@ -7779,17 +7928,50 @@ impl GlobalTool for ChildWaitEventLog {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct ChildWaitEventTool;
+struct ChildWaitEventTool {
+    pid: i32,
+    blocked_getpid: Option<i32>,
+}
 
 #[reverie::tool]
 impl Tool for ChildWaitEventTool {
     type GlobalState = ChildWaitEventLog;
     type ThreadState = ();
 
-    fn subscriptions(_config: &()) -> Subscription {
+    fn new(pid: Pid, config: &u64) -> Self {
+        Self {
+            pid: pid.as_raw(),
+            blocked_getpid: CHILD_WAIT_EVENT_CONFIGS
+                .lock()
+                .unwrap()
+                .get(config)
+                .expect("child wait event config disappeared")
+                .blocked_getpid,
+        }
+    }
+
+    fn subscriptions(_config: &u64) -> Subscription {
         let mut subscriptions = Subscription::none();
-        subscriptions.syscalls([Sysno::fork, Sysno::wait4, Sysno::rt_sigaction]);
+        subscriptions.syscalls([
+            Sysno::fork,
+            Sysno::getpid,
+            Sysno::wait4,
+            Sysno::waitid,
+            Sysno::rt_sigaction,
+        ]);
         subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        if syscall.number() == Sysno::getpid && self.blocked_getpid == Some(self.pid) {
+            std::future::pending().await
+        } else {
+            Ok(guest.inject(syscall).await?)
+        }
     }
 }
 
@@ -7814,6 +7996,9 @@ fn child_waitability_callback_and_auto_reap_are_observed_on_real_kvm() {
 #include <sys/wait.h>
 #include <unistd.h>
 
+static volatile sig_atomic_t handled;
+static void handler(int signal) { if (signal == SIGCHLD) ++handled; }
+
 static void child_exit(int code) {
   pid_t child = fork();
   if (child < 0) _exit(90);
@@ -7822,19 +8007,20 @@ static void child_exit(int code) {
 
 int main(void) {
   struct sigaction action = {0};
-  action.sa_handler = (void (*)(int))0x4321;
+  action.sa_handler = handler;
+  action.sa_flags = SA_RESTART;
   sigemptyset(&action.sa_mask);
   errno = 0;
-  /* Installing a real SIGCHLD handler must SUCCEED, as it does natively and under
-     ptrace. What this test is really for is unchanged below: with a real handler
-     installed SIGCHLD does not auto-reap, so the child must still be waitable.
-     (This handler address is never invoked.) */
+  /* Installing and running a real SIGCHLD handler must succeed, as it does
+     natively and under ptrace. A caught SIGCHLD does not auto-reap, so the
+     child must still be waitable after delivery. */
   if (sigaction(SIGCHLD, &action, 0) != 0) return 10;
 
   child_exit(7);
   int status = 0;
   if (waitpid(-1, &status, 0) <= 0 || !WIFEXITED(status) ||
       WEXITSTATUS(status) != 7) return 11;
+  if (handled != 1) return 16;
 
   action.sa_handler = SIG_IGN;
   action.sa_flags = 0;
@@ -7855,6 +8041,7 @@ int main(void) {
     let executable = executable.to_str().unwrap();
     let image = std::fs::read(executable).unwrap();
     let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend.set_root_pid(17).unwrap();
     backend
         .install_static_elf_with_context(
             &image,
@@ -7864,8 +8051,10 @@ int main(void) {
         )
         .unwrap();
 
+    let event_log = Arc::new(Mutex::new(Vec::new()));
+    let config = child_wait_event_config(&event_log);
     let (global, code, _stdout, stderr) = futures::executor::block_on(
-        backend.run_static_elf_with_tool::<ChildWaitEventTool>((), true),
+        backend.run_static_elf_with_tool::<ChildWaitEventTool>(config, true),
     )
     .unwrap();
     assert_eq!(
@@ -7884,32 +8073,333 @@ int main(void) {
         events,
         vec![
             BackendChildWaitEvent {
-                parent: Pid::from_raw(1),
-                child: Pid::from_raw(2),
+                parent: SignalProcessId {
+                    tgid: Pid::from_raw(17),
+                    generation: 1,
+                },
+                child: SignalProcessId {
+                    tgid: Pid::from_raw(18),
+                    generation: 2,
+                },
                 state: BackendChildWaitState::Exited {
                     status: ExitStatus::Exited(7),
-                    waitable: true
+                    waitable: true,
+                    uid: 0,
+                    user_ticks: 0,
+                    system_ticks: 0,
                 },
             },
             BackendChildWaitEvent {
-                parent: Pid::from_raw(1),
-                child: Pid::from_raw(3),
+                parent: SignalProcessId {
+                    tgid: Pid::from_raw(17),
+                    generation: 1,
+                },
+                child: SignalProcessId {
+                    tgid: Pid::from_raw(19),
+                    generation: 3,
+                },
                 state: BackendChildWaitState::Exited {
                     status: ExitStatus::Exited(8),
-                    waitable: false
+                    waitable: false,
+                    uid: 0,
+                    user_ticks: 0,
+                    system_ticks: 0,
                 },
             },
             BackendChildWaitEvent {
-                parent: Pid::from_raw(1),
-                child: Pid::from_raw(4),
+                parent: SignalProcessId {
+                    tgid: Pid::from_raw(17),
+                    generation: 1,
+                },
+                child: SignalProcessId {
+                    tgid: Pid::from_raw(20),
+                    generation: 4,
+                },
                 state: BackendChildWaitState::Exited {
                     status: ExitStatus::Exited(9),
-                    waitable: false
+                    waitable: false,
+                    uid: 0,
+                    user_ticks: 0,
+                    system_ticks: 0,
                 },
             },
         ],
         "the backend callback must describe every real terminal waitability transition",
     );
+    assert!(
+        events
+            .iter()
+            .all(|event| event.child.tgid.as_raw() as u64 != event.child.generation)
+    );
+    let publications = global
+        .publications
+        .lock()
+        .expect("child publication log poisoned");
+    assert_eq!(publications.len(), 3);
+    for (publication, event) in publications.iter().zip(events) {
+        let reverie::ChildExitPublicationResult::Committed(receipt) = publication else {
+            panic!("real callback publication did not commit: {publication:?}");
+        };
+        assert_eq!(receipt.completion, event.child_exit_completion().unwrap());
+    }
+    assert_eq!(
+        publications
+            .iter()
+            .map(|publication| match publication {
+                reverie::ChildExitPublicationResult::Committed(receipt) => receipt.effect,
+                _ => unreachable!(),
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            reverie::ChildExitPublicationEffect::Queued,
+            reverie::ChildExitPublicationEffect::SuppressedExplicitIgnore,
+            reverie::ChildExitPublicationEffect::Queued,
+        ]
+    );
+}
+
+#[test]
+fn grandchild_family_transitions_are_causal_on_real_kvm() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM descendant-lifecycle test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "child-grandchild-wait-order",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 8;
+  int mode = atoi(argv[1]);
+  sigset_t blocked;
+  sigemptyset(&blocked);
+  sigaddset(&blocked, SIGCHLD);
+  if (sigprocmask(SIG_BLOCK, &blocked, 0) != 0) return 9;
+  int ready[2] = {-1, -1};
+  if ((mode == 0 || (mode >= 6 && mode <= 8)) && pipe(ready) != 0) return 10;
+  pid_t child = fork();
+  if (child < 0) return 11;
+  if (child == 0) {
+    pid_t root = getppid();
+    if (mode == 4 || mode == 5 || mode == 7 || mode == 8) {
+      struct sigaction action = {0};
+      action.sa_handler = (mode == 4 || mode == 7) ? SIG_IGN : SIG_DFL;
+      action.sa_flags = (mode == 5 || mode == 8) ? SA_NOCLDWAIT : 0;
+      sigemptyset(&action.sa_mask);
+      if (sigaction(SIGCHLD, &action, 0) != 0) _exit(12);
+    }
+    pid_t grandchild = fork();
+    if (grandchild < 0) _exit(13);
+    if (grandchild == 0) {
+      if (mode == 0) {
+        char byte = 'x';
+        if (write(ready[1], &byte, 1) != 1) _exit(14);
+        for (;;) (void)getpid();
+      } else if (mode >= 6 && mode <= 8) {
+        char byte = 0;
+        if (read(ready[0], &byte, 1) != 1 || byte != 'x') _exit(21);
+      }
+      _exit(9);
+    }
+    if (mode == 0) {
+      char byte = 0;
+      if (read(ready[0], &byte, 1) != 1 || byte != 'x') _exit(15);
+    } else if (mode == 1 || mode == 3) {
+      siginfo_t info = {0};
+      if (waitid(P_PID, grandchild, &info, WEXITED | WNOWAIT) != 0 ||
+          info.si_pid != grandchild || info.si_code != CLD_EXITED ||
+          info.si_status != 9) _exit(16);
+      if (mode == 3) {
+        info.si_pid = 0;
+        if (waitid(P_PID, grandchild, &info, WEXITED) != 0 ||
+            info.si_pid != grandchild || info.si_code != CLD_EXITED ||
+            info.si_status != 9) _exit(17);
+      }
+    } else if (mode == 2) {
+      int grandchild_status = 0;
+      if (waitpid(grandchild, &grandchild_status, 0) != grandchild ||
+          !WIFEXITED(grandchild_status) || WEXITSTATUS(grandchild_status) != 9)
+        _exit(18);
+    } else if (mode >= 6 && mode <= 8) {
+      errno = 0;
+      while (kill(root, 0) == 0) (void)getpid();
+      if (errno != ESRCH) _exit(22);
+      char byte = 'x';
+      if (write(ready[1], &byte, 1) != 1) _exit(23);
+      int grandchild_status = 0;
+      if (mode == 6) {
+        if (waitpid(grandchild, &grandchild_status, 0) != grandchild ||
+            !WIFEXITED(grandchild_status) || WEXITSTATUS(grandchild_status) != 9)
+          _exit(24);
+      } else {
+        errno = 0;
+        if (waitpid(grandchild, &grandchild_status, 0) != -1 || errno != ECHILD)
+          _exit(25);
+      }
+    } else {
+      int grandchild_status = 0;
+      errno = 0;
+      if (waitpid(grandchild, &grandchild_status, 0) != -1 || errno != ECHILD)
+        _exit(19);
+    }
+    _exit(7);
+  }
+  if (mode >= 6 && mode <= 8) return 0;
+  int status = 0;
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 7) return 20;
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let event = |parent: i32, parent_generation, child: i32, child_generation, waitable| {
+        BackendChildWaitEvent {
+            parent: SignalProcessId {
+                tgid: Pid::from_raw(parent),
+                generation: parent_generation,
+            },
+            child: SignalProcessId {
+                tgid: Pid::from_raw(child),
+                generation: child_generation,
+            },
+            state: BackendChildWaitState::Exited {
+                status: ExitStatus::Exited(if child_generation == 3 { 9 } else { 7 }),
+                waitable,
+                uid: 0,
+                user_ticks: 0,
+                system_ticks: 0,
+            },
+        }
+    };
+
+    for root_pid in [1, 3] {
+        for mode in 0..=8 {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let config =
+                child_wait_event_config_with_block(&events, (mode == 0).then_some(root_pid + 2));
+            let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+            backend.set_root_pid(root_pid).unwrap();
+            let mode_string = mode.to_string();
+            backend
+                .install_static_elf_with_context(
+                    &image,
+                    &[executable, &mode_string],
+                    &["PATH=/usr/bin:/bin"],
+                    &directory.0,
+                )
+                .unwrap();
+            let result = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<ChildWaitEventTool>(config, true),
+            );
+            let observed = events
+                .lock()
+                .expect("child wait-event log poisoned")
+                .clone();
+            let child = root_pid + 1;
+            let grandchild = root_pid + 2;
+            match mode {
+                0 => {
+                    let rendered = result.unwrap_err().to_string();
+                    assert!(
+                        rendered.contains("still requiring unsupported reparenting"),
+                        "live descendant, root pid {root_pid}: {rendered}"
+                    );
+                    assert!(
+                        observed.is_empty(),
+                        "a still-live grandchild has no terminal event: {observed:?}"
+                    );
+                }
+                1 => {
+                    let rendered = result.unwrap_err().to_string();
+                    assert!(
+                        rendered.contains("still requiring unsupported reparenting"),
+                        "zombie descendant, root pid {root_pid}: {rendered}"
+                    );
+                    assert_eq!(
+                        observed,
+                        vec![event(child, 2, grandchild, 3, true)],
+                        "WNOWAIT must retain the zombie while suppressing only C-to-root publication",
+                    );
+                }
+                2 | 3 => {
+                    let (_global, code, _stdout, stderr) = result.unwrap();
+                    assert_eq!(
+                        code,
+                        0,
+                        "consuming mode {mode}, root pid {root_pid}: {}",
+                        String::from_utf8_lossy(&stderr)
+                    );
+                    assert_eq!(
+                        observed,
+                        vec![
+                            event(child, 2, grandchild, 3, true),
+                            event(root_pid, 1, child, 2, true),
+                        ],
+                    );
+                }
+                4 | 5 => {
+                    let (_global, code, _stdout, stderr) = result.unwrap();
+                    assert_eq!(
+                        code,
+                        0,
+                        "auto-reap mode {mode}, root pid {root_pid}: {}",
+                        String::from_utf8_lossy(&stderr)
+                    );
+                    assert_eq!(
+                        observed,
+                        vec![
+                            event(child, 2, grandchild, 3, false),
+                            event(root_pid, 1, child, 2, true),
+                        ],
+                    );
+                }
+                6 => {
+                    let (_global, code, _stdout, stderr) = result.unwrap();
+                    assert_eq!(
+                        code,
+                        0,
+                        "terminal-root/live-parent mode, root pid {root_pid}: {}",
+                        String::from_utf8_lossy(&stderr)
+                    );
+                    assert_eq!(
+                        observed,
+                        vec![event(child, 2, grandchild, 3, true)],
+                        "a terminal transitive root cannot steal a grandchild from its live direct parent",
+                    );
+                }
+                7 | 8 => {
+                    let (_global, code, _stdout, stderr) = result.unwrap();
+                    assert_eq!(
+                        code,
+                        0,
+                        "terminal-root/live-parent auto-reap mode {mode}, root pid {root_pid}: {}",
+                        String::from_utf8_lossy(&stderr)
+                    );
+                    assert_eq!(
+                        observed,
+                        vec![event(child, 2, grandchild, 3, false)],
+                        "the live direct parent's frozen SIGCHLD policy remains authoritative after root exit",
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
 }
 
 const PRCTL_REVIEW_REGRESSION: &str = r###"#define _GNU_SOURCE

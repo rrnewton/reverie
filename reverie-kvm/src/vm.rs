@@ -32,13 +32,12 @@ use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
 use kvm_ioctls::VcpuFd;
 use kvm_ioctls::VmFd;
-use reverie::BackendChildWaitEvent;
-use reverie::BackendChildWaitState;
 use reverie::BackendStatsRequest;
 use reverie::BackendStatsSource;
 use reverie::ExitStatus;
 use reverie::GlobalTool;
 use reverie::Pid;
+use reverie::SignalProcessId;
 use reverie::ThreadOwnership;
 use reverie::Tool;
 
@@ -76,19 +75,21 @@ use crate::elf::initial_thread_name;
 use crate::elf::load_static_elf;
 use crate::elf::load_static_elf_file;
 use crate::executor::CapturedOutput;
+#[cfg(test)]
 use crate::executor::ChildCompletion;
+use crate::executor::ChildCompletionSlot;
 use crate::executor::ChildStartCommand;
 use crate::executor::ChildStartGate;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
 use crate::executor::ProcessExit;
+use crate::executor::ProcessSignalBindingGuard;
 use crate::executor::SignalDisposition;
 use crate::executor::conventional_exit_code;
 use crate::runtime::PendingChildCancellation;
 use crate::runtime::PendingChildKind;
 use crate::runtime::PendingChildStart;
 use crate::runtime::SharedChildStarts;
-use crate::runtime::SyscallExecutor;
 use crate::runtime::ToolContext;
 use crate::signal::LEGACY_FPSTATE_SIZE;
 use crate::signal::RT_SIGFRAME_SIZE;
@@ -1261,6 +1262,17 @@ struct ForkedProcess {
     executor: ElfExecutor,
 }
 
+/// One fork child's logical wait-publication ownership. This is deliberately
+/// non-generic: the runtime already owns `&T::GlobalState` at the exact point
+/// where the final process status becomes authoritative.
+pub(crate) struct OwnChildExitContext {
+    pub(crate) child: SignalProcessId,
+    pub(crate) _parent_binding: ProcessSignalBindingGuard,
+    pub(crate) completion: Arc<ChildCompletionSlot>,
+    pub(crate) completion_notifier: std::sync::mpsc::Sender<i32>,
+    pub(crate) raw_child_pid: i32,
+}
+
 // A process snapshot can be taken while another Tool-owned thread has its own
 // scratch page exposed in the shared user-access map. The fork child must not
 // inherit any of those temporary mappings; normalize only the copied map and
@@ -2210,7 +2222,55 @@ impl KvmBackend {
             0,
         );
         child.backend.check_entry_owner()?;
-        let completion = executor.child_completion(status);
+        let family = child.executor.process_family_exit()?;
+        let snapshot = match family {
+            crate::executor::ProcessFamilyExit::Child(snapshot) => snapshot,
+            crate::executor::ProcessFamilyExit::Root => {
+                return Err(Error::UnexpectedVcpuExit(format!(
+                    "KVM fork child {} was recorded as a traced root",
+                    child.pid
+                )));
+            }
+            crate::executor::ProcessFamilyExit::RunTeardownChild { .. } => {
+                // A nested Direct fork would resume this caller's synchronous
+                // stack after completion. Unlike an asynchronously owned Tool
+                // child, it has no detached teardown path on which a terminal
+                // caller can consume that completion, so refuse rather than
+                // return into the terminal caller.
+                return Err(Error::UnexpectedVcpuExit(format!(
+                    "KVM fork child {} completed after its parent became terminal",
+                    child.pid
+                )));
+            }
+            crate::executor::ProcessFamilyExit::Failed => {
+                unreachable!("executor maps failed family state to an error")
+            }
+            crate::executor::ProcessFamilyExit::DescendantReparentingUnsupported { .. } => {
+                unreachable!("executor maps unsupported reparenting to an error")
+            }
+            crate::executor::ProcessFamilyExit::ParentGenerationUnavailable { .. } => {
+                unreachable!("executor maps a missing parent generation to an error")
+            }
+            crate::executor::ProcessFamilyExit::ParentChildRelationUnavailable { .. } => {
+                unreachable!("executor maps a missing parent-child relation to an error")
+            }
+            crate::executor::ProcessFamilyExit::AncestryCycle { .. } => {
+                unreachable!("executor maps a family ancestry cycle to an error")
+            }
+            crate::executor::ProcessFamilyExit::MultipleParents { .. } => {
+                unreachable!("executor maps ambiguous family parents to an error")
+            }
+        };
+        if snapshot.completion.status != status {
+            return Err(Error::UnexpectedVcpuExit(format!(
+                "KVM fork child {} family status disagrees with its process status",
+                child.pid
+            )));
+        }
+        let completion = crate::executor::ChildCompletion::from_waitability(
+            snapshot.completion.status,
+            snapshot.completion.waitable,
+        );
         executor.record_child_completion(child.pid, completion)?;
         executor.append_output(stdout, stderr);
         configure_process_syscall_return(
@@ -2813,6 +2873,27 @@ impl KvmBackend {
                 };
 
                 let child_pid = Pid::from_raw(child.pid);
+                // Capture generation-bound process identities while both live
+                // executors are still registered. The child task is retired
+                // before the wait callback, so reconstructing its generation at
+                // callback time would bind numeric PID reuse instead.
+                executor.signal_task_identity().ok_or_else(|| {
+                    Error::UnexpectedVcpuExit(
+                        "KVM fork parent lost its signal generation before child admission"
+                            .to_owned(),
+                    )
+                })?;
+                let child_signal_process = child
+                    .executor
+                    .signal_task_identity()
+                    .ok_or_else(|| {
+                        Error::UnexpectedVcpuExit(
+                            "KVM fork child lost its signal generation before host spawn"
+                                .to_owned(),
+                        )
+                    })?
+                    .process;
+                let parent_signal_binding = executor.retain_signal_process_binding();
                 let global_state = context.global_state.ok_or_else(|| {
                     Error::UnexpectedVcpuExit(
                         "forked KVM Tool process requires shared global state".to_owned(),
@@ -2825,12 +2906,17 @@ impl KvmBackend {
                 let subscriptions = context.subscriptions;
                 let pending_child_starts = context.pending_child_starts;
                 let raw_child_pid = child.pid;
-                let parent_pid = context.pid;
-                let lifecycle_state = global_state.clone();
-                let auto_reap = executor.child_exit_policy();
                 let completion_notifier = executor.child_completion_notifier();
-                let completion = Arc::new(Mutex::new(None));
+                let completion = Arc::new(ChildCompletionSlot::default());
                 let child_completion = completion.clone();
+                let child_completion_notifier = completion_notifier.clone();
+                let child_exit_context = OwnChildExitContext {
+                    child: child_signal_process,
+                    _parent_binding: parent_signal_binding,
+                    completion: completion.clone(),
+                    completion_notifier,
+                    raw_child_pid,
+                };
                 let panic_owner = child.backend.tool_failure.as_ref().map(|failure| {
                     crate::executor::ChildProcessPanicOwner::new(failure.run.clone())
                 });
@@ -2847,6 +2933,7 @@ impl KvmBackend {
                         global_state,
                         config,
                         subscriptions,
+                        child_exit_context,
                     ),
                     move |(
                         mut child,
@@ -2855,6 +2942,7 @@ impl KvmBackend {
                         global_state,
                         config,
                         subscriptions,
+                        child_exit_context,
                     )| {
                         let driver = child.backend.start_entry_driver();
                         child.executor.bind_address_space(&child.backend.memory);
@@ -2893,13 +2981,14 @@ impl KvmBackend {
                                             &config,
                                             &subscriptions,
                                             false,
+                                            Some(child_exit_context),
                                         ),
                                     )
                                 };
                                 child.backend.restore_entry_origin();
                                 child.executor.bind_address_space(&child.backend.memory);
                                 match result {
-                                    Ok((status, _, _)) => {
+                                    Ok((_status, _, _)) => {
                                         write_tid_best_effort(
                                             &mut child.backend.memory,
                                             child.executor.take_clear_child_tid(),
@@ -2910,39 +2999,7 @@ impl KvmBackend {
                                         futures::executor::block_on(
                                             child.backend.route_entry_outcome(Ok(())),
                                         )?;
-                                        let waitable = !auto_reap.load(Ordering::SeqCst);
-                                        let completion =
-                                            ChildCompletion::from_waitability(status, waitable);
-                                        *child_completion
-                                            .lock()
-                                            .expect("KVM child completion lock poisoned") =
-                                            Some(completion);
-                                        let _ = completion_notifier.send(raw_child_pid);
-                                        let caught = futures::executor::block_on(
-                                            crate::failure::owned_future::catch_owned_future_from(
-                                                || {
-                                                    lifecycle_state.on_backend_child_wait_event(
-                                                        BackendChildWaitEvent {
-                                                            parent: parent_pid,
-                                                            child: child_pid,
-                                                            state: BackendChildWaitState::Exited {
-                                                                status,
-                                                                waitable,
-                                                            },
-                                                        },
-                                                    )
-                                                },
-                                            ),
-                                        );
-                                        child.backend.tool_panic_owner().finish(
-                                            crate::failure::owned_future::CaughtFuture {
-                                                output: caught
-                                                    .output
-                                                    .map(|result| result.map_err(Error::Reverie)),
-                                                panics: caught.panics,
-                                            },
-                                            "child wait hook",
-                                        )
+                                        Ok(())
                                     }
                                     Err(error) => Err(error),
                                 }
@@ -2972,12 +3029,8 @@ impl KvmBackend {
                                         .backend
                                         .report_tool_failure("fork owner retirement", error)
                                 });
-                        if result.is_err() {
-                            *child_completion
-                                .lock()
-                                .expect("KVM child completion lock poisoned") =
-                                Some(ChildCompletion::Failed);
-                            let _ = completion_notifier.send(raw_child_pid);
+                        if result.is_err() && child_completion.fail_if_pending() {
+                            let _ = child_completion_notifier.send(raw_child_pid);
                         }
                         child
                             .backend
@@ -2988,7 +3041,7 @@ impl KvmBackend {
                     Ok(handle) => handle,
                     Err((
                         error,
-                        (mut child, child_tool, child_thread_state, global_state, config, _),
+                        (mut child, child_tool, child_thread_state, global_state, config, _, _),
                     )) => {
                         // Publish the original spawn failure through the parent
                         // first. Its outer owner consumes this child afterward,
@@ -3243,6 +3296,7 @@ impl KvmBackend {
                                                 &config,
                                                 &subscriptions,
                                                 false,
+                                                None,
                                             ),
                                         )
                                     };
@@ -4305,7 +4359,7 @@ impl KvmBackend {
                             None,
                         )?;
                         executor.set_current_user_stack_pointer(userspace.rsp);
-                        let result = executor.execute(&request, &self.memory);
+                        let result = executor.execute_checked(&request, &self.memory)?;
                         SyscallRequest::write_result(&mut self.memory, frame_address, result)?;
                         (
                             executor.take_segment(),
@@ -6949,6 +7003,46 @@ mod tests {
         assert_eq!(*global.events.lock().unwrap(), vec![expected]);
     }
 
+    #[test]
+    fn finish_forked_process_refuses_unreaped_descendant() {
+        let mut parent =
+            KvmBackend::new(16 * 1024 * 1024).expect("direct fork family control requires KVM");
+        parent
+            .install_static_elf(&minimal_test_elf(&[0xf4]), "/bin/fork-family-reparenting")
+            .unwrap();
+        let mut executor = ElfExecutor::new(parent.static_elf.take().unwrap(), false);
+        let registers = parent.vcpu.get_regs().unwrap();
+        stage_process_syscall_return(
+            &mut parent.memory,
+            &parent.vcpu,
+            parent.syscall_frame_address,
+            registers,
+        )
+        .unwrap();
+
+        let mut child = parent
+            .prepare_forked_process(
+                &executor, 2, None, None, None, None, false, false, false, None,
+            )
+            .unwrap();
+        let owner = child.executor.signal_task_identity().unwrap().process;
+        let mut descendant = child.executor.fork_child(3, false, false).unwrap();
+        let descendant_id = descendant.signal_task_identity().unwrap().process;
+        descendant.retire_current_thread(ExitStatus::Exited(9), false);
+        child
+            .executor
+            .retire_current_thread(ExitStatus::Exited(7), false);
+
+        let error = parent
+            .finish_forked_process(&mut executor, child, ExitStatus::Exited(7), vec![], vec![])
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::DescendantReparentingUnsupported { process, child }
+                if process == owner && child == descendant_id
+        ));
+    }
+
     #[derive(Default)]
     struct FatalProcessMemoryLog {
         memory: Mutex<Option<GuestMemory>>,
@@ -7056,6 +7150,7 @@ mod tests {
                 &(),
                 &reverie::Subscription::none(),
                 false,
+                None,
             ))
             .unwrap()
         } else {
@@ -7306,6 +7401,7 @@ mod tests {
                 &(),
                 &reverie::Subscription::none(),
                 false,
+                None,
             ))
             .unwrap()
         } else {
@@ -7763,7 +7859,7 @@ mod tests {
         let fork_cancelled_in_child = fork_cancelled.clone();
         let (fork_sender, fork_receiver) = std::sync::mpsc::channel();
         let fork_gate = ChildStartGate::new(fork_sender);
-        let fork_completion = Arc::new(Mutex::new(None));
+        let fork_completion = Arc::new(ChildCompletionSlot::default());
         let fork_handle = std::thread::spawn(move || match fork_receiver.recv() {
             Ok(ChildStartCommand::CancelAfterFailure) => {
                 fork_cancelled_in_child.store(true, Ordering::Release);
@@ -7871,7 +7967,7 @@ mod tests {
             executor.register_child_process_with_gate(
                 41,
                 fork_gate.clone(),
-                Arc::new(Mutex::new(None)),
+                Arc::new(ChildCompletionSlot::default()),
                 fork_handle,
             );
             starts
@@ -8624,6 +8720,7 @@ mod tests {
                     &config,
                     &subscriptions,
                     false,
+                    None,
                 ))
                 .unwrap();
             assert_eq!(status, ExitStatus::SUCCESS);
@@ -8794,9 +8891,9 @@ mod tests {
         leader.register_child_process_with_gate(
             41,
             first_gate.clone(),
-            Arc::new(Mutex::new(Some(ChildCompletion::Waitable(
-                ExitStatus::SUCCESS,
-            )))),
+            Arc::new(ChildCompletionSlot::with_completion(
+                ChildCompletion::Waitable(ExitStatus::SUCCESS),
+            )),
             std::thread::spawn(|| Ok(())),
         );
 
@@ -8805,7 +8902,7 @@ mod tests {
         sibling.register_child_process_with_gate(
             42,
             second_gate,
-            Arc::new(Mutex::new(None)),
+            Arc::new(ChildCompletionSlot::default()),
             std::thread::spawn(|| Ok(())),
         );
 
@@ -8867,7 +8964,7 @@ mod tests {
         executor.register_child_process_with_gate(
             52,
             lost_gate.clone(),
-            Arc::new(Mutex::new(None)),
+            Arc::new(ChildCompletionSlot::default()),
             lost_handle,
         );
         starts
@@ -8955,7 +9052,7 @@ mod tests {
                         executor.register_child_process_with_gate(
                             41,
                             gate.clone(),
-                            Arc::new(Mutex::new(None)),
+                            Arc::new(ChildCompletionSlot::default()),
                             std::thread::spawn(move || Err(child())),
                         );
                         starts

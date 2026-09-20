@@ -30,10 +30,107 @@ pub enum Error {
         /// Original carrier error.
         errno: reverie::syscalls::Errno,
     },
+    /// A child-completion operation committed before readiness failed.
+    #[error("child-exit publication committed {receipt:?}, then failed: {errno}")]
+    ChildExitPublication {
+        /// Exact irreversible child-completion receipt.
+        receipt: reverie::ChildExitPublication,
+        /// Original carrier error.
+        errno: reverie::syscalls::Errno,
+    },
     /// A peer or the Tool scheduler has made this run terminal. This internal
     /// outcome is never a successful guest status or a syscall errno.
     #[error("KVM execution stopped after a fatal run failure")]
     RunAborted,
+
+    /// A process exited while it still owned a logical child. Reparenting is
+    /// deliberately fail-closed until wait ownership can be transferred to an
+    /// in-tree PID 1 or an out-of-tree namespace reaper atomically.
+    #[error(
+        "KVM process {process:?} exited with child {child:?} still requiring unsupported reparenting"
+    )]
+    DescendantReparentingUnsupported {
+        /// Exiting process generation.
+        process: reverie::SignalProcessId,
+        /// Direct child generation that still needs a reaper.
+        child: reverie::SignalProcessId,
+    },
+
+    /// A child reached its terminal boundary after its exact parent generation
+    /// disappeared without recording a family transition. This is distinct
+    /// from unsupported reparenting: no child can be named as its own parent.
+    #[error(
+        "KVM process {process:?} cannot complete because parent generation {parent:?} lost its family transition"
+    )]
+    ParentGenerationUnavailable {
+        /// Exiting child process generation.
+        process: reverie::SignalProcessId,
+        /// Exact parent generation that disappeared.
+        parent: reverie::SignalProcessId,
+    },
+
+    /// A live parent and child lost their exact registered family edge before
+    /// the child's terminal transition. This is an internal ledger invariant,
+    /// not reparenting or a stale parent lifetime.
+    #[error(
+        "KVM process {process:?} cannot complete because its relation to live parent {parent:?} disappeared"
+    )]
+    ParentChildRelationUnavailable {
+        /// Exiting child process generation.
+        process: reverie::SignalProcessId,
+        /// Exact live parent generation whose edge disappeared.
+        parent: reverie::SignalProcessId,
+    },
+
+    /// A Tool-controlled backend wait removed a numeric child for which the
+    /// exact-generation process-family ledger had no waitable zombie.
+    #[error(
+        "KVM parent {parent:?} reaped numeric child {child_pid} without a waitable exact family entry"
+    )]
+    FamilyWaitLedgerMismatch {
+        /// Exact parent generation that executed the wait.
+        parent: reverie::SignalProcessId,
+        /// Numeric PID actually removed by the backend wait implementation.
+        child_pid: i32,
+    },
+
+    /// A previous backend wait left its irreversible family-ledger effect
+    /// pending when another syscall tried to begin.
+    #[error(
+        "KVM parent {parent:?} began another syscall with child {child_pid}'s wait-ledger effect pending"
+    )]
+    ChildWaitLedgerEffectPending {
+        /// Exact parent generation that owns the pending effect.
+        parent: reverie::SignalProcessId,
+        /// Numeric PID removed by the originating backend wait.
+        child_pid: i32,
+    },
+
+    /// Corrupt exact-generation family edges formed an ancestry cycle.
+    #[error(
+        "KVM process {process:?} cannot complete because family ancestry cycles at {ancestor:?}"
+    )]
+    ProcessFamilyAncestryCycle {
+        /// Process whose terminal transition discovered the corruption.
+        process: reverie::SignalProcessId,
+        /// Revisited exact generation.
+        ancestor: reverie::SignalProcessId,
+    },
+
+    /// One exact process generation appeared under two family parents.
+    #[error(
+        "KVM process {process:?} cannot complete because child {child:?} has family parents {first_parent:?} and {second_parent:?}"
+    )]
+    ProcessFamilyMultipleParents {
+        /// Process whose terminal transition discovered the corruption.
+        process: reverie::SignalProcessId,
+        /// Exact generation with ambiguous ancestry.
+        child: reverie::SignalProcessId,
+        /// First exact parent in deterministic key order.
+        first_parent: reverie::SignalProcessId,
+        /// Second exact parent in deterministic key order.
+        second_parent: reverie::SignalProcessId,
+    },
 
     /// Terminal failure with irreversible pending-state effects retained intact.
     #[error("{cause}; committed signal effects: {} removals, {} publication receipts", dequeues.len(), publications.len())]

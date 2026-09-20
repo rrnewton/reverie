@@ -27,7 +27,7 @@ impl GuestSyscallExecutor<AdapterTool> for RefusingExecutor {
         ))
     }
 
-    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
+    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<i64> {
         panic!("terminal cancellation executed a syscall")
     }
     fn tail_injection_allowed(&self, _request: &SyscallRequest) -> bool {

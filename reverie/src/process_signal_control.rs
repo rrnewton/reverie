@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::CallbackSignalSite;
+use crate::ExitStatus;
 use crate::ProcessAlarmSignalDisposition;
 use crate::SignalEvent;
 use crate::SignalProcessId;
@@ -56,6 +57,70 @@ pub enum ProcessSignalPublicationResult {
     FailedAfterCommit {
         /// Committed effect.
         receipt: ProcessSignalPublication,
+        /// Original readiness failure.
+        errno: Errno,
+    },
+}
+
+/// A scheduler-authorized terminal child transition.
+///
+/// Both process identities include their run-local generations, so a reused
+/// numeric PID cannot inherit this completion. Times are Linux clock ticks,
+/// not nanoseconds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ChildExitCompletion {
+    /// Exact parent process lifetime receiving SIGCHLD.
+    pub parent: SignalProcessId,
+    /// Exact terminal child process lifetime.
+    pub child: SignalProcessId,
+    /// Complete wait status, including signal and core-dump provenance.
+    pub status: ExitStatus,
+    /// Whether the terminal status remains consumable by a wait syscall.
+    pub waitable: bool,
+    /// Virtual child uid reported through siginfo.
+    pub uid: u32,
+    /// Child user CPU time in signed Linux clock ticks.
+    pub user_ticks: i64,
+    /// Child system CPU time in signed Linux clock ticks.
+    pub system_ticks: i64,
+}
+
+/// Effect committed by one child-completion publication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ChildExitPublicationEffect {
+    /// SIGCHLD entered the shared process-pending set.
+    Queued,
+    /// SIGCHLD was already pending and retained its first complete siginfo.
+    Coalesced,
+    /// An explicit `SIG_IGN` suppressed SIGCHLD generation.
+    SuppressedExplicitIgnore,
+    /// A later ignored-disposition transition discarded the generation in
+    /// which this child event was authorized before delayed publication ran.
+    DiscardedByDispositionChange,
+}
+
+/// Receipt for an irreversible child-completion publication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ChildExitPublication {
+    /// Exact completion whose effect committed.
+    pub completion: ChildExitCompletion,
+    /// Disposition/pending generation at the operation.
+    pub pending_generation: u64,
+    /// Whether publication queued, coalesced, or explicitly suppressed SIGCHLD.
+    pub effect: ChildExitPublicationEffect,
+}
+
+/// Complete result of publishing one scheduler-authorized child completion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ChildExitPublicationResult {
+    /// No pending state or signalfd readiness changed.
+    RejectedBeforeCommit(Errno),
+    /// The receipt's effect committed.
+    Committed(ChildExitPublication),
+    /// The effect committed before readiness failed. Never retry it.
+    FailedAfterCommit {
+        /// Retained irreversible publication receipt.
+        receipt: ChildExitPublication,
         /// Original readiness failure.
         errno: Errno,
     },
@@ -130,9 +195,44 @@ pub trait ProcessSignalControl: Debug + Send + Sync {
         event: SignalEvent,
     ) -> ProcessSignalPublicationResult;
 
+    /// Publish one scheduler-authorized terminal child transition.
+    ///
+    /// The caller supplies the causal scheduler fence. A committed or
+    /// failed-after-commit result must never be retried; backends may return the
+    /// retained receipt idempotently if an exact duplicate nevertheless arrives.
+    /// This publication makes waitability visible but does not reap the backend
+    /// child status. A Tool that schedules a consuming wait must still execute
+    /// that wait through [`crate::Guest::inject`] before retiring Tool shadow
+    /// state; publication is not a substitute for the backend wait syscall.
+    ///
+    /// KVM may take its run-wide child-publication lock alone for an idempotent
+    /// duplicate preflight. Its committing path then acquires the exact parent's
+    /// process-signal transaction before the run-wide registry and signal-state
+    /// locks. A caller that holds a Tool scheduler mutex to make admission
+    /// atomic must preserve that nested order: Tool scheduler -> backend parent
+    /// transaction -> backend registry and signal state. No reverse path may
+    /// acquire the Tool mutex while retaining those backend locks.
+    /// An implementation used from that scheduler reservation must not call
+    /// back into Tool code or wait for the fenced parent wait or other guest
+    /// progress before returning.
+    fn publish_child_exit(&self, _completion: ChildExitCompletion) -> ChildExitPublicationResult {
+        ChildExitPublicationResult::RejectedBeforeCommit(Errno::ENOSYS)
+    }
+
+    /// Eligible live recipients for one pending signal, in ascending numeric
+    /// TID order. The caller intersects these with its causally admitted task
+    /// generations.
+    fn signal_recipients(
+        &self,
+        process: SignalProcessId,
+        signal: i32,
+    ) -> Result<Vec<SignalRecipient>, Errno>;
+
     /// Eligible live recipients, in ascending numeric TID order. The caller
     /// intersects these with its causally admitted task generations.
-    fn alarm_recipients(&self, process: SignalProcessId) -> Result<Vec<SignalRecipient>, Errno>;
+    fn alarm_recipients(&self, process: SignalProcessId) -> Result<Vec<SignalRecipient>, Errno> {
+        self.signal_recipients(process, libc::SIGALRM)
+    }
 
     /// Register one selected task. A second outstanding permit is not a retry.
     fn reserve_delivery(&self, permit: SignalDeliveryPermit) -> Result<(), Errno>;
@@ -145,6 +245,18 @@ pub trait ProcessSignalControl: Debug + Send + Sync {
     /// Forward a retained publication failure to the run owner. This may call
     /// GlobalTool, so the caller MUST release its scheduler mutex first.
     fn finish_publication_failure(&self, process: SignalProcessId) -> Result<(), Errno>;
+
+    /// Forward one exact retained child-publication failure to the run owner.
+    ///
+    /// The receipt prevents a caller from acknowledging a different terminal
+    /// publication. This may call GlobalTool, so the caller MUST release its
+    /// scheduler mutex first.
+    fn finish_child_exit_publication_failure(
+        &self,
+        _receipt: ChildExitPublication,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
 }
 
 /// The single run-level installation carries both publication and selection.

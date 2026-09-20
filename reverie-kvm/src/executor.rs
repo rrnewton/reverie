@@ -18,6 +18,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::FileExt;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
@@ -41,7 +42,6 @@ use crate::elf::resolve_executable_path;
 use crate::memory::AllocationCursors;
 use crate::memory::HostMemoryOperand;
 use crate::memory::RegionKind;
-use crate::runtime::SyscallExecutor;
 use crate::signal::GuestStack;
 use crate::signal::KERNEL_SIGACTION_SIZE;
 use crate::signal::KERNEL_SIGSET_SIZE;
@@ -59,6 +59,7 @@ use crate::signal::signal_info_user;
 
 #[path = "process_signal_publication.rs"]
 mod process_signal_publication;
+pub(crate) use process_signal_publication::ProcessFamilyExit;
 
 #[path = "capture_identity.rs"]
 mod capture_identity;
@@ -1156,7 +1157,7 @@ fn guest_host_address(
         .map_err(|_| negative_errno(libc::EFAULT))
 }
 
-/// A [`SyscallExecutor`] that supplies the static-ELF guest-kernel semantics
+/// A [`crate::SyscallExecutor`] that supplies the static-ELF guest-kernel semantics
 /// ([`execute_basic_syscall`]) to the tool-driven run loop
 /// ([`crate::KvmBackend::run_static_elf_with_tool`]).
 ///
@@ -1199,6 +1200,12 @@ pub(crate) struct ElfExecutor {
     parked_signals: Option<ParkedSignalState>,
     completed_signal_effects: Vec<reverie::SignalDequeue>,
     signal_effect_raw_result: Option<i64>,
+}
+
+/// Keeps one exact process-generation registry binding alive without exposing
+/// its backend-private representation.
+pub(crate) struct ProcessSignalBindingGuard {
+    _binding: Arc<ProcessBinding>,
 }
 
 pub(crate) type UnstartedToolCleanup =
@@ -1313,7 +1320,7 @@ struct OwnedChildProcesses {
 
 struct PendingProcess {
     start: ChildStartGate,
-    completion: Arc<Mutex<Option<ChildCompletion>>>,
+    completion: Arc<ChildCompletionSlot>,
     handle: ChildProcessHandle,
 }
 
@@ -1395,7 +1402,6 @@ impl ChildProcessHandle {
 pub(crate) enum ChildCompletion {
     Waitable(ExitStatus),
     AutoReaped(ExitStatus),
-    Failed,
 }
 
 impl ChildCompletion {
@@ -1404,6 +1410,188 @@ impl ChildCompletion {
             Self::Waitable(status)
         } else {
             Self::AutoReaped(status)
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ChildCompletionSlot {
+    state: Mutex<ChildCompletionState>,
+    changed: Condvar,
+    #[cfg(test)]
+    publication_waiters: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    publication_waiter_changed: Condvar,
+}
+
+#[derive(Debug, Default)]
+enum ChildCompletionState {
+    #[default]
+    Pending,
+    PublicationFenced,
+    Ready(ChildCompletion),
+    Failed,
+    Consumed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChildCompletionSlotError {
+    Failed,
+    PublicationFenced,
+    Poisoned,
+}
+
+impl ChildCompletionSlot {
+    #[cfg(test)]
+    pub(crate) fn with_completion(completion: ChildCompletion) -> Self {
+        Self {
+            state: Mutex::new(ChildCompletionState::Ready(completion)),
+            ..Default::default()
+        }
+    }
+
+    /// Fence a callback-announced transition before polling arbitrary Tool
+    /// code. A concurrent nonblocking parent wait may still poll a genuinely
+    /// running `Pending` child, but it must wait through this bounded state so
+    /// the callback prefix cannot make the parent runnable before waitability.
+    pub(crate) fn begin_publication(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("KVM child completion lock poisoned");
+        if matches!(*state, ChildCompletionState::Pending) {
+            *state = ChildCompletionState::PublicationFenced;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Complete a transition previously armed by [`Self::begin_publication`].
+    /// The mutex is never held while Tool code runs.
+    pub(crate) fn publish_after_fence(&self, completion: ChildCompletion) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("KVM child completion lock poisoned");
+        let published = if matches!(*state, ChildCompletionState::PublicationFenced) {
+            *state = ChildCompletionState::Ready(completion);
+            true
+        } else {
+            false
+        };
+        drop(state);
+        if published {
+            self.changed.notify_all();
+        }
+        published
+    }
+
+    /// Publish a direct logical wait result exactly once. Callback-driven
+    /// publication uses the explicit fenced pair above. A consumed result
+    /// remains terminal, so later physical-cleanup failure cannot resurrect or
+    /// replace it.
+    pub(crate) fn publish(&self, completion: ChildCompletion) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("KVM child completion lock poisoned");
+        if matches!(*state, ChildCompletionState::Pending) {
+            *state = ChildCompletionState::Ready(completion);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn fail_if_pending(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("KVM child completion lock poisoned");
+        let failed = if matches!(
+            *state,
+            ChildCompletionState::Pending | ChildCompletionState::PublicationFenced
+        ) {
+            *state = ChildCompletionState::Failed;
+            true
+        } else {
+            false
+        };
+        drop(state);
+        if failed {
+            self.changed.notify_all();
+        }
+        failed
+    }
+
+    /// Return immediately for a genuinely running child, but wait through the
+    /// bounded callback-to-publication interval once the child has announced
+    /// its terminal transition.
+    fn waitability_pending(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("KVM child completion lock poisoned");
+        #[cfg(test)]
+        let mut registered_waiter = false;
+        loop {
+            match *state {
+                ChildCompletionState::Pending => return true,
+                ChildCompletionState::PublicationFenced => {
+                    #[cfg(test)]
+                    if !registered_waiter {
+                        self.publication_waiters.fetch_add(1, Ordering::SeqCst);
+                        self.publication_waiter_changed.notify_all();
+                        registered_waiter = true;
+                    }
+                    state = self
+                        .changed
+                        .wait(state)
+                        .expect("KVM child completion lock poisoned");
+                }
+                ChildCompletionState::Ready(_)
+                | ChildCompletionState::Failed
+                | ChildCompletionState::Consumed => {
+                    #[cfg(test)]
+                    if registered_waiter {
+                        self.publication_waiters.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    return false;
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn wait_for_publication_waiter(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .expect("KVM child completion lock poisoned");
+        let (_state, timeout) = self
+            .publication_waiter_changed
+            .wait_timeout_while(state, std::time::Duration::from_secs(5), |_| {
+                self.publication_waiters.load(Ordering::SeqCst) == 0
+            })
+            .expect("KVM child completion lock poisoned");
+        !timeout.timed_out() && self.publication_waiters.load(Ordering::SeqCst) != 0
+    }
+
+    fn take(&self) -> Result<Option<ChildCompletion>, ChildCompletionSlotError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ChildCompletionSlotError::Poisoned)?;
+        if matches!(*state, ChildCompletionState::PublicationFenced) {
+            return Err(ChildCompletionSlotError::PublicationFenced);
+        }
+        match std::mem::replace(&mut *state, ChildCompletionState::Consumed) {
+            ChildCompletionState::Ready(completion) => Ok(Some(completion)),
+            ChildCompletionState::Failed => Err(ChildCompletionSlotError::Failed),
+            ChildCompletionState::Pending => Ok(None),
+            ChildCompletionState::PublicationFenced => unreachable!("checked above"),
+            ChildCompletionState::Consumed => Ok(None),
         }
     }
 }
@@ -2066,8 +2254,9 @@ impl ElfExecutor {
         ));
         state.fdinfo_table = Arc::downgrade(&file_table);
         let signal_registry = Arc::new(ProcessSignalRegistry::default());
-        let signal_binding =
-            signal_registry.register(&state, &file_table, process_generation, None);
+        let signal_binding = signal_registry
+            .register(&state, &file_table, process_generation, None)
+            .expect("a traced root has no parent registration to reject");
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         Self {
             state,
@@ -2494,7 +2683,7 @@ impl ElfExecutor {
             .expect("registered KVM task exists")
             .process_generation;
         let sigchld_auto_reap = sigchld_auto_reaps(&state);
-        let signal_binding = self.signal_registry.register(
+        let signal_binding = match self.signal_registry.register(
             &state,
             &file_table,
             process_generation,
@@ -2502,7 +2691,22 @@ impl ElfExecutor {
                 tgid: reverie::Pid::from_raw(self.state.pid),
                 generation: self.process_generation,
             }),
-        );
+        ) {
+            Ok(binding) => binding,
+            Err(parent) => {
+                state
+                    .task_lifecycle
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(state.tid, task_generation);
+                return Err(crate::Error::UnexpectedVcpuExit(format!(
+                    "KVM process {} registered a child after parent generation {}:{} became terminal",
+                    state.pid,
+                    parent.tgid.as_raw(),
+                    parent.generation,
+                )));
+            }
+        };
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         let child = Self {
             state,
@@ -2644,6 +2848,7 @@ impl ElfExecutor {
         self.clear_child_tid = address;
     }
 
+    #[cfg(any(test, feature = "native-test-support"))]
     pub(crate) fn child_exit_policy(&self) -> Arc<AtomicBool> {
         self.sigchld_auto_reap.clone()
     }
@@ -2652,6 +2857,7 @@ impl ElfExecutor {
         self.child_completion_sender.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn child_completion(&self, status: ExitStatus) -> ChildCompletion {
         ChildCompletion::from_waitability(status, !self.sigchld_auto_reap.load(Ordering::SeqCst))
     }
@@ -2667,9 +2873,6 @@ impl ElfExecutor {
                 Ok(())
             }
             ChildCompletion::AutoReaped(_) => Ok(()),
-            ChildCompletion::Failed => Err(crate::Error::UnexpectedVcpuExit(format!(
-                "KVM child process {pid} failed before publishing its status"
-            ))),
         }
     }
 
@@ -2679,7 +2882,7 @@ impl ElfExecutor {
         &mut self,
         pid: i32,
         start: std::sync::mpsc::Sender<ChildStartCommand>,
-        completion: Arc<Mutex<Option<ChildCompletion>>>,
+        completion: Arc<ChildCompletionSlot>,
         handle: std::thread::JoinHandle<crate::Result<()>>,
     ) {
         self.register_child_process_with_gate(pid, ChildStartGate::new(start), completion, handle);
@@ -2690,7 +2893,7 @@ impl ElfExecutor {
         &mut self,
         pid: i32,
         start: ChildStartGate,
-        completion: Arc<Mutex<Option<ChildCompletion>>>,
+        completion: Arc<ChildCompletionSlot>,
         handle: std::thread::JoinHandle<crate::Result<()>>,
     ) {
         self.register_child_process_with_panic_owner(pid, start, completion, handle, None);
@@ -2700,7 +2903,7 @@ impl ElfExecutor {
         &mut self,
         pid: i32,
         start: ChildStartGate,
-        completion: Arc<Mutex<Option<ChildCompletion>>>,
+        completion: Arc<ChildCompletionSlot>,
         handle: std::thread::JoinHandle<crate::Result<()>>,
         panic_owner: Option<Arc<ChildProcessPanicOwner>>,
     ) {
@@ -2772,13 +2975,7 @@ impl ElfExecutor {
             ))
         })?;
 
-        if !block
-            && process
-                .completion
-                .lock()
-                .expect("KVM child completion lock poisoned")
-                .is_none()
-        {
+        if !block && process.completion.waitability_pending() {
             return Ok(false);
         }
 
@@ -2795,15 +2992,24 @@ impl ElfExecutor {
         } else {
             self.completed_processes.push(handle);
         }
-        let completion = completion
-            .lock()
-            .expect("KVM child completion lock poisoned")
-            .take()
-            .ok_or_else(|| {
-                crate::Error::UnexpectedVcpuExit(format!(
-                    "KVM child process {pid} exited without publishing its status"
-                ))
-            })?;
+        let completion = completion.take().map_err(|reason| {
+            crate::Error::UnexpectedVcpuExit(match reason {
+                ChildCompletionSlotError::Failed => {
+                    format!("KVM child process {pid} failed before publishing its status")
+                }
+                ChildCompletionSlotError::PublicationFenced => {
+                    format!("KVM child process {pid} exited while its wait publication was fenced")
+                }
+                ChildCompletionSlotError::Poisoned => {
+                    format!("KVM child process {pid} completion lock poisoned")
+                }
+            })
+        })?;
+        let completion = completion.ok_or_else(|| {
+            crate::Error::UnexpectedVcpuExit(format!(
+                "KVM child process {pid} exited without publishing its status"
+            ))
+        })?;
         self.record_child_completion(pid, completion)?;
         Ok(true)
     }
@@ -2916,21 +3122,26 @@ impl ElfExecutor {
             match result {
                 Err(error) => errors.push(error),
                 Ok(()) => {
-                    let completion = process
-                        .completion
-                        .lock()
-                        .map_err(|_| {
+                    let completion = process.completion.take().map_err(|reason| {
+                        crate::Error::UnexpectedVcpuExit(match reason {
+                            ChildCompletionSlotError::Failed => format!(
+                                "KVM child process {pid} failed before publishing its status"
+                            ),
+                            ChildCompletionSlotError::PublicationFenced => format!(
+                                "KVM child process {pid} exited while its wait publication was fenced"
+                            ),
+                            ChildCompletionSlotError::Poisoned => {
+                                format!("KVM child process {pid} completion lock poisoned")
+                            }
+                        })
+                    });
+                    let completion = completion.and_then(|completion| {
+                        completion.ok_or_else(|| {
                             crate::Error::UnexpectedVcpuExit(format!(
-                                "KVM child process {pid} completion lock poisoned"
+                                "KVM child process {pid} exited without publishing its status"
                             ))
                         })
-                        .and_then(|mut completion| {
-                            completion.take().ok_or_else(|| {
-                                crate::Error::UnexpectedVcpuExit(format!(
-                                    "KVM child process {pid} exited without publishing its status"
-                                ))
-                            })
-                        });
+                    });
                     if let Err(error) = completion
                         .and_then(|completion| self.record_child_completion(pid, completion))
                     {
@@ -3363,6 +3574,12 @@ impl ElfExecutor {
         use reverie::ChildExitSignalOutcome::RejectedBeforeCommit;
         use reverie::syscalls::Errno;
 
+        if self.signal_controlled() {
+            return RejectedBeforeCommit {
+                kind: Unsupported,
+                errno: Errno::ENOSYS,
+            };
+        }
         if let Err((kind, errno)) = self.validate_child_exit_signal_event(event) {
             return RejectedBeforeCommit { kind, errno };
         }
@@ -4181,6 +4398,60 @@ impl ElfExecutor {
             })
     }
 
+    /// Retain this process generation through an asynchronous Tool
+    /// acknowledgement. Lifecycle validation remains authoritative; this guard
+    /// only prevents the weak run registry binding from disappearing early.
+    pub(crate) fn retain_signal_process_binding(&self) -> ProcessSignalBindingGuard {
+        ProcessSignalBindingGuard {
+            _binding: self.signal_binding.clone(),
+        }
+    }
+
+    pub(crate) fn process_family_exit(&self) -> crate::Result<ProcessFamilyExit> {
+        let process = self.admitted_signal_identity().process;
+        match self.signal_registry.process_family_exit(process) {
+            Some(exit @ ProcessFamilyExit::Root)
+            | Some(exit @ ProcessFamilyExit::Child(_))
+            | Some(exit @ ProcessFamilyExit::RunTeardownChild { .. }) => Ok(exit),
+            Some(ProcessFamilyExit::Failed) => Err(crate::Error::RunAborted),
+            Some(ProcessFamilyExit::DescendantReparentingUnsupported { child }) => {
+                Err(crate::Error::DescendantReparentingUnsupported { process, child })
+            }
+            Some(ProcessFamilyExit::ParentGenerationUnavailable { parent }) => {
+                Err(crate::Error::ParentGenerationUnavailable { process, parent })
+            }
+            Some(ProcessFamilyExit::ParentChildRelationUnavailable { parent }) => {
+                Err(crate::Error::ParentChildRelationUnavailable { process, parent })
+            }
+            Some(ProcessFamilyExit::AncestryCycle { ancestor }) => {
+                Err(crate::Error::ProcessFamilyAncestryCycle { process, ancestor })
+            }
+            Some(ProcessFamilyExit::MultipleParents {
+                child,
+                first_parent,
+                second_parent,
+            }) => Err(crate::Error::ProcessFamilyMultipleParents {
+                process,
+                child,
+                first_parent,
+                second_parent,
+            }),
+            None => Err(crate::Error::UnexpectedVcpuExit(format!(
+                "KVM process {} lost its terminal family transition",
+                process.tgid.as_raw()
+            ))),
+        }
+    }
+
+    fn record_consumed_child_wait(&self, child_pid: i32) -> crate::Result<()> {
+        let parent = self.admitted_signal_identity().process;
+        let consumed = self.signal_registry.consume_child_wait(parent, child_pid);
+        if !consumed && self.signal_registry.controlled() {
+            return Err(crate::Error::FamilyWaitLedgerMismatch { parent, child_pid });
+        }
+        Ok(())
+    }
+
     pub(crate) fn sole_signal_receiver(&self) -> bool {
         let lifecycle = self
             .state
@@ -4564,12 +4835,34 @@ impl ElfExecutor {
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let status = self.exit_status.take()?;
         let group = std::mem::take(&mut self.exit_group);
-        let status = self
-            .state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .exit(self.state.tid, self.task_generation, status, group);
+        let (status, process_status, group_started) = {
+            let mut lifecycle = self
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (status, group_started) =
+                lifecycle.exit(self.state.tid, self.task_generation, status, group);
+            let process_status =
+                lifecycle.process_exit_status(self.state.pid, self.process_generation);
+            (status, process_status, group_started)
+        };
+        // A group exit is the logical process-exit transition even while host
+        // cancellation is still retiring peer task handles. Record it at the
+        // initiating task's ordered exit point; otherwise a descendant given a
+        // later scheduler turn could race the final peer's host retirement and
+        // change success into an unsupported-reparenting error.
+        let family_status = process_status.or(group_started.then_some(status));
+        if let Some(process_status) = family_status {
+            // Keep the exact process transaction held across both the final
+            // lifecycle removal and its family-ledger transition. A direct
+            // child samples this transaction before inspecting the parent's
+            // lifecycle, so it cannot observe a dead parent generation before
+            // `record_process_exit` makes the corresponding terminal state
+            // visible.
+            self.signal_registry
+                .record_process_exit(self.admitted_signal_identity().process, process_status);
+        }
         Some(ProcessExit { status, group })
     }
 
@@ -4589,11 +4882,18 @@ impl ElfExecutor {
     pub(crate) fn retire_failed_thread(&mut self) {
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-        self.state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .fail(self.state.tid, self.task_generation);
+        let task_failed = {
+            let mut lifecycle = self
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            lifecycle.fail(self.state.tid, self.task_generation)
+        };
+        if task_failed {
+            self.signal_registry
+                .record_process_failure(self.admitted_signal_identity().process);
+        }
     }
 
     pub(crate) fn process_exit_status(&self) -> Option<ExitStatus> {
@@ -4634,20 +4934,33 @@ impl Drop for ElfExecutor {
     }
 }
 
-impl SyscallExecutor for ElfExecutor {
-    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+impl ElfExecutor {
+    /// Execute one static-ELF guest syscall. Backend invariants are typed run
+    /// failures: callers must terminate the run rather than encode them as a
+    /// Linux syscall errno.
+    pub(crate) fn execute_checked(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+    ) -> crate::Result<i64> {
         #[cfg(test)]
         memory.observe_test_syscall_dispatch(request);
+        if let Some(child_pid) = self.state.consumed_child_wait {
+            return Err(crate::Error::ChildWaitLedgerEffectPending {
+                parent: self.admitted_signal_identity().process,
+                child_pid,
+            });
+        }
         self.bind_address_space(memory);
         let _retirement = self.state.file_retirement.hold();
         if let Some(result) = self.synchronize_wait4(request) {
-            return result;
+            return Ok(result);
         }
         if let Some(result) = self.synchronize_waitid(request, memory) {
-            return result;
+            return Ok(result);
         }
         if let Some(result) = self.execute_accept(request, memory) {
-            return result;
+            return Ok(result);
         }
         // TODO-HUMAN-REVIEW(PR-172): Review CLONE_FILES descriptor-table sharing.
         // Thread children retain private executor state, but synchronize their
@@ -4662,7 +4975,7 @@ impl SyscallExecutor for ElfExecutor {
             .expect("file-table guard disappeared")
             .install(&mut self.state)
         {
-            return io_error(error);
+            return Ok(io_error(error));
         }
         // install cloned every fdinfo description Arc while holding the
         // current table. Scalar dispatch below therefore retains its entry
@@ -4674,7 +4987,7 @@ impl SyscallExecutor for ElfExecutor {
             self.state.file_retirement.drain_unlocked();
         }
         if let Some(result) = self.execute_process_action(request, memory) {
-            return result;
+            return Ok(result);
         }
         // Clones share the underlying MAP_SHARED mapping, so writes through this
         // handle reach the guest; `execute_basic_syscall` needs `&mut` access.
@@ -4707,14 +5020,29 @@ impl SyscallExecutor for ElfExecutor {
                 if segment.is_some() {
                     self.pending_segment = segment;
                 }
-                result
+                let consumed_child = self.state.consumed_child_wait.take();
+                if let Some(child) = consumed_child {
+                    self.record_consumed_child_wait(child)?;
+                }
+                Ok(result)
             }
             SyscallAction::Exit(code) => {
                 self.exit_status = Some(code);
                 self.exit_group = request.number() != libc::SYS_exit as u64;
-                0
+                Ok(0)
             }
         }
+    }
+}
+
+// Unit tests historically exercise the concrete executor as a raw Linux
+// syscall function. Keep that concise surface while production dispatch uses
+// the fallible trait method and cannot turn a backend invariant into an errno.
+#[cfg(test)]
+impl ElfExecutor {
+    pub(crate) fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        self.execute_checked(request, memory)
+            .expect("unit-test syscall dispatch returned a backend failure")
     }
 }
 
@@ -15203,6 +15531,7 @@ fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         return negative_errno(libc::EFAULT);
     }
     state.children.remove(&child_pid);
+    state.consumed_child_wait = Some(child_pid);
     i64::from(child_pid)
 }
 
@@ -15279,6 +15608,7 @@ fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     }
     if args[3] & libc::WNOWAIT as u64 == 0 {
         state.children.remove(&child_pid);
+        state.consumed_child_wait = Some(child_pid);
     }
     0
 }
@@ -15622,6 +15952,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         cloexec_fds: std::collections::BTreeSet::new(),
         closed_standard_fds: std::collections::BTreeSet::new(),
         children: std::collections::BTreeMap::new(),
+        consumed_child_wait: None,
         proc_files: std::collections::BTreeMap::new(),
         fdinfo_files: std::collections::BTreeMap::new(),
         fdinfo_table: std::sync::Weak::new(),
@@ -36966,15 +37297,14 @@ mod tests {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let (running_sender, running_receiver) = std::sync::mpsc::channel();
         let (exit_sender, exit_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(Mutex::new(None));
+        let completion = Arc::new(ChildCompletionSlot::default());
         let child_completion = completion.clone();
         let completion_notifier = executor.child_completion_notifier();
         let handle = std::thread::spawn(move || {
             running_sender.send(()).unwrap();
             start_receiver.recv().unwrap();
             exit_receiver.recv().unwrap();
-            *child_completion.lock().unwrap() =
-                Some(ChildCompletion::Waitable(ExitStatus::Exited(9)));
+            assert!(child_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(9))));
             completion_notifier.send(2).unwrap();
             Ok(())
         });
@@ -37042,9 +37372,9 @@ mod tests {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let (callback_started_sender, callback_started_receiver) = std::sync::mpsc::channel();
         let (callback_release_sender, callback_release_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(Mutex::new(Some(ChildCompletion::Waitable(
-            ExitStatus::Exited(7),
-        ))));
+        let completion = Arc::new(ChildCompletionSlot::with_completion(
+            ChildCompletion::Waitable(ExitStatus::Exited(7)),
+        ));
         let handle = std::thread::spawn(move || {
             start_receiver.recv().unwrap();
             callback_started_sender.send(()).unwrap();
@@ -37084,9 +37414,104 @@ mod tests {
         assert_eq!(libc::c_int::from_le_bytes(status), 7 << 8);
     }
 
+    #[test]
+    fn wnohang_waits_through_callback_publication_fence() {
+        const OUTPUT: u64 = 0x100;
+
+        let root = TestDir::new();
+        for use_waitid in [false, true] {
+            let mut executor = ElfExecutor::new(test_state(&root.0), false);
+            let (start_sender, start_receiver) = std::sync::mpsc::channel();
+            let (armed_sender, armed_receiver) = std::sync::mpsc::channel();
+            let (publish_sender, publish_receiver) = std::sync::mpsc::channel();
+            let completion = Arc::new(ChildCompletionSlot::default());
+            let child_completion = completion.clone();
+            let notifier = executor.child_completion_notifier();
+            let handle = std::thread::spawn(move || {
+                start_receiver.recv().unwrap();
+                assert!(child_completion.begin_publication());
+                armed_sender.send(()).unwrap();
+                publish_receiver.recv().unwrap();
+                assert!(
+                    child_completion
+                        .publish_after_fence(ChildCompletion::Waitable(ExitStatus::Exited(9),))
+                );
+                notifier.send(2).unwrap();
+                Ok(())
+            });
+            executor.register_child_process(2, start_sender, completion.clone(), handle);
+            executor.start_pending_child_processes().unwrap();
+            armed_receiver.recv().unwrap();
+
+            let waiter = std::thread::spawn(move || {
+                let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+                let request = if use_waitid {
+                    SyscallRequest::new(
+                        libc::SYS_waitid as u64,
+                        [
+                            libc::P_PID as u64,
+                            2,
+                            OUTPUT,
+                            (libc::WEXITED | libc::WNOHANG) as u64,
+                            0,
+                            0,
+                        ],
+                    )
+                } else {
+                    SyscallRequest::new(
+                        libc::SYS_wait4 as u64,
+                        [2, OUTPUT, libc::WNOHANG as u64, 0, 0, 0],
+                    )
+                };
+                let result = executor.execute(&request, &memory);
+                (executor, memory, result)
+            });
+
+            assert!(
+                completion.wait_for_publication_waiter(),
+                "parent did not enter the callback-to-waitability fence"
+            );
+            assert!(
+                !waiter.is_finished(),
+                "WNOHANG leaked a no-child-ready result through the publication fence"
+            );
+            publish_sender.send(()).unwrap();
+
+            let (mut executor, memory, result) = waiter.join().unwrap();
+            if use_waitid {
+                assert_eq!(result, 0);
+                let info: libc::siginfo_t = read_struct(&memory, OUTPUT);
+                // SAFETY: waitid writes the SIGCHLD variant of siginfo_t.
+                unsafe {
+                    assert_eq!(info.si_pid(), 2);
+                    assert_eq!(info.si_status(), 9);
+                }
+            } else {
+                assert_eq!(result, 2);
+                let mut status = [0; std::mem::size_of::<libc::c_int>()];
+                memory.read(OUTPUT, &mut status).unwrap();
+                assert_eq!(libc::c_int::from_le_bytes(status), 9 << 8);
+            }
+            executor.join_all_child_processes().unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_callback_publication_wakes_fenced_waiter_without_resurrection() {
+        let completion = Arc::new(ChildCompletionSlot::default());
+        assert!(completion.begin_publication());
+        let waiter_completion = completion.clone();
+        let waiter = std::thread::spawn(move || waiter_completion.waitability_pending());
+        assert!(completion.wait_for_publication_waiter());
+        assert!(completion.fail_if_pending());
+        assert!(!waiter.join().unwrap());
+        assert!(!completion.publish_after_fence(ChildCompletion::Waitable(ExitStatus::Exited(9),)));
+        assert_eq!(completion.take(), Err(ChildCompletionSlotError::Failed));
+    }
+
     fn register_published_child(executor: &mut ElfExecutor, pid: i32, completion: ChildCompletion) {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(Mutex::new(Some(completion)));
+        let completion = Arc::new(ChildCompletionSlot::with_completion(completion));
         let handle = std::thread::spawn(move || {
             start_receiver.recv().unwrap();
             Ok(())
@@ -37098,26 +37523,28 @@ mod tests {
         let notifier = executor.child_completion_notifier();
         let (release_sender, release_receiver) = std::sync::mpsc::channel();
         let (low_start_sender, low_start_receiver) = std::sync::mpsc::channel();
-        let low_completion = Arc::new(Mutex::new(None));
+        let low_completion = Arc::new(ChildCompletionSlot::default());
         let child_low_completion = low_completion.clone();
         let low_notifier = notifier.clone();
         let low_handle = std::thread::spawn(move || {
             low_start_receiver.recv().unwrap();
             release_receiver.recv().unwrap();
-            *child_low_completion.lock().unwrap() =
-                Some(ChildCompletion::AutoReaped(ExitStatus::Exited(2)));
+            assert!(
+                child_low_completion.publish(ChildCompletion::AutoReaped(ExitStatus::Exited(2)))
+            );
             low_notifier.send(2).unwrap();
             Ok(())
         });
         executor.register_child_process(2, low_start_sender, low_completion, low_handle);
 
         let (high_start_sender, high_start_receiver) = std::sync::mpsc::channel();
-        let high_completion = Arc::new(Mutex::new(None));
+        let high_completion = Arc::new(ChildCompletionSlot::default());
         let child_high_completion = high_completion.clone();
         let high_handle = std::thread::spawn(move || {
             high_start_receiver.recv().unwrap();
-            *child_high_completion.lock().unwrap() =
-                Some(ChildCompletion::Waitable(ExitStatus::Exited(3)));
+            assert!(
+                child_high_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(3)))
+            );
             notifier.send(3).unwrap();
             Ok(())
         });
@@ -37670,14 +38097,13 @@ mod tests {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
         let (started_sender, started_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(Mutex::new(None));
+        let completion = Arc::new(ChildCompletionSlot::default());
         let child_completion = completion.clone();
         let handle = std::thread::spawn(move || {
             ready_sender.send(()).unwrap();
             assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Start);
             started_sender.send(()).unwrap();
-            *child_completion.lock().unwrap() =
-                Some(ChildCompletion::Waitable(ExitStatus::SUCCESS));
+            assert!(child_completion.publish(ChildCompletion::Waitable(ExitStatus::SUCCESS)));
             Ok(())
         });
 
@@ -37724,7 +38150,12 @@ mod tests {
                         "transferred pending {pid}"
                     )))
                 });
-                worker.register_child_process(pid, start, Arc::new(Mutex::new(None)), handle);
+                worker.register_child_process(
+                    pid,
+                    start,
+                    Arc::new(ChildCompletionSlot::default()),
+                    handle,
+                );
                 let child_lifetime = lifetime.clone();
                 worker.completed_processes.push(
                     std::thread::spawn(move || {
@@ -37854,7 +38285,7 @@ mod tests {
         let lifetime = Arc::new(());
         for pid in 2..=7 {
             let (start_sender, start_receiver) = std::sync::mpsc::channel();
-            let completion = Arc::new(Mutex::new(None));
+            let completion = Arc::new(ChildCompletionSlot::default());
             let child_completion = completion.clone();
             let child_lifetime = lifetime.clone();
             let receiver = if pid == 2 {
@@ -37875,19 +38306,21 @@ mod tests {
                     3 => panic!("forced pending child panic"),
                     4 => Ok(()),
                     5 => {
-                        *child_completion.lock().unwrap() = Some(ChildCompletion::Failed);
+                        assert!(child_completion.fail_if_pending());
                         Ok(())
                     }
                     6 => {
                         let _ = std::panic::catch_unwind(|| {
-                            let _guard = child_completion.lock().unwrap();
+                            let _guard = child_completion.state.lock().unwrap();
                             panic!("forced completion lock poison");
                         });
                         Ok(())
                     }
                     7 => {
-                        *child_completion.lock().unwrap() =
-                            Some(ChildCompletion::Waitable(ExitStatus::SUCCESS));
+                        assert!(
+                            child_completion
+                                .publish(ChildCompletion::Waitable(ExitStatus::SUCCESS))
+                        );
                         Ok(())
                     }
                     _ => unreachable!(),
@@ -38007,7 +38440,7 @@ mod tests {
             executor.register_child_process_with_gate(
                 pid,
                 gate,
-                Arc::new(Mutex::new(None)),
+                Arc::new(ChildCompletionSlot::default()),
                 handle,
             );
         }
@@ -38121,7 +38554,7 @@ mod tests {
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancelled_in_child = cancelled.clone();
         let (cancel_sender, cancel_receiver) = std::sync::mpsc::channel();
-        let cancel_completion = Arc::new(Mutex::new(None));
+        let cancel_completion = Arc::new(ChildCompletionSlot::default());
         let cancel_handle = std::thread::spawn(move || match cancel_receiver.recv() {
             Ok(ChildStartCommand::Cancel) => {
                 cancelled_in_child.store(true, Ordering::Release);
@@ -38137,7 +38570,7 @@ mod tests {
         let sibling_finished_in_child = sibling_finished.clone();
         let (sibling_start_sender, sibling_start_receiver) = std::sync::mpsc::channel();
         let (sibling_release_sender, sibling_release_receiver) = std::sync::mpsc::channel();
-        let sibling_completion = Arc::new(Mutex::new(None));
+        let sibling_completion = Arc::new(ChildCompletionSlot::default());
         let sibling_handle = std::thread::spawn(move || {
             assert_eq!(
                 sibling_start_receiver.recv().unwrap(),
@@ -38182,7 +38615,7 @@ mod tests {
         let root = TestDir::new();
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(Mutex::new(None));
+        let completion = Arc::new(ChildCompletionSlot::default());
         let handle = std::thread::spawn(move || {
             assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Cancel);
             Err(crate::Error::UnexpectedVcpuExit(
@@ -38466,6 +38899,11 @@ mod tests {
         drop(prepared);
         assert_eq!(leader.process_exit_status(), Some(ExitStatus::Exited(73)));
         assert_eq!(fork.process_exit_status(), Some(ExitStatus::Exited(99)));
+        assert!(
+            matches!(leader.process_family_exit(), Err(crate::Error::UnexpectedVcpuExit(message))
+                if message == "KVM process 1 lost its terminal family transition"),
+            "a final provisional-task Drop must fail closed until an explicit terminal task records the family transition",
+        );
         leader.cancel_current_thread();
         worker.cancel_current_thread();
         assert_eq!(
@@ -38520,6 +38958,13 @@ mod tests {
         let mut new_worker = leader.thread_child(2).unwrap();
         assert_ne!(old_worker.task_generation, new_worker.task_generation);
         old_worker.retire_current_thread(ExitStatus::Exited(99), true);
+        assert_eq!(
+            leader
+                .signal_registry
+                .process_family_exit(leader.admitted_signal_identity().process),
+            None,
+            "a stale pre-exec worker cannot freeze the live process family outcome",
+        );
         commit_test_exit(&mut leader, 37, false);
         assert_eq!(leader.process_exit_status(), None);
         commit_test_exit(&mut new_worker, 73, false);
@@ -41942,7 +42387,7 @@ mod child_panic_owner_tests {
             let (secondary, secondary_address) = payload(&dropped);
             let (sender, receiver) = std::sync::mpsc::channel();
             let gate = ChildStartGate::new(sender);
-            let completion = Arc::new(Mutex::new(None));
+            let completion = Arc::new(ChildCompletionSlot::default());
             let child_completion = completion.clone();
             let (ready, wait_ready) = std::sync::mpsc::channel();
             let handle = std::thread::spawn(move || -> crate::Result<()> {
@@ -41960,7 +42405,7 @@ mod child_panic_owner_tests {
                     crate::Error::SharedFailure(child_cause),
                     vec![secondary],
                 );
-                *child_completion.lock().unwrap() = Some(ChildCompletion::Failed);
+                assert!(child_completion.fail_if_pending());
                 let _ = ready.send(());
                 std::panic::resume_unwind(original)
             });

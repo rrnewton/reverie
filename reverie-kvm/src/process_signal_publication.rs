@@ -8,13 +8,13 @@
 //! Run-scoped callback-independent process publication and recipient permits.
 //!
 //! Installation precedes guest startup. A permit authorizes one actual task
-//! continuation, not a host wake or an unrelated borrowed Guest. Child
-//! completion publication remains private and inactive.
+//! continuation, not a host wake or an unrelated borrowed Guest. Generation-
+//! bound child completion is published through this same run-scoped control.
 //!
 //! Active publication uses only transaction -> lifecycle -> run failure ->
 //! process signals and pinned private eventfd carriers. It never acquires or
-//! pins the ordinary file table. The inactive private endpoint additionally
-//! takes file table first, retaining its original negative controls.
+//! pins the ordinary file table. The retained inactive alarm test endpoint
+//! additionally takes file table first, preserving its negative controls.
 //! Image validation briefly reacquires image below transaction;
 //! child lookup briefly reacquires registry below lifecycle. Those guards are
 //! released before failure/process acquisition. The run failure guard remains
@@ -24,6 +24,7 @@
 //! the transaction. No registry or retirement mutex is held during host closes.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
@@ -39,6 +40,19 @@ use super::LoadedStaticElf;
 use super::set_signalfd_ready;
 use crate::elf::TaskLifecycleTable;
 use crate::signal::ProcessSignalState;
+
+type ProcessKey = (i32, u64);
+
+fn process_key(process: SignalProcessId) -> ProcessKey {
+    (process.tgid.as_raw(), process.generation)
+}
+
+fn process_identity((tgid, generation): ProcessKey) -> SignalProcessId {
+    SignalProcessId {
+        tgid: reverie::Pid::from_raw(tgid),
+        generation,
+    }
+}
 
 #[derive(Clone, Debug)]
 struct ImageRevision(Arc<()>);
@@ -79,9 +93,109 @@ impl ProcessBinding {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DirectChildState {
+    Live,
+    WaitableZombie,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ChildExitSnapshot {
+    pub(crate) completion: reverie::ChildExitCompletion,
+    disposition: PublicationDisposition,
+    pending_generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProcessFamilyExit {
+    Root,
+    Child(ChildExitSnapshot),
+    Failed,
+    RunTeardownChild {
+        status: reverie::ExitStatus,
+    },
+    DescendantReparentingUnsupported {
+        child: SignalProcessId,
+    },
+    ParentGenerationUnavailable {
+        parent: SignalProcessId,
+    },
+    ParentChildRelationUnavailable {
+        parent: SignalProcessId,
+    },
+    AncestryCycle {
+        ancestor: SignalProcessId,
+    },
+    MultipleParents {
+        child: SignalProcessId,
+        first_parent: SignalProcessId,
+        second_parent: SignalProcessId,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessFamilyAncestryError {
+    Cycle {
+        ancestor: ProcessKey,
+    },
+    MultipleParents {
+        child: ProcessKey,
+        first_parent: ProcessKey,
+        second_parent: ProcessKey,
+    },
+}
+
+#[derive(Default)]
+struct ProcessFamilyState {
+    direct_children: BTreeMap<ProcessKey, BTreeMap<ProcessKey, DirectChildState>>,
+    terminal: BTreeMap<ProcessKey, ProcessFamilyExit>,
+}
+
+impl ProcessFamilyState {
+    fn has_terminal_ancestor(
+        &self,
+        mut ancestor: ProcessKey,
+    ) -> Result<bool, ProcessFamilyAncestryError> {
+        let mut visited = BTreeSet::new();
+        loop {
+            if !visited.insert(ancestor) {
+                return Err(ProcessFamilyAncestryError::Cycle { ancestor });
+            }
+            if self.terminal.contains_key(&ancestor) {
+                return Ok(true);
+            }
+            let mut parents = self
+                .direct_children
+                .iter()
+                .filter(|(_, children)| children.contains_key(&ancestor))
+                .map(|(parent, _)| *parent);
+            let Some(parent) = parents.next() else {
+                return Ok(false);
+            };
+            if let Some(second_parent) = parents.next() {
+                return Err(ProcessFamilyAncestryError::MultipleParents {
+                    child: ancestor,
+                    first_parent: parent,
+                    second_parent,
+                });
+            }
+            ancestor = parent;
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ProcessSignalRegistry {
     processes: Mutex<BTreeMap<(i32, u64), Weak<ProcessBinding>>>,
+    // Logical process ancestry is independent of host join-handle placement.
+    // It is retained by exact generation until a wait consumes a zombie or an
+    // exit-time auto-reap decision removes it. This is the fail-closed boundary
+    // for reparenting, which this change does not claim to implement.
+    family: Mutex<ProcessFamilyState>,
+    // Run-scoped at-most-once admission. Standard-signal coalescing is not an
+    // operation ledger: after dequeue, the same child could otherwise enqueue
+    // a second SIGCHLD. Retain exact generations until the run ends.
+    child_publications: Mutex<BTreeMap<(i32, u64), ChildPublicationRecord>>,
     // No callbacks or G references. An eventual owner must make its own run
     // terminal after saving FailedAfterCommit. This latch refuses further
     // publication; it is not a substitute for that owner transition.
@@ -91,6 +205,7 @@ pub(super) struct ProcessSignalRegistry {
     completed_permits: Mutex<BTreeMap<(i32, u64, i32, u64), reverie::SignalDeliveryPermit>>,
     run_failure: Mutex<Weak<crate::failure::RunFailure>>,
     reported_failure: Mutex<Option<crate::Error>>,
+    failure_forwarded: AtomicBool,
 }
 
 impl ProcessSignalRegistry {
@@ -100,12 +215,17 @@ impl ProcessSignalRegistry {
         files: &Arc<Mutex<FileTableState>>,
         generation: u64,
         parent: Option<SignalProcessId>,
-    ) -> Arc<ProcessBinding> {
+    ) -> Result<Arc<ProcessBinding>, SignalProcessId> {
+        let identity = SignalProcessId {
+            tgid: reverie::Pid::from_raw(state.pid),
+            generation,
+        };
+        // Successful exec and same-process executor reconstruction retain the
+        // process generation; they are not a fork edge and cannot make a
+        // process its own child.
+        let parent = parent.filter(|candidate| *candidate != identity);
         let binding = Arc::new(ProcessBinding {
-            identity: SignalProcessId {
-                tgid: reverie::Pid::from_raw(state.pid),
-                generation,
-            },
+            identity,
             parent,
             transaction: Arc::downgrade(&state.signal_transaction),
             lifecycle: Arc::downgrade(&state.task_lifecycle),
@@ -115,10 +235,23 @@ impl ProcessSignalRegistry {
                 signals: Arc::downgrade(&state.process_signals),
             }),
         });
+        if let Some(parent) = parent {
+            let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
+            let parent_key = process_key(parent);
+            if family.terminal.contains_key(&parent_key) {
+                return Err(parent);
+            }
+            let previous = family
+                .direct_children
+                .entry(parent_key)
+                .or_default()
+                .insert(process_key(binding.identity), DirectChildState::Live);
+            debug_assert!(previous.is_none(), "duplicate KVM child process generation");
+        }
         let mut processes = self.processes.lock().unwrap_or_else(|p| p.into_inner());
         processes.retain(|_, process| process.strong_count() != 0);
         processes.insert((state.pid, generation), Arc::downgrade(&binding));
-        binding
+        Ok(binding)
     }
 
     fn lookup(&self, identity: SignalProcessId) -> Option<Arc<ProcessBinding>> {
@@ -127,6 +260,247 @@ impl ProcessSignalRegistry {
             .unwrap_or_else(|p| p.into_inner())
             .get(&(identity.tgid.as_raw(), identity.generation))?
             .upgrade()
+    }
+
+    /// Freeze the exact process generation at its first exact task failure.
+    /// Descendants may still finish successfully while the runtime unwinds,
+    /// but their completion is teardown rather than a new logical child-exit
+    /// publication to the failed parent.
+    pub(super) fn record_process_failure(&self, process: SignalProcessId) {
+        let parent = self.lookup(process).and_then(|binding| binding.parent);
+        let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
+        let process_family_key = process_key(process);
+        let replace_success = matches!(
+            family.terminal.get(&process_family_key),
+            None | Some(
+                ProcessFamilyExit::Root
+                    | ProcessFamilyExit::Child(_)
+                    | ProcessFamilyExit::RunTeardownChild { .. }
+            )
+        );
+        if !replace_success {
+            // Preserve the first typed fatal family invariant instead of
+            // replacing its actionable cause with a generic peer failure.
+            return;
+        }
+        family
+            .terminal
+            .insert(process_family_key, ProcessFamilyExit::Failed);
+        if let Some(parent) = parent {
+            let parent_key = process_key(parent);
+            if let Some(children) = family.direct_children.get_mut(&parent_key) {
+                children.remove(&process_family_key);
+                if children.is_empty() {
+                    family.direct_children.remove(&parent_key);
+                }
+            }
+        }
+    }
+
+    /// Freeze one process's terminal parent/wait policy at the authoritative
+    /// lifecycle transition. Host join completion and the later Tool callback
+    /// only consume this snapshot; they cannot resample a parent's newer
+    /// SIGCHLD disposition.
+    pub(super) fn record_process_exit(
+        &self,
+        process: SignalProcessId,
+        status: reverie::ExitStatus,
+    ) -> ProcessFamilyExit {
+        if let Some(exit) = self
+            .family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .terminal
+            .get(&process_key(process))
+            .copied()
+        {
+            return exit;
+        }
+
+        let binding = self.lookup(process);
+        let parent_identity = binding.as_ref().and_then(|binding| binding.parent);
+        let is_root = parent_identity.is_none();
+        let parent_binding = parent_identity.and_then(|parent| self.lookup(parent));
+        let parent_transaction = parent_binding
+            .as_ref()
+            .and_then(|binding| binding.transaction.upgrade());
+        let _parent_transaction = parent_transaction
+            .as_ref()
+            .map(|transaction| transaction.lock().unwrap_or_else(|p| p.into_inner()));
+        let parent_snapshot = parent_binding.as_ref().and_then(|parent_binding| {
+            let parent = parent_identity?;
+            let lifecycle = parent_binding.lifecycle.upgrade()?;
+            let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+            if !lifecycle.contains_process(parent.tgid.as_raw(), parent.generation) {
+                return None;
+            }
+            let image = parent_binding
+                .image
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            let signals = image.signals.upgrade()?;
+            let signals = signals.lock().unwrap_or_else(|p| p.into_inner());
+            let action = signals
+                .dispositions
+                .get(&libc::SIGCHLD)
+                .copied()
+                .unwrap_or_default();
+            let disposition = if action.is_ignored() {
+                PublicationDisposition::Ignored
+            } else if action.handler == libc::SIG_DFL as u64 {
+                PublicationDisposition::Default
+            } else {
+                PublicationDisposition::Caught
+            };
+            let waitable = !action.is_ignored() && action.flags & libc::SA_NOCLDWAIT as u64 == 0;
+            let pending_generation = signals.pending_generation(libc::SIGCHLD);
+            Some((parent, disposition, waitable, pending_generation))
+        });
+
+        let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(exit) = family.terminal.get(&process_key(process)).copied() {
+            return exit;
+        }
+        let blocking_descendant = family
+            .direct_children
+            .get(&process_key(process))
+            .and_then(|children| children.keys().next().copied())
+            .map(process_identity);
+        let parent_is_terminal = match parent_identity {
+            Some(parent) => match family.has_terminal_ancestor(process_key(parent)) {
+                Ok(_) => family.terminal.contains_key(&process_key(parent)),
+                Err(ProcessFamilyAncestryError::Cycle { ancestor }) => {
+                    let exit = ProcessFamilyExit::AncestryCycle {
+                        ancestor: process_identity(ancestor),
+                    };
+                    family.terminal.insert(process_key(process), exit);
+                    return exit;
+                }
+                Err(ProcessFamilyAncestryError::MultipleParents {
+                    child,
+                    first_parent,
+                    second_parent,
+                }) => {
+                    let exit = ProcessFamilyExit::MultipleParents {
+                        child: process_identity(child),
+                        first_parent: process_identity(first_parent),
+                        second_parent: process_identity(second_parent),
+                    };
+                    family.terminal.insert(process_key(process), exit);
+                    return exit;
+                }
+            },
+            None => false,
+        };
+        let exit = if is_root {
+            ProcessFamilyExit::Root
+        } else if parent_is_terminal {
+            // The direct parent's logical transition, rather than a transitive
+            // ancestor's host teardown, decides whether this child still has a
+            // live reaper. Both exits serialize through the direct parent's
+            // transaction: child-first retains normal waitability, while
+            // parent-first is consuming run teardown. A terminal root alone
+            // cannot silently auto-reap a grandchild from its still-live parent.
+            if let Some(parent) = parent_identity {
+                let parent_key = process_key(parent);
+                if let Some(children) = family.direct_children.get_mut(&parent_key) {
+                    children.remove(&process_key(process));
+                    if children.is_empty() {
+                        family.direct_children.remove(&parent_key);
+                    }
+                }
+            }
+            // No process that is itself terminal can subsequently reap an
+            // already-published zombie or a still-running direct child. Retire
+            // those exact edges as part of this consuming teardown transition;
+            // each later child still recognizes the terminal direct parent by
+            // generation and takes this same branch.
+            family.direct_children.remove(&process_key(process));
+            ProcessFamilyExit::RunTeardownChild { status }
+        } else if let Some(child) = blocking_descendant {
+            ProcessFamilyExit::DescendantReparentingUnsupported { child }
+        } else if let Some((parent, disposition, waitable, pending_generation)) = parent_snapshot {
+            let completion = reverie::ChildExitCompletion {
+                parent,
+                child: process,
+                status,
+                waitable,
+                uid: 0,
+                user_ticks: 0,
+                system_ticks: 0,
+            };
+            let parent_key = process_key(parent);
+            let child_key = process_key(process);
+            let relation_exists = family
+                .direct_children
+                .get(&parent_key)
+                .is_some_and(|children| children.contains_key(&child_key));
+            if !relation_exists {
+                let exit = ProcessFamilyExit::ParentChildRelationUnavailable { parent };
+                family.terminal.insert(process_key(process), exit);
+                return exit;
+            }
+            if waitable {
+                let relation = family
+                    .direct_children
+                    .get_mut(&parent_key)
+                    .and_then(|children| children.get_mut(&child_key))
+                    .expect("validated KVM direct-child relation remains present");
+                *relation = DirectChildState::WaitableZombie;
+            } else {
+                let children = family
+                    .direct_children
+                    .get_mut(&parent_key)
+                    .expect("validated KVM parent relation remains present");
+                children.remove(&child_key);
+                if children.is_empty() {
+                    family.direct_children.remove(&parent_key);
+                }
+            }
+            ProcessFamilyExit::Child(ChildExitSnapshot {
+                completion,
+                disposition,
+                pending_generation,
+            })
+        } else {
+            ProcessFamilyExit::ParentGenerationUnavailable {
+                parent: parent_identity.expect("non-root KVM process retains a parent identity"),
+            }
+        };
+        family.terminal.insert(process_key(process), exit);
+        exit
+    }
+
+    pub(super) fn process_family_exit(
+        &self,
+        process: SignalProcessId,
+    ) -> Option<ProcessFamilyExit> {
+        self.family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .terminal
+            .get(&process_key(process))
+            .copied()
+    }
+
+    pub(super) fn consume_child_wait(&self, parent: SignalProcessId, child_pid: i32) -> bool {
+        let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
+        let parent_key = process_key(parent);
+        let Some(children) = family.direct_children.get_mut(&parent_key) else {
+            return false;
+        };
+        let child = children.iter().find_map(|(key, state)| {
+            (key.0 == child_pid && *state == DirectChildState::WaitableZombie).then_some(*key)
+        });
+        let Some(child) = child else {
+            return false;
+        };
+        children.remove(&child);
+        if children.is_empty() {
+            family.direct_children.remove(&parent_key);
+        }
+        true
     }
 
     pub(super) fn control(self: &Arc<Self>) -> ProcessSignalControl {
@@ -182,6 +556,7 @@ pub(super) enum PendingChange {
     Queued,
     Coalesced,
     Suppressed,
+    Discarded,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -192,6 +567,7 @@ pub(super) struct PublicationReceipt {
     pending_generation: u64,
     change: PendingChange,
     disposition: PublicationDisposition,
+    child_completion: Option<reverie::ChildExitCompletion>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -207,17 +583,28 @@ pub(super) enum ProcessPublication {
     FailedAfterCommit(PublicationFailure),
 }
 
-/// A future completion rendezvous must construct this only from committed
-/// child accounting, before retiring the owned child completion. There is no
-/// production constructor or child publication caller in this prerequisite.
-/// Normal exits only; killed/core exits require their own provenance support.
-pub(super) struct CommittedChildExit {
-    parent: SignalProcessId,
-    child: SignalProcessId,
-    status: u8,
-    uid: u32,
-    user_time: i64,
-    system_time: i64,
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ChildPublicationRecord {
+    Committed(PublicationReceipt),
+    Failed(PublicationFailure),
+}
+
+impl ChildPublicationRecord {
+    fn completion(&self) -> reverie::ChildExitCompletion {
+        match self {
+            Self::Committed(receipt) => receipt,
+            Self::Failed(failure) => &failure.receipt,
+        }
+        .child_completion
+        .expect("child ledger contains a child completion")
+    }
+
+    fn replay(&self) -> ProcessPublication {
+        match self {
+            Self::Committed(receipt) => ProcessPublication::Committed(receipt.clone()),
+            Self::Failed(failure) => ProcessPublication::FailedAfterCommit(failure.clone()),
+        }
+    }
 }
 
 impl ProcessSignalControl {
@@ -262,43 +649,22 @@ impl ProcessSignalControl {
         self.publish(target, event, None, true)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "inactive private entry point; child completion rendezvous is separate"
-        )
-    )]
-    pub(super) fn publish_child_exit(&self, completion: CommittedChildExit) -> ProcessPublication {
-        if completion.user_time < 0 || completion.system_time < 0 {
-            return ProcessPublication::Rejected(PublicationRejection::InvalidCompletion);
-        }
-        let mut info = [0; reverie::SIGNAL_INFO_SIZE];
-        info[..4].copy_from_slice(&libc::SIGCHLD.to_ne_bytes());
-        info[8..12].copy_from_slice(&libc::CLD_EXITED.to_ne_bytes());
-        info[16..20].copy_from_slice(&completion.child.tgid.as_raw().to_ne_bytes());
-        info[20..24].copy_from_slice(&completion.uid.to_ne_bytes());
-        info[24..28].copy_from_slice(&i32::from(completion.status).to_ne_bytes());
-        info[32..40].copy_from_slice(&completion.user_time.to_ne_bytes());
-        info[40..48].copy_from_slice(&completion.system_time.to_ne_bytes());
-        let event = SignalEvent::new(
-            libc::SIGCHLD,
-            info,
-            reverie::SignalTarget::Process {
-                pid: completion.parent.tgid,
-            },
-        );
-        let Ok(event) = event else {
-            return ProcessPublication::Rejected(PublicationRejection::InvalidCompletion);
+    fn publish_child_completion(
+        &self,
+        completion: reverie::ChildExitCompletion,
+    ) -> ProcessPublication {
+        let event = match child_exit_signal_event(completion) {
+            Ok(event) => event,
+            Err(rejection) => return ProcessPublication::Rejected(rejection),
         };
-        self.publish(completion.parent, event, Some(&completion), false)
+        self.publish(completion.parent, event, Some(&completion), true)
     }
 
     fn publish(
         &self,
         target: SignalProcessId,
         event: SignalEvent,
-        completion: Option<&CommittedChildExit>,
+        completion: Option<&reverie::ChildExitCompletion>,
         independent_carriers: bool,
     ) -> ProcessPublication {
         use ProcessPublication::Rejected;
@@ -306,6 +672,23 @@ impl ProcessSignalControl {
         let Some(registry) = self.0.upgrade() else {
             return Rejected(Closed);
         };
+        // A committed result is a stable acknowledgement, not permission to
+        // repeat the effect. Consult it before liveness validation so an exact
+        // duplicate remains idempotent after the child executor retires.
+        if let Some(completion) = completion
+            && let Some(record) = registry
+                .child_publications
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&(completion.child.tgid.as_raw(), completion.child.generation))
+                .cloned()
+        {
+            return if record.completion() == *completion {
+                record.replay()
+            } else {
+                Rejected(InvalidCompletion)
+            };
+        }
         let Some(binding) = registry.lookup(target) else {
             return Rejected(StaleProcess);
         };
@@ -356,6 +739,15 @@ impl ProcessSignalControl {
         {
             return Rejected(StaleProcess);
         }
+        let child_snapshot = match completion {
+            Some(completion) => match registry.process_family_exit(completion.child) {
+                Some(ProcessFamilyExit::Child(snapshot)) if snapshot.completion == *completion => {
+                    Some(snapshot)
+                }
+                _ => return Rejected(InvalidCompletion),
+            },
+            None => None,
+        };
         if let Some(completion) = completion {
             let Some(child) = registry.lookup(completion.child) else {
                 return Rejected(InvalidCompletion);
@@ -364,7 +756,7 @@ impl ProcessSignalControl {
                 || lifecycle.process_exit_status(
                     completion.child.tgid.as_raw(),
                     completion.child.generation,
-                ) != Some(reverie::ExitStatus::Exited(i32::from(completion.status)))
+                ) != Some(completion.status)
             {
                 return Rejected(InvalidCompletion);
             }
@@ -376,6 +768,25 @@ impl ProcessSignalControl {
         if failure.is_some() {
             return Rejected(Terminal);
         }
+        // Keep this guard through the complete mutation and readiness phase.
+        // A concurrent duplicate cannot pass the check before the first
+        // operation records its irreversible commit.
+        let mut child_publications = completion.map(|_| {
+            registry
+                .child_publications
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+        });
+        if let (Some(completion), Some(publications)) = (completion, child_publications.as_ref())
+            && let Some(previous) =
+                publications.get(&(completion.child.tgid.as_raw(), completion.child.generation))
+        {
+            return if previous.completion() == *completion {
+                previous.replay()
+            } else {
+                Rejected(InvalidCompletion)
+            };
+        }
         let mut process = signals.lock().unwrap_or_else(|p| p.into_inner());
         let signal = event.signal();
         let action = process
@@ -383,22 +794,56 @@ impl ProcessSignalControl {
             .get(&signal)
             .copied()
             .unwrap_or_default();
-        let disposition = if action.is_ignored() {
-            PublicationDisposition::Ignored
-        } else if action.handler == libc::SIG_DFL as u64 {
-            PublicationDisposition::Default
-        } else {
-            PublicationDisposition::Caught
-        };
+        let disposition = child_snapshot.map_or_else(
+            || {
+                if action.is_ignored() {
+                    PublicationDisposition::Ignored
+                } else if action.handler == libc::SIG_DFL as u64 {
+                    PublicationDisposition::Default
+                } else {
+                    PublicationDisposition::Caught
+                }
+            },
+            |snapshot| snapshot.disposition,
+        );
+        let pending_generation = child_snapshot.map_or_else(
+            || process.pending_generation(signal),
+            |snapshot| snapshot.pending_generation,
+        );
         let mut receipt = PublicationReceipt {
             process: target,
             image: image.revision,
             signal,
-            pending_generation: process.pending_generation(signal),
+            pending_generation,
             change: PendingChange::Suppressed,
             disposition,
+            child_completion: completion.copied(),
         };
-        if signal == libc::SIGCHLD && action.is_ignored() {
+        if signal == libc::SIGCHLD && disposition == PublicationDisposition::Ignored {
+            if let (Some(completion), Some(publications)) =
+                (completion, child_publications.as_mut())
+            {
+                let previous = publications.insert(
+                    (completion.child.tgid.as_raw(), completion.child.generation),
+                    ChildPublicationRecord::Committed(receipt.clone()),
+                );
+                debug_assert!(previous.is_none());
+            }
+            return ProcessPublication::Committed(receipt);
+        }
+        if let Some(snapshot) = child_snapshot
+            && process.pending_generation(signal) != snapshot.pending_generation
+        {
+            receipt.change = PendingChange::Discarded;
+            if let (Some(completion), Some(publications)) =
+                (completion, child_publications.as_mut())
+            {
+                let previous = publications.insert(
+                    (completion.child.tgid.as_raw(), completion.child.generation),
+                    ChildPublicationRecord::Committed(receipt.clone()),
+                );
+                debug_assert!(previous.is_none());
+            }
             return ProcessPublication::Committed(receipt);
         }
         let matching = process
@@ -450,12 +895,62 @@ impl ProcessSignalControl {
                     receipt,
                     errno: Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO)),
                 };
+                if let (Some(completion), Some(publications)) =
+                    (completion, child_publications.as_mut())
+                {
+                    let previous = publications.insert(
+                        (completion.child.tgid.as_raw(), completion.child.generation),
+                        ChildPublicationRecord::Failed(committed.clone()),
+                    );
+                    debug_assert!(previous.is_none());
+                }
                 *failure = Some(committed.clone());
                 return ProcessPublication::FailedAfterCommit(committed);
             }
         }
+        if let (Some(completion), Some(publications)) = (completion, child_publications.as_mut()) {
+            let previous = publications.insert(
+                (completion.child.tgid.as_raw(), completion.child.generation),
+                ChildPublicationRecord::Committed(receipt.clone()),
+            );
+            debug_assert!(previous.is_none());
+        }
         ProcessPublication::Committed(receipt)
     }
+}
+
+fn child_exit_signal_event(
+    completion: reverie::ChildExitCompletion,
+) -> Result<SignalEvent, PublicationRejection> {
+    if completion.user_ticks < 0 || completion.system_ticks < 0 {
+        return Err(PublicationRejection::InvalidCompletion);
+    }
+    let (code, status) = match completion.status {
+        reverie::ExitStatus::Exited(status) if (0..=i32::from(u8::MAX)).contains(&status) => {
+            (libc::CLD_EXITED, status)
+        }
+        reverie::ExitStatus::Exited(_) => {
+            return Err(PublicationRejection::InvalidCompletion);
+        }
+        reverie::ExitStatus::Signaled(signal, true) => (libc::CLD_DUMPED, signal as libc::c_int),
+        reverie::ExitStatus::Signaled(signal, false) => (libc::CLD_KILLED, signal as libc::c_int),
+    };
+    let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+    info[..4].copy_from_slice(&libc::SIGCHLD.to_ne_bytes());
+    info[8..12].copy_from_slice(&code.to_ne_bytes());
+    info[16..20].copy_from_slice(&completion.child.tgid.as_raw().to_ne_bytes());
+    info[20..24].copy_from_slice(&completion.uid.to_ne_bytes());
+    info[24..28].copy_from_slice(&status.to_ne_bytes());
+    info[32..40].copy_from_slice(&completion.user_ticks.to_ne_bytes());
+    info[40..48].copy_from_slice(&completion.system_ticks.to_ne_bytes());
+    let event = SignalEvent::new(
+        libc::SIGCHLD,
+        info,
+        reverie::SignalTarget::Process {
+            pid: completion.parent.tgid,
+        },
+    );
+    event.map_err(|_| PublicationRejection::InvalidCompletion)
 }
 
 impl ProcessSignalRegistry {
@@ -525,6 +1020,7 @@ impl ProcessSignalRegistry {
 }
 
 fn public_receipt(receipt: &PublicationReceipt) -> reverie::ProcessSignalPublication {
+    debug_assert!(receipt.child_completion.is_none());
     reverie::ProcessSignalPublication {
         process: receipt.process,
         pending_generation: receipt.pending_generation,
@@ -535,6 +1031,54 @@ fn public_receipt(receipt: &PublicationReceipt) -> reverie::ProcessSignalPublica
             PublicationDisposition::Default => reverie::ProcessAlarmSignalDisposition::DefaultFatal,
         },
     }
+}
+
+fn public_child_receipt(receipt: &PublicationReceipt) -> reverie::ChildExitPublication {
+    reverie::ChildExitPublication {
+        completion: receipt
+            .child_completion
+            .expect("child publication retained its completion"),
+        pending_generation: receipt.pending_generation,
+        effect: match receipt.change {
+            PendingChange::Queued => reverie::ChildExitPublicationEffect::Queued,
+            PendingChange::Coalesced => reverie::ChildExitPublicationEffect::Coalesced,
+            PendingChange::Suppressed => {
+                reverie::ChildExitPublicationEffect::SuppressedExplicitIgnore
+            }
+            PendingChange::Discarded => {
+                reverie::ChildExitPublicationEffect::DiscardedByDispositionChange
+            }
+        },
+    }
+}
+
+fn report_publication_failure(
+    registry: &ProcessSignalRegistry,
+    process: SignalProcessId,
+    phase: &'static str,
+    error: crate::Error,
+) -> Result<(), Errno> {
+    let run = registry
+        .run_failure
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .upgrade()
+        .ok_or(Errno::ESRCH)?;
+    if registry.failure_forwarded.swap(true, Ordering::AcqRel) {
+        return Ok(());
+    }
+    // No scheduler, registry, image or signal lock survives this call.
+    let context = crate::failure::FailureContext::new(run, process.tgid, process.tgid);
+    let published = context.publish(phase, error);
+    // The first run cause may be a concurrent independent failure. Keep this
+    // returned Error too, so root completion retains the committed publication
+    // receipt as secondary cleanup rather than losing it.
+    registry
+        .reported_failure
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_or_insert(published);
+    Ok(())
 }
 
 impl reverie::ProcessSignalControl for ProcessSignalControl {
@@ -562,10 +1106,39 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
         }
     }
 
-    fn alarm_recipients(
+    fn publish_child_exit(
+        &self,
+        completion: reverie::ChildExitCompletion,
+    ) -> reverie::ChildExitPublicationResult {
+        use reverie::ChildExitPublicationResult as Outcome;
+        match self.publish_child_completion(completion) {
+            ProcessPublication::Committed(receipt) => {
+                Outcome::Committed(public_child_receipt(&receipt))
+            }
+            ProcessPublication::FailedAfterCommit(failure) => Outcome::FailedAfterCommit {
+                receipt: public_child_receipt(&failure.receipt),
+                errno: failure.errno,
+            },
+            ProcessPublication::Rejected(reason) => Outcome::RejectedBeforeCommit(match reason {
+                PublicationRejection::Backend(errno) => errno,
+                PublicationRejection::Closed | PublicationRejection::StaleProcess => Errno::ESRCH,
+                PublicationRejection::ChangedImage => Errno::EAGAIN,
+                PublicationRejection::InvalidEvent | PublicationRejection::InvalidCompletion => {
+                    Errno::EINVAL
+                }
+                PublicationRejection::Terminal => Errno::EIO,
+            }),
+        }
+    }
+
+    fn signal_recipients(
         &self,
         process: SignalProcessId,
+        signal: i32,
     ) -> Result<Vec<reverie::SignalRecipient>, Errno> {
+        if !(1..=64).contains(&signal) {
+            return Err(Errno::EINVAL);
+        }
         let registry = self.0.upgrade().ok_or(Errno::ESRCH)?;
         let binding = registry.lookup(process).ok_or(Errno::ESRCH)?;
         let image = binding
@@ -588,11 +1161,11 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
         }
         let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
         let signals = signals.lock().unwrap_or_else(|p| p.into_inner());
-        let mut alarm_mask = crate::signal::KernelSigset::default();
-        alarm_mask.insert(libc::SIGALRM);
+        let mut signal_mask = crate::signal::KernelSigset::default();
+        signal_mask.insert(signal);
         if !signals
             .shared_pending
-            .any_matching(alarm_mask, &signals.pending_generations)
+            .any_matching(signal_mask, &signals.pending_generations)
         {
             return Ok(Vec::new());
         }
@@ -601,11 +1174,19 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
             let Some(thread) = lifecycle.signal_target(task.tid.as_raw()) else {
                 continue;
             };
-            if !thread.lock().blocked.contains(libc::SIGALRM) {
+            if !thread.lock().blocked.contains(signal) {
                 recipients.push(reverie::SignalRecipient { task });
             }
         }
+        recipients.sort_by_key(|recipient| recipient.task.tid);
         Ok(recipients)
+    }
+
+    fn alarm_recipients(
+        &self,
+        process: SignalProcessId,
+    ) -> Result<Vec<reverie::SignalRecipient>, Errno> {
+        <Self as reverie::ProcessSignalControl>::signal_recipients(self, process, libc::SIGALRM)
     }
 
     fn reserve_delivery(&self, permit: reverie::SignalDeliveryPermit) -> Result<(), Errno> {
@@ -670,33 +1251,45 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
             .unwrap_or_else(|p| p.into_inner())
             .clone()
             .ok_or(Errno::EINVAL)?;
-        if failure.receipt.process != process {
+        if failure.receipt.process != process || failure.receipt.child_completion.is_some() {
             return Err(Errno::EINVAL);
         }
-        let run = registry
-            .run_failure
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .upgrade()
-            .ok_or(Errno::ESRCH)?;
-        // No scheduler, registry, image or signal lock survives this call.
-        let context = crate::failure::FailureContext::new(run, process.tgid, process.tgid);
-        let published = context.publish(
+        report_publication_failure(
+            &registry,
+            process,
             "process signal publication",
             crate::Error::ProcessSignalPublication {
                 receipt: public_receipt(&failure.receipt),
                 errno: failure.errno,
             },
-        );
-        // The first run cause may be a concurrent independent failure. Keep
-        // this returned Error too, so root completion retains the committed
-        // publication receipt as secondary cleanup rather than losing it.
-        registry
-            .reported_failure
+        )
+    }
+
+    fn finish_child_exit_publication_failure(
+        &self,
+        receipt: reverie::ChildExitPublication,
+    ) -> Result<(), Errno> {
+        let registry = self.0.upgrade().ok_or(Errno::ESRCH)?;
+        let failure = registry
+            .failure
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get_or_insert(published);
-        Ok(())
+            .clone()
+            .ok_or(Errno::EINVAL)?;
+        if failure.receipt.child_completion.is_none()
+            || public_child_receipt(&failure.receipt) != receipt
+        {
+            return Err(Errno::EINVAL);
+        }
+        report_publication_failure(
+            &registry,
+            receipt.completion.parent,
+            "child-exit signal publication",
+            crate::Error::ChildExitPublication {
+                receipt,
+                errno: failure.errno,
+            },
+        )
     }
 }
 
@@ -709,7 +1302,6 @@ mod tests {
     use super::*;
     use crate::GuestMemory;
     use crate::SyscallRequest;
-    use crate::runtime::SyscallExecutor;
     use crate::signal::KernelSigaction;
     use crate::signal::KernelSigset;
 
@@ -737,9 +1329,27 @@ mod tests {
         executor.execute(&SyscallRequest::new(number as u64, args), memory)
     }
 
+    fn read_struct<T>(memory: &GuestMemory, address: u64) -> T {
+        let mut value = std::mem::MaybeUninit::<T>::zeroed();
+        // SAFETY: value is writable for exactly size_of::<T>() bytes.
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                value.as_mut_ptr().cast::<u8>(),
+                std::mem::size_of::<T>(),
+            )
+        };
+        memory.read(address, bytes).unwrap();
+        // SAFETY: zeroed storage was fully initialized by memory.read.
+        unsafe { value.assume_init() }
+    }
+
     fn signalfd(executor: &mut ElfExecutor, memory: &mut GuestMemory) -> i32 {
+        signalfd_for(executor, memory, libc::SIGALRM)
+    }
+
+    fn signalfd_for(executor: &mut ElfExecutor, memory: &mut GuestMemory, signal: i32) -> i32 {
         let mut mask = KernelSigset::default();
-        mask.insert(libc::SIGALRM);
+        mask.insert(signal);
         memory.write(0x80, &mask.to_bytes()).unwrap();
         let fd = call(
             executor,
@@ -766,6 +1376,32 @@ mod tests {
         match outcome {
             ProcessPublication::Committed(receipt) => receipt,
             other => panic!("publication did not commit: {other:?}"),
+        }
+    }
+
+    fn child_completion(
+        parent: SignalProcessId,
+        child: SignalProcessId,
+        status: reverie::ExitStatus,
+        waitable: bool,
+    ) -> reverie::ChildExitCompletion {
+        reverie::ChildExitCompletion {
+            parent,
+            child,
+            status,
+            waitable,
+            uid: 0,
+            user_ticks: 0,
+            system_ticks: 0,
+        }
+    }
+
+    fn child_receipt(
+        outcome: reverie::ChildExitPublicationResult,
+    ) -> reverie::ChildExitPublication {
+        match outcome {
+            reverie::ChildExitPublicationResult::Committed(receipt) => receipt,
+            other => panic!("child publication did not commit: {other:?}"),
         }
     }
 
@@ -1738,70 +2374,1460 @@ mod tests {
     }
 
     #[test]
-    fn inactive_publication_child_requires_committed_generation_and_parent() {
+    fn child_publication_requires_exact_generation_parent_status_and_waitability() {
+        use reverie::ChildExitPublicationResult::RejectedBeforeCommit;
+
         let mut parent = executor();
-        let id = identity(&parent);
+        let parent_id = identity(&parent);
         let mut child = parent.fork_child(2, false, false).unwrap();
         let child_id = identity(&child);
-        let control = parent.signal_registry.control();
-        let completion = || CommittedChildExit {
-            parent: id,
-            child: child_id,
-            status: 23,
-            uid: 0,
-            user_time: 11,
-            system_time: 13,
-        };
+        let wrong_parent = parent.fork_child(3, false, false).unwrap();
+        let wrong_parent_id = identity(&wrong_parent);
+        let control = parent.backend_signal_control().process;
+        let completion =
+            child_completion(parent_id, child_id, reverie::ExitStatus::Exited(23), true);
+
         assert_eq!(
-            control.publish_child_exit(completion()),
-            ProcessPublication::Rejected(PublicationRejection::InvalidCompletion)
+            control.publish_child_exit(completion),
+            RejectedBeforeCommit(Errno::EINVAL),
+            "a live child has no committed terminal status"
         );
         child.retire_current_thread(reverie::ExitStatus::Exited(23), false);
-        let first = receipt(control.publish_child_exit(completion()));
-        assert_eq!(first.change, PendingChange::Queued);
-        let pending = parent.take_pending_signal_for_delivery().unwrap().unwrap();
-        let info = pending.event.siginfo();
-        assert_eq!(pending.event.signal(), libc::SIGCHLD);
-        assert_eq!(
-            i32::from_ne_bytes(info[8..12].try_into().unwrap()),
-            libc::CLD_EXITED
-        );
-        assert_eq!(i32::from_ne_bytes(info[16..20].try_into().unwrap()), 2);
-        assert_eq!(i32::from_ne_bytes(info[24..28].try_into().unwrap()), 23);
-        assert_eq!(i64::from_ne_bytes(info[32..40].try_into().unwrap()), 11);
-        assert_eq!(i64::from_ne_bytes(info[40..48].try_into().unwrap()), 13);
-        let mut wrong = completion();
-        wrong.child.generation += 1;
-        assert_eq!(
-            control.publish_child_exit(wrong),
-            ProcessPublication::Rejected(PublicationRejection::InvalidCompletion)
-        );
-        let other = parent.fork_child(3, false, false).unwrap();
-        let mut wrong = completion();
-        wrong.parent = identity(&other);
-        assert_eq!(
-            control.publish_child_exit(wrong),
-            ProcessPublication::Rejected(PublicationRejection::InvalidCompletion)
-        );
-        parent
-            .state
-            .process_signals
-            .lock()
+
+        for (wrong, expected) in [
+            (
+                reverie::ChildExitCompletion {
+                    child: SignalProcessId {
+                        generation: child_id.generation + 1,
+                        ..child_id
+                    },
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    parent: SignalProcessId {
+                        generation: parent_id.generation + 1,
+                        ..parent_id
+                    },
+                    ..completion
+                },
+                Errno::ESRCH,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    parent: wrong_parent_id,
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    status: reverie::ExitStatus::Exited(24),
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    waitable: false,
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    status: reverie::ExitStatus::Exited(256),
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    user_ticks: -1,
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+            (
+                reverie::ChildExitCompletion {
+                    system_ticks: -1,
+                    ..completion
+                },
+                Errno::EINVAL,
+            ),
+        ] {
+            assert_eq!(
+                control.publish_child_exit(wrong),
+                RejectedBeforeCommit(expected)
+            );
+        }
+
+        let receipt = child_receipt(control.publish_child_exit(completion));
+        assert_eq!(receipt.completion, completion);
+        assert_eq!(receipt.effect, reverie::ChildExitPublicationEffect::Queued);
+        let event = parent
+            .take_pending_signal_for_delivery()
             .unwrap()
-            .dispositions
-            .insert(
-                libc::SIGCHLD,
+            .unwrap()
+            .event;
+        let info = event.siginfo();
+        assert_eq!(event.signal(), libc::SIGCHLD);
+        assert_eq!(i32::from_ne_bytes(info[16..20].try_into().unwrap()), 2);
+        assert_eq!(u32::from_ne_bytes(info[20..24].try_into().unwrap()), 0);
+        assert_eq!(i64::from_ne_bytes(info[32..40].try_into().unwrap()), 0);
+        assert_eq!(i64::from_ne_bytes(info[40..48].try_into().unwrap()), 0);
+
+        assert_eq!(
+            child_receipt(control.publish_child_exit(completion)),
+            receipt,
+            "an exact duplicate returns the retained acknowledgement"
+        );
+        assert!(
+            parent.take_pending_signal_for_delivery().unwrap().is_none(),
+            "an acknowledged duplicate must not enqueue a second SIGCHLD"
+        );
+        assert_eq!(
+            control.publish_child_exit(reverie::ChildExitCompletion {
+                uid: completion.uid + 1,
+                ..completion
+            }),
+            RejectedBeforeCommit(Errno::EINVAL),
+            "conflicting data for one child generation must fail before mutation"
+        );
+
+        drop(child);
+        drop(wrong_parent);
+        let replacement = parent.fork_child(2, false, false).unwrap();
+        assert_ne!(identity(&replacement).generation, child_id.generation);
+        assert_eq!(
+            child_receipt(control.publish_child_exit(completion)),
+            receipt,
+            "the exact acknowledgement survives executor retirement and numeric PID reuse"
+        );
+        assert!(parent.state.children.is_empty());
+    }
+
+    #[test]
+    fn process_registry_keeps_reused_numeric_pids_generation_distinct() {
+        let parent = executor();
+        let mut old = parent.fork_child(2, false, false).unwrap();
+        let old_id = identity(&old);
+        old.retire_current_thread(reverie::ExitStatus::Exited(23), false);
+        let replacement = parent.fork_child(2, false, false).unwrap();
+        let replacement_id = identity(&replacement);
+        assert_ne!(old_id.generation, replacement_id.generation);
+        assert_eq!(
+            parent.signal_registry.lookup(old_id).unwrap().identity,
+            old_id
+        );
+        assert_eq!(
+            parent
+                .signal_registry
+                .lookup(replacement_id)
+                .unwrap()
+                .identity,
+            replacement_id
+        );
+        drop(old);
+        assert!(parent.signal_registry.lookup(old_id).is_none());
+        assert!(parent.signal_registry.lookup(replacement_id).is_some());
+    }
+
+    #[test]
+    fn child_publication_encodes_exited_killed_and_core_statuses() {
+        for (status, expected_code, expected_status) in [
+            (reverie::ExitStatus::Exited(37), libc::CLD_EXITED, 37),
+            (
+                reverie::ExitStatus::Signaled(reverie::Signal::SIGTERM, false),
+                libc::CLD_KILLED,
+                libc::SIGTERM,
+            ),
+            (
+                reverie::ExitStatus::Signaled(reverie::Signal::SIGABRT, true),
+                libc::CLD_DUMPED,
+                libc::SIGABRT,
+            ),
+        ] {
+            let mut parent = executor();
+            let mut child = parent.fork_child(2, false, false).unwrap();
+            let completion = child_completion(identity(&parent), identity(&child), status, true);
+            child.retire_current_thread(status, false);
+            let receipt = child_receipt(
+                parent
+                    .backend_signal_control()
+                    .process
+                    .publish_child_exit(completion),
+            );
+            assert_eq!(receipt.completion.status, status);
+            let event = parent
+                .take_pending_signal_for_delivery()
+                .unwrap()
+                .unwrap()
+                .event;
+            let info = event.siginfo();
+            assert_eq!(
+                i32::from_ne_bytes(info[8..12].try_into().unwrap()),
+                expected_code
+            );
+            assert_eq!(
+                i32::from_ne_bytes(info[24..28].try_into().unwrap()),
+                expected_status
+            );
+        }
+    }
+
+    #[test]
+    fn child_publication_distinguishes_explicit_ignore_from_no_cldwait() {
+        for (action, expected_effect, pending) in [
+            (
                 KernelSigaction {
                     handler: libc::SIG_IGN as u64,
                     ..Default::default()
                 },
+                reverie::ChildExitPublicationEffect::SuppressedExplicitIgnore,
+                false,
+            ),
+            (
+                KernelSigaction {
+                    handler: libc::SIG_DFL as u64,
+                    flags: libc::SA_NOCLDWAIT as u64,
+                    ..Default::default()
+                },
+                reverie::ChildExitPublicationEffect::Queued,
+                true,
+            ),
+        ] {
+            let parent = executor();
+            parent
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .dispositions
+                .insert(libc::SIGCHLD, action);
+            let mut child = parent.fork_child(2, false, false).unwrap();
+            let completion = child_completion(
+                identity(&parent),
+                identity(&child),
+                reverie::ExitStatus::Exited(7),
+                false,
             );
+            child.retire_current_thread(completion.status, false);
+            let control = parent.backend_signal_control().process;
+            let receipt = child_receipt(control.publish_child_exit(completion));
+            assert_eq!(receipt.effect, expected_effect);
+            assert_eq!(
+                child_receipt(control.publish_child_exit(completion)),
+                receipt,
+                "an exact duplicate must retain the original suppression/queue receipt"
+            );
+            assert_eq!(
+                parent
+                    .state
+                    .process_signals
+                    .lock()
+                    .unwrap()
+                    .shared_pending
+                    .contains(libc::SIGCHLD),
+                pending
+            );
+        }
+    }
+
+    #[test]
+    fn child_publication_uses_exit_time_disposition_after_parent_policy_changes() {
+        let install = |parent: &mut ElfExecutor, action: KernelSigaction| {
+            let mut memory = GuestMemory::new(0, 4096).unwrap();
+            memory.write(0x100, &action.encode()).unwrap();
+            assert_eq!(
+                call(
+                    parent,
+                    &memory,
+                    libc::SYS_rt_sigaction,
+                    [libc::SIGCHLD as u64, 0x100, 0, 8, 0, 0],
+                ),
+                0,
+            );
+        };
+
+        let mut parent = executor();
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let completion = child_completion(
+            identity(&parent),
+            identity(&child),
+            reverie::ExitStatus::Exited(7),
+            true,
+        );
+        child.retire_current_thread(completion.status, false);
+        let exit_generation = match child
+            .signal_registry
+            .process_family_exit(completion.child)
+            .unwrap()
+        {
+            ProcessFamilyExit::Child(snapshot) => snapshot.pending_generation,
+            other => panic!("unexpected child family exit: {other:?}"),
+        };
+        install(
+            &mut parent,
+            KernelSigaction {
+                handler: libc::SIG_IGN as u64,
+                ..Default::default()
+            },
+        );
+        let receipt = child_receipt(
+            parent
+                .backend_signal_control()
+                .process
+                .publish_child_exit(completion),
+        );
+        assert_eq!(receipt.completion, completion);
+        assert_eq!(receipt.pending_generation, exit_generation);
         assert_eq!(
-            receipt(control.publish_child_exit(completion())).change,
-            PendingChange::Suppressed
+            receipt.effect,
+            reverie::ChildExitPublicationEffect::DiscardedByDispositionChange
+        );
+        assert!(
+            !parent
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGCHLD),
+            "a delayed child event cannot resurrect the discarded generation",
+        );
+
+        for (action, expected_effect) in [
+            (
+                KernelSigaction {
+                    handler: libc::SIG_IGN as u64,
+                    ..Default::default()
+                },
+                reverie::ChildExitPublicationEffect::SuppressedExplicitIgnore,
+            ),
+            (
+                KernelSigaction {
+                    handler: libc::SIG_DFL as u64,
+                    flags: libc::SA_NOCLDWAIT as u64,
+                    ..Default::default()
+                },
+                reverie::ChildExitPublicationEffect::DiscardedByDispositionChange,
+            ),
+        ] {
+            let mut parent = executor();
+            install(&mut parent, action);
+            let mut child = parent.fork_child(2, false, false).unwrap();
+            let completion = child_completion(
+                identity(&parent),
+                identity(&child),
+                reverie::ExitStatus::Exited(9),
+                false,
+            );
+            child.retire_current_thread(completion.status, false);
+            install(&mut parent, KernelSigaction::default());
+            let receipt = child_receipt(
+                parent
+                    .backend_signal_control()
+                    .process
+                    .publish_child_exit(completion),
+            );
+            assert_eq!(receipt.completion, completion);
+            assert_eq!(receipt.effect, expected_effect);
+        }
+    }
+
+    #[test]
+    fn process_family_fails_closed_until_direct_children_are_reaped_or_auto_reaped() {
+        let parent = executor();
+        let mut live_owner = parent.fork_child(2, false, false).unwrap();
+        let live_descendant = live_owner.fork_child(3, false, false).unwrap();
+        let live_owner_id = identity(&live_owner);
+        let live_descendant_id = identity(&live_descendant);
+        live_owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        assert_eq!(
+            live_owner
+                .signal_registry
+                .process_family_exit(live_owner_id),
+            Some(ProcessFamilyExit::DescendantReparentingUnsupported {
+                child: live_descendant_id,
+            })
+        );
+
+        let parent = executor();
+        let mut zombie_owner = parent.fork_child(2, false, false).unwrap();
+        let mut zombie = zombie_owner.fork_child(3, false, false).unwrap();
+        let zombie_owner_id = identity(&zombie_owner);
+        let zombie_id = identity(&zombie);
+        zombie.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+        zombie_owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        assert!(matches!(
+            zombie_owner
+                .signal_registry
+                .process_family_exit(zombie_owner_id),
+            Some(ProcessFamilyExit::DescendantReparentingUnsupported { child })
+                if child == zombie_id
+        ));
+
+        let parent = executor();
+        let mut reaping_owner = parent.fork_child(2, false, false).unwrap();
+        let mut reaped = reaping_owner.fork_child(3, false, false).unwrap();
+        let reaping_owner_id = identity(&reaping_owner);
+        reaped.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+        assert!(
+            reaping_owner
+                .signal_registry
+                .consume_child_wait(reaping_owner_id, 3)
+        );
+        reaping_owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        assert!(matches!(
+            reaping_owner
+                .signal_registry
+                .process_family_exit(reaping_owner_id),
+            Some(ProcessFamilyExit::Child(_))
+        ));
+
+        for action in [
+            KernelSigaction {
+                handler: libc::SIG_IGN as u64,
+                ..Default::default()
+            },
+            KernelSigaction {
+                handler: libc::SIG_DFL as u64,
+                flags: libc::SA_NOCLDWAIT as u64,
+                ..Default::default()
+            },
+        ] {
+            let parent = executor();
+            let mut owner = parent.fork_child(2, false, false).unwrap();
+            owner
+                .state
+                .process_signals
+                .lock()
+                .unwrap()
+                .dispositions
+                .insert(libc::SIGCHLD, action);
+            let mut auto_reaped = owner.fork_child(3, false, false).unwrap();
+            let owner_id = identity(&owner);
+            auto_reaped.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+            owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+            assert!(matches!(
+                owner.signal_registry.process_family_exit(owner_id),
+                Some(ProcessFamilyExit::Child(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn terminal_root_preserves_a_live_parent_wait_before_direct_parent_teardown() {
+        const INFO: u64 = 0x100;
+        const STATUS: u64 = 0x200;
+
+        let mut root = executor();
+        let mut child = root.fork_child(2, false, false).unwrap();
+        let mut grandchild = child.fork_child(3, false, false).unwrap();
+        let root_id = identity(&root);
+        let child_id = identity(&child);
+        let grandchild_id = identity(&grandchild);
+
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        assert_eq!(
+            root.signal_registry.process_family_exit(root_id),
+            Some(ProcessFamilyExit::Root),
+        );
+        grandchild.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        let completion = match grandchild
+            .signal_registry
+            .process_family_exit(grandchild_id)
+            .unwrap()
+        {
+            ProcessFamilyExit::Child(snapshot) => snapshot.completion,
+            other => panic!("live direct parent lost its waitable child: {other:?}"),
+        };
+        assert_eq!(completion.parent, child_id);
+        assert_eq!(completion.child, grandchild_id);
+        assert_eq!(completion.status, reverie::ExitStatus::Exited(3));
+        assert!(completion.waitable);
+        child
+            .record_child_completion(
+                3,
+                crate::executor::ChildCompletion::from_waitability(
+                    completion.status,
+                    completion.waitable,
+                ),
+            )
+            .unwrap();
+
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_waitid as u64,
+                    [
+                        libc::P_PID as u64,
+                        3,
+                        INFO,
+                        (libc::WEXITED | libc::WNOWAIT | libc::WNOHANG) as u64,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        let info: libc::siginfo_t = read_struct(&memory, INFO);
+        // SAFETY: waitid writes the SIGCHLD variant of siginfo_t.
+        unsafe {
+            assert_eq!(info.si_pid(), 3);
+            assert_eq!(info.si_status(), 3);
+        }
+        assert!(
+            child
+                .signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .direct_children
+                .get(&process_key(child_id))
+                .is_some_and(|children| children.get(&process_key(grandchild_id))
+                    == Some(&DirectChildState::WaitableZombie)),
+            "WNOWAIT must preserve the exact waitable family edge",
+        );
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_wait4 as u64,
+                    [3, STATUS, libc::WNOHANG as u64, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            3,
+        );
+        let mut status = [0; std::mem::size_of::<libc::c_int>()];
+        memory.read(STATUS, &mut status).unwrap();
+        assert_eq!(libc::c_int::from_le_bytes(status), 3 << 8);
+
+        child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(2),
+            }),
+        );
+        assert!(
+            root.signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .direct_children
+                .is_empty(),
+            "direct-parent teardown must retire every exact child edge",
+        );
+    }
+
+    #[test]
+    fn terminal_direct_parent_tears_down_a_later_child_without_publication() {
+        let mut root = executor();
+        let mut child = root.fork_child(2, false, false).unwrap();
+        let mut grandchild = child.fork_child(3, false, false).unwrap();
+        let child_id = identity(&child);
+        let grandchild_id = identity(&grandchild);
+
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(2),
+            }),
+        );
+        grandchild.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        assert_eq!(
+            grandchild
+                .signal_registry
+                .process_family_exit(grandchild_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(3),
+            }),
+        );
+        assert!(
+            root.signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .direct_children
+                .is_empty(),
+        );
+    }
+
+    #[test]
+    fn live_root_refuses_but_terminal_root_consumes_the_same_unreaped_family_shape() {
+        let root = executor();
+        let mut child = root.fork_child(2, false, false).unwrap();
+        let grandchild = child.fork_child(3, false, false).unwrap();
+        let child_id = identity(&child);
+        let grandchild_id = identity(&grandchild);
+
+        child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::DescendantReparentingUnsupported {
+                child: grandchild_id,
+            }),
+            "a middle process that exits under a live root still requires unsupported reparenting",
+        );
+
+        let mut root = executor();
+        let mut child = root.fork_child(2, false, false).unwrap();
+        let mut grandchild = child.fork_child(3, false, false).unwrap();
+        let root_id = identity(&root);
+        let child_id = identity(&child);
+        let grandchild_id = identity(&grandchild);
+
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        assert_eq!(
+            root.signal_registry.process_family_exit(root_id),
+            Some(ProcessFamilyExit::Root),
+        );
+        child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(2),
+            }),
+            "after the root becomes terminal, the same middle exit belongs to whole-run teardown",
+        );
+        grandchild.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        assert_eq!(
+            grandchild
+                .signal_registry
+                .process_family_exit(grandchild_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(3),
+            }),
+        );
+        assert!(
+            root.signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .direct_children
+                .is_empty(),
+            "terminal-root consumption must retire the same family's exact edges",
+        );
+    }
+
+    #[test]
+    fn child_exit_distinguishes_lost_parent_generation_from_lost_family_edge() {
+        let parent = executor();
+        let parent_id = identity(&parent);
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let child_id = identity(&child);
+        drop(parent);
+
+        child.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::ParentGenerationUnavailable { parent: parent_id }),
+        );
+        assert!(matches!(
+            child.process_family_exit(),
+            Err(crate::Error::ParentGenerationUnavailable { process, parent })
+                if process == child_id && parent == parent_id
+        ));
+        child.signal_registry.record_process_failure(child_id);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::ParentGenerationUnavailable { parent: parent_id }),
+            "a later generic failure must preserve the missing-generation cause",
+        );
+
+        let parent = executor();
+        let parent_id = identity(&parent);
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let child_id = identity(&child);
+        {
+            let mut family = parent
+                .signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let children = family
+                .direct_children
+                .get_mut(&process_key(parent_id))
+                .expect("fork registered an exact parent family edge");
+            assert_eq!(
+                children.remove(&process_key(child_id)),
+                Some(DirectChildState::Live)
+            );
+            if children.is_empty() {
+                family.direct_children.remove(&process_key(parent_id));
+            }
+        }
+
+        child.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::ParentChildRelationUnavailable { parent: parent_id }),
+        );
+        assert!(matches!(
+            child.process_family_exit(),
+            Err(crate::Error::ParentChildRelationUnavailable { process, parent })
+                if process == child_id && parent == parent_id
+        ));
+        child.signal_registry.record_process_failure(child_id);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::ParentChildRelationUnavailable { parent: parent_id }),
+            "a later generic failure must preserve the missing-relation cause",
+        );
+    }
+
+    #[test]
+    fn child_wait_consumes_the_exact_family_child_selected_by_the_backend() {
+        const INFO: u64 = 0x100;
+
+        for mode in 0..5 {
+            let mut parent = executor();
+            let parent_id = identity(&parent);
+            let mut low = parent.fork_child(2, false, false).unwrap();
+            let mut high = parent.fork_child(3, false, false).unwrap();
+            let low_id = identity(&low);
+            let high_id = identity(&high);
+            low.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+            high.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+            parent
+                .state
+                .children
+                .insert(2, reverie::ExitStatus::Exited(2));
+            parent
+                .state
+                .children
+                .insert(3, reverie::ExitStatus::Exited(3));
+
+            let (id_type, id, expected, consume, use_wait4) = match mode {
+                0 => (libc::P_ALL, 0, low_id, true, false),
+                1 => (libc::P_PGID, parent.state.pgid, low_id, true, false),
+                2 => (libc::P_PID, high_id.tgid.as_raw(), high_id, true, false),
+                3 => (libc::P_ALL, 0, low_id, false, false),
+                4 => (libc::P_ALL, 0, low_id, true, true),
+                _ => unreachable!(),
+            };
+            let memory = GuestMemory::new(0, 4096).unwrap();
+            let selected = if use_wait4 {
+                let selected = call(
+                    &mut parent,
+                    &memory,
+                    libc::SYS_wait4,
+                    [u64::from(u32::MAX), INFO, libc::WNOHANG as u64, 0, 0, 0],
+                );
+                libc::pid_t::try_from(selected).expect("wait4 returned the selected child pid")
+            } else {
+                let flags = libc::WEXITED | libc::WNOHANG | if consume { 0 } else { libc::WNOWAIT };
+                assert_eq!(
+                    call(
+                        &mut parent,
+                        &memory,
+                        libc::SYS_waitid,
+                        [id_type as u64, id as u64, INFO, flags as u64, 0, 0],
+                    ),
+                    0,
+                );
+                let info: libc::siginfo_t = read_struct(&memory, INFO);
+                // SAFETY: waitid wrote the SIGCHLD variant of siginfo_t.
+                unsafe { info.si_pid() }
+            };
+            assert_eq!(selected, expected.tgid.as_raw());
+
+            let family = parent
+                .signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let children = family
+                .direct_children
+                .get(&process_key(parent_id))
+                .expect("at least one waitable child remains");
+            for child in [low_id, high_id] {
+                let remains = !consume || child != expected;
+                assert_eq!(
+                    children.get(&process_key(child)).copied(),
+                    remains.then_some(DirectChildState::WaitableZombie),
+                    "family-ledger removal must follow the pid actually returned by the backend wait",
+                );
+                assert_eq!(
+                    parent.state.children.contains_key(&child.tgid.as_raw()),
+                    remains,
+                    "backend wait state and exact-generation family state must change together",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn controlled_child_wait_fails_closed_without_an_exact_family_zombie() {
+        let mut parent = executor();
+        let parent_id = identity(&parent);
+        parent
+            .signal_registry
+            .controlled
+            .store(true, Ordering::Release);
+        parent
+            .state
+            .children
+            .insert(2, reverie::ExitStatus::Exited(2));
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        let error = parent
+            .execute_checked(
+                &SyscallRequest::new(
+                    libc::SYS_wait4 as u64,
+                    [u64::from(u32::MAX), 0, libc::WNOHANG as u64, 0, 0, 0],
+                ),
+                &memory,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::Error::FamilyWaitLedgerMismatch {
+                parent,
+                child_pid: 2,
+            } if parent == parent_id
+        ));
+        assert!(
+            !parent.state.children.contains_key(&2),
+            "the typed failure must retain that the backend already reaped the numeric child",
+        );
+        assert!(parent.state.consumed_child_wait.is_none());
+    }
+
+    #[test]
+    fn stale_child_wait_effect_refuses_before_another_syscall_dispatch() {
+        let mut parent = executor();
+        let parent_id = identity(&parent);
+        parent.state.consumed_child_wait = Some(17);
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        let error = parent
+            .execute_checked(
+                &SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]),
+                &memory,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::Error::ChildWaitLedgerEffectPending {
+                parent,
+                child_pid: 17,
+            } if parent == parent_id
+        ));
+        assert_eq!(parent.state.consumed_child_wait, Some(17));
+    }
+
+    #[test]
+    fn corrupt_family_ancestry_is_typed_instead_of_panicking_or_choosing_a_parent() {
+        let root = executor();
+        let parent = root.fork_child(2, false, false).unwrap();
+        let mut child = parent.fork_child(3, false, false).unwrap();
+        let root_id = identity(&root);
+        let parent_id = identity(&parent);
+        let child_id = identity(&child);
+        parent
+            .signal_registry
+            .family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .direct_children
+            .get_mut(&process_key(parent_id))
+            .expect("parent owns its real child edge")
+            .insert(process_key(root_id), DirectChildState::Live);
+
+        child.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::AncestryCycle {
+                ancestor: parent_id,
+            }),
+        );
+        assert!(matches!(
+            child.process_family_exit(),
+            Err(crate::Error::ProcessFamilyAncestryCycle { process, ancestor })
+                if process == child_id && ancestor == parent_id
+        ));
+
+        let root = executor();
+        let parent = root.fork_child(2, false, false).unwrap();
+        let mut child = parent.fork_child(3, false, false).unwrap();
+        let root_id = identity(&root);
+        let parent_id = identity(&parent);
+        let child_id = identity(&child);
+        let alternate_parent = SignalProcessId {
+            tgid: reverie::Pid::from_raw(99),
+            generation: 99,
+        };
+        parent
+            .signal_registry
+            .family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .direct_children
+            .entry(process_key(alternate_parent))
+            .or_default()
+            .insert(process_key(parent_id), DirectChildState::Live);
+
+        child.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::MultipleParents {
+                child: parent_id,
+                first_parent: root_id,
+                second_parent: alternate_parent,
+            }),
+        );
+        assert!(matches!(
+            child.process_family_exit(),
+            Err(crate::Error::ProcessFamilyMultipleParents {
+                process,
+                child,
+                first_parent,
+                second_parent,
+            }) if process == child_id
+                && child == parent_id
+                && first_parent == root_id
+                && second_parent == alternate_parent
+        ));
+    }
+
+    #[test]
+    fn group_exit_records_family_order_before_peer_host_retirement() {
+        let actions = [
+            KernelSigaction {
+                handler: libc::SIG_IGN as u64,
+                ..Default::default()
+            },
+            KernelSigaction {
+                handler: libc::SIG_DFL as u64,
+                flags: libc::SA_NOCLDWAIT as u64,
+                ..Default::default()
+            },
+        ];
+
+        for action in actions {
+            for owner_finishes_first in [false, true] {
+                let parent = executor();
+                let mut owner = parent.fork_child(2, false, false).unwrap();
+                owner
+                    .state
+                    .process_signals
+                    .lock()
+                    .unwrap()
+                    .dispositions
+                    .insert(libc::SIGCHLD, action);
+                let mut owner_peer = owner.thread_child(4).unwrap();
+                let mut descendant = owner.fork_child(3, false, false).unwrap();
+                let owner_id = identity(&owner);
+                let descendant_id = identity(&descendant);
+
+                owner_peer.retire_current_thread(reverie::ExitStatus::Exited(7), true);
+                assert_eq!(
+                    owner.signal_registry.process_family_exit(owner_id),
+                    Some(ProcessFamilyExit::DescendantReparentingUnsupported {
+                        child: descendant_id,
+                    }),
+                    "the ordered exit_group transition must not wait for peer host cancellation",
+                );
+                assert!(
+                    owner.fork_child(6, false, false).is_err(),
+                    "a peer cannot admit a new process after the family exit is frozen",
+                );
+                assert!(
+                    !owner
+                        .state
+                        .task_lifecycle
+                        .lock()
+                        .unwrap()
+                        .processes()
+                        .any(|(tgid, _)| tgid == 6),
+                    "refused late registration must retire its provisional lifecycle entry",
+                );
+
+                if owner_finishes_first {
+                    owner.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+                    descendant.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+                } else {
+                    descendant.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+                    owner.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+                }
+                assert_eq!(
+                    descendant
+                        .signal_registry
+                        .process_family_exit(descendant_id),
+                    Some(ProcessFamilyExit::RunTeardownChild {
+                        status: reverie::ExitStatus::Exited(9),
+                    }),
+                );
+                assert_eq!(
+                    owner.signal_registry.process_family_exit(owner_id),
+                    Some(ProcessFamilyExit::DescendantReparentingUnsupported {
+                        child: descendant_id,
+                    }),
+                    "physical peer order cannot replace the ordered family outcome",
+                );
+            }
+
+            for owner_finishes_first in [false, true] {
+                let parent = executor();
+                let mut owner = parent.fork_child(2, false, false).unwrap();
+                owner
+                    .state
+                    .process_signals
+                    .lock()
+                    .unwrap()
+                    .dispositions
+                    .insert(libc::SIGCHLD, action);
+                let mut owner_peer = owner.thread_child(4).unwrap();
+                let mut descendant = owner.fork_child(3, false, false).unwrap();
+                let mut descendant_peer = descendant.thread_child(5).unwrap();
+                let owner_id = identity(&owner);
+                let descendant_id = identity(&descendant);
+
+                descendant_peer.retire_current_thread(reverie::ExitStatus::Exited(9), true);
+                assert!(matches!(
+                    descendant
+                        .signal_registry
+                        .process_family_exit(descendant_id),
+                    Some(ProcessFamilyExit::Child(ChildExitSnapshot {
+                        completion: reverie::ChildExitCompletion {
+                            waitable: false,
+                            ..
+                        },
+                        ..
+                    }))
+                ));
+
+                owner_peer.retire_current_thread(reverie::ExitStatus::Exited(7), true);
+                assert!(matches!(
+                    owner.signal_registry.process_family_exit(owner_id),
+                    Some(ProcessFamilyExit::Child(_))
+                ));
+
+                if owner_finishes_first {
+                    owner.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+                    descendant.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+                } else {
+                    descendant.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+                    owner.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+                }
+                assert!(matches!(
+                    descendant
+                        .signal_registry
+                        .process_family_exit(descendant_id),
+                    Some(ProcessFamilyExit::Child(_))
+                ));
+                assert!(matches!(
+                    owner.signal_registry.process_family_exit(owner_id),
+                    Some(ProcessFamilyExit::Child(_))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn failed_process_family_is_monotonic_across_peer_retirement_orders() {
+        for leader_first in [false, true] {
+            for leader_group_exit in [false, true] {
+                let parent = executor();
+                let mut owner = parent.fork_child(2, false, false).unwrap();
+                let mut worker = owner.thread_child(4).unwrap();
+                let mut descendant = owner.fork_child(3, false, false).unwrap();
+                let owner_id = identity(&owner);
+                let descendant_id = identity(&descendant);
+
+                if leader_first {
+                    owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+                    assert_eq!(
+                        owner.signal_registry.process_family_exit(owner_id),
+                        None,
+                        "a surviving peer keeps the process logically live",
+                    );
+                    worker.retire_failed_thread();
+                } else {
+                    worker.retire_failed_thread();
+                    owner.retire_current_thread(reverie::ExitStatus::Exited(7), leader_group_exit);
+                }
+
+                assert_eq!(
+                    owner.signal_registry.process_family_exit(owner_id),
+                    Some(ProcessFamilyExit::Failed),
+                    "later success or exit_group cannot replace exact failure",
+                );
+                assert!(
+                    owner.fork_child(6, false, false).is_err(),
+                    "a failed process cannot admit another child",
+                );
+                descendant.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+                assert_eq!(
+                    descendant
+                        .signal_registry
+                        .process_family_exit(descendant_id),
+                    Some(ProcessFamilyExit::RunTeardownChild {
+                        status: reverie::ExitStatus::Exited(9),
+                    }),
+                );
+            }
+        }
+
+        let parent = executor();
+        let mut owner = parent.fork_child(2, false, false).unwrap();
+        let mut peer = owner.thread_child(4).unwrap();
+        let owner_id = identity(&owner);
+        peer.retire_current_thread(reverie::ExitStatus::Exited(7), true);
+        assert!(matches!(
+            owner.signal_registry.process_family_exit(owner_id),
+            Some(ProcessFamilyExit::Child(_)),
+        ));
+        owner.retire_failed_thread();
+        assert_eq!(
+            owner.signal_registry.process_family_exit(owner_id),
+            Some(ProcessFamilyExit::Failed),
+            "a peer failure must override an optimistic exit_group family success",
         );
         assert!(
             parent
+                .signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .direct_children
+                .get(&process_key(identity(&parent)))
+                .is_none_or(|children| !children.contains_key(&process_key(owner_id))),
+            "the failed process cannot remain as a waitable successful child",
+        );
+
+        let mut root = executor();
+        let mut root_peer = root.thread_child(4).unwrap();
+        let root_id = identity(&root);
+        root_peer.retire_current_thread(reverie::ExitStatus::Exited(7), true);
+        assert_eq!(
+            root.signal_registry.process_family_exit(root_id),
+            Some(ProcessFamilyExit::Root),
+        );
+        root.retire_failed_thread();
+        assert_eq!(
+            root.signal_registry.process_family_exit(root_id),
+            Some(ProcessFamilyExit::Failed),
+            "a peer failure must override an optimistic root exit_group success",
+        );
+
+        let mut root = executor();
+        let mut child = root.fork_child(2, false, false).unwrap();
+        let mut child_peer = child.thread_child(4).unwrap();
+        let child_id = identity(&child);
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        child_peer.retire_current_thread(reverie::ExitStatus::Exited(7), true);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(7),
+            }),
+        );
+        child.retire_failed_thread();
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::Failed),
+            "a peer failure must override an optimistic run-teardown exit_group success",
+        );
+
+        let parent = executor();
+        let mut owner = parent.fork_child(2, false, false).unwrap();
+        let mut peer = owner.thread_child(4).unwrap();
+        let descendant = owner.fork_child(3, false, false).unwrap();
+        let owner_id = identity(&owner);
+        let descendant_id = identity(&descendant);
+        peer.retire_current_thread(reverie::ExitStatus::Exited(7), true);
+        assert_eq!(
+            owner.signal_registry.process_family_exit(owner_id),
+            Some(ProcessFamilyExit::DescendantReparentingUnsupported {
+                child: descendant_id,
+            }),
+        );
+        owner.retire_failed_thread();
+        assert_eq!(
+            owner.signal_registry.process_family_exit(owner_id),
+            Some(ProcessFamilyExit::DescendantReparentingUnsupported {
+                child: descendant_id,
+            }),
+            "a generic peer failure must not erase an earlier typed fatal invariant",
+        );
+    }
+
+    #[test]
+    fn child_siginfo_encoder_and_coalescing_retain_first_nonzero_metadata() {
+        let mut parent = executor();
+        let parent_id = identity(&parent);
+        let first = reverie::ChildExitCompletion {
+            parent: parent_id,
+            child: SignalProcessId {
+                tgid: reverie::Pid::from_raw(2),
+                generation: 41,
+            },
+            status: reverie::ExitStatus::Exited(7),
+            waitable: true,
+            uid: 1001,
+            user_ticks: 17,
+            system_ticks: 23,
+        };
+        let second = reverie::ChildExitCompletion {
+            child: SignalProcessId {
+                tgid: reverie::Pid::from_raw(3),
+                generation: 42,
+            },
+            status: reverie::ExitStatus::Exited(9),
+            uid: 1002,
+            user_ticks: 29,
+            system_ticks: 31,
+            ..first
+        };
+        let first_event = child_exit_signal_event(first).unwrap();
+        let second_event = child_exit_signal_event(second).unwrap();
+        for (event, completion) in [(first_event, first), (second_event, second)] {
+            let info = event.siginfo();
+            assert_eq!(
+                i32::from_ne_bytes(info[16..20].try_into().unwrap()),
+                completion.child.tgid.as_raw()
+            );
+            assert_eq!(
+                u32::from_ne_bytes(info[20..24].try_into().unwrap()),
+                completion.uid
+            );
+            assert_eq!(
+                i64::from_ne_bytes(info[32..40].try_into().unwrap()),
+                completion.user_ticks
+            );
+            assert_eq!(
+                i64::from_ne_bytes(info[40..48].try_into().unwrap()),
+                completion.system_ticks
+            );
+        }
+
+        let control = parent.signal_registry.control();
+        assert_eq!(
+            receipt(control.publish(parent_id, first_event, None, true)).change,
+            PendingChange::Queued
+        );
+        assert_eq!(
+            receipt(control.publish(parent_id, second_event, None, true)).change,
+            PendingChange::Coalesced
+        );
+        assert_eq!(
+            parent
+                .take_pending_signal_for_delivery()
+                .unwrap()
+                .unwrap()
+                .event,
+            first_event,
+            "standard-signal coalescing must retain the first complete siginfo",
+        );
+    }
+
+    #[test]
+    fn child_publication_coalesces_and_retains_first_complete_siginfo() {
+        let mut parent = executor();
+        let parent_id = identity(&parent);
+        let mut first = parent.fork_child(2, false, false).unwrap();
+        let mut second = parent.fork_child(3, false, false).unwrap();
+        let first_completion = child_completion(
+            parent_id,
+            identity(&first),
+            reverie::ExitStatus::Exited(7),
+            true,
+        );
+        let second_completion = child_completion(
+            parent_id,
+            identity(&second),
+            reverie::ExitStatus::Exited(9),
+            true,
+        );
+        first.retire_current_thread(first_completion.status, false);
+        second.retire_current_thread(second_completion.status, false);
+        let control = parent.backend_signal_control().process;
+        assert_eq!(
+            child_receipt(control.publish_child_exit(first_completion)).effect,
+            reverie::ChildExitPublicationEffect::Queued
+        );
+        let second_receipt = child_receipt(control.publish_child_exit(second_completion));
+        assert_eq!(
+            second_receipt.effect,
+            reverie::ChildExitPublicationEffect::Coalesced
+        );
+        assert_eq!(
+            child_receipt(control.publish_child_exit(second_completion)),
+            second_receipt,
+            "an exact duplicate must retain the original coalesced receipt"
+        );
+        let info = parent
+            .take_pending_signal_for_delivery()
+            .unwrap()
+            .unwrap()
+            .event
+            .siginfo();
+        assert_eq!(i32::from_ne_bytes(info[16..20].try_into().unwrap()), 2);
+        assert_eq!(i32::from_ne_bytes(info[24..28].try_into().unwrap()), 7);
+        assert_eq!(u32::from_ne_bytes(info[20..24].try_into().unwrap()), 0);
+        assert_eq!(i64::from_ne_bytes(info[32..40].try_into().unwrap()), 0);
+        assert_eq!(i64::from_ne_bytes(info[40..48].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn concurrent_exact_child_publications_commit_one_effect() {
+        let mut parent = executor();
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let completion = child_completion(
+            identity(&parent),
+            identity(&child),
+            reverie::ExitStatus::Exited(7),
+            true,
+        );
+        child.retire_current_thread(completion.status, false);
+        let control = parent.backend_signal_control().process;
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let control = control.clone();
+            let barrier = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                control.publish_child_exit(completion)
+            }));
+        }
+        barrier.wait();
+        let first = workers.remove(0).join().unwrap();
+        let second = workers.remove(0).join().unwrap();
+        assert_eq!(first, second);
+        assert!(matches!(
+            first,
+            reverie::ChildExitPublicationResult::Committed(_)
+        ));
+        assert!(parent.take_pending_signal_for_delivery().unwrap().is_some());
+        assert!(parent.take_pending_signal_for_delivery().unwrap().is_none());
+    }
+
+    #[test]
+    fn generic_recipients_are_sorted_live_and_mask_aware() {
+        let parent = executor();
+        let high = parent.thread_child(9).unwrap();
+        let low = parent.thread_child(3).unwrap();
+        parent
+            .state
+            .thread_signals
+            .lock()
+            .blocked
+            .insert(libc::SIGCHLD);
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let completion = child_completion(
+            identity(&parent),
+            identity(&child),
+            reverie::ExitStatus::Exited(7),
+            true,
+        );
+        child.retire_current_thread(completion.status, false);
+        let control = parent.backend_signal_control().process;
+        child_receipt(control.publish_child_exit(completion));
+        assert_eq!(
+            control
+                .signal_recipients(completion.parent, libc::SIGCHLD)
+                .unwrap()
+                .into_iter()
+                .map(|recipient| recipient.task.tid.as_raw())
+                .collect::<Vec<_>>(),
+            vec![3, 9]
+        );
+        high.state
+            .thread_signals
+            .lock()
+            .blocked
+            .insert(libc::SIGCHLD);
+        assert_eq!(
+            control
+                .signal_recipients(completion.parent, libc::SIGCHLD)
+                .unwrap()
+                .into_iter()
+                .map(|recipient| recipient.task.tid.as_raw())
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+        assert_eq!(
+            control.signal_recipients(completion.parent, 0),
+            Err(Errno::EINVAL)
+        );
+        drop(low);
+        assert!(
+            control
+                .signal_recipients(completion.parent, libc::SIGCHLD)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn child_publication_uses_independent_carriers_and_refuses_a_missing_one() {
+        let mut parent = executor();
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let fd = signalfd_for(&mut parent, &mut memory, libc::SIGCHLD);
+        let alias = call(
+            &mut parent,
+            &memory,
+            libc::SYS_dup,
+            [fd as u64, 0, 0, 0, 0, 0],
+        ) as i32;
+        assert!(alias > fd);
+        let completion = child_completion(
+            identity(&parent),
+            identity(&child),
+            reverie::ExitStatus::Exited(7),
+            true,
+        );
+        child.retire_current_thread(completion.status, false);
+        let control = parent.backend_signal_control().process;
+        let table = parent.file_table.clone();
+        let held = table.lock().unwrap();
+        assert_eq!(
+            child_receipt(control.publish_child_exit(completion)).effect,
+            reverie::ChildExitPublicationEffect::Queued,
+            "publication must not acquire the ordinary file table"
+        );
+        drop(held);
+        assert!(ready(&parent, fd));
+
+        let mut other_parent = executor();
+        let mut other_child = other_parent.fork_child(2, false, false).unwrap();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let fd = signalfd_for(&mut other_parent, &mut memory, libc::SIGCHLD);
+        let other_completion = child_completion(
+            identity(&other_parent),
+            identity(&other_child),
+            reverie::ExitStatus::Exited(8),
+            true,
+        );
+        other_child.retire_current_thread(other_completion.status, false);
+        let carrier = other_parent
+            .state
+            .process_signals
+            .lock()
+            .unwrap()
+            .signalfd_carriers
+            .remove(&fd)
+            .unwrap();
+        assert_eq!(
+            other_parent
+                .backend_signal_control()
+                .process
+                .publish_child_exit(other_completion),
+            reverie::ChildExitPublicationResult::RejectedBeforeCommit(Errno::EBADF)
+        );
+        assert!(
+            other_parent
                 .state
                 .process_signals
                 .lock()
@@ -1809,9 +3835,118 @@ mod tests {
                 .shared_pending
                 .is_empty()
         );
-        assert!(
-            parent.state.children.is_empty(),
-            "publication must not manufacture waitability"
+        drop(carrier);
+    }
+
+    #[test]
+    fn child_signalfd_failure_retains_exact_receipt_and_is_not_retryable() {
+        let mut parent = executor();
+        let parent_id = identity(&parent);
+        let global = Arc::new(());
+        let run = crate::failure::RunFailure::new(&global);
+        parent
+            .signal_registry
+            .install(reverie::BackendSignalControlMode::ToolControlled, &run);
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let fd = signalfd_for(&mut parent, &mut memory, libc::SIGCHLD);
+        let alias = call(
+            &mut parent,
+            &memory,
+            libc::SYS_dup,
+            [fd as u64, 0, 0, 0, 0, 0],
+        ) as i32;
+        assert!(alias > fd);
+        let completion = child_completion(
+            parent_id,
+            identity(&child),
+            reverie::ExitStatus::Signaled(reverie::Signal::SIGABRT, true),
+            true,
         );
+        child.retire_current_thread(completion.status, false);
+        parent
+            .state
+            .process_signals
+            .lock()
+            .unwrap()
+            .signalfd_carriers
+            .insert(
+                alias,
+                crate::signal::SignalFdCarrier::pin_eventfd(
+                    &std::fs::File::open("/dev/null").unwrap(),
+                )
+                .unwrap(),
+            );
+        let committed_carrier = parent
+            .state
+            .process_signals
+            .lock()
+            .unwrap()
+            .signalfd_carriers[&fd]
+            .clone();
+        let control = parent.backend_signal_control().process;
+        let reverie::ChildExitPublicationResult::FailedAfterCommit { receipt, errno } =
+            control.publish_child_exit(completion)
+        else {
+            panic!("missing child post-commit failure")
+        };
+        assert_eq!(errno, Errno::EBADF);
+        assert_eq!(receipt.completion, completion);
+        assert_eq!(receipt.effect, reverie::ChildExitPublicationEffect::Queued);
+        assert!(
+            ready(&parent, fd) && ready(&parent, alias),
+            "the lower-fd carrier must commit readiness before the higher-fd carrier fails"
+        );
+        set_signalfd_ready(committed_carrier.file(), false).unwrap();
+        assert!(!ready(&parent, fd) && !ready(&parent, alias));
+        assert_eq!(
+            control.publish_child_exit(completion),
+            reverie::ChildExitPublicationResult::FailedAfterCommit { receipt, errno },
+            "an exact duplicate returns the retained failure without retrying the effect"
+        );
+        assert!(
+            !ready(&parent, fd) && !ready(&parent, alias),
+            "replaying a retained failure must not reapply the already committed lower carrier"
+        );
+        assert_eq!(
+            control.finish_publication_failure(parent_id),
+            Err(Errno::EINVAL),
+            "the alarm-shaped finisher must not acknowledge a child receipt"
+        );
+        assert_eq!(
+            control.finish_child_exit_publication_failure(reverie::ChildExitPublication {
+                pending_generation: receipt.pending_generation + 1,
+                ..receipt
+            }),
+            Err(Errno::EINVAL),
+            "failure forwarding is bound to the exact retained receipt"
+        );
+        control
+            .finish_child_exit_publication_failure(receipt)
+            .unwrap();
+        control
+            .finish_child_exit_publication_failure(receipt)
+            .expect("exact failure acknowledgement is idempotent");
+        let retained = parent
+            .take_process_publication_failure()
+            .expect("root-owned child publication failure");
+        assert!(
+            matches!(retained.primary(), crate::Error::ChildExitPublication { receipt: actual, errno: Errno::EBADF } if *actual == receipt)
+        );
+    }
+
+    #[test]
+    fn process_binding_guard_retains_exact_generation_until_ack_scope_ends() {
+        let parent = executor();
+        let process = identity(&parent);
+        let registry = parent.signal_registry.clone();
+        let guard = parent.retain_signal_process_binding();
+        drop(parent);
+        assert!(
+            registry.lookup(process).is_some(),
+            "the callback guard must retain the exact weak registry binding"
+        );
+        drop(guard);
+        assert!(registry.lookup(process).is_none());
     }
 }

@@ -203,6 +203,28 @@ pub trait GlobalTool: Send + Sync + Default {
     /// invoke this at that boundary rather than inferring state from signal
     /// delivery. Backends whose host kernel owns child waitability may retain
     /// the default no-op.
+    ///
+    /// KVM polls this callback through its first suspension before making the
+    /// status visible to a parent wait. A Tool-controlled signal scheduler must
+    /// commit its publication or suppression decision in that synchronous
+    /// prefix: it must neither reach an `.await` nor otherwise block on parent
+    /// progress. The backend may already be holding a concurrent parent wait
+    /// across the whole prefix, so waiting for that parent would deadlock.
+    /// Work after that admission point may await parent progress; the backend
+    /// retains and finishes the same pinned future after publishing waitability.
+    /// If that synchronous prefix makes a concurrent parent runnable, the
+    /// backend fences its wait until publication completes; the parent cannot
+    /// observe the callback decision while still receiving a no-child-ready
+    /// result.
+    ///
+    /// No callback is emitted when the exact parent generation is already
+    /// terminal. Such a child is run-teardown state rather than a new waitable
+    /// transition, and the backend auto-reaps its status. A terminal transitive
+    /// ancestor does not suppress a child event while the direct parent remains
+    /// logically live; that parent retains its exact wait semantics.
+    /// For a live parent, callback admission only controls when waitability is
+    /// exposed. It does not reap the backend status: a Tool-controlled wait must
+    /// still be injected into the Guest before Tool shadow state is consumed.
     async fn on_backend_child_wait_event(
         &self,
         _event: BackendChildWaitEvent,
@@ -233,6 +255,12 @@ pub enum BackendChildWaitState {
         /// Whether the parent may consume this status with a wait syscall.
         /// Explicit `SIGCHLD` ignore and `SA_NOCLDWAIT` make this false.
         waitable: bool,
+        /// Virtual child uid reported through `siginfo_t`.
+        uid: u32,
+        /// Child user CPU time in signed Linux clock ticks.
+        user_ticks: i64,
+        /// Child system CPU time in signed Linux clock ticks.
+        system_ticks: i64,
     },
     /// The child entered a job-control stop for this signal number.
     Stopped(i32),
@@ -243,12 +271,38 @@ pub enum BackendChildWaitState {
 /// A backend-observed child waitability decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BackendChildWaitEvent {
-    /// The process whose wait syscalls may observe the transition.
-    pub parent: Pid,
-    /// The child process that changed state.
-    pub child: Pid,
+    /// Exact process lifetime whose wait syscalls may observe the transition.
+    pub parent: crate::SignalProcessId,
+    /// Exact child process lifetime that changed state.
+    pub child: crate::SignalProcessId,
     /// The observed child state and whether it remains waitable.
     pub state: BackendChildWaitState,
+}
+
+impl BackendChildWaitEvent {
+    /// Returns the complete terminal publication payload when the receiving
+    /// parent remains inside the traced process tree.
+    pub fn child_exit_completion(self) -> Option<crate::ChildExitCompletion> {
+        let BackendChildWaitState::Exited {
+            status,
+            waitable,
+            uid,
+            user_ticks,
+            system_ticks,
+        } = self.state
+        else {
+            return None;
+        };
+        Some(crate::ChildExitCompletion {
+            parent: self.parent,
+            child: self.child,
+            status,
+            waitable,
+            uid,
+            user_ticks,
+            system_ticks,
+        })
+    }
 }
 
 #[async_trait]

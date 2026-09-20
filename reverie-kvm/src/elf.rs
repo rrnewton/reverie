@@ -257,24 +257,25 @@ impl TaskLifecycleTable {
         generation: u64,
         status: ExitStatus,
         group: bool,
-    ) -> ExitStatus {
+    ) -> (ExitStatus, bool) {
         let Some(task) = self.tasks.get(&tid).copied() else {
-            return status;
+            return (status, false);
         };
         if task.generation != generation {
-            return status;
+            return (status, false);
         }
         let exit = self
             .process_exits
             .entry((task.tgid, task.process_generation))
             .or_default();
-        if group {
-            exit.group.get_or_insert(status);
+        let group_started = group && exit.group.is_none();
+        if group_started {
+            exit.group = Some(status);
         }
         exit.last_thread = Some(status);
         let status = exit.group.unwrap_or(status);
         self.remove(tid, generation);
-        status
+        (status, group_started)
     }
 
     pub(crate) fn process_exit_status(
@@ -307,18 +308,19 @@ impl TaskLifecycleTable {
         }
     }
 
-    pub(crate) fn fail(&mut self, tid: i32, generation: u64) {
+    pub(crate) fn fail(&mut self, tid: i32, generation: u64) -> bool {
         let Some(task) = self.tasks.get(&tid).copied() else {
-            return;
+            return false;
         };
         if task.generation != generation {
-            return;
+            return false;
         }
         self.process_exits
             .entry((task.tgid, task.process_generation))
             .or_default()
             .failed = true;
         self.remove(tid, generation);
+        true
     }
 
     pub(crate) fn reset_after_exec(&mut self, tid: i32, tgid: i32, pgid: i32) -> u64 {
@@ -719,6 +721,10 @@ pub(crate) struct LoadedStaticElf {
     pub cloexec_fds: std::collections::BTreeSet<i32>,
     pub closed_standard_fds: std::collections::BTreeSet<i32>,
     pub children: std::collections::BTreeMap<i32, ExitStatus>,
+    /// Exact numeric child selected and removed by the immediately preceding
+    /// wait syscall. The family ledger consumes this after the syscall returns,
+    /// avoiding a second copy of waitid's selection rule.
+    pub(crate) consumed_child_wait: Option<i32>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Track memfd-backed synthetic /proc descriptors.
     // TODO-HUMAN-REVIEW(reverie-kvm): Review synthetic /proc determinism.
     //
@@ -871,6 +877,7 @@ impl LoadedStaticElf {
             cloexec_fds: self.cloexec_fds.clone(),
             closed_standard_fds: self.closed_standard_fds.clone(),
             children: std::collections::BTreeMap::new(),
+            consumed_child_wait: None,
             proc_files: self.proc_files.clone(),
             proc_mounts: self.proc_mounts.clone(),
             fdinfo_files: self.fdinfo_files.clone(),
@@ -1416,6 +1423,7 @@ fn load_executable(
         cloexec_fds: std::collections::BTreeSet::new(),
         closed_standard_fds: std::collections::BTreeSet::new(),
         children: std::collections::BTreeMap::new(),
+        consumed_child_wait: None,
         proc_files: std::collections::BTreeMap::new(),
         proc_mounts: std::sync::Arc::new(crate::proc_mounts::ProcMountSnapshot::capture()?),
         fdinfo_files: std::collections::BTreeMap::new(),

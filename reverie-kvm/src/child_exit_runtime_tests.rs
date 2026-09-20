@@ -35,7 +35,7 @@ impl GuestSyscallExecutor<AdapterTool> for QueueExecutor {
         ))
     }
 
-    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
+    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<i64> {
         panic!("queue operation executed a guest syscall")
     }
     fn defer_signal_delivery(&mut self, _: SignalEvent) -> std::result::Result<(), Errno> {
