@@ -207,9 +207,11 @@ pub trait GlobalTool: Send + Sync + Default {
     /// KVM polls this callback through its first suspension before making the
     /// status visible to a parent wait. A Tool-controlled signal scheduler must
     /// commit its publication or suppression decision in that synchronous
-    /// prefix: it must not reach an `.await` first. Work after that admission
-    /// point may await parent progress; the backend retains and finishes the
-    /// same pinned future after publishing waitability.
+    /// prefix: it must neither reach an `.await` nor otherwise block on parent
+    /// progress. The backend may already be holding a concurrent parent wait
+    /// across the whole prefix, so waiting for that parent would deadlock.
+    /// Work after that admission point may await parent progress; the backend
+    /// retains and finishes the same pinned future after publishing waitability.
     /// If that synchronous prefix makes a concurrent parent runnable, the
     /// backend fences its wait until publication completes; the parent cannot
     /// observe the callback decision while still receiving a no-child-ready

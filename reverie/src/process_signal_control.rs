@@ -204,6 +204,17 @@ pub trait ProcessSignalControl: Debug + Send + Sync {
     /// child status. A Tool that schedules a consuming wait must still execute
     /// that wait through [`crate::Guest::inject`] before retiring Tool shadow
     /// state; publication is not a substitute for the backend wait syscall.
+    ///
+    /// KVM may take its run-wide child-publication lock alone for an idempotent
+    /// duplicate preflight. Its committing path then acquires the exact parent's
+    /// process-signal transaction before the run-wide registry and signal-state
+    /// locks. A caller that holds a Tool scheduler mutex to make admission
+    /// atomic must preserve that nested order: Tool scheduler -> backend parent
+    /// transaction -> backend registry and signal state. No reverse path may
+    /// acquire the Tool mutex while retaining those backend locks.
+    /// An implementation used from that scheduler reservation must not call
+    /// back into Tool code or wait for the fenced parent wait or other guest
+    /// progress before returning.
     fn publish_child_exit(&self, _completion: ChildExitCompletion) -> ChildExitPublicationResult {
         ChildExitPublicationResult::RejectedBeforeCommit(Errno::ENOSYS)
     }
