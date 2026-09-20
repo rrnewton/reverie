@@ -487,7 +487,7 @@
       ],
       "result": {
         "exit_code": 132,
-        "signal": 4,
+        "signal": "SIGILL",
         "timed_out": false,
         "timeout_origin": "NONE",
         "guest_started": true,
@@ -532,8 +532,8 @@
           "kind": "RESULT",
           "storage": "TRACKED",
           "locator": "services/folly/timerfd-timeout-manager-test--246a62382461/evidence/seed-000-discovery.result.json",
-          "sha256": "6196c442bcff3b386100732bf0d5c3bb1b4fd65ee3881960975bbef7dbf16c50",
-          "bytes": 2290,
+          "sha256": "f4a82e75ffd6333ea1c195c37567d6e66aa97cb88880ab7460d91e7f74c34a5b",
+          "bytes": 2297,
           "capture_limit_bytes": 67108864,
           "truncated": false,
           "media_type": "application/json"

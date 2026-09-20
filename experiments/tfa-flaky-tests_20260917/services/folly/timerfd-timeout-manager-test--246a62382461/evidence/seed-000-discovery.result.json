@@ -58,7 +58,7 @@
   ],
   "result": {
     "exit_code": 132,
-    "signal": 4,
+    "signal": "SIGILL",
     "timed_out": false,
     "timeout_origin": "NONE",
     "guest_started": true,
