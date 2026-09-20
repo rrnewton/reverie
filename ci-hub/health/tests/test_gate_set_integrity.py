@@ -86,6 +86,17 @@ def test_checker_requires_itself(tmp_path):
     assert "gate_set_integrity" in fields["missing"]
 
 
+def test_chat_bridge_resource_gate_cannot_disappear_silently(tmp_path):
+    cfg = write_config(
+        tmp_path,
+        [name for name in gsi.REQUIRED if name != "chat_bridge_resource_health"],
+    )
+    code, fields = run(["--config", str(cfg), "--no-drift"])
+    assert code == 1
+    assert fields["missing"] == "chat_bridge_resource_health"
+    assert "runaway writes" in fields["summary"]
+
+
 def test_all_present_passes(tmp_path):
     cfg = write_config(tmp_path, list(gsi.REQUIRED))
     code, fields = run(["--config", str(cfg), "--no-drift"])
@@ -197,6 +208,133 @@ def test_required_gate_name_cannot_survive_without_a_command(tmp_path):
     code, fields = run(["--config", str(cfg), "--no-drift"])
     assert code == 1
     assert "gate definition is missing" in fields["summary"]
+
+
+def test_chat_bridge_gate_execution_shape_is_pinned_and_detection_only():
+    config = yaml.safe_load(LIVE_CONFIG.read_text())
+    reminder = {row["name"]: row for row in config["reminders"]}[
+        "chat_bridge_resource_health"
+    ]
+    assert reminder == {
+        "name": "chat_bridge_resource_health",
+        "cadence_secs": 1800,
+        "gate": {
+            "timeout_secs": 15,
+            "cmd": (
+                "python3 ci-hub/health/chat_bridge_health.py "
+                '--root "$DEV_HERMIT_PARENT"'
+            ),
+            "when": "failure",
+            "capture": True,
+        },
+        "emit": {
+            "kind": "action",
+            "skill": "hard-warn-coordinator",
+            "fields": {"component": "chat-bridge-resource-health"},
+            "title": "Chat bridge resource health needs attention: {summary}",
+        },
+    }
+    assert gsi.REQUIRED_GATE_SHAPES["chat_bridge_resource_health"] == reminder
+    command = f" {reminder['gate']['cmd']} "
+    for mutator in (
+        "--apply",
+        " kill ",
+        " reset-",
+        " restart ",
+        " stop ",
+        " disable ",
+        " unmount ",
+        " delete ",
+    ):
+        assert mutator not in command
+
+
+def test_chat_bridge_gate_name_cannot_survive_at_an_inert_cadence(tmp_path):
+    live = {
+        row["name"]: row
+        for row in yaml.safe_load(LIVE_CONFIG.read_text())["reminders"]
+    }
+    live["chat_bridge_resource_health"]["cadence_secs"] = 31_536_000
+    cfg = tmp_path / "tick-hub.yaml"
+    cfg.write_text(yaml.safe_dump({"reminders": list(live.values())}))
+    code, fields = run(["--config", str(cfg), "--no-drift"])
+    assert code == 1
+    assert "protected gate execution shape changed" in fields["summary"]
+
+
+def test_chat_bridge_gate_rejects_float_substitution_for_integer_cadence(tmp_path):
+    code, fields = _mutated_chat_config(
+        tmp_path,
+        lambda reminder: reminder.update(cadence_secs=1800.0),
+    )
+    assert code == 1
+    assert "protected gate execution shape changed" in fields["summary"]
+
+
+def test_chat_bridge_gate_rejects_nested_float_timeout_substitution(tmp_path):
+    code, fields = _mutated_chat_config(
+        tmp_path,
+        lambda reminder: reminder["gate"].update(timeout_secs=15.0),
+    )
+    assert code == 1
+    assert "protected gate execution shape changed" in fields["summary"]
+
+
+def _mutated_chat_config(tmp_path, mutator):
+    live = {
+        row["name"]: row
+        for row in yaml.safe_load(LIVE_CONFIG.read_text())["reminders"]
+    }
+    mutator(live["chat_bridge_resource_health"])
+    cfg = tmp_path / "tick-hub.yaml"
+    cfg.write_text(yaml.safe_dump({"reminders": list(live.values())}))
+    return run(["--config", str(cfg), "--no-drift"])
+
+
+def test_chat_bridge_gate_cannot_be_suppressed_by_never_true_flag(tmp_path):
+    code, fields = _mutated_chat_config(
+        tmp_path,
+        lambda reminder: reminder.update(requires_flags=["never_configured"]),
+    )
+    assert code == 1
+    assert "protected gate execution shape changed" in fields["summary"]
+
+
+def test_chat_bridge_gate_cannot_gain_a_suppressing_dependency(tmp_path):
+    code, fields = _mutated_chat_config(
+        tmp_path,
+        lambda reminder: reminder.update(depends_on=["host_resource_audit"]),
+    )
+    assert code == 1
+    assert "protected gate execution shape changed" in fields["summary"]
+
+
+def test_chat_bridge_gate_cannot_move_to_a_phase_or_narrow_window(tmp_path):
+    def phase(reminder):
+        reminder["cadence_offset_secs"] = 1200
+        reminder["cadence_window_secs"] = 60
+
+    code, fields = _mutated_chat_config(tmp_path, phase)
+    assert code == 1
+    assert "protected gate execution shape changed" in fields["summary"]
+
+
+def test_chat_bridge_gate_rejects_an_unreviewed_future_jitter_key(tmp_path):
+    code, fields = _mutated_chat_config(
+        tmp_path,
+        lambda reminder: reminder.update(cadence_jitter_secs=1700),
+    )
+    assert code == 1
+    assert "protected gate execution shape changed" in fields["summary"]
+
+
+def test_chat_bridge_gate_cannot_silently_gain_parallel_execution(tmp_path):
+    code, fields = _mutated_chat_config(
+        tmp_path,
+        lambda reminder: reminder["gate"].update(parallel=True),
+    )
+    assert code == 1
+    assert "protected gate execution shape changed" in fields["summary"]
 
 
 def test_orphan_reaper_schedule_is_detection_only_and_bounded():

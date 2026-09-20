@@ -1215,6 +1215,49 @@ reminders:
         component: host-resource-audit
       title: "host memory, swap, process, zombie, or disk pressure needs attention: {summary}"
 
+  # CHAT BRIDGE RESOURCE HEALTH, DETECTION ONLY. Discover both public bridge
+  # units and their event-source companions by generic user-unit prefix; there
+  # is no space, coordinator, or host-specific suffix in this policy. A host
+  # with no matching units is healthy. Enabled units must be active, failed
+  # units are findings, and every active unit (including a deliberately
+  # disabled probe) must retain finite task/memory caps, zero core dumps,
+  # control-group teardown, and all three systemd accounting switches.
+  #
+  # One private, nofollow, flock-serialized atomic baseline compares systemd's
+  # cumulative IOWriteBytes and CPUUsageNSec, bound to InvocationID. The write
+  # alarm is 5 GiB/hour. The incident this brackets
+  # retained 604.3 GiB in 12h16m (~49.3 GiB/hour), so the gate catches it with
+  # roughly ten-fold margin; 5 GiB/hour is still 120 GiB/day, far beyond valid
+  # bridge state, receipt, and journal traffic. First and new-invocation samples
+  # establish a baseline rather than inventing a rate. A same-invocation sample
+  # is compared across ANY positive interval; age never turns cumulative
+  # runaway evidence into a healthy baseline. A monotonic counter decrease or
+  # non-increasing timestamp refuses without overwriting the prior/newer sample.
+  # Zero discovered units returns before state is opened or written.
+  # CPU is emitted in millicores for diagnosis, not gated because provider cost
+  # differs. Cost is two discovery calls, one batched property call, and one
+  # small state replacement per outer tick. Systemd's glob lookup is O(its user
+  # unit catalog); our parse/policy work is O(matching units), and stable
+  # state/report ordering is O(N log N). Empty-host preflight uses two calls;
+  # nonempty hosts repeat discovery under lock before the property query. Five
+  # 2s command bounds plus a 0.5s lock wait fit inside this gate's 15s backstop.
+  # There is no filesystem/provider polling loop or tree walk. Lock contention
+  # alone retries every 25ms for at most 0.5s. There is no signal, restart,
+  # reset, unmount, or cleanup action.
+  - name: chat_bridge_resource_health
+    cadence_secs: 1800
+    gate:
+      timeout_secs: 15
+      cmd: python3 ci-hub/health/chat_bridge_health.py --root "$DEV_HERMIT_PARENT"
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: chat-bridge-resource-health
+      title: "Chat bridge resource health needs attention: {summary}"
+
   # PRODUCER FRESHNESS, DETECTION ONLY. The disk writers were ORC workflows;
   # during coordinator transition their files can remain well-formed while the
   # observations age indefinitely. Content timestamps, never mtimes, are read.

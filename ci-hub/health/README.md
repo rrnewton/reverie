@@ -180,6 +180,54 @@ Four reminders were removed on 2026-08-08 under that test: `stuck_agents`,
 report-only. `worktree_new_dead_owner` was replaced by `worktree_disk_residue`
 (below). The full removal record is inline in `tick-hub.yaml`.
 
+### Chat bridge resource health
+
+`chat_bridge_health.py` is the read-only resource bracket for user services
+named `agentctl-chat-*.service` or
+`agentctl-gchat-events-*.service`. It discovers unit files and loaded units, so
+an active service is still checked when it is disabled for a controlled probe.
+A host with no matching units is healthy. An enabled service must be active;
+failed services are findings. Every active service must have finite
+`MemoryMax` and `TasksMax`, `LimitCORE=0`, `KillMode=control-group`, and enabled
+memory, task, and I/O accounting. Missing or malformed systemd evidence is a
+refusal, never a clean result.
+
+The probe writes only
+`$DEV_HERMIT_PARENT/.tick-hub/chat-bridge-health.json`, mode `0600`, by fsynced
+same-directory replacement. A mode-`0600` nofollow lock serializes the complete
+read/timestamp/systemd-sample/compare/replace transaction with a 0.5-second
+wait bound. Root, `.tick-hub`, state, and lock identities are opened and
+rechecked through directory file descriptors without following symlinks.
+Successful discovery of zero matching units returns before opening either state
+file.
+
+Systemd's cumulative `IOWriteBytes` and `CPUUsageNSec` are bound to its
+`InvocationID` and compared between ticks. A first sample or changed invocation
+establishes a baseline. A same-invocation sample is compared over every positive
+interval, even after a long monitoring gap; a counter decrease is inconsistent
+evidence, and it refuses without changing the baseline. A non-increasing
+timestamp likewise refuses and cannot replace the newer sample. The write
+gate is 5 GiB/hour (120 GiB/day). Its provenance is the measured 604.3 GiB in
+12h16m incident, approximately 49.3 GiB/hour, so the incident exceeds the
+threshold by roughly ten times. CPU delta is emitted in millicores for
+diagnosis without pretending all event providers have the same valid cost.
+
+An empty-host preflight uses two bounded discovery calls. On a nonempty host,
+the lock covers one small state read, repeated discovery, one batched property
+read, and one atomic state write. Systemd's glob lookup is O(the user
+manager's installed/loaded unit catalog); probe-side parsing and property
+checks are O(number of matching units), while stable state/report ordering is
+O(N log N). The empty-host preflight uses two calls; a nonempty host repeats
+discovery under the lock before its property query. Five 2-second subprocess
+bounds plus the 0.5-second lock bound fit below the 15-second gate backstop.
+There is no filesystem/provider polling loop or directory walk. Lock contention
+alone uses a bounded 25-millisecond retry for at most 0.5 seconds. The probe has
+no path that starts, stops, resets, signals, unmounts, or rewrites a service.
+
+```bash
+python3 ci-hub/health/chat_bridge_health.py --root "$DEV_HERMIT_PARENT"
+```
+
 `./ci-hub/ci-hub active-work`, `residue_sweep.py`, `unowned_backlog.py`, and
 `operational_health.py agents` all still work and are still useful **on
 request**, when a coordinator or agent is actually asking that question. What

@@ -76,6 +76,9 @@ REQUIRED: dict[str, str] = {
     "btrfs_headroom": "filesystem headroom and runaway writers on /data",
     "orphaned_hermit_reaper": "orphaned Hermit and test processes that no live owner will reap",
     "host_resource_audit": "memory, swap, process, zombie, and disk pressure on the host",
+    "chat_bridge_resource_health": (
+        "Chat bridge services losing resource bounds or returning to runaway writes"
+    ),
     "operational_input_freshness": "agent and disk snapshots whose producers silently stopped",
     "stale_tick_processes": "health-tick invocations that escaped their complete-run bound",
     # Per-slot disk residue; one of only two mechanisms found genuinely live
@@ -100,79 +103,133 @@ REQUIRED: dict[str, str] = {
     "deleted_tool_absent": "deliberately-deleted tools reappearing on disk",
 }
 
-# These transition gates are new enough that their names alone are not a
-# durable mechanism.  Pin the complete execution shape: retaining the reminder
-# while deleting its command, changing it to an always-successful probe, or
-# disabling capture must be as loud as deleting the reminder itself.
-REQUIRED_GATE_SHAPES: dict[str, dict[str, object]] = {
-    "host_resource_audit": {
-        "cadence_secs": 900,
+def _protected_shape(
+    name: str,
+    cadence_secs: int,
+    command: str,
+    timeout_secs: int,
+    component: str,
+    title: str,
+) -> dict[str, object]:
+    """The exact raw reminder shape, not an incomplete projection of it.
+
+    Tick-hub's canonical Reminder schema currently admits name, cadence_secs,
+    cadence_offset_secs, cadence_window_secs, requires_flags, depends_on, gate,
+    and emit. Gate admits cmd/when/capture/timeout_secs/parallel; Emit admits
+    kind/title/skill/fields. Exact raw equality deliberately protects ABSENCE:
+    adding a never-true flag, dependency, phase/window, or parallel execution is
+    as visible as changing a value already present. It also rejects any future
+    scheduling/jitter key until this executable expectation is reviewed.
+    """
+    return {
+        "name": name,
+        "cadence_secs": cadence_secs,
         "gate": {
-            "timeout_secs": 30,
-            "cmd": "scripts/resource_audit.sh --tick-gate",
+            "timeout_secs": timeout_secs,
+            "cmd": command,
             "when": "failure",
             "capture": True,
         },
-        "emit_kind": "action",
-        "emit_component": "host-resource-audit",
-        "emit_skill": "hard-warn-coordinator",
-        "emit_title": (
+        "emit": {
+            "kind": "action",
+            "skill": "hard-warn-coordinator",
+            "fields": {"component": component},
+            "title": title,
+        },
+    }
+
+
+def _same_typed_value(actual: object, expected: object) -> bool:
+    """Recursive equality where bool/int/float and nested variants differ.
+
+    Python deliberately considers ``1800 == 1800.0`` and ``True == 1``. That
+    is wrong for executable configuration: tick-hub's schema accepts an integer
+    cadence/timeout, and silently accepting a YAML float here would let this
+    integrity checker bless a row the canonical parser refuses.
+    """
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict) or len(actual) != len(expected):
+            return False
+        unmatched = list(actual.items())
+        for expected_key, expected_value in expected.items():
+            for index, (actual_key, actual_value) in enumerate(unmatched):
+                if _same_typed_value(actual_key, expected_key):
+                    if not _same_typed_value(actual_value, expected_value):
+                        return False
+                    unmatched.pop(index)
+                    break
+            else:
+                return False
+        return not unmatched
+    if isinstance(expected, list):
+        return isinstance(actual, list) and len(actual) == len(expected) and all(
+            _same_typed_value(actual_item, expected_item)
+            for actual_item, expected_item in zip(actual, expected, strict=True)
+        )
+    return actual == expected
+
+
+# These transition gates are new enough that their names alone are not a
+# durable mechanism. Pin their COMPLETE canonical reminder rows. A reminder
+# with the right command but a never-true requires_flags, a suppressing
+# dependency, or a cadence phase outside the outer tick is inert just as surely
+# as one whose command was deleted.
+REQUIRED_GATE_SHAPES: dict[str, dict[str, object]] = {
+    "chat_bridge_resource_health": _protected_shape(
+        "chat_bridge_resource_health",
+        1800,
+        "python3 ci-hub/health/chat_bridge_health.py "
+        '--root "$DEV_HERMIT_PARENT"',
+        15,
+        "chat-bridge-resource-health",
+        "Chat bridge resource health needs attention: {summary}",
+    ),
+    "host_resource_audit": _protected_shape(
+        "host_resource_audit",
+        900,
+        "scripts/resource_audit.sh --tick-gate",
+        30,
+        "host-resource-audit",
+        (
             "host memory, swap, process, zombie, or disk pressure needs "
             "attention: {summary}"
         ),
-    },
-    "operational_input_freshness": {
-        "cadence_secs": 900,
-        "gate": {
-            "timeout_secs": 10,
-            "cmd": (
-                "python3 ci-hub/health/operational_health.py input-freshness "
-                '--state-root "$DEV_HERMIT_PARENT"'
-            ),
-            "when": "failure",
-            "capture": True,
-        },
-        "emit_kind": "action",
-        "emit_component": "operational-input-freshness",
-        "emit_skill": "hard-warn-coordinator",
-        "emit_title": (
+    ),
+    "operational_input_freshness": _protected_shape(
+        "operational_input_freshness",
+        900,
+        "python3 ci-hub/health/operational_health.py input-freshness "
+        '--state-root "$DEV_HERMIT_PARENT"',
+        10,
+        "operational-input-freshness",
+        (
             "agent or disk producer snapshots are stale, missing, or invalid: "
             "{summary}"
         ),
-    },
-    "stale_tick_processes": {
-        "cadence_secs": 900,
-        "gate": {
-            "timeout_secs": 10,
-            "cmd": (
-                "python3 ci-hub/health/stale_tick_processes.py --gate "
-                '--root "$DEV_HERMIT_PARENT" --max-age-secs 900'
-            ),
-            "when": "failure",
-            "capture": True,
-        },
-        "emit_kind": "action",
-        "emit_component": "stale-tick-processes",
-        "emit_skill": "hard-warn-coordinator",
-        "emit_title": (
+    ),
+    "stale_tick_processes": _protected_shape(
+        "stale_tick_processes",
+        900,
+        "python3 ci-hub/health/stale_tick_processes.py --gate "
+        '--root "$DEV_HERMIT_PARENT" --max-age-secs 900',
+        10,
+        "stale-tick-processes",
+        (
             "health-tick invocations outlived their complete-run bound: {summary}"
         ),
-    },
-    "orphaned_hermit_reaper": {
-        "cadence_secs": 900,
-        "gate": {
-            "timeout_secs": 60,
-            "cmd": "python3 scripts/orphaned-hermit-reaper.py --report-orphans",
-            "when": "failure",
-            "capture": True,
-        },
-        "emit_kind": "action",
-        "emit_component": "orphaned-hermit-reaper",
-        "emit_skill": "hard-warn-coordinator",
-        "emit_title": (
+    ),
+    "orphaned_hermit_reaper": _protected_shape(
+        "orphaned_hermit_reaper",
+        900,
+        "python3 scripts/orphaned-hermit-reaper.py --report-orphans",
+        60,
+        "orphaned-hermit-reaper",
+        (
             "orphaned Hermit/test processes are running unowned: {summary}"
         ),
-    },
+    ),
 }
 
 DEFAULT_CONFIG = "ci-hub/health/tick-hub.yaml"
@@ -267,21 +324,9 @@ def unrunnable_required_gates(path: Path) -> tuple[list[str], str]:
             )
             continue
         expected = REQUIRED_GATE_SHAPES.get(name)
-        if expected is not None:
-            emit = r.get("emit")
-            fields = emit.get("fields") if isinstance(emit, dict) else None
-            if (
-                r.get("cadence_secs") != expected["cadence_secs"]
-                or gate != expected["gate"]
-                or not isinstance(emit, dict)
-                or emit.get("kind") != expected["emit_kind"]
-                or emit.get("skill") != expected["emit_skill"]
-                or emit.get("title") != expected["emit_title"]
-                or not isinstance(fields, dict)
-                or fields.get("component") != expected["emit_component"]
-            ):
-                broken.append(f"{name} -> protected gate execution shape changed")
-                continue
+        if expected is not None and not _same_typed_value(r, expected):
+            broken.append(f"{name} -> protected gate execution shape changed")
+            continue
         # The script is the first token that looks like a repo-relative path.
         # Deliberately conservative: only a token we can resolve is judged, so an
         # exotic command line is left alone rather than reported as broken.
