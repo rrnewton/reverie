@@ -28,7 +28,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Iterable
 
-from ledger import read_shard, union_events, validate_event, validate_events
+from ledger import LedgerError, read_shard, union_events, validate_event, validate_events
 from publisher import retained, spool, spooled
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -1531,6 +1531,84 @@ def rows(*, root: Path | None = None, preserve_admission: bool = False) -> list[
     return _rows_from_events(items, root=root)
 
 
+def canonical_finalized_row(
+    root: Path | None = None,
+    *,
+    repo: str,
+    run_id: str,
+    record_id: str,
+    commit: str,
+    cwd: str,
+    started_at: str,
+) -> dict:
+    """Select one exact canonical terminal row, without qualifying its verdict.
+
+    Unlike the diagnostic current-run view, this query refuses incomplete or
+    ambiguous correction groups, including malformed singletons. The caller
+    must still verify the selected row's admission, finalized evidence and
+    producer census; this selection does not manufacture those proofs.
+    """
+    expected = dict(repo=repo, run_id=run_id, record_id=record_id,
+                    commit=commit, cwd=cwd, started_at=started_at)
+    for field, value in expected.items():
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"canonical producer selector requires nonempty {field}")
+
+    root = (root or repository_root()).resolve()
+    items, _ = _validated_events(root=root, preserve_admission=True)
+    team = _ledger_team(repo)
+    # Canonical repository aliases share a correction group. Literal repo
+    # equality is required only for the selected terminal, below.
+    group = [row for row in _rows_from_events(items, root=root)
+             if _ledger_team(row.get("repo")) == team and row.get("run_id") == run_id]
+    if not group:
+        raise ValueError("canonical producer run is absent")
+
+    # Do not filter by the expected record/head/cwd/start first: that could hide
+    # an opposing successor or a missing predecessor under a different identity.
+    records: dict[str, dict] = {}
+    for row in group:
+        identity = row.get("record_id")
+        if not isinstance(identity, str) or not identity.strip():
+            raise ValueError("canonical producer run has a missing record_id")
+        if identity in records:
+            raise ValueError("canonical producer run has duplicate record_id values")
+        records[identity] = row
+
+    superseded: set[str] = set()
+    for identity, row in records.items():
+        predecessor = row.get("corrects")
+        if predecessor is None:
+            continue
+        if (not isinstance(predecessor, str) or predecessor not in records
+                or predecessor == identity):
+            raise ValueError("canonical producer run has an invalid correction predecessor")
+        if predecessor in superseded:
+            raise ValueError("canonical producer run has branched corrections")
+        superseded.add(predecessor)
+
+    terminals = records.keys() - superseded
+    if len(terminals) != 1:
+        raise ValueError("canonical producer run has no unique terminal record")
+    visited: set[str] = set()
+    current = next(iter(terminals))
+    while current is not None:
+        if current in visited:
+            raise ValueError("canonical producer run has a correction cycle")
+        visited.add(current)
+        current = records[current].get("corrects")
+    if len(visited) != len(records):
+        raise ValueError("canonical producer run has a disconnected correction chain")
+
+    # Only a fully checked group may use the existing current-run projection.
+    # Keep that reader's historical/diagnostic behavior unchanged.
+    [selected] = current_validation_run_rows(group)
+    for field, value in expected.items():
+        if selected.get(field) != value:
+            raise ValueError(f"canonical producer terminal differs from requested {field}")
+    return selected
+
+
 def emit_jsonl(items: Iterable[dict]) -> None:
     for item in items:
         print(json.dumps(item, sort_keys=True, separators=(",", ":")))
@@ -1652,6 +1730,16 @@ def main(argv: list[str] | None = None) -> int:
     for command in (row_command, status_command):
         command.add_argument("--preserve-admission", action="store_true",
                              help="preserve original JSON fields for admission-aware receipt readers")
+    producer_command = commands.add_parser(
+        "producer-row",
+        description="select one exact terminal producer row from the canonical ledger; "
+        "refuse incomplete or ambiguous run corrections; preserve admission JSON "
+        "without qualifying the result or census",
+        help="read one exact canonical terminal producer row",
+    )
+    for name in ("repo", "run-id", "record-id", "commit", "cwd", "started-at"):
+        producer_command.add_argument("--" + name, required=True,
+                                      help="exact producer " + name + " (no latest-row fallback)")
     commands.add_parser("events", description="emit the canonical event union", help="emit the canonical event union")
     commands.add_parser("record", description="read one HistoryRow JSON object from stdin and journal it", help="read one HistoryRow JSON object from stdin and journal it")
     source_command = commands.add_parser("reverie-source", help="bind one exact raw Reverie producer event")
@@ -1675,6 +1763,18 @@ def main(argv: list[str] | None = None) -> int:
                          help="'full' by default; pass '' for any profile")
     summary.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "producer-row":
+        try:
+            value = canonical_finalized_row(
+                repo=args.repo, run_id=args.run_id, record_id=args.record_id,
+                commit=args.commit, cwd=args.cwd, started_at=args.started_at,
+            )
+            print(qualifying_receipt.admission_json_dumps(value, sort_keys=True))
+            return 0
+        except (LedgerError, OSError, ValueError) as error:
+            print(f"validate-ledger: REFUSED: {error}; inspect canonical rows and "
+                  "supply the exact terminal producer identity", file=sys.stderr)
+            return 2
     if args.command == "summary":
         row = latest_row(args.repo, args.commit, args.profile or None)
         if row is None:

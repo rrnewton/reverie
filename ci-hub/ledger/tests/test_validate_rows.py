@@ -964,6 +964,258 @@ def test_malformed_correction_never_hides_original_row(tmp_path: Path, case: str
     assert path.read_text(encoding="utf-8").splitlines()[0] == original_line
 
 
+def _producer_selector_row(root: Path, **changes) -> dict:
+    # Data-only event/selection fixture, not a qualified finalized-run proof.
+    return {
+        "schema_version": 6,
+        "repo": "hermit",
+        "run_id": "producer-run",
+        "record_id": "producer-final",
+        "producer": "hermit-validate-rs",
+        "host": "hosta",
+        "commit": "a" * 40,
+        "cwd": str(root / "hermit"),
+        "started_at": "2026-08-09T01:00:00Z",
+        "finished_at": "2026-08-09T01:01:00Z",
+        "result": "fail",
+        "executed_tests": None,
+        "passed_tests": None,
+        **changes,
+    }
+
+
+def _producer_selector_event(row: dict, root: Path) -> dict:
+    # This data-only miniature ledger owns root, even when pytest stores it
+    # inside a real dev-hermit workspace. Declare its portable cwd explicitly;
+    # leave the independent expected selector in the original absolute form.
+    relative_cwd = Path(row["cwd"]).relative_to(root).as_posix()
+    portable = {**row, "cwd": f"{validate_rows.WORKSPACE_TOKEN}/{relative_cwd}"}
+    return validate_rows._event_for_row(portable, root)
+
+
+def _producer_selector_args(row: dict) -> dict:
+    return {key: row[key] for key in
+            ("repo", "run_id", "record_id", "commit", "cwd", "started_at")}
+
+
+@pytest.mark.parametrize("result", ["pass", "fail", "no_result"])
+def test_producer_row_preserves_terminal_result_and_null_counts(tmp_path: Path, result: str):
+    source = _producer_selector_row(tmp_path, result=result)
+    event = _producer_selector_event(source, tmp_path)
+    assert event["workspace"]["repo_relative"] == "{{WORKSPACE_ROOT}}/hermit"
+    assert event["legacy_row"]["cwd"] == "{{WORKSPACE_ROOT}}/hermit"
+    path = write_events(tmp_path, event)
+    before = path.read_bytes()
+
+    selected = validate_rows.canonical_finalized_row(tmp_path, **_producer_selector_args(source))
+
+    assert selected == source
+    assert selected["result"] == result
+    assert selected["executed_tests"] is None and selected["passed_tests"] is None
+    assert path.read_bytes() == before
+
+
+def test_producer_row_uses_complete_union_and_ignores_other_runs(tmp_path: Path):
+    first = _producer_selector_row(tmp_path, record_id="producer-first")
+    final = _producer_selector_row(tmp_path, corrects="producer-first")
+    # A newer same-head run must neither substitute for nor poison this run.
+    other = _producer_selector_row(tmp_path, run_id="other-run", record_id="other",
+                                   corrects="missing", finished_at="2026-08-09T02:00:00Z")
+    original = _producer_selector_event(first, tmp_path)
+    write_events(tmp_path, original, _producer_selector_event(other, tmp_path))
+    validate_rows._spool_record_event(original, tmp_path)  # identical overlap is ordinary union
+    validate_rows._spool_record_event(_producer_selector_event(final, tmp_path), tmp_path)
+
+    selected = validate_rows.canonical_finalized_row(tmp_path, **_producer_selector_args(final))
+
+    assert selected == final
+    assert len(validate_rows.events(root=tmp_path)) == 3
+    assert len(validate_rows.rows(root=tmp_path)) == 3
+    with pytest.raises(ValueError, match="terminal differs from requested record_id"):
+        validate_rows.canonical_finalized_row(tmp_path, **_producer_selector_args(first))
+
+
+def test_producer_row_cannot_hide_a_competing_repository_alias(tmp_path: Path):
+    source = _producer_selector_row(tmp_path)
+    opponent = _producer_selector_row(tmp_path, repo="rrnewton/hermit", record_id="alias-opponent")
+    write_events(tmp_path, _producer_selector_event(source, tmp_path),
+                 _producer_selector_event(opponent, tmp_path))
+
+    with pytest.raises(ValueError, match="no unique terminal record"):
+        validate_rows.canonical_finalized_row(tmp_path, **_producer_selector_args(source))
+
+    # An alias may be part of the same valid chain but cannot satisfy a literal
+    # repository selector for its terminal, even when all other fields agree.
+    successor = {**source, "repo": "rrnewton/hermit", "record_id": "alias-opponent",
+                 "corrects": source["record_id"]}
+    write_events(tmp_path, _producer_selector_event(source, tmp_path),
+                 _producer_selector_event(successor, tmp_path))
+    request = {**_producer_selector_args(successor), "repo": "hermit"}
+    with pytest.raises(ValueError, match="terminal differs from requested repo"):
+        validate_rows.canonical_finalized_row(tmp_path, **request)
+
+
+def test_producer_row_keeps_normal_event_correction_projection(tmp_path: Path):
+    source = _producer_selector_row(tmp_path, gates=[{
+        "name": "check.example", "result": "fail", "failure_origin": "outer_gate",
+        "failed_substeps": None,
+    }])
+    original = _producer_selector_event(source, tmp_path)
+    replacement = correction_for(original)
+    path = write_events(tmp_path, original, replacement)
+    before = path.read_bytes()
+
+    selected = validate_rows.canonical_finalized_row(tmp_path, **_producer_selector_args(source))
+
+    assert selected["record_id"] == source["record_id"]
+    assert selected["gates"][0]["failed_substeps"] == []
+    assert len(validate_rows.events(root=tmp_path)) == 2
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("records", [
+    [("producer-final", "absent")],                         # dangling singleton
+    [("producer-final", "producer-final")],                 # self singleton
+    [("producer-final", 7)],                                # non-null non-ID
+    [("producer-final", "")],                               # empty predecessor
+    [(None, None)],                                         # missing record identity
+    [("producer-final", None), ("producer-final", None)],   # duplicate record identity
+    [("first", None), ("producer-final", "missing-middle")],
+    [("first", None), ("opponent", "first"), ("producer-final", "first")],
+    [("left", "right"), ("right", "left")],                 # cycle, no terminal
+    [("left", "right"), ("right", "left"), ("producer-final", None)],
+    [("first", None), ("producer-final", None)],             # unrelated roots
+])
+def test_producer_row_refuses_entire_bad_group_before_identity_filter(tmp_path: Path, records):
+    source = _producer_selector_row(tmp_path)
+    events = []
+    for index, (record_id, corrects) in enumerate(records):
+        candidate = {**source, "record_id": record_id, "corrects": corrects,
+                     "finished_at": f"2026-08-09T01:01:{index:02d}Z"}
+        if record_id != source["record_id"]:
+            candidate.update(commit="b" * 40, cwd=str(tmp_path / "other"),
+                             started_at="2026-08-09T00:00:00Z")
+        event = _producer_selector_event(candidate, tmp_path)
+        # Distinct canonical events can contain conflicting compatibility IDs;
+        # event IDs are not universally the projected HistoryRow record IDs.
+        event["event_id"] = f"producer-event-{index}"
+        events.append(event)
+    path = write_events(tmp_path, *events)
+    before = path.read_bytes()
+    diagnostic = validate_rows.rows(root=tmp_path, preserve_admission=True)
+    current = validate_rows.current_validation_run_rows(diagnostic)
+
+    with pytest.raises(ValueError, match="canonical producer run"):
+        validate_rows.canonical_finalized_row(tmp_path, **_producer_selector_args(source))
+
+    assert validate_rows.rows(root=tmp_path, preserve_admission=True) == diagnostic
+    assert validate_rows.current_validation_run_rows(diagnostic) == current
+    if len(records) == 1:
+        assert current == diagnostic  # diagnostic singleton behavior stays intact
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("field,value", [
+    ("repo", "reverie"), ("run_id", "missing-run"), ("record_id", "different-record"),
+    ("commit", "b" * 40), ("cwd", "/different-checkout"),
+    ("started_at", "2026-08-09T00:00:00Z"),
+])
+def test_producer_row_requires_every_exact_identity_field(tmp_path: Path, field: str, value: str):
+    source = _producer_selector_row(tmp_path)
+    write_events(tmp_path, _producer_selector_event(source, tmp_path))
+    assert validate_rows.canonical_finalized_row(
+        tmp_path, **_producer_selector_args(source)
+    ) == source
+    request = {**_producer_selector_args(source), field: value}
+    expected_refusal = (
+        "canonical producer run is absent" if field in {"repo", "run_id"}
+        else f"canonical producer terminal differs from requested {field}"
+    )
+
+    with pytest.raises(ValueError, match=f"^{expected_refusal}$"):
+        validate_rows.canonical_finalized_row(tmp_path, **request)
+
+
+@pytest.mark.parametrize("defect", ["fixture", "unknown-envelope", "conflicting-event", "truncated"])
+def test_producer_row_keeps_canonical_union_refusals(tmp_path: Path, defect: str):
+    source = _producer_selector_row(tmp_path)
+    if defect == "fixture":
+        source["producer"] = "ledger-live-sync-acceptance"
+    event = _producer_selector_event(source, tmp_path)
+    if defect == "unknown-envelope":
+        event["schema"] = "validate-ledger/v999"
+    path = write_events(tmp_path, event)
+    if defect == "conflicting-event":
+        conflict = copy.deepcopy(event)
+        conflict["legacy_row"]["result"] = "pass"
+        path.write_text(path.read_text() + json.dumps(conflict) + "\n")
+    if defect == "truncated":
+        path.write_bytes(path.read_bytes().rstrip(b"\n"))
+    before = path.read_bytes()
+
+    error = {"conflicting-event": ledger.ConflictingEventId,
+             "truncated": ledger.MalformedEvent}.get(defect, ValueError)
+    with pytest.raises(error):
+        validate_rows.canonical_finalized_row(tmp_path, **_producer_selector_args(source))
+
+    assert path.read_bytes() == before
+
+
+def test_producer_row_cli_preserves_claim_pairs_and_refuses_stale_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+):
+    source = _producer_selector_row(tmp_path)
+    event = _producer_selector_event(source, tmp_path)
+    # Present claim bytes belong to the downstream admission verifier. Selection
+    # must not silently normalize an ambiguous claim into apparently good data.
+    event["legacy_row"]["admission_floor_evidence"] = (
+        validate_rows.qualifying_receipt.AdmissionJsonObject([
+            ("schema_version", 1), ("context", {}), ("context", {"opponent": True}),
+        ])
+    )
+    path = write_events(tmp_path, event)
+    path.write_text(validate_rows.qualifying_receipt.admission_json_dumps(event) + "\n")
+    monkeypatch.setattr(validate_rows, "repository_root", lambda: tmp_path)
+    argv = ["producer-row"]
+    for name, value in _producer_selector_args(source).items():
+        argv.extend(["--" + name.replace("_", "-"), value])
+
+    assert validate_rows.main(argv) == 0
+    emitted = capsys.readouterr()
+    assert emitted.err == ""
+    decoded = json.loads(emitted.out,
+                         object_pairs_hook=validate_rows.qualifying_receipt.AdmissionJsonObject)
+    claim = decoded["admission_floor_evidence"]
+    assert [value for key, value in claim.pairs if key == "context"] == [{}, {"opponent": True}]
+    assert decoded["result"] == "fail" and decoded["passed_tests"] is None
+
+    argv[argv.index("--record-id") + 1] = "stale-record"
+    assert validate_rows.main(argv) == 2
+    refused = capsys.readouterr()
+    assert refused.out == ""
+    assert "terminal differs from requested record_id" in refused.err
+    assert "inspect canonical rows" in refused.err
+
+    path.write_bytes(path.read_bytes().rstrip(b"\n"))
+    assert validate_rows.main(argv) == 2
+    malformed = capsys.readouterr()
+    assert malformed.out == ""
+    assert "truncated" in malformed.err
+
+
+@pytest.mark.parametrize("flag", ["-h", "--help"])
+def test_producer_row_cli_exposes_required_selectors(flag: str, capsys):
+    with pytest.raises(SystemExit) as exit_status:
+        validate_rows.main(["producer-row", flag])
+    assert exit_status.value.code == 0
+    help_text = capsys.readouterr().out
+    for name in ("repo", "run-id", "record-id", "commit", "cwd", "started-at"):
+        assert "--" + name in help_text
+    with pytest.raises(SystemExit) as missing:
+        validate_rows.main(["producer-row"])
+    assert missing.value.code == 2
+
+
 def test_enrichment_compatibility_rows_do_not_collapse_by_run_id(tmp_path: Path):
     source = row(tmp_path, record_id="enriched-run")
     original = validate_rows._event_for_row(source, tmp_path)
