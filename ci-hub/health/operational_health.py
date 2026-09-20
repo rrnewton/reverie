@@ -132,11 +132,11 @@ DEFAULT_DISK_PATH_PREVIOUS_STATE = (
 )
 DISK_PATH_INSTRUMENT = "compsize -b -x"
 DEFAULT_DISK_PATH_TIMEOUT_SECS = 180.0
-# The systemd producer has a 512 MiB soft memory boundary. Five simultaneous
-# compsize processes collectively crossed it on devbig014, and the four large
-# children remained in cgroup reclaim until their timeouts. A two-worker cap
-# retains useful overlap without making all populations compete for that bound.
-DISK_PATH_MAX_WORKERS = 2
+# The systemd producer has a 512 MiB soft memory boundary. Even two concurrent
+# compsize processes drove the live cgroup to about 584 MiB, exhausted its
+# 128 MiB swap allowance, and spent sustained time in full memory pressure.
+# Measure one population at a time so scans do not compete for that boundary.
+DISK_PATH_MAX_WORKERS = 1
 _BTRFS_FREE_ESTIMATED = re.compile(
     r"^\s*Free \(estimated\):\s*([0-9]+)(?:\s|$)", re.MULTILINE
 )

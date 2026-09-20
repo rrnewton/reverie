@@ -1535,12 +1535,12 @@ class OperationalHealthTest(unittest.TestCase):
             document["counts"], {"complete": 1, "partial": 1, "unavailable": 0}
         )
 
-    def test_cache_disk_paths_limits_population_concurrency_to_two(self) -> None:
+    def test_cache_disk_paths_serializes_population_measurements(self) -> None:
         active = 0
         maximum_active = 0
         started: list[str] = []
         lock = threading.Lock()
-        two_started = threading.Event()
+        first_started = threading.Event()
         release = threading.Event()
 
         def population_result(
@@ -1552,8 +1552,7 @@ class OperationalHealthTest(unittest.TestCase):
                 active += 1
                 maximum_active = max(maximum_active, active)
                 started.append(name)
-                if active == 2:
-                    two_started.set()
+                first_started.set()
             if not release.wait(timeout=5):
                 raise AssertionError("test did not release population workers")
             with lock:
@@ -1602,9 +1601,10 @@ class OperationalHealthTest(unittest.TestCase):
             ), mock.patch.object(operational_health, "_emit"):
                 publisher = threading.Thread(target=publish, daemon=True)
                 publisher.start()
-                reached_two = two_started.wait(timeout=2)
-                # Give any incorrectly admitted third worker time to enter the
-                # held callback before observing the cap.
+                reached_one = first_started.wait(timeout=2)
+                # A second worker would enter the held callback immediately.
+                # Give that forbidden worker time to expose itself before the
+                # first worker is released.
                 time.sleep(0.05)
                 with lock:
                     active_while_held = active
@@ -1614,13 +1614,14 @@ class OperationalHealthTest(unittest.TestCase):
 
             document = json.loads(current.read_text()) if current.exists() else {}
 
-        self.assertTrue(reached_two)
+        self.assertTrue(reached_one)
         self.assertFalse(publisher.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(results, [0])
-        self.assertEqual(active_while_held, 2)
-        self.assertEqual(started_while_held, 2)
-        self.assertEqual(maximum_active, 2)
+        self.assertEqual(operational_health.DISK_PATH_MAX_WORKERS, 1)
+        self.assertEqual(active_while_held, 1)
+        self.assertEqual(started_while_held, 1)
+        self.assertEqual(maximum_active, 1)
         self.assertEqual(
             [row["name"] for row in document["populations"]],
             [name for name, _paths in populations],
