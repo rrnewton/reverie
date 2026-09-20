@@ -40,7 +40,7 @@ fn last_error(operation: &'static str) -> crate::Error {
 }
 
 fn install_handler() -> Result<()> {
-    static INSTALL: OnceLock<std::result::Result<(), i32>> = OnceLock::new();
+    static INSTALL: OnceLock<std::result::Result<usize, i32>> = OnceLock::new();
     let result = INSTALL.get_or_init(|| {
         // SAFETY: the supplied action storage is initialized and lives through
         // each call. The handler performs no work, allocation or locking.
@@ -62,15 +62,23 @@ fn install_handler() -> Result<()> {
                     .raw_os_error()
                     .unwrap_or(libc::EIO));
             }
-            Ok(())
+            // Retain the exact address passed to the kernel. In optimized
+            // builds the linker may fold this empty handler with another empty
+            // handler, while separate function-pointer materializations still
+            // name distinct symbols. Re-evaluating `interrupt as usize` below
+            // can therefore reject the disposition we just installed.
+            Ok(action.sa_sigaction)
         }
     });
-    if let Err(errno) = result {
-        return Err(failure(
-            "reserve host signal 64",
-            std::io::Error::from_raw_os_error(*errno),
-        ));
-    }
+    let installed_handler = match result {
+        Ok(handler) => *handler,
+        Err(errno) => {
+            return Err(failure(
+                "reserve host signal 64",
+                std::io::Error::from_raw_os_error(*errno),
+            ));
+        }
+    };
     // A default-disposition check cannot exclude a future foreign owner. The
     // lifetime reservation is an embedding contract; detect a visible change
     // rather than silently replacing a library's handler on later entries.
@@ -79,7 +87,7 @@ fn install_handler() -> Result<()> {
         if libc::sigaction(SIGNAL, std::ptr::null(), &mut current) != 0 {
             return Err(last_error("query reserved host signal"));
         }
-        if current.sa_sigaction != interrupt as *const () as usize {
+        if current.sa_sigaction != installed_handler {
             return Err(protocol_failure("reserved host signal disposition changed"));
         }
     }
@@ -388,7 +396,14 @@ mod tests {
         let Ok(case) = std::env::var(CHILD) else {
             // Disposition ownership and unexplained pending signals are tested
             // in fresh processes. They must not alter the parallel test runner.
-            for case in ["blocked", "unblocked", "pending", "ignored", "foreign"] {
+            for case in [
+                "blocked",
+                "unblocked",
+                "pending",
+                "ignored",
+                "foreign",
+                "replaced",
+            ] {
                 let output = std::process::Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
@@ -430,6 +445,32 @@ mod tests {
                 let mut action: libc::sigaction = std::mem::zeroed();
                 assert_eq!(libc::sigaction(SIGNAL, std::ptr::null(), &mut action), 0);
                 assert_eq!(action.sa_sigaction, handler);
+            }
+            return;
+        }
+        if case == "replaced" {
+            Mask::block().unwrap().finish().unwrap();
+            unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = foreign_handler as *const () as usize;
+                libc::sigemptyset(&mut action.sa_mask);
+                assert_eq!(libc::sigaction(SIGNAL, &action, std::ptr::null_mut()), 0);
+            }
+            let error = match Mask::block() {
+                Err(error) => error,
+                Ok(_) => panic!("accepted a replacement signal owner"),
+            };
+            assert!(matches!(
+                error.primary(),
+                crate::Error::EntryControl {
+                    operation: "reserved host signal disposition changed",
+                    ..
+                }
+            ));
+            unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                assert_eq!(libc::sigaction(SIGNAL, std::ptr::null(), &mut action), 0);
+                assert_eq!(action.sa_sigaction, foreign_handler as *const () as usize);
             }
             return;
         }

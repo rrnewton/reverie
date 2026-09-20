@@ -19,6 +19,15 @@ use crate::executor::ChildCompletionSlot;
 use crate::executor::ChildStartCommand;
 use crate::vm::GuestThreadGroup;
 
+/// Install and validate the process-wide KVM entry signal handler once.
+///
+/// The reservation remains installed for this process. This control exists so
+/// integration tests can exercise the production, non-`cfg(test)` handler.
+#[cfg(feature = "native-test-support")]
+pub fn check_reserved_entry_signal_handler() -> Result<()> {
+    crate::entry::check_reserved_signal_handler()
+}
+
 /// A callback expressed against the abstract Guest interface, including Tools
 /// whose concrete global request type is private to another crate.
 pub trait NativeToolCallback<T: Tool>: Send + Sync {
