@@ -16,6 +16,7 @@ import hashlib
 import json
 import math
 import re
+import signal as signal_module
 import sys
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -666,11 +667,21 @@ def _safehermit_report_errors(
             errors.append(f"{path}: safehermit report field {key} is negative")
     if numeric.get("bytes_written", resource_bounds["stderr_bytes"] + 1) > resource_bounds["stderr_bytes"]:
         errors.append(f"{path}: safehermit bytes_written exceeds sealed stderr bound")
-    signal = result["signal"]
-    expected_exit = 128 + signal if signal is not None else result["exit_code"]
+    signal_name = result["signal"]
+    signal_number = None
+    if signal_name is not None:
+        try:
+            signal_number = signal_module.Signals[signal_name].value
+        except (KeyError, ValueError):
+            errors.append(f"{path}: event result has unknown signal {signal_name!r}")
+    expected_exit = (
+        128 + signal_number
+        if signal_number is not None
+        else result["exit_code"]
+    )
     if result["timed_out"]:
         expected_unit_results = {"timeout"}
-    elif signal is not None:
+    elif signal_name is not None:
         expected_unit_results = {"signal", "core-dump"}
     elif expected_exit == 0:
         expected_unit_results = {"success"}
@@ -680,14 +691,14 @@ def _safehermit_report_errors(
         errors.append(f"{path}: safehermit unit_result disagrees with event result")
     if expected_exit is None or numeric.get("exit_code") != expected_exit:
         errors.append(f"{path}: safehermit exit_code disagrees with event result")
-    if signal is None and not result["timed_out"] and numeric.get("runner_exit_code") != expected_exit:
+    if signal_name is None and not result["timed_out"] and numeric.get("runner_exit_code") != expected_exit:
         errors.append(f"{path}: safehermit runner_exit_code disagrees with event result")
-    if signal is not None:
+    if signal_name is not None:
         try:
             process_signal = int(fields.get("process_signal", ""))
         except ValueError:
             process_signal = None
-        if process_signal != signal:
+        if signal_number is None or process_signal != signal_number:
             errors.append(f"{path}: safehermit process_signal disagrees with event result")
     return errors
 
