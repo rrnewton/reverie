@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
 import sys
 from pathlib import Path
@@ -23,12 +24,27 @@ def main() -> int:
     parser.add_argument("--findings", type=int, required=True)
     args = parser.parse_args()
     try:
-        payload = args.payload_file.read_text(encoding="utf-8")
-        event = make_event(
-            kind=args.kind, payload=payload, origin_host=args.origin_host,
-            findings=args.findings,
-        )
-        path = write_event(args.queue, event)
+        args.queue.mkdir(parents=True, exist_ok=True)
+        lock = (args.queue / ".worker.lock").open("a+")
+        with lock:
+            # Recovery and delivery use the same population lock. In particular,
+            # an operator-reviewed recovery manifest cannot be made stale by a
+            # schema-v1 rename in the middle of its apply transaction.
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            sentinels = sorted(args.queue.glob("event-legacy-recovery-*.alarm"))
+            if sentinels:
+                raise InvalidEvent(
+                    "legacy recovery sentinel blocks enqueue until the reviewed "
+                    f"archive is released: {sentinels[0].name}"
+                )
+            payload = args.payload_file.read_text(encoding="utf-8")
+            event = make_event(
+                kind=args.kind,
+                payload=payload,
+                origin_host=args.origin_host,
+                findings=args.findings,
+            )
+            path = write_event(args.queue, event)
     except (OSError, UnicodeError, InvalidEvent) as error:
         print(f"enqueue-health-escalation: REFUSED: {error}", file=sys.stderr)
         return 2

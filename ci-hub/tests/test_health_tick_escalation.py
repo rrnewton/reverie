@@ -46,7 +46,9 @@ def bench(tmp_path: Path):
         for name in ("escalate_live_report_findings", "launch_health_escalation")
     )
 
-    def run(report_lines: str, *, complete: bool, twice: bool = False) -> dict[str, object]:
+    def run(
+        report_lines: str, *, complete: bool, twice: bool = False
+    ) -> dict[str, object]:
         report.write_text(report_lines)
         invlog.write_text("")
         calls.write_text("")
@@ -63,6 +65,7 @@ def bench(tmp_path: Path):
                 "ESCALATION_AGENT=health-tick",
                 "ESCALATION_TG_DB=hermit2",
                 f"ESCALATION_PENDING_DIR={queue}",
+                f"ESCALATION_STAGING_DIR={tmp_path / 'staging'}",
                 f"ESCALATION_LOG={tmp_path / 'delivery.log'}",
                 f"ESCALATE={tmp_path / 'escalate'}",
                 f"ENQUEUE_HEALTH_ESCALATION={ROOT / 'ci-hub/bin/enqueue-health-escalation'}",
@@ -129,8 +132,7 @@ def test_interrupted_findings_are_queued(bench) -> None:
     assert len(result["events"]) == 1
     assert json.loads(result["events"][0].read_text())["kind"] == "alarm"
     assert any(
-        arg.startswith("--unit=hermit-health-escalation-")
-        for arg in result["calls"]
+        arg.startswith("--unit=hermit-health-escalation-") for arg in result["calls"]
     )
 
 
@@ -141,7 +143,8 @@ def test_complete_clean_report_queues_resolve_after_prior_alarm(bench) -> None:
     events = second["events"]
     assert len(events) == 2
     assert [json.loads(event.read_text())["kind"] for event in events] == [
-        "alarm", "resolve"
+        "alarm",
+        "resolve",
     ]
 
 

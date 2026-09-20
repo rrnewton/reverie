@@ -231,6 +231,7 @@ ESCALATION_AGENT="health-tick"
 # scheduled service happens to inherit is an invisible alarm, not a quiet one.
 ESCALATION_TG_DB="hermit2"
 ESCALATION_PENDING_DIR="$ROOT/ignored/ci-hub/health-escalation-pending"
+ESCALATION_STAGING_DIR="$ROOT/ignored/ci-hub/health-escalation-staging"
 ESCALATION_LOG="$HOME/.local/state/hermit-health-escalation.log"
 TOOL_CACHE="${DEV_HERMIT_TOOL_CACHE:-${HERMIT_HEALTH_TOOL_CACHE:-$HOME/.local/state/hermit-health-tool}}"
 CANONICAL_REPOSITORY="rrnewton/dev-hermit"
@@ -361,8 +362,12 @@ escalate_live_report_findings() {
     [ -n "$LIVE_REPORT_STAMP" ] || return 0
     LIVE_REPORT_ESCALATED=1
     local temporary event kind count origin_host enqueue_error
-    mkdir -p -- "$ESCALATION_PENDING_DIR" 2>/dev/null || return 0
-    temporary=$(mktemp "$ESCALATION_PENDING_DIR/.event-$(date -u +%Y%m%dT%H%M%S%NZ)-$$-XXXXXX") || return 0
+    mkdir -p -- "$ESCALATION_PENDING_DIR" "$ESCALATION_STAGING_DIR" 2>/dev/null || return 0
+    # Incomplete input is recovery evidence, but it is not queue evidence. Keep
+    # it outside the population protected by .worker.lock so manifest apply can
+    # prove there was no concurrent queue drift. enqueue-health-escalation reads
+    # this file and publishes the validated envelope while holding that lock.
+    temporary=$(mktemp "$ESCALATION_STAGING_DIR/.event-$(date -u +%Y%m%dT%H%M%S%NZ)-$$-XXXXXX") || return 0
     if [ -s "$LIVE_REPORT" ]; then
         grep -E '^(ACTION|ERROR):' "$LIVE_REPORT" >"$temporary" 2>/dev/null || true
     fi
