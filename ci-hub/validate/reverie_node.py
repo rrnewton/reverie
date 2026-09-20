@@ -8,11 +8,15 @@ import hashlib
 import json
 import os
 import re
+import selectors
+import signal
 import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import time
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -87,8 +91,17 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SAFE_CI_STEP = "validate.reverie-full"
 I64_MAX = (1 << 63) - 1
 TEST_COUNT_FIELDS = ("executed_tests", "passed_tests", "filtered_tests")
+# The launch request and historical sidecar keep their original wire spelling.
+# New evidence is v2; changing the request constant would hide old run handles.
 COUNT_SCHEMA = "reverie-count-handoff/v1"
-COUNT_EVIDENCE_SCHEMA = "reverie-count-evidence/v1"
+COUNT_BINDING_SCHEMA = "reverie-count-handoff/v2"
+COUNT_EVIDENCE_SCHEMA = "reverie-count-evidence/v2"
+LEGACY_COUNT_EVIDENCE_SCHEMA = "reverie-count-evidence/v1"
+COUNT_OWNER_SCHEMA = "reverie-count-owner/v1"
+COUNT_OBSERVATION_SECONDS = 10
+COUNT_CLEANUP_SECONDS = 2
+COUNT_READ_BYTES = 64 * 1024
+COUNT_MAX_ANCESTORS = 128
 COUNT_HANDLE_ENV = "CI_HUB_REVERIE_COUNT_HANDLE"
 COUNT_SOURCE_PATHS = (
     "ci-hub/validate/start_unit.py", "ci-hub/validate/run_registry.py",
@@ -233,18 +246,521 @@ def read_finalization(
     return value
 
 
-def validate_count_binding(
-    value: object, record: dict[str, Any], record_path: Path
+def _count_object(value: object, keys: set[str], description: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise Refusal(f"invalid {description} fields")
+    return value
+
+
+def _count_integer(value: object, description: str, *, minimum: int = 1) -> int:
+    if type(value) is not int or not minimum <= value <= I64_MAX:
+        raise Refusal(f"invalid {description} integer")
+    return value
+
+
+def _count_path(value: object) -> str:
+    if (not isinstance(value, str) or not value.startswith("/") or len(value) > 4096
+            or any(part in {"", ".", ".."} for part in value[1:].split("/"))
+            or "\x00" in value or "\n" in value):
+        raise Refusal("invalid absolute count ownership path")
+    return value
+
+
+def _count_under(path: str, parent: str) -> bool:
+    return path == parent or path.startswith(parent + "/")
+
+
+def _count_authority(authority: object, record: dict[str, Any], row: dict[str, Any]) -> None:
+    """Bind the actual Rust holder/owner constructors, not fixture-only fields."""
+    if (not isinstance(authority, dict) or type(authority.get("schema_version")) is not int
+            or authority["schema_version"] != 1 or authority.get("admissible") is not True
+            or authority.get("lock_admissible") is not True or authority.get("state") != "held"
+            or authority.get("canonical_anchor_held") is not True):
+        raise Refusal("count authority is not a held admitted validation")
+    _count_object(authority, {"schema_version", "slot", "lock_admissible", "admissible", "state",
+                             "reason_code", "holder", "owner", "canonical_anchor_held", "cleanup_state",
+                             "admission_floor", "admission_floor_reason"}, "count authority")
+    _count_integer(authority["slot"], "authority slot", minimum=0)
+    if (not isinstance(authority["cleanup_state"], str)
+            or authority["cleanup_state"] not in {"none", "active-bound", "armed", "recoverable", "uncensused", "unknown"}
+            or any(item is not None and not isinstance(item, str)
+                   for item in (authority["reason_code"], authority["admission_floor_reason"]))):
+        raise Refusal("invalid count authority state metadata")
+    floor = authority["admission_floor"]
+    if floor is not None:
+        _count_object(floor, {"kind", "sha", "tree", "observed_main_sha"}, "authority admission floor")
+        if (not isinstance(floor["kind"], str) or floor["kind"] not in {"current-main", "frozen-target"}
+                or any(not isinstance(floor[key], str) or not SHA_RE.fullmatch(floor[key])
+                       for key in ("sha", "tree", "observed_main_sha"))):
+            raise Refusal("invalid count authority admission floor")
+    holder = _count_object(authority.get("holder"),
+                           {"agent", "kind", "target", "host", "acquired_at", "expires_at"},
+                           "count authority holder")
+    owner = _count_object(authority.get("owner"),
+                          {"pid", "start_ticks", "boot_id", "host", "liveness"},
+                          "count authority owner")
+    identity = record["process_identity"]
+    if (any(owner.get(key) != identity[key] for key in identity)
+            or any(type(owner[key]) is not int for key in ("pid", "start_ticks"))
+            or owner["liveness"] != "alive"
+            or holder["agent"] != record.get("agent") or holder["kind"] != record.get("kind")
+            or holder["target"] != record["target"]
+            or not isinstance(record.get("host"), str) or not record["host"]
+            or any(host != record["host"] for host in (holder["host"], owner["host"], row.get("host")))):
+        raise Refusal("count authority belongs to a different owner/handle")
+    acquired = _count_integer(holder["acquired_at"], "lease acquisition", minimum=0)
+    expires = _count_integer(holder["expires_at"], "lease expiry", minimum=0)
+    if acquired >= expires:
+        raise Refusal("count authority lease interval is invalid")
+
+
+_COUNT_UNIT_PROPERTIES = {"Id", "LoadState", "ActiveState", "SubState", "InvocationID", "ControlGroup"}
+
+
+def _count_unit_properties(value: object, unit: str, *, service: bool) -> dict[str, str]:
+    keys = _COUNT_UNIT_PROPERTIES | ({"Type"} if service else set())
+    props = _count_object(value, keys, "observed unit")
+    if (any(not isinstance(item, str) or len(item) > 4096 or "\x00" in item or "\n" in item
+            for item in props.values()) or props["Id"] != unit or props["LoadState"] != "loaded"
+            or re.fullmatch(r"[0-9a-f]{32}", props["InvocationID"]) is None
+            or props["InvocationID"] == "0" * 32):
+        raise Refusal("unit does not have an observed loaded generation")
+    _count_path(props["ControlGroup"])
+    # ActiveState/SubState/Type are diagnostic. A live oneshot can be activating.
+    return props
+
+
+def _parse_count_unit(raw: str, unit: str, *, service: bool) -> dict[str, str]:
+    props: dict[str, str] = {}
+    for line in raw.splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or key in props:
+            raise Refusal("malformed or duplicate systemctl count property")
+        props[key] = value
+    return _count_unit_properties(props, unit, service=service)
+
+
+def _count_cgroup(value: object) -> dict[str, Any]:
+    group = _count_object(value, {"path", "device", "inode"}, "held cgroup")
+    _count_path(group["path"])
+    _count_integer(group["device"], "cgroup device", minimum=0)
+    _count_integer(group["inode"], "cgroup inode")
+    return group
+
+
+def validate_count_owner(value: object, record: dict[str, Any], row: dict[str, Any]) -> None:
+    proof = _count_object(value, {"schema", "producer", "lineage", "owner_cgroup",
+                                 "service", "scope", "step", "authority"}, "count owner proof")
+    if proof["schema"] != COUNT_OWNER_SCHEMA:
+        raise Refusal("unknown count owner proof schema")
+    identity = record["process_identity"]
+    producer = _count_object(proof["producer"], {"pid", "start_ticks", "boot_id"}, "producer")
+    for key in ("pid", "start_ticks"):
+        _count_integer(producer[key], f"producer {key}")
+    if producer["boot_id"] != identity["boot_id"]:
+        raise Refusal("count producer boot generation differs")
+    lineage = proof["lineage"]
+    if not isinstance(lineage, list) or not 2 <= len(lineage) <= COUNT_MAX_ANCESTORS:
+        raise Refusal("count producer has no bounded owner lineage")
+    seen: set[int] = set()
+    for entry in lineage:
+        _count_object(entry, {"pid", "start_ticks", "ppid"}, "process lineage")
+        for key in entry:
+            _count_integer(entry[key], f"lineage {key}", minimum=0 if key == "ppid" else 1)
+        if entry["pid"] in seen:
+            raise Refusal("count lineage has a repeated process")
+        seen.add(entry["pid"])
+    if (any(lineage[0][key] != producer[key] for key in ("pid", "start_ticks"))
+            or any(lineage[-1][key] != identity[key] for key in ("pid", "start_ticks"))
+            or any(child["ppid"] != parent["pid"] for child, parent in zip(lineage, lineage[1:]))):
+        raise Refusal("count producer lineage does not reach this owner generation")
+    step = _count_cgroup(proof["step"])
+    safe_ci = row.get("safe_ci")
+    if (not is_safe_ci_step_cgroup(step["path"], SAFE_CI_STEP)
+            or not isinstance(safe_ci, dict) or safe_ci.get("cgroup") != step["path"]
+            or safe_ci.get("observed") is not True or safe_ci.get("required") is not True
+            or safe_ci.get("fallback_allowed") is not False or safe_ci.get("step") != SAFE_CI_STEP):
+        raise Refusal("count producer is not in the recorded safe-ci step")
+    owner_cgroup = _count_path(proof["owner_cgroup"])
+    for name in ("service", "scope"):
+        observation = _count_object(proof[name], {"before", "after", "cgroup"}, f"{name} observation")
+        group = _count_cgroup(observation["cgroup"])
+        unit = record["unit"] if name == "service" else step["path"].split("/")[-2]
+        before = _count_unit_properties(observation["before"], unit, service=name == "service")
+        after = _count_unit_properties(observation["after"], unit, service=name == "service")
+        if (any(before[key] != after[key] for key in ("Id", "LoadState", "InvocationID", "ControlGroup"))
+                or after["ControlGroup"] != group["path"]):
+            raise Refusal("count unit generation or cgroup moved")
+        if name == "service":
+            if group["path"].split("/")[-1] != unit or not _count_under(owner_cgroup, group["path"]):
+                raise Refusal("count owner is outside the handle service")
+        elif group["path"] != step["path"].rsplit("/", 1)[0]:
+            raise Refusal("count scope does not contain the producer step")
+    _count_authority(row.get("validate_lock_authority"), record, row)
+    _count_authority(proof["authority"], record, row)
+    if proof["authority"]["slot"] != row["validate_lock_authority"]["slot"]:
+        raise Refusal("count lock authority slot changed")
+
+
+def _count_work_remaining(deadline: float) -> float:
+    remaining = deadline - COUNT_CLEANUP_SECONDS - time.monotonic()
+    if remaining <= 0:
+        raise Refusal("count ownership observation deadline exhausted")
+    return remaining
+
+
+class _CountQueryStatus:
+    """A consumed PIDfd wait event is authority; Popen's returncode is not."""
+
+    def __init__(self, proc: subprocess.Popen, pidfd: int):
+        self.proc = proc
+        self.pidfd = pidfd
+        self.authenticated = False
+        self.event = None
+        self.returncode: int | None = None
+        self.unavailable: str | None = None
+
+    def poll(self) -> int | None:
+        if self.unavailable is not None:
+            raise Refusal(self.unavailable)
+        if self.event is not None:
+            return self.returncode
+        try:
+            event = os.waitid(os.P_PIDFD, self.pidfd, os.WEXITED | os.WNOHANG)
+        except OSError as error:
+            self.unavailable = f"count query wait status unavailable ({type(error).__name__}: {error})"
+            raise Refusal(self.unavailable) from error
+        if event is None:
+            # Successful waitid on a live child authenticates this descriptor.
+            self.authenticated = True
+            return None
+        if (event.si_pid != self.proc.pid
+                or event.si_code not in (os.CLD_EXITED, os.CLD_KILLED, os.CLD_DUMPED)):
+            self.unavailable = "count query wait status has an unexpected child or terminal event"
+            raise Refusal(self.unavailable)
+        self.authenticated = True
+        self.event = event
+        self.returncode = event.si_status if event.si_code == os.CLD_EXITED else -event.si_status
+        # Prevent Popen bookkeeping from reaping an already-consumed event.
+        # Neither this field nor Popen.poll()/wait() is used as evidence.
+        self.proc.returncode = self.returncode
+        return self.returncode
+
+
+def _cleanup_count_query(status: _CountQueryStatus | None, deadline: float) -> str:
+    """No new grace period and no numeric-PID signal, even on a failed query."""
+    if status is None or not status.authenticated:
+        return "direct child identity/cleanup unknown; enclosing step owns residuals"
+    try:
+        code = status.poll()
+        if code is not None:
+            return f"direct child exit={code}; descendant cleanup unconfirmed"
+        for sig, end in ((signal.SIGTERM, min(deadline, time.monotonic() + 1)),
+                         (signal.SIGKILL, deadline)):
+            if time.monotonic() >= end:
+                continue
+            try:
+                signal.pidfd_send_signal(status.pidfd, sig)
+            except ProcessLookupError:
+                pass
+            while True:
+                code = status.poll()
+                if code is not None:
+                    return f"direct child exit={code}; descendant cleanup unconfirmed"
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(remaining, 0.05))
+    except (OSError, Refusal) as error:
+        return f"direct child status/cleanup unknown ({error}); enclosing step owns residuals"
+    return "direct child cleanup unknown at deadline; enclosing step owns residuals"
+
+
+def _capture_count_query(argv: list[str], root: Path, deadline: float, *, stdout_limit: int) -> str:
+    """Private ownership queries only; the canonical ledger lookup is separate."""
+    _count_work_remaining(deadline)
+    if (not callable(getattr(os, "pidfd_open", None)) or not hasattr(os, "P_PIDFD")
+            or not callable(getattr(os, "waitid", None))
+            or not callable(getattr(signal, "pidfd_send_signal", None))):
+        raise Refusal("count query requires Python PIDfd ownership APIs before spawn")
+    proc = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True)
+    pidfd = None
+    status = None
+    try:
+        pidfd = os.pidfd_open(proc.pid)
+        status = _CountQueryStatus(proc, pidfd)
+        # Authenticate OUR waitable child before granting cleanup authority.
+        # If already terminal, consume and retain the real event exactly once.
+        status.poll()
+        outputs = {"stdout": bytearray(), "stderr": bytearray()}
+        with selectors.DefaultSelector() as selector:
+            for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, name)
+            while True:
+                code = status.poll()
+                if not selector.get_map() and code is not None:
+                    break
+                remaining = _count_work_remaining(deadline)
+                for key, _events in selector.select(min(remaining, 0.05)):
+                    chunk = os.read(key.fd, 8192)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    outputs[key.data].extend(chunk)
+                    limit = stdout_limit if key.data == "stdout" else COUNT_READ_BYTES
+                    if len(outputs[key.data]) > limit:
+                        raise Refusal(f"count query {key.data} exceeds its byte limit")
+            _count_work_remaining(deadline)
+        stdout, stderr = (bytes(outputs[key]).decode("utf-8") for key in ("stdout", "stderr"))
+        if code != 0:
+            raise Refusal(f"count query exit={code}: {stderr}")
+        return stdout
+    except BaseException as error:
+        cleanup = _cleanup_count_query(status, deadline)
+        if not isinstance(error, (OSError, ValueError, Refusal)):
+            error.add_note(cleanup)
+            raise
+        raise Refusal(f"count ownership query refused: {error}; {cleanup}") from error
+    finally:
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
+        if pidfd is not None:
+            os.close(pidfd)
+
+
+def _show_count_unit(root: Path, unit: str, deadline: float, *, service: bool) -> dict[str, str]:
+    keys = sorted(_COUNT_UNIT_PROPERTIES | ({"Type"} if service else set()))
+    raw = _capture_count_query(
+        ["systemctl", "--user", "--no-pager", "show", "--all",
+         *(f"--property={key}" for key in keys), unit], root, deadline, stdout_limit=COUNT_READ_BYTES)
+    return _parse_count_unit(raw, unit, service=service)
+
+
+def _open_count_directory(path: str) -> int:
+    """Walk every component without following symlinks; caller owns the final fd."""
+    _count_path(path)
+    descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for component in path[1:].split("/"):
+            following = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = following
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_count_fd(descriptor: int) -> bytes:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    raw = bytearray()
+    while len(raw) <= COUNT_READ_BYTES:
+        chunk = os.read(descriptor, COUNT_READ_BYTES + 1 - len(raw))
+        if not chunk:
+            return bytes(raw)
+        raw.extend(chunk)
+    raise Refusal("count ownership file exceeds its byte limit")
+
+
+def _read_count_at(directory: int, name: str) -> str:
+    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
+    try:
+        return _read_count_fd(descriptor).decode("utf-8")
+    finally:
+        os.close(descriptor)
+
+
+def _parse_count_stat(raw: str, pid: int) -> dict[str, int]:
+    prefix, _separator, suffix = raw.rpartition(")")
+    fields = suffix.split()
+    if (not prefix.startswith(f"{pid} (") or len(fields) < 20
+            or fields[0] not in {"R", "S", "D", "T", "t", "I", "P", "W", "K"}):
+        raise Refusal("count process is not a readable live generation")
+    try:
+        value = {"pid": pid, "ppid": int(fields[1]), "start_ticks": int(fields[19])}
+    except ValueError as error:
+        raise Refusal("malformed count process stat") from error
+    for key, item in value.items():
+        _count_integer(item, f"stat {key}", minimum=0 if key == "ppid" else 1)
+    return value
+
+
+def _parse_count_membership(raw: str) -> str:
+    rows = [line.split(":", 2) for line in raw.splitlines()]
+    if len(rows) != 1 or rows[0][:2] != ["0", ""] or len(rows[0]) != 3:
+        raise Refusal("count ownership requires one unified cgroup membership")
+    return _count_path(rows[0][2])
+
+
+def _count_directory_unchanged(path: str, descriptor: int) -> None:
+    current = _open_count_directory(path)
+    try:
+        held, named = os.fstat(descriptor), os.fstat(current)
+        if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+            raise Refusal("count ownership directory identity moved")
+    finally:
+        os.close(current)
+
+
+@contextmanager
+def observe_count_owner(root: Path, record: dict[str, Any], row: dict[str, Any], record_path: Path):
+    """Observe after the ledger query; retain descriptors through publication."""
+    import run_registry
+
+    deadline = time.monotonic() + COUNT_OBSERVATION_SECONDS
+    with ExitStack() as held:
+        def directory(path: str) -> int:
+            _count_work_remaining(deadline)
+            descriptor = _open_count_directory(path)
+            held.callback(os.close, descriptor)
+            return descriptor
+
+        boot_directory = directory("/proc/sys/kernel/random")
+        boot = _read_count_at(boot_directory, "boot_id").strip()
+        identity = record["process_identity"]
+        if boot != identity["boot_id"]:
+            raise Refusal("count owner boot generation is no longer current")
+        processes: list[tuple[str, int, dict[str, int]]] = []
+        cursor = os.getpid()
+        seen: set[int] = set()
+        while len(processes) < COUNT_MAX_ANCESTORS:
+            if cursor <= 1 or cursor in seen:
+                raise Refusal("count producer does not descend from the recorded owner")
+            seen.add(cursor)
+            path = f"/proc/{cursor}"
+            descriptor = directory(path)
+            entry = _parse_count_stat(_read_count_at(descriptor, "stat"), cursor)
+            processes.append((path, descriptor, entry))
+            if cursor == identity["pid"]:
+                if entry["start_ticks"] != identity["start_ticks"]:
+                    raise Refusal("count owner PID generation changed")
+                break
+            cursor = entry["ppid"]
+        else:
+            raise Refusal("count ancestry exceeds its depth limit")
+        producer_group = _parse_count_membership(_read_count_at(processes[0][1], "cgroup"))
+        owner_group = _parse_count_membership(_read_count_at(processes[-1][1], "cgroup"))
+        if not is_safe_ci_step_cgroup(producer_group, SAFE_CI_STEP):
+            raise Refusal("count producer has no safe-ci step membership")
+        owner_components = owner_group.split("/")
+        if owner_components.count(record["unit"]) != 1:
+            raise Refusal("count owner is outside the named service")
+        service_group = "/".join(owner_components[:owner_components.index(record["unit"]) + 1])
+        scope_group = producer_group.rsplit("/", 1)[0]
+        group_descriptors: list[tuple[str, int]] = []
+
+        def group(path: str) -> dict[str, Any]:
+            absolute = "/sys/fs/cgroup" + path
+            descriptor = directory(absolute)
+            group_descriptors.append((absolute, descriptor))
+            info = os.fstat(descriptor)
+            return {"path": path, "device": info.st_dev, "inode": info.st_ino}
+
+        step = group(producer_group)
+        service = {"cgroup": group(service_group)}
+        scope = {"cgroup": group(scope_group)}
+        scope_name = scope_group.split("/")[-1]
+        service["before"] = _show_count_unit(root, record["unit"], deadline, service=True)
+        scope["before"] = _show_count_unit(root, scope_name, deadline, service=False)
+
+        owner_name = os.environ.get("CI_HUB_VALIDATE_LOCK_OWNER_FILE", "")
+        if os.environ.get("CI_HUB_VALIDATE_LOCK_OWNER_PID") != str(identity["pid"]):
+            raise Refusal("inherited owner PID does not match the handle")
+        _count_path(owner_name)
+        owner_parent = directory(str(Path(owner_name).parent))
+        owner_fd = os.open(Path(owner_name).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                           dir_fd=owner_parent)
+        held.callback(os.close, owner_fd)
+        owner_stat = os.fstat(owner_fd)
+        if not stat.S_ISREG(owner_stat.st_mode):
+            raise Refusal("count owner sidecar is not a regular file")
+        owner_bytes = _read_count_fd(owner_fd)
+        owner_values: dict[str, str] = {}
+        for line in owner_bytes.decode("utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            if not separator or key in owner_values:
+                raise Refusal("malformed count owner sidecar")
+            owner_values[key] = value
+        expected_owner = {key: str(value) for key, value in {**identity, "host": record.get("host")}.items()}
+        if owner_values != expected_owner:
+            raise Refusal("count owner sidecar does not bind the handle generation")
+
+        raw = _capture_count_query([str(root / "ci-hub/ci-hub"), "validate-lock", "authority-status", "--json"],
+                                   root, deadline, stdout_limit=COUNT_MAX_BYTES)
+        response = strict_count_json(raw)
+        candidates = response.get("authorities", [response])
+        if not isinstance(candidates, list):
+            raise Refusal("count authority list is malformed")
+        matches = []
+        for candidate in candidates:
+            try:
+                _count_authority(candidate, record, row)
+            except Refusal:
+                continue
+            matches.append(candidate)
+        if len(matches) != 1:
+            raise Refusal("count authority does not identify exactly one held owner")
+        service["after"] = _show_count_unit(root, record["unit"], deadline, service=True)
+        scope["after"] = _show_count_unit(root, scope_name, deadline, service=False)
+        for path, descriptor, entry in processes:
+            _count_work_remaining(deadline)
+            _count_directory_unchanged(path, descriptor)
+            if _parse_count_stat(_read_count_at(descriptor, "stat"), entry["pid"]) != entry:
+                raise Refusal("count process generation or parent edge moved")
+        for path, descriptor in group_descriptors:
+            _count_work_remaining(deadline)
+            _count_directory_unchanged(path, descriptor)
+        _count_directory_unchanged(str(Path(owner_name).parent), owner_parent)
+        if (_parse_count_membership(_read_count_at(processes[0][1], "cgroup")) != producer_group
+                or _parse_count_membership(_read_count_at(processes[-1][1], "cgroup")) != owner_group
+                or _read_count_at(boot_directory, "boot_id").strip() != boot
+                or _read_count_fd(owner_fd) != owner_bytes
+                or _file_generation(os.fstat(owner_fd)) != _file_generation(owner_stat)
+                or _file_generation(os.stat(owner_name, follow_symlinks=False)) != _file_generation(owner_stat)):
+            raise Refusal("count owner generation or membership moved")
+        # A handle reread inside this phase must not open an unbounded file/FIFO.
+        current, _digest, _generation = read_count_sidecar(record_path)
+        run_registry.parse_current_record(current)
+        if any(current.get(key) != record.get(key) for key in (*COUNT_CONTEXT_FIELDS, "agent", "host")):
+            raise Refusal("count handle identity changed during ownership observation")
+        proof = {"schema": COUNT_OWNER_SCHEMA,
+                 "producer": {"pid": processes[0][2]["pid"], "start_ticks": processes[0][2]["start_ticks"], "boot_id": boot},
+                 "lineage": [entry for _path, _fd, entry in processes], "owner_cgroup": owner_group,
+                 "service": service, "scope": scope, "step": step, "authority": matches[0]}
+        validate_count_owner(proof, record, row)
+        _count_work_remaining(deadline)
+        yield proof
+
+
+def _validate_count_binding(
+    value: object, record: dict[str, Any], record_path: Path, *, legacy: bool
 ) -> tuple[int, int, int]:
     """Validate transport shape and framework populations; no ledger authority here."""
     if (not isinstance(value, dict)
             or set(value) != {"schema", "context", "invocation_id", "source_id", "final_id",
-                              "run_id", "canonical", "canonical_sha256"}
-            or value.get("schema") != COUNT_SCHEMA
+                              "run_id", "canonical", "canonical_sha256"} | (set() if legacy else {"execution"})
+            or value.get("schema") != (COUNT_SCHEMA if legacy else COUNT_BINDING_SCHEMA)
             or value.get("context") != count_context(record, record_path)
             or not isinstance(value.get("invocation_id"), str)
             or re.fullmatch(r"[0-9a-f]{32}", value["invocation_id"]) is None):
         raise Refusal("count sidecar does not bind this handle/invocation/source")
+    totals = _validate_count_canonical(value, record)
+    if legacy:
+        # Preserve the old read contract literally; it does not establish v2 ownership.
+        holder = value["canonical"]["row"]["validate_lock_authority"]["holder"]
+        if any(holder.get(key) != record.get(key) for key in ("unit", "target", "started_at", "process_identity")):
+            raise Refusal("count row's validation authority belongs to a different handle")
+    else:
+        validate_count_owner(value["execution"], record, value["canonical"]["row"])
+    return totals
+
+
+def _validate_count_canonical(value: dict[str, Any], record: dict[str, Any]) -> tuple[int, int, int]:
+    """Immutable event/population checks, also performed before live queries."""
     canonical = value["canonical"]
     if (not isinstance(canonical, dict) or set(canonical) != {"source", "final", "row"}
             or not all(isinstance(item, dict) for item in canonical.values())
@@ -267,14 +783,11 @@ def validate_count_binding(
     authority = row.get("validate_lock_authority")
     if not isinstance(authority, dict) or not isinstance(authority.get("holder"), dict):
         raise Refusal("count validation authority must contain a holder object")
-    holder = authority["holder"]
     boundary = datetime.fromisoformat(record["started_at"].replace("Z", "+00:00")).replace(microsecond=0)
     started = datetime.fromisoformat(row["started_at"].replace("Z", "+00:00"))
     finished = datetime.fromisoformat(row["finished_at"].replace("Z", "+00:00"))
     if any(item.tzinfo is None for item in (boundary, started, finished)) or not boundary <= started <= finished:
         raise Refusal("count row does not bind this run's start boundary")
-    if any(holder.get(key) != record.get(key) for key in ("unit", "target", "started_at", "process_identity")):
-        raise Refusal("count row's validation authority belongs to a different handle")
     policy, expected, counted = require_expected_gate_set(row.get("gates"))
     totals = recorded_test_counts(row)
     executed, passed, filtered, zero, absent = recorded_gate_coverage(row, counted)
@@ -283,6 +796,15 @@ def validate_count_binding(
             or (policy in {"reverie-local-validation/v4", "reverie-local-validation/v5"} and (zero or absent))):
         raise Refusal("count selection policy or aggregate differs from the counted gates")
     return totals
+
+
+def validate_count_binding(
+    value: object, record: dict[str, Any], record_path: Path
+) -> tuple[int, int, int]:
+    """Only the current proof can authorize a new sidecar or count update."""
+    if isinstance(value, dict) and value.get("schema") == COUNT_SCHEMA:
+        raise Refusal("legacy v1 count proof is readable but not current ownership evidence")
+    return _validate_count_binding(value, record, record_path, legacy=False)
 
 
 def produce_count_handoff(
@@ -301,9 +823,8 @@ def produce_count_handoff(
     if context["reverie_count_request"]["producer_files"] != count_source_hashes(root):
         raise Refusal("executing count producer differs from the launch source")
     invocation = os.environ.get("INVOCATION_ID", "")
-    cgroup = Path("/proc/self/cgroup").read_text()
-    if not any(handle["unit"] in line.split(":", 2)[-1].split("/") for line in cgroup.splitlines()):
-        raise Refusal("count producer is outside the named service")
+    if re.fullmatch(r"[0-9a-f]{32}", invocation) is None:
+        raise Refusal("count producer has malformed inherited invocation metadata")
     ack = strict_count_json(receipt)
     if (ack.get("schema") != "ci-hub-validate-ledger-record/v1"
             or ack.get("run_id") != source.get("run_id")
@@ -312,11 +833,17 @@ def produce_count_handoff(
     canonical = read_finalization(root, source["event_id"], ack["event_id"], ack["run_id"])
     if count_json(canonical["source"]) != count_json(source) or count_json(canonical["row"]) != count_json(row):
         raise Refusal("acknowledged finalization differs from the producer's objects")
-    value = {"schema": COUNT_SCHEMA, "context": context, "invocation_id": invocation,
+    value = {"schema": COUNT_BINDING_SCHEMA, "context": context, "invocation_id": invocation,
              "source_id": source["event_id"], "final_id": ack["event_id"], "run_id": ack["run_id"],
              "canonical": canonical, "canonical_sha256": hashlib.sha256(count_json(canonical)).hexdigest()}
-    validate_count_binding(value, handle, record_path)
-    publish_count_sidecar(count_sidecar_path(record_path), value)
+    _validate_count_canonical(value, handle)
+    _count_authority(row.get("validate_lock_authority"), handle, row)
+    # The potentially long canonical query precedes the bounded live observation.
+    # Keep its held identity descriptors until the exclusive publication completes.
+    with observe_count_owner(root, handle, row, record_path) as proof:
+        value["execution"] = proof
+        validate_count_binding(value, handle, record_path)
+        publish_count_sidecar(count_sidecar_path(record_path), value)
 
 
 def consume_count_handoff(
@@ -338,11 +865,25 @@ def consume_count_handoff(
 def validate_count_evidence(
     value: object, record: dict[str, Any], record_path: Path
 ) -> tuple[int, int, int]:
+    if isinstance(value, dict) and value.get("schema") == LEGACY_COUNT_EVIDENCE_SCHEMA:
+        raise Refusal("legacy v1 count evidence is readable but cannot authorize a new update")
     if (not isinstance(value, dict) or set(value) != {"schema", "sidecar_sha256", "binding"}
             or value.get("schema") != COUNT_EVIDENCE_SCHEMA
             or value.get("sidecar_sha256") != hashlib.sha256(count_json(value.get("binding"))).hexdigest()):
         raise Refusal("count evidence does not bind the published sidecar bytes")
     return validate_count_binding(value["binding"], record, record_path)
+
+
+def parse_stored_count_evidence(
+    value: object, record: dict[str, Any], record_path: Path
+) -> tuple[int, int, int]:
+    """Historical read compatibility only; callers must not use it for updates."""
+    if isinstance(value, dict) and value.get("schema") == LEGACY_COUNT_EVIDENCE_SCHEMA:
+        if (set(value) != {"schema", "sidecar_sha256", "binding"}
+                or value["sidecar_sha256"] != hashlib.sha256(count_json(value.get("binding"))).hexdigest()):
+            raise Refusal("legacy count evidence does not bind the published bytes")
+        return _validate_count_binding(value["binding"], record, record_path, legacy=True)
+    return validate_count_evidence(value, record, record_path)
 
 
 def require_kvm_environment() -> None:

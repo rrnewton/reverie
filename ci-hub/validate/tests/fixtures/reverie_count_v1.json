@@ -1,0 +1,348 @@
+{
+  "admission": "ci-hub validate-lock",
+  "agent": "count-test",
+  "canonical_verdict": "NEEDS-RERUN",
+  "cargo_home": "/home/newton/work/dev-hermit/ignored/ci-signal-reverie-count-handoff-20260920/normal-reader-v6/data/test_reverie_count_real_writer0/cargo",
+  "checkout": "/home/newton/work/dev-hermit/ignored/ci-signal-reverie-count-handoff-20260920/normal-reader-v6/data/test_reverie_count_real_writer0/worktrees/counted/reverie",
+  "executed_tests": 20,
+  "exit_code": 1,
+  "final_validate_status": "FAILED",
+  "finished_at": "2026-09-20T00:01:00+00:00",
+  "kind": "reverie-validate",
+  "log": "/home/newton/work/dev-hermit/ignored/ci-signal-reverie-count-handoff-20260920/normal-reader-v6/data/test_reverie_count_real_writer0/run.log",
+  "pane_role": "observer-only",
+  "parent_checkout_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "passed_tests": 19,
+  "process_identity": {
+    "boot_id": "data-only",
+    "pid": 123,
+    "start_ticks": 456
+  },
+  "producer": "ci-hub/validate/run_registry.py",
+  "repo": "rrnewton/reverie",
+  "result": "failure",
+  "reverie_count_evidence": {
+    "binding": {
+      "canonical": {
+        "final": {
+          "commit": "f61e4b0bc46e80cf746e6f2ff001f5e875f4dd61",
+          "emitted_at": "2026-09-20T00:01:00Z",
+          "event_id": "reverie-final-78920d15c123d45a425a1d11a468f80095466149362364ec25ff63901f1d8bbe",
+          "event_type": "run.correct",
+          "host": "count-test",
+          "legacy_row": {
+            "checks": 8,
+            "commit": "f61e4b0bc46e80cf746e6f2ff001f5e875f4dd61",
+            "coverage": {
+              "absent_nodes": [],
+              "executed_test_nodes": 2,
+              "planned_test_nodes": 2,
+              "zero_executed_nodes": []
+            },
+            "cwd": "{{WORKSPACE_ROOT}}/worktrees/counted/reverie",
+            "executed_tests": 20,
+            "exit_code": 1,
+            "failures": 1,
+            "filtered_tests": 4,
+            "finished_at": "2026-09-20T00:01:00Z",
+            "gates": [
+              {
+                "name": "Cross-client skill discovery",
+                "result": "pass"
+              },
+              {
+                "name": "Build workspace",
+                "result": "pass"
+              },
+              {
+                "name": "DBT virtual identity and pidfd_open policy",
+                "result": "pass"
+              },
+              {
+                "name": "Backend maturity",
+                "result": "pass"
+              },
+              {
+                "executed_tests": 10,
+                "filtered_tests": 2,
+                "name": "Test regular workspace cases",
+                "passed_tests": 9,
+                "result": "fail"
+              },
+              {
+                "executed_tests": 10,
+                "filtered_tests": 2,
+                "name": "Documentation tests",
+                "passed_tests": 10,
+                "result": "pass"
+              },
+              {
+                "name": "Clippy",
+                "result": "pass"
+              },
+              {
+                "name": "Rustfmt",
+                "result": "pass"
+              }
+            ],
+            "gates_expected": 8,
+            "gates_run": 8,
+            "host": "count-test",
+            "log_file": "{{WORKSPACE_ROOT}}/run.log",
+            "passed_tests": 19,
+            "producer": "ci-hub-reverie-validate-run",
+            "raw_result": "fail",
+            "record_id": "source-count",
+            "repo": "rrnewton/reverie",
+            "result": "fail",
+            "reverie_validation_policy": "reverie-local-validation/v5",
+            "schema_version": 5,
+            "started_at": "2026-09-20T00:00:00Z",
+            "tree": "d6839adfd3c32df18bf9f18b9626e2d01346c5c8",
+            "validate_lock_authority": {
+              "holder": {
+                "process_identity": {
+                  "boot_id": "data-only",
+                  "pid": 123,
+                  "start_ticks": 456
+                },
+                "started_at": "2026-09-20T00:00:00.123456+00:00",
+                "target": "f61e4b0bc46e80cf746e6f2ff001f5e875f4dd61",
+                "unit": "validate-count.service"
+              }
+            }
+          },
+          "outcome": "fail",
+          "producer": {
+            "source": "observed",
+            "tool": "ci-hub-reverie-validate-run",
+            "tool_version": "5"
+          },
+          "reason": "Bind observed safe-ci finalizer provenance to the original Reverie execution",
+          "run_id": "source-count",
+          "schema": "validate-ledger/v1",
+          "started_at": "2026-09-20T00:00:00Z",
+          "supersedes": "source-count",
+          "team": "reverie",
+          "workspace": {
+            "repo_relative": "{{WORKSPACE_ROOT}}/worktrees/counted/reverie"
+          }
+        },
+        "row": {
+          "checks": 8,
+          "commit": "f61e4b0bc46e80cf746e6f2ff001f5e875f4dd61",
+          "coverage": {
+            "absent_nodes": [],
+            "executed_test_nodes": 2,
+            "planned_test_nodes": 2,
+            "zero_executed_nodes": []
+          },
+          "cwd": "/home/newton/work/dev-hermit/ignored/ci-signal-reverie-count-handoff-20260920/normal-reader-v6/data/test_reverie_count_real_writer0/worktrees/counted/reverie",
+          "executed_tests": 20,
+          "exit_code": 1,
+          "failures": 1,
+          "filtered_tests": 4,
+          "finished_at": "2026-09-20T00:01:00Z",
+          "gates": [
+            {
+              "name": "Cross-client skill discovery",
+              "result": "pass"
+            },
+            {
+              "name": "Build workspace",
+              "result": "pass"
+            },
+            {
+              "name": "DBT virtual identity and pidfd_open policy",
+              "result": "pass"
+            },
+            {
+              "name": "Backend maturity",
+              "result": "pass"
+            },
+            {
+              "executed_tests": 10,
+              "filtered_tests": 2,
+              "name": "Test regular workspace cases",
+              "passed_tests": 9,
+              "result": "fail"
+            },
+            {
+              "executed_tests": 10,
+              "filtered_tests": 2,
+              "name": "Documentation tests",
+              "passed_tests": 10,
+              "result": "pass"
+            },
+            {
+              "name": "Clippy",
+              "result": "pass"
+            },
+            {
+              "name": "Rustfmt",
+              "result": "pass"
+            }
+          ],
+          "gates_expected": 8,
+          "gates_run": 8,
+          "host": "count-test",
+          "log_file": "/home/newton/work/dev-hermit/ignored/ci-signal-reverie-count-handoff-20260920/normal-reader-v6/data/test_reverie_count_real_writer0/run.log",
+          "passed_tests": 19,
+          "producer": "ci-hub-reverie-validate-run",
+          "raw_result": "fail",
+          "record_id": "source-count",
+          "repo": "rrnewton/reverie",
+          "result": "fail",
+          "reverie_validation_policy": "reverie-local-validation/v5",
+          "schema_version": 5,
+          "started_at": "2026-09-20T00:00:00Z",
+          "tree": "d6839adfd3c32df18bf9f18b9626e2d01346c5c8",
+          "validate_lock_authority": {
+            "holder": {
+              "process_identity": {
+                "boot_id": "data-only",
+                "pid": 123,
+                "start_ticks": 456
+              },
+              "started_at": "2026-09-20T00:00:00.123456+00:00",
+              "target": "f61e4b0bc46e80cf746e6f2ff001f5e875f4dd61",
+              "unit": "validate-count.service"
+            }
+          }
+        },
+        "source": {
+          "commit": "f61e4b0bc46e80cf746e6f2ff001f5e875f4dd61",
+          "emitted_at": "2026-09-20T00:01:00Z",
+          "event_id": "source-count",
+          "event_type": "run.result",
+          "host": "count-test",
+          "legacy_row": {
+            "checks": 8,
+            "commit": "f61e4b0bc46e80cf746e6f2ff001f5e875f4dd61",
+            "cwd": "{{WORKSPACE_ROOT}}/worktrees/counted/reverie",
+            "executed_tests": 20,
+            "exit_code": 1,
+            "failures": 1,
+            "filtered_tests": 4,
+            "finished_at": "2026-09-20T00:01:00Z",
+            "gates": [
+              {
+                "name": "Cross-client skill discovery",
+                "result": "pass"
+              },
+              {
+                "name": "Build workspace",
+                "result": "pass"
+              },
+              {
+                "name": "DBT virtual identity and pidfd_open policy",
+                "result": "pass"
+              },
+              {
+                "name": "Backend maturity",
+                "result": "pass"
+              },
+              {
+                "executed_tests": 10,
+                "filtered_tests": 2,
+                "name": "Test regular workspace cases",
+                "passed_tests": 9,
+                "result": "fail"
+              },
+              {
+                "executed_tests": 10,
+                "filtered_tests": 2,
+                "name": "Documentation tests",
+                "passed_tests": 10,
+                "result": "pass"
+              },
+              {
+                "name": "Clippy",
+                "result": "pass"
+              },
+              {
+                "name": "Rustfmt",
+                "result": "pass"
+              }
+            ],
+            "host": "count-test",
+            "log_file": "{{WORKSPACE_ROOT}}/run.log",
+            "passed_tests": 19,
+            "producer": "reverie-validate-sh",
+            "record_id": "source-count",
+            "repo": "reverie",
+            "result": "fail",
+            "schema_version": 5,
+            "started_at": "2026-09-20T00:00:00Z"
+          },
+          "outcome": "fail",
+          "producer": {
+            "source": "observed",
+            "tool": "reverie-validate-sh",
+            "tool_version": "5"
+          },
+          "run_id": "source-count",
+          "schema": "validate-ledger/v1",
+          "started_at": "2026-09-20T00:00:00Z",
+          "team": "reverie",
+          "workspace": {
+            "repo_relative": "{{WORKSPACE_ROOT}}/worktrees/counted/reverie"
+          }
+        }
+      },
+      "canonical_sha256": "b308a9373a4d7d97eceac97732308e989ee4cfd3285825e8c0bad406fa939b0c",
+      "context": {
+        "checkout": "/home/newton/work/dev-hermit/ignored/ci-signal-reverie-count-handoff-20260920/normal-reader-v6/data/test_reverie_count_real_writer0/worktrees/counted/reverie",
+        "log": "/home/newton/work/dev-hermit/ignored/ci-signal-reverie-count-handoff-20260920/normal-reader-v6/data/test_reverie_count_real_writer0/run.log",
+        "parent_checkout_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "process_identity": {
+          "boot_id": "data-only",
+          "pid": 123,
+          "start_ticks": 456
+        },
+        "record_path": "/home/newton/work/dev-hermit/ignored/ci-signal-reverie-count-handoff-20260920/normal-reader-v6/data/test_reverie_count_real_writer0/validate-count.json",
+        "repo": "rrnewton/reverie",
+        "reverie_count_request": {
+          "nonce": "11111111111111111111111111111111",
+          "producer_files": {
+            "ci-hub/ledger/validate_rows.py": "2222222222222222222222222222222222222222222222222222222222222222",
+            "ci-hub/validate/reverie_node.py": "2222222222222222222222222222222222222222222222222222222222222222",
+            "ci-hub/validate/run_registry.py": "2222222222222222222222222222222222222222222222222222222222222222",
+            "ci-hub/validate/start_unit.py": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "schema": "reverie-count-handoff/v1"
+        },
+        "started_at": "2026-09-20T00:00:00.123456+00:00",
+        "target": "f61e4b0bc46e80cf746e6f2ff001f5e875f4dd61",
+        "unit": "validate-count.service"
+      },
+      "final_id": "reverie-final-78920d15c123d45a425a1d11a468f80095466149362364ec25ff63901f1d8bbe",
+      "invocation_id": "33333333333333333333333333333333",
+      "run_id": "source-count",
+      "schema": "reverie-count-handoff/v1",
+      "source_id": "source-count"
+    },
+    "schema": "reverie-count-evidence/v1",
+    "sidecar_sha256": "0150e527165988ee43c58858718cda70b2ff74c6d68ff40bbb3421656df29039"
+  },
+  "reverie_count_refusal": null,
+  "reverie_count_request": {
+    "nonce": "11111111111111111111111111111111",
+    "producer_files": {
+      "ci-hub/ledger/validate_rows.py": "2222222222222222222222222222222222222222222222222222222222222222",
+      "ci-hub/validate/reverie_node.py": "2222222222222222222222222222222222222222222222222222222222222222",
+      "ci-hub/validate/run_registry.py": "2222222222222222222222222222222222222222222222222222222222222222",
+      "ci-hub/validate/start_unit.py": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "schema": "reverie-count-handoff/v1"
+  },
+  "schema_version": 1,
+  "source_checkout": "/home/newton/work/dev-hermit/ignored/ci-signal-reverie-count-handoff-20260920/normal-reader-v6/data/test_reverie_count_real_writer0/worktrees/counted/reverie",
+  "started_at": "2026-09-20T00:00:00.123456+00:00",
+  "state": "completed",
+  "target": "f61e4b0bc46e80cf746e6f2ff001f5e875f4dd61",
+  "temporary_checkout": false,
+  "unit": "validate-count.service",
+  "validate_lock_child_deadline_seconds": 3600,
+  "wrapper_exit_code": 4
+}

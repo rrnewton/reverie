@@ -10,9 +10,10 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Callable
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -41,7 +42,7 @@ def count_transport_fixture(directory: Path) -> tuple[Path, dict, dict]:
         "repo": "rrnewton/reverie", "target": "a" * 40,
         "checkout": str(directory / "checkout"), "source_checkout": str(directory / "checkout"),
         "cargo_home": str(directory / "cargo"), "log": str(directory / "run.log"),
-        "agent": "count-test", "admission": "ci-hub validate-lock", "pane_role": "observer-only",
+        "agent": "count-test", "host": "count-test", "admission": "ci-hub validate-lock", "pane_role": "observer-only",
         "temporary_checkout": False,
         "started_at": "2026-09-20T00:00:00.123456+00:00",
         "parent_checkout_head": "b" * 40, "validate_lock_child_deadline_seconds": 3600,
@@ -69,8 +70,16 @@ def count_transport_fixture(directory: Path) -> tuple[Path, dict, dict]:
            "reverie_validation_policy": "reverie-local-validation/v5", "gates_expected": 8,
            "gates_run": 8, "coverage": {"planned_test_nodes": 2, "executed_test_nodes": 2,
                                         "zero_executed_nodes": [], "absent_nodes": []},
-           "validate_lock_authority": {"holder": {
-               key: record[key] for key in ("unit", "target", "started_at", "process_identity")}}}
+           "safe_ci": {"cgroup": "/user.slice/dagrun.slice/dagrun-321.scope/step-validate.reverie-full",
+                       "required": True, "observed": True, "fallback_allowed": False,
+                       "step": reverie_node.SAFE_CI_STEP},
+           "validate_lock_authority": {
+               "schema_version": 1, "slot": 0, "admissible": True, "lock_admissible": True,
+               "state": "held", "reason_code": None, "canonical_anchor_held": True,
+               "cleanup_state": "active-bound", "admission_floor": None, "admission_floor_reason": None,
+               "holder": {"agent": record["agent"], "kind": record["kind"], "target": record["target"],
+                          "host": record["host"], "acquired_at": 1789862400, "expires_at": 1789863600},
+               "owner": {**record["process_identity"], "host": record["host"], "liveness": "alive"}}}
     source = {"schema": "validate-ledger/v1", "event_id": "source-count", "run_id": "source-count",
               "event_type": "run.result", "team": "reverie", "host": "count-test",
               "commit": record["target"], "started_at": original["started_at"],
@@ -82,10 +91,32 @@ def count_transport_fixture(directory: Path) -> tuple[Path, dict, dict]:
              "producer": {"source": "observed", "tool": "ci-hub-reverie-validate-run", "tool_version": "5"},
              "legacy_row": copy.deepcopy(row)}
     canonical = {"source": source, "final": final, "row": row}
-    binding = {"schema": reverie_node.COUNT_SCHEMA, "context": reverie_node.count_context(record, path),
+    binding = {"schema": reverie_node.COUNT_BINDING_SCHEMA, "context": reverie_node.count_context(record, path),
                "invocation_id": "3" * 32, "source_id": source["event_id"], "final_id": final["event_id"],
                "run_id": source["run_id"], "canonical": canonical,
                "canonical_sha256": hashlib.sha256(reverie_node.count_json(canonical)).hexdigest()}
+    step = row["safe_ci"]["cgroup"]
+
+    def observed(unit: str, group: str, inode: int, service: bool) -> dict:
+        props = {"Id": unit, "LoadState": "loaded", "ActiveState": "active", "SubState": "running",
+                 "InvocationID": ("4" if service else "5") * 32, "ControlGroup": group}
+        if service:
+            props["Type"] = "simple"
+        return {"before": copy.deepcopy(props), "after": props,
+                "cgroup": {"path": group, "device": 27, "inode": inode}}
+
+    binding["execution"] = {
+        "schema": reverie_node.COUNT_OWNER_SCHEMA,
+        "producer": {"pid": 789, "start_ticks": 999, "boot_id": record["process_identity"]["boot_id"]},
+        "lineage": [{"pid": 789, "start_ticks": 999, "ppid": 321},
+                    {"pid": 321, "start_ticks": 888, "ppid": 123},
+                    {"pid": 123, "start_ticks": 456, "ppid": 100}],
+        "owner_cgroup": "/user.slice/validate-count.service",
+        "service": observed(record["unit"], "/user.slice/validate-count.service", 100, True),
+        "scope": observed("dagrun-321.scope", step.rsplit("/", 1)[0], 101, False),
+        "step": {"path": step, "device": 27, "inode": 102},
+        "authority": copy.deepcopy(row["validate_lock_authority"]),
+    }
     return path, record, binding
 
 
@@ -172,6 +203,463 @@ class ReverieCountTransportTests(unittest.TestCase):
             with mock.patch.object(reverie_node, "read_finalization", side_effect=reverie_node.Refusal("checker unavailable")):
                 with self.assertRaisesRegex(reverie_node.Refusal, "checker unavailable"):
                     reverie_node.consume_count_handoff(directory, directory, path, record)
+
+
+class ReverieCountOwnerTests(unittest.TestCase):
+    def test_real_holder_owner_and_sibling_scope_with_renewed_lease(self) -> None:
+        path, record, binding = count_transport_fixture(Path("/data-only"))
+        proof = binding["execution"]
+        self.assertNotIn(record["unit"], proof["step"]["path"].split("/"))
+        self.assertEqual({"agent", "kind", "target", "host", "acquired_at", "expires_at"},
+                         set(proof["authority"]["holder"]))
+        old = copy.deepcopy(binding["canonical"]["row"]["validate_lock_authority"])
+        proof["authority"]["holder"]["acquired_at"] += 60
+        proof["authority"]["holder"]["expires_at"] += 60
+        self.assertEqual((20, 19, 4), reverie_node.validate_count_binding(binding, record, path))
+        self.assertEqual(old, binding["canonical"]["row"]["validate_lock_authority"])
+        self.assertEqual("NEEDS-RERUN", record["canonical_verdict"])
+
+    def test_unrelated_owner_movement_and_invented_holder_refuse(self) -> None:
+        path, record, binding = count_transport_fixture(Path("/data-only"))
+        changes = [
+            lambda p: p["lineage"][-1].update(start_ticks=457),
+            lambda p: p["lineage"][0].update(ppid=999),
+            lambda p: p["producer"].update(boot_id="another-boot"),
+            lambda p: p["authority"]["owner"].update(pid=124),
+            lambda p: p["authority"]["holder"].update(agent="unrelated"),
+            lambda p: p["authority"]["holder"].update(host="other-host"),
+            lambda p: p["authority"].update(admissible=False),
+            lambda p: p["authority"].update(canonical_anchor_held=False),
+            lambda p: p["authority"].update(cleanup_state=[]),
+            lambda p: p["authority"].update(slot=1),
+            lambda p: p["authority"].update(holder={k: record[k] for k in
+                                                   ("unit", "target", "started_at", "process_identity")}),
+            lambda p: p["service"]["after"].update(InvocationID="6" * 32),
+            lambda p: p["scope"]["after"].update(ControlGroup="/unrelated/dagrun-321.scope"),
+            lambda p: p.update(owner_cgroup="/user.slice/unrelated.service"),
+            lambda p: p["step"].update(path="/user.slice/dagrun.slice/dagrun-999.scope/step-validate.reverie-full"),
+            lambda p: p["step"].update(inode=True),
+            lambda p: p["authority"]["holder"].update(expires_at=True),
+        ]
+        for index, change in enumerate(changes):
+            with self.subTest(index=index):
+                bad = copy.deepcopy(binding)
+                change(bad["execution"])
+                with self.assertRaises(reverie_node.Refusal):
+                    reverie_node.validate_count_binding(bad, record, path)
+
+    def test_explicit_unit_properties_allow_live_activating_oneshot(self) -> None:
+        _path, record, binding = count_transport_fixture(Path("/data-only"))
+        props = binding["execution"]["service"]["before"]
+        props.update(Type="oneshot", ActiveState="activating", SubState="start")
+        raw = "".join(f"{key}={value}\n" for key, value in props.items())
+        self.assertEqual(props, reverie_node._parse_count_unit(raw, record["unit"], service=True))
+        for bad in (raw + "Id=second.service\n", raw.replace("LoadState=loaded", "LoadState=not-found"),
+                    raw.replace("InvocationID=" + "4" * 32, "InvocationID="),
+                    raw.replace("ControlGroup=/user.slice/validate-count.service\n", ""),
+                    raw + "Unknown=1\n", raw + "\x00\n"):
+            with self.subTest(raw=bad), self.assertRaises(reverie_node.Refusal):
+                reverie_node._parse_count_unit(bad, record["unit"], service=True)
+
+    def test_proc_parsing_uses_generation_and_exact_unified_membership(self) -> None:
+        raw = "789 (name with ) spaces) S 321 " + "0 " * 17 + "999 0\n"
+        self.assertEqual({"pid": 789, "ppid": 321, "start_ticks": 999},
+                         reverie_node._parse_count_stat(raw, 789))
+        for bad in (raw.replace(") S ", ") Z "), raw.replace("789 (", "788 ("), "789 (short) R 321"):
+            with self.assertRaises(reverie_node.Refusal):
+                reverie_node._parse_count_stat(bad, 789)
+        self.assertEqual("/a/b", reverie_node._parse_count_membership("0::/a/b\n"))
+        for bad in ("1:cpu:/a/b\n", "0::/a/../b\n", "0::/a/b\n0::/c/d\n"):
+            with self.assertRaises(reverie_node.Refusal):
+                reverie_node._parse_count_membership(bad)
+
+    def test_deadline_refuses_before_spawn_and_cleanup_does_not_reset_grace(self) -> None:
+        with mock.patch.object(reverie_node.time, "monotonic", return_value=9), \
+                mock.patch.object(reverie_node.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(reverie_node.Refusal, "deadline"):
+                reverie_node._capture_count_query(["never-run"], Path("/"), 10, stdout_limit=10)
+            spawn.assert_not_called()
+        proc = mock.Mock(pid=321, returncode=None)
+        status = reverie_node._CountQueryStatus(proc, 52)
+        status.authenticated = True
+        now = [8.5]
+        sleeps = []
+
+        def advance(duration):
+            sleeps.append(duration)
+            now[0] += duration
+
+        with mock.patch.object(reverie_node.time, "monotonic", side_effect=lambda: now[0]), \
+                mock.patch.object(reverie_node.time, "sleep", side_effect=advance), \
+                mock.patch.object(reverie_node.os, "waitid", return_value=None) as waitid, \
+                mock.patch.object(reverie_node.signal, "pidfd_send_signal") as signal_child:
+            result = reverie_node._cleanup_count_query(status, 10)
+        self.assertEqual(10, now[0])
+        self.assertAlmostEqual(1.5, sum(sleeps))
+        self.assertTrue(all(0 < duration <= 0.05 for duration in sleeps))
+        waitid.assert_called_with(reverie_node.os.P_PIDFD, 52, reverie_node.os.WEXITED | reverie_node.os.WNOHANG)
+        self.assertEqual([mock.call(52, reverie_node.signal.SIGTERM), mock.call(52, reverie_node.signal.SIGKILL)],
+                         signal_child.call_args_list)
+        self.assertIn("unknown at deadline", result)
+        proc.poll.assert_not_called()
+        proc.wait.assert_not_called()
+        with mock.patch.object(reverie_node.signal, "pidfd_send_signal") as no_signal:
+            self.assertIn("identity/cleanup unknown", reverie_node._cleanup_count_query(None, 10))
+            no_signal.assert_not_called()
+
+    def test_pidfd_must_belong_to_our_waitable_child_before_signaling(self) -> None:
+        proc = mock.Mock(pid=321, returncode=None)
+        proc.poll.return_value = None
+        with mock.patch.object(reverie_node.subprocess, "Popen", return_value=proc), \
+                mock.patch.object(reverie_node.time, "monotonic", return_value=0), \
+                mock.patch.object(reverie_node.os, "pidfd_open", return_value=52), \
+                mock.patch.object(reverie_node.os, "waitid", side_effect=ChildProcessError("not our child")), \
+                mock.patch.object(reverie_node.os, "close") as close, \
+                mock.patch.object(reverie_node.signal, "pidfd_send_signal") as no_signal:
+            with self.assertRaisesRegex(reverie_node.Refusal, "identity/cleanup unknown"):
+                reverie_node._capture_count_query(["not-executed"], Path("/"), 10, stdout_limit=10)
+        no_signal.assert_not_called()
+        close.assert_called_once_with(52)
+        proc.stdout.close.assert_called_once()
+        proc.stderr.close.assert_called_once()
+
+    def test_missing_pidfd_api_refuses_before_creating_a_query(self) -> None:
+        for api in ("pidfd_open", "waitid"):
+            with self.subTest(api=api), \
+                    mock.patch.object(reverie_node.time, "monotonic", return_value=0), \
+                    mock.patch.object(reverie_node.os, api, None), \
+                    mock.patch.object(reverie_node.subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(reverie_node.Refusal, "PIDfd ownership APIs before spawn"):
+                    reverie_node._capture_count_query(["never-run"], Path("/"), 10, stdout_limit=10)
+                spawn.assert_not_called()
+
+    def test_capture_requires_complete_bounded_utf8_and_real_zero_exit(self) -> None:
+        for output, status, expected in ((b"valid\n", 0, "valid\n"), (b"oversized", 0, None),
+                                          (b"\xff", 0, None), (b"valid\n", 7, None)):
+            with self.subTest(output=output, status=status):
+                streams = [mock.Mock(), mock.Mock()]
+                for descriptor, stream in zip((10, 11), streams):
+                    stream.fileno.return_value = descriptor
+                proc = mock.Mock(pid=321, stdout=streams[0], stderr=streams[1], returncode=0)
+                event = SimpleNamespace(si_pid=321, si_code=os.CLD_EXITED, si_status=status)
+                pending = {}
+                selector = mock.MagicMock()
+                selector.__enter__.return_value = selector
+                selector.get_map.side_effect = lambda: pending
+                selector.register.side_effect = lambda stream, _events, name: pending.update(
+                    {stream.fileno(): SimpleNamespace(fd=stream.fileno(), fileobj=stream, data=name)})
+                selector.unregister.side_effect = lambda stream: pending.pop(stream.fileno())
+                selector.select.side_effect = lambda _timeout: [(next(iter(pending.values())), 1)]
+                chunks = {10: [output, b""], 11: [b""]}
+                with mock.patch.object(reverie_node.subprocess, "Popen", return_value=proc), \
+                        mock.patch.object(reverie_node.selectors, "DefaultSelector", return_value=selector), \
+                        mock.patch.object(reverie_node.time, "monotonic", return_value=0), \
+                        mock.patch.object(reverie_node.os, "pidfd_open", return_value=52), \
+                        mock.patch.object(reverie_node.os, "waitid", return_value=event) as waitid, \
+                        mock.patch.object(reverie_node.os, "set_blocking"), \
+                        mock.patch.object(reverie_node.os, "read", side_effect=lambda fd, _size: chunks[fd].pop(0)), \
+                        mock.patch.object(reverie_node.os, "close") as close, \
+                        mock.patch.object(reverie_node.signal, "pidfd_send_signal") as no_signal:
+                    if expected is None:
+                        with self.assertRaises(reverie_node.Refusal):
+                            reverie_node._capture_count_query(["not-executed"], Path("/"), 10, stdout_limit=6)
+                    else:
+                        self.assertEqual(expected, reverie_node._capture_count_query(
+                            ["not-executed"], Path("/"), 10, stdout_limit=6))
+                waitid.assert_called_once_with(os.P_PIDFD, 52, os.WEXITED | os.WNOHANG)
+                close.assert_called_once_with(52)
+                no_signal.assert_not_called()
+                proc.poll.assert_not_called()
+                proc.wait.assert_not_called()
+                for stream in streams:
+                    stream.close.assert_called_once()
+
+    def test_directory_replacement_refuses_held_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            named = Path(temporary) / "owned-data"
+            named.mkdir()
+            descriptor = reverie_node._open_count_directory(str(named))
+            try:
+                reverie_node._count_directory_unchanged(str(named), descriptor)
+                named.rename(Path(temporary) / "previous-data")
+                named.mkdir()
+                with self.assertRaisesRegex(reverie_node.Refusal, "identity moved"):
+                    reverie_node._count_directory_unchanged(str(named), descriptor)
+            finally:
+                os.close(descriptor)
+
+    def test_exited_query_with_inherited_pipe_is_deadline_refusal_not_success(self) -> None:
+        proc = mock.Mock(pid=321, returncode=0)
+        event = SimpleNamespace(si_pid=321, si_code=os.CLD_EXITED, si_status=0)
+        selector = mock.MagicMock()
+        selector.__enter__.return_value = selector
+        selector.get_map.return_value = {10: "pipe still held"}
+        selector.select.return_value = []
+        with mock.patch.object(reverie_node.subprocess, "Popen", return_value=proc), \
+                mock.patch.object(reverie_node.selectors, "DefaultSelector", return_value=selector), \
+                mock.patch.object(reverie_node.time, "monotonic", side_effect=[0, 0, 8]), \
+                mock.patch.object(reverie_node.os, "pidfd_open", return_value=52), \
+                mock.patch.object(reverie_node.os, "waitid", return_value=event), \
+                mock.patch.object(reverie_node.os, "set_blocking"), \
+                mock.patch.object(reverie_node.os, "close"), \
+                mock.patch.object(reverie_node.signal, "pidfd_send_signal") as no_signal:
+            with self.assertRaisesRegex(reverie_node.Refusal, "deadline exhausted.*direct child exit=0"):
+                reverie_node._capture_count_query(["not-executed"], Path("/"), 10, stdout_limit=6)
+        proc.communicate.assert_not_called()
+        proc.poll.assert_not_called()
+        proc.wait.assert_not_called()
+        no_signal.assert_not_called()
+        proc.stdout.close.assert_called_once()
+        proc.stderr.close.assert_called_once()
+
+    def test_pidfd_terminal_event_is_consumed_once_independent_of_popen_bookkeeping(self) -> None:
+        for code, value, expected in ((os.CLD_EXITED, 0, 0), (os.CLD_EXITED, 23, 23),
+                                      (os.CLD_KILLED, reverie_node.signal.SIGTERM, -reverie_node.signal.SIGTERM),
+                                      (os.CLD_DUMPED, reverie_node.signal.SIGABRT, -reverie_node.signal.SIGABRT)):
+            with self.subTest(code=code, value=value):
+                proc = mock.Mock(pid=321, returncode=0)
+                status = reverie_node._CountQueryStatus(proc, 52)
+                event = SimpleNamespace(si_pid=321, si_code=code, si_status=value)
+                with mock.patch.object(reverie_node.os, "waitid", side_effect=[None, event]) as waitid:
+                    self.assertIsNone(status.poll())
+                    self.assertTrue(status.authenticated)
+                    self.assertEqual(expected, status.poll())
+                    self.assertIs(status.event, event)
+                    self.assertEqual(expected, proc.returncode)
+                    proc.returncode = 0  # Bookkeeping cannot replace the retained event.
+                    self.assertEqual(expected, status.poll())
+                    self.assertEqual(2, waitid.call_count)
+                proc.poll.assert_not_called()
+                proc.wait.assert_not_called()
+
+
+    def test_pidfd_unavailable_status_after_authentication_is_sticky_unknown(self) -> None:
+        proc = mock.Mock(pid=321, returncode=0)
+        status = reverie_node._CountQueryStatus(proc, 52)
+        with mock.patch.object(reverie_node.os, "waitid", side_effect=[None, ChildProcessError(10, "No child processes")]) as waitid, \
+                mock.patch.object(reverie_node.signal, "pidfd_send_signal") as no_signal:
+            self.assertIsNone(status.poll())
+            self.assertTrue(status.authenticated)
+            with self.assertRaisesRegex(reverie_node.Refusal, "wait status unavailable.*ChildProcessError"):
+                status.poll()
+            self.assertIsNone(status.event)
+            self.assertIsNone(status.returncode)
+            with self.assertRaisesRegex(reverie_node.Refusal, "wait status unavailable.*ChildProcessError"):
+                status.poll()
+            cleanup = reverie_node._cleanup_count_query(status, 10)
+            self.assertIn("status/cleanup unknown", cleanup)
+            self.assertNotIn("exit=0", cleanup)
+            self.assertEqual(2, waitid.call_count)
+            no_signal.assert_not_called()
+        proc.poll.assert_not_called()
+        proc.wait.assert_not_called()
+
+
+    def test_capture_valid_output_with_unavailable_status_refuses_popen_zero(self) -> None:
+        streams = [mock.Mock(), mock.Mock()]
+        for descriptor, stream in zip((10, 11), streams):
+            stream.fileno.return_value = descriptor
+        proc = mock.Mock(pid=321, stdout=streams[0], stderr=streams[1], returncode=0)
+        proc.poll.return_value = 0  # The old capture would accept this after EOF.
+        pending = {}
+        selector = mock.MagicMock()
+        selector.__enter__.return_value = selector
+        selector.get_map.side_effect = lambda: pending
+        selector.register.side_effect = lambda stream, _events, name: pending.update(
+            {stream.fileno(): SimpleNamespace(fd=stream.fileno(), fileobj=stream, data=name)})
+        selector.unregister.side_effect = lambda stream: pending.pop(stream.fileno())
+        selector.select.side_effect = lambda _timeout: [(next(iter(pending.values())), 1)]
+        chunks = {10: [b"valid\n", b""], 11: [b""]}
+        wait_calls = []
+
+        def real_status_shape(*args):
+            wait_calls.append(args)
+            if len(wait_calls) > 1 and not pending:
+                raise ChildProcessError(10, "No child processes")
+            return None
+
+        with mock.patch.object(reverie_node.subprocess, "Popen", return_value=proc), \
+                mock.patch.object(reverie_node.selectors, "DefaultSelector", return_value=selector), \
+                mock.patch.object(reverie_node.time, "monotonic", return_value=0), \
+                mock.patch.object(reverie_node.os, "pidfd_open", return_value=52), \
+                mock.patch.object(reverie_node.os, "waitid", side_effect=real_status_shape), \
+                mock.patch.object(reverie_node.os, "set_blocking"), \
+                mock.patch.object(reverie_node.os, "read", side_effect=lambda fd, _size: chunks[fd].pop(0)), \
+                mock.patch.object(reverie_node.os, "close") as close, \
+                mock.patch.object(reverie_node.signal, "pidfd_send_signal") as no_signal:
+            with self.assertRaisesRegex(reverie_node.Refusal, "wait status unavailable.*status/cleanup unknown"):
+                reverie_node._capture_count_query(["not-executed"], Path("/"), 10, stdout_limit=6)
+        self.assertEqual({10: [], 11: []}, chunks)
+        close.assert_called_once_with(52)
+        no_signal.assert_not_called()
+        proc.poll.assert_not_called()
+        proc.wait.assert_not_called()
+        for stream in streams:
+            stream.close.assert_called_once()
+
+
+    def test_producer_queries_canonical_first_and_holds_snapshot_through_publication(self) -> None:
+        import run_registry
+        path, record, binding = count_transport_fixture(Path("/data-only"))
+        order = []
+
+        @contextmanager
+        def observation(*_args):
+            order.append("observe")
+            yield binding["execution"]
+            order.append("close")
+
+        def canonical(*_args):
+            order.append("canonical")
+            return binding["canonical"]
+
+        def publish(_path, value):
+            self.assertEqual(binding, value)
+            order.append("publish")
+
+        ack = json.dumps({"schema": "ci-hub-validate-ledger-record/v1", "run_id": binding["run_id"],
+                          "event_id": binding["final_id"]})
+        with mock.patch.object(run_registry, "read_record", return_value=record), \
+                mock.patch.object(reverie_node, "count_source_hashes", return_value=record["reverie_count_request"]["producer_files"]), \
+                mock.patch.object(reverie_node, "read_finalization", side_effect=canonical), \
+                mock.patch.object(reverie_node, "observe_count_owner", side_effect=observation), \
+                mock.patch.object(reverie_node, "publish_count_sidecar", side_effect=publish), \
+                mock.patch.dict(os.environ, {reverie_node.COUNT_HANDLE_ENV: str(path), "INVOCATION_ID": "3" * 32}):
+            reverie_node.produce_count_handoff(Path("/data-only"), binding["canonical"]["row"],
+                                                binding["canonical"]["source"], ack)
+        self.assertEqual(["canonical", "observe", "publish", "close"], order)
+
+    def test_malformed_canonical_counts_or_authority_refuse_before_live_queries(self) -> None:
+        import run_registry
+        for field in ("executed_tests", "validate_lock_authority"):
+            with self.subTest(field=field):
+                path, record, binding = count_transport_fixture(Path("/data-only"))
+                binding["canonical"]["row"][field] = None
+                ack = json.dumps({"schema": "ci-hub-validate-ledger-record/v1", "run_id": binding["run_id"],
+                                  "event_id": binding["final_id"]})
+                with mock.patch.object(run_registry, "read_record", return_value=record), \
+                        mock.patch.object(reverie_node, "count_source_hashes", return_value=record["reverie_count_request"]["producer_files"]), \
+                        mock.patch.object(reverie_node, "read_finalization", return_value=binding["canonical"]), \
+                        mock.patch.object(reverie_node, "observe_count_owner") as observe, \
+                        mock.patch.dict(os.environ, {reverie_node.COUNT_HANDLE_ENV: str(path), "INVOCATION_ID": "3" * 32}):
+                    with self.assertRaises(reverie_node.Refusal):
+                        reverie_node.produce_count_handoff(Path("/data-only"), binding["canonical"]["row"],
+                                                          binding["canonical"]["source"], ack)
+                    observe.assert_not_called()
+
+    def test_legacy_sealed_bytes_remain_readable_but_not_current_evidence(self) -> None:
+        import run_registry
+        raw = (HERE / "fixtures/reverie_count_v1.json").read_bytes()
+        self.assertEqual("201bf9737f39e35abf857fe2ee7307b8e77473841fb8bf948b57a961b5046805",
+                         hashlib.sha256(raw).hexdigest())
+        record = json.loads(raw)
+        self.assertEqual(record, run_registry.parse_current_record(record).raw)
+        evidence = record["reverie_count_evidence"]
+        path = Path(evidence["binding"]["context"]["record_path"])
+        self.assertEqual((20, 19, 4), reverie_node.parse_stored_count_evidence(evidence, record, path))
+        with self.assertRaises(reverie_node.Refusal):
+            reverie_node.validate_count_evidence(evidence, record, path)
+        broken = copy.deepcopy(record)
+        broken["reverie_count_evidence"]["sidecar_sha256"] = "0" * 64
+        with self.assertRaises(RuntimeError):
+            run_registry.parse_current_record(broken)
+        with tempfile.TemporaryDirectory() as temporary:
+            local = Path(temporary) / "handle.json"
+            local.write_bytes(raw)
+            self.assertEqual(record, run_registry.read_record(local))
+            with self.assertRaises(reverie_node.Refusal):
+                run_registry.update_reverie_counts(local, record, evidence=evidence)
+            self.assertEqual(raw, local.read_bytes())
+            reverie_node.publish_count_sidecar(reverie_node.count_sidecar_path(local), evidence["binding"])
+            with mock.patch.object(reverie_node, "read_finalization") as ledger:
+                with self.assertRaisesRegex(reverie_node.Refusal, "legacy v1"):
+                    reverie_node.consume_count_handoff(Path(temporary), Path(temporary), local, record)
+                ledger.assert_not_called()
+
+    def test_observer_retains_descriptors_and_refuses_moving_or_unrelated_identity(self) -> None:
+        import run_registry
+        path, record, binding = count_transport_fixture(Path("/data-only"))
+        proof = binding["execution"]
+        for attack in (None, "parent", "membership", "scope-generation", "unrelated", "context"):
+            with self.subTest(attack=attack):
+                fd_paths = {}
+                closed = []
+                calls = {}
+                owner_bytes = "".join(f"{key}={value}\n" for key, value in
+                                      {"host": record["host"], **record["process_identity"]}.items()).encode()
+
+                def directory(name):
+                    descriptor = 100 + len(fd_paths)
+                    fd_paths[descriptor] = name
+                    return descriptor
+
+                def info(descriptor):
+                    name = fd_paths.get(descriptor, "/owned/lock.owner")
+                    inode = {proof[k]["cgroup"]["path"]: proof[k]["cgroup"]["inode"]
+                             for k in ("service", "scope")}
+                    inode[proof["step"]["path"]] = proof["step"]["inode"]
+                    return SimpleNamespace(st_dev=27, st_ino=inode.get(name.removeprefix("/sys/fs/cgroup"), 99),
+                                           st_size=len(owner_bytes), st_mtime_ns=1, st_ctime_ns=1,
+                                           st_mode=reverie_node.stat.S_IFREG)
+
+                def read_at(descriptor, name):
+                    key = (fd_paths[descriptor], name)
+                    calls[key] = calls.get(key, 0) + 1
+                    if name == "boot_id":
+                        return record["process_identity"]["boot_id"] + "\n"
+                    pid = int(fd_paths[descriptor].rsplit("/", 1)[1])
+                    if name == "stat":
+                        entry = next(item for item in proof["lineage"] if item["pid"] == pid)
+                        parent = entry["ppid"]
+                        if (attack == "unrelated" and pid == 789) or (attack == "parent" and calls[key] == 2):
+                            parent = 1
+                        return f"{pid} (control) S {parent} " + "0 " * 17 + str(entry["start_ticks"]) + "\n"
+                    if pid == 789:
+                        group = proof["step"]["path"]
+                        if attack == "membership" and calls[key] == 2:
+                            group = "/unrelated"
+                    else:
+                        group = proof["owner_cgroup"]
+                    return "0::" + group + "\n"
+
+                def show(_root, unit, _deadline, *, service):
+                    key = (unit, "show")
+                    calls[key] = calls.get(key, 0) + 1
+                    value = copy.deepcopy(proof["service" if service else "scope"]["before"])
+                    if attack == "scope-generation" and not service and calls[key] == 2:
+                        value["InvocationID"] = "6" * 32
+                    return value
+
+                current = copy.deepcopy(record)
+                if attack == "context":
+                    current["parent_checkout_head"] = "d" * 40
+                with mock.patch.object(reverie_node, "_open_count_directory", side_effect=directory), \
+                        mock.patch.object(reverie_node, "_read_count_at", side_effect=read_at), \
+                        mock.patch.object(reverie_node, "_read_count_fd", return_value=owner_bytes), \
+                        mock.patch.object(reverie_node, "_show_count_unit", side_effect=show), \
+                        mock.patch.object(reverie_node, "_capture_count_query", return_value=json.dumps({"authorities": [proof["authority"]]})), \
+                        mock.patch.object(reverie_node.os, "open", return_value=800), \
+                        mock.patch.object(reverie_node.os, "fstat", side_effect=info), \
+                        mock.patch.object(reverie_node.os, "stat", return_value=info(800)), \
+                        mock.patch.object(reverie_node.os, "close", side_effect=closed.append), \
+                        mock.patch.object(reverie_node.os, "getpid", return_value=789), \
+                        mock.patch.object(reverie_node.time, "monotonic", return_value=0), \
+                        mock.patch.object(reverie_node, "read_count_sidecar", return_value=(current, "data-only", ())), \
+                        mock.patch.object(reverie_node.subprocess, "Popen", side_effect=AssertionError("data-only control")), \
+                        mock.patch.dict(os.environ, {"CI_HUB_VALIDATE_LOCK_OWNER_PID": "123",
+                                                     "CI_HUB_VALIDATE_LOCK_OWNER_FILE": "/owned/lock.owner"}):
+                    if attack is None:
+                        with reverie_node.observe_count_owner(Path("/data-only"), record, binding["canonical"]["row"], path) as actual:
+                            self.assertEqual(proof, actual)
+                            self.assertNotIn(101, closed)  # Held producer survives until publication.
+                            self.assertNotIn(800, closed)
+                    else:
+                        with self.assertRaises(reverie_node.Refusal):
+                            with reverie_node.observe_count_owner(Path("/data-only"), record, binding["canonical"]["row"], path):
+                                self.fail("moving/unrelated owner yielded a proof")
+                self.assertIn(101, closed)
+                self.assertEqual(len(closed), len(set(closed)))
+                self.assertTrue(set(fd_paths).issubset(closed))
 
 
 class ReverieValidateTest(unittest.TestCase):

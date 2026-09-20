@@ -994,7 +994,7 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
                 evidence_path = Path(evidence["binding"]["context"]["record_path"])
                 if not evidence_path.is_absolute():
                     raise ValueError("count evidence path is not absolute")
-                executed, passed, _filtered = reverie_node.validate_count_evidence(
+                executed, passed, _filtered = reverie_node.parse_stored_count_evidence(
                     evidence, dict(value), evidence_path
                 )
                 if state not in {RunState.COMPLETED, RunState.KILLED}:
