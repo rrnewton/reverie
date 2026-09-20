@@ -138,10 +138,12 @@ fn queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes() 
     }
     assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
     assert!(!waiter.handle.as_ref().unwrap().is_finished());
-    // Controller view + waiter view + actual retained word and timeout. The
-    // operand admission tokens have retired; their Mapping owners have not.
-    assert_eq!(owners(), 4);
+    // Controller view + waiter view + the retained word. The timeout was
+    // copied into host-owned storage before the wait and retains no Mapping.
+    // The operand admission tokens have retired; the word remains retained.
+    assert_eq!(owners(), 3);
     assert_eq!(gate.test_state().copies, 0);
+    assert_eq!(gate.test_state().retained_operands, 1);
     let closed = gate
         .try_close()
         .unwrap()
@@ -152,7 +154,8 @@ fn queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes() 
         .unwrap();
     assert!(gate.test_state().closed);
     assert_eq!(gate.test_state().copies, 0);
-    assert_eq!(owners(), 4);
+    assert_eq!(gate.test_state().retained_operands, 1);
+    assert_eq!(owners(), 3);
     assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
     assert!(!waiter.handle.as_ref().unwrap().is_finished());
     drop(closed);
@@ -170,6 +173,206 @@ fn queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes() 
     );
     drop(memory);
     assert_eq!(owners(), 0);
+}
+
+#[test]
+fn futex_timeout_import_and_non_pi_word_alignment_follow_linux_fault_order() {
+    const BASE: u64 = 0x1_0000;
+    const WORD: u64 = BASE;
+    const TIMEOUT_PAGE: u64 = BASE + PAGE_SIZE;
+    const MAPPED_WORD: u64 = BASE + 2 * PAGE_SIZE;
+    const TIMEOUT: u64 = TIMEOUT_PAGE + 64;
+    let memory = GuestMemory::new(BASE, 3 * PAGE_SIZE as usize).unwrap();
+    memory
+        .map_user_range(TIMEOUT_PAGE, PAGE_SIZE, false)
+        .unwrap();
+    memory
+        .map_user_range(MAPPED_WORD, PAGE_SIZE, false)
+        .unwrap();
+    memory.enable_user_access();
+
+    // do_futex rejects invalid flag combinations and unsupported commands
+    // before get_futex_key reaches a misaligned, inaccessible word.
+    assert_eq!(
+        futex(
+            &memory,
+            &[
+                WORD + 1,
+                (libc::FUTEX_WAIT | libc::FUTEX_CLOCK_REALTIME) as u64,
+                0,
+                0,
+                0,
+                0,
+            ]
+        ),
+        negative_errno(libc::ENOSYS)
+    );
+    assert_eq!(
+        futex(&memory, &[WORD + 1, 99, 0, 0, 0, 0]),
+        negative_errno(libc::ENOSYS)
+    );
+
+    // FUTEX_UNLOCK_PI reads the word before key lookup, so an inaccessible,
+    // misaligned address faults instead of reaching the alignment check.
+    assert_eq!(
+        futex(
+            &memory,
+            &[WORD + 1, libc::FUTEX_UNLOCK_PI as u64, 0, 0, 0, 0]
+        ),
+        negative_errno(libc::EFAULT)
+    );
+
+    // The outer sys_futex timeout import still precedes do_futex validation.
+    assert_eq!(
+        futex(
+            &memory,
+            &[
+                WORD + 1,
+                (libc::FUTEX_WAIT | libc::FUTEX_CLOCK_REALTIME) as u64,
+                0,
+                1,
+                0,
+                0,
+            ]
+        ),
+        negative_errno(libc::EFAULT)
+    );
+
+    // sys_futex validates a readable timeout before do_futex reaches the
+    // aligned but unmapped primary word.
+    for malformed in [
+        libc::timespec {
+            tv_sec: -1,
+            tv_nsec: 0,
+        },
+        libc::timespec {
+            tv_sec: 0,
+            tv_nsec: -1,
+        },
+        libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 1_000_000_000,
+        },
+    ] {
+        let malformed_bytes = unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref(&malformed).cast::<u8>(),
+                std::mem::size_of::<libc::timespec>(),
+            )
+        };
+        memory.write_raw(TIMEOUT, malformed_bytes).unwrap();
+        for operation in [
+            libc::FUTEX_WAIT,
+            libc::FUTEX_LOCK_PI,
+            libc::FUTEX_WAIT_BITSET,
+            libc::FUTEX_WAIT_REQUEUE_PI,
+            libc::FUTEX_LOCK_PI2,
+        ] {
+            assert_eq!(
+                futex(&memory, &[WORD, operation as u64, 0, TIMEOUT, 0, 0]),
+                negative_errno(libc::EINVAL),
+                "operation {operation} must validate its timeout first"
+            );
+        }
+    }
+
+    let valid = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let valid_bytes = unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(&valid).cast::<u8>(),
+            std::mem::size_of::<libc::timespec>(),
+        )
+    };
+    memory.write_raw(TIMEOUT, valid_bytes).unwrap();
+
+    // WAIT_REQUEUE_PI resolves its PI destination before the primary wait
+    // word. The PI commands intentionally retain their existing adapter
+    // translation order rather than applying the non-PI alignment precheck.
+    assert_eq!(
+        futex(
+            &memory,
+            &[
+                MAPPED_WORD + 1,
+                libc::FUTEX_WAIT_REQUEUE_PI as u64,
+                0,
+                TIMEOUT,
+                WORD,
+                0,
+            ]
+        ),
+        negative_errno(libc::EFAULT)
+    );
+
+    // Natural alignment is rejected before mapping accessibility, for both
+    // words of the covered non-PI operations.
+    assert_eq!(
+        futex(
+            &memory,
+            &[WORD + 1, libc::FUTEX_WAIT as u64, 0, TIMEOUT, 0, 0]
+        ),
+        negative_errno(libc::EINVAL)
+    );
+    assert_eq!(
+        futex(
+            &memory,
+            &[
+                MAPPED_WORD,
+                libc::FUTEX_CMP_REQUEUE as u64,
+                0,
+                1,
+                WORD + 1,
+                0,
+            ]
+        ),
+        negative_errno(libc::EINVAL)
+    );
+}
+
+#[test]
+fn futex_timeout_copy_accepts_unaligned_readonly_cross_page_input() {
+    const BASE: u64 = 0x1_0000;
+    const WORD: u64 = BASE;
+    const TIMEOUT_PAGE: u64 = BASE + PAGE_SIZE;
+    const TIMEOUT: u64 = TIMEOUT_PAGE + PAGE_SIZE - 7;
+    let memory = GuestMemory::new(BASE, 3 * PAGE_SIZE as usize).unwrap();
+    memory.map_user_range(BASE, PAGE_SIZE, false).unwrap();
+    memory
+        .map_user_range(TIMEOUT_PAGE, 2 * PAGE_SIZE, false)
+        .unwrap();
+    memory.write_raw(WORD, &1_u32.to_ne_bytes()).unwrap();
+    let timeout = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let timeout_bytes = unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(&timeout).cast::<u8>(),
+            std::mem::size_of::<libc::timespec>(),
+        )
+    };
+    memory.write_raw(TIMEOUT, timeout_bytes).unwrap();
+    memory
+        .map_user_permissions(TIMEOUT_PAGE, 2 * PAGE_SIZE, true, false)
+        .unwrap();
+    memory.enable_user_access();
+
+    // Linux copies a timespec bytewise: it need not be naturally aligned or
+    // writable. The mismatched word makes the actual host wait return EAGAIN.
+    assert_eq!(
+        futex(&memory, &[WORD, libc::FUTEX_WAIT as u64, 0, TIMEOUT, 0, 0]),
+        negative_errno(libc::EAGAIN)
+    );
+
+    memory
+        .map_user_permissions(TIMEOUT_PAGE + PAGE_SIZE, PAGE_SIZE, false, false)
+        .unwrap();
+    assert_eq!(
+        futex(&memory, &[WORD, libc::FUTEX_WAIT as u64, 0, TIMEOUT, 0, 0]),
+        negative_errno(libc::EFAULT)
+    );
 }
 
 struct MmapReader {
