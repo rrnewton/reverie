@@ -366,12 +366,12 @@ impl GuestSyscallExecutor<ProbeTool> for ProbeExecutor {
         self.counts.preparations.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-    fn execute(&mut self, request: &SyscallRequest, _: &GuestMemory) -> i64 {
+    fn execute(&mut self, request: &SyscallRequest, _: &GuestMemory) -> Result<i64> {
         assert_eq!(request.number(), libc::SYS_close as u64);
         assert_eq!(request.args()[0], 9);
         self.counts.dispatches.fetch_add(1, Ordering::SeqCst);
         self.counts.effects.fetch_add(1, Ordering::SeqCst);
-        0
+        Ok(0)
     }
     fn complete_injection<'a>(
         &'a mut self,

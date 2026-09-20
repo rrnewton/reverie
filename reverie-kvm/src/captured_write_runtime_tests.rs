@@ -31,7 +31,7 @@ impl GuestSyscallExecutor<Upper> for Unsupported {
     fn read_clock(&self) -> Result<u64> {
         panic!("capability query read a clock")
     }
-    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
+    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<i64> {
         panic!("capability query executed a syscall")
     }
 }
@@ -44,7 +44,7 @@ impl GuestSyscallExecutor<Upper> for Capable {
     fn read_clock(&self) -> Result<u64> {
         panic!("capability query read a clock")
     }
-    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
+    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<i64> {
         panic!("capability query executed a syscall")
     }
     fn captured_write_signal_site(&self, call: Write) -> Option<CallbackSignalSite> {

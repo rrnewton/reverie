@@ -41,7 +41,6 @@ use crate::elf::resolve_executable_path;
 use crate::memory::AllocationCursors;
 use crate::memory::HostMemoryOperand;
 use crate::memory::RegionKind;
-use crate::runtime::SyscallExecutor;
 use crate::signal::GuestStack;
 use crate::signal::KERNEL_SIGACTION_SIZE;
 use crate::signal::KERNEL_SIGSET_SIZE;
@@ -1157,7 +1156,7 @@ fn guest_host_address(
         .map_err(|_| negative_errno(libc::EFAULT))
 }
 
-/// A [`SyscallExecutor`] that supplies the static-ELF guest-kernel semantics
+/// A [`crate::SyscallExecutor`] that supplies the static-ELF guest-kernel semantics
 /// ([`execute_basic_syscall`]) to the tool-driven run loop
 /// ([`crate::KvmBackend::run_static_elf_with_tool`]).
 ///
@@ -4316,6 +4315,19 @@ impl ElfExecutor {
             Some(ProcessFamilyExit::ParentChildRelationUnavailable { parent }) => {
                 Err(crate::Error::ParentChildRelationUnavailable { process, parent })
             }
+            Some(ProcessFamilyExit::AncestryCycle { ancestor }) => {
+                Err(crate::Error::ProcessFamilyAncestryCycle { process, ancestor })
+            }
+            Some(ProcessFamilyExit::MultipleParents {
+                child,
+                first_parent,
+                second_parent,
+            }) => Err(crate::Error::ProcessFamilyMultipleParents {
+                process,
+                child,
+                first_parent,
+                second_parent,
+            }),
             None => Err(crate::Error::UnexpectedVcpuExit(format!(
                 "KVM process {} lost its terminal family transition",
                 process.tgid.as_raw()
@@ -4323,13 +4335,13 @@ impl ElfExecutor {
         }
     }
 
-    fn record_consumed_child_wait(&self, child_pid: i32) {
+    fn record_consumed_child_wait(&self, child_pid: i32) -> crate::Result<()> {
         let parent = self.admitted_signal_identity().process;
         let consumed = self.signal_registry.consume_child_wait(parent, child_pid);
-        assert!(
-            consumed || !self.signal_registry.controlled(),
-            "a Tool-controlled KVM wait reaped child {child_pid} without a waitable exact family entry"
-        );
+        if !consumed && self.signal_registry.controlled() {
+            return Err(crate::Error::FamilyWaitLedgerMismatch { parent, child_pid });
+        }
+        Ok(())
     }
 
     pub(crate) fn sole_signal_receiver(&self) -> bool {
@@ -4814,20 +4826,33 @@ impl Drop for ElfExecutor {
     }
 }
 
-impl SyscallExecutor for ElfExecutor {
-    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+impl ElfExecutor {
+    /// Execute one static-ELF guest syscall. Backend invariants are typed run
+    /// failures: callers must terminate the run rather than encode them as a
+    /// Linux syscall errno.
+    pub(crate) fn execute_checked(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+    ) -> crate::Result<i64> {
         #[cfg(test)]
         memory.observe_test_syscall_dispatch(request);
+        if let Some(child_pid) = self.state.consumed_child_wait {
+            return Err(crate::Error::ChildWaitLedgerEffectPending {
+                parent: self.admitted_signal_identity().process,
+                child_pid,
+            });
+        }
         self.bind_address_space(memory);
         let _retirement = self.state.file_retirement.hold();
         if let Some(result) = self.synchronize_wait4(request) {
-            return result;
+            return Ok(result);
         }
         if let Some(result) = self.synchronize_waitid(request, memory) {
-            return result;
+            return Ok(result);
         }
         if let Some(result) = self.execute_accept(request, memory) {
-            return result;
+            return Ok(result);
         }
         // TODO-HUMAN-REVIEW(PR-172): Review CLONE_FILES descriptor-table sharing.
         // Thread children retain private executor state, but synchronize their
@@ -4842,7 +4867,7 @@ impl SyscallExecutor for ElfExecutor {
             .expect("file-table guard disappeared")
             .install(&mut self.state)
         {
-            return io_error(error);
+            return Ok(io_error(error));
         }
         // install cloned every fdinfo description Arc while holding the
         // current table. Scalar dispatch below therefore retains its entry
@@ -4854,7 +4879,7 @@ impl SyscallExecutor for ElfExecutor {
             self.state.file_retirement.drain_unlocked();
         }
         if let Some(result) = self.execute_process_action(request, memory) {
-            return result;
+            return Ok(result);
         }
         // Clones share the underlying MAP_SHARED mapping, so writes through this
         // handle reach the guest; `execute_basic_syscall` needs `&mut` access.
@@ -4863,10 +4888,6 @@ impl SyscallExecutor for ElfExecutor {
             && request.args()[0] as libc::c_int == libc::SIGCHLD
             && request.args()[1] != 0)
             .then(|| installed_signal_action(&self.state, libc::SIGCHLD));
-        assert!(
-            self.state.consumed_child_wait.is_none(),
-            "a KVM child-wait ledger effect must be consumed by its originating syscall"
-        );
         let action = execute_basic_syscall_with_output(
             &mut memory,
             &mut self.state,
@@ -4893,16 +4914,27 @@ impl SyscallExecutor for ElfExecutor {
                 }
                 let consumed_child = self.state.consumed_child_wait.take();
                 if let Some(child) = consumed_child {
-                    self.record_consumed_child_wait(child);
+                    self.record_consumed_child_wait(child)?;
                 }
-                result
+                Ok(result)
             }
             SyscallAction::Exit(code) => {
                 self.exit_status = Some(code);
                 self.exit_group = request.number() != libc::SYS_exit as u64;
-                0
+                Ok(0)
             }
         }
+    }
+}
+
+// Unit tests historically exercise the concrete executor as a raw Linux
+// syscall function. Keep that concise surface while production dispatch uses
+// the fallible trait method and cannot turn a backend invariant into an errno.
+#[cfg(test)]
+impl ElfExecutor {
+    pub(crate) fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        self.execute_checked(request, memory)
+            .expect("unit-test syscall dispatch returned a backend failure")
     }
 }
 

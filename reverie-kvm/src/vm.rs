@@ -90,7 +90,6 @@ use crate::runtime::PendingChildCancellation;
 use crate::runtime::PendingChildKind;
 use crate::runtime::PendingChildStart;
 use crate::runtime::SharedChildStarts;
-use crate::runtime::SyscallExecutor;
 use crate::runtime::ToolContext;
 use crate::signal::LEGACY_FPSTATE_SIZE;
 use crate::signal::RT_SIGFRAME_SIZE;
@@ -2233,6 +2232,11 @@ impl KvmBackend {
                 )));
             }
             crate::executor::ProcessFamilyExit::RunTeardownChild { .. } => {
+                // A nested Direct fork would resume this caller's synchronous
+                // stack after completion. Unlike an asynchronously owned Tool
+                // child, it has no detached teardown path on which a terminal
+                // caller can consume that completion, so refuse rather than
+                // return into the terminal caller.
                 return Err(Error::UnexpectedVcpuExit(format!(
                     "KVM fork child {} completed after its parent became terminal",
                     child.pid
@@ -2249,6 +2253,12 @@ impl KvmBackend {
             }
             crate::executor::ProcessFamilyExit::ParentChildRelationUnavailable { .. } => {
                 unreachable!("executor maps a missing parent-child relation to an error")
+            }
+            crate::executor::ProcessFamilyExit::AncestryCycle { .. } => {
+                unreachable!("executor maps a family ancestry cycle to an error")
+            }
+            crate::executor::ProcessFamilyExit::MultipleParents { .. } => {
+                unreachable!("executor maps ambiguous family parents to an error")
             }
         };
         if snapshot.completion.status != status {
@@ -4349,7 +4359,7 @@ impl KvmBackend {
                             None,
                         )?;
                         executor.set_current_user_stack_pointer(userspace.rsp);
-                        let result = executor.execute(&request, &self.memory);
+                        let result = executor.execute_checked(&request, &self.memory)?;
                         SyscallRequest::write_result(&mut self.memory, frame_address, result)?;
                         (
                             executor.take_segment(),

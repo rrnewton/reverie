@@ -47,6 +47,13 @@ fn process_key(process: SignalProcessId) -> ProcessKey {
     (process.tgid.as_raw(), process.generation)
 }
 
+fn process_identity((tgid, generation): ProcessKey) -> SignalProcessId {
+    SignalProcessId {
+        tgid: reverie::Pid::from_raw(tgid),
+        generation,
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ImageRevision(Arc<()>);
 
@@ -104,10 +111,38 @@ pub(crate) enum ProcessFamilyExit {
     Root,
     Child(ChildExitSnapshot),
     Failed,
-    RunTeardownChild { status: reverie::ExitStatus },
-    DescendantReparentingUnsupported { child: SignalProcessId },
-    ParentGenerationUnavailable { parent: SignalProcessId },
-    ParentChildRelationUnavailable { parent: SignalProcessId },
+    RunTeardownChild {
+        status: reverie::ExitStatus,
+    },
+    DescendantReparentingUnsupported {
+        child: SignalProcessId,
+    },
+    ParentGenerationUnavailable {
+        parent: SignalProcessId,
+    },
+    ParentChildRelationUnavailable {
+        parent: SignalProcessId,
+    },
+    AncestryCycle {
+        ancestor: SignalProcessId,
+    },
+    MultipleParents {
+        child: SignalProcessId,
+        first_parent: SignalProcessId,
+        second_parent: SignalProcessId,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessFamilyAncestryError {
+    Cycle {
+        ancestor: ProcessKey,
+    },
+    MultipleParents {
+        child: ProcessKey,
+        first_parent: ProcessKey,
+        second_parent: ProcessKey,
+    },
 }
 
 #[derive(Default)]
@@ -117,15 +152,17 @@ struct ProcessFamilyState {
 }
 
 impl ProcessFamilyState {
-    fn has_terminal_ancestor(&self, mut ancestor: ProcessKey) -> bool {
+    fn has_terminal_ancestor(
+        &self,
+        mut ancestor: ProcessKey,
+    ) -> Result<bool, ProcessFamilyAncestryError> {
         let mut visited = BTreeSet::new();
         loop {
-            assert!(
-                visited.insert(ancestor),
-                "KVM process-family ancestry must remain acyclic"
-            );
+            if !visited.insert(ancestor) {
+                return Err(ProcessFamilyAncestryError::Cycle { ancestor });
+            }
             if self.terminal.contains_key(&ancestor) {
-                return true;
+                return Ok(true);
             }
             let mut parents = self
                 .direct_children
@@ -133,12 +170,15 @@ impl ProcessFamilyState {
                 .filter(|(_, children)| children.contains_key(&ancestor))
                 .map(|(parent, _)| *parent);
             let Some(parent) = parents.next() else {
-                return false;
+                return Ok(false);
             };
-            assert!(
-                parents.next().is_none(),
-                "one KVM process generation cannot have multiple family parents"
-            );
+            if let Some(second_parent) = parents.next() {
+                return Err(ProcessFamilyAncestryError::MultipleParents {
+                    child: ancestor,
+                    first_parent: parent,
+                    second_parent,
+                });
+            }
             ancestor = parent;
         }
     }
@@ -326,18 +366,44 @@ impl ProcessSignalRegistry {
             .direct_children
             .get(&process_key(process))
             .and_then(|children| children.keys().next().copied())
-            .map(|(tgid, generation)| SignalProcessId {
-                tgid: reverie::Pid::from_raw(tgid),
-                generation,
-            });
-        let ancestor_is_terminal =
-            parent_identity.is_some_and(|parent| family.has_terminal_ancestor(process_key(parent)));
+            .map(process_identity);
+        let ancestor_is_terminal = match parent_identity {
+            Some(parent) => match family.has_terminal_ancestor(process_key(parent)) {
+                Ok(terminal) => terminal,
+                Err(ProcessFamilyAncestryError::Cycle { ancestor }) => {
+                    let exit = ProcessFamilyExit::AncestryCycle {
+                        ancestor: process_identity(ancestor),
+                    };
+                    family.terminal.insert(process_key(process), exit);
+                    return exit;
+                }
+                Err(ProcessFamilyAncestryError::MultipleParents {
+                    child,
+                    first_parent,
+                    second_parent,
+                }) => {
+                    let exit = ProcessFamilyExit::MultipleParents {
+                        child: process_identity(child),
+                        first_parent: process_identity(first_parent),
+                        second_parent: process_identity(second_parent),
+                    };
+                    family.terminal.insert(process_key(process), exit);
+                    return exit;
+                }
+            },
+            None => false,
+        };
         let exit = if is_root {
             ProcessFamilyExit::Root
         } else if ancestor_is_terminal {
             // A terminal ancestor is a consuming transition for the entire run,
             // not a still-live reaper. Descendants therefore unwind as teardown
-            // regardless of their post-terminal retirement order.
+            // regardless of their post-terminal retirement order. This branch
+            // deliberately begins only after that ancestor transition: the
+            // same unreaped descendant under a live root still fails closed as
+            // unsupported reparenting. Guest-causal root-versus-middle exit
+            // order can therefore change compatibility (teardown versus
+            // refusal), but host retirement order cannot.
             if let Some(parent) = parent_identity {
                 let parent_key = process_key(parent);
                 if let Some(children) = family.direct_children.get_mut(&parent_key) {
@@ -1232,7 +1298,6 @@ mod tests {
     use super::*;
     use crate::GuestMemory;
     use crate::SyscallRequest;
-    use crate::runtime::SyscallExecutor;
     use crate::signal::KernelSigaction;
     use crate::signal::KernelSigset;
 
@@ -2812,6 +2877,63 @@ mod tests {
     }
 
     #[test]
+    fn live_root_refuses_but_terminal_root_consumes_the_same_unreaped_family_shape() {
+        let root = executor();
+        let mut child = root.fork_child(2, false, false).unwrap();
+        let grandchild = child.fork_child(3, false, false).unwrap();
+        let child_id = identity(&child);
+        let grandchild_id = identity(&grandchild);
+
+        child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::DescendantReparentingUnsupported {
+                child: grandchild_id,
+            }),
+            "a middle process that exits under a live root still requires unsupported reparenting",
+        );
+
+        let mut root = executor();
+        let mut child = root.fork_child(2, false, false).unwrap();
+        let mut grandchild = child.fork_child(3, false, false).unwrap();
+        let root_id = identity(&root);
+        let child_id = identity(&child);
+        let grandchild_id = identity(&grandchild);
+
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        assert_eq!(
+            root.signal_registry.process_family_exit(root_id),
+            Some(ProcessFamilyExit::Root),
+        );
+        child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(2),
+            }),
+            "after the root becomes terminal, the same middle exit belongs to whole-run teardown",
+        );
+        grandchild.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        assert_eq!(
+            grandchild
+                .signal_registry
+                .process_family_exit(grandchild_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(3),
+            }),
+        );
+        assert!(
+            root.signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .direct_children
+                .is_empty(),
+            "terminal-root consumption must retire the same family's exact edges",
+        );
+    }
+
+    #[test]
     fn child_exit_distinguishes_lost_parent_generation_from_lost_family_edge() {
         let parent = executor();
         let parent_id = identity(&parent);
@@ -2961,6 +3083,7 @@ mod tests {
     #[test]
     fn controlled_child_wait_fails_closed_without_an_exact_family_zombie() {
         let mut parent = executor();
+        let parent_id = identity(&parent);
         parent
             .signal_registry
             .controlled
@@ -2970,18 +3093,123 @@ mod tests {
             .children
             .insert(2, reverie::ExitStatus::Exited(2));
         let memory = GuestMemory::new(0, 4096).unwrap();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            call(
-                &mut parent,
+        let error = parent
+            .execute_checked(
+                &SyscallRequest::new(
+                    libc::SYS_wait4 as u64,
+                    [u64::from(u32::MAX), 0, libc::WNOHANG as u64, 0, 0, 0],
+                ),
                 &memory,
-                libc::SYS_wait4,
-                [u64::from(u32::MAX), 0, libc::WNOHANG as u64, 0, 0, 0],
             )
-        }));
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::Error::FamilyWaitLedgerMismatch {
+                parent,
+                child_pid: 2,
+            } if parent == parent_id
+        ));
         assert!(
-            result.is_err(),
-            "a managed wait must not silently diverge from the exact family ledger"
+            !parent.state.children.contains_key(&2),
+            "the typed failure must retain that the backend already reaped the numeric child",
         );
+        assert!(parent.state.consumed_child_wait.is_none());
+    }
+
+    #[test]
+    fn stale_child_wait_effect_refuses_before_another_syscall_dispatch() {
+        let mut parent = executor();
+        let parent_id = identity(&parent);
+        parent.state.consumed_child_wait = Some(17);
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        let error = parent
+            .execute_checked(
+                &SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]),
+                &memory,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::Error::ChildWaitLedgerEffectPending {
+                parent,
+                child_pid: 17,
+            } if parent == parent_id
+        ));
+        assert_eq!(parent.state.consumed_child_wait, Some(17));
+    }
+
+    #[test]
+    fn corrupt_family_ancestry_is_typed_instead_of_panicking_or_choosing_a_parent() {
+        let root = executor();
+        let parent = root.fork_child(2, false, false).unwrap();
+        let mut child = parent.fork_child(3, false, false).unwrap();
+        let root_id = identity(&root);
+        let parent_id = identity(&parent);
+        let child_id = identity(&child);
+        parent
+            .signal_registry
+            .family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .direct_children
+            .get_mut(&process_key(parent_id))
+            .expect("parent owns its real child edge")
+            .insert(process_key(root_id), DirectChildState::Live);
+
+        child.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::AncestryCycle {
+                ancestor: parent_id,
+            }),
+        );
+        assert!(matches!(
+            child.process_family_exit(),
+            Err(crate::Error::ProcessFamilyAncestryCycle { process, ancestor })
+                if process == child_id && ancestor == parent_id
+        ));
+
+        let root = executor();
+        let parent = root.fork_child(2, false, false).unwrap();
+        let mut child = parent.fork_child(3, false, false).unwrap();
+        let root_id = identity(&root);
+        let parent_id = identity(&parent);
+        let child_id = identity(&child);
+        let alternate_parent = SignalProcessId {
+            tgid: reverie::Pid::from_raw(99),
+            generation: 99,
+        };
+        parent
+            .signal_registry
+            .family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .direct_children
+            .entry(process_key(alternate_parent))
+            .or_default()
+            .insert(process_key(parent_id), DirectChildState::Live);
+
+        child.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::MultipleParents {
+                child: parent_id,
+                first_parent: root_id,
+                second_parent: alternate_parent,
+            }),
+        );
+        assert!(matches!(
+            child.process_family_exit(),
+            Err(crate::Error::ProcessFamilyMultipleParents {
+                process,
+                child,
+                first_parent,
+                second_parent,
+            }) if process == child_id
+                && child == parent_id
+                && first_parent == root_id
+                && second_parent == alternate_parent
+        ));
     }
 
     #[test]

@@ -142,7 +142,7 @@ impl GuestSyscallExecutor<RpcTool> for NoGuestExecution {
     fn read_clock(&self) -> Result<u64> {
         panic!("native RPC control read a guest clock")
     }
-    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
+    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<i64> {
         panic!("native RPC control continued guest execution")
     }
 }

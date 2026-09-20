@@ -313,7 +313,7 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
         false
     }
 
-    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
+    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Result<i64>;
 
     /// Reserve backend bookkeeping before executing an injected syscall.
     /// Refusal is terminal backend failure, never an emulated syscall errno.
@@ -484,8 +484,8 @@ impl<T: Tool> GuestSyscallExecutor<T> for DirectSyscallExecutor<'_> {
         self.vcpu.read_clock()
     }
 
-    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
-        self.executor.execute(request, memory)
+    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Result<i64> {
+        Ok(self.executor.execute(request, memory))
     }
 }
 
@@ -660,14 +660,14 @@ where
             .map(|failure| failure.run.subscribe())
     }
 
-    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Result<i64> {
         self.polled_read_attempt = None;
         if !self.signal_injection_allowed(request) {
             // KvmGuest performs the same check before dispatch. Keep the
             // production executor fail-closed as well: a future Guest caller
             // must not execute an irreversible transition and only then learn
             // that SignalBoundary cannot resume its Tool hook.
-            return -(i64::from(Errno::ENOSYS.into_raw()));
+            return Ok(-(i64::from(Errno::ENOSYS.into_raw())));
         }
         if matches!(
             self.process_context,
@@ -676,14 +676,14 @@ where
             .executor
             .lifecycle_signal_mask_preflight(request, memory)
         {
-            return result;
+            return Ok(result);
         }
         if !self.process_context.injected_signal_allowed(request) {
             // A successful injected self-signal would become pending, but a
             // lifecycle callback has no transported userspace context in which
             // to run the structured hook or build a signal frame. Refuse before
             // mutating pending state instead of delaying it to another syscall.
-            return -(i64::from(Errno::ENOSYS.into_raw()));
+            return Ok(-(i64::from(Errno::ENOSYS.into_raw())));
         }
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-233): Review synthetic initial exec completion.
@@ -694,12 +694,12 @@ where
         ) {
             self.last_result = Some(0);
             self.process_context = ProcessExecutionContext::InitialExecCompleted;
-            return 0;
+            return Ok(0);
         }
-        let result = self.executor.execute(request, memory);
+        let result = self.executor.execute_checked(request, memory)?;
         self.last_result = Some(result);
         self.polled_read_attempt = Some((*request, result));
-        result
+        Ok(result)
     }
 
     fn prepare_signal_effects(&mut self) -> std::result::Result<(), Errno> {
@@ -1458,7 +1458,14 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
             return std::future::pending().await;
         }
         self.admit_ordinary_operation().await;
-        let raw = self.executor.execute(&request, &self.memory);
+        let raw = match self.executor.execute(&request, &self.memory) {
+            Ok(raw) => raw,
+            Err(error) => {
+                let error = self.executor.with_signal_effects(error, None);
+                self.signal_handler(HandlerSignal::RuntimeError(error));
+                return std::future::pending().await;
+            }
+        };
         if let Err(error) = self.complete_signal_effects(Some(raw)).await {
             self.signal_handler(HandlerSignal::RuntimeError(error));
             return std::future::pending().await;
@@ -2876,6 +2883,34 @@ pub struct ToolRunCompletion<G> {
 /// Complete the owner after physical worker joins. A fork child's logical wait
 /// result and callback publish immediately after its authoritative process
 /// status, before consuming hooks or recursively joining descendants.
+fn validate_tool_child_completion(
+    completion: reverie::ChildExitCompletion,
+    expected_child: reverie::SignalProcessId,
+    process_status: ExitStatus,
+    raw_child_pid: i32,
+) -> Result<()> {
+    if completion.child != expected_child {
+        return Err(Error::UnexpectedVcpuExit(format!(
+            "KVM child process {raw_child_pid} family identity {:?} disagrees with admitted identity {expected_child:?}",
+            completion.child,
+        )));
+    }
+    validate_tool_child_status(completion.status, process_status, raw_child_pid)
+}
+
+fn validate_tool_child_status(
+    family_status: ExitStatus,
+    process_status: ExitStatus,
+    raw_child_pid: i32,
+) -> Result<()> {
+    if family_status != process_status {
+        return Err(Error::UnexpectedVcpuExit(format!(
+            "KVM child process {raw_child_pid} family status {family_status:?} disagrees with its process status {process_status:?}",
+        )));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn finish_tool_process_after_workers_with_panics<T: Tool>(
     executor: &mut ElfExecutor,
@@ -2916,7 +2951,6 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
             }
         }
     });
-    let natural_exit = outcome.as_ref().is_ok_and(|exit| exit.joins_live_peers());
     let mut status = cancelled_exit.map_or_else(
         || {
             outcome
@@ -2926,7 +2960,7 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
         |exit| exit.exit.status,
     );
     let mut process_status = Ok(());
-    if pid == tid && natural_exit {
+    if pid == tid && outcome.is_ok() {
         match executor.process_exit_status() {
             Some(final_status) => status = final_status,
             None if workers.is_err() => status = ExitStatus::Exited(255),
@@ -2953,66 +2987,83 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
             match family_exit {
                 Err(error) => Err(error),
                 Ok(crate::executor::ProcessFamilyExit::Child(snapshot)) => {
-                    debug_assert_eq!(snapshot.completion.child, context.child);
-                    debug_assert_eq!(snapshot.completion.status, status);
-                    let completion = crate::executor::ChildCompletion::from_waitability(
-                        snapshot.completion.status,
-                        snapshot.completion.waitable,
-                    );
-                    let event = reverie::BackendChildWaitEvent {
-                        parent: snapshot.completion.parent,
-                        child: context.child,
-                        state: reverie::BackendChildWaitState::Exited {
-                            status: snapshot.completion.status,
-                            waitable: snapshot.completion.waitable,
-                            uid: snapshot.completion.uid,
-                            user_ticks: snapshot.completion.user_ticks,
-                            system_ticks: snapshot.completion.system_ticks,
-                        },
-                    };
-                    let mut callback =
-                        Box::pin(crate::failure::owned_future::catch_owned_future_from(
-                            || global_state.on_backend_child_wait_event(event),
-                        ));
-                    // Poll through the Tool's synchronous admission prefix
-                    // before exposing waitability. The retained future may
-                    // then suspend on parent progress without hiding the
-                    // already-committed publication decision.
-                    let first_poll = poll_fn(|cx| Poll::Ready(callback.as_mut().poll(cx))).await;
-                    let waitability = if context.completion.publish(completion) {
-                        let _ = context.completion_notifier.send(context.raw_child_pid);
-                        Ok(())
-                    } else {
-                        Err(report(
-                            "child wait completion",
-                            Error::UnexpectedVcpuExit(format!(
-                                "KVM child process {} published its logical completion twice",
-                                context.raw_child_pid
-                            )),
-                        ))
-                    };
-                    let caught = match first_poll {
-                        Poll::Ready(caught) => caught,
-                        Poll::Pending => callback.await,
-                    };
-                    let hook = panics
-                        .finish(
-                            crate::failure::owned_future::CaughtFuture {
-                                output: caught.output.map(|result| result.map_err(Error::Reverie)),
-                                panics: caught.panics,
-                            },
-                            "child wait hook",
-                        )
-                        .map_err(|error| report("child wait hook", error));
-                    match (waitability, hook) {
-                        (Ok(()), result) | (result, Ok(())) => result,
-                        (Err(error), Err(hook)) => Err(error.with_cleanup(vec![hook])),
+                    match validate_tool_child_completion(
+                        snapshot.completion,
+                        context.child,
+                        status,
+                        context.raw_child_pid,
+                    ) {
+                        Err(error) => Err(report("child family exit", error)),
+                        Ok(()) => {
+                            let completion = crate::executor::ChildCompletion::from_waitability(
+                                snapshot.completion.status,
+                                snapshot.completion.waitable,
+                            );
+                            let event = reverie::BackendChildWaitEvent {
+                                parent: snapshot.completion.parent,
+                                child: context.child,
+                                state: reverie::BackendChildWaitState::Exited {
+                                    status: snapshot.completion.status,
+                                    waitable: snapshot.completion.waitable,
+                                    uid: snapshot.completion.uid,
+                                    user_ticks: snapshot.completion.user_ticks,
+                                    system_ticks: snapshot.completion.system_ticks,
+                                },
+                            };
+                            let mut callback =
+                                Box::pin(crate::failure::owned_future::catch_owned_future_from(
+                                    || global_state.on_backend_child_wait_event(event),
+                                ));
+                            // Poll through the Tool's synchronous admission prefix
+                            // before exposing waitability. The retained future may
+                            // then suspend on parent progress without hiding the
+                            // already-committed publication decision.
+                            let first_poll =
+                                poll_fn(|cx| Poll::Ready(callback.as_mut().poll(cx))).await;
+                            let waitability = if context.completion.publish(completion) {
+                                let _ = context.completion_notifier.send(context.raw_child_pid);
+                                Ok(())
+                            } else {
+                                Err(report(
+                                    "child wait completion",
+                                    Error::UnexpectedVcpuExit(format!(
+                                        "KVM child process {} published its logical completion twice",
+                                        context.raw_child_pid
+                                    )),
+                                ))
+                            };
+                            let caught = match first_poll {
+                                Poll::Ready(caught) => caught,
+                                Poll::Pending => callback.await,
+                            };
+                            let hook = panics
+                                .finish(
+                                    crate::failure::owned_future::CaughtFuture {
+                                        output: caught
+                                            .output
+                                            .map(|result| result.map_err(Error::Reverie)),
+                                        panics: caught.panics,
+                                    },
+                                    "child wait hook",
+                                )
+                                .map_err(|error| report("child wait hook", error));
+                            match (waitability, hook) {
+                                (Ok(()), result) | (result, Ok(())) => result,
+                                (Err(error), Err(hook)) => Err(error.with_cleanup(vec![hook])),
+                            }
+                        }
                     }
                 }
-                Ok(crate::executor::ProcessFamilyExit::RunTeardownChild { status }) => {
-                    if !context
+                Ok(crate::executor::ProcessFamilyExit::RunTeardownChild {
+                    status: family_status,
+                }) => {
+                    if let Err(error) =
+                        validate_tool_child_status(family_status, status, context.raw_child_pid)
+                    {
+                        Err(report("child family exit", error))
+                    } else if !context
                         .completion
-                        .publish(crate::executor::ChildCompletion::AutoReaped(status))
+                        .publish(crate::executor::ChildCompletion::AutoReaped(family_status))
                     {
                         Err(report(
                             "child teardown completion",
@@ -3046,6 +3097,12 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
                     ..
                 }) => {
                     unreachable!("executor maps a missing parent-child relation to an error")
+                }
+                Ok(crate::executor::ProcessFamilyExit::AncestryCycle { .. }) => {
+                    unreachable!("executor maps a family ancestry cycle to an error")
+                }
+                Ok(crate::executor::ProcessFamilyExit::MultipleParents { .. }) => {
+                    unreachable!("executor maps ambiguous family parents to an error")
                 }
             }
         }
@@ -5487,7 +5544,9 @@ impl KvmBackend {
                     executor.reserve_signal_effects(64).map_err(|errno| {
                         executor.with_signal_effects(Error::Reverie(errno.into()), None)
                     })?;
-                    let raw = executor.execute(&request, &memory);
+                    let raw = executor
+                        .execute_checked(&request, &memory)
+                        .map_err(|error| executor.with_signal_effects(error, None))?;
                     flush_pending_signal_effects_with_tool(
                         self,
                         executor,
@@ -5856,6 +5915,46 @@ mod tests {
 
     fn synthetic_initial_exec() -> SyscallRequest {
         SyscallRequest::new(libc::SYS_execve as u64, [0x100, 0x200, 0x300, 0, 0, 0])
+    }
+
+    #[test]
+    fn tool_child_completion_validation_is_exact_and_release_active() {
+        let parent = reverie::SignalProcessId {
+            tgid: Pid::from_raw(1),
+            generation: 10,
+        };
+        let child = reverie::SignalProcessId {
+            tgid: Pid::from_raw(2),
+            generation: 11,
+        };
+        let completion = reverie::ChildExitCompletion {
+            parent,
+            child,
+            status: ExitStatus::Exited(7),
+            waitable: true,
+            uid: 0,
+            user_ticks: 0,
+            system_ticks: 0,
+        };
+
+        validate_tool_child_completion(completion, child, ExitStatus::Exited(7), 2).unwrap();
+
+        let stale_child = reverie::SignalProcessId {
+            generation: 12,
+            ..child
+        };
+        assert!(matches!(
+            validate_tool_child_completion(completion, stale_child, ExitStatus::Exited(7), 2),
+            Err(Error::UnexpectedVcpuExit(message))
+                if message.contains("family identity")
+                    && message.contains("admitted identity")
+        ));
+        assert!(matches!(
+            validate_tool_child_completion(completion, child, ExitStatus::Exited(8), 2),
+            Err(Error::UnexpectedVcpuExit(message))
+                if message.contains("family status Exited(7)")
+                    && message.contains("process status Exited(8)")
+        ));
     }
 
     #[test]
@@ -6262,6 +6361,26 @@ mod tests {
         state: TailInjectionSideEffects,
     }
 
+    struct FailingSyscallExecutor;
+
+    impl GuestSyscallExecutor<crate::StraceTool> for FailingSyscallExecutor {
+        fn read_clock(&self) -> Result<u64> {
+            Err(Error::GuestClock(
+                "failing executor has no guest counter".into(),
+            ))
+        }
+
+        fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<i64> {
+            Err(Error::FamilyWaitLedgerMismatch {
+                parent: reverie::SignalProcessId {
+                    tgid: Pid::from_raw(1),
+                    generation: 7,
+                },
+                child_pid: 2,
+            })
+        }
+    }
+
     impl GuestSyscallExecutor<crate::StraceTool> for SideEffectingExecutor {
         fn read_clock(&self) -> Result<u64> {
             Err(Error::GuestClock(
@@ -6269,7 +6388,7 @@ mod tests {
             ))
         }
 
-        fn execute(&mut self, request: &SyscallRequest, _memory: &GuestMemory) -> i64 {
+        fn execute(&mut self, request: &SyscallRequest, _memory: &GuestMemory) -> Result<i64> {
             match request.number() as libc::c_long {
                 libc::SYS_write => self.state.output_bytes += request.args()[2] as usize,
                 libc::SYS_pipe2 => self.state.descriptors += 2,
@@ -6288,7 +6407,7 @@ mod tests {
                 libc::SYS_exit | libc::SYS_exit_group => self.state.exited = true,
                 number => panic!("unexpected side-effect probe syscall {number}"),
             }
-            0
+            Ok(0)
         }
 
         fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
@@ -6328,7 +6447,7 @@ mod tests {
             ))
         }
 
-        fn execute(&mut self, request: &SyscallRequest, _memory: &GuestMemory) -> i64 {
+        fn execute(&mut self, request: &SyscallRequest, _memory: &GuestMemory) -> Result<i64> {
             match request.number() as libc::c_long {
                 libc::SYS_execve | libc::SYS_execveat => {
                     self.state.address_space_generation += 1;
@@ -6340,7 +6459,7 @@ mod tests {
                 libc::SYS_exit | libc::SYS_exit_group => self.state.exited = true,
                 number => panic!("unexpected nonreturning probe syscall {number}"),
             }
-            0
+            Ok(0)
         }
 
         fn complete_injection<'a>(
@@ -6357,6 +6476,54 @@ mod tests {
                 })
             })
         }
+    }
+
+    #[test]
+    fn injected_backend_failure_is_runtime_fatal_not_a_guest_errno() {
+        let memory = GuestMemory::new(0, STACK_CAPACITY).unwrap();
+        let auxv = [];
+        let mut thread_state = ();
+        let global_state = crate::StraceLog::default();
+        let config = ();
+        let subscriptions = Subscription::none();
+        let handler_signal = Arc::new(Mutex::new(None));
+        let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+        let mut executor = FailingSyscallExecutor;
+        let mut guest = KvmGuest::<crate::StraceTool>::new(
+            Pid::from_raw(1),
+            Pid::from_raw(1),
+            Arc::new(crate::StraceTool),
+            memory,
+            &auxv,
+            // SAFETY: the test does not inspect any register field.
+            unsafe { std::mem::zeroed() },
+            &mut thread_state,
+            &mut executor,
+            &global_state,
+            None,
+            &config,
+            &subscriptions,
+            handler_signal.clone(),
+            pending_child_starts.clone(),
+            crate::bootstrap::TOOL_STACK_TOP,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let syscall = SyscallRequest::new(libc::SYS_getpid as u64, [0; 6])
+            .into_syscall()
+            .unwrap();
+        let outcome = futures::executor::block_on(drive_handler(
+            guest.inject(syscall),
+            handler_signal,
+            pending_child_starts,
+            std::future::pending(),
+        ));
+        assert!(matches!(
+            outcome,
+            HandlerOutcome::RuntimeError(Error::FamilyWaitLedgerMismatch {
+                parent,
+                child_pid: 2,
+            }) if parent.tgid == Pid::from_raw(1) && parent.generation == 7
+        ));
     }
 
     #[test]

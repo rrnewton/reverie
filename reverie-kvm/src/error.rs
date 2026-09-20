@@ -82,6 +82,56 @@ pub enum Error {
         parent: reverie::SignalProcessId,
     },
 
+    /// A Tool-controlled backend wait removed a numeric child for which the
+    /// exact-generation process-family ledger had no waitable zombie.
+    #[error(
+        "KVM parent {parent:?} reaped numeric child {child_pid} without a waitable exact family entry"
+    )]
+    FamilyWaitLedgerMismatch {
+        /// Exact parent generation that executed the wait.
+        parent: reverie::SignalProcessId,
+        /// Numeric PID actually removed by the backend wait implementation.
+        child_pid: i32,
+    },
+
+    /// A previous backend wait left its irreversible family-ledger effect
+    /// pending when another syscall tried to begin.
+    #[error(
+        "KVM parent {parent:?} began another syscall with child {child_pid}'s wait-ledger effect pending"
+    )]
+    ChildWaitLedgerEffectPending {
+        /// Exact parent generation that owns the pending effect.
+        parent: reverie::SignalProcessId,
+        /// Numeric PID removed by the originating backend wait.
+        child_pid: i32,
+    },
+
+    /// Corrupt exact-generation family edges formed an ancestry cycle.
+    #[error(
+        "KVM process {process:?} cannot complete because family ancestry cycles at {ancestor:?}"
+    )]
+    ProcessFamilyAncestryCycle {
+        /// Process whose terminal transition discovered the corruption.
+        process: reverie::SignalProcessId,
+        /// Revisited exact generation.
+        ancestor: reverie::SignalProcessId,
+    },
+
+    /// One exact process generation appeared under two family parents.
+    #[error(
+        "KVM process {process:?} cannot complete because child {child:?} has family parents {first_parent:?} and {second_parent:?}"
+    )]
+    ProcessFamilyMultipleParents {
+        /// Process whose terminal transition discovered the corruption.
+        process: reverie::SignalProcessId,
+        /// Exact generation with ambiguous ancestry.
+        child: reverie::SignalProcessId,
+        /// First exact parent in deterministic key order.
+        first_parent: reverie::SignalProcessId,
+        /// Second exact parent in deterministic key order.
+        second_parent: reverie::SignalProcessId,
+    },
+
     /// Terminal failure with irreversible pending-state effects retained intact.
     #[error("{cause}; committed signal effects: {} removals, {} publication receipts", dequeues.len(), publications.len())]
     SignalEffects {

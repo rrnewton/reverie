@@ -82,7 +82,7 @@ impl<T: Tool> GuestSyscallExecutor<T> for NoInstructions<'_> {
     fn read_clock(&self) -> Result<u64> {
         panic!("native Tool control must disable guest clock operations")
     }
-    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
+    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> Result<i64> {
         panic!("native Tool control must not inject a guest instruction")
     }
 }
