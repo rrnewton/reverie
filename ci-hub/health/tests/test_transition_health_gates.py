@@ -176,10 +176,10 @@ def test_herdr_snapshot_producer_runs_independently_inside_freshness_bound() -> 
     health_service = (ROOT / "scripts/systemd/hermit-health-tick.service").read_text()
     assert "OnUnitInactiveSec=1min" in timer
     assert "AccuracySec=5s" in timer
-    assert "TimeoutStartSec=90" in service
+    assert "TimeoutStartSec=110" in service
     # `captured_at` is the observation START. One full old collection, inactive
     # interval, accuracy, and one full next collection still fit the consumer.
-    assert 90 + 60 + 5 + 90 < slot_agent_parity.DEFAULT_MAX_SOURCE_AGE_SECS
+    assert 110 + 60 + 5 + 110 < slot_agent_parity.DEFAULT_MAX_SOURCE_AGE_SECS
     assert "herdr_agent_snapshot.py" in service
     assert "--bindings %h/work/dev-hermit/.tick-hub/herdr-agent-bindings.json" in service
     assert "--output %h/work/dev-hermit/ignored/ci-hub/agent-snapshot.json" in service

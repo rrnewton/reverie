@@ -5,8 +5,8 @@ Documentation=https://github.com/rrnewton/dev-hermit/blob/main/ci-hub/health/her
 [Timer]
 OnBootSec=45s
 # The producer timestamps the START of observation, never publication. In the
-# fully conservative case, one prior 90s collection + 60s inactive interval +
-# 5s accuracy + one next 90s collection is 245s from evidence start to the next
+# fully conservative case, one prior 110s collection + 60s inactive interval +
+# 5s accuracy + one next 110s collection is 285s from evidence start to the next
 # publication, below slot parity's 300s refusal bound.
 OnUnitInactiveSec=1min
 AccuracySec=5s
