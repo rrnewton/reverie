@@ -39,6 +39,9 @@ Run: python3 -m pytest ci-hub/ledger/tests/test_ledger_invariants.py -q
 from __future__ import annotations
 
 import json
+import os
+import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -253,6 +256,242 @@ def test_shared_event_type_refuses_missing_result_outcome_by_name():
     del event["outcome"]
     codes = impl.validate_event(event)
     assert any("run.result omitted outcome" in code for code in codes), codes
+
+
+def copy_shared_checker_sources(destination: Path) -> None:
+    repository = Path(__file__).resolve().parents[3]
+    for relative in impl._SHARED_TYPE_SOURCE_RELATIVES:
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((repository / relative).read_bytes())
+        target.chmod(
+            0o755 if relative == impl._SHARED_TYPE_CHECKER_RELATIVE else 0o644
+        )
+
+
+def test_shared_checker_cache_key_is_source_content_not_checkout_path(tmp_path):
+    needs_impl("the Rust checker cache key is independent of a private tool-root path")
+    first_source = tmp_path / "run-a"
+    second_source = tmp_path / "run-b"
+    cache = tmp_path / "cache"
+    copy_shared_checker_sources(first_source)
+    copy_shared_checker_sources(second_source)
+
+    first = impl._materialized_shared_type_checker(
+        source_root=first_source, cache_root=cache
+    )
+    second = impl._materialized_shared_type_checker(
+        source_root=second_source, cache_root=cache
+    )
+
+    assert first == second
+    target = first.parents[2]
+    for relative in impl._SHARED_TYPE_SOURCE_RELATIVES:
+        cached = target / relative
+        assert cached.read_bytes() == (first_source / relative).read_bytes()
+        assert stat.S_IMODE(cached.stat().st_mode) == (
+            0o555 if relative == impl._SHARED_TYPE_CHECKER_RELATIVE else 0o444
+        )
+        assert cached.stat().st_nlink == 1
+    assert first.read_bytes().startswith(
+        b"#!/usr/bin/env -S rust-script --force\n"
+    )
+    assert stat.S_IMODE(first.stat().st_mode) & 0o111
+
+
+def test_shared_checker_cache_tamper_is_refused_not_repaired(tmp_path):
+    needs_impl("tampered cached Rust checker bytes fail closed")
+    source = tmp_path / "run"
+    cache = tmp_path / "cache"
+    copy_shared_checker_sources(source)
+    checker = impl._materialized_shared_type_checker(
+        source_root=source, cache_root=cache
+    )
+    tampered = checker.read_bytes() + b"\n// tampered\n"
+    checker.chmod(0o755)
+    checker.write_bytes(tampered)
+
+    with pytest.raises(impl.SharedTypeCheckerUnavailable, match="cached checker source"):
+        impl._materialized_shared_type_checker(source_root=source, cache_root=cache)
+    assert checker.read_bytes() == tampered
+
+
+def test_shared_checker_source_must_retain_tracked_executable_semantics(tmp_path):
+    needs_impl("a nonexecutable source checker cannot be promoted by the cache")
+    source = tmp_path / "run"
+    copy_shared_checker_sources(source)
+    (source / impl._SHARED_TYPE_CHECKER_RELATIVE).chmod(0o644)
+
+    with pytest.raises(impl.SharedTypeCheckerUnavailable, match="source mode"):
+        impl._materialized_shared_type_checker(
+            source_root=source, cache_root=tmp_path / "cache"
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation,match",
+    [
+        ("hardlink", "link count"),
+        ("extra-entry", "unexpected entries"),
+    ],
+)
+def test_shared_checker_cache_shape_tamper_is_refused(
+    tmp_path, mutation, match
+):
+    needs_impl("cached checker mode, links, and tree shape remain exact")
+    source = tmp_path / "run"
+    cache = tmp_path / "cache"
+    copy_shared_checker_sources(source)
+    checker = impl._materialized_shared_type_checker(
+        source_root=source, cache_root=cache
+    )
+    if mutation == "hardlink":
+        os.link(checker, tmp_path / "checker-hardlink")
+    else:
+        checker.parent.chmod(0o755)
+        (checker.parent / "unexpected").write_text("tampered\n")
+        checker.parent.chmod(0o555)
+
+    with pytest.raises(impl.SharedTypeCheckerUnavailable, match=match):
+        impl._materialized_shared_type_checker(source_root=source, cache_root=cache)
+
+
+def test_shared_checker_dependency_change_mints_a_new_cache_key(tmp_path):
+    needs_impl("a changed producer-owned Rust dependency cannot reuse a stale binary")
+    first_source = tmp_path / "run-a"
+    changed_source = tmp_path / "run-b"
+    cache = tmp_path / "cache"
+    copy_shared_checker_sources(first_source)
+    copy_shared_checker_sources(changed_source)
+    first = impl._materialized_shared_type_checker(
+        source_root=first_source, cache_root=cache
+    )
+    dependency_relative = Path("ci-hub/lib/ledger_event.rs")
+    dependency = changed_source / dependency_relative
+    changed_bytes = dependency.read_bytes() + b"\n// source-identity fixture\n"
+    dependency.write_bytes(changed_bytes)
+
+    changed = impl._materialized_shared_type_checker(
+        source_root=changed_source, cache_root=cache
+    )
+
+    assert changed != first
+    assert (changed.parents[2] / dependency_relative).read_bytes() == changed_bytes
+    assert (first.parents[2] / dependency_relative).read_bytes() != changed_bytes
+
+    third_source = tmp_path / "run-c"
+    copy_shared_checker_sources(third_source)
+    third_dependency = third_source / dependency_relative
+    third_bytes = third_dependency.read_bytes() + b"\n// second source identity\n"
+    third_dependency.write_bytes(third_bytes)
+    third = impl._materialized_shared_type_checker(
+        source_root=third_source, cache_root=cache
+    )
+    assert third not in (first, changed)
+    assert not first.parents[2].exists()
+    assert changed.parents[2].is_dir()
+    assert third.parents[2].is_dir()
+
+
+def test_shared_checker_post_execution_tamper_discards_success(tmp_path, monkeypatch):
+    needs_impl("a checker changed during execution cannot return a trusted success")
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("CI_HUB_LEDGER_EVENT_CHECKER_CACHE", str(cache))
+    monkeypatch.delenv("CI_HUB_LEDGER_EVENT_CHECKER", raising=False)
+    monkeypatch.delenv("DEV_HERMIT_TOOL_AUTHORITY", raising=False)
+
+    def mutate_then_succeed(argv, **_kwargs):
+        checker = Path(argv[0])
+        checker.chmod(0o755)
+        checker.write_bytes(checker.read_bytes() + b"\n// post-check tamper\n")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(impl.subprocess, "run", mutate_then_succeed)
+    codes = impl._shared_type_codes([result("01A", SHA_1, "pass")])
+    assert len(codes) == 1 and len(codes[0]) == 1
+    assert codes[0][0].startswith("shared-ledger-event-check-unavailable:")
+    assert "cached checker source" in codes[0][0]
+
+
+@pytest.mark.parametrize(
+    "name,value,message",
+    [
+        (
+            "CI_HUB_LEDGER_EVENT_CHECKER",
+            "/bin/true",
+            "fixture checker override is forbidden in immutable tool runs",
+        ),
+        (
+            "CI_HUB_LEDGER_EVENT_CHECKER_CACHE",
+            "/fixture/cache",
+            "fixture checker cache override is forbidden in immutable tool runs",
+        ),
+    ],
+)
+def test_immutable_tool_run_refuses_fixture_checker_override(
+    monkeypatch, name, value, message
+):
+    needs_impl("immutable health cannot replace or redirect its Rust checker")
+    monkeypatch.delenv("CI_HUB_LEDGER_EVENT_CHECKER", raising=False)
+    monkeypatch.delenv("CI_HUB_LEDGER_EVENT_CHECKER_CACHE", raising=False)
+    monkeypatch.setenv(name, value)
+    monkeypatch.setenv("DEV_HERMIT_TOOL_AUTHORITY", "/fixture/authority")
+    called = False
+
+    def must_not_run(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("fixture override ran inside immutable tooling")
+
+    monkeypatch.setattr(impl.subprocess, "run", must_not_run)
+    codes = impl._shared_type_codes([result("01A", SHA_1, "pass")])
+    assert not called
+    assert codes == [[f"shared-ledger-event-check-unavailable: {message}"]]
+
+
+def test_shared_checker_cache_path_symlink_is_refused(tmp_path):
+    needs_impl("the checker cache never follows a substituted path component")
+    source = tmp_path / "run"
+    copy_shared_checker_sources(source)
+    real_cache = tmp_path / "real-cache"
+    real_cache.mkdir()
+    cache_link = tmp_path / "cache-link"
+    cache_link.symlink_to(real_cache, target_is_directory=True)
+
+    with pytest.raises(impl.SharedTypeCheckerUnavailable, match="not a real directory"):
+        impl._materialized_shared_type_checker(
+            source_root=source, cache_root=cache_link
+        )
+
+
+def test_shared_checker_missing_source_and_materializer_failure_refuse(
+    tmp_path, monkeypatch
+):
+    needs_impl("an incomplete checker source tree is unavailable, never skipped")
+    source = tmp_path / "run"
+    cache = tmp_path / "cache"
+    checker_relative = impl._SHARED_TYPE_CHECKER_RELATIVE
+    checker = source / checker_relative
+    checker.parent.mkdir(parents=True)
+    checker.write_bytes(
+        (Path(__file__).resolve().parents[3] / checker_relative).read_bytes()
+    )
+    checker.chmod(0o755)
+    with pytest.raises(impl.SharedTypeCheckerUnavailable, match="cannot read checker source"):
+        impl._materialized_shared_type_checker(source_root=source, cache_root=cache)
+
+    monkeypatch.delenv("CI_HUB_LEDGER_EVENT_CHECKER", raising=False)
+
+    def unavailable():
+        raise impl.SharedTypeCheckerUnavailable("fixture cache refusal")
+
+    monkeypatch.setattr(
+        impl, "_locked_materialized_shared_type_checker", unavailable
+    )
+    codes = impl._shared_type_codes([result("01A", SHA_1, "pass")])
+    assert codes == [[
+        "shared-ledger-event-check-unavailable: fixture cache refusal"
+    ]]
 
 
 def test_shard_fixtures_for_two_teams_and_two_machines_are_disjoint_paths(tmp_path):

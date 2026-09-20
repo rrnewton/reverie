@@ -30,10 +30,16 @@ FLAGGED by the linter.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import fcntl
+import hashlib
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
@@ -80,6 +86,446 @@ class ConflictingEventId(LedgerError):
     conflict means two producers disagree about history and a human must say
     which is right (§5.2).
     """
+
+
+class SharedTypeCheckerUnavailable(LedgerError):
+    """The exact Rust event checker could not be materialized safely."""
+
+
+_SHARED_TYPE_CHECKER_RELATIVE = Path("ci-hub/ledger/check-ledger-events.rs")
+_SHARED_TYPE_SOURCE_RELATIVES = (
+    _SHARED_TYPE_CHECKER_RELATIVE,
+    Path("ci-hub/lib/ledger_event.rs"),
+)
+_SHARED_TYPE_CACHE_MODES = {
+    _SHARED_TYPE_CHECKER_RELATIVE: (b"100755", 0o555),
+    Path("ci-hub/lib/ledger_event.rs"): (b"100644", 0o444),
+}
+_SHARED_TYPE_CACHE_VERSION = "v1"
+_SHARED_TYPE_CACHE_KEEP = 2
+
+
+def _stable_checker_cache_root() -> Path:
+    configured = os.environ.get("CI_HUB_LEDGER_EVENT_CHECKER_CACHE")
+    if configured:
+        if os.environ.get("DEV_HERMIT_TOOL_AUTHORITY"):
+            raise SharedTypeCheckerUnavailable(
+                "fixture checker cache override is forbidden in immutable tool runs"
+            )
+        root = Path(configured)
+    else:
+        tool_cache = os.environ.get("DEV_HERMIT_TOOL_CACHE")
+        configured_base = os.environ.get("XDG_CACHE_HOME")
+        if tool_cache:
+            root = Path(tool_cache) / "checker-sources"
+        elif configured_base:
+            root = Path(configured_base) / "dev-hermit" / "ledger-event-checker"
+        else:
+            home = os.environ.get("HOME")
+            if not home:
+                raise SharedTypeCheckerUnavailable(
+                    "HOME and XDG_CACHE_HOME are both absent"
+                )
+            root = Path(home) / ".cache" / "dev-hermit" / "ledger-event-checker"
+    if not root.is_absolute():
+        raise SharedTypeCheckerUnavailable(
+            f"checker cache root must be absolute: {root}"
+        )
+    return root
+
+
+def _stable_checker_source_bytes(source_root: Path) -> dict[Path, bytes]:
+    sources: dict[Path, bytes] = {}
+    for relative in _SHARED_TYPE_SOURCE_RELATIVES:
+        path = source_root / relative
+        try:
+            before = path.lstat()
+            if not stat.S_ISREG(before.st_mode):
+                raise SharedTypeCheckerUnavailable(
+                    f"checker source is not a regular file: {path}"
+                )
+            executable = bool(stat.S_IMODE(before.st_mode) & 0o111)
+            expected_executable = relative == _SHARED_TYPE_CHECKER_RELATIVE
+            if executable != expected_executable:
+                raise SharedTypeCheckerUnavailable(
+                    f"checker source mode disagrees with tracked semantics: {path}"
+                )
+            if before.st_nlink != 1:
+                raise SharedTypeCheckerUnavailable(
+                    f"checker source link count is not one: {path}"
+                )
+            data = path.read_bytes()
+            after = path.lstat()
+        except SharedTypeCheckerUnavailable:
+            raise
+        except OSError as error:
+            raise SharedTypeCheckerUnavailable(
+                f"cannot read checker source {path}: {error}"
+            ) from error
+        identity_before = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_mode,
+            before.st_nlink,
+        )
+        identity_after = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_mode,
+            after.st_nlink,
+        )
+        if identity_before != identity_after or len(data) != after.st_size:
+            raise SharedTypeCheckerUnavailable(
+                f"checker source changed while it was read: {path}"
+            )
+        sources[relative] = data
+    if not sources[_SHARED_TYPE_CHECKER_RELATIVE].startswith(
+        b"#!/usr/bin/env -S rust-script --force\n"
+    ):
+        raise SharedTypeCheckerUnavailable(
+            "checker source no longer carries its required rust-script --force boundary"
+        )
+    return sources
+
+
+def _stable_checker_digest(sources: dict[Path, bytes]) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"dev-hermit-ledger-event-checker-v1\0")
+    for relative in _SHARED_TYPE_SOURCE_RELATIVES:
+        name = relative.as_posix().encode("utf-8")
+        data = sources[relative]
+        tracked_mode, _cache_mode = _SHARED_TYPE_CACHE_MODES[relative]
+        digest.update(len(name).to_bytes(4, "big"))
+        digest.update(name)
+        digest.update(tracked_mode)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def _checker_expected_directories() -> dict[Path, set[str]]:
+    expected: dict[Path, set[str]] = {Path(): set()}
+    for relative in _SHARED_TYPE_SOURCE_RELATIVES:
+        parent = Path()
+        for part in relative.parts[:-1]:
+            expected.setdefault(parent, set()).add(part)
+            parent /= part
+            expected.setdefault(parent, set())
+        expected[parent].add(relative.name)
+    return expected
+
+
+def _verify_stable_checker_tree(
+    target: Path, sources: dict[Path, bytes]
+) -> Path:
+    owner = os.geteuid()
+    for relative, expected_children in _checker_expected_directories().items():
+        directory = target / relative
+        try:
+            metadata = directory.lstat()
+            children = {entry.name for entry in os.scandir(directory)}
+        except OSError as error:
+            raise SharedTypeCheckerUnavailable(
+                f"cannot inspect cached checker directory {directory}: {error}"
+            ) from error
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != owner
+            or stat.S_IMODE(metadata.st_mode) != 0o555
+        ):
+            raise SharedTypeCheckerUnavailable(
+                f"cached checker directory mode or owner is invalid: {directory}"
+            )
+        if children != expected_children:
+            raise SharedTypeCheckerUnavailable(
+                f"cached checker directory has unexpected entries: {directory}"
+            )
+    for relative, expected in sources.items():
+        path = target / relative
+        _tracked_mode, expected_mode = _SHARED_TYPE_CACHE_MODES[relative]
+        try:
+            before = path.lstat()
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_uid != owner
+                or before.st_nlink != 1
+                or stat.S_IMODE(before.st_mode) != expected_mode
+            ):
+                raise SharedTypeCheckerUnavailable(
+                    f"cached checker source mode, owner, or link count is invalid: {path}"
+                )
+            actual = path.read_bytes()
+            after = path.lstat()
+        except SharedTypeCheckerUnavailable:
+            raise
+        except OSError as error:
+            raise SharedTypeCheckerUnavailable(
+                f"cannot inspect cached checker source {path}: {error}"
+            ) from error
+        if (
+            (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_mode,
+                before.st_nlink,
+            )
+            != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_mode,
+                after.st_nlink,
+            )
+            or len(actual) != after.st_size
+        ):
+            raise SharedTypeCheckerUnavailable(
+                f"cached checker source changed while it was read: {path}"
+            )
+        if actual != expected:
+            raise SharedTypeCheckerUnavailable(
+                f"cached checker source differs from its content address: {path}"
+            )
+    return target / _SHARED_TYPE_CHECKER_RELATIVE
+
+
+def _remove_checker_stage(stage: Path) -> None:
+    if not stage.exists():
+        return
+    for directory, names, files in os.walk(stage):
+        os.chmod(directory, 0o700)
+        for name in (*names, *files):
+            path = Path(directory) / name
+            if not path.is_symlink():
+                os.chmod(path, 0o700 if path.is_dir() else 0o600)
+    shutil.rmtree(stage)
+
+
+def _private_real_cache_directory(path: Path) -> None:
+    if not path.is_absolute():
+        raise SharedTypeCheckerUnavailable(
+            f"checker cache directory must be absolute: {path}"
+        )
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            try:
+                current.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
+            try:
+                metadata = current.lstat()
+            except OSError as error:
+                raise SharedTypeCheckerUnavailable(
+                    f"cannot create checker cache directory {current}: {error}"
+                ) from error
+        except OSError as error:
+            raise SharedTypeCheckerUnavailable(
+                f"cannot inspect checker cache path {current}: {error}"
+            ) from error
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise SharedTypeCheckerUnavailable(
+                f"checker cache path component is not a real directory: {current}"
+            )
+    metadata = path.lstat()
+    if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise SharedTypeCheckerUnavailable(
+            f"checker cache directory is not private and owned: {path}"
+        )
+
+
+@contextmanager
+def _checker_cache_lock(version_root: Path):
+    lock_path = version_root / ".materialize.lock"
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise SharedTypeCheckerUnavailable(
+                f"checker cache lock mode, owner, or link count is invalid: {lock_path}"
+            )
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except SharedTypeCheckerUnavailable:
+        if "descriptor" in locals():
+            os.close(descriptor)
+        raise
+    except OSError as error:
+        if "descriptor" in locals():
+            os.close(descriptor)
+        raise SharedTypeCheckerUnavailable(
+            f"cannot lock checker cache {lock_path}: {error}"
+        ) from error
+    try:
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _cleanup_abandoned_checker_stages(version_root: Path) -> None:
+    pattern = re.compile(r"\.[0-9a-f]{64}\.stage\.[A-Za-z0-9_-]+")
+    for entry in os.scandir(version_root):
+        if pattern.fullmatch(entry.name) is None:
+            continue
+        metadata = entry.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise SharedTypeCheckerUnavailable(
+                f"abandoned checker stage is not an owned real directory: {entry.path}"
+            )
+        _remove_checker_stage(Path(entry.path))
+
+
+def _retire_old_checker_targets(version_root: Path, current: Path) -> None:
+    """Keep the active source identity plus one rollout predecessor."""
+    target_pattern = re.compile(r"[0-9a-f]{64}")
+    targets: list[tuple[int, str, Path]] = []
+    for entry in os.scandir(version_root):
+        if target_pattern.fullmatch(entry.name) is None:
+            continue
+        metadata = entry.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise SharedTypeCheckerUnavailable(
+                f"cached checker target is not an owned real directory: {entry.path}"
+            )
+        targets.append((metadata.st_mtime_ns, entry.name, Path(entry.path)))
+    if current.name not in {name for _mtime, name, _path in targets}:
+        raise SharedTypeCheckerUnavailable(
+            f"current cached checker target disappeared: {current}"
+        )
+    keep = {current.name}
+    for _mtime, name, _path in sorted(targets, reverse=True):
+        keep.add(name)
+        if len(keep) >= _SHARED_TYPE_CACHE_KEEP:
+            break
+    for _mtime, name, path in targets:
+        if name not in keep:
+            _remove_checker_stage(path)
+
+
+def _materialize_checker_under_lock(
+    version_root: Path, sources: dict[Path, bytes]
+) -> Path:
+    content_digest = _stable_checker_digest(sources)
+    target = version_root / content_digest
+    stage: Path | None = None
+    try:
+        try:
+            target.lstat()
+        except FileNotFoundError:
+            stage = Path(
+                tempfile.mkdtemp(prefix=f".{content_digest}.stage.", dir=version_root)
+            )
+            for relative, data in sources.items():
+                destination = stage / relative
+                destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                with destination.open("xb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                _tracked_mode, cache_mode = _SHARED_TYPE_CACHE_MODES[relative]
+                destination.chmod(cache_mode)
+            directories = {stage}
+            for relative in _SHARED_TYPE_SOURCE_RELATIVES:
+                current = (stage / relative).parent
+                while current != stage:
+                    directories.add(current)
+                    current = current.parent
+            for directory in sorted(
+                directories, key=lambda item: len(item.parts), reverse=True
+            ):
+                directory.chmod(0o555)
+            try:
+                os.rename(stage, target)
+                stage = None
+            except OSError:
+                # A concurrent creator can win the no-replacement directory
+                # rename. Its bytes still have to pass the same exact check.
+                target.lstat()
+        return _verify_stable_checker_tree(target, sources)
+    except SharedTypeCheckerUnavailable:
+        raise
+    except OSError as error:
+        raise SharedTypeCheckerUnavailable(
+            f"cannot materialize content-addressed checker {target}: {error}"
+        ) from error
+    finally:
+        if stage is not None:
+            _remove_checker_stage(stage)
+
+
+@contextmanager
+def _locked_materialized_shared_type_checker(
+    *, source_root: Path | None = None, cache_root: Path | None = None
+):
+    """Yield the exact checker under a source-content-addressed cache lock.
+
+    Health ticks execute from short-lived ``.run.*`` roots. rust-script 0.36
+    keys its generated package by the script's absolute path, and ``--force``
+    then refreshes its path dependency. Measured on devbig014 (2026-09-20), a
+    fresh random path cost 1.24s wall / 1.82s CPU while the unchanged path cost
+    0.03s wall / 0.03s CPU. The two producer-owned Rust sources instead live at
+    a stable path keyed by their bytes and normalized tracked modes.
+
+    ``--force`` remains load-bearing. The cache is checked before and after
+    execution, and a mismatch is refused rather than repaired or hidden behind
+    a compiled binary. The lock covers cooperating writers. As with the shared
+    Cargo cache, a deliberately hostile same-uid process can still perform an
+    ABA replacement; same-uid processes are inside this host's cache boundary.
+    """
+    source_root = (source_root or Path(__file__).resolve().parents[2]).resolve()
+    cache_root = cache_root or _stable_checker_cache_root()
+    if not cache_root.is_absolute():
+        raise SharedTypeCheckerUnavailable(
+            f"checker cache root must be absolute: {cache_root}"
+        )
+    _private_real_cache_directory(cache_root)
+    version_root = cache_root / _SHARED_TYPE_CACHE_VERSION
+    _private_real_cache_directory(version_root)
+    with _checker_cache_lock(version_root):
+        _cleanup_abandoned_checker_stages(version_root)
+        sources = _stable_checker_source_bytes(source_root)
+        checker = _materialize_checker_under_lock(version_root, sources)
+        # The operational tool cache retains current+previous parent trees for
+        # the same rollout race. Mirror that bound for tiny source aliases;
+        # rust-script's generated packages have their separate 64-GiB cleanup.
+        _retire_old_checker_targets(version_root, checker.parents[2])
+        try:
+            yield checker
+        finally:
+            if _stable_checker_source_bytes(source_root) != sources:
+                raise SharedTypeCheckerUnavailable(
+                    "checker source changed across cached execution"
+                )
+            if _verify_stable_checker_tree(checker.parents[2], sources) != checker:
+                raise SharedTypeCheckerUnavailable(
+                    "cached checker identity changed across execution"
+                )
+
+
+def _materialized_shared_type_checker(
+    *, source_root: Path | None = None, cache_root: Path | None = None
+) -> Path:
+    with _locked_materialized_shared_type_checker(
+        source_root=source_root, cache_root=cache_root
+    ) as checker:
+        return checker
 
 
 # --------------------------------------------------------------------- paths
@@ -167,27 +613,41 @@ def _shared_type_codes(events: Sequence[dict], *, serializer=None) -> list[list[
     if not events:
         return []
     # The override is a fixture seam for isolated linked-worktree tests whose
-    # deliberately minimal repository copy does not include this checker.
-    checker = Path(
-        os.environ.get(
-            "CI_HUB_LEDGER_EVENT_CHECKER",
-            str(Path(__file__).resolve().with_name("check-ledger-events.rs")),
+    # deliberately minimal repository copy does not include this checker. An
+    # immutable operational run has the complete source tree and must never let
+    # inherited health.env content replace the producer-owned type.
+    payload = "".join(
+        (
+            serializer(event)
+            if serializer is not None
+            else json.dumps(event, sort_keys=True, separators=(",", ":"))
         )
+        + "\n"
+        for event in events
     )
-    try:
-        result = subprocess.run(
+
+    def run(checker: Path):
+        return subprocess.run(
             [str(checker)],
-            input="".join(
-                (serializer(event) if serializer is not None else
-                 json.dumps(event, sort_keys=True, separators=(",", ":"))) + "\n"
-                for event in events
-            ),
+            input=payload,
             capture_output=True,
             text=True,
             timeout=300,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+
+    try:
+        configured_checker = os.environ.get("CI_HUB_LEDGER_EVENT_CHECKER")
+        if configured_checker:
+            if os.environ.get("DEV_HERMIT_TOOL_AUTHORITY"):
+                raise SharedTypeCheckerUnavailable(
+                    "fixture checker override is forbidden in immutable tool runs"
+                )
+            result = run(Path(configured_checker))
+        else:
+            with _locked_materialized_shared_type_checker() as checker:
+                result = run(checker)
+    except (OSError, SharedTypeCheckerUnavailable, subprocess.TimeoutExpired) as error:
         return [[f"shared-ledger-event-check-unavailable: {error}"]] + [
             [] for _ in events[1:]
         ]
