@@ -1,0 +1,283 @@
+{
+  "schema_version": 2,
+  "record_type": "TFA_TARGET_EXPERIMENT",
+  "contract": {
+    "commit": "9d7f603c43618715b9245c74acb3e164c17d2ae8",
+    "path": "ai_docs/tfa-acceptance-bracket-2026-09-17.md",
+    "blob": "4a53f0c25623ad6371ee86b4556adada1218745d"
+  },
+  "identity": {
+    "service": "folly",
+    "canonical_target": "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+    "target_key_sha256": "246a623824611aae67d9548c5de604acb3b78f6fe5ca218eb7f724c020d2d942",
+    "target_directory": "services/folly/timerfd-timeout-manager-test--246a62382461",
+    "testinfra_id": "281475234167465",
+    "test_name": "TimerFDTimeoutManagerTest.ReschedTest",
+    "source_label_qualifier": null,
+    "test_selector": {
+      "kind": "EXACT_FILTER",
+      "flag": "--exact",
+      "value": "fbcode//folly/io/async/test:timerfd_timeout_manager_test - TimerFDTimeoutManagerTest.ReschedTest"
+    },
+    "build_mode_selector": [
+      "@fbcode//mode/dev-tsan"
+    ],
+    "invoked_target": "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+    "standalone_argv": [
+      "buck",
+      "test",
+      "@fbcode//mode/dev-tsan",
+      "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+      "--",
+      "--exact",
+      "fbcode//folly/io/async/test:timerfd_timeout_manager_test - TimerFDTimeoutManagerTest.ReschedTest",
+      "--run-disabled"
+    ],
+    "experiment_id": "folly/timerfd-timeout-manager-test--246a62382461",
+    "alias_resolution": {
+      "input_target": "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+      "resolved_target": "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+      "method": "buck2-targets-show-output-from-pinned-source",
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "evidence": "Resolved to buck-out/v2/art/fbcode/0a1a6e1cc8764b0f/folly/io/async/test/__timerfd_timeout_manager_test__/timerfd_timeout_manager_test; executable x86-64 ELF, 8743112 bytes, SHA-256 f1e2b15c30e0b32e05378b5be9f2d59032bb00c1108f1bd2005aa9cb68692be7."
+    }
+  },
+  "candidate_ranking": {
+    "pfs": {
+      "value": 0.3054,
+      "displayed_percent": "30.54%",
+      "partition": "2026-09-17",
+      "metric": "probability_of_flaky_state",
+      "role": "ranking_only",
+      "may_parameterize_seed_budget": false
+    },
+    "native_failure_rate": {
+      "failures": 28,
+      "executed": 93,
+      "rate": 0.3010752688172043,
+      "rate_fraction": "28/93",
+      "displayed_percent": "30.11%",
+      "window": "trailing one week; latest up to 100 final outcomes",
+      "limit": 100,
+      "final_only": true,
+      "purposes": [
+        "CONTINUOUS",
+        "STRESS_RUN",
+        "STRESS_RUN_NEW_TEST"
+      ],
+      "pass_statuses": [
+        "PASSED"
+      ],
+      "failure_statuses": [
+        "FAILED",
+        "FATAL",
+        "TIMEOUT"
+      ],
+      "excluded_statuses": [
+        "OMITTED",
+        "SKIPPED",
+        "INFRA_FAILURE"
+      ],
+      "source": "meta testinfra.result history",
+      "role": "planning_prior_only"
+    }
+  },
+  "plan": {
+    "plan_id": "folly-timerfd-dev-tsan-direct-elf-ptrace-strict-chaos-v1",
+    "plan_sha256": "c40a5edfb39e6c57f82034435d401bd9edab0d868cd22e13ad61392df222ccd6",
+    "sealed_at": "2026-09-20T13:11:32Z",
+    "sealed_by": "codex-tfa",
+    "campaign_owner_identity": "rrnewton",
+    "authorized_routes": [
+      {
+        "route_id": "folly-timerfd-dev-tsan-direct-elf-buck-out-bind",
+        "route_sha256": "f9523891e8c2b3009d08b24cbce16190335b6ce4b0d54962c7111b815be47521",
+        "fallback_of": null,
+        "authorized_cell_ids": [
+          "folly-timerfd-dev-tsan-direct-elf-ptrace-strict-chaos"
+        ],
+        "canonical_target": "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//folly/io/async/test:timerfd_timeout_manager_test - TimerFDTimeoutManagerTest.ReschedTest"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/dev-tsan"
+        ],
+        "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "build_argv": [
+          "buck",
+          "test",
+          "@fbcode//mode/dev-tsan",
+          "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+          "--",
+          "--exact",
+          "fbcode//folly/io/async/test:timerfd_timeout_manager_test - TimerFDTimeoutManagerTest.ReschedTest",
+          "--run-disabled"
+        ],
+        "launch_argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "900",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-folly-timerfd-verify-2088150-1789909892153926966",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0a1a6e1cc8764b0f/folly/io/async/test/__timerfd_timeout_manager_test__/timerfd_timeout_manager_test",
+          "--gtest_filter=TimerFDTimeoutManagerTest.ReschedTest",
+          "--gtest_also_run_disabled_tests"
+        ],
+        "repeat_matcher": {
+          "kind": "BUILTIN_VERIFY",
+          "comparison": "BitwiseInfoV1"
+        },
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "notes": "Use exact built dev-tsan ELF; no fallback. Direct selector --gtest_filter=TimerFDTimeoutManagerTest.ReschedTest; --gtest_also_run_disabled_tests preserves run-disabled. Same-path Buck mount. Retained logs use live 8G qgroup /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-folly-timerfd-verify-2088150-1789909892153926966."
+      }
+    ],
+    "target_oracle": {
+      "oracle_id": "folly-timerfd-gtest-exact-v1",
+      "defined_before_runs": true,
+      "unmodified": true,
+      "selected_test_executed_predicate": "GoogleTest output contains [ RUN      ] TimerFDTimeoutManagerTest.ReschedTest and reports exactly one test.",
+      "pass_predicate": "The selected line is [       OK ] TimerFDTimeoutManagerTest.ReschedTest, summary reports 1 passed, and exit is 0 without signal.",
+      "fail_classes": [
+        {
+          "failure_class_id": "gtest-selected-test-failure",
+          "target_owned": true,
+          "predicate": "The selected line is [  FAILED  ] TimerFDTimeoutManagerTest.ReschedTest, summary reports 1 failed, and guest exits nonzero, excluding harness, dependency, infrastructure, or outer timeout."
+        }
+      ],
+      "timeout_policy": {
+        "target_timeout_can_fail": false,
+        "target_timeout_predicate": null,
+        "target_timeout_failure_class_id": null,
+        "outer_timeout_is_censored": true
+      }
+    },
+    "measurement_design": {
+      "purpose": "EXISTENCE_DISCOVERY",
+      "swept_coordinate": {
+        "flag": "--sched-seed",
+        "domain": "unsigned 64-bit integers; explicit prefix 0 through 12",
+        "scheduler_modes": []
+      },
+      "fixed_seed_roots": {
+        "--seed": 0,
+        "--rng-seed": 0,
+        "--sched-seed": null,
+        "--fuzz-seed": 0
+      },
+      "seed_population": {
+        "kind": "EXPLICIT_VALUES",
+        "values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12
+        ]
+      },
+      "selection_order": {
+        "kind": "EXPLICIT",
+        "seed_values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12
+        ]
+      },
+      "without_replacement": true,
+      "design_basis": {
+        "kind": "RATE_BOUND",
+        "expected_hermit_fail_probability": 0.3010752688172043,
+        "provenance_kind": "NATIVE_EMPIRICAL_RATE",
+        "provenance": "Fixed cohort has 28 failures among 93 final native outcomes; non-equivalent planning prior only.",
+        "equivalence_to_hermit": false,
+        "max_miss_probability": 0.05
+      },
+      "miss_probability_override": null,
+      "required_valid_seed_tuples": 9,
+      "max_attempted_seed_tuples": 13,
+      "stop_rule": "BOTH_ARMS_THEN_REPEAT",
+      "repeat_min_executions_per_arm": 2,
+      "repeat_attempt_cap": 2,
+      "independence_assumption": "Distinct scheduler seeds are independent only for planning; native and Hermit rates are not asserted equivalent."
+    },
+    "resource_bounds": {
+      "wall_seconds": 900,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "stderr_bytes": 67108864,
+      "retained_log_bytes": 67108864,
+      "disk_guard": "8G"
+    },
+    "artifact_policy": {
+      "scratch_root": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit",
+      "terminal_evidence_must_be_durable": true,
+      "digest_algorithm": "sha256"
+    }
+  },
+  "plan_receipt": null,
+  "attempt_state": "PLANNED",
+  "cells": [],
+  "events": [],
+  "samples": [],
+  "matchers": [],
+  "outcome_history": [],
+  "current_outcome": null
+}
