@@ -13,14 +13,28 @@ steady-state reason to write even 5 GiB/hour (120 GiB/day).  That limit catches
 the measured failure with roughly a ten-fold margin while leaving orders of
 magnitude above bounded state, receipt, and journal traffic.
 
-Each row is bound to systemd's InvocationID. The CPU counter is compared over
-the same interval and emitted as millicores so an idle-loop regression is
-visible. It is diagnostic rather than a gate: CPU cost depends on the selected
-event provider, whereas sustained disk writes at the limit above are unsafe
-regardless of provider. A long-lived invocation is always compared, however old
-the prior sample. Only a changed InvocationID is a clean reset baseline; a
-monotonic counter decrease within one invocation is inconsistent evidence and
-refuses without changing state.
+Each row is bound to systemd's InvocationID and NRestarts. NRestarts counts
+automatic cycles caused by Restart=; any observed increase is an actionable
+lower bound even though the new invocation's CPU/I/O counters cannot honestly
+be added to the old invocation. (The counter can be reset between samples.) An
+InvocationID change without an observed NRestarts increase proves a lifecycle
+boundary and is consistent with an explicit restart, but does not prove its
+cause; it is actionable without being mislabeled as automatic churn. An
+NRestarts decrease is an evidence discontinuity: that tick refuses and
+normally atomically establishes a new baseline rather than inventing work
+across the reset. If the same sample also has an irreconcilable CPU/I/O counter
+decrease, preserving the old baseline takes precedence. A first or migrated
+baseline surfaces any positive NRestarts value as
+unbaselined history rather than silently absorbing it. Output names every unit
+whose CPU/I/O interval was unmeasured, so a zero
+measured delta is never presented as zero actual I/O. The CPU counter is
+compared over the same uninterrupted interval and emitted as millicores so an
+idle-loop regression is visible. It is diagnostic rather than a gate: CPU cost
+depends on the selected event provider, whereas sustained disk writes at the
+limit above are unsafe regardless of provider. A long-lived invocation is
+always compared, however old the prior sample. A monotonic CPU/I/O counter
+decrease within one invocation is inconsistent evidence and refuses without
+changing state.
 
 Installed units are checked before first start as well as while active. The
 event broker is capped at 1280 MiB and the bridge at 896 MiB; both are limited
@@ -28,6 +42,10 @@ to 128 MiB swap, 384 tasks, 1024 file descriptors, and four CPUs. Restart
 backoff, stop deadlines, group teardown, OOM behavior, core limits, and resource
 accounting are also part of the standing policy. These are the deployed bounds,
 not merely checks that a very large finite number was written in the unit.
+NRestarts is validated for stopped and failed units, but restart baselines are
+persisted only while per-invocation CPU/I/O counters are live. A failed or
+enabled-but-inactive unit is already actionable; if it becomes live, any
+positive counter is surfaced as unbaselined restart history.
 
 COST
 ====
@@ -36,12 +54,14 @@ host repeats those calls under the state lock before one batched property call,
 so its complete authoritative sample is serialized. The user manager's glob
 discovery is O(its installed/loaded unit catalog).
 Probe-side parsing and policy work are O(number of matching units); stable
-ordering makes state/comparison O(N log N). Disk work is one small state read
-and one atomic state replacement per 30-minute tick, serialized by a private
-bounded flock. All state path components are opened without following symlinks.
-There is no filesystem/provider polling loop or tree walk. Lock contention alone
-uses a bounded 25 ms retry for at most 0.5 seconds. A proven-empty discovery
-returns before opening or writing state.
+ordering makes state/comparison O(N log N). The restart proof adds one bounded
+integer per live unit; the complete serialized state remains capped at 1 MiB.
+Disk work is one small state read and one atomic state replacement per
+30-minute tick, serialized by a private bounded flock. All state path
+components are opened without following symlinks. There is no
+filesystem/provider polling loop or tree walk. Lock contention alone uses a
+bounded 25 ms retry for at most 0.5 seconds. A proven-empty discovery returns
+before opening or writing state.
 """
 
 from __future__ import annotations
@@ -66,12 +86,13 @@ from typing import Any
 GIB = 1 << 30
 MIB = 1 << 20
 NSEC_PER_SEC = 1_000_000_000
-STATE_VERSION = 2
+STATE_VERSION = 3
 WRITE_LIMIT_BYTES_PER_HOUR = 5 * GIB
 SYSTEMCTL_TIMEOUT_SECS = 2
 LOCK_WAIT_SECS = 0.5
 LOCK_POLL_SECS = 0.025
 MAX_STATE_BYTES = 1 << 20
+MAX_NRESTARTS = (1 << 32) - 1
 STATE_DIRECTORY = ".tick-hub"
 STATE_NAME = "chat-bridge-health.json"
 LOCK_NAME = "chat-bridge-health.lock"
@@ -139,6 +160,7 @@ SHOW_PROPERTIES = (
     "IOWriteBytes",
     "CPUUsageNSec",
     "InvocationID",
+    "NRestarts",
 )
 
 CommandRunner = Callable[[tuple[str, ...]], str]
@@ -186,6 +208,7 @@ class Counters:
     io_write_bytes: int
     cpu_usage_nsec: int
     invocation_id: str
+    automatic_restarts: int
 
 
 @dataclass(frozen=True)
@@ -442,6 +465,15 @@ def _counter(value: str, *, name: str, unit: str) -> int:
     return parsed
 
 
+def _restart_counter(value: str, *, unit: str) -> int:
+    parsed = _counter(value, name="NRestarts", unit=unit)
+    # NRestarts is a D-Bus `u` property. Reject impossible wider values rather
+    # than allowing adversarial decimal strings to inflate state or arithmetic.
+    if parsed > MAX_NRESTARTS:
+        raise EvidenceUnavailable(f"{unit} has out-of-range NRestarts={parsed}")
+    return parsed
+
+
 def active_policy_and_counters(
     units: list[UnitEvidence],
 ) -> tuple[list[str], dict[str, Counters]]:
@@ -540,6 +572,10 @@ def active_policy_and_counters(
             if value != "yes":
                 issues.append(f"{unit.name}:{prop}-not-yes")
         if not unit.has_live_counters:
+            # NRestarts is part of the standing evidence contract even while
+            # stopped. A malformed value must not become healthy merely
+            # because the per-invocation CPU/I/O counters are unavailable.
+            _restart_counter(props["NRestarts"], unit=unit.name)
             continue
         invocation_id = props["InvocationID"]
         if re.fullmatch(r"[0-9a-f]{32}", invocation_id) is None:
@@ -554,6 +590,9 @@ def active_policy_and_counters(
                 props["CPUUsageNSec"], name="CPUUsageNSec", unit=unit.name
             ),
             invocation_id=invocation_id,
+            automatic_restarts=_restart_counter(
+                props["NRestarts"], unit=unit.name
+            ),
         )
     return sorted(set(issues)), counters
 
@@ -868,23 +907,28 @@ def _baseline_from_document(document: object) -> LoadedBaseline:
             "io_write_bytes",
             "cpu_usage_nsec",
             "invocation_id",
+            "automatic_restarts",
         }:
             raise ValueError(f"invalid counter row for {name}")
         io_write = row["io_write_bytes"]
         cpu = row["cpu_usage_nsec"]
         invocation_id = row["invocation_id"]
+        automatic_restarts = row["automatic_restarts"]
         if any(
             isinstance(value, bool) or not isinstance(value, int)
-            for value in (io_write, cpu)
+            for value in (io_write, cpu, automatic_restarts)
         ):
             raise ValueError(f"non-integer counter for {name}")
-        if io_write < 0 or cpu < 0:
+        if io_write < 0 or cpu < 0 or automatic_restarts < 0:
             raise ValueError(f"negative counter for {name}")
-        if not isinstance(invocation_id, str) or re.fullmatch(
-            r"[0-9a-f]{32}", invocation_id
-        ) is None:
+        if automatic_restarts > MAX_NRESTARTS:
+            raise ValueError(f"out-of-range automatic_restarts for {name}")
+        if (
+            not isinstance(invocation_id, str)
+            or re.fullmatch(r"[0-9a-f]{32}", invocation_id) is None
+        ):
             raise ValueError(f"invalid invocation_id for {name}")
-        units[name] = Counters(io_write, cpu, invocation_id)
+        units[name] = Counters(io_write, cpu, invocation_id, automatic_restarts)
     return LoadedBaseline("loaded", Baseline(observed, units))
 
 
@@ -897,6 +941,7 @@ def _state_document(now_ns: int, counters: Mapping[str, Counters]) -> dict[str, 
                 "io_write_bytes": row.io_write_bytes,
                 "cpu_usage_nsec": row.cpu_usage_nsec,
                 "invocation_id": row.invocation_id,
+                "automatic_restarts": row.automatic_restarts,
             }
             for name, row in sorted(counters.items())
         },
@@ -933,13 +978,52 @@ def _empty_comparison_fields(status: str) -> dict[str, object]:
         "invocation_reset_units": "none",
         "counter_reset_units": "none",
         "counter_decrease_units": "none",
+        "automatic_restart_delta_lower_bound": 0,
+        "automatic_restart_units": "none",
+        "unbaselined_automatic_restart_history": 0,
+        "unbaselined_automatic_restart_units": "none",
         "io_write_delta_bytes": 0,
         "io_write_rate_bytes_per_hour": 0,
         "io_write_limit_bytes_per_hour": WRITE_LIMIT_BYTES_PER_HOUR,
+        "io_write_unmeasured_units": "none",
         "cpu_delta_nsec": 0,
         "cpu_millicores": 0,
         "runaway_units": "none",
     }
+
+
+def _counter_discontinuity_summary(
+    *,
+    restart_counter_reset: list[str],
+    cpu_io_counter_decrease: list[str],
+    additional_findings: list[str],
+    will_rebaseline: bool,
+) -> str:
+    parts: list[str] = []
+    if restart_counter_reset:
+        restart_detail = "systemd NRestarts decreased for " + ",".join(
+            restart_counter_reset
+        )
+        if will_rebaseline:
+            restart_detail += (
+                "; replacing that discontinuous restart baseline after this refusal"
+            )
+        else:
+            restart_detail += (
+                "; preserving the prior restart baseline because this sample "
+                "also has irreconcilable CPU/I/O evidence"
+            )
+        parts.append(restart_detail)
+    if cpu_io_counter_decrease:
+        parts.append(
+            "monotonic CPU/I/O counters decreased without an InvocationID "
+            "change for "
+            + ",".join(cpu_io_counter_decrease)
+            + "; preserving the prior baseline"
+        )
+    if additional_findings:
+        parts.append("also observed " + "; ".join(additional_findings))
+    return "refusing this tick: " + "; ".join(parts)
 
 
 def compare_counters(
@@ -947,14 +1031,30 @@ def compare_counters(
     current: Mapping[str, Counters],
     now_ns: int,
 ) -> Comparison:
-    if prior.status == "missing":
-        fields = _empty_comparison_fields("baseline-missing")
+    if prior.status in {"missing", "invalid"}:
+        status = (
+            "baseline-missing"
+            if prior.status == "missing"
+            else "baseline-invalid-replaced"
+        )
+        fields = _empty_comparison_fields(status)
         fields["baseline_units"] = len(current)
-        return Comparison(fields)
-    if prior.status == "invalid":
-        fields = _empty_comparison_fields("baseline-invalid-replaced")
-        fields["baseline_units"] = len(current)
-        return Comparison(fields)
+        fields["io_write_unmeasured_units"] = ",".join(sorted(current)) or "none"
+        history_units = sorted(
+            name for name, row in current.items() if row.automatic_restarts
+        )
+        history = sum(current[name].automatic_restarts for name in history_units)
+        fields["unbaselined_automatic_restart_history"] = history
+        fields["unbaselined_automatic_restart_units"] = (
+            ",".join(history_units) or "none"
+        )
+        initial_findings: tuple[str, ...] = ()
+        if history:
+            initial_findings = (
+                "unbaselined-automatic-restart-history="
+                f"{history} across " + ",".join(history_units),
+            )
+        return Comparison(fields, findings=initial_findings)
     assert prior.baseline is not None
     elapsed_ns = now_ns - prior.baseline.observed_at_unix_ns
     if elapsed_ns <= 0:
@@ -971,13 +1071,37 @@ def compare_counters(
     io_delta = 0
     cpu_delta = 0
     compared = 0
-    new_units = 0
+    new_units: list[str] = []
     invocation_reset: list[str] = []
+    restart_counter_reset: list[str] = []
+    counter_decrease: list[str] = []
+    automatic_restart_units: list[str] = []
+    automatic_restart_delta_lower_bound = 0
+    unbaselined_restart_units: list[str] = []
+    unbaselined_restart_history = 0
     per_unit_rates: dict[str, int] = {}
     for name, row in sorted(current.items()):
         old = prior.baseline.units.get(name)
         if old is None:
-            new_units += 1
+            new_units.append(name)
+            if row.automatic_restarts:
+                unbaselined_restart_units.append(name)
+                unbaselined_restart_history += row.automatic_restarts
+            continue
+        if row.automatic_restarts < old.automatic_restarts:
+            restart_counter_reset.append(name)
+            if row.invocation_id != old.invocation_id:
+                invocation_reset.append(name)
+                continue
+        elif row.automatic_restarts > old.automatic_restarts:
+            unit_restart_delta = row.automatic_restarts - old.automatic_restarts
+            automatic_restart_delta_lower_bound += unit_restart_delta
+            automatic_restart_units.append(name)
+            if row.invocation_id != old.invocation_id:
+                invocation_reset.append(name)
+            # A lifecycle occurred between samples. Even if systemd is
+            # observed during a transition with the old InvocationID, do not
+            # manufacture one cross-lifecycle CPU/I/O total.
             continue
         if row.invocation_id != old.invocation_id:
             invocation_reset.append(name)
@@ -986,18 +1110,8 @@ def compare_counters(
             row.io_write_bytes < old.io_write_bytes
             or row.cpu_usage_nsec < old.cpu_usage_nsec
         ):
-            fields = _empty_comparison_fields("inconsistent-counter-decrease")
-            fields["sample_elapsed_secs"] = elapsed_ns // NSEC_PER_SEC
-            fields["counter_decrease_units"] = name
-            return Comparison(
-                fields,
-                unavailable=(
-                    f"{name} retained InvocationID={row.invocation_id} while a "
-                    "monotonic CPU/I/O counter decreased; refusing to rebaseline "
-                    "inconsistent systemd evidence"
-                ),
-                may_write=False,
-            )
+            counter_decrease.append(name)
+            continue
         unit_io_delta = row.io_write_bytes - old.io_write_bytes
         io_delta += unit_io_delta
         cpu_delta += row.cpu_usage_nsec - old.cpu_usage_nsec
@@ -1011,13 +1125,47 @@ def compare_counters(
         if rate >= WRITE_LIMIT_BYTES_PER_HOUR
     )
     findings: list[str] = []
+    if automatic_restart_delta_lower_bound:
+        findings.append(
+            "automatic-restart-lower-bound="
+            f"{automatic_restart_delta_lower_bound} across "
+            + ",".join(automatic_restart_units)
+        )
+    if unbaselined_restart_history:
+        findings.append(
+            "unbaselined-automatic-restart-history="
+            f"{unbaselined_restart_history} across "
+            + ",".join(unbaselined_restart_units)
+        )
+    nonautomatic_rollovers = sorted(
+        set(invocation_reset) - set(automatic_restart_units)
+    )
+    if nonautomatic_rollovers:
+        findings.append(
+            "invocation-rollover-without-observed-automatic-increase="
+            f"{len(nonautomatic_rollovers)} across " + ",".join(nonautomatic_rollovers)
+        )
     if total_rate >= WRITE_LIMIT_BYTES_PER_HOUR:
         findings.append(
             "aggregate-write-rate="
             f"{total_rate}B/h>={WRITE_LIMIT_BYTES_PER_HOUR}B/h"
         )
-    if compared and (invocation_reset or new_units):
+    unmeasured_units = sorted(
+        set(new_units)
+        | set(invocation_reset)
+        | set(counter_decrease)
+        | set(automatic_restart_units)
+    )
+    if restart_counter_reset and counter_decrease:
+        sample_status = "inconsistent-counter-evidence"
+    elif restart_counter_reset:
+        sample_status = "restart-counter-decrease"
+    elif counter_decrease:
+        sample_status = "inconsistent-counter-decrease"
+    elif compared and unmeasured_units:
         sample_status = "partial-counter-baseline"
+    elif automatic_restart_units:
+        sample_status = "automatic-restart-baseline"
     elif invocation_reset:
         sample_status = "invocation-reset-baseline"
     elif new_units:
@@ -1029,18 +1177,42 @@ def compare_counters(
             "sample_status": sample_status,
             "sample_elapsed_secs": elapsed_ns // NSEC_PER_SEC,
             "compared_units": compared,
-            "baseline_units": new_units,
+            "baseline_units": len(new_units),
             "invocation_reset_units": ",".join(invocation_reset) or "none",
-            "counter_reset_units": "none",
-            "counter_decrease_units": "none",
+            "counter_reset_units": (",".join(restart_counter_reset) or "none"),
+            "counter_decrease_units": ",".join(counter_decrease) or "none",
+            "automatic_restart_delta_lower_bound": (
+                automatic_restart_delta_lower_bound
+            ),
+            "automatic_restart_units": (",".join(automatic_restart_units) or "none"),
+            "unbaselined_automatic_restart_history": (unbaselined_restart_history),
+            "unbaselined_automatic_restart_units": (
+                ",".join(unbaselined_restart_units) or "none"
+            ),
             "io_write_delta_bytes": io_delta,
             "io_write_rate_bytes_per_hour": total_rate,
             "io_write_limit_bytes_per_hour": WRITE_LIMIT_BYTES_PER_HOUR,
+            "io_write_unmeasured_units": (",".join(unmeasured_units) or "none"),
             "cpu_delta_nsec": cpu_delta,
             "cpu_millicores": cpu_delta * 1000 // elapsed_ns,
             "runaway_units": ",".join(runaway) or "none",
         },
         findings=tuple(findings),
+        unavailable=(
+            _counter_discontinuity_summary(
+                restart_counter_reset=restart_counter_reset,
+                cpu_io_counter_decrease=counter_decrease,
+                additional_findings=findings,
+                will_rebaseline=not counter_decrease,
+            )
+            if restart_counter_reset or counter_decrease
+            else ""
+        ),
+        # A CPU/I/O decrease with the same invocation remains irreconcilable;
+        # preserve the old baseline. NRestarts may legitimately be reset by
+        # the manager or service, so that discontinuity refuses one tick and
+        # rebaselines for bounded recovery.
+        may_write=not counter_decrease,
     )
 
 
@@ -1138,10 +1310,15 @@ def evaluate(
     if prior.status == "invalid":
         state_path = root / STATE_DIRECTORY / STATE_NAME
         fields["state"] = "unknown"
-        fields["summary"] = (
+        invalid_summary = (
             f"REFUSING one tick: prior baseline {state_path} was invalid "
             f"({_clean_error(prior.error)}); replaced it atomically from current counters"
         )
+        if comparison.findings:
+            invalid_summary += "; current systemd finding(s): " + "; ".join(
+                comparison.findings
+            )
+        fields["summary"] = invalid_summary
         return Report(2, fields)
 
     findings = [*policy_issues, *comparison.findings]

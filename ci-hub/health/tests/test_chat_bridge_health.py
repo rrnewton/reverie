@@ -62,6 +62,7 @@ def unit_properties(name: str, **changes: str) -> dict[str, str]:
         "IOWriteBytes": "1000",
         "CPUUsageNSec": "2000",
         "InvocationID": INVOCATION_A,
+        "NRestarts": "0",
     }
     values.update(changes)
     return values
@@ -137,6 +138,7 @@ def seed_state(
     *,
     observed_ns: int,
     rows: dict[str, tuple[int, int, str]],
+    automatic_restarts: dict[str, int] | None = None,
 ) -> None:
     state_directory(root).mkdir(mode=0o700, parents=True, exist_ok=True)
     state_path(root).write_text(
@@ -149,6 +151,7 @@ def seed_state(
                         "io_write_bytes": counters[0],
                         "cpu_usage_nsec": counters[1],
                         "invocation_id": counters[2],
+                        "automatic_restarts": (automatic_restarts or {}).get(name, 0),
                     }
                     for name, counters in rows.items()
                 },
@@ -169,9 +172,7 @@ def oversized_systemd() -> FakeSystemd:
             for index in range(8500)
         }
     )
-    counters = {
-        name: probe.Counters(1000, 2000, INVOCATION_A) for name in units
-    }
+    counters = {name: probe.Counters(1000, 2000, INVOCATION_A, 0) for name in units}
     with pytest.raises(probe.EvidenceUnavailable, match="next baseline is"):
         probe.serialize_baseline(NOW_NS, counters)
     return FakeSystemd(units)
@@ -225,6 +226,8 @@ def test_first_active_sample_records_private_state_and_lock(tmp_path: Path) -> N
     assert report.fields["invocation_reset_units"] == "none"
     assert report.fields["counter_reset_units"] == "none"
     assert report.fields["counter_decrease_units"] == "none"
+    assert report.fields["automatic_restart_delta_lower_bound"] == 0
+    assert report.fields["automatic_restart_units"] == "none"
     assert report.fields["io_write_delta_bytes"] == 0
     assert report.fields["io_write_rate_bytes_per_hour"] == 0
     assert report.fields["io_write_limit_bytes_per_hour"] == 5 * probe.GIB
@@ -235,11 +238,28 @@ def test_first_active_sample_records_private_state_and_lock(tmp_path: Path) -> N
     assert stat.S_IMODE(lock_path(tmp_path).stat().st_mode) == 0o600
     assert saved_state(tmp_path)["units"] == {
         CHAT: {
+            "automatic_restarts": 0,
             "cpu_usage_nsec": 2000,
             "io_write_bytes": 1000,
             "invocation_id": INVOCATION_A,
         }
     }
+
+
+def test_first_sample_surfaces_positive_unbaselined_restart_history(
+    tmp_path: Path,
+) -> None:
+    report = run(
+        tmp_path,
+        FakeSystemd({CHAT: unit_properties(CHAT, NRestarts="1")}),
+    )
+    assert report.returncode == 1
+    assert report.fields["state"] == "actionable"
+    assert report.fields["sample_status"] == "baseline-missing"
+    assert report.fields["unbaselined_automatic_restart_history"] == 1
+    assert report.fields["unbaselined_automatic_restart_units"] == CHAT
+    assert report.fields["io_write_unmeasured_units"] == CHAT
+    assert "unbaselined-automatic-restart-history=1" in str(report.fields["summary"])
 
 
 def test_normal_write_and_cpu_deltas_are_compared(tmp_path: Path) -> None:
@@ -391,12 +411,12 @@ def test_same_invocation_counter_decrease_refuses_without_state_write(
     assert report.fields["counter_reset_units"] == "none"
     assert report.fields["counter_decrease_units"] == CHAT
     assert report.fields["io_write_delta_bytes"] == 0
-    assert "monotonic CPU/I/O counter decreased" in str(report.fields["summary"])
+    assert "monotonic CPU/I/O counters decreased" in str(report.fields["summary"])
     assert state_path(tmp_path).read_bytes() == before_bytes
     assert state_path(tmp_path).stat().st_mtime_ns == before_mtime
 
 
-def test_changed_invocation_is_a_clean_reset_even_when_counters_grow(
+def test_changed_invocation_without_observed_auto_increase_is_actionable(
     tmp_path: Path,
 ) -> None:
     earlier = NOW_NS - 1800 * probe.NSEC_PER_SEC
@@ -404,17 +424,282 @@ def test_changed_invocation_is_a_clean_reset_even_when_counters_grow(
         tmp_path,
         observed_ns=earlier,
         rows={CHAT: (1000, 2000, INVOCATION_A)},
+        automatic_restarts={CHAT: 2},
     )
     props = unit_properties(
         CHAT,
         InvocationID=INVOCATION_B,
+        NRestarts="2",
         IOWriteBytes=str(100 * probe.GIB),
         CPUUsageNSec=str(1000 * probe.NSEC_PER_SEC),
     )
     report = run(tmp_path, FakeSystemd({CHAT: props}))
-    assert report.returncode == 0
+    assert report.returncode == 1
+    assert report.fields["state"] == "actionable"
     assert report.fields["sample_status"] == "invocation-reset-baseline"
     assert report.fields["invocation_reset_units"] == CHAT
+    assert report.fields["automatic_restart_delta_lower_bound"] == 0
+    assert report.fields["automatic_restart_units"] == "none"
+    assert report.fields["io_write_delta_bytes"] == 0
+    assert report.fields["io_write_rate_bytes_per_hour"] == 0
+    assert report.fields["io_write_unmeasured_units"] == CHAT
+    assert "invocation-rollover-without-observed-automatic-increase=1" in str(
+        report.fields["summary"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("invocation_id", "expected_invocation_reset"),
+    [
+        (INVOCATION_B, CHAT),
+        (INVOCATION_A, "none"),
+    ],
+    ids=("completed-new-invocation", "transitional-old-invocation"),
+)
+def test_automatic_restart_increase_is_actionable_without_inventing_io(
+    tmp_path: Path,
+    invocation_id: str,
+    expected_invocation_reset: str,
+) -> None:
+    seed_state(
+        tmp_path,
+        observed_ns=NOW_NS - 1800 * probe.NSEC_PER_SEC,
+        rows={CHAT: (1000, 2000, INVOCATION_A)},
+        automatic_restarts={CHAT: 0},
+    )
+    # This is the measured write footprint of the live broker invocation that
+    # exposed the reset blind spot. It is deliberately not added to the prior
+    # invocation's counter: NRestarts itself is the sound churn evidence.
+    props = unit_properties(
+        CHAT,
+        InvocationID=invocation_id,
+        NRestarts="1",
+        IOWriteBytes="227835904",
+        CPUUsageNSec=str(1000 * probe.NSEC_PER_SEC),
+    )
+    report = run(tmp_path, FakeSystemd({CHAT: props}))
+    assert report.returncode == 1
+    assert report.fields["state"] == "actionable"
+    assert report.fields["sample_status"] == "automatic-restart-baseline"
+    assert report.fields["automatic_restart_delta_lower_bound"] == 1
+    assert report.fields["automatic_restart_units"] == CHAT
+    assert report.fields["invocation_reset_units"] == expected_invocation_reset
+    assert report.fields["compared_units"] == 0
+    assert report.fields["io_write_delta_bytes"] == 0
+    assert report.fields["io_write_rate_bytes_per_hour"] == 0
+    assert report.fields["io_write_unmeasured_units"] == CHAT
+    assert "automatic-restart-lower-bound=1" in str(report.fields["summary"])
+    assert saved_state(tmp_path)["units"][CHAT] == {
+        "automatic_restarts": 1,
+        "cpu_usage_nsec": 1000 * probe.NSEC_PER_SEC,
+        "io_write_bytes": 227835904,
+        "invocation_id": invocation_id,
+    }
+
+
+@pytest.mark.parametrize(
+    ("invocation_id", "expected_io_delta", "expected_unmeasured"),
+    [
+        (INVOCATION_A, 100 * probe.GIB - 10_000, "none"),
+        (INVOCATION_B, 0, CHAT),
+    ],
+    ids=("same-invocation-io-remains-measurable", "changed-invocation"),
+)
+def test_restart_counter_decrease_refuses_once_and_rebaselines_without_fabricated_io(
+    tmp_path: Path,
+    invocation_id: str,
+    expected_io_delta: int,
+    expected_unmeasured: str,
+) -> None:
+    seed_state(
+        tmp_path,
+        observed_ns=NOW_NS - 1800 * probe.NSEC_PER_SEC,
+        rows={CHAT: (10_000, 20_000, INVOCATION_A)},
+        automatic_restarts={CHAT: 3},
+    )
+    props = unit_properties(
+        CHAT,
+        InvocationID=invocation_id,
+        NRestarts="1",
+        IOWriteBytes=str(100 * probe.GIB),
+        CPUUsageNSec=str(1000 * probe.NSEC_PER_SEC),
+    )
+    report = run(tmp_path, FakeSystemd({CHAT: props}))
+    assert report.returncode == 2
+    assert report.fields["state"] == "unknown"
+    assert report.fields["sample_status"] == "restart-counter-decrease"
+    assert report.fields["counter_reset_units"] == CHAT
+    assert report.fields["automatic_restart_delta_lower_bound"] == 0
+    assert report.fields["automatic_restart_units"] == "none"
+    assert report.fields["io_write_delta_bytes"] == expected_io_delta
+    assert report.fields["io_write_unmeasured_units"] == expected_unmeasured
+    if invocation_id == INVOCATION_A:
+        assert report.fields["io_write_rate_bytes_per_hour"] > 5 * probe.GIB
+        assert "aggregate-write-rate=" in str(report.fields["summary"])
+    else:
+        assert report.fields["io_write_rate_bytes_per_hour"] == 0
+    assert "NRestarts decreased" in str(report.fields["summary"])
+    assert saved_state(tmp_path)["units"][CHAT] == {
+        "automatic_restarts": 1,
+        "cpu_usage_nsec": 1000 * probe.NSEC_PER_SEC,
+        "io_write_bytes": 100 * probe.GIB,
+        "invocation_id": invocation_id,
+    }
+
+    clean = run(
+        tmp_path,
+        FakeSystemd({CHAT: props}),
+        now_ns=NOW_NS + 1800 * probe.NSEC_PER_SEC,
+    )
+    assert clean.returncode == 0
+    assert clean.fields["sample_status"] == "compared"
+    assert clean.fields["counter_reset_units"] == "none"
+
+
+def test_restart_counter_reset_cannot_erase_another_units_restart_increase(
+    tmp_path: Path,
+) -> None:
+    seed_state(
+        tmp_path,
+        observed_ns=NOW_NS - 1800 * probe.NSEC_PER_SEC,
+        rows={
+            CHAT: (10_000, 20_000, INVOCATION_A),
+            EVENTS: (1000, 2000, INVOCATION_A),
+        },
+        automatic_restarts={CHAT: 3, EVENTS: 0},
+    )
+    units = {
+        CHAT: unit_properties(
+            CHAT,
+            NRestarts="1",
+            IOWriteBytes="10000",
+            CPUUsageNSec="20000",
+        ),
+        EVENTS: unit_properties(
+            EVENTS,
+            InvocationID=INVOCATION_B,
+            NRestarts="2",
+            IOWriteBytes="227835904",
+            CPUUsageNSec=str(1000 * probe.NSEC_PER_SEC),
+        ),
+    }
+    report = run(tmp_path, FakeSystemd(units))
+    assert report.returncode == 2
+    assert report.fields["sample_status"] == "restart-counter-decrease"
+    assert report.fields["counter_reset_units"] == CHAT
+    assert report.fields["automatic_restart_delta_lower_bound"] == 2
+    assert report.fields["automatic_restart_units"] == EVENTS
+    assert report.fields["io_write_unmeasured_units"] == EVENTS
+    assert report.fields["compared_units"] == 1
+    assert "automatic-restart-lower-bound=2" in str(report.fields["summary"])
+    assert saved_state(tmp_path)["units"][EVENTS]["automatic_restarts"] == 2
+
+
+def test_cpu_counter_decrease_cannot_erase_another_units_restart_increase(
+    tmp_path: Path,
+) -> None:
+    seed_state(
+        tmp_path,
+        observed_ns=NOW_NS - 1800 * probe.NSEC_PER_SEC,
+        rows={
+            CHAT: (10_000, 20_000, INVOCATION_A),
+            EVENTS: (1000, 2000, INVOCATION_A),
+        },
+        automatic_restarts={CHAT: 0, EVENTS: 0},
+    )
+    before = state_path(tmp_path).read_bytes()
+    units = {
+        CHAT: unit_properties(
+            CHAT,
+            IOWriteBytes="10000",
+            CPUUsageNSec="19999",
+        ),
+        EVENTS: unit_properties(
+            EVENTS,
+            InvocationID=INVOCATION_B,
+            NRestarts="2",
+            IOWriteBytes="227835904",
+        ),
+    }
+    report = run(tmp_path, FakeSystemd(units))
+    assert report.returncode == 2
+    assert report.fields["sample_status"] == "inconsistent-counter-decrease"
+    assert report.fields["counter_decrease_units"] == CHAT
+    assert report.fields["automatic_restart_delta_lower_bound"] == 2
+    assert report.fields["automatic_restart_units"] == EVENTS
+    assert "automatic-restart-lower-bound=2" in str(report.fields["summary"])
+    assert state_path(tmp_path).read_bytes() == before
+
+
+def test_mixed_counter_discontinuities_preserve_state_and_report_truthfully(
+    tmp_path: Path,
+) -> None:
+    seed_state(
+        tmp_path,
+        observed_ns=NOW_NS - 1800 * probe.NSEC_PER_SEC,
+        rows={
+            CHAT: (10_000, 20_000, INVOCATION_A),
+            EVENTS: (1000, 2000, INVOCATION_A),
+        },
+        automatic_restarts={CHAT: 3, EVENTS: 0},
+    )
+    before = state_path(tmp_path).read_bytes()
+    before_mtime = state_path(tmp_path).stat().st_mtime_ns
+    units = {
+        CHAT: unit_properties(
+            CHAT,
+            NRestarts="1",
+            IOWriteBytes="10000",
+            CPUUsageNSec="20000",
+        ),
+        EVENTS: unit_properties(
+            EVENTS,
+            IOWriteBytes="1000",
+            CPUUsageNSec="1999",
+        ),
+    }
+    report = run(tmp_path, FakeSystemd(units))
+    assert report.returncode == 2
+    assert report.fields["sample_status"] == "inconsistent-counter-evidence"
+    assert report.fields["counter_reset_units"] == CHAT
+    assert report.fields["counter_decrease_units"] == EVENTS
+    assert "preserving the prior restart baseline" in str(
+        report.fields["summary"]
+    )
+    assert "replacing that discontinuous restart baseline" not in str(
+        report.fields["summary"]
+    )
+    assert state_path(tmp_path).read_bytes() == before
+    assert state_path(tmp_path).stat().st_mtime_ns == before_mtime
+
+
+def test_stable_unit_io_remains_measured_alongside_restarted_unit(
+    tmp_path: Path,
+) -> None:
+    seed_state(
+        tmp_path,
+        observed_ns=NOW_NS - 1800 * probe.NSEC_PER_SEC,
+        rows={
+            CHAT: (1000, 2000, INVOCATION_A),
+            EVENTS: (1000, 2000, INVOCATION_A),
+        },
+    )
+    units = {
+        CHAT: unit_properties(CHAT, IOWriteBytes=str(1000 + 64 * probe.MIB)),
+        EVENTS: unit_properties(
+            EVENTS,
+            InvocationID=INVOCATION_B,
+            NRestarts="3",
+            IOWriteBytes="227835904",
+        ),
+    }
+    report = run(tmp_path, FakeSystemd(units))
+    assert report.returncode == 1
+    assert report.fields["sample_status"] == "partial-counter-baseline"
+    assert report.fields["compared_units"] == 1
+    assert report.fields["io_write_delta_bytes"] == 64 * probe.MIB
+    assert report.fields["io_write_unmeasured_units"] == EVENTS
+    assert report.fields["automatic_restart_delta_lower_bound"] == 3
 
 
 def test_older_sample_refuses_and_never_overwrites_newer_state(tmp_path: Path) -> None:
@@ -438,11 +723,82 @@ def test_invalid_private_baseline_refuses_once_and_repairs_it(tmp_path: Path) ->
     state_directory(tmp_path).mkdir(mode=0o700)
     state_path(tmp_path).write_text("{not-json", encoding="utf-8")
     state_path(tmp_path).chmod(0o600)
-    report = run(tmp_path, FakeSystemd({CHAT: unit_properties(CHAT)}))
+    report = run(
+        tmp_path,
+        FakeSystemd({CHAT: unit_properties(CHAT, NRestarts="1")}),
+    )
     assert report.returncode == 2
     assert report.fields["sample_status"] == "baseline-invalid-replaced"
     assert saved_state(tmp_path)["version"] == probe.STATE_VERSION
     assert stat.S_IMODE(state_path(tmp_path).stat().st_mode) == 0o600
+
+
+def test_legacy_state_without_restart_counter_refuses_once_and_upgrades(
+    tmp_path: Path,
+) -> None:
+    state_directory(tmp_path).mkdir(mode=0o700)
+    state_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "observed_at_unix_ns": NOW_NS - probe.NSEC_PER_SEC,
+                "units": {
+                    CHAT: {
+                        "io_write_bytes": 1000,
+                        "cpu_usage_nsec": 2000,
+                        "invocation_id": INVOCATION_A,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    state_path(tmp_path).chmod(0o600)
+    report = run(
+        tmp_path,
+        FakeSystemd({CHAT: unit_properties(CHAT, NRestarts="1")}),
+    )
+    assert report.returncode == 2
+    assert report.fields["sample_status"] == "baseline-invalid-replaced"
+    assert saved_state(tmp_path)["version"] == 3
+    assert saved_state(tmp_path)["units"][CHAT]["automatic_restarts"] == 1
+    assert report.fields["unbaselined_automatic_restart_history"] == 1
+    assert "current systemd finding(s)" in str(report.fields["summary"])
+    assert "unbaselined-automatic-restart-history=1" in str(report.fields["summary"])
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [None, True, "1", -1, probe.MAX_NRESTARTS + 1],
+    ids=("missing", "boolean", "string", "negative", "uint32-overflow"),
+)
+def test_malformed_schema_v3_restart_counter_refuses_and_repairs(
+    tmp_path: Path, bad_value: object
+) -> None:
+    state_directory(tmp_path).mkdir(mode=0o700)
+    row: dict[str, object] = {
+        "io_write_bytes": 1000,
+        "cpu_usage_nsec": 2000,
+        "invocation_id": INVOCATION_A,
+        "automatic_restarts": bad_value,
+    }
+    if bad_value is None:
+        row.pop("automatic_restarts")
+    state_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "version": probe.STATE_VERSION,
+                "observed_at_unix_ns": NOW_NS - probe.NSEC_PER_SEC,
+                "units": {CHAT: row},
+            }
+        ),
+        encoding="utf-8",
+    )
+    state_path(tmp_path).chmod(0o600)
+    report = run(tmp_path, FakeSystemd({CHAT: unit_properties(CHAT)}))
+    assert report.returncode == 2
+    assert report.fields["sample_status"] == "baseline-invalid-replaced"
+    assert saved_state(tmp_path)["units"][CHAT]["automatic_restarts"] == 0
 
 
 def test_oversize_first_baseline_refuses_without_state_or_temp_residue(
@@ -568,10 +924,12 @@ def test_failed_unit_alerts_even_when_disabled(tmp_path: Path) -> None:
         IOWriteBytes="[not set]",
         CPUUsageNSec="[not set]",
         InvocationID="",
+        NRestarts="7",
     )
     report = run(tmp_path, FakeSystemd({CHAT: props}))
     assert report.returncode == 1
     assert f"{CHAT}:failed" in str(report.fields["policy_issues"])
+    assert report.fields["unbaselined_automatic_restart_history"] == 0
 
 
 def test_legacy_unit_is_outside_generic_discovery_policy(tmp_path: Path) -> None:
@@ -672,6 +1030,9 @@ def test_finite_resource_values_above_policy_are_unhealthy(
         ("MemoryAccounting", "maybe"),
         ("IOWriteBytes", "[not set]"),
         ("CPUUsageNSec", "[not set]"),
+        ("NRestarts", "[not set]"),
+        ("NRestarts", "-1"),
+        ("NRestarts", str(probe.MAX_NRESTARTS + 1)),
         ("InvocationID", ""),
         ("InvocationID", "not-a-generation"),
     ],
@@ -698,6 +1059,25 @@ def test_unavailable_discovery_fails_closed_without_state(tmp_path: Path) -> Non
     assert not state_directory(tmp_path).exists()
 
 
+def test_inactive_unit_with_malformed_restart_evidence_fails_closed(
+    tmp_path: Path,
+) -> None:
+    props = unit_properties(
+        CHAT,
+        UnitFileState="disabled",
+        ActiveState="inactive",
+        SubState="dead",
+        IOWriteBytes="[not set]",
+        CPUUsageNSec="[not set]",
+        InvocationID="",
+        NRestarts="[not set]",
+    )
+    report = run(tmp_path, FakeSystemd({CHAT: props}))
+    assert report.returncode == 2
+    assert "unavailable NRestarts" in str(report.fields["summary"])
+    assert not state_path(tmp_path).exists()
+
+
 def test_show_omitting_an_installed_unit_fails_closed(tmp_path: Path) -> None:
     systemd = FakeSystemd({CHAT: unit_properties(CHAT)})
 
@@ -709,6 +1089,30 @@ def test_show_omitting_an_installed_unit_fails_closed(tmp_path: Path) -> None:
     report = probe.evaluate(root=tmp_path, run=missing, now_ns=NOW_NS)
     assert report.returncode == 2
     assert "omitted unit" in str(report.fields["summary"])
+
+
+def test_show_omitting_restart_counter_fails_closed_without_state(
+    tmp_path: Path,
+) -> None:
+    systemd = FakeSystemd({CHAT: unit_properties(CHAT)})
+
+    def missing_restart_property(args: tuple[str, ...]) -> str:
+        if args[0] != "show":
+            return systemd(args)
+        values = systemd.units[CHAT]
+        return (
+            "\n".join(
+                f"{key}={values[key]}"
+                for key in probe.SHOW_PROPERTIES
+                if key != "NRestarts"
+            )
+            + "\n"
+        )
+
+    report = probe.evaluate(root=tmp_path, run=missing_restart_property, now_ns=NOW_NS)
+    assert report.returncode == 2
+    assert "omitted properties: NRestarts" in str(report.fields["summary"])
+    assert not state_path(tmp_path).exists()
 
 
 def test_discovery_unions_installed_and_loaded_generic_families(
@@ -768,13 +1172,14 @@ def test_state_replacement_is_same_directory_private_and_atomic(
         assert transaction.load_baseline().status == "loaded"
         payload = probe.serialize_baseline(
             NOW_NS,
-            {CHAT: probe.Counters(13, 17, INVOCATION_A)},
+            {CHAT: probe.Counters(13, 17, INVOCATION_A, 2)},
         )
         transaction.write_baseline(payload)
     assert observations == 1
     assert stat.S_IMODE(state_path(tmp_path).stat().st_mode) == 0o600
     assert saved_state(tmp_path)["units"] == {
         CHAT: {
+            "automatic_restarts": 2,
             "io_write_bytes": 13,
             "cpu_usage_nsec": 17,
             "invocation_id": INVOCATION_A,
