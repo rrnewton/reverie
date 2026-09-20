@@ -1,0 +1,316 @@
+{
+  "schema_version": 2,
+  "record_type": "TFA_TARGET_EXPERIMENT",
+  "contract": {
+    "commit": "9d7f603c43618715b9245c74acb3e164c17d2ae8",
+    "path": "ai_docs/tfa-acceptance-bracket-2026-09-17.md",
+    "blob": "4a53f0c25623ad6371ee86b4556adada1218745d"
+  },
+  "identity": {
+    "service": "thrift",
+    "canonical_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+    "target_key_sha256": "3e07b8fc0ca0b9f498450c35f3501c1cb91f5ea46ab354b890dda91ac7e2edfe",
+    "target_directory": "services/thrift/instrumentationtest--3e07b8fc0ca0",
+    "testinfra_id": "281475235299286",
+    "test_name": "RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest",
+    "source_label_qualifier": null,
+    "test_selector": {
+      "kind": "EXACT_FILTER",
+      "flag": "--exact",
+      "value": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+    },
+    "build_mode_selector": [
+      "@fbcode//mode/dev-tsan"
+    ],
+    "invoked_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+    "standalone_argv": [
+      "buck",
+      "test",
+      "@fbcode//mode/dev-tsan",
+      "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "--",
+      "--exact",
+      "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+    ],
+    "experiment_id": "thrift/instrumentationtest--3e07b8fc0ca0",
+    "alias_resolution": {
+      "input_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "resolved_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "method": "buck2-targets-show-output-from-pinned-source",
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "evidence": "buck2 targets --show-output @fbcode//mode/dev-tsan resolved to buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest; executable x86-64 ELF, 11514064 bytes, SHA-256 2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc."
+    }
+  },
+  "candidate_ranking": {
+    "pfs": {
+      "value": 0.1722,
+      "displayed_percent": "17.22%",
+      "partition": "2026-09-17",
+      "metric": "probability_of_flaky_state",
+      "role": "ranking_only",
+      "may_parameterize_seed_budget": false
+    },
+    "native_failure_rate": {
+      "failures": 0,
+      "executed": 29,
+      "rate": 0.0,
+      "rate_fraction": "0/29",
+      "displayed_percent": "0.00%",
+      "window": "trailing one week; latest up to 100 final outcomes",
+      "limit": 100,
+      "final_only": true,
+      "purposes": [
+        "CONTINUOUS",
+        "STRESS_RUN",
+        "STRESS_RUN_NEW_TEST"
+      ],
+      "pass_statuses": [
+        "PASSED"
+      ],
+      "failure_statuses": [
+        "FAILED",
+        "FATAL",
+        "TIMEOUT"
+      ],
+      "excluded_statuses": [
+        "OMITTED",
+        "SKIPPED",
+        "INFRA_FAILURE"
+      ],
+      "source": "meta testinfra.result history",
+      "role": "planning_prior_only"
+    }
+  },
+  "plan": {
+    "plan_id": "thrift-instrumentation-dev-tsan-direct-elf-ptrace-strict-chaos-v1",
+    "plan_sha256": "14121d466324fa3ac598cfa9629355fc3183ce68e767ffa9fe5dded480f29e99",
+    "sealed_at": "2026-09-20T13:59:43Z",
+    "sealed_by": "codex-tfa",
+    "campaign_owner_identity": "rrnewton",
+    "authorized_routes": [
+      {
+        "route_id": "thrift-instrumentation-dev-tsan-direct-elf-buck-out-bind",
+        "route_sha256": "d879f1b2bff2229cd4ce39c75174623d183b1a0e29d8be03ae104154db5d6837",
+        "fallback_of": null,
+        "authorized_cell_ids": [
+          "thrift-instrumentation-dev-tsan-direct-elf-ptrace-strict-chaos"
+        ],
+        "canonical_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/dev-tsan"
+        ],
+        "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "build_argv": [
+          "buck",
+          "test",
+          "@fbcode//mode/dev-tsan",
+          "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+          "--",
+          "--exact",
+          "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        ],
+        "launch_argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "900",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+          "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        ],
+        "repeat_matcher": {
+          "kind": "BUILTIN_VERIFY",
+          "comparison": "BitwiseInfoV1"
+        },
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "notes": "Use exact already-built dev-tsan ELF; no build or fallback route is authorized. Direct GoogleTest selector matches the registry. The same-path Buck output mount exposes dependencies. Retained logs use existing live 8G quota directory /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244."
+      }
+    ],
+    "target_oracle": {
+      "oracle_id": "thrift-instrumentation-gtest-exact-v1",
+      "defined_before_runs": true,
+      "unmodified": true,
+      "selected_test_executed_predicate": "GoogleTest output contains [ RUN      ] RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest and reports exactly one test.",
+      "pass_predicate": "The selected line is [       OK ] RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest, the summary reports 1 passed, and the guest exits 0 without a signal.",
+      "fail_classes": [
+        {
+          "failure_class_id": "gtest-selected-test-failure",
+          "target_owned": true,
+          "predicate": "The selected line is [  FAILED  ] RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest, the summary reports 1 failed, and the guest exits nonzero, excluding Hermit, sanitizer, harness, dependency, infrastructure, or outer-timeout failures."
+        }
+      ],
+      "timeout_policy": {
+        "target_timeout_can_fail": false,
+        "target_timeout_predicate": null,
+        "target_timeout_failure_class_id": null,
+        "outer_timeout_is_censored": true
+      }
+    },
+    "measurement_design": {
+      "purpose": "EXISTENCE_DISCOVERY",
+      "swept_coordinate": {
+        "flag": "--sched-seed",
+        "domain": "unsigned 64-bit integers; explicit prefix 0 through 31",
+        "scheduler_modes": []
+      },
+      "fixed_seed_roots": {
+        "--seed": 0,
+        "--rng-seed": 0,
+        "--sched-seed": null,
+        "--fuzz-seed": 0
+      },
+      "seed_population": {
+        "kind": "EXPLICIT_VALUES",
+        "values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31
+        ]
+      },
+      "selection_order": {
+        "kind": "EXPLICIT",
+        "seed_values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31
+        ]
+      },
+      "without_replacement": true,
+      "design_basis": {
+        "kind": "FINITE_POPULATION",
+        "population_definition": "The first 32 unsigned scheduler seeds, 0 through 31, fixed before execution because native history has zero observed failures and cannot provide a finite rate-bound design.",
+        "population_size": 32,
+        "selection_rule": "Attempt the complete explicit ascending seed population without replacement unless both target arms are found and confirmed first."
+      },
+      "miss_probability_override": null,
+      "required_valid_seed_tuples": 32,
+      "max_attempted_seed_tuples": 32,
+      "stop_rule": "BOTH_ARMS_THEN_REPEAT",
+      "repeat_min_executions_per_arm": 2,
+      "repeat_attempt_cap": 2,
+      "independence_assumption": "No probabilistic independence claim is used; the design is a finite explicit scheduler-seed population."
+    },
+    "resource_bounds": {
+      "wall_seconds": 900,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "stderr_bytes": 67108864,
+      "retained_log_bytes": 67108864,
+      "disk_guard": "8G"
+    },
+    "artifact_policy": {
+      "scratch_root": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit",
+      "terminal_evidence_must_be_durable": true,
+      "digest_algorithm": "sha256"
+    }
+  },
+  "plan_receipt": null,
+  "attempt_state": "PLANNED",
+  "cells": [],
+  "events": [],
+  "samples": [],
+  "matchers": [],
+  "outcome_history": [],
+  "current_outcome": null
+}
