@@ -1,0 +1,32 @@
+ZippyDB VRT seed-0 strict-verify divergence
+
+The exact selected test started in both replicas, but the combined verifier output did not establish one agreeing target outcome. Its first stdout difference is a target assertion present only on the left:
+
+  [ RUN      ] VRTUsageTrackerTest.BumpWithIOTagTest
+- fbcode/zippydb/common/tests/VRTUsageTrackerTest.cpp:113: Failure
+- Expected equality of these values:
+-   counter.get(60)
+-     Which is: 0
+-   testVal
+-     Which is: 5
+
+The first canonical INFO difference is the content of the same 246-byte read after identical openat and newfstatat context:
+
+<"INFO detcore::io_buffers: DETLOG [iobuf][dtid 29] read in fd=26 0x7fffd3ae2200+246->4fa983fc609934bde092197870af44dacc88f6fd1c777215f1ab8d173b5807e9"
+>"INFO detcore::io_buffers: DETLOG [iobuf][dtid 29] read in fd=26 0x7fffd3ae2200+246->a343d7941c830955dfa039f73e8dedcddb5611b8594697b07abc7ae137251fcc"
+  run 1, prior syscall #5993: read(fd 26, count 247) = Ok(246)
+  run 2, prior syscall #5993: read(fd 26, count 247) = Ok(246)
+
+Verifier summary:
+  Logs contain 853248 | 121143 INFO messages
+  Logs contain 737302 | 110441 DETLOG and scheduler COMMIT messages
+  comparison=BitwiseInfoV1 relaxations=none
+  Failure: nondeterministic.
+
+Full retained verifier logs at capture time:
+- original run 1: /home/newton/.local/state/hermit/verify-failures/comparison-p5aM5Kc2dDCc/run1_log_SlWfw; 196217277 bytes; sha256 9f140022bf61cd3ae182bd99d62b2878244e9d0cbc74ca420a20779e6eddba51
+- original run 2: /home/newton/.local/state/hermit/verify-failures/comparison-p5aM5Kc2dDCc/run2_log_Dzuif; 28010755 bytes; sha256 50b8bfa2b314c7d8d3f302fb5a2a862b6376ffdf6356ed55211bb3a3835e6cd6
+- bounded copy run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-safehermit-20260920T054553Z-2384200-2384882-1789883154032374843/verify-run1.info.log; same bytes and SHA-256
+- bounded copy run 2: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-safehermit-20260920T054553Z-2384200-2384882-1789883154032374843/verify-run2.info.log; same bytes and SHA-256
+
+After copying, bounded-run-space read live qgroup 0/257 as referenced=14430208 exclusive=14430208 limit=8000000000 and returned 0.
