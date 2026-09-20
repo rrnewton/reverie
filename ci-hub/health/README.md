@@ -87,13 +87,14 @@ under one lock. It writes the fresh whole-filesystem Btrfs allocator reading to
 main top-level populations to `ignored/ops-state/disk-paths.json`, and retains
 the preceding published path run at
 `ignored/ops-state/disk-paths.previous.json`. The path scan runs at idle I/O and
-lowest normal CPU priority, with a 180-second bound per concurrently measured
-population. `TimeoutStartSec=540` is the fail-closed bound on the complete
-service path, including immutable-tool setup and both publications; no measured
-cold-run component is treated as a code-enforced sub-bound. The service also
-has explicit memory, swap, and task caps. Both independent publications are
-attempted serially under the shared lock, and any command failure fails the
-oneshot without suppressing the other source of disk evidence.
+lowest normal CPU priority, with at most two populations measured concurrently
+and a 180-second bound per population. `TimeoutStartSec=540` is the fail-closed
+bound on the complete service path, including immutable-tool setup and both
+publications; no measured cold-run component is treated as a code-enforced
+sub-bound. The service also has explicit memory, swap, and task caps. Both
+independent publications are attempted serially under the shared lock, and any
+command failure fails the oneshot without suppressing the other source of disk
+evidence.
 
 For a cold or repair installation, first run
 `scripts/install-disk-snapshot.sh --no-start`. It checks producer dependencies,

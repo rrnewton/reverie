@@ -132,6 +132,11 @@ DEFAULT_DISK_PATH_PREVIOUS_STATE = (
 )
 DISK_PATH_INSTRUMENT = "compsize -b -x"
 DEFAULT_DISK_PATH_TIMEOUT_SECS = 180.0
+# The systemd producer has a 512 MiB soft memory boundary. Five simultaneous
+# compsize processes collectively crossed it on devbig014, and the four large
+# children remained in cgroup reclaim until their timeouts. A two-worker cap
+# retains useful overlap without making all populations compete for that bound.
+DISK_PATH_MAX_WORKERS = 2
 _BTRFS_FREE_ESTIMATED = re.compile(
     r"^\s*Free \(estimated\):\s*([0-9]+)(?:\s|$)", re.MULTILINE
 )
@@ -1380,7 +1385,7 @@ def cache_disk_paths(
         free_before, device_size_before = _fresh_btrfs_reading(resolved_root)
         selected = populations or _disk_path_populations(resolved_root)
         with concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, len(selected))
+            max_workers=max(1, min(DISK_PATH_MAX_WORKERS, len(selected)))
         ) as executor:
             readings = list(
                 executor.map(

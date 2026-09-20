@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -1533,6 +1534,155 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual(
             document["counts"], {"complete": 1, "partial": 1, "unavailable": 0}
         )
+
+    def test_cache_disk_paths_limits_population_concurrency_to_two(self) -> None:
+        active = 0
+        maximum_active = 0
+        started: list[str] = []
+        lock = threading.Lock()
+        two_started = threading.Event()
+        release = threading.Event()
+
+        def population_result(
+            name: str, paths: tuple[Path, ...], *, timeout: float
+        ) -> dict[str, object]:
+            nonlocal active, maximum_active
+            self.assertEqual(timeout, 9)
+            with lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+                started.append(name)
+                if active == 2:
+                    two_started.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("test did not release population workers")
+            with lock:
+                active -= 1
+            return {
+                "name": name,
+                "paths": [str(path) for path in paths],
+                "state": "complete",
+                "physical_bytes": 100,
+                "elapsed_seconds": 0.25,
+                "diagnostics": [],
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / "disk-paths.json"
+            previous = root / "disk-paths.previous.json"
+            populations = tuple(
+                (f"population-{index}", (root,)) for index in range(5)
+            )
+            results: list[int] = []
+            errors: list[Exception] = []
+
+            def publish() -> None:
+                try:
+                    results.append(
+                        operational_health.cache_disk_paths(
+                            state_root=root,
+                            state_file=current,
+                            previous_state_file=previous,
+                            population_timeout=9,
+                            populations=populations,
+                        )
+                    )
+                except Exception as error:
+                    errors.append(error)
+
+            with mock.patch.object(
+                operational_health,
+                "_fresh_btrfs_reading",
+                side_effect=[(700, 1000), (690, 1000)],
+            ), mock.patch.object(
+                operational_health,
+                "_measure_disk_population",
+                side_effect=population_result,
+            ), mock.patch.object(operational_health, "_emit"):
+                publisher = threading.Thread(target=publish, daemon=True)
+                publisher.start()
+                reached_two = two_started.wait(timeout=2)
+                # Give any incorrectly admitted third worker time to enter the
+                # held callback before observing the cap.
+                time.sleep(0.05)
+                with lock:
+                    active_while_held = active
+                    started_while_held = len(started)
+                release.set()
+                publisher.join(timeout=5)
+
+            document = json.loads(current.read_text()) if current.exists() else {}
+
+        self.assertTrue(reached_two)
+        self.assertFalse(publisher.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(results, [0])
+        self.assertEqual(active_while_held, 2)
+        self.assertEqual(started_while_held, 2)
+        self.assertEqual(maximum_active, 2)
+        self.assertEqual(
+            [row["name"] for row in document["populations"]],
+            [name for name, _paths in populations],
+        )
+
+    def test_cache_disk_paths_aggregates_timeout_with_usable_result(self) -> None:
+        def population_result(
+            name: str, paths: tuple[Path, ...], *, timeout: float
+        ) -> dict[str, object]:
+            if name == "timed-out":
+                return {
+                    "name": name,
+                    "paths": [str(path) for path in paths],
+                    "state": "unavailable",
+                    "physical_bytes": None,
+                    "elapsed_seconds": timeout,
+                    "diagnostics": [f"timed out after {timeout:g}s"],
+                }
+            return {
+                "name": name,
+                "paths": [str(path) for path in paths],
+                "state": "complete",
+                "physical_bytes": 17,
+                "elapsed_seconds": 0.1,
+                "diagnostics": [],
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / "disk-paths.json"
+            previous = root / "disk-paths.previous.json"
+            populations = (("timed-out", (root,)), ("usable", (root,)))
+            with mock.patch.object(
+                operational_health,
+                "_fresh_btrfs_reading",
+                side_effect=[(700, 1000), (690, 1000)],
+            ), mock.patch.object(
+                operational_health,
+                "_measure_disk_population",
+                side_effect=population_result,
+            ):
+                result, output = self.capture(
+                    operational_health.cache_disk_paths,
+                    state_root=root,
+                    state_file=current,
+                    previous_state_file=previous,
+                    population_timeout=9,
+                    populations=populations,
+                    now=200,
+                )
+            document = json.loads(current.read_text())
+
+        self.assertEqual(result, 0)
+        self.assertIn("state=partial", output)
+        self.assertEqual(
+            document["counts"], {"complete": 1, "partial": 0, "unavailable": 1}
+        )
+        self.assertIsNone(document["populations"][0]["physical_bytes"])
+        self.assertEqual(
+            document["populations"][0]["diagnostics"], ["timed out after 9s"]
+        )
+        self.assertEqual(document["populations"][1]["physical_bytes"], 17)
 
     def test_cache_disk_paths_partial_population_is_usable_and_publishes(self) -> None:
         def partial_population(
