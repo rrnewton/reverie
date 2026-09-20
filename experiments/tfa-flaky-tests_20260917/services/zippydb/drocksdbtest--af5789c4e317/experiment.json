@@ -331,12 +331,494 @@
       "digest_algorithm": "sha256"
     }
   },
-  "plan_receipt": null,
-  "attempt_state": "PLANNED",
-  "cells": [],
-  "events": [],
-  "samples": [],
-  "matchers": [],
-  "outcome_history": [],
-  "current_outcome": null
+    "plan_receipt": {
+      "commit": "3a8adcadea5b33cf6e0dd728db4fda5c6cd1f383",
+      "path": "services/zippydb/drocksdbtest--af5789c4e317/experiment.json",
+      "blob": "f2c0cf4ac572294eaa083b2011d06b97d1b9467a"
+    },
+    "attempt_state": "MATERIAL",
+    "cells": [
+      {
+        "cell_id": "zippydb-drocksdb-opt-direct-elf-ptrace-strict-chaos",
+        "route_id": "zippydb-drocksdb-opt-direct-elf-buck-out-bind",
+        "route_sha256": "a3b0e0df227b9e17d4714de2209e73cd8ecc4004f3f647354572ee646042c59d",
+        "plan_sha256": "c4cb969d875fcb0dafcb9a6f6169024e97e7548762168e99e1b094ad04f94898",
+        "frozen_at": "2026-09-20T06:07:39Z",
+        "cell_sha256": "3cc49f56d85f92c2991cd8c692deb1ad03ab0541346639cd23c88fcfa8f8ec64",
+        "canonical_target": "fbcode//zippydb/drocksdb/tests:DRocksDBTest",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//zippydb/drocksdb/tests:DRocksDBTest - DRocksDBTest.DestroySucceedsOnPopulatedBackend"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/opt"
+        ],
+        "target_source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "hermit_source_revision": "79da523137dbac400faca6130593361b58a01468",
+        "hermit_binary_sha256": "000eeb5e59345b6c9c14bf194d6d5b392294a52d25d40209e553376f3a84764a",
+        "test_artifact_sha256": "902229d509225665f364157eb3cb21500db960b5f38cbe2bf1ddcc4af5e0ab66",
+        "guest": {
+          "argv": [
+            "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c23cf22b4c1c8a3b/zippydb/drocksdb/tests/__DRocksDBTest__/DRocksDBTest",
+            "--gtest_filter=DRocksDBTest.DestroySucceedsOnPopulatedBackend"
+          ],
+          "environment": {
+            "LC_ALL": "C",
+            "TZ": "UTC"
+          },
+          "mounts": [
+            "type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+          ],
+          "immutable_inputs": [
+            {
+              "artifact_id": "drocksdb-opt-test-elf",
+              "kind": "OTHER",
+              "storage": "LOCAL_IGNORED",
+              "locator": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c23cf22b4c1c8a3b/zippydb/drocksdb/tests/__DRocksDBTest__/DRocksDBTest",
+              "sha256": "902229d509225665f364157eb3cb21500db960b5f38cbe2bf1ddcc4af5e0ab66",
+              "bytes": 2143957936,
+              "capture_limit_bytes": 2143957936,
+              "truncated": false,
+              "media_type": "application/x-executable"
+            }
+          ],
+          "working_directory": "/home/newton/work/dev-hermit/worktrees/slots/hermit-904-tfa-layout/experiments/tfa-flaky-tests_20260917"
+        },
+        "hermit": {
+          "backend": "ptrace",
+          "strict": true,
+          "chaos": true,
+          "relaxations": [],
+          "argv": [
+            "bin/safehermit",
+            "--sh-report",
+            "{SAFEHERMIT_REPORT}",
+            "--sh-deadline",
+            "900",
+            "--sh-max-log-bytes",
+            "67108864",
+            "--sh-disk-limit",
+            "8G",
+            "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+            "run",
+            "--backend",
+            "ptrace",
+            "--strict",
+            "--chaos",
+            "--base-env=minimal",
+            "--env",
+            "LC_ALL=C",
+            "--env",
+            "TZ=UTC",
+            "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+            "--seed",
+            "0",
+            "--rng-seed",
+            "0",
+            "--fuzz-seed",
+            "0",
+            "--sched-seed",
+            "{SWEEP}",
+            "--sched-heuristic",
+            "random",
+            "--max-timeslice",
+            "200000000",
+            "--verify",
+            "--verify-strict",
+            "--verify-allow",
+            "both",
+            "--keep-logs",
+            "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-drocksdb-verify-3482641-1789884345113574049",
+            "--",
+            "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c23cf22b4c1c8a3b/zippydb/drocksdb/tests/__DRocksDBTest__/DRocksDBTest",
+            "--gtest_filter=DRocksDBTest.DestroySucceedsOnPopulatedBackend"
+          ],
+          "scheduler_heuristic": "random",
+          "swept_coordinate": "--sched-seed",
+          "fixed_seed_roots": {
+            "--seed": 0,
+            "--rng-seed": 0,
+            "--sched-seed": null,
+            "--fuzz-seed": 0
+          }
+        },
+        "timing": {
+          "requested_max_timeslice": 200000000,
+          "effective_max_timeslice": 200000000
+        },
+        "pmu": {
+          "available": true,
+          "effective_timer": "RCB",
+          "fallback_recorded": false
+        },
+        "host": {
+          "hostname": "devbig030.atn3.facebook.com",
+          "kernel": "Linux 6.13.2-0_fbk17_hardened_0_g2ae417e0caa0",
+          "architecture": "x86_64",
+          "cpu": "AMD EPYC 9D85 158-Core Processor",
+          "capabilities": {
+            "pmu": true,
+            "mount_namespace": true,
+            "buck_out_bind": true,
+            "safehermit_disk_qgroup": true
+          }
+        },
+        "oracle_id": "zippydb-drocksdb-gtest-exact-v1",
+        "resource_bounds": {
+          "wall_seconds": 900,
+          "memory_bytes": 17179869184,
+          "swap_bytes": 0,
+          "stderr_bytes": 67108864,
+          "retained_log_bytes": 67108864,
+          "disk_guard": "8G"
+        }
+      }
+    ],
+    "events": [
+      {
+        "event_id": "event-seed-000-discovery",
+        "kind": "HERMIT_EXECUTION",
+        "plan_sha256": "c4cb969d875fcb0dafcb9a6f6169024e97e7548762168e99e1b094ad04f94898",
+        "route_id": "zippydb-drocksdb-opt-direct-elf-buck-out-bind",
+        "route_sha256": "a3b0e0df227b9e17d4714de2209e73cd8ecc4004f3f647354572ee646042c59d",
+        "canonical_target": "fbcode//zippydb/drocksdb/tests:DRocksDBTest",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//zippydb/drocksdb/tests:DRocksDBTest - DRocksDBTest.DestroySucceedsOnPopulatedBackend"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/opt"
+        ],
+        "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "cell_id": "zippydb-drocksdb-opt-direct-elf-ptrace-strict-chaos",
+        "cell_sha256": "3cc49f56d85f92c2991cd8c692deb1ad03ab0541346639cd23c88fcfa8f8ec64",
+        "measurement_role": "DISCOVERY",
+        "started_at": "2026-09-20T06:09:43Z",
+        "finished_at": "2026-09-20T06:16:29Z",
+        "argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "services/zippydb/drocksdbtest--af5789c4e317/evidence/seed-000-discovery.safehermit.txt",
+          "--sh-deadline",
+          "900",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-drocksdb-verify-3482641-1789884345113574049",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c23cf22b4c1c8a3b/zippydb/drocksdb/tests/__DRocksDBTest__/DRocksDBTest",
+          "--gtest_filter=DRocksDBTest.DestroySucceedsOnPopulatedBackend"
+        ],
+        "result": {
+          "exit_code": 125,
+          "signal": null,
+          "timed_out": false,
+          "timeout_origin": "NONE",
+          "guest_started": true,
+          "selected_test_executed_count": 0,
+          "target_oracle": "NOT_RUN",
+          "failure_class_id": null,
+          "harness_status": "ERROR",
+          "diagnostic": "The first strict-verify replica deadlocked with one FutexWait thread and no runnable threads before the selected GoogleTest emitted an oracle line; Hermit reported container-child-exit and exit 125. Its retained INFO log reached Hermit's 1 GiB cap and is truncated."
+        },
+        "invocation_id": "verify-seed-000-20260920T060943Z-3671185",
+        "replica_index": 1,
+        "seed": {
+          "flag": "--sched-seed",
+          "value": 0
+        },
+        "effective_config_sha256": "3cc49f56d85f92c2991cd8c692deb1ad03ab0541346639cd23c88fcfa8f8ec64",
+        "artifacts": [
+          {
+            "artifact_id": "drocksdb-seed-000-stdout",
+            "kind": "STDOUT",
+            "storage": "TRACKED",
+            "locator": "services/zippydb/drocksdbtest--af5789c4e317/evidence/seed-000-discovery.stdout.txt",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0,
+            "capture_limit_bytes": 67108864,
+            "truncated": false,
+            "media_type": "text/plain"
+          },
+          {
+            "artifact_id": "drocksdb-seed-000-stderr",
+            "kind": "STDERR",
+            "storage": "TRACKED",
+            "locator": "services/zippydb/drocksdbtest--af5789c4e317/evidence/seed-000-discovery.stderr.txt",
+            "sha256": "a5477ce2d5dd238df14dc3bb26f228720dd1ff038a114a837bae31f41f3bf565",
+            "bytes": 825,
+            "capture_limit_bytes": 67108864,
+            "truncated": false,
+            "media_type": "text/plain"
+          },
+          {
+            "artifact_id": "drocksdb-seed-000-result",
+            "kind": "RESULT",
+            "storage": "TRACKED",
+            "locator": "services/zippydb/drocksdbtest--af5789c4e317/evidence/seed-000-discovery.result.json",
+            "sha256": "2e16b6b19c19bc1117f201b60898a6eaee0d8c10cfc523541a59a46e19ca325f",
+            "bytes": 2257,
+            "capture_limit_bytes": 67108864,
+            "truncated": false,
+            "media_type": "application/json"
+          },
+          {
+            "artifact_id": "drocksdb-seed-000-safehermit",
+            "kind": "SAFEHERMIT_REPORT",
+            "storage": "TRACKED",
+            "locator": "services/zippydb/drocksdbtest--af5789c4e317/evidence/seed-000-discovery.safehermit.txt",
+            "sha256": "3746de2236a8ab30595d2a06706a921e0d0af9021928c89a30c3615107c3bf1d",
+            "bytes": 1804,
+            "capture_limit_bytes": 67108864,
+            "truncated": false,
+            "media_type": "text/plain"
+          },
+          {
+            "artifact_id": "drocksdb-seed-000-deadlock",
+            "kind": "DIAGNOSTIC",
+            "storage": "TRACKED",
+            "locator": "services/zippydb/drocksdbtest--af5789c4e317/evidence/seed-000-discovery.deadlock.txt",
+            "sha256": "2148fa2320d4cd43b521ef62f2893146a898390994aaece446c28cfe14f499f8",
+            "bytes": 1699,
+            "capture_limit_bytes": 67108864,
+            "truncated": false,
+            "media_type": "text/plain"
+          },
+          {
+            "artifact_id": "drocksdb-seed-000-run1-full-info",
+            "kind": "CANONICAL_INFO",
+            "storage": "LOCAL_IGNORED",
+            "locator": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-drocksdb-verify-3482641-1789884345113574049/run1_log_Wigm7",
+            "sha256": "e32e503bdcdaef92b5e4a7ceb0d49e4c864e2903bfcb3224e36809791082533a",
+            "bytes": 1073742000,
+            "capture_limit_bytes": 1073742000,
+            "truncated": true,
+            "media_type": "text/plain"
+          }
+        ]
+      }
+    ],
+    "samples": [
+      {
+        "sample_id": "sample-seed-000",
+        "cell_id": "zippydb-drocksdb-opt-direct-elf-ptrace-strict-chaos",
+        "seed": {
+          "flag": "--sched-seed",
+          "value": 0
+        },
+        "selection_index": 0,
+        "status": "CENSORED",
+        "target_outcome": null,
+        "failure_class_id": null,
+        "censor_reason": "Hermit deadlocked in the first strict-verify replica before the selected test emitted an oracle line; the retained INFO log also reached its cap.",
+        "execution_event_ids": [
+          "event-seed-000-discovery"
+        ]
+      }
+    ],
+    "matchers": [],
+    "outcome_history": [
+      {
+        "classification_id": "classification-not-determinable-20260920T061851Z",
+        "classified_at": "2026-09-20T06:18:51Z",
+        "supersedes": null,
+        "evidence_refs": [
+          "event-seed-000-discovery",
+          "sample-seed-000",
+          "drocksdb-seed-000-deadlock",
+          "drocksdb-seed-000-safehermit"
+        ],
+        "kind": "NOT-DETERMINABLE",
+        "route_evidence": [
+          {
+            "route_id": "zippydb-drocksdb-opt-direct-elf-buck-out-bind",
+            "cell_ids": [
+              "zippydb-drocksdb-opt-direct-elf-ptrace-strict-chaos"
+            ],
+            "evidence_event_ids": [
+              "event-seed-000-discovery"
+            ]
+          }
+        ],
+        "inspected_commands": [
+          [
+            "bin/safehermit",
+            "--sh-report",
+            "services/zippydb/drocksdbtest--af5789c4e317/evidence/seed-000-discovery.safehermit.txt",
+            "--sh-deadline",
+            "900",
+            "--sh-max-log-bytes",
+            "67108864",
+            "--sh-disk-limit",
+            "8G",
+            "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+            "run",
+            "--backend",
+            "ptrace",
+            "--strict",
+            "--chaos",
+            "--base-env=minimal",
+            "--env",
+            "LC_ALL=C",
+            "--env",
+            "TZ=UTC",
+            "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+            "--seed",
+            "0",
+            "--rng-seed",
+            "0",
+            "--fuzz-seed",
+            "0",
+            "--sched-seed",
+            "0",
+            "--sched-heuristic",
+            "random",
+            "--max-timeslice",
+            "200000000",
+            "--verify",
+            "--verify-strict",
+            "--verify-allow",
+            "both",
+            "--keep-logs",
+            "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-drocksdb-verify-3482641-1789884345113574049",
+            "--",
+            "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c23cf22b4c1c8a3b/zippydb/drocksdb/tests/__DRocksDBTest__/DRocksDBTest",
+            "--gtest_filter=DRocksDBTest.DestroySucceedsOnPopulatedBackend"
+          ]
+        ],
+        "inspected_artifacts": [
+          "drocksdb-seed-000-stderr",
+          "drocksdb-seed-000-result",
+          "drocksdb-seed-000-safehermit",
+          "drocksdb-seed-000-deadlock",
+          "drocksdb-seed-000-run1-full-info"
+        ],
+        "missing_or_ambiguous_facts": [
+          "Seed 0 did not produce a target oracle because Hermit deadlocked before the selected test emitted an execution marker.",
+          "The retained full INFO log is truncated at Hermit's configured 1 GiB bound and is diagnostic LOCAL_IGNORED evidence, not durable campaign evidence.",
+          "No valid scheduler-seed tuple has established either target arm."
+        ],
+        "measurement_budget_exhausted": false,
+        "pending_in_scope_measurements": [
+          "Select a different predeclared candidate; this target's sweep is stopped after its failed readiness checkpoint."
+        ]
+      }
+    ],
+    "current_outcome": {
+      "classification_id": "classification-not-determinable-20260920T061851Z",
+      "classified_at": "2026-09-20T06:18:51Z",
+      "supersedes": null,
+      "evidence_refs": [
+        "event-seed-000-discovery",
+        "sample-seed-000",
+        "drocksdb-seed-000-deadlock",
+        "drocksdb-seed-000-safehermit"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "zippydb-drocksdb-opt-direct-elf-buck-out-bind",
+          "cell_ids": [
+            "zippydb-drocksdb-opt-direct-elf-ptrace-strict-chaos"
+          ],
+          "evidence_event_ids": [
+            "event-seed-000-discovery"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/zippydb/drocksdbtest--af5789c4e317/evidence/seed-000-discovery.safehermit.txt",
+          "--sh-deadline",
+          "900",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-drocksdb-verify-3482641-1789884345113574049",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/c23cf22b4c1c8a3b/zippydb/drocksdb/tests/__DRocksDBTest__/DRocksDBTest",
+          "--gtest_filter=DRocksDBTest.DestroySucceedsOnPopulatedBackend"
+        ]
+      ],
+      "inspected_artifacts": [
+        "drocksdb-seed-000-stderr",
+        "drocksdb-seed-000-result",
+        "drocksdb-seed-000-safehermit",
+        "drocksdb-seed-000-deadlock",
+        "drocksdb-seed-000-run1-full-info"
+      ],
+      "missing_or_ambiguous_facts": [
+        "Seed 0 did not produce a target oracle because Hermit deadlocked before the selected test emitted an execution marker.",
+        "The retained full INFO log is truncated at Hermit's configured 1 GiB bound and is diagnostic LOCAL_IGNORED evidence, not durable campaign evidence.",
+        "No valid scheduler-seed tuple has established either target arm."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Select a different predeclared candidate; this target's sweep is stopped after its failed readiness checkpoint."
+      ]
+    }
 }
