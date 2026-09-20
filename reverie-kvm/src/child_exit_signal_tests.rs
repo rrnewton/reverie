@@ -1,8 +1,14 @@
 // Included in executor::tests to exercise the actual pending-state operation.
-fn child_exit_test_event(pid: i32, child: i32, status: i32, marker: u8) -> reverie::SignalEvent {
+fn child_exit_test_event_with_code(
+    pid: i32,
+    child: i32,
+    code: i32,
+    status: i32,
+    marker: u8,
+) -> reverie::SignalEvent {
     let mut info = [0; reverie::SIGNAL_INFO_SIZE];
     info[0..4].copy_from_slice(&libc::SIGCHLD.to_ne_bytes());
-    info[8..12].copy_from_slice(&libc::CLD_EXITED.to_ne_bytes());
+    info[8..12].copy_from_slice(&code.to_ne_bytes());
     info[16..20].copy_from_slice(&child.to_ne_bytes());
     info[20..24].copy_from_slice(&65_534_u32.to_ne_bytes());
     info[24..28].copy_from_slice(&status.to_ne_bytes());
@@ -17,6 +23,49 @@ fn child_exit_test_event(pid: i32, child: i32, status: i32, marker: u8) -> rever
         },
     )
     .unwrap()
+}
+
+fn child_exit_test_event(pid: i32, child: i32, status: i32, marker: u8) -> reverie::SignalEvent {
+    child_exit_test_event_with_code(pid, child, libc::CLD_EXITED, status, marker)
+}
+
+#[test]
+fn child_exit_signal_accepts_every_terminal_status_class() {
+    use reverie::ChildExitSignalDisposition::PendingEligible;
+    use reverie::ChildExitSignalOutcome::Accepted;
+
+    let root = TestDir::new();
+    for (code, status) in [
+        (libc::CLD_EXITED, 0),
+        (libc::CLD_EXITED, i32::from(u8::MAX)),
+        (libc::CLD_KILLED, 1),
+        (libc::CLD_KILLED, 64),
+        (libc::CLD_KILLED, libc::SIGSEGV),
+        (libc::CLD_DUMPED, libc::SIGQUIT),
+        (libc::CLD_DUMPED, libc::SIGSYS),
+    ] {
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let event = child_exit_test_event_with_code(executor.state.pid, 41, code, status, 0xa5);
+        assert_eq!(
+            executor.queue_child_exit_signal(event),
+            Accepted {
+                disposition: PendingEligible,
+                pending_generation: 0,
+                coalesced: false,
+            },
+            "code={code} status={status}",
+        );
+        let selected = executor
+            .take_pending_signal()
+            .expect("published child event");
+        assert_eq!(selected.event, event);
+        assert_eq!(selected.domain, PendingSignalDomain::Process);
+        assert_eq!(
+            executor.prepare_filtered_signal_delivery(event, selected.domain),
+            Ok(Some(selected)),
+            "Tool-return validation narrowed code={code} status={status}",
+        );
+    }
 }
 
 #[test]
@@ -165,8 +214,6 @@ fn child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish() {
     for code in [
         libc::SI_USER,
         libc::SI_TKILL,
-        libc::CLD_KILLED,
-        libc::CLD_DUMPED,
         libc::CLD_STOPPED,
         libc::CLD_CONTINUED,
         libc::CLD_TRAPPED,
@@ -178,6 +225,27 @@ fn child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish() {
     for (offset, value) in [(4, 1_i32), (16, 0), (16, -1), (24, -1), (24, 256)] {
         let mut info = valid.siginfo();
         info[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+        cases.push((info, valid.target(), Invalid, Errno::EINVAL));
+    }
+    for (code, status) in [
+        (libc::CLD_KILLED, 0_i32),
+        (libc::CLD_KILLED, libc::SIGCHLD),
+        (libc::CLD_KILLED, libc::SIGCONT),
+        (libc::CLD_KILLED, libc::SIGSTOP),
+        (libc::CLD_KILLED, libc::SIGTSTP),
+        (libc::CLD_KILLED, libc::SIGTTIN),
+        (libc::CLD_KILLED, libc::SIGTTOU),
+        (libc::CLD_KILLED, libc::SIGURG),
+        (libc::CLD_KILLED, libc::SIGWINCH),
+        (libc::CLD_KILLED, 65),
+        (libc::CLD_DUMPED, 0),
+        (libc::CLD_DUMPED, libc::SIGHUP),
+        (libc::CLD_DUMPED, 64),
+        (libc::CLD_DUMPED, 65),
+    ] {
+        let mut info = valid.siginfo();
+        info[8..12].copy_from_slice(&code.to_ne_bytes());
+        info[24..28].copy_from_slice(&status.to_ne_bytes());
         cases.push((info, valid.target(), Invalid, Errno::EINVAL));
     }
     for offset in [32, 40] {
@@ -325,6 +393,32 @@ fn child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer(
     );
     memory.read(0, &mut actual).unwrap();
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn child_exit_signal_signalfd_encodes_every_terminal_status_class() {
+    for (code, status) in [
+        (libc::CLD_EXITED, 37),
+        (libc::CLD_KILLED, libc::SIGTERM),
+        (libc::CLD_KILLED, libc::SIGSEGV),
+        (libc::CLD_DUMPED, libc::SIGABRT),
+    ] {
+        let event = child_exit_test_event_with_code(3, 41, code, status, 0xa5);
+        let mut expected: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
+        expected.ssi_signo = libc::SIGCHLD as u32;
+        expected.ssi_code = code;
+        expected.ssi_pid = 41;
+        expected.ssi_uid = 65_534;
+        expected.ssi_status = status;
+        expected.ssi_utime = 11;
+        expected.ssi_stime = 13;
+        let expected = struct_bytes(&expected);
+        assert_eq!(
+            encode_signalfd_siginfo(event).as_slice(),
+            expected.as_slice(),
+            "code={code} status={status}",
+        );
+    }
 }
 
 #[test]
