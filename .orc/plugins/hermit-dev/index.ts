@@ -225,10 +225,29 @@ interface PolicyInjectionReceipt {
   injectedAt: string;
 }
 
+interface WorkflowRetirementFailure {
+  name: string;
+  error: string;
+}
+
+interface WorkflowRetirementResult {
+  pass: boolean;
+  observedAt: string;
+  requested: string[];
+  presentBefore: string[];
+  absentBefore: string[];
+  killed: string[];
+  killErrors: WorkflowRetirementFailure[];
+  registryErrors: string[];
+  stillPresent: string[];
+  stillPresentSystemdReplaced: string[];
+}
+
 let resolvedSources: HermitDevSources | null = null;
 let lastSurfaceGap: string[] = [];
 let lastSelfTest: SelfTestResult | null = null;
 let lastPolicyInjection: PolicyInjectionReceipt | null = null;
+let lastWorkflowRetirement: WorkflowRetirementResult | null = null;
 
 // The only safe capability probe on this build: ask the runtime what it
 // publishes rather than poking a name at the host object. Returns null when
@@ -948,6 +967,59 @@ function missingRegisteredNames(
   return required.filter((name) => !names.has(name));
 }
 
+function registeredNames(entries: unknown): Set<string> {
+  return new Set(
+    (Array.isArray(entries) ? entries : []).map((entry) => {
+      const row = (entry || {}) as { name?: unknown };
+      return String(row.name || "");
+    }).filter((name) => name.length > 0),
+  );
+}
+
+const WORKFLOW_RETIREMENT_CHECK_NAME =
+  "systemd-replaced-workflows-retired-at-startup";
+
+function workflowRetirementCheck(
+  result: WorkflowRetirementResult | null,
+): SelfTestCheck {
+  if (result === null) {
+    return {
+      name: WORKFLOW_RETIREMENT_CHECK_NAME,
+      pass: false,
+      severity: "error",
+      detail: "startup has not reconciled the live workflow registry",
+    };
+  }
+  return {
+    name: WORKFLOW_RETIREMENT_CHECK_NAME,
+    pass: result.pass && result.stillPresentSystemdReplaced.length === 0,
+    severity: "error",
+    detail: result.pass
+      ? result.absentBefore.length + " already absent; " +
+        result.killed.length + " removed; post-kill registry confirmed " +
+        result.stillPresentSystemdReplaced.length + " competing producers"
+      : "registry_errors=" + JSON.stringify(result.registryErrors) +
+        " kill_errors=" + JSON.stringify(result.killErrors) +
+        " still_present=" + JSON.stringify(result.stillPresent),
+  };
+}
+
+function retainWorkflowRetirementCheck(
+  result: WorkflowRetirementResult,
+): void {
+  const check = workflowRetirementCheck(result);
+  const checks = (lastSelfTest?.checks || []).filter((candidate) =>
+    candidate.name !== WORKFLOW_RETIREMENT_CHECK_NAME
+  );
+  checks.push(check);
+  lastSelfTest = {
+    pass: checks.every((candidate) =>
+      candidate.pass || candidate.severity === "notice"
+    ),
+    checks,
+  };
+}
+
 async function verifyRegisteredSurface(): Promise<SelfTestResult> {
   const host = hermitDevSelfTest();
   const checks = host.checks.slice();
@@ -1083,6 +1155,10 @@ async function verifyRegisteredSurface(): Promise<SelfTestResult> {
     }
   }
 
+  if (lastWorkflowRetirement !== null) {
+    checks.push(workflowRetirementCheck(lastWorkflowRetirement));
+  }
+
   const pass = checks.every((check) =>
     check.pass || check.severity === "notice"
   );
@@ -1119,6 +1195,7 @@ function hermitDevStatus() {
     missingOrcSurfaceAtStartup: lastSurfaceGap,
     unverifiableOrcSurface: UNVERIFIABLE_ORC_SURFACE,
     selfTestAtStartup: lastSelfTest,
+    workflowRetirementAtStartup: lastWorkflowRetirement,
     hermitPrimary: "rrnewton/hermit",
     hermitUpstream: "facebookexperimental/hermit",
     reverieIssueRepo: "rrnewton/reverie",
@@ -1146,6 +1223,13 @@ const RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES = [
   "hermit-dev-agent-snapshot-5m-v1",
   "hermit-dev-disk-free-15m-v1",
   "hermit-dev-disk-paths-15m-v1",
+] as const;
+
+const RETIRED_WORKFLOW_NAMES = [
+  LEGACY_PR_HEALTH_WORKFLOW_NAME,
+  LEGACY_POLICY_RELOAD_WORKFLOW_NAME,
+  LEGACY_SPECULATIVE_LAND_WORKFLOW_NAME,
+  ...RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES,
 ] as const;
 
 // --- heartbeat declaration ---------------------------------------------------
@@ -1176,24 +1260,93 @@ const RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES = [
 // startup hook accepts both across two consecutive edits. Declaring in BOTH
 // places was also measured, and is rejected — the module-scope declaration is
 // the one ORC acts on, so it has to go.
-async function retireDurableWorkflowSpec(name: string): Promise<void> {
-  if (!hasOrcSurface("killWorkflow")) {
-    return;
-  }
+async function reconcileWorkflowRetirement(
+  requested: readonly string[],
+): Promise<WorkflowRetirementResult> {
+  const targets = [...new Set(requested)];
+  const result: WorkflowRetirementResult = {
+    pass: false,
+    observedAt: new Date().toISOString(),
+    requested: targets,
+    presentBefore: [],
+    absentBefore: [],
+    killed: [],
+    killErrors: [],
+    registryErrors: [],
+    stillPresent: targets.slice(),
+    stillPresentSystemdReplaced:
+      [...RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES],
+  };
+
+  let before: unknown;
   try {
-    await orc.killWorkflow(name);
-  } catch (_err) {
-    // Absent in a fresh session, and absent again after ORC has already
-    // retired it. Neither case is a fault, and neither may stop the
-    // declarations that follow.
+    before = await orc.listWorkflows();
+    if (!Array.isArray(before)) {
+      result.registryErrors.push(
+        "pre-kill orc.listWorkflows() returned " + typeof before,
+      );
+      return result;
+    }
+  } catch (err) {
+    result.registryErrors.push(
+      "pre-kill orc.listWorkflows() failed: " + String(err),
+    );
+    return result;
   }
+
+  const beforeNames = registeredNames(before);
+  result.presentBefore = targets.filter((name) => beforeNames.has(name));
+  result.absentBefore = targets.filter((name) => !beforeNames.has(name));
+
+  if (!hasOrcSurface("killWorkflow")) {
+    for (const name of result.presentBefore) {
+      result.killErrors.push({
+        name,
+        error: "orc.killWorkflow is not published by this runtime",
+      });
+    }
+  } else {
+    for (const name of result.presentBefore) {
+      try {
+        await orc.killWorkflow(name);
+        result.killed.push(name);
+      } catch (err) {
+        result.killErrors.push({ name, error: String(err) });
+      }
+    }
+  }
+
+  let after: unknown;
+  try {
+    after = await orc.listWorkflows();
+    if (!Array.isArray(after)) {
+      result.registryErrors.push(
+        "post-kill orc.listWorkflows() returned " + typeof after,
+      );
+      return result;
+    }
+  } catch (err) {
+    result.registryErrors.push(
+      "post-kill orc.listWorkflows() failed: " + String(err),
+    );
+    return result;
+  }
+
+  const afterNames = registeredNames(after);
+  result.stillPresent = targets.filter((name) => afterNames.has(name));
+  result.stillPresentSystemdReplaced =
+    RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES.filter((name) =>
+      afterNames.has(name)
+    );
+  result.pass = result.registryErrors.length === 0 &&
+    result.killErrors.length === 0 && result.stillPresent.length === 0;
+  return result;
 }
 
 /** Report whether every heartbeat this plugin owns is present in the live
- * workflow registry. Deliberately NOT part of the startup self-test: startup
- * hooks run before ORC applies its candidate workflow inventory, so a reading
- * taken there passes even when the inventory is about to reject every one of
- * them, which is exactly the reassuring silence that hid this outage. */
+ * workflow registry. The startup self-test retains the separate pre/post-kill
+ * retirement receipt; this manual check observes the final registry after ORC
+ * has applied the candidate workflow inventory. */
 async function verifyRegisteredWorkflows(): Promise<SelfTestResult> {
   const required = [
     POLICY_RELOAD_WORKFLOW_NAME,
@@ -1230,13 +1383,7 @@ async function verifyRegisteredWorkflows(): Promise<SelfTestResult> {
         ". A workflow rejected at load is retired and deleted, so check the " +
         "session log for 'workflow declaration rejected by compiler'.",
   });
-  const retired = [
-    LEGACY_PR_HEALTH_WORKFLOW_NAME,
-    LEGACY_POLICY_RELOAD_WORKFLOW_NAME,
-    LEGACY_SPECULATIVE_LAND_WORKFLOW_NAME,
-    ...RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES,
-  ];
-  const stillPresent = retired.filter((name) =>
+  const stillPresent = RETIRED_WORKFLOW_NAMES.filter((name) =>
     missingRegisteredNames(listed, [name]).length === 0
   );
   checks.push({
@@ -1244,9 +1391,10 @@ async function verifyRegisteredWorkflows(): Promise<SelfTestResult> {
     pass: stillPresent.length === 0,
     severity: "error",
     detail: stillPresent.length === 0
-      ? retired.length + " retired workflow IDs absent"
+      ? RETIRED_WORKFLOW_NAMES.length + " retired workflow IDs absent"
       : "still registered: " + stillPresent.join(", "),
   });
+  checks.push(workflowRetirementCheck(lastWorkflowRetirement));
   return {
     pass: checks.every((check) => check.pass || check.severity === "notice"),
     checks,
@@ -1361,14 +1509,18 @@ function registerPluginSurface(): void {
           );
         }
       } catch (err) {
+        const checks: SelfTestCheck[] = [{
+          name: "registered-surface-validation-completed",
+          pass: false,
+          severity: "error",
+          detail: String(err),
+        }];
+        if (lastWorkflowRetirement !== null) {
+          checks.push(workflowRetirementCheck(lastWorkflowRetirement));
+        }
         lastSelfTest = {
           pass: false,
-          checks: [{
-            name: "registered-surface-validation-completed",
-            pass: false,
-            severity: "error",
-            detail: String(err),
-          }],
+          checks,
         };
         orc.log("error", formatSelfTest(lastSelfTest));
         await orc.sendWakeup(
@@ -1478,13 +1630,30 @@ function registerPluginSurface(): void {
   orc.registerStartup(
     PLUGIN_NAME + ".workflows",
     async function hermitDevWorkflows() {
-      for (
-        const heartbeat of [
-          POLICY_RELOAD_WORKFLOW_NAME,
-          ...RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES,
-        ]
-      ) {
-        await retireDurableWorkflowSpec(heartbeat);
+      lastWorkflowRetirement = await reconcileWorkflowRetirement([
+        POLICY_RELOAD_WORKFLOW_NAME,
+        ...RETIRED_WORKFLOW_NAMES,
+      ]);
+      retainWorkflowRetirementCheck(lastWorkflowRetirement);
+      if (!lastWorkflowRetirement.pass) {
+        const detail = workflowRetirementCheck(lastWorkflowRetirement).detail;
+        orc.log(
+          "error",
+          "hermit-dev: competing workflow retirement failed: " + detail,
+        );
+        try {
+          await orc.sendWakeup(
+            [],
+            "HARD WARNING: competing ORC producer retirement failed",
+            detail,
+          );
+        } catch (err) {
+          orc.log(
+            "error",
+            "hermit-dev: workflow retirement wakeup failed: " + String(err),
+          );
+        }
+        throw new Error("competing workflow retirement failed: " + detail);
       }
 
       // Keep the entry literal at this call site: the workflow compiler reads its
@@ -1512,19 +1681,6 @@ function registerPluginSurface(): void {
           lastSurfaceGap.join(", ") +
           ". Update .orc/plugins/hermit-dev/index.ts against orc.listEffects().",
       );
-    }
-    if (hasOrcSurface("killWorkflow")) {
-      for (const legacyWorkflow of [
-        LEGACY_PR_HEALTH_WORKFLOW_NAME,
-        LEGACY_POLICY_RELOAD_WORKFLOW_NAME,
-        LEGACY_SPECULATIVE_LAND_WORKFLOW_NAME,
-      ]) {
-        try {
-          await orc.killWorkflow(legacyWorkflow);
-        } catch (_err) {
-          // Legacy workflows are absent in new sessions.
-        }
-      }
     }
     const result = await activateHermitDevPolicies("startup");
     orc.log("info", result);

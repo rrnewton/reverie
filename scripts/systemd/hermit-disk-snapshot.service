@@ -18,10 +18,11 @@ UMask=0077
 # One immutable current-origin tool invocation runs both publishers serially;
 # the wrapper's lock also refuses overlapping direct/manual invocations.
 ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative scripts/publish-disk-snapshots.py -- --state-root %h/work/dev-hermit --population-timeout 180
-# Worst case: 120s materialization-lock wait + 110s cold immutable-tool work +
-# two 30s bracketing btrfs reads + one concurrent 180s population window + the
-# final 30s disk read = 500s. Keep 40s for process startup and atomic
-# publication, while remaining below the timer's 15-minute period.
+# This is the fail-closed wall authority for the complete path: lock wait,
+# immutable-tool materialization, measurements, and atomic publication. It is
+# deliberately below both the 15-minute timer period and the disk evidence's
+# 45-minute freshness refusal window; no internal phase is claimed to have a
+# separate code-enforced wall bound.
 TimeoutStartSec=540
 TimeoutStopSec=5s
 KillMode=control-group

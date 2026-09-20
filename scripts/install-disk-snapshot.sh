@@ -110,25 +110,21 @@ if ((start)); then
     timer_load=$(unit_property "$timer" LoadState)
     timer_active=$(unit_property "$timer" ActiveState)
     timer_sub=$(unit_property "$timer" SubState)
-    [[ $service_load == loaded ]] || {
-        printf 'install-disk-snapshot: service is not loaded: %s\n' "$service_load" >&2
+    [[ $service_load == loaded && $timer_load == loaded ]] || {
+        printf 'install-disk-snapshot: units are not both loaded: service=%s timer=%s\n' \
+            "$service_load" "$timer_load" >&2
         exit 1
     }
-    case "$service_active:$service_sub" in
-        inactive:dead|activating:start) ;;
+    case "$service_active:$service_sub:$timer_active:$timer_sub" in
+        inactive:dead:active:waiting|activating:start:active:running) ;;
         *)
-            printf 'install-disk-snapshot: service is not healthy: %s/%s\n' \
-                "$service_active" "$service_sub" >&2
+            printf 'install-disk-snapshot: incoherent service/timer state: %s/%s + %s/%s\n' \
+                "$service_active" "$service_sub" "$timer_active" "$timer_sub" >&2
             exit 1
             ;;
     esac
-    [[ $timer_load == loaded && $timer_active == active && $timer_sub == waiting ]] || {
-        printf 'install-disk-snapshot: timer is not loaded and waiting: %s/%s/%s\n' \
-            "$timer_load" "$timer_active" "$timer_sub" >&2
-        exit 1
-    }
     printf 'install-disk-snapshot: service=%s/%s timer=%s/%s\n' \
         "$service_active" "$service_sub" "$timer_active" "$timer_sub"
 else
-    printf 'install-disk-snapshot: timer enabled but not started; disable the two legacy ORC disk workflows before starting it\n'
+    printf 'install-disk-snapshot: timer enabled but not started; require hermitDevStatus().workflowRetirementAtStartup.pass=true before starting it\n'
 fi

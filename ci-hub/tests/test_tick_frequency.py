@@ -88,6 +88,23 @@ def test_systemd_replaced_orc_producers_are_retirement_only() -> None:
         assert forbidden not in plugin
 
 
+def test_orc_retirement_is_observed_and_fails_closed() -> None:
+    plugin = read(".orc/plugins/hermit-dev/index.ts")
+    start = plugin.index("async function reconcileWorkflowRetirement")
+    end = plugin.index("/** Report whether every heartbeat", start)
+    reconciliation = plugin[start:end]
+
+    assert reconciliation.count("await orc.listWorkflows()") == 2
+    assert "result.absentBefore" in reconciliation
+    assert "result.killErrors.push" in reconciliation
+    assert "result.stillPresentSystemdReplaced" in reconciliation
+    assert "result.stillPresent.length === 0" in reconciliation
+    assert "workflowRetirementAtStartup: lastWorkflowRetirement" in plugin
+    assert "retainWorkflowRetirementCheck(lastWorkflowRetirement)" in plugin
+    assert "HARD WARNING: competing ORC producer retirement failed" in plugin
+    assert 'throw new Error("competing workflow retirement failed: "' in plugin
+
+
 def test_disk_writer_has_a_durable_fifteen_minute_systemd_schedule() -> None:
     service = read("scripts/systemd/hermit-disk-snapshot.service")
     timer = read("scripts/systemd/hermit-disk-snapshot.timer")

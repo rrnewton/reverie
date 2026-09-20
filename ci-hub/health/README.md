@@ -29,12 +29,12 @@ health polling. Project policy stays in this repository:
   primary that owns the materialized Hermit/agent-utils checkouts. The wrapper
   provisions the pinned Python runtime dependency into the ignored
   `.tick-hub/venv` when needed, then invokes the real tick-hub CLI.
-- `.orc/plugins/hermit-dev/index.ts` is the outer thirty-minute scheduler and
-  wakeup delivery adapter.
-- `scripts/systemd/hermit-health-tick.timer` independently invokes the same
-  tick every thirty minutes so it survives coordinator-session loss. The
-  wrapper serializes complete runs from the two schedulers before touching
-  shared reports or gate state.
+- `scripts/systemd/hermit-health-tick.timer` is the sole thirty-minute
+  scheduler, so the tick survives coordinator-session loss.
+- `.orc/plugins/hermit-dev/index.ts` retires the superseded ORC health workflow
+  at startup and fails startup reconciliation if it remains registered. The
+  wrapper lock serializes a bounded manual invocation or service restart
+  against the scheduled run before either touches shared reports or gate state.
 
 ## Timing-sensitive load precondition
 
@@ -88,16 +88,19 @@ main top-level populations to `ignored/ops-state/disk-paths.json`, and retains
 the preceding published path run at
 `ignored/ops-state/disk-paths.previous.json`. The path scan runs at idle I/O and
 lowest normal CPU priority, with a 180-second bound per concurrently measured
-population. The service explicitly includes the immutable-tool's 120-second
-lock wait and has an outer 540-second runtime bound plus explicit
-memory, swap, and task caps; any command failure fails the oneshot.
+population. `TimeoutStartSec=540` is the fail-closed bound on the complete
+service path, including immutable-tool setup and both publications; no measured
+cold-run component is treated as a code-enforced sub-bound. The service also
+has explicit memory, swap, and task caps; any command failure fails the
+oneshot.
 
 Validate with `scripts/install-disk-snapshot.sh --check`, then install and
 enable without starting with `scripts/install-disk-snapshot.sh --no-start`.
-Disable the legacy `hermit-dev-disk-free-15m-v1` and
-`hermit-dev-disk-paths-15m-v1` ORC workflows before the explicit
-`scripts/install-disk-snapshot.sh --start`, so old and new producers never
-write the same artifacts concurrently.
+Load or restart ORC and require
+`orc.hermitDevStatus().workflowRetirementAtStartup.pass === true`; that receipt
+is a pre/post-registry observation that all replaced workflows are absent.
+Only then use the explicit `scripts/install-disk-snapshot.sh --start`, so old
+and new producers never write the same artifacts concurrently.
 
 The five populations are registered slots, disposable validation checkouts,
 the shared Hermit/Reverie/LiteInst2 checkouts, the parent Git object database,
@@ -167,15 +170,15 @@ standing backlog in captured fields, so it cannot become the permanently-on gate
 that gets muted within a day. It is DETECT ONLY: reclaim needs a recovery SHA
 and remains a coordinator decision.
 
-## What this hub structurally cannot see: its own host dying
+## Independent host and coordinator liveness
 
-Everything above runs inside ORC, and `.orc/plugins/hermit-dev/index.ts` is its
-outer scheduler. On 2026-08-06 the ORC process and its tmux server died
-together, so the scheduler, the tick, and every gate above died in the same
-event and reported nothing. A human noticed, after a long silent interval.
+The health tick and its gates now run from a `systemd --user` timer, outside
+ORC. This replaces the historical arrangement in which ORC scheduled the tick:
+on 2026-08-06 the ORC process and its tmux server died together, so the old
+scheduler and every gate died silently until a human noticed.
 
-Two watchdogs therefore live outside ORC, on independent `systemd --user`
-timers. They answer different questions and must not be confused:
+Two additional `systemd --user` watchdog timers answer different questions and
+must not be confused:
 
 - `hermit-health-staleness.timer` asks **"is the tick still firing?"**, purely
   by the mtime of the heartbeat and `.tick-hub/fired-state`. It would read a

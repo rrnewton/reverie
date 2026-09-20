@@ -26,7 +26,9 @@ registers it as the `hermit-dev` skill.
   The bounded user-systemd `hermit-health-tick.timer`,
   `hermit-herdr-agent-snapshot.timer`, and `hermit-disk-snapshot.timer` own
   those operations; this plugin must not register competing scripts or
-  workflows.
+  workflows. Startup lists the registry before and after retirement, treats an
+  already-absent ID as benign, and fails the startup hook on a real kill error
+  or any replaced workflow that remains registered.
 - Through the systemd-owned health tick, gently fast-forward clean product primaries and publish a
   coherent parent gitlink snapshot; dirty or inconsistent state is preserved
   and surfaced as a hard warning.
@@ -78,11 +80,13 @@ HERMIT_AGENT_SNAPSHOT_JSON='[]' ./ci-hub/bin/health-tick --no-header
 ```
 
 A live session's `orc.hermitDevStatus()` must report the systemd health and
-agent-snapshot timer owners and a non-null
+agent-snapshot timer owners, a
+`workflowRetirementAtStartup.pass` value of `true`, and a non-null
 `lastPolicyContextInjection` receipt with `contextInjected: true`.
 `await orc.hermitDevSelfTest()` must report all registered scripts and
-the advertised functions present, exercise the inert argv echo through
-`orc.scripts`, and exercise `globalThis.gchatSafe` on allowed and refused text.
+the advertised functions present, retain the successful workflow-retirement
+receipt, exercise the inert argv echo through `orc.scripts`, and exercise
+`globalThis.gchatSafe` on allowed and refused text.
 `orc.listWorkflows()` must show only the plugin's sleeping
 `hermit-dev-policy-reload-2h-v1` workflow and must not show
 `hermit-dev-operational-health-v1`, `hermit-dev-agent-snapshot-5m-v1`,

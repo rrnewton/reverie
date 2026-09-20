@@ -347,6 +347,126 @@ function sourceBetween(startMarker, endMarker) {
   return SOURCE.slice(start, end);
 }
 
+// Execute the shipped retirement reconciler with an in-memory registry. This
+// brackets benign absence, successful removal, kill failure, and a kill that
+// reports success without actually removing the competing producer.
+function compileWorkflowRetirement(functionSource, orcStub, hasKill = true) {
+  const javascript = functionSource
+    .replace("requested: readonly string[]", "requested")
+    .replace("): Promise<WorkflowRetirementResult>", ")")
+    .replace("const result: WorkflowRetirementResult =", "const result =")
+    .replace("let before: unknown;", "let before;")
+    .replace("let after: unknown;", "let after;");
+  const registeredNames = (entries) => new Set(
+    (Array.isArray(entries) ? entries : [])
+      .map((entry) => String(entry?.name || ""))
+      .filter((name) => name.length > 0),
+  );
+  return new Function(
+    "registeredNames",
+    "hasOrcSurface",
+    "orc",
+    "RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES",
+    javascript + "; return reconcileWorkflowRetirement;",
+  )(
+    registeredNames,
+    (name) => name === "killWorkflow" && hasKill,
+    orcStub,
+    ["systemd-producer"],
+  );
+}
+
+async function probeWorkflowRetirement({
+  initial = [],
+  killError = null,
+  sticky = false,
+  hasKill = true,
+} = {}) {
+  const names = new Set(initial);
+  const killCalls = [];
+  let listCalls = 0;
+  const orcStub = {
+    listWorkflows: async () => {
+      listCalls += 1;
+      return [...names].map((name) => ({ name }));
+    },
+    killWorkflow: async (name) => {
+      killCalls.push(name);
+      if (killError === name) throw new Error("kill refused for " + name);
+      if (!sticky) names.delete(name);
+    },
+  };
+  const retirementSource = sourceBetween(
+    "async function reconcileWorkflowRetirement",
+    "\n/** Report whether every heartbeat",
+  );
+  const reconcile = compileWorkflowRetirement(
+    retirementSource,
+    orcStub,
+    hasKill,
+  );
+  const result = await reconcile(["policy-reload", "systemd-producer"]);
+  return { result, killCalls, listCalls };
+}
+
+const absentRetirement = await probeWorkflowRetirement();
+check(
+  "already-absent workflows are benign without a kill call",
+  absentRetirement.result.pass === true &&
+    absentRetirement.killCalls.length === 0 &&
+    absentRetirement.listCalls === 2 &&
+    absentRetirement.result.absentBefore.length === 2,
+  JSON.stringify(absentRetirement),
+);
+const successfulRetirement = await probeWorkflowRetirement({
+  initial: ["policy-reload", "systemd-producer"],
+});
+check(
+  "present workflows are removed and post-list reconciled",
+  successfulRetirement.result.pass === true &&
+    successfulRetirement.killCalls.length === 2 &&
+    successfulRetirement.listCalls === 2 &&
+    successfulRetirement.result.killed.length === 2 &&
+    successfulRetirement.result.stillPresent.length === 0,
+  JSON.stringify(successfulRetirement),
+);
+const refusedRetirement = await probeWorkflowRetirement({
+  initial: ["systemd-producer"],
+  killError: "systemd-producer",
+});
+check(
+  "a real kill error fails and remains attributable",
+  refusedRetirement.result.pass === false &&
+    refusedRetirement.result.killErrors.length === 1 &&
+    refusedRetirement.result.killErrors[0].name === "systemd-producer" &&
+    refusedRetirement.result.stillPresentSystemdReplaced[0] ===
+      "systemd-producer",
+  JSON.stringify(refusedRetirement),
+);
+const stickyRetirement = await probeWorkflowRetirement({
+  initial: ["systemd-producer"],
+  sticky: true,
+});
+check(
+  "post-list rejects a kill that leaves the producer registered",
+  stickyRetirement.result.pass === false &&
+    stickyRetirement.result.killErrors.length === 0 &&
+    stickyRetirement.result.stillPresentSystemdReplaced[0] ===
+      "systemd-producer",
+  JSON.stringify(stickyRetirement),
+);
+check(
+  "retirement receipt is retained in status and startup self-test",
+  SOURCE.includes("workflowRetirementAtStartup: lastWorkflowRetirement") &&
+    SOURCE.includes("retainWorkflowRetirementCheck(lastWorkflowRetirement)") &&
+    SOURCE.includes("checks.push(workflowRetirementCheck(lastWorkflowRetirement))"),
+);
+check(
+  "retirement failure is surfaced and aborts startup",
+  SOURCE.includes("HARD WARNING: competing ORC producer retirement failed") &&
+    SOURCE.includes('throw new Error("competing workflow retirement failed: "'),
+);
+
 function compilePolicyInjectionHelper(functionSource) {
   const javascript = functionSource
     .replace("reason: PolicyInjectionReason", "reason")
@@ -691,7 +811,7 @@ const surfaceCheckSource = sourceBetween(
 );
 const missingNamesSource = sourceBetween(
   "function missingRegisteredNames(",
-  "\n\nasync function verifyRegisteredSurface",
+  "\n\nfunction registeredNames",
 )
   .replace(
     "function missingRegisteredNames(\n  entries: unknown,\n  required: string[],\n): string[] {",
@@ -800,6 +920,7 @@ console.log(
   "script-arg-passing: " + passed + " checks passed " +
     "(argv round-trip through the shipped literal, off-by-one detection, " +
     "death-gate permit/refuse brackets, policy context pass/fail brackets, " +
-    "the persisted GChat guard, registered-surface validation, a " +
+    "workflow-retirement reconciliation, the persisted GChat guard, " +
+    "registered-surface validation, a " +
     "cache-authority mutation control, and index.ts drift guards)",
 );

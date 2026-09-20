@@ -9,9 +9,9 @@
 # stale reminder-only hermit-dev-pr-health spec, which never calls health-tick.
 # fired-state froze for ~38h and the silence looked exactly like health.
 #
-# This script is also invoked by a systemd --user timer (Linger=yes) so health
-# continues across logout, reboot, and session recycling. The ORC workflow is
-# retained for its direct wakeup path; main() serializes their complete runs.
+# A systemd --user timer (Linger=yes) is the sole scheduled driver, so health
+# continues across logout, reboot, and coordinator-session recycling. main()
+# also serializes an operator's bounded manual invocation against that timer.
 set -uo pipefail
 
 # Argument inspection is pure: neither help nor a usage refusal may reach
@@ -178,11 +178,11 @@ ROOT="${HOME:?HOME must be set}/work/dev-hermit"
 FIRED_STATE="$ROOT/.tick-hub/fired-state"
 INVLOG="$HOME/.local/state/hermit-health-tick-invocations.log"
 # ⚠️ THE REPORT MUST EXIST ON DISK BEFORE THE TICK FINISHES, because the tick
-# does not always finish. Both drivers run it through hermit-operational-tick's
-# 1200s whole-subtree CPU budget and 619s blocked-work backstop, with a 650s
-# last-resort outer deadline. Capturing health-tick's output in a command
-# substitution meant the entire
-# report lived in a shell variable of a process that was about to be killed, so
+# does not always finish. The systemd driver runs it through
+# hermit-operational-tick's 1200s whole-subtree CPU budget and 619s blocked-work
+# backstop, with a 650s last-resort outer deadline. Capturing health-tick's
+# output in a command substitution meant the entire report lived in a shell
+# variable of a process that was about to be killed, so
 # every finding it had already made was destroyed. Measured 2026-09-03: two runs
 # entered the gate loop, one of them for 508 seconds, and neither left a single
 # finding line behind. health-tick writes each gate's verdict as it is decided,
@@ -310,9 +310,9 @@ refresh_canonical_object_mirror() {
 # Copy whatever the tick has reported so far into the durable invocation log.
 #
 # Called on the ordinary path AND from the exit trap, which is what makes an
-# interrupted tick self-describing: SIGTERM from either outer bound runs the
-# trap, so the findings already on disk are recorded with the same start stamp
-# as the rest of the invocation. `LIVE_REPORT_RECORDED` keeps the two callers
+# interrupted tick self-describing: SIGTERM from the systemd deadline or a
+# bounded manual caller runs the trap, so findings already on disk retain the
+# same start stamp as the rest of the invocation. `LIVE_REPORT_RECORDED` keeps the two callers
 # from writing the same finding twice; a tick killed with SIGKILL records
 # nothing here, but the report itself is still readable at LIVE_REPORT.
 record_live_report_findings() {
@@ -749,12 +749,12 @@ finish_tick_cancellation() {
         kill -s "$TICK_CANCEL_SIGNAL" -- "-$TICK_CHILD_PID" 2>/dev/null || true
         # Hand the already-streamed report to an independent service before
         # waiting for the child. Delivery then runs concurrently with teardown
-        # and survives the wrapper's two-second hard-kill window.
+        # and survives the wrapper's bounded teardown window.
         record_live_report_findings
         escalate_live_report_findings
-        # ORC gives this wrapper two seconds before SIGKILL. Give the measured
-        # child one second to finish its signal handler, then reap the complete
-        # process group before the wrapper releases its private tool tree.
+        # Give the measured child one second to finish its signal handler, then
+        # reap the complete process group before the bounded caller releases
+        # this wrapper's private tool tree.
         for _ in {1..50}; do
             if [[ ! -r /proc/$TICK_CHILD_PID/stat ]] || \
                ! read -r _ _ state _ < "/proc/$TICK_CHILD_PID/stat" || \
@@ -2652,10 +2652,10 @@ if [[ ${1:-} == --emit-output ]]; then
     shift
 fi
 
-# The durable systemd timer and the ORC workflow are independent schedulers.
-# Serialize the complete stateful run before truncating LIVE_REPORT: otherwise
-# phase-aligned firings can erase each other's report and duplicate gates or
-# escalations. A duplicate is expected redundancy, not a failed health check.
+# The durable systemd timer is the sole scheduler. Serialize the complete
+# stateful run before truncating LIVE_REPORT so a bounded manual invocation or
+# service restart cannot erase the scheduled run's report or duplicate gates
+# and escalations.
 mkdir -p -- "$(dirname -- "$RUN_LOCK")" || {
     printf 'ERROR: health-tick could not create run-lock directory: %s\n' "$RUN_LOCK" >&2
     return 73
@@ -2758,7 +2758,8 @@ else
     operational_tool=$(verified_installed_operational_tool)
     printf '%s tool_root=%s tool_root_sha=%s state_root=%s\n' \
         "$start" "$tool_root" "$tool_root_sha" "$ROOT" >>"$INVLOG"
-    # Keep the measured tick in its own process group so either outer bound can
+    # Keep the measured tick in its own process group so the systemd deadline
+    # or a bounded manual caller can
     # stop every gate descendant without also killing this wrapper before its
     # exit trap records and escalates the report already received. A dedicated
     # read descriptor preserves tick-hub's line-by-line delivery; unlike the old
