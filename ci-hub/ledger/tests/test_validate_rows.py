@@ -1517,7 +1517,7 @@ def test_linked_worktree_cli_filters_exact_source_row_and_refuses_ambiguity(
         *(item["record_id"] for item in decoys),
     }
 
-    selected = reverie_node.load_source_row(
+    selected, selected_event = reverie_node.load_source_row(
         linked,
         source["commit"],
         linked,
@@ -1525,6 +1525,8 @@ def test_linked_worktree_cli_filters_exact_source_row_and_refuses_ambiguity(
         started,
     )
     assert selected == source
+    assert selected_event["event_id"] == source["record_id"]
+    assert selected_event in validate_rows.events(root=primary)
 
     duplicate = {**source, "record_id": "second-exact-match"}
     result = ledger_cli("record", duplicate)
@@ -1761,3 +1763,207 @@ def test_missing_failure_log_stays_unclassified_and_cannot_look_durable(
 
     assert "known_flaky_failure" not in recorded
     assert "failure_origin" not in recorded["gates"][0]
+
+
+def reverie_finalization_fixture(root: Path, *, run_number: int = 153) -> tuple[dict, dict]:
+    source = row(root, record_id=f"source-{run_number}")
+    source.update(
+        schema_version=4, producer="reverie-validate-sh", repo="reverie",
+        run_number=run_number, log_file=str(root / f"run-{run_number}.log"),
+        exit_code=1, result="fail", checks=1, failures=1,
+        executed_tests=10, passed_tests=9, filtered_tests=2,
+        gates=[dict(name="Test regular workspace cases", result="fail",
+                    executed_tests=10, passed_tests=9, filtered_tests=2,
+                    failure_origin="outer_gate", failed_substeps=[])],
+    )
+    Path(source["log_file"]).write_text("one real fixture failure\n")
+    validate_rows.record(source, root=root)
+    event = next(x for x in validate_rows.events(root=root) if x["event_id"] == source["record_id"])
+    final = {**source, "schema_version": 5, "producer": "ci-hub-reverie-validate-run",
+             "repo": "rrnewton/reverie", "raw_result": "fail", "gates_run": 1,
+             "tree": git(Path(source["cwd"]), "rev-parse", "HEAD^{tree}").stdout.strip(),
+             "safe_ci": {"required": True, "observed": True, "cgroup": "/fixture"}}
+    return event, final
+
+
+def test_reverie_finalization_preserves_one_failed_run_and_raw_source(tmp_path: Path):
+    event, final = reverie_finalization_fixture(tmp_path)
+    spool_dir = validate_rows.live_spool_dir(tmp_path)
+    original_files = {p: p.read_bytes() for p in spool_dir.glob("*.jsonl")}
+    receipt = validate_rows.record_reverie_finalization(event, final, root=tmp_path)
+    assert receipt["run_id"] == event["run_id"]
+    events = validate_rows.events(root=tmp_path)
+    assert len(events) == 2 and event in events
+    correction = next(e for e in events if e["event_type"] == "run.correct")
+    assert correction["supersedes"] == event["event_id"]
+    assert correction["run_id"] == event["run_id"]
+    projected = validate_rows.status_input(root=tmp_path)
+    assert len(projected["rows"]) == 1
+    assert len(projected["records"]) == 2
+    current = projected["rows"][0]
+    assert current["result"] == current["raw_result"] == "fail"
+    assert (current["executed_tests"], current["passed_tests"], current["filtered_tests"]) == (10, 9, 2)
+    assert current["gates"] == final["gates"]
+    assert all(p.read_bytes() == raw for p, raw in original_files.items())
+    replay = validate_rows.record_reverie_finalization(event, final, root=tmp_path)
+    assert replay["already_recorded"] is True
+    assert replay["event_id"] == receipt["event_id"]
+    assert len(list(spool_dir.glob("*.jsonl"))) == 2
+
+
+def test_reverie_same_time_same_commit_runs_stay_distinct(tmp_path: Path):
+    first, first_final = reverie_finalization_fixture(tmp_path, run_number=153)
+    second, second_final = reverie_finalization_fixture(tmp_path, run_number=154)
+    assert first["commit"] == second["commit"]
+    assert first["host"] == second["host"]
+    assert first["started_at"] == second["started_at"]
+    for event, final in [(first, first_final), (second, second_final)]:
+        validate_rows.record_reverie_finalization(event, final, root=tmp_path)
+    projected = validate_rows.status_input(root=tmp_path)
+    assert len(projected["records"]) == 4
+    assert {r["run_number"] for r in projected["rows"]} == {153, 154}
+    assert len(projected["rows"]) == 2
+
+
+@pytest.mark.parametrize("field,value", [
+    ("commit", "b" * 40), ("host", "foreign"), ("run_number", 154),
+    ("log_file", "/foreign.log"), ("cwd", "/missing-checkout"),
+    ("started_at", "2026-08-09T01:00:01Z"), ("finished_at", "2026-08-09T01:01:01Z"),
+    ("result", "pass"), ("raw_result", "pass"), ("exit_code", 0),
+    ("executed_tests", 9), ("passed_tests", 10), ("filtered_tests", 0),
+    ("failures", True), ("gates", []), ("repo", "hermit"),
+    ("producer", "other"), ("schema_version", 6), ("new_fact", "unsupported"),
+    ("tree", "f" * 40),
+])
+def test_reverie_finalization_refuses_execution_changes(tmp_path: Path, field: str, value):
+    event, final = reverie_finalization_fixture(tmp_path)
+    final[field] = value
+    with pytest.raises(ValueError):
+        validate_rows.record_reverie_finalization(event, final, root=tmp_path)
+    assert validate_rows.events(root=tmp_path) == [event]
+
+
+@pytest.mark.parametrize("field", ["event_id", "run_id", "host", "legacy_row"])
+def test_reverie_finalization_binds_exact_retained_source(tmp_path: Path, field: str):
+    event, final = reverie_finalization_fixture(tmp_path)
+    supplied = copy.deepcopy(event)
+    supplied[field] = {} if field == "legacy_row" else "forged"
+    with pytest.raises(ValueError, match="does not match the retained event"):
+        validate_rows.record_reverie_finalization(supplied, final, root=tmp_path)
+    assert validate_rows.events(root=tmp_path) == [event]
+
+
+def test_reverie_conflicting_finalization_refuses_before_spooling(tmp_path: Path):
+    event, final = reverie_finalization_fixture(tmp_path)
+    validate_rows.record_reverie_finalization(event, final, root=tmp_path)
+    retained = validate_rows.events(root=tmp_path)
+    final["safe_ci"]["cgroup"] = "/different-finalizer"
+    with pytest.raises(ValueError, match="different finalization"):
+        validate_rows.record_reverie_finalization(event, final, root=tmp_path)
+    assert validate_rows.events(root=tmp_path) == retained
+
+
+def test_reverie_finalization_keeps_ordinary_admission_refusal(tmp_path: Path):
+    event, final = reverie_finalization_fixture(tmp_path)
+    final["admission_floor_evidence"] = {"schema_version": 999}
+    with pytest.raises(ValueError):
+        validate_rows.record_reverie_finalization(event, final, root=tmp_path)
+    assert validate_rows.events(root=tmp_path) == [event]
+
+
+def test_reverie_finalization_keeps_ordinary_failed_gate_refusal(tmp_path: Path):
+    event, final = reverie_finalization_fixture(tmp_path)
+    final["gates"] = copy.deepcopy(final["gates"])
+    final["gates"][0]["failed_substeps"] = None
+    with pytest.raises(ValueError, match="inconsistent failure_origin"):
+        validate_rows.record_reverie_finalization(event, final, root=tmp_path)
+    assert validate_rows.events(root=tmp_path) == [event]
+
+
+def test_reverie_finalization_busy_source_refuses_without_history_change(tmp_path: Path):
+    import fcntl
+    event, final = reverie_finalization_fixture(tmp_path)
+    directory = validate_rows.live_spool_dir(tmp_path) / ".reverie-finalization"
+    directory.mkdir()
+    guard = directory / (hashlib.sha256(event["event_id"].encode()).hexdigest() + ".lock")
+    with guard.open("a") as owner:
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ValueError, match="already in progress"):
+            validate_rows.record_reverie_finalization(event, final, root=tmp_path)
+    assert validate_rows.events(root=tmp_path) == [event]
+
+
+def test_reverie_finalization_cannot_promote_reconstructed_source(tmp_path: Path):
+    fixture_root = tmp_path / "original"
+    event, final = reverie_finalization_fixture(fixture_root)
+    reconstructed = copy.deepcopy(event)
+    reconstructed["producer"]["source"] = "reconstructed"
+    replay_root = tmp_path / "reconstructed"
+    write_events(replay_root, reconstructed)
+    with pytest.raises(ValueError, match="not a raw Reverie producer result"):
+        validate_rows.record_reverie_finalization(reconstructed, final, root=replay_root)
+    assert validate_rows.events(root=replay_root) == [reconstructed]
+
+
+def test_reverie_competing_writers_hold_guard_through_append(tmp_path: Path):
+    import select
+
+    event, final = reverie_finalization_fixture(tmp_path)
+    competing = copy.deepcopy(final)
+    competing["safe_ci"]["cgroup"] = "/other-finalizer"
+    ready_read, ready_write = os.pipe()
+    release_read, release_write = os.pipe()
+    worker = r'''
+import json,os,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import validate_rows
+real_append=validate_rows._spool_record_event
+def held_append(event,root):
+    # The actual finalizer has already read the source and admitted no successor.
+    # Hold precisely its last boundary before the real durable append.
+    os.write(int(sys.argv[3]),b'L')
+    assert os.read(int(sys.argv[4]),1)==b'G'
+    return real_append(event,root)
+validate_rows._spool_record_event=held_append
+request=json.load(sys.stdin)
+print(json.dumps(validate_rows.record_reverie_finalization(request['source'],request['row'],root=Path(sys.argv[2]))))
+'''
+    environment = {**os.environ, "DEV_HERMIT_PARENT": str(tmp_path)}
+    first = subprocess.Popen(
+        [sys.executable, "-c", worker, str(HERE.parent), str(tmp_path), str(ready_write), str(release_read)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=environment, pass_fds=(ready_write, release_read),
+    )
+    os.close(ready_write)
+    os.close(release_read)
+    try:
+        assert first.stdin is not None
+        first.stdin.write(json.dumps({"source": event, "row": final}))
+        first.stdin.close()
+        first.stdin = None
+        assert select.select([ready_read], [], [], 20)[0], "first writer did not reach append"
+        assert os.read(ready_read, 1) == b"L"
+        argv = [sys.executable, str(HERE.parent / "validate_rows.py"), "record-reverie-finalization"]
+        request = json.dumps({"source": event, "row": competing})
+        second = subprocess.run(argv, input=request, text=True, capture_output=True, env=environment, timeout=20)
+        assert second.returncode == 2
+        assert "already in progress" in second.stderr
+        assert validate_rows.events(root=tmp_path) == [event]
+        os.write(release_write, b"G")
+        stdout, stderr = first.communicate(timeout=20)
+        assert first.returncode == 0, stderr
+        assert json.loads(stdout)["run_id"] == event["run_id"]
+        after = subprocess.run(argv, input=request, text=True, capture_output=True, env=environment, timeout=20)
+        assert after.returncode == 2
+        assert "different finalization" in after.stderr
+        retained = validate_rows.events(root=tmp_path)
+        assert len(retained) == 2 and event in retained
+        current = validate_rows.rows(root=tmp_path)
+        assert len(current) == 1 and current[0]["safe_ci"]["cgroup"] == "/fixture"
+    finally:
+        os.close(ready_read)
+        os.close(release_write)
+        if first.poll() is None:
+            first.terminate()
+            first.communicate(timeout=20)

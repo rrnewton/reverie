@@ -229,39 +229,23 @@ def lock_authority(root: Path, target: str) -> dict[str, Any]:
     )
 
 
-def load_source_row(root: Path, target: str, checkout: Path, log: Path, started: datetime) -> dict[str, Any]:
+def load_source_row(root: Path, target: str, checkout: Path, log: Path, started: datetime) -> tuple[dict[str, Any], dict[str, Any]]:
     result = run(
-        [sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "rows"], cwd=root
+        [sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "reverie-source",
+         "--target", target, "--checkout", str(checkout), "--log", str(log),
+         "--started", started.isoformat()], cwd=root
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
         raise Refusal(f"canonical ledger union unavailable: {detail}")
-    candidates: list[dict[str, Any]] = []
-    for line in result.stdout.splitlines():
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        if row.get("repo") not in ("reverie", "rrnewton/reverie"):
-            continue
-        if row.get("commit") != target or row.get("cwd") != str(checkout):
-            continue
-        if row.get("log_file") != str(log):
-            continue
-        try:
-            row_started = datetime.fromisoformat(str(row["started_at"]).replace("Z", "+00:00"))
-        except (KeyError, TypeError, ValueError):
-            continue
-        if row_started >= started:
-            candidates.append(row)
-    if len(candidates) != 1:
-        raise Refusal(
-            "expected exactly one Reverie source row for this safe-ci node, "
-            f"found {len(candidates)}"
-        )
-    return candidates[0]
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise Refusal("canonical ledger source reply is not JSON") from error
+    if (not isinstance(value, dict) or set(value) != {"row", "event"}
+            or not isinstance(value["row"], dict) or not isinstance(value["event"], dict)):
+        raise Refusal("canonical ledger source reply has no exact row/event binding")
+    return value["row"], value["event"]
 
 
 def recorded_gate_coverage(
@@ -381,10 +365,10 @@ def require_expected_gate_set(
     raise Refusal(f"Reverie gate set drifted: {gate_names!r}")
 
 
-def record(root: Path, row: dict[str, Any]) -> None:
+def record(root: Path, row: dict[str, Any], source: dict[str, Any]) -> None:
     result = bounded_capture.capture(
-        [sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "record"],
-        input=json.dumps(row, sort_keys=True) + "\n",
+        [sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "record-reverie-finalization"],
+        input=json.dumps({"source": source, "row": row}, sort_keys=True) + "\n",
         cwd=root,
     )
     if result.returncode != 0:
@@ -449,7 +433,7 @@ def main(argv: list[str] | None = None) -> int:
             text=True,
             check=False,
         )
-        source = load_source_row(root, args.target, checkout, log, started)
+        source, source_event = load_source_row(root, args.target, checkout, log, started)
         gates = source.get("gates")
         policy, expected_gates, test_gates = require_expected_gate_set(gates)
         executed, passed, filtered = recorded_test_counts(source)
@@ -511,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         # The canonical row records even a product red. Shape failures are not
         # repaired here; the reader will refuse them rather than minting green.
-        record(root, canonical)
+        record(root, canonical, source_event)
         if result.returncode == 0:
             status = "PASSED"
         elif result.returncode == 1:

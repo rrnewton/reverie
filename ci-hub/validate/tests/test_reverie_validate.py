@@ -185,11 +185,11 @@ class ReverieValidateTest(unittest.TestCase):
                 "run",
                 return_value=subprocess.CompletedProcess([], validate_exit),
             ),
-            mock.patch.object(reverie_node, "load_source_row", return_value=source),
+            mock.patch.object(reverie_node, "load_source_row", return_value=(source, {"event_id": "source-event"})),
             mock.patch.object(
                 reverie_node,
                 "record",
-                side_effect=lambda _root, row: recorded.append(row),
+                side_effect=lambda _root, row, _source: recorded.append(row),
             ),
         ):
             rc = reverie_node.main(

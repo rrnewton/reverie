@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import fcntl
 import json
 import os
 import hashlib
@@ -24,6 +25,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
+from datetime import datetime
 from typing import Iterable
 
 from ledger import read_shard, union_events, validate_event, validate_events
@@ -886,10 +888,9 @@ def _record_admission_identity(row: dict):
     return encoded, copy.deepcopy(evidence["artifact"]), copy.deepcopy(row[log_key])
 
 
-def record(row: dict, *, root: Path | None = None) -> dict:
-    """Append one observed row before any Git operation can block or tear it."""
+def _prepare_record_event(row: dict, root: Path) -> dict:
+    """Apply the ordinary writer's evidence checks before either append path."""
     production_root = repository_root().resolve()
-    root = (root or production_root).resolve()
     # Inspect original pairs before display normalization or enrichment can
     # discard an ambiguous claim. The ordinary writer view is safe only after
     # that present claim has passed the shared verifier; absence stays legacy.
@@ -964,7 +965,10 @@ def record(row: dict, *, root: Path | None = None) -> dict:
     _require_gate_failure_bindings(row)
     if _record_admission_identity(row) != admitted_identity:
         raise ValueError("writer normalization changed admitted evidence identity")
-    event = _event_for_row(row, root)
+    return _event_for_row(row, root)
+
+
+def _spool_record_event(event: dict, root: Path) -> dict:
     target = spool(live_spool_dir(root), event["team"], event["host"], [event])
     return {
         "schema": "ci-hub-validate-ledger-record/v1",
@@ -978,6 +982,133 @@ def record(row: dict, *, root: Path | None = None) -> dict:
             / f"{event['emitted_at'][:7]}.jsonl"
         ).as_posix(),
     }
+
+
+def record(row: dict, *, root: Path | None = None) -> dict:
+    """Append one observed row before any Git operation can block or tear it."""
+    root = (root or repository_root()).resolve()
+    return _spool_record_event(_prepare_record_event(row, root), root)
+
+
+def reverie_source(
+    target: str, checkout: str, log: str, started: str, *, root: Path | None = None
+) -> dict:
+    """Select the exact raw producer event, retaining its existing identity."""
+    root = (root or repository_root()).resolve()
+    items, _ = _validated_events(root=root, preserve_admission=True)
+    # Keep the ordinary reader's refusal on ambiguous or cyclic corrections.
+    _rows_from_events(items, root=root)
+    boundary = datetime.fromisoformat(started.replace("Z", "+00:00"))
+    candidates = []
+    for event in items:
+        if event.get("event_type") != "run.result":
+            continue
+        rows_for_event = _rows_from_events([event], root=root)
+        if len(rows_for_event) != 1:
+            continue
+        row = rows_for_event[0]
+        if (row.get("producer") != "reverie-validate-sh"
+                or row.get("repo") not in {"reverie", "rrnewton/reverie"}
+                or row.get("commit") != target or row.get("cwd") != checkout
+                or row.get("log_file") != log):
+            continue
+        try:
+            row_started = datetime.fromisoformat(row["started_at"].replace("Z", "+00:00"))
+            within_run = row_started >= boundary
+        except (KeyError, AttributeError, TypeError, ValueError):
+            continue
+        if within_run:
+            candidates.append({"event": event, "row": row})
+    if len(candidates) != 1:
+        raise ValueError(f"expected exactly one Reverie source event, found {len(candidates)}")
+    return candidates[0]
+
+
+def record_reverie_finalization(
+    source: dict, row: dict, *, root: Path | None = None
+) -> dict:
+    """Append finalizer provenance without inventing a second execution.
+
+    Every original execution fact stays immutable. This is intentionally not
+    a general correction API: only the existing Reverie adapter's metadata
+    additions may differ from its exact, still-retained source event.
+    """
+    root = (root or repository_root()).resolve()
+    if not isinstance(source, dict) or not isinstance(row, dict):
+        raise ValueError("Reverie finalization requires source event and row objects")
+    source_id = source.get("event_id")
+    if not isinstance(source_id, str) or not source_id:
+        raise ValueError("Reverie source event has no identity")
+    guard_dir = live_spool_dir(root) / ".reverie-finalization"
+    guard_dir.mkdir(parents=True, exist_ok=True)
+    guard_name = hashlib.sha256(source_id.encode()).hexdigest() + ".lock"
+    # Do not unlink the guard: a second inode would split concurrent writers.
+    with (guard_dir / guard_name).open("a") as guard:
+        try:
+            fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError("Reverie source finalization is already in progress") from error
+        items, _ = _validated_events(root=root, preserve_admission=True)
+        _rows_from_events(items, root=root)
+        matches = [item for item in items if item.get("event_id") == source_id]
+        if len(matches) != 1 or _admission_event_identity(matches[0]) != _admission_event_identity(source):
+            raise ValueError("Reverie source event does not match the retained event")
+        original = source.get("legacy_row")
+        if (source.get("event_type") != "run.result"
+                or source.get("team") != "reverie"
+                or not isinstance(original, dict)
+                or original.get("producer") != "reverie-validate-sh"
+                or source.get("producer", {}).get("tool") != "reverie-validate-sh"
+                or source.get("producer", {}).get("source") != "observed"
+                or type(original.get("schema_version")) is not int
+                or original.get("schema_version") not in {3, 4, 5}
+                or original.get("repo") not in {"reverie", "rrnewton/reverie"}):
+            raise ValueError("Reverie finalization source is not a raw Reverie producer result")
+        event = _prepare_record_event(row, root)
+        final = event["legacy_row"]
+        normalized = {"schema_version": 5, "producer": "ci-hub-reverie-validate-run", "repo": "rrnewton/reverie"}
+        additions = {
+            "tree", "raw_result", "gates_run", "gates_expected", "coverage",
+            "admission", "concurrent_validates", "concurrency_proof", "safe_ci",
+            "validate_lock_authority", "reverie_validation_policy",
+        }
+        if any(final.get(key) != value for key, value in normalized.items()):
+            raise ValueError("Reverie finalizer producer/schema/repository is invalid")
+        for key, value in original.items():
+            if key not in normalized and (
+                key not in final
+                or _admission_event_identity(final[key]) != _admission_event_identity(value)
+            ):
+                raise ValueError(f"Reverie finalization changed immutable source field {key!r}")
+        if set(final) - set(original) - set(normalized) - additions:
+            raise ValueError("Reverie finalization added an unsupported source field")
+        if final.get("raw_result") != original.get("result"):
+            raise ValueError("Reverie finalization raw_result differs from the source")
+        tree = subprocess.run(
+            ["git", "--no-replace-objects", "-C", row["cwd"], "rev-parse", row["commit"] + "^{tree}"],
+            capture_output=True, text=True, check=False, timeout=10,
+            env={**{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+                 "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull},
+        )
+        if tree.returncode or final.get("tree") != tree.stdout.strip():
+            raise ValueError("Reverie finalization tree does not bind the source commit")
+        for field in ("commit", "host", "started_at", "emitted_at", "outcome", "run_number"):
+            if event.get(field) != source.get(field):
+                raise ValueError(f"Reverie finalization changed envelope field {field!r}")
+        body = _admission_event_identity({"source": source, "final": event}).encode()
+        event.update(
+            event_id="reverie-final-" + hashlib.sha256(body).hexdigest(),
+            event_type="run.correct", run_id=source["run_id"], supersedes=source_id,
+            reason="Bind observed safe-ci finalizer provenance to the original Reverie execution",
+        )
+        successors = [item for item in items if item.get("supersedes") == source_id]
+        if successors:
+            if len(successors) == 1 and _admission_event_identity(successors[0]) == _admission_event_identity(event):
+                return {"schema": "ci-hub-validate-ledger-record/v1", "event_id": event["event_id"], "run_id": event["run_id"], "already_recorded": True}
+            raise ValueError("Reverie source already has a different finalization")
+        # Apply the actual correction consumer before making new bytes visible.
+        _rows_from_events([*items, event], root=root)
+        return _spool_record_event(event, root)
 
 
 def _read_rows(path: Path) -> list[dict]:
@@ -1452,6 +1583,10 @@ def main(argv: list[str] | None = None) -> int:
                              help="preserve original JSON fields for admission-aware receipt readers")
     commands.add_parser("events", description="emit the canonical event union", help="emit the canonical event union")
     commands.add_parser("record", description="read one HistoryRow JSON object from stdin and journal it", help="read one HistoryRow JSON object from stdin and journal it")
+    source_command = commands.add_parser("reverie-source", help="bind one exact raw Reverie producer event")
+    for name in ("target", "checkout", "log", "started"):
+        source_command.add_argument("--" + name, required=True)
+    commands.add_parser("record-reverie-finalization", help="append finalizer provenance for one retained Reverie source event")
     summary = commands.add_parser(
         "summary",
         description="coverage-aware breakdown of one receipt: gates_run beside the "
@@ -1481,12 +1616,26 @@ def main(argv: list[str] | None = None) -> int:
         s = summarise(row)
         print(json.dumps(s, sort_keys=True) if args.json else render_summary(s))
         return 0
-    if args.command == "record":
+    if args.command == "reverie-source":
+        try:
+            value = reverie_source(args.target, args.checkout, args.log, args.started)
+            print(qualifying_receipt.admission_json_dumps(value, sort_keys=True))
+            return 0
+        except (OSError, ValueError) as error:
+            print(f"validate-ledger: REFUSED: {error}", file=sys.stderr)
+            return 2
+    if args.command in {"record", "record-reverie-finalization"}:
         try:
             value = json.load(sys.stdin, object_pairs_hook=qualifying_receipt.AdmissionJsonObject)
             if not isinstance(value, dict):
                 raise ValueError("input is not a JSON object")
-            print(json.dumps(record(value), sort_keys=True))
+            if args.command == "record-reverie-finalization":
+                if set(value) != {"source", "row"}:
+                    raise ValueError("Reverie finalization requires exactly source and row")
+                receipt = record_reverie_finalization(value["source"], value["row"])
+            else:
+                receipt = record(value)
+            print(json.dumps(receipt, sort_keys=True))
             return 0
         except (OSError, ValueError, json.JSONDecodeError) as error:
             print(f"validate-ledger: REFUSED: {error}", file=sys.stderr)
