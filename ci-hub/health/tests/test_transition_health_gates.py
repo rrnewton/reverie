@@ -183,9 +183,9 @@ def test_herdr_snapshot_producer_runs_independently_inside_freshness_bound() -> 
     assert "herdr_agent_snapshot.py" in service
     assert "--bindings %h/work/dev-hermit/.tick-hub/herdr-agent-bindings.json" in service
     assert "--output %h/work/dev-hermit/ignored/ci-hub/agent-snapshot.json" in service
-    assert "MemoryMax=512M" in service
-    assert "MemorySwapMax=64M" in service
-    assert "TasksMax=256" in service
+    assert "MemoryMax=1G" in service
+    assert "MemorySwapMax=128M" in service
+    assert "TasksMax=512" in service
     assert "--herdr-bin %h/bin/herdr" in service
     assert "--agentctl-bin %h/.local/bin/agentctl" in service
     assert "EnvironmentFile=-%h/.config/dev-hermit/health.env" in health_service

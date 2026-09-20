@@ -12,17 +12,17 @@ ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --sta
 TimeoutStartSec=90
 TimeoutStopSec=2s
 KillMode=control-group
-MemoryMax=512M
-MemorySwapMax=64M
+MemoryMax=1G
+MemorySwapMax=128M
 # `operational-tool` may refresh its immutable checkout before the tiny Python
 # producer starts. The GitHub credential helper is a Go binary and initializes
 # more than 32 runtime threads on this host; TasksMax=32 made it abort before
 # authentication with `pthread_create failed`. Keep a bound, but cover the
-# bootstrap plus helper as well as the producer itself. The same measured run
-# used the full 512 MiB memory cap with no swap under a 64 MiB swap cap; 256 MiB
-# succeeded only by pushing 99 MiB into swap. Keep both finite bounds so a
-# recurring bootstrap cannot consume unbounded host swap.
-TasksMax=256
+# cold checkout bootstrap, Git repack, helper, and producer. The exact cold
+# path needed 1,012 MiB peak and 236 KiB swap; cached runs are much smaller.
+# Keep finite RAM and swap bounds so neither path can consume the host without
+# limit.
+TasksMax=512
 
 [Install]
 WantedBy=default.target
