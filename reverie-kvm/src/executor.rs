@@ -4310,6 +4310,12 @@ impl ElfExecutor {
             Some(ProcessFamilyExit::DescendantReparentingUnsupported { child }) => {
                 Err(crate::Error::DescendantReparentingUnsupported { process, child })
             }
+            Some(ProcessFamilyExit::ParentGenerationUnavailable { parent }) => {
+                Err(crate::Error::ParentGenerationUnavailable { process, parent })
+            }
+            Some(ProcessFamilyExit::ParentChildRelationUnavailable { parent }) => {
+                Err(crate::Error::ParentChildRelationUnavailable { process, parent })
+            }
             None => Err(crate::Error::UnexpectedVcpuExit(format!(
                 "KVM process {} lost its terminal family transition",
                 process.tgid.as_raw()
@@ -4319,7 +4325,11 @@ impl ElfExecutor {
 
     fn record_consumed_child_wait(&self, child_pid: i32) {
         let parent = self.admitted_signal_identity().process;
-        let _ = self.signal_registry.consume_child_wait(parent, child_pid);
+        let consumed = self.signal_registry.consume_child_wait(parent, child_pid);
+        assert!(
+            consumed || !self.signal_registry.controlled(),
+            "a Tool-controlled KVM wait reaped child {child_pid} without a waitable exact family entry"
+        );
     }
 
     pub(crate) fn sole_signal_receiver(&self) -> bool {
@@ -4853,16 +4863,10 @@ impl SyscallExecutor for ElfExecutor {
             && request.args()[0] as libc::c_int == libc::SIGCHLD
             && request.args()[1] != 0)
             .then(|| installed_signal_action(&self.state, libc::SIGCHLD));
-        let waitid_consumption = (request.number() == libc::SYS_waitid as u64
-            && request.args()[3] & libc::WNOWAIT as u64 == 0)
-            .then(|| match request.args()[0] as libc::idtype_t {
-                libc::P_PID => libc::pid_t::try_from(request.args()[1])
-                    .ok()
-                    .filter(|pid| self.state.children.contains_key(pid)),
-                libc::P_ALL | libc::P_PGID => self.state.children.keys().next().copied(),
-                _ => None,
-            })
-            .flatten();
+        assert!(
+            self.state.consumed_child_wait.is_none(),
+            "a KVM child-wait ledger effect must be consumed by its originating syscall"
+        );
         let action = execute_basic_syscall_with_output(
             &mut memory,
             &mut self.state,
@@ -4887,13 +4891,7 @@ impl SyscallExecutor for ElfExecutor {
                 if segment.is_some() {
                     self.pending_segment = segment;
                 }
-                let consumed_child = if request.number() == libc::SYS_wait4 as u64 && result > 0 {
-                    i32::try_from(result).ok()
-                } else if request.number() == libc::SYS_waitid as u64 && result == 0 {
-                    waitid_consumption
-                } else {
-                    None
-                };
+                let consumed_child = self.state.consumed_child_wait.take();
                 if let Some(child) = consumed_child {
                     self.record_consumed_child_wait(child);
                 }
@@ -15393,6 +15391,7 @@ fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
         return negative_errno(libc::EFAULT);
     }
     state.children.remove(&child_pid);
+    state.consumed_child_wait = Some(child_pid);
     i64::from(child_pid)
 }
 
@@ -15469,6 +15468,7 @@ fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     }
     if args[3] & libc::WNOWAIT as u64 == 0 {
         state.children.remove(&child_pid);
+        state.consumed_child_wait = Some(child_pid);
     }
     0
 }
@@ -15812,6 +15812,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         cloexec_fds: std::collections::BTreeSet::new(),
         closed_standard_fds: std::collections::BTreeSet::new(),
         children: std::collections::BTreeMap::new(),
+        consumed_child_wait: None,
         proc_files: std::collections::BTreeMap::new(),
         fdinfo_files: std::collections::BTreeMap::new(),
         fdinfo_table: std::sync::Weak::new(),

@@ -56,6 +56,32 @@ pub enum Error {
         child: reverie::SignalProcessId,
     },
 
+    /// A child reached its terminal boundary after its exact parent generation
+    /// disappeared without recording a family transition. This is distinct
+    /// from unsupported reparenting: no child can be named as its own parent.
+    #[error(
+        "KVM process {process:?} cannot complete because parent generation {parent:?} lost its family transition"
+    )]
+    ParentGenerationUnavailable {
+        /// Exiting child process generation.
+        process: reverie::SignalProcessId,
+        /// Exact parent generation that disappeared.
+        parent: reverie::SignalProcessId,
+    },
+
+    /// A live parent and child lost their exact registered family edge before
+    /// the child's terminal transition. This is an internal ledger invariant,
+    /// not reparenting or a stale parent lifetime.
+    #[error(
+        "KVM process {process:?} cannot complete because its relation to live parent {parent:?} disappeared"
+    )]
+    ParentChildRelationUnavailable {
+        /// Exiting child process generation.
+        process: reverie::SignalProcessId,
+        /// Exact live parent generation whose edge disappeared.
+        parent: reverie::SignalProcessId,
+    },
+
     /// Terminal failure with irreversible pending-state effects retained intact.
     #[error("{cause}; committed signal effects: {} removals, {} publication receipts", dequeues.len(), publications.len())]
     SignalEffects {

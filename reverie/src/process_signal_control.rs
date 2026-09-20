@@ -200,6 +200,10 @@ pub trait ProcessSignalControl: Debug + Send + Sync {
     /// The caller supplies the causal scheduler fence. A committed or
     /// failed-after-commit result must never be retried; backends may return the
     /// retained receipt idempotently if an exact duplicate nevertheless arrives.
+    /// This publication makes waitability visible but does not reap the backend
+    /// child status. A Tool that schedules a consuming wait must still execute
+    /// that wait through [`crate::Guest::inject`] before retiring Tool shadow
+    /// state; publication is not a substitute for the backend wait syscall.
     fn publish_child_exit(&self, _completion: ChildExitCompletion) -> ChildExitPublicationResult {
         ChildExitPublicationResult::RejectedBeforeCommit(Errno::ENOSYS)
     }

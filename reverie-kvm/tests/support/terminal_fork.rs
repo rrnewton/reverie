@@ -572,7 +572,7 @@ fn run_case(test: &str, mode: u8) {
                     .filter(|event| event.pid == pid && event.kind == "wait-event")
                     .count(),
                 usize::from(expected_wait_event),
-                "child wait publication must follow the causally controlled mode/PID order: pid={pid} events={at_return:?}",
+                "a child gets one wait event after a live-parent exit, while parent-terminal teardown suppresses and auto-reaps it: pid={pid} events={at_return:?}",
             );
             if expected_wait_event {
                 let wait_event = position("wait-event").unwrap();

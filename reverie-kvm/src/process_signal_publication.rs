@@ -24,6 +24,7 @@
 //! the transaction. No registry or retirement mutex is held during host closes.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
@@ -105,12 +106,42 @@ pub(crate) enum ProcessFamilyExit {
     Failed,
     RunTeardownChild { status: reverie::ExitStatus },
     DescendantReparentingUnsupported { child: SignalProcessId },
+    ParentGenerationUnavailable { parent: SignalProcessId },
+    ParentChildRelationUnavailable { parent: SignalProcessId },
 }
 
 #[derive(Default)]
 struct ProcessFamilyState {
     direct_children: BTreeMap<ProcessKey, BTreeMap<ProcessKey, DirectChildState>>,
     terminal: BTreeMap<ProcessKey, ProcessFamilyExit>,
+}
+
+impl ProcessFamilyState {
+    fn has_terminal_ancestor(&self, mut ancestor: ProcessKey) -> bool {
+        let mut visited = BTreeSet::new();
+        loop {
+            assert!(
+                visited.insert(ancestor),
+                "KVM process-family ancestry must remain acyclic"
+            );
+            if self.terminal.contains_key(&ancestor) {
+                return true;
+            }
+            let mut parents = self
+                .direct_children
+                .iter()
+                .filter(|(_, children)| children.contains_key(&ancestor))
+                .map(|(parent, _)| *parent);
+            let Some(parent) = parents.next() else {
+                return false;
+            };
+            assert!(
+                parents.next().is_none(),
+                "one KVM process generation cannot have multiple family parents"
+            );
+            ancestor = parent;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -196,12 +227,34 @@ impl ProcessSignalRegistry {
     /// but their completion is teardown rather than a new logical child-exit
     /// publication to the failed parent.
     pub(super) fn record_process_failure(&self, process: SignalProcessId) {
-        self.family
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        let parent = self.lookup(process).and_then(|binding| binding.parent);
+        let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
+        let process_family_key = process_key(process);
+        let replace_success = matches!(
+            family.terminal.get(&process_family_key),
+            None | Some(
+                ProcessFamilyExit::Root
+                    | ProcessFamilyExit::Child(_)
+                    | ProcessFamilyExit::RunTeardownChild { .. }
+            )
+        );
+        if !replace_success {
+            // Preserve the first typed fatal family invariant instead of
+            // replacing its actionable cause with a generic peer failure.
+            return;
+        }
+        family
             .terminal
-            .entry(process_key(process))
-            .or_insert(ProcessFamilyExit::Failed);
+            .insert(process_family_key, ProcessFamilyExit::Failed);
+        if let Some(parent) = parent {
+            let parent_key = process_key(parent);
+            if let Some(children) = family.direct_children.get_mut(&parent_key) {
+                children.remove(&process_family_key);
+                if children.is_empty() {
+                    family.direct_children.remove(&parent_key);
+                }
+            }
+        }
     }
 
     /// Freeze one process's terminal parent/wait policy at the authoritative
@@ -277,13 +330,14 @@ impl ProcessSignalRegistry {
                 tgid: reverie::Pid::from_raw(tgid),
                 generation,
             });
-        let parent_is_terminal = parent_identity.is_some_and(|parent| {
-            let parent = process_key(parent);
-            family.terminal.contains_key(&parent)
-        });
+        let ancestor_is_terminal =
+            parent_identity.is_some_and(|parent| family.has_terminal_ancestor(process_key(parent)));
         let exit = if is_root {
             ProcessFamilyExit::Root
-        } else if parent_is_terminal {
+        } else if ancestor_is_terminal {
+            // A terminal ancestor is a consuming transition for the entire run,
+            // not a still-live reaper. Descendants therefore unwind as teardown
+            // regardless of their post-terminal retirement order.
             if let Some(parent) = parent_identity {
                 let parent_key = process_key(parent);
                 if let Some(children) = family.direct_children.get_mut(&parent_key) {
@@ -308,17 +362,27 @@ impl ProcessSignalRegistry {
             };
             let parent_key = process_key(parent);
             let child_key = process_key(process);
+            let relation_exists = family
+                .direct_children
+                .get(&parent_key)
+                .is_some_and(|children| children.contains_key(&child_key));
+            if !relation_exists {
+                let exit = ProcessFamilyExit::ParentChildRelationUnavailable { parent };
+                family.terminal.insert(process_key(process), exit);
+                return exit;
+            }
             if waitable {
                 let relation = family
                     .direct_children
                     .get_mut(&parent_key)
-                    .and_then(|children| children.get_mut(&child_key));
-                if let Some(relation) = relation {
-                    *relation = DirectChildState::WaitableZombie;
-                } else {
-                    return ProcessFamilyExit::DescendantReparentingUnsupported { child: process };
-                }
-            } else if let Some(children) = family.direct_children.get_mut(&parent_key) {
+                    .and_then(|children| children.get_mut(&child_key))
+                    .expect("validated KVM direct-child relation remains present");
+                *relation = DirectChildState::WaitableZombie;
+            } else {
+                let children = family
+                    .direct_children
+                    .get_mut(&parent_key)
+                    .expect("validated KVM parent relation remains present");
                 children.remove(&child_key);
                 if children.is_empty() {
                     family.direct_children.remove(&parent_key);
@@ -330,7 +394,9 @@ impl ProcessSignalRegistry {
                 pending_generation,
             })
         } else {
-            ProcessFamilyExit::DescendantReparentingUnsupported { child: process }
+            ProcessFamilyExit::ParentGenerationUnavailable {
+                parent: parent_identity.expect("non-root KVM process retains a parent identity"),
+            }
         };
         family.terminal.insert(process_key(process), exit);
         exit
@@ -1192,6 +1258,20 @@ mod tests {
 
     fn call(executor: &mut ElfExecutor, memory: &GuestMemory, number: i64, args: [u64; 6]) -> i64 {
         executor.execute(&SyscallRequest::new(number as u64, args), memory)
+    }
+
+    fn read_struct<T>(memory: &GuestMemory, address: u64) -> T {
+        let mut value = std::mem::MaybeUninit::<T>::zeroed();
+        // SAFETY: value is writable for exactly size_of::<T>() bytes.
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                value.as_mut_ptr().cast::<u8>(),
+                std::mem::size_of::<T>(),
+            )
+        };
+        memory.read(address, bytes).unwrap();
+        // SAFETY: zeroed storage was fully initialized by memory.read.
+        unsafe { value.assume_init() }
     }
 
     fn signalfd(executor: &mut ElfExecutor, memory: &mut GuestMemory) -> i32 {
@@ -2671,6 +2751,240 @@ mod tests {
     }
 
     #[test]
+    fn terminal_ancestor_consumes_nested_family_in_either_descendant_order() {
+        for grandchild_first in [false, true] {
+            let mut root = executor();
+            let mut child = root.fork_child(2, false, false).unwrap();
+            let mut grandchild = child.fork_child(3, false, false).unwrap();
+            let root_id = identity(&root);
+            let child_id = identity(&child);
+            let grandchild_id = identity(&grandchild);
+
+            root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+            assert_eq!(
+                root.signal_registry.process_family_exit(root_id),
+                Some(ProcessFamilyExit::Root),
+            );
+
+            if grandchild_first {
+                grandchild.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+                assert_eq!(
+                    grandchild
+                        .signal_registry
+                        .process_family_exit(grandchild_id),
+                    Some(ProcessFamilyExit::RunTeardownChild {
+                        status: reverie::ExitStatus::Exited(3),
+                    }),
+                    "a terminal transitive ancestor suppresses normal child publication",
+                );
+            }
+
+            child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+            assert_eq!(
+                child.signal_registry.process_family_exit(child_id),
+                Some(ProcessFamilyExit::RunTeardownChild {
+                    status: reverie::ExitStatus::Exited(2),
+                }),
+                "a terminal ancestor consumes its still-nested family instead of requiring a live reaper",
+            );
+
+            if !grandchild_first {
+                grandchild.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+                assert_eq!(
+                    grandchild
+                        .signal_registry
+                        .process_family_exit(grandchild_id),
+                    Some(ProcessFamilyExit::RunTeardownChild {
+                        status: reverie::ExitStatus::Exited(3),
+                    }),
+                );
+            }
+            assert!(
+                root.signal_registry
+                    .family
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .direct_children
+                    .is_empty(),
+                "root-first teardown must retire every exact direct-child edge",
+            );
+        }
+    }
+
+    #[test]
+    fn child_exit_distinguishes_lost_parent_generation_from_lost_family_edge() {
+        let parent = executor();
+        let parent_id = identity(&parent);
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let child_id = identity(&child);
+        drop(parent);
+
+        child.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::ParentGenerationUnavailable { parent: parent_id }),
+        );
+        assert!(matches!(
+            child.process_family_exit(),
+            Err(crate::Error::ParentGenerationUnavailable { process, parent })
+                if process == child_id && parent == parent_id
+        ));
+        child.signal_registry.record_process_failure(child_id);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::ParentGenerationUnavailable { parent: parent_id }),
+            "a later generic failure must preserve the missing-generation cause",
+        );
+
+        let parent = executor();
+        let parent_id = identity(&parent);
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let child_id = identity(&child);
+        {
+            let mut family = parent
+                .signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let children = family
+                .direct_children
+                .get_mut(&process_key(parent_id))
+                .expect("fork registered an exact parent family edge");
+            assert_eq!(
+                children.remove(&process_key(child_id)),
+                Some(DirectChildState::Live)
+            );
+            if children.is_empty() {
+                family.direct_children.remove(&process_key(parent_id));
+            }
+        }
+
+        child.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::ParentChildRelationUnavailable { parent: parent_id }),
+        );
+        assert!(matches!(
+            child.process_family_exit(),
+            Err(crate::Error::ParentChildRelationUnavailable { process, parent })
+                if process == child_id && parent == parent_id
+        ));
+        child.signal_registry.record_process_failure(child_id);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::ParentChildRelationUnavailable { parent: parent_id }),
+            "a later generic failure must preserve the missing-relation cause",
+        );
+    }
+
+    #[test]
+    fn child_wait_consumes_the_exact_family_child_selected_by_the_backend() {
+        const INFO: u64 = 0x100;
+
+        for mode in 0..5 {
+            let mut parent = executor();
+            let parent_id = identity(&parent);
+            let mut low = parent.fork_child(2, false, false).unwrap();
+            let mut high = parent.fork_child(3, false, false).unwrap();
+            let low_id = identity(&low);
+            let high_id = identity(&high);
+            low.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+            high.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+            parent
+                .state
+                .children
+                .insert(2, reverie::ExitStatus::Exited(2));
+            parent
+                .state
+                .children
+                .insert(3, reverie::ExitStatus::Exited(3));
+
+            let (id_type, id, expected, consume, use_wait4) = match mode {
+                0 => (libc::P_ALL, 0, low_id, true, false),
+                1 => (libc::P_PGID, parent.state.pgid, low_id, true, false),
+                2 => (libc::P_PID, high_id.tgid.as_raw(), high_id, true, false),
+                3 => (libc::P_ALL, 0, low_id, false, false),
+                4 => (libc::P_ALL, 0, low_id, true, true),
+                _ => unreachable!(),
+            };
+            let memory = GuestMemory::new(0, 4096).unwrap();
+            let selected = if use_wait4 {
+                let selected = call(
+                    &mut parent,
+                    &memory,
+                    libc::SYS_wait4,
+                    [u64::from(u32::MAX), INFO, libc::WNOHANG as u64, 0, 0, 0],
+                );
+                libc::pid_t::try_from(selected).expect("wait4 returned the selected child pid")
+            } else {
+                let flags = libc::WEXITED | libc::WNOHANG | if consume { 0 } else { libc::WNOWAIT };
+                assert_eq!(
+                    call(
+                        &mut parent,
+                        &memory,
+                        libc::SYS_waitid,
+                        [id_type as u64, id as u64, INFO, flags as u64, 0, 0],
+                    ),
+                    0,
+                );
+                let info: libc::siginfo_t = read_struct(&memory, INFO);
+                // SAFETY: waitid wrote the SIGCHLD variant of siginfo_t.
+                unsafe { info.si_pid() }
+            };
+            assert_eq!(selected, expected.tgid.as_raw());
+
+            let family = parent
+                .signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let children = family
+                .direct_children
+                .get(&process_key(parent_id))
+                .expect("at least one waitable child remains");
+            for child in [low_id, high_id] {
+                let remains = !consume || child != expected;
+                assert_eq!(
+                    children.get(&process_key(child)).copied(),
+                    remains.then_some(DirectChildState::WaitableZombie),
+                    "family-ledger removal must follow the pid actually returned by the backend wait",
+                );
+                assert_eq!(
+                    parent.state.children.contains_key(&child.tgid.as_raw()),
+                    remains,
+                    "backend wait state and exact-generation family state must change together",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn controlled_child_wait_fails_closed_without_an_exact_family_zombie() {
+        let mut parent = executor();
+        parent
+            .signal_registry
+            .controlled
+            .store(true, Ordering::Release);
+        parent
+            .state
+            .children
+            .insert(2, reverie::ExitStatus::Exited(2));
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            call(
+                &mut parent,
+                &memory,
+                libc::SYS_wait4,
+                [u64::from(u32::MAX), 0, libc::WNOHANG as u64, 0, 0, 0],
+            )
+        }));
+        assert!(
+            result.is_err(),
+            "a managed wait must not silently diverge from the exact family ledger"
+        );
+    }
+
+    #[test]
     fn group_exit_records_family_order_before_peer_host_retirement() {
         let actions = [
             KernelSigaction {
@@ -2848,6 +3162,89 @@ mod tests {
                 );
             }
         }
+
+        let parent = executor();
+        let mut owner = parent.fork_child(2, false, false).unwrap();
+        let mut peer = owner.thread_child(4).unwrap();
+        let owner_id = identity(&owner);
+        peer.retire_current_thread(reverie::ExitStatus::Exited(7), true);
+        assert!(matches!(
+            owner.signal_registry.process_family_exit(owner_id),
+            Some(ProcessFamilyExit::Child(_)),
+        ));
+        owner.retire_failed_thread();
+        assert_eq!(
+            owner.signal_registry.process_family_exit(owner_id),
+            Some(ProcessFamilyExit::Failed),
+            "a peer failure must override an optimistic exit_group family success",
+        );
+        assert!(
+            parent
+                .signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .direct_children
+                .get(&process_key(identity(&parent)))
+                .is_none_or(|children| !children.contains_key(&process_key(owner_id))),
+            "the failed process cannot remain as a waitable successful child",
+        );
+
+        let mut root = executor();
+        let mut root_peer = root.thread_child(4).unwrap();
+        let root_id = identity(&root);
+        root_peer.retire_current_thread(reverie::ExitStatus::Exited(7), true);
+        assert_eq!(
+            root.signal_registry.process_family_exit(root_id),
+            Some(ProcessFamilyExit::Root),
+        );
+        root.retire_failed_thread();
+        assert_eq!(
+            root.signal_registry.process_family_exit(root_id),
+            Some(ProcessFamilyExit::Failed),
+            "a peer failure must override an optimistic root exit_group success",
+        );
+
+        let mut root = executor();
+        let mut child = root.fork_child(2, false, false).unwrap();
+        let mut child_peer = child.thread_child(4).unwrap();
+        let child_id = identity(&child);
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        child_peer.retire_current_thread(reverie::ExitStatus::Exited(7), true);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(7),
+            }),
+        );
+        child.retire_failed_thread();
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::Failed),
+            "a peer failure must override an optimistic run-teardown exit_group success",
+        );
+
+        let parent = executor();
+        let mut owner = parent.fork_child(2, false, false).unwrap();
+        let mut peer = owner.thread_child(4).unwrap();
+        let descendant = owner.fork_child(3, false, false).unwrap();
+        let owner_id = identity(&owner);
+        let descendant_id = identity(&descendant);
+        peer.retire_current_thread(reverie::ExitStatus::Exited(7), true);
+        assert_eq!(
+            owner.signal_registry.process_family_exit(owner_id),
+            Some(ProcessFamilyExit::DescendantReparentingUnsupported {
+                child: descendant_id,
+            }),
+        );
+        owner.retire_failed_thread();
+        assert_eq!(
+            owner.signal_registry.process_family_exit(owner_id),
+            Some(ProcessFamilyExit::DescendantReparentingUnsupported {
+                child: descendant_id,
+            }),
+            "a generic peer failure must not erase an earlier typed fatal invariant",
+        );
     }
 
     #[test]

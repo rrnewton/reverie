@@ -3039,6 +3039,14 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
                 Ok(crate::executor::ProcessFamilyExit::DescendantReparentingUnsupported {
                     ..
                 }) => unreachable!("executor maps unsupported reparenting to an error"),
+                Ok(crate::executor::ProcessFamilyExit::ParentGenerationUnavailable { .. }) => {
+                    unreachable!("executor maps a missing parent generation to an error")
+                }
+                Ok(crate::executor::ProcessFamilyExit::ParentChildRelationUnavailable {
+                    ..
+                }) => {
+                    unreachable!("executor maps a missing parent-child relation to an error")
+                }
             }
         }
         (None, true) if pid == tid => executor

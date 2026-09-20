@@ -2244,6 +2244,12 @@ impl KvmBackend {
             crate::executor::ProcessFamilyExit::DescendantReparentingUnsupported { .. } => {
                 unreachable!("executor maps unsupported reparenting to an error")
             }
+            crate::executor::ProcessFamilyExit::ParentGenerationUnavailable { .. } => {
+                unreachable!("executor maps a missing parent generation to an error")
+            }
+            crate::executor::ProcessFamilyExit::ParentChildRelationUnavailable { .. } => {
+                unreachable!("executor maps a missing parent-child relation to an error")
+            }
         };
         if snapshot.completion.status != status {
             return Err(Error::UnexpectedVcpuExit(format!(
