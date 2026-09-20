@@ -18,6 +18,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::FileExt;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
@@ -1416,12 +1417,18 @@ impl ChildCompletion {
 #[derive(Debug, Default)]
 pub(crate) struct ChildCompletionSlot {
     state: Mutex<ChildCompletionState>,
+    changed: Condvar,
+    #[cfg(test)]
+    publication_waiters: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    publication_waiter_changed: Condvar,
 }
 
 #[derive(Debug, Default)]
 enum ChildCompletionState {
     #[default]
     Pending,
+    PublicationFenced,
     Ready(ChildCompletion),
     Failed,
     Consumed,
@@ -1430,6 +1437,7 @@ enum ChildCompletionState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ChildCompletionSlotError {
     Failed,
+    PublicationFenced,
     Poisoned,
 }
 
@@ -1438,12 +1446,51 @@ impl ChildCompletionSlot {
     pub(crate) fn with_completion(completion: ChildCompletion) -> Self {
         Self {
             state: Mutex::new(ChildCompletionState::Ready(completion)),
+            ..Default::default()
         }
     }
 
-    /// Publish the logical wait result exactly once. A consumed result remains
-    /// terminal, so later physical-cleanup failure cannot resurrect or replace
-    /// it.
+    /// Fence a callback-announced transition before polling arbitrary Tool
+    /// code. A concurrent nonblocking parent wait may still poll a genuinely
+    /// running `Pending` child, but it must wait through this bounded state so
+    /// the callback prefix cannot make the parent runnable before waitability.
+    pub(crate) fn begin_publication(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("KVM child completion lock poisoned");
+        if matches!(*state, ChildCompletionState::Pending) {
+            *state = ChildCompletionState::PublicationFenced;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Complete a transition previously armed by [`Self::begin_publication`].
+    /// The mutex is never held while Tool code runs.
+    pub(crate) fn publish_after_fence(&self, completion: ChildCompletion) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("KVM child completion lock poisoned");
+        let published = if matches!(*state, ChildCompletionState::PublicationFenced) {
+            *state = ChildCompletionState::Ready(completion);
+            true
+        } else {
+            false
+        };
+        drop(state);
+        if published {
+            self.changed.notify_all();
+        }
+        published
+    }
+
+    /// Publish a direct logical wait result exactly once. Callback-driven
+    /// publication uses the explicit fenced pair above. A consumed result
+    /// remains terminal, so later physical-cleanup failure cannot resurrect or
+    /// replace it.
     pub(crate) fn publish(&self, completion: ChildCompletion) -> bool {
         let mut state = self
             .state
@@ -1462,22 +1509,73 @@ impl ChildCompletionSlot {
             .state
             .lock()
             .expect("KVM child completion lock poisoned");
-        if matches!(*state, ChildCompletionState::Pending) {
+        let failed = if matches!(
+            *state,
+            ChildCompletionState::Pending | ChildCompletionState::PublicationFenced
+        ) {
             *state = ChildCompletionState::Failed;
             true
         } else {
             false
+        };
+        drop(state);
+        if failed {
+            self.changed.notify_all();
+        }
+        failed
+    }
+
+    /// Return immediately for a genuinely running child, but wait through the
+    /// bounded callback-to-publication interval once the child has announced
+    /// its terminal transition.
+    fn waitability_pending(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("KVM child completion lock poisoned");
+        #[cfg(test)]
+        let mut registered_waiter = false;
+        loop {
+            match *state {
+                ChildCompletionState::Pending => return true,
+                ChildCompletionState::PublicationFenced => {
+                    #[cfg(test)]
+                    if !registered_waiter {
+                        self.publication_waiters.fetch_add(1, Ordering::SeqCst);
+                        self.publication_waiter_changed.notify_all();
+                        registered_waiter = true;
+                    }
+                    state = self
+                        .changed
+                        .wait(state)
+                        .expect("KVM child completion lock poisoned");
+                }
+                ChildCompletionState::Ready(_)
+                | ChildCompletionState::Failed
+                | ChildCompletionState::Consumed => {
+                    #[cfg(test)]
+                    if registered_waiter {
+                        self.publication_waiters.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    return false;
+                }
+            }
         }
     }
 
-    fn is_pending(&self) -> bool {
-        matches!(
-            *self
-                .state
-                .lock()
-                .expect("KVM child completion lock poisoned"),
-            ChildCompletionState::Pending
-        )
+    #[cfg(test)]
+    fn wait_for_publication_waiter(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .expect("KVM child completion lock poisoned");
+        let (_state, timeout) = self
+            .publication_waiter_changed
+            .wait_timeout_while(state, std::time::Duration::from_secs(5), |_| {
+                self.publication_waiters.load(Ordering::SeqCst) == 0
+            })
+            .expect("KVM child completion lock poisoned");
+        !timeout.timed_out() && self.publication_waiters.load(Ordering::SeqCst) != 0
     }
 
     fn take(&self) -> Result<Option<ChildCompletion>, ChildCompletionSlotError> {
@@ -1485,10 +1583,14 @@ impl ChildCompletionSlot {
             .state
             .lock()
             .map_err(|_| ChildCompletionSlotError::Poisoned)?;
+        if matches!(*state, ChildCompletionState::PublicationFenced) {
+            return Err(ChildCompletionSlotError::PublicationFenced);
+        }
         match std::mem::replace(&mut *state, ChildCompletionState::Consumed) {
             ChildCompletionState::Ready(completion) => Ok(Some(completion)),
             ChildCompletionState::Failed => Err(ChildCompletionSlotError::Failed),
             ChildCompletionState::Pending => Ok(None),
+            ChildCompletionState::PublicationFenced => unreachable!("checked above"),
             ChildCompletionState::Consumed => Ok(None),
         }
     }
@@ -2873,7 +2975,7 @@ impl ElfExecutor {
             ))
         })?;
 
-        if !block && process.completion.is_pending() {
+        if !block && process.completion.waitability_pending() {
             return Ok(false);
         }
 
@@ -2894,6 +2996,9 @@ impl ElfExecutor {
             crate::Error::UnexpectedVcpuExit(match reason {
                 ChildCompletionSlotError::Failed => {
                     format!("KVM child process {pid} failed before publishing its status")
+                }
+                ChildCompletionSlotError::PublicationFenced => {
+                    format!("KVM child process {pid} exited while its wait publication was fenced")
                 }
                 ChildCompletionSlotError::Poisoned => {
                     format!("KVM child process {pid} completion lock poisoned")
@@ -3021,6 +3126,9 @@ impl ElfExecutor {
                         crate::Error::UnexpectedVcpuExit(match reason {
                             ChildCompletionSlotError::Failed => format!(
                                 "KVM child process {pid} failed before publishing its status"
+                            ),
+                            ChildCompletionSlotError::PublicationFenced => format!(
+                                "KVM child process {pid} exited while its wait publication was fenced"
                             ),
                             ChildCompletionSlotError::Poisoned => {
                                 format!("KVM child process {pid} completion lock poisoned")
@@ -37306,6 +37414,101 @@ mod tests {
         assert_eq!(libc::c_int::from_le_bytes(status), 7 << 8);
     }
 
+    #[test]
+    fn wnohang_waits_through_callback_publication_fence() {
+        const OUTPUT: u64 = 0x100;
+
+        let root = TestDir::new();
+        for use_waitid in [false, true] {
+            let mut executor = ElfExecutor::new(test_state(&root.0), false);
+            let (start_sender, start_receiver) = std::sync::mpsc::channel();
+            let (armed_sender, armed_receiver) = std::sync::mpsc::channel();
+            let (publish_sender, publish_receiver) = std::sync::mpsc::channel();
+            let completion = Arc::new(ChildCompletionSlot::default());
+            let child_completion = completion.clone();
+            let notifier = executor.child_completion_notifier();
+            let handle = std::thread::spawn(move || {
+                start_receiver.recv().unwrap();
+                assert!(child_completion.begin_publication());
+                armed_sender.send(()).unwrap();
+                publish_receiver.recv().unwrap();
+                assert!(
+                    child_completion
+                        .publish_after_fence(ChildCompletion::Waitable(ExitStatus::Exited(9),))
+                );
+                notifier.send(2).unwrap();
+                Ok(())
+            });
+            executor.register_child_process(2, start_sender, completion.clone(), handle);
+            executor.start_pending_child_processes().unwrap();
+            armed_receiver.recv().unwrap();
+
+            let waiter = std::thread::spawn(move || {
+                let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+                let request = if use_waitid {
+                    SyscallRequest::new(
+                        libc::SYS_waitid as u64,
+                        [
+                            libc::P_PID as u64,
+                            2,
+                            OUTPUT,
+                            (libc::WEXITED | libc::WNOHANG) as u64,
+                            0,
+                            0,
+                        ],
+                    )
+                } else {
+                    SyscallRequest::new(
+                        libc::SYS_wait4 as u64,
+                        [2, OUTPUT, libc::WNOHANG as u64, 0, 0, 0],
+                    )
+                };
+                let result = executor.execute(&request, &memory);
+                (executor, memory, result)
+            });
+
+            assert!(
+                completion.wait_for_publication_waiter(),
+                "parent did not enter the callback-to-waitability fence"
+            );
+            assert!(
+                !waiter.is_finished(),
+                "WNOHANG leaked a no-child-ready result through the publication fence"
+            );
+            publish_sender.send(()).unwrap();
+
+            let (mut executor, memory, result) = waiter.join().unwrap();
+            if use_waitid {
+                assert_eq!(result, 0);
+                let info: libc::siginfo_t = read_struct(&memory, OUTPUT);
+                // SAFETY: waitid writes the SIGCHLD variant of siginfo_t.
+                unsafe {
+                    assert_eq!(info.si_pid(), 2);
+                    assert_eq!(info.si_status(), 9);
+                }
+            } else {
+                assert_eq!(result, 2);
+                let mut status = [0; std::mem::size_of::<libc::c_int>()];
+                memory.read(OUTPUT, &mut status).unwrap();
+                assert_eq!(libc::c_int::from_le_bytes(status), 9 << 8);
+            }
+            executor.join_all_child_processes().unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_callback_publication_wakes_fenced_waiter_without_resurrection() {
+        let completion = Arc::new(ChildCompletionSlot::default());
+        assert!(completion.begin_publication());
+        let waiter_completion = completion.clone();
+        let waiter = std::thread::spawn(move || waiter_completion.waitability_pending());
+        assert!(completion.wait_for_publication_waiter());
+        assert!(completion.fail_if_pending());
+        assert!(!waiter.join().unwrap());
+        assert!(!completion.publish_after_fence(ChildCompletion::Waitable(ExitStatus::Exited(9),)));
+        assert_eq!(completion.take(), Err(ChildCompletionSlotError::Failed));
+    }
+
     fn register_published_child(executor: &mut ElfExecutor, pid: i32, completion: ChildCompletion) {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let completion = Arc::new(ChildCompletionSlot::with_completion(completion));
@@ -38696,6 +38899,11 @@ mod tests {
         drop(prepared);
         assert_eq!(leader.process_exit_status(), Some(ExitStatus::Exited(73)));
         assert_eq!(fork.process_exit_status(), Some(ExitStatus::Exited(99)));
+        assert!(
+            matches!(leader.process_family_exit(), Err(crate::Error::UnexpectedVcpuExit(message))
+                if message == "KVM process 1 lost its terminal family transition"),
+            "a final provisional-task Drop must fail closed until an explicit terminal task records the family transition",
+        );
         leader.cancel_current_thread();
         worker.cancel_current_thread();
         assert_eq!(

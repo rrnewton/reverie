@@ -367,9 +367,9 @@ impl ProcessSignalRegistry {
             .get(&process_key(process))
             .and_then(|children| children.keys().next().copied())
             .map(process_identity);
-        let ancestor_is_terminal = match parent_identity {
+        let parent_is_terminal = match parent_identity {
             Some(parent) => match family.has_terminal_ancestor(process_key(parent)) {
-                Ok(terminal) => terminal,
+                Ok(_) => family.terminal.contains_key(&process_key(parent)),
                 Err(ProcessFamilyAncestryError::Cycle { ancestor }) => {
                     let exit = ProcessFamilyExit::AncestryCycle {
                         ancestor: process_identity(ancestor),
@@ -395,15 +395,13 @@ impl ProcessSignalRegistry {
         };
         let exit = if is_root {
             ProcessFamilyExit::Root
-        } else if ancestor_is_terminal {
-            // A terminal ancestor is a consuming transition for the entire run,
-            // not a still-live reaper. Descendants therefore unwind as teardown
-            // regardless of their post-terminal retirement order. This branch
-            // deliberately begins only after that ancestor transition: the
-            // same unreaped descendant under a live root still fails closed as
-            // unsupported reparenting. Guest-causal root-versus-middle exit
-            // order can therefore change compatibility (teardown versus
-            // refusal), but host retirement order cannot.
+        } else if parent_is_terminal {
+            // The direct parent's logical transition, rather than a transitive
+            // ancestor's host teardown, decides whether this child still has a
+            // live reaper. Both exits serialize through the direct parent's
+            // transaction: child-first retains normal waitability, while
+            // parent-first is consuming run teardown. A terminal root alone
+            // cannot silently auto-reap a grandchild from its still-live parent.
             if let Some(parent) = parent_identity {
                 let parent_key = process_key(parent);
                 if let Some(children) = family.direct_children.get_mut(&parent_key) {
@@ -413,6 +411,12 @@ impl ProcessSignalRegistry {
                     }
                 }
             }
+            // No process that is itself terminal can subsequently reap an
+            // already-published zombie or a still-running direct child. Retire
+            // those exact edges as part of this consuming teardown transition;
+            // each later child still recognizes the terminal direct parent by
+            // generation and takes this same branch.
+            family.direct_children.remove(&process_key(process));
             ProcessFamilyExit::RunTeardownChild { status }
         } else if let Some(child) = blocking_descendant {
             ProcessFamilyExit::DescendantReparentingUnsupported { child }
@@ -2816,64 +2820,146 @@ mod tests {
     }
 
     #[test]
-    fn terminal_ancestor_consumes_nested_family_in_either_descendant_order() {
-        for grandchild_first in [false, true] {
-            let mut root = executor();
-            let mut child = root.fork_child(2, false, false).unwrap();
-            let mut grandchild = child.fork_child(3, false, false).unwrap();
-            let root_id = identity(&root);
-            let child_id = identity(&child);
-            let grandchild_id = identity(&grandchild);
+    fn terminal_root_preserves_a_live_parent_wait_before_direct_parent_teardown() {
+        const INFO: u64 = 0x100;
+        const STATUS: u64 = 0x200;
 
-            root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
-            assert_eq!(
-                root.signal_registry.process_family_exit(root_id),
-                Some(ProcessFamilyExit::Root),
-            );
+        let mut root = executor();
+        let mut child = root.fork_child(2, false, false).unwrap();
+        let mut grandchild = child.fork_child(3, false, false).unwrap();
+        let root_id = identity(&root);
+        let child_id = identity(&child);
+        let grandchild_id = identity(&grandchild);
 
-            if grandchild_first {
-                grandchild.retire_current_thread(reverie::ExitStatus::Exited(3), false);
-                assert_eq!(
-                    grandchild
-                        .signal_registry
-                        .process_family_exit(grandchild_id),
-                    Some(ProcessFamilyExit::RunTeardownChild {
-                        status: reverie::ExitStatus::Exited(3),
-                    }),
-                    "a terminal transitive ancestor suppresses normal child publication",
-                );
-            }
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        assert_eq!(
+            root.signal_registry.process_family_exit(root_id),
+            Some(ProcessFamilyExit::Root),
+        );
+        grandchild.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        let completion = match grandchild
+            .signal_registry
+            .process_family_exit(grandchild_id)
+            .unwrap()
+        {
+            ProcessFamilyExit::Child(snapshot) => snapshot.completion,
+            other => panic!("live direct parent lost its waitable child: {other:?}"),
+        };
+        assert_eq!(completion.parent, child_id);
+        assert_eq!(completion.child, grandchild_id);
+        assert_eq!(completion.status, reverie::ExitStatus::Exited(3));
+        assert!(completion.waitable);
+        child
+            .record_child_completion(
+                3,
+                crate::executor::ChildCompletion::from_waitability(
+                    completion.status,
+                    completion.waitable,
+                ),
+            )
+            .unwrap();
 
-            child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
-            assert_eq!(
-                child.signal_registry.process_family_exit(child_id),
-                Some(ProcessFamilyExit::RunTeardownChild {
-                    status: reverie::ExitStatus::Exited(2),
-                }),
-                "a terminal ancestor consumes its still-nested family instead of requiring a live reaper",
-            );
-
-            if !grandchild_first {
-                grandchild.retire_current_thread(reverie::ExitStatus::Exited(3), false);
-                assert_eq!(
-                    grandchild
-                        .signal_registry
-                        .process_family_exit(grandchild_id),
-                    Some(ProcessFamilyExit::RunTeardownChild {
-                        status: reverie::ExitStatus::Exited(3),
-                    }),
-                );
-            }
-            assert!(
-                root.signal_registry
-                    .family
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .direct_children
-                    .is_empty(),
-                "root-first teardown must retire every exact direct-child edge",
-            );
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_waitid as u64,
+                    [
+                        libc::P_PID as u64,
+                        3,
+                        INFO,
+                        (libc::WEXITED | libc::WNOWAIT | libc::WNOHANG) as u64,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        let info: libc::siginfo_t = read_struct(&memory, INFO);
+        // SAFETY: waitid writes the SIGCHLD variant of siginfo_t.
+        unsafe {
+            assert_eq!(info.si_pid(), 3);
+            assert_eq!(info.si_status(), 3);
         }
+        assert!(
+            child
+                .signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .direct_children
+                .get(&process_key(child_id))
+                .is_some_and(|children| children.get(&process_key(grandchild_id))
+                    == Some(&DirectChildState::WaitableZombie)),
+            "WNOWAIT must preserve the exact waitable family edge",
+        );
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_wait4 as u64,
+                    [3, STATUS, libc::WNOHANG as u64, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            3,
+        );
+        let mut status = [0; std::mem::size_of::<libc::c_int>()];
+        memory.read(STATUS, &mut status).unwrap();
+        assert_eq!(libc::c_int::from_le_bytes(status), 3 << 8);
+
+        child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(2),
+            }),
+        );
+        assert!(
+            root.signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .direct_children
+                .is_empty(),
+            "direct-parent teardown must retire every exact child edge",
+        );
+    }
+
+    #[test]
+    fn terminal_direct_parent_tears_down_a_later_child_without_publication() {
+        let mut root = executor();
+        let mut child = root.fork_child(2, false, false).unwrap();
+        let mut grandchild = child.fork_child(3, false, false).unwrap();
+        let child_id = identity(&child);
+        let grandchild_id = identity(&grandchild);
+
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(2),
+            }),
+        );
+        grandchild.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        assert_eq!(
+            grandchild
+                .signal_registry
+                .process_family_exit(grandchild_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(3),
+            }),
+        );
+        assert!(
+            root.signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .direct_children
+                .is_empty(),
+        );
     }
 
     #[test]

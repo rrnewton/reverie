@@ -2999,57 +2999,71 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
                                 snapshot.completion.status,
                                 snapshot.completion.waitable,
                             );
-                            let event = reverie::BackendChildWaitEvent {
-                                parent: snapshot.completion.parent,
-                                child: context.child,
-                                state: reverie::BackendChildWaitState::Exited {
-                                    status: snapshot.completion.status,
-                                    waitable: snapshot.completion.waitable,
-                                    uid: snapshot.completion.uid,
-                                    user_ticks: snapshot.completion.user_ticks,
-                                    system_ticks: snapshot.completion.system_ticks,
-                                },
-                            };
-                            let mut callback =
-                                Box::pin(crate::failure::owned_future::catch_owned_future_from(
-                                    || global_state.on_backend_child_wait_event(event),
-                                ));
-                            // Poll through the Tool's synchronous admission prefix
-                            // before exposing waitability. The retained future may
-                            // then suspend on parent progress without hiding the
-                            // already-committed publication decision.
-                            let first_poll =
-                                poll_fn(|cx| Poll::Ready(callback.as_mut().poll(cx))).await;
-                            let waitability = if context.completion.publish(completion) {
-                                let _ = context.completion_notifier.send(context.raw_child_pid);
-                                Ok(())
-                            } else {
+                            if !context.completion.begin_publication() {
                                 Err(report(
                                     "child wait completion",
                                     Error::UnexpectedVcpuExit(format!(
-                                        "KVM child process {} published its logical completion twice",
+                                        "KVM child process {} armed its logical completion twice",
                                         context.raw_child_pid
                                     )),
                                 ))
-                            };
-                            let caught = match first_poll {
-                                Poll::Ready(caught) => caught,
-                                Poll::Pending => callback.await,
-                            };
-                            let hook = panics
-                                .finish(
-                                    crate::failure::owned_future::CaughtFuture {
-                                        output: caught
-                                            .output
-                                            .map(|result| result.map_err(Error::Reverie)),
-                                        panics: caught.panics,
+                            } else {
+                                let event = reverie::BackendChildWaitEvent {
+                                    parent: snapshot.completion.parent,
+                                    child: context.child,
+                                    state: reverie::BackendChildWaitState::Exited {
+                                        status: snapshot.completion.status,
+                                        waitable: snapshot.completion.waitable,
+                                        uid: snapshot.completion.uid,
+                                        user_ticks: snapshot.completion.user_ticks,
+                                        system_ticks: snapshot.completion.system_ticks,
                                     },
-                                    "child wait hook",
-                                )
-                                .map_err(|error| report("child wait hook", error));
-                            match (waitability, hook) {
-                                (Ok(()), result) | (result, Ok(())) => result,
-                                (Err(error), Err(hook)) => Err(error.with_cleanup(vec![hook])),
+                                };
+                                let mut callback = Box::pin(
+                                    crate::failure::owned_future::catch_owned_future_from(|| {
+                                        global_state.on_backend_child_wait_event(event)
+                                    }),
+                                );
+                                // Poll through the Tool's synchronous admission prefix
+                                // before exposing waitability. The retained future may
+                                // then suspend on parent progress without hiding the
+                                // already-committed publication decision.
+                                let first_poll =
+                                    poll_fn(|cx| Poll::Ready(callback.as_mut().poll(cx))).await;
+                                let waitability = if context
+                                    .completion
+                                    .publish_after_fence(completion)
+                                {
+                                    let _ = context.completion_notifier.send(context.raw_child_pid);
+                                    Ok(())
+                                } else {
+                                    Err(report(
+                                        "child wait completion",
+                                        Error::UnexpectedVcpuExit(format!(
+                                            "KVM child process {} published its logical completion twice",
+                                            context.raw_child_pid
+                                        )),
+                                    ))
+                                };
+                                let caught = match first_poll {
+                                    Poll::Ready(caught) => caught,
+                                    Poll::Pending => callback.await,
+                                };
+                                let hook = panics
+                                    .finish(
+                                        crate::failure::owned_future::CaughtFuture {
+                                            output: caught
+                                                .output
+                                                .map(|result| result.map_err(Error::Reverie)),
+                                            panics: caught.panics,
+                                        },
+                                        "child wait hook",
+                                    )
+                                    .map_err(|error| report("child wait hook", error));
+                                match (waitability, hook) {
+                                    (Ok(()), result) | (result, Ok(())) => result,
+                                    (Err(error), Err(hook)) => Err(error.with_cleanup(vec![hook])),
+                                }
                             }
                         }
                     }

@@ -8189,14 +8189,15 @@ int main(int argc, char **argv) {
   sigaddset(&blocked, SIGCHLD);
   if (sigprocmask(SIG_BLOCK, &blocked, 0) != 0) return 9;
   int ready[2] = {-1, -1};
-  if (mode == 0 && pipe(ready) != 0) return 10;
+  if ((mode == 0 || (mode >= 6 && mode <= 8)) && pipe(ready) != 0) return 10;
   pid_t child = fork();
   if (child < 0) return 11;
   if (child == 0) {
-    if (mode == 4 || mode == 5) {
+    pid_t root = getppid();
+    if (mode == 4 || mode == 5 || mode == 7 || mode == 8) {
       struct sigaction action = {0};
-      action.sa_handler = mode == 4 ? SIG_IGN : SIG_DFL;
-      action.sa_flags = mode == 5 ? SA_NOCLDWAIT : 0;
+      action.sa_handler = (mode == 4 || mode == 7) ? SIG_IGN : SIG_DFL;
+      action.sa_flags = (mode == 5 || mode == 8) ? SA_NOCLDWAIT : 0;
       sigemptyset(&action.sa_mask);
       if (sigaction(SIGCHLD, &action, 0) != 0) _exit(12);
     }
@@ -8207,6 +8208,9 @@ int main(int argc, char **argv) {
         char byte = 'x';
         if (write(ready[1], &byte, 1) != 1) _exit(14);
         for (;;) (void)getpid();
+      } else if (mode >= 6 && mode <= 8) {
+        char byte = 0;
+        if (read(ready[0], &byte, 1) != 1 || byte != 'x') _exit(21);
       }
       _exit(9);
     }
@@ -8229,6 +8233,22 @@ int main(int argc, char **argv) {
       if (waitpid(grandchild, &grandchild_status, 0) != grandchild ||
           !WIFEXITED(grandchild_status) || WEXITSTATUS(grandchild_status) != 9)
         _exit(18);
+    } else if (mode >= 6 && mode <= 8) {
+      errno = 0;
+      while (kill(root, 0) == 0) (void)getpid();
+      if (errno != ESRCH) _exit(22);
+      char byte = 'x';
+      if (write(ready[1], &byte, 1) != 1) _exit(23);
+      int grandchild_status = 0;
+      if (mode == 6) {
+        if (waitpid(grandchild, &grandchild_status, 0) != grandchild ||
+            !WIFEXITED(grandchild_status) || WEXITSTATUS(grandchild_status) != 9)
+          _exit(24);
+      } else {
+        errno = 0;
+        if (waitpid(grandchild, &grandchild_status, 0) != -1 || errno != ECHILD)
+          _exit(25);
+      }
     } else {
       int grandchild_status = 0;
       errno = 0;
@@ -8237,6 +8257,7 @@ int main(int argc, char **argv) {
     }
     _exit(7);
   }
+  if (mode >= 6 && mode <= 8) return 0;
   int status = 0;
   if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
       WEXITSTATUS(status) != 7) return 20;
@@ -8267,7 +8288,7 @@ int main(int argc, char **argv) {
     };
 
     for root_pid in [1, 3] {
-        for mode in 0..=5 {
+        for mode in 0..=8 {
             let events = Arc::new(Mutex::new(Vec::new()));
             let config =
                 child_wait_event_config_with_block(&events, (mode == 0).then_some(root_pid + 2));
@@ -8345,6 +8366,34 @@ int main(int argc, char **argv) {
                             event(child, 2, grandchild, 3, false),
                             event(root_pid, 1, child, 2, true),
                         ],
+                    );
+                }
+                6 => {
+                    let (_global, code, _stdout, stderr) = result.unwrap();
+                    assert_eq!(
+                        code,
+                        0,
+                        "terminal-root/live-parent mode, root pid {root_pid}: {}",
+                        String::from_utf8_lossy(&stderr)
+                    );
+                    assert_eq!(
+                        observed,
+                        vec![event(child, 2, grandchild, 3, true)],
+                        "a terminal transitive root cannot steal a grandchild from its live direct parent",
+                    );
+                }
+                7 | 8 => {
+                    let (_global, code, _stdout, stderr) = result.unwrap();
+                    assert_eq!(
+                        code,
+                        0,
+                        "terminal-root/live-parent auto-reap mode {mode}, root pid {root_pid}: {}",
+                        String::from_utf8_lossy(&stderr)
+                    );
+                    assert_eq!(
+                        observed,
+                        vec![event(child, 2, grandchild, 3, false)],
+                        "the live direct parent's frozen SIGCHLD policy remains authoritative after root exit",
                     );
                 }
                 _ => unreachable!(),

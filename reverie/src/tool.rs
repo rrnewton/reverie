@@ -210,11 +210,16 @@ pub trait GlobalTool: Send + Sync + Default {
     /// prefix: it must not reach an `.await` first. Work after that admission
     /// point may await parent progress; the backend retains and finishes the
     /// same pinned future after publishing waitability.
+    /// If that synchronous prefix makes a concurrent parent runnable, the
+    /// backend fences its wait until publication completes; the parent cannot
+    /// observe the callback decision while still receiving a no-child-ready
+    /// result.
     ///
-    /// No callback is emitted when the exact parent generation or one of its
-    /// retained ancestors is already terminal. Such a child is run-teardown
-    /// state rather than a new waitable transition for a dead process family,
-    /// and the backend auto-reaps its status.
+    /// No callback is emitted when the exact parent generation is already
+    /// terminal. Such a child is run-teardown state rather than a new waitable
+    /// transition, and the backend auto-reaps its status. A terminal transitive
+    /// ancestor does not suppress a child event while the direct parent remains
+    /// logically live; that parent retains its exact wait semantics.
     /// For a live parent, callback admission only controls when waitability is
     /// exposed. It does not reap the backend status: a Tool-controlled wait must
     /// still be injected into the Guest before Tool shadow state is consumed.
