@@ -1629,13 +1629,64 @@ def _contains_admission_claim(value):
     return False
 
 
-def admission_json_dumps(value, *, sort_keys=False):
-    """Transport original pairs within claimed rows, never normalize a claim.
+def _admission_stdlib_json_safe(value):
+    """Whether the C JSON encoder is byte-identical to the pair-aware encoder.
 
-    This is not HistoryRow or context canonicalization. Legacy subtrees with
-    no admission claim keep json.dumps' existing last-value dictionary view.
-    Object-key sorting is stable so duplicate order remains observable.
+    A parsed :class:`AdmissionJsonObject` is safe only while its current item
+    sequence is the exact unique sequence retained in ``pairs``.  Comparing
+    value identities as well as keys catches replacement by an equal value;
+    comparing sequence order catches pop-and-reinsert mutations that ordinary
+    dictionary equality cannot see.  Any duplicate, mutation, non-string key,
+    container subclass, unsupported scalar, or cycle takes the exact encoder
+    below instead.
+
+    This predicate is deliberately conservative.  Its only authority is to
+    select an equivalent implementation; returning false preserves the
+    original transport and refusal behavior.
     """
+    ancestors = set()
+
+    def safe(item):
+        if type(item) is AdmissionJsonObject:
+            pairs = item.pairs
+            if len(item) != len(pairs) or any(
+                current_key != pair_key or current_value is not pair_value
+                for (current_key, current_value), (pair_key, pair_value)
+                in zip(item.items(), pairs)
+            ):
+                return False
+            if any(type(key) is not str for key, _child in pairs):
+                return False
+            children = (child for _key, child in pairs)
+        elif type(item) is dict:
+            if any(type(key) is not str for key in item):
+                return False
+            children = iter(item.values())
+        elif type(item) is list:
+            children = iter(item)
+        else:
+            return item is None or type(item) in (str, bool, int, float)
+
+        identity = id(item)
+        if identity in ancestors:
+            return False
+        ancestors.add(identity)
+        try:
+            for child in children:
+                if child is None or type(child) in (str, bool, int, float):
+                    continue
+                if not safe(child):
+                    return False
+            return True
+        finally:
+            ancestors.remove(identity)
+
+    return safe(value)
+
+
+def _admission_json_dumps_exact(value, *, sort_keys=False):
+    """The original pair-aware encoder, retained as the exact slow path."""
+
     def encode(item, within_claim=False):
         if isinstance(item, dict):
             claimed_row = "admission_floor_evidence" in item
@@ -1652,6 +1703,22 @@ def admission_json_dumps(value, *, sort_keys=False):
         return json.dumps(item, separators=(",", ":"))
 
     return encode(value)
+
+
+def admission_json_dumps(value, *, sort_keys=False):
+    """Transport original pairs within claimed rows, never normalize a claim.
+
+    This is not HistoryRow or context canonicalization. Legacy subtrees with
+    no admission claim keep json.dumps' existing last-value dictionary view.
+    Object-key sorting is stable so duplicate order remains observable.
+
+    The common, unmodified, duplicate-free JSON shape is byte-identical under
+    the standard encoder and uses its bounded C traversal.  Anything whose
+    identity could differ falls back to the original encoder above.
+    """
+    if _admission_stdlib_json_safe(value):
+        return json.dumps(value, sort_keys=sort_keys, separators=(",", ":"))
+    return _admission_json_dumps_exact(value, sort_keys=sort_keys)
 
 
 def _admission_duplicate_keys(value):

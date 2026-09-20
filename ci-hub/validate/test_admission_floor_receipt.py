@@ -728,6 +728,104 @@ def test_claimed_pair_transport_preserves_legacy_and_qualifying_identity():
     assert qr.validate_admission_floor_evidence(normalized["admission_floor_evidence"], normalized)
 
 
+def test_unique_pair_transport_fast_path_is_byte_identical(monkeypatch):
+    event = {
+        "schema": "validate-ledger/v1",
+        "event_id": "fixture-result",
+        "legacy_row": row(),
+        "future": ["escaped\ntext", "snowman-\u2603", 1.25, True, None],
+    }
+    parsed = json.loads(
+        json.dumps(event, separators=(",", ":")),
+        object_pairs_hook=qr.AdmissionJsonObject,
+    )
+    expected = qr._admission_json_dumps_exact(parsed, sort_keys=True)
+    assert expected == json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+
+    def exact_must_not_run(*_args, **_kwargs):
+        raise AssertionError("duplicate-free transport did not take the stdlib fast path")
+
+    monkeypatch.setattr(qr, "_admission_json_dumps_exact", exact_must_not_run)
+    assert qr.admission_json_dumps(parsed, sort_keys=True) == expected
+
+
+@pytest.mark.parametrize("raw,duplicate,retained", [
+    ('{"event_id":"first","event_id":"second",'
+     '"legacy_row":{"admission_floor_evidence":{}}}', '"event_id":', 2),
+    ('{"legacy_row":{"admission_floor_evidence":{},'
+     '"coverage":{"run_id":"first","run_id":"second"}}}', '"run_id":', 2),
+    ('{"future":1,"future":2,"legacy":{"state":"last-value"}}', '"future":', 1),
+])
+def test_duplicate_pair_transport_uses_exact_fallback(
+        monkeypatch, raw, duplicate, retained):
+    parsed = json.loads(raw, object_pairs_hook=qr.AdmissionJsonObject)
+    expected = qr._admission_json_dumps_exact(parsed, sort_keys=True)
+    original = qr._admission_json_dumps_exact
+    calls = []
+
+    def observed(value, *, sort_keys=False):
+        calls.append(value)
+        return original(value, sort_keys=sort_keys)
+
+    monkeypatch.setattr(qr, "_admission_json_dumps_exact", observed)
+    assert qr.admission_json_dumps(parsed, sort_keys=True) == expected
+    assert calls == [parsed]
+    # Claimed duplicates remain observable; legacy duplicates retain the old
+    # last-value dictionary behavior. Both shapes take the exact encoder.
+    assert expected.count(duplicate) == retained
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_value_mutation_still_reaches_exact_refusal(monkeypatch, nested):
+    parsed = json.loads(
+        '{"event_id":"fixture","legacy_row":{"admission_floor_evidence":{},'
+        '"coverage":{"run_id":"actual"}}}',
+        object_pairs_hook=qr.AdmissionJsonObject,
+    )
+    target = parsed["legacy_row"]["coverage"] if nested else parsed
+    key = "run_id" if nested else "event_id"
+    target[key] = "changed"
+    original = qr._admission_json_dumps_exact
+    calls = []
+
+    def observed(value, *, sort_keys=False):
+        calls.append(value)
+        return original(value, sort_keys=sort_keys)
+
+    monkeypatch.setattr(qr, "_admission_json_dumps_exact", observed)
+    with pytest.raises(ValueError, match="raw admission object changed before validation"):
+        qr.admission_json_dumps(parsed, sort_keys=True)
+    assert calls == [parsed]
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_order_mutation_preserves_original_pair_order_via_fallback(monkeypatch, nested):
+    parsed = json.loads(
+        '{"event_id":"fixture","legacy_row":{"admission_floor_evidence":{},'
+        '"coverage":{"first":1,"second":2}}}',
+        object_pairs_hook=qr.AdmissionJsonObject,
+    )
+    target = parsed["legacy_row"]["coverage"] if nested else parsed
+    key = "first" if nested else "event_id"
+    value = target.pop(key)
+    target[key] = value
+    expected = qr._admission_json_dumps_exact(parsed)
+    original = qr._admission_json_dumps_exact
+    calls = []
+
+    def observed(candidate, *, sort_keys=False):
+        calls.append(candidate)
+        return original(candidate, sort_keys=sort_keys)
+
+    monkeypatch.setattr(qr, "_admission_json_dumps_exact", observed)
+    assert qr.admission_json_dumps(parsed) == expected
+    assert calls == [parsed]
+    if nested:
+        assert expected.index('"first":1') < expected.index('"second":2')
+    else:
+        assert expected.startswith('{"event_id":"fixture"')
+
+
 @pytest.mark.parametrize("store", ["shard", "spool", "retained", "fixture"])
 @pytest.mark.parametrize("order", ["bad-first", "good-first", "bad-only"])
 def test_real_selected_scan_keeps_raw_duplicate_rows_separate(
