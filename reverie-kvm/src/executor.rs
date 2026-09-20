@@ -1201,6 +1201,12 @@ pub(crate) struct ElfExecutor {
     signal_effect_raw_result: Option<i64>,
 }
 
+/// Keeps one exact process-generation registry binding alive without exposing
+/// its backend-private representation.
+pub(crate) struct ProcessSignalBindingGuard {
+    _binding: Arc<ProcessBinding>,
+}
+
 pub(crate) type UnstartedToolCleanup =
     Pin<Box<dyn Future<Output = crate::Result<()>> + Send + 'static>>;
 
@@ -4179,6 +4185,15 @@ impl ElfExecutor {
                 tid: reverie::Pid::from_raw(self.state.tid),
                 task_generation: task.generation,
             })
+    }
+
+    /// Retain this process generation through an asynchronous Tool
+    /// acknowledgement. Lifecycle validation remains authoritative; this guard
+    /// only prevents the weak run registry binding from disappearing early.
+    pub(crate) fn retain_signal_process_binding(&self) -> ProcessSignalBindingGuard {
+        ProcessSignalBindingGuard {
+            _binding: self.signal_binding.clone(),
+        }
     }
 
     pub(crate) fn sole_signal_receiver(&self) -> bool {

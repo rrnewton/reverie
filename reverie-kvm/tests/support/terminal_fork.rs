@@ -103,7 +103,7 @@ impl GlobalTool for Log {
         &self,
         event: BackendChildWaitEvent,
     ) -> Result<(), reverie::Error> {
-        assert_eq!(event.parent.as_raw(), 1);
+        assert_eq!(event.parent.tgid.as_raw(), 1);
         assert_eq!(
             event.state,
             BackendChildWaitState::Exited {
@@ -111,13 +111,14 @@ impl GlobalTool for Log {
                 waitable: true,
             }
         );
-        self.control.record("wait-event", event.child.as_raw(), 0);
+        self.control
+            .record("wait-event", event.child.tgid.as_raw(), 0);
         if self.mode == 2 {
             // The backend publishes the waitable status before invoking this
             // callback. Hold its failure until the parent has collected that
             // status and reached the intended cancellation point.
             self.control.wait_for(|state| state.release_child).await;
-            return Err(if event.child.as_raw() == 2 {
+            return Err(if event.child.tgid.as_raw() == 2 {
                 Errno::EIO
             } else {
                 Errno::E2BIG

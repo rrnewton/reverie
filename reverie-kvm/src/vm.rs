@@ -2813,6 +2813,30 @@ impl KvmBackend {
                 };
 
                 let child_pid = Pid::from_raw(child.pid);
+                // Capture generation-bound process identities while both live
+                // executors are still registered. The child task is retired
+                // before the wait callback, so reconstructing its generation at
+                // callback time would bind numeric PID reuse instead.
+                let parent_signal_process = executor
+                    .signal_task_identity()
+                    .ok_or_else(|| {
+                        Error::UnexpectedVcpuExit(
+                            "KVM fork parent lost its signal generation before child admission"
+                                .to_owned(),
+                        )
+                    })?
+                    .process;
+                let child_signal_process = child
+                    .executor
+                    .signal_task_identity()
+                    .ok_or_else(|| {
+                        Error::UnexpectedVcpuExit(
+                            "KVM fork child lost its signal generation before host spawn"
+                                .to_owned(),
+                        )
+                    })?
+                    .process;
+                let parent_signal_binding = executor.retain_signal_process_binding();
                 let global_state = context.global_state.ok_or_else(|| {
                     Error::UnexpectedVcpuExit(
                         "forked KVM Tool process requires shared global state".to_owned(),
@@ -2825,7 +2849,6 @@ impl KvmBackend {
                 let subscriptions = context.subscriptions;
                 let pending_child_starts = context.pending_child_starts;
                 let raw_child_pid = child.pid;
-                let parent_pid = context.pid;
                 let lifecycle_state = global_state.clone();
                 let auto_reap = executor.child_exit_policy();
                 let completion_notifier = executor.child_completion_notifier();
@@ -2847,6 +2870,7 @@ impl KvmBackend {
                         global_state,
                         config,
                         subscriptions,
+                        parent_signal_binding,
                     ),
                     move |(
                         mut child,
@@ -2855,7 +2879,12 @@ impl KvmBackend {
                         global_state,
                         config,
                         subscriptions,
+                        parent_signal_binding,
                     )| {
+                        // The child executor retains its own binding; this
+                        // explicit parent guard keeps both registry entries alive
+                        // until the Tool acknowledges the exact wait event.
+                        let _parent_signal_binding = parent_signal_binding;
                         let driver = child.backend.start_entry_driver();
                         child.executor.bind_address_space(&child.backend.memory);
                         let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
@@ -2923,8 +2952,8 @@ impl KvmBackend {
                                                 || {
                                                     lifecycle_state.on_backend_child_wait_event(
                                                         BackendChildWaitEvent {
-                                                            parent: parent_pid,
-                                                            child: child_pid,
+                                                            parent: parent_signal_process,
+                                                            child: child_signal_process,
                                                             state: BackendChildWaitState::Exited {
                                                                 status,
                                                                 waitable,
@@ -2988,7 +3017,7 @@ impl KvmBackend {
                     Ok(handle) => handle,
                     Err((
                         error,
-                        (mut child, child_tool, child_thread_state, global_state, config, _),
+                        (mut child, child_tool, child_thread_state, global_state, config, _, _),
                     )) => {
                         // Publish the original spawn failure through the parent
                         // first. Its outer owner consumes this child afterward,
