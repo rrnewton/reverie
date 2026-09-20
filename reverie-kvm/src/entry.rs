@@ -10,7 +10,9 @@
 //!
 //! Closing admission accounts for vCPU setup, running vCPUs, return cleanup,
 //! and admitted host copies. It neither completes pending guest syscalls nor
-//! stops host operations using an already retained pointer or backing fd.
+//! waits for host operations using an already retained pointer. Those retained
+//! operands are counted separately: an unchanged close may finish around them,
+//! but a mapping publication must refuse while any remains live.
 
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
@@ -44,6 +46,31 @@ mod cleanup_tests;
 
 type Change = Shared<oneshot::Receiver<()>>;
 type GateResult<T> = Result<T, Arc<PendingFailure>>;
+
+/// One installed guest-physical backing image. Every vCPU entry and short host
+/// copy is admitted against exactly one generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MappingGeneration(u64);
+
+impl MappingGeneration {
+    pub(crate) const INITIAL: Self = Self(0);
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the mapping publisher is deliberately non-activating"
+        )
+    )]
+    fn next(self) -> Option<Self> {
+        self.0.checked_add(1).map(Self)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+}
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -289,12 +316,14 @@ enum Activity {
 
 struct Member {
     run: u64,
+    generation: Option<MappingGeneration>,
     activity: Activity,
     origin: EntryOrigin,
 }
 
 struct State {
     admission: Admission,
+    generation: MappingGeneration,
     next_member: u64,
     #[cfg_attr(
         not(test),
@@ -306,6 +335,7 @@ struct State {
     next_close: u64,
     members: BTreeMap<u64, Member>,
     copies: usize,
+    retained_operands: usize,
     failure: Option<Arc<PendingFailure>>,
     sender: Option<oneshot::Sender<()>>,
     changed: Change,
@@ -436,6 +466,7 @@ pub(crate) struct EntryGate {
 pub(crate) struct TestMemberState {
     pub(crate) id: u64,
     pub(crate) run: u64,
+    pub(crate) generation: Option<MappingGeneration>,
     pub(crate) stopped: bool,
 }
 
@@ -444,7 +475,9 @@ pub(crate) struct TestMemberState {
 pub(crate) struct TestGateState {
     pub(crate) open: bool,
     pub(crate) closed: bool,
+    pub(crate) generation: MappingGeneration,
     pub(crate) copies: usize,
+    pub(crate) retained_operands: usize,
     pub(crate) copy_waits: usize,
     pub(crate) copy_waiters: Vec<std::thread::ThreadId>,
     pub(crate) members: Vec<TestMemberState>,
@@ -469,7 +502,9 @@ impl EntryGate {
         TestGateState {
             open: state.admission == Admission::Open,
             closed: matches!(state.admission, Admission::Closed(_)),
+            generation: state.generation,
             copies: state.copies,
+            retained_operands: state.retained_operands,
             copy_waits: state.copy_waits,
             copy_waiters: state.copy_waiters.clone(),
             members: state
@@ -478,6 +513,7 @@ impl EntryGate {
                 .map(|(&id, member)| TestMemberState {
                     id,
                     run: member.run,
+                    generation: member.generation,
                     stopped: member.activity == Activity::Stopped,
                 })
                 .collect(),
@@ -491,10 +527,12 @@ impl EntryGate {
             prepare_probe: Mutex::new(None),
             state: Mutex::new(State {
                 admission: Admission::Open,
+                generation: MappingGeneration::INITIAL,
                 next_member: 0,
                 next_close: 0,
                 members: BTreeMap::new(),
                 copies: 0,
+                retained_operands: 0,
                 failure: None,
                 sender: Some(sender),
                 changed: receiver.shared(),
@@ -533,6 +571,12 @@ impl EntryGate {
 
     pub(crate) fn pending_failure(&self) -> Option<Arc<PendingFailure>> {
         self.state.lock().unwrap().failure.clone()
+    }
+
+    pub(crate) fn generation(&self) -> GateResult<MappingGeneration> {
+        let state = self.state.lock().unwrap();
+        state.check()?;
+        Ok(state.generation)
     }
 
     /// Serialize an operation's admission with poison capture, then release
@@ -574,6 +618,7 @@ impl EntryGate {
                         id,
                         Member {
                             run: 0,
+                            generation: None,
                             activity: Activity::Stopped,
                             origin: EntryOrigin::default(),
                         },
@@ -651,6 +696,38 @@ impl EntryGate {
         Ok(CopyAccess {
             gate: self.clone(),
             origin,
+            generation: state.generation,
+        })
+    }
+
+    /// Retain a host pointer after its short-copy admission ends. Closing still
+    /// waits only for short copies, so ordinary unchanged fences do not wait on
+    /// a blocking kernel operation. Mapping publication checks this count and
+    /// fails before changing the backing image.
+    pub(crate) fn retain_operand(
+        self: &Arc<Self>,
+        copy: &CopyAccess,
+    ) -> GateResult<RetainedOperand> {
+        assert!(Arc::ptr_eq(self, &copy.gate));
+        let mut state = self.state.lock().unwrap();
+        state.check()?;
+        assert!(state.copies != 0, "retained operand requires a live copy");
+        assert_eq!(state.generation, copy.generation);
+        let Some(retained_operands) = state.retained_operands.checked_add(1) else {
+            let failure = state.fail(
+                copy.origin.clone(),
+                protocol_failure("retained host operand accounting exhausted"),
+            );
+            let sender = state.changed();
+            drop(state);
+            notify(sender);
+            return Err(failure);
+        };
+        state.retained_operands = retained_operands;
+        Ok(RetainedOperand {
+            gate: self.clone(),
+            origin: copy.origin.clone(),
+            generation: copy.generation,
         })
     }
 
@@ -763,6 +840,7 @@ impl Participant {
         if state.admission != Admission::Open {
             return Ok(None);
         }
+        let generation = state.generation;
         let member = state.members.get_mut(&self.id).unwrap();
         assert_eq!(member.activity, Activity::Stopped);
         let Some(run) = member.run.checked_add(1) else {
@@ -779,6 +857,7 @@ impl Participant {
         Ok(Some(Entry {
             participant: self,
             run,
+            generation,
             acknowledged: false,
             _same_thread: PhantomData,
         }))
@@ -863,6 +942,7 @@ impl Drop for Participant {
 pub(crate) struct Entry<'a> {
     participant: &'a mut Participant,
     run: u64,
+    generation: MappingGeneration,
     acknowledged: bool,
     _same_thread: PhantomData<Rc<()>>,
 }
@@ -880,6 +960,7 @@ impl Entry<'_> {
         let member = state.members.get(&self.participant.id).unwrap();
         assert_eq!(member.run, self.run);
         assert_eq!(member.activity, Activity::Setup);
+        assert_eq!(state.generation, self.generation);
         if state.admission != Admission::Open {
             return Ok(false);
         }
@@ -911,6 +992,7 @@ impl Entry<'_> {
         // and signal cleanup. The numeric pthread identity never escapes the
         // serialized sender path.
         member.activity = Activity::Running(unsafe { libc::pthread_self() });
+        member.generation = Some(self.generation);
         Ok(true)
     }
 
@@ -1046,6 +1128,7 @@ impl Drop for RunEntry<'_> {
 pub(crate) struct CopyAccess {
     gate: Arc<EntryGate>,
     origin: EntryOrigin,
+    generation: MappingGeneration,
 }
 
 impl Drop for CopyAccess {
@@ -1056,6 +1139,41 @@ impl Drop for CopyAccess {
                 state.fail(self.origin.clone(), protocol_failure("host copy unwound"));
             }
             state.copies = state.copies.checked_sub(1).expect("copy retired twice");
+            state.changed()
+        };
+        notify(sender);
+    }
+}
+
+pub(crate) struct RetainedOperand {
+    gate: Arc<EntryGate>,
+    origin: EntryOrigin,
+    generation: MappingGeneration,
+}
+
+impl std::fmt::Debug for RetainedOperand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetainedOperand")
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for RetainedOperand {
+    fn drop(&mut self) {
+        let sender = {
+            let mut state = self.gate.state.lock().unwrap();
+            if std::thread::panicking() {
+                state.fail(
+                    self.origin.clone(),
+                    protocol_failure("retained host operand unwound"),
+                );
+            }
+            assert_eq!(state.generation, self.generation);
+            state.retained_operands = state
+                .retained_operands
+                .checked_sub(1)
+                .expect("retained host operand retired twice");
             state.changed()
         };
         notify(sender);
@@ -1095,6 +1213,7 @@ impl Closing {
                     return Ok(Closed {
                         gate: self.gate.clone(),
                         id: self.id,
+                        published: false,
                     });
                 }
                 state.changed.clone()
@@ -1113,8 +1232,9 @@ impl Drop for Closing {
     }
 }
 
-/// Only an unchanged-mapping fence. Dropping a successfully acquired token
-/// reopens admission; it does not perform or authorize a mapping update.
+/// Exclusive stopped-address-space token. Dropping it reopens admission. A
+/// mapping change is authorized only through [`Closed::publish`], which binds
+/// the external change and the next admitted generation.
 #[cfg_attr(
     not(test),
     expect(
@@ -1125,6 +1245,118 @@ impl Drop for Closing {
 pub(crate) struct Closed {
     gate: Arc<EntryGate>,
     id: u64,
+    published: bool,
+}
+
+impl Closed {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the mapping publisher is deliberately non-activating"
+        )
+    )]
+    pub(crate) fn belongs_to(&self, gate: &Arc<EntryGate>) -> bool {
+        Arc::ptr_eq(&self.gate, gate)
+    }
+
+    /// Publish exactly one prepared mapping image while every participant is
+    /// stopped and short copies are drained. The operation runs without the
+    /// registry mutex; admission remains closed through this token. Any error
+    /// or unwind poisons the gate, so a partially changed external mapping can
+    /// never be followed by guest re-entry.
+    /// Success requires the memory owner's opaque installed-view receipt. Its
+    /// private constructor binds generation advancement to retained backing and
+    /// pointer-provenance metadata instead of trusting an arbitrary callback.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the mapping publisher is deliberately non-activating"
+        )
+    )]
+    pub(crate) fn publish(
+        &mut self,
+        origin: impl Into<EntryOrigin>,
+        expected: MappingGeneration,
+        operation: impl FnOnce(MappingGeneration) -> crate::Result<crate::memory::InstalledMapping>,
+    ) -> GateResult<MappingGeneration> {
+        let origin = origin.into();
+        let next = {
+            let mut state = self.gate.state.lock().unwrap();
+            state.check()?;
+            assert_eq!(state.admission, Admission::Closed(self.id));
+            if state.generation != expected {
+                let failure = state.fail(
+                    origin.clone(),
+                    protocol_failure("staged mapping generation changed before publication"),
+                );
+                let sender = state.changed();
+                drop(state);
+                notify(sender);
+                return Err(failure);
+            }
+            if self.published {
+                let failure = state.fail(
+                    origin.clone(),
+                    protocol_failure("mapping generation published twice"),
+                );
+                let sender = state.changed();
+                drop(state);
+                notify(sender);
+                return Err(failure);
+            }
+            if state.retained_operands != 0 {
+                let failure = state.fail(
+                    origin.clone(),
+                    protocol_failure("mapping publication has retained host operands"),
+                );
+                let sender = state.changed();
+                drop(state);
+                notify(sender);
+                return Err(failure);
+            }
+            let Some(next) = state.generation.next() else {
+                let failure = state.fail(
+                    origin.clone(),
+                    protocol_failure("mapping generation exhausted"),
+                );
+                let sender = state.changed();
+                drop(state);
+                notify(sender);
+                return Err(failure);
+            };
+            next
+        };
+
+        let result = catch_unwind(AssertUnwindSafe(|| operation(next)));
+        let installed = match result {
+            Ok(Ok(installed)) => installed,
+            Ok(Err(error)) => return Err(self.gate.poison(origin, error)),
+            Err(payload) => {
+                self.gate
+                    .poison(origin, protocol_failure("mapping publication unwound"));
+                resume_unwind(payload);
+            }
+        };
+        if installed.generation() != next {
+            return Err(self.gate.poison(
+                origin,
+                protocol_failure("installed mapping receipt has the wrong generation"),
+            ));
+        }
+        let sender = {
+            let mut state = self.gate.state.lock().unwrap();
+            state.check()?;
+            assert_eq!(state.admission, Admission::Closed(self.id));
+            assert_eq!(state.generation.next(), Some(next));
+            state.generation = next;
+            self.published = true;
+            state.changed()
+        };
+        notify(sender);
+        Ok(next)
+    }
 }
 
 impl Drop for Closed {
@@ -1172,6 +1404,79 @@ mod tests {
         entry.withdraw();
         entry.acknowledge(Ok(())).unwrap();
         drop(gate.try_copy(None).unwrap().unwrap());
+    }
+
+    #[test]
+    fn successful_publication_advances_exactly_one_admission_generation() {
+        let gate = EntryGate::new();
+        let expected = gate.generation().unwrap();
+        let mut closed = block_on(gate.try_close().unwrap().unwrap().finish()).unwrap();
+        let generation = closed
+            .publish(None, expected, |next| {
+                assert_eq!(next.get(), expected.get() + 1);
+                Ok(crate::memory::InstalledMapping::gate_control(next))
+            })
+            .unwrap();
+        assert_eq!(generation.get(), 1);
+        assert_eq!(gate.test_state().generation, generation);
+        drop(closed);
+
+        let copy = gate.try_copy(None).unwrap().unwrap();
+        assert_eq!(copy.generation, generation);
+        drop(copy);
+    }
+
+    #[test]
+    fn failed_or_unwound_publication_never_reopens_an_usable_gate() {
+        for unwinds in [false, true] {
+            let gate = EntryGate::new();
+            let expected = gate.generation().unwrap();
+            let mut closed = block_on(gate.try_close().unwrap().unwrap().finish()).unwrap();
+            let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                closed.publish(None, expected, |next| {
+                    if unwinds {
+                        panic!("injected mapping publication unwind");
+                    }
+                    let _ = next;
+                    Err(protocol_failure("injected mapping publication failure"))
+                })
+            }));
+            if unwinds {
+                assert!(outcome.is_err());
+            } else {
+                assert!(outcome.unwrap().is_err());
+            }
+            assert_eq!(gate.test_state().generation, expected);
+            assert!(gate.pending_failure().is_some());
+            drop(closed);
+            assert!(gate.try_copy(None).is_err());
+            assert!(gate.try_close().is_err());
+        }
+    }
+
+    #[test]
+    fn stale_publication_generation_refuses_before_running_the_operation() {
+        let gate = EntryGate::new();
+        let stale = gate.generation().unwrap();
+        let mut closed = block_on(gate.try_close().unwrap().unwrap().finish()).unwrap();
+        closed
+            .publish(None, stale, |next| {
+                Ok(crate::memory::InstalledMapping::gate_control(next))
+            })
+            .unwrap();
+        drop(closed);
+
+        let mut closed = block_on(gate.try_close().unwrap().unwrap().finish()).unwrap();
+        let called = std::cell::Cell::new(false);
+        let result = closed.publish(None, stale, |next| {
+            called.set(true);
+            Ok(crate::memory::InstalledMapping::gate_control(next))
+        });
+        assert!(result.is_err());
+        assert!(!called.get());
+        assert_eq!(gate.test_state().generation.get(), 1);
+        drop(closed);
+        assert!(gate.try_copy(None).is_err());
     }
 
     #[test]
