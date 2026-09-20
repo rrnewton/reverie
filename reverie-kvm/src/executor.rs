@@ -501,6 +501,8 @@ fn execute_basic_syscall_inner(
     } else if number == libc::SYS_select as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         select(memory, state, args)
+    } else if number == libc::SYS_pselect6 as u64 {
+        pselect6_validation_preflight(memory, args)
     } else if number == libc::SYS_poll as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         poll(memory, state, args)
@@ -7872,6 +7874,87 @@ fn remove_inserted_file(state: &mut LoadedStaticElf, fd: libc::c_int) {
     state.fd_object_inodes.remove(&fd);
     state.cloexec_fds.remove(&fd);
     cleanup_fd_object_inodes(state);
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Pselect6SigmaskArg {
+    sigmask: u64,
+    sigsetsize: u64,
+}
+
+/// Reproduces Linux's non-mutating `pselect6` argument-validation boundary.
+///
+/// Detcore owns deterministic retries, virtual deadlines, and temporary signal
+/// masks. The KVM executor cannot yet service a valid probe without crossing
+/// that scheduler boundary, so it fails closed with `ENOSYS` only after every
+/// access and value check that Linux performs before selecting descriptors.
+/// In particular, this lets Detcore's deliberately malformed-timeout probe
+/// distinguish an inaccessible outer wrapper from an inaccessible inner mask.
+/// This helper never calls host `pselect`, installs a host signal mask, writes
+/// guest memory, or mutates executor state.
+fn pselect6_validation_preflight(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+    // Linux first copies the complete outer { sigmask, sigsetsize } wrapper.
+    let sigmask_argument = if args[5] == 0 {
+        None
+    } else {
+        match read_guest_struct::<Pselect6SigmaskArg>(memory, args[5]) {
+            Ok(argument) => Some(argument),
+            Err(error) => return error,
+        }
+    };
+
+    // do_pselect reads and validates the timeout before inspecting the inner
+    // signal-mask pointer or size.
+    if args[4] != 0 {
+        let timeout = match read_guest_struct::<libc::timespec>(memory, args[4]) {
+            Ok(timeout) => timeout,
+            Err(error) => return error,
+        };
+        if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+            return negative_errno(libc::EINVAL);
+        }
+    }
+
+    // set_user_sigmask ignores sigsetsize when the inner pointer is NULL.
+    if let Some(argument) = sigmask_argument
+        && argument.sigmask != 0
+    {
+        if argument.sigsetsize != KERNEL_SIGSET_SIZE as u64 {
+            return negative_errno(libc::EINVAL);
+        }
+        let mut mask = [0; KERNEL_SIGSET_SIZE];
+        if memory.user().read(argument.sigmask, &mut mask).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
+    }
+
+    // The raw syscall argument is an `int`; Linux observes its low 32 bits.
+    let nfds = args[0] as libc::c_int;
+    if nfds < 0 {
+        return negative_errno(libc::EINVAL);
+    }
+
+    // Linux clamps this copy to the live fd-table capacity, which KVM does not
+    // model yet. One machine word is exact for every fresh Linux table and for
+    // Detcore's internal pselect probes. Refuse larger calls before touching
+    // their fd sets rather than over-reading up to GUEST_NOFILE_LIMIT and
+    // manufacturing an EFAULT that Linux would not return.
+    if nfds > u64::BITS as libc::c_int {
+        return negative_errno(libc::ENOSYS);
+    }
+    let word_count = (nfds as usize).div_ceil(u64::BITS as usize);
+    let byte_length = word_count * std::mem::size_of::<u64>();
+    let mut fd_set = vec![0; byte_length];
+    if byte_length != 0 {
+        for address in &args[1..4] {
+            if *address != 0 && memory.user().read(*address, &mut fd_set).is_err() {
+                return negative_errno(libc::EFAULT);
+            }
+        }
+    }
+
+    negative_errno(libc::ENOSYS)
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -22872,6 +22955,232 @@ mod tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn pselect6_preflight_preserves_linux_validation_order_and_guest_state() {
+        const OUTER: u64 = 0x100;
+        const TIMEOUT: u64 = 0x180;
+        const SIGNAL_MASK: u64 = 0x200;
+        const READ_SET: u64 = 0x280;
+        const WRITE_SET: u64 = 0x300;
+        const EXCEPT_SET: u64 = 0x380;
+        const BAD_ADDRESS: u64 = 0x00f0_0000;
+
+        fn assert_refused_without_mutation(
+            memory: &mut GuestMemory,
+            state: &mut LoadedStaticElf,
+            args: [u64; 6],
+        ) {
+            let mut memory_before = vec![0; PAGE_SIZE as usize];
+            memory.read(0, &mut memory_before).unwrap();
+            let blocked_before = test_blocked_mask(state);
+            let files_before = state.files.keys().copied().collect::<Vec<_>>();
+            assert_eq!(
+                syscall_result(memory, state, libc::SYS_pselect6, args),
+                negative_errno(libc::ENOSYS)
+            );
+            let mut memory_after = vec![0; PAGE_SIZE as usize];
+            memory.read(0, &mut memory_after).unwrap();
+            assert_eq!(memory_after, memory_before);
+            assert_eq!(test_blocked_mask(state), blocked_before);
+            assert_eq!(
+                state.files.keys().copied().collect::<Vec<_>>(),
+                files_before
+            );
+        }
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let valid_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let malformed_timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 1_000_000_000,
+        };
+        assert_eq!(write_struct(&mut memory, TIMEOUT, &malformed_timeout), 0);
+
+        // The complete outer wrapper is copied before even an invalid timeout
+        // is inspected. Cover both a wholly inaccessible wrapper and a split
+        // wrapper whose first word is readable at the mapping boundary.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [0, 0, 0, 0, TIMEOUT, BAD_ADDRESS],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        memory
+            .write(PAGE_SIZE - 8, &SIGNAL_MASK.to_ne_bytes())
+            .unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [0, 0, 0, 0, TIMEOUT, PAGE_SIZE - 8],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+
+        // Timeout access precedes inner-mask size validation.
+        let bad_size = Pselect6SigmaskArg {
+            sigmask: SIGNAL_MASK,
+            sigsetsize: 0,
+        };
+        assert_eq!(write_struct(&mut memory, OUTER, &bad_size), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [0, 0, 0, 0, BAD_ADDRESS, OUTER],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+
+        // Timeout value validation precedes inner-mask access.
+        let inaccessible_mask = Pselect6SigmaskArg {
+            sigmask: BAD_ADDRESS,
+            sigsetsize: KERNEL_SIGSET_SIZE as u64,
+        };
+        assert_eq!(write_struct(&mut memory, OUTER, &inaccessible_mask), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [0, 0, 0, 0, TIMEOUT, OUTER],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+
+        assert_eq!(write_struct(&mut memory, TIMEOUT, &valid_timeout), 0);
+        let wrong_size_and_inaccessible = Pselect6SigmaskArg {
+            sigmask: BAD_ADDRESS,
+            sigsetsize: (KERNEL_SIGSET_SIZE - 1) as u64,
+        };
+        assert_eq!(
+            write_struct(&mut memory, OUTER, &wrong_size_and_inaccessible),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [0, 0, 0, 0, TIMEOUT, OUTER],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(write_struct(&mut memory, OUTER, &inaccessible_mask), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [0, 0, 0, 0, TIMEOUT, OUTER],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+
+        // Linux ignores sigsetsize when the inner pointer is NULL. Validation
+        // therefore advances to nfds, and zero-length fd sets ignore pointers.
+        let null_mask_bad_size = Pselect6SigmaskArg {
+            sigmask: 0,
+            sigsetsize: u64::MAX,
+        };
+        assert_eq!(write_struct(&mut memory, OUTER, &null_mask_bad_size), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [
+                    u64::MAX,
+                    BAD_ADDRESS,
+                    BAD_ADDRESS,
+                    BAD_ADDRESS,
+                    TIMEOUT,
+                    OUTER
+                ],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_refused_without_mutation(
+            &mut memory,
+            &mut state,
+            [0, BAD_ADDRESS, BAD_ADDRESS, BAD_ADDRESS, TIMEOUT, OUTER],
+        );
+
+        // Up to one machine word, each non-null fd set must be readable before
+        // the deliberately unsupported execution boundary is returned.
+        memory.write(READ_SET, &0_u64.to_ne_bytes()).unwrap();
+        memory.write(WRITE_SET, &0_u64.to_ne_bytes()).unwrap();
+        memory.write(EXCEPT_SET, &0_u64.to_ne_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [1, BAD_ADDRESS, 0, 0, TIMEOUT, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [1, READ_SET, BAD_ADDRESS, 0, TIMEOUT, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pselect6,
+                [1, READ_SET, WRITE_SET, BAD_ADDRESS, TIMEOUT, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+
+        // Exactly 64 fds still copies one eight-byte word. Calls above that
+        // range are refused before fd-set access because KVM does not yet model
+        // Linux's live fd-table capacity and must not guess a copy length.
+        assert_refused_without_mutation(
+            &mut memory,
+            &mut state,
+            [64, PAGE_SIZE - 8, 0, 0, TIMEOUT, 0],
+        );
+        assert_refused_without_mutation(
+            &mut memory,
+            &mut state,
+            [65, BAD_ADDRESS, BAD_ADDRESS, BAD_ADDRESS, TIMEOUT, 0],
+        );
+
+        // A fully valid argument set reaches the explicit fail-closed boundary
+        // without changing any guest byte. A NULL timeout (an infinite wait in
+        // Linux) reaches the same boundary immediately and never host-blocks.
+        memory.write(SIGNAL_MASK, &[0; KERNEL_SIGSET_SIZE]).unwrap();
+        let valid_mask = Pselect6SigmaskArg {
+            sigmask: SIGNAL_MASK,
+            sigsetsize: KERNEL_SIGSET_SIZE as u64,
+        };
+        assert_eq!(write_struct(&mut memory, OUTER, &valid_mask), 0);
+        assert_refused_without_mutation(
+            &mut memory,
+            &mut state,
+            [1, READ_SET, WRITE_SET, EXCEPT_SET, TIMEOUT, OUTER],
+        );
+        assert_refused_without_mutation(&mut memory, &mut state, [0, 0, 0, 0, 0, OUTER]);
     }
 
     #[test]
