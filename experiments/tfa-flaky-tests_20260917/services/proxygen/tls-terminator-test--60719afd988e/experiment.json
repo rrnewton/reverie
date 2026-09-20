@@ -1,0 +1,287 @@
+{
+  "schema_version": 2,
+  "record_type": "TFA_TARGET_EXPERIMENT",
+  "contract": {
+    "commit": "9d7f603c43618715b9245c74acb3e164c17d2ae8",
+    "path": "ai_docs/tfa-acceptance-bracket-2026-09-17.md",
+    "blob": "4a53f0c25623ad6371ee86b4556adada1218745d"
+  },
+  "identity": {
+    "service": "proxygen",
+    "canonical_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+    "target_key_sha256": "60719afd988eee8c2db83c049a52f1d217db38984e103b124eea11f2cbce04f2",
+    "target_directory": "services/proxygen/tls-terminator-test--60719afd988e",
+    "testinfra_id": "281475238796418",
+    "test_name": "TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+    "source_label_qualifier": null,
+    "test_selector": {
+      "kind": "EXACT_FILTER",
+      "flag": "--exact",
+      "value": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test - TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect"
+    },
+    "build_mode_selector": [
+      "@fbcode//mode/opt"
+    ],
+    "invoked_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+    "standalone_argv": [
+      "buck",
+      "test",
+      "@fbcode//mode/opt",
+      "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+      "--",
+      "--exact",
+      "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test - TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+      "--run-disabled"
+    ],
+    "experiment_id": "proxygen/tls-terminator-test--60719afd988e",
+    "alias_resolution": {
+      "input_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+      "resolved_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+      "method": "buck2-targets-show-output-from-pinned-source",
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "evidence": "buck2 targets --show-output @fbcode//mode/opt resolved the already-built target to buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test; pre-run verification found an executable x86-64 ELF of 991876712 bytes with SHA-256 e7a5278312bb9daa6d38a9a03cc2001cd31f8c64a92791d92d5aa47c20f66566."
+    }
+  },
+  "candidate_ranking": {
+    "pfs": {
+      "value": 0.2344,
+      "displayed_percent": "23.44%",
+      "partition": "2026-09-17",
+      "metric": "probability_of_flaky_state",
+      "role": "ranking_only",
+      "may_parameterize_seed_budget": false
+    },
+    "native_failure_rate": {
+      "failures": 23,
+      "executed": 96,
+      "rate": 0.23958333333333334,
+      "rate_fraction": "23/96",
+      "displayed_percent": "23.96%",
+      "window": "trailing one week; latest up to 100 final outcomes",
+      "limit": 100,
+      "final_only": true,
+      "purposes": [
+        "CONTINUOUS",
+        "STRESS_RUN",
+        "STRESS_RUN_NEW_TEST"
+      ],
+      "pass_statuses": [
+        "PASSED"
+      ],
+      "failure_statuses": [
+        "FAILED",
+        "FATAL",
+        "TIMEOUT"
+      ],
+      "excluded_statuses": [
+        "OMITTED",
+        "SKIPPED",
+        "INFRA_FAILURE"
+      ],
+      "source": "meta testinfra.result history",
+      "role": "planning_prior_only"
+    }
+  },
+  "plan": {
+    "plan_id": "proxygen-tls-terminator-opt-direct-elf-ptrace-strict-chaos-v1",
+    "plan_sha256": "b2a7b70cc3c64638991c70366916251835fe8ea11dc80f8ec43d319a6514396d",
+    "sealed_at": "2026-09-20T12:53:30Z",
+    "sealed_by": "codex-tfa",
+    "campaign_owner_identity": "rrnewton",
+    "authorized_routes": [
+      {
+        "route_id": "proxygen-tls-terminator-opt-direct-elf-buck-out-bind",
+        "route_sha256": "344ded73e0b3f77a6b347f213e22e1503cbce81f6d629959f31013073d74b8b7",
+        "fallback_of": null,
+        "authorized_cell_ids": [
+          "proxygen-tls-terminator-opt-direct-elf-ptrace-strict-chaos"
+        ],
+        "canonical_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test - TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/opt"
+        ],
+        "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "build_argv": [
+          "buck",
+          "test",
+          "@fbcode//mode/opt",
+          "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+          "--",
+          "--exact",
+          "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test - TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+          "--run-disabled"
+        ],
+        "launch_argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "900",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-proxygen-tls-terminator-verify-878473-1789908809866238061",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test",
+          "--gtest_filter=TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+          "--gtest_also_run_disabled_tests"
+        ],
+        "repeat_matcher": {
+          "kind": "BUILTIN_VERIFY",
+          "comparison": "BitwiseInfoV1"
+        },
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "notes": "Use the exact already-built opt-mode ELF; no build or fallback route is authorized. The direct GoogleTest selector is --gtest_filter=TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect; --gtest_also_run_disabled_tests preserves the registry standalone invocation run-disabled setting. The same-path Buck output mount exposes the nested EdenFS redirection in the guest. SAFEHERMIT_LOG_ROOT is the quota-enabled loopback mnt/safehermit; --keep-logs directs both verifier logs into the separately precreated live 8G qgroup at /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-proxygen-tls-terminator-verify-878473-1789908809866238061."
+      }
+    ],
+    "target_oracle": {
+      "oracle_id": "proxygen-tls-terminator-gtest-exact-v1",
+      "defined_before_runs": true,
+      "unmodified": true,
+      "selected_test_executed_predicate": "GoogleTest output contains [ RUN      ] TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect and its summary reports exactly one test from the parameterized TlsTerminatorTest suite.",
+      "pass_predicate": "The selected test line is [       OK ] TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect, the GoogleTest summary reports 1 test passed, and the guest exits 0 without a signal.",
+      "fail_classes": [
+        {
+          "failure_class_id": "gtest-selected-test-failure",
+          "target_owned": true,
+          "predicate": "The selected test line is [  FAILED  ] TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect and the GoogleTest summary reports 1 failed test with a nonzero guest exit, excluding Hermit, wrapper, dependency, infrastructure, or outer-timeout failures."
+        }
+      ],
+      "timeout_policy": {
+        "target_timeout_can_fail": false,
+        "target_timeout_predicate": null,
+        "target_timeout_failure_class_id": null,
+        "outer_timeout_is_censored": true
+      }
+    },
+    "measurement_design": {
+      "purpose": "EXISTENCE_DISCOVERY",
+      "swept_coordinate": {
+        "flag": "--sched-seed",
+        "domain": "unsigned 64-bit integers; explicit prefix 0 through 14",
+        "scheduler_modes": []
+      },
+      "fixed_seed_roots": {
+        "--seed": 0,
+        "--rng-seed": 0,
+        "--sched-seed": null,
+        "--fuzz-seed": 0
+      },
+      "seed_population": {
+        "kind": "EXPLICIT_VALUES",
+        "values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14
+        ]
+      },
+      "selection_order": {
+        "kind": "EXPLICIT",
+        "seed_values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14
+        ]
+      },
+      "without_replacement": true,
+      "design_basis": {
+        "kind": "RATE_BOUND",
+        "expected_hermit_fail_probability": 0.23958333333333334,
+        "provenance_kind": "NATIVE_EMPIRICAL_RATE",
+        "provenance": "The fixed cohort records 23 failures among 96 final native TestInfra outcomes. This is used only as a non-equivalent planning prior for the Hermit seed search.",
+        "equivalence_to_hermit": false,
+        "max_miss_probability": 0.05
+      },
+      "miss_probability_override": null,
+      "required_valid_seed_tuples": 11,
+      "max_attempted_seed_tuples": 15,
+      "stop_rule": "BOTH_ARMS_THEN_REPEAT",
+      "repeat_min_executions_per_arm": 2,
+      "repeat_attempt_cap": 2,
+      "independence_assumption": "Distinct scheduler seeds are treated as independent discovery draws only for the predeclared planning calculation; the native rate is not asserted to equal the Hermit seed-outcome rate."
+    },
+    "resource_bounds": {
+      "wall_seconds": 900,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "stderr_bytes": 67108864,
+      "retained_log_bytes": 67108864,
+      "disk_guard": "8G"
+    },
+    "artifact_policy": {
+      "scratch_root": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit",
+      "terminal_evidence_must_be_durable": true,
+      "digest_algorithm": "sha256"
+    }
+  },
+  "plan_receipt": null,
+  "attempt_state": "PLANNED",
+  "cells": [],
+  "events": [],
+  "samples": [],
+  "matchers": [],
+  "outcome_history": [],
+  "current_outcome": null
+}
