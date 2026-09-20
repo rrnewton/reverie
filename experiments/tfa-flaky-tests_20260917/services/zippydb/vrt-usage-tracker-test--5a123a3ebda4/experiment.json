@@ -407,12 +407,499 @@
       "digest_algorithm": "sha256"
     }
   },
-  "plan_receipt": null,
-  "attempt_state": "PLANNED",
-  "cells": [],
-  "events": [],
-  "samples": [],
-  "matchers": [],
-  "outcome_history": [],
-  "current_outcome": null
+    "plan_receipt": {
+      "commit": "55f87c05072a717bf227e4948227e4a101dcce7d",
+      "path": "services/zippydb/vrt-usage-tracker-test--5a123a3ebda4/experiment.json",
+      "blob": "2e7862f73fb9f8b13a2553b33bdf26cf19d84b37"
+    },
+    "attempt_state": "MATERIAL",
+    "cells": [
+      {
+        "cell_id": "zippydb-vrt-opt-direct-elf-ptrace-strict-chaos",
+        "route_id": "zippydb-vrt-opt-direct-elf-buck-out-bind",
+        "route_sha256": "e7bac9a0455fe6594f612401e0aa79ddd78822333fb7024858644f5086f97876",
+        "plan_sha256": "e19582a19dddd8beff7196f6d18dc3a4112b7140e0c4b7e5c45b75d8e9410dc5",
+        "frozen_at": "2026-09-20T05:39:44Z",
+        "cell_sha256": "e5b6e8b7e56a7d3f87239f41d61036e8d914468c21b0258f835a0203a2cbf049",
+        "canonical_target": "fbcode//zippydb/common/tests:vrt_usage_tracker_test",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//zippydb/common/tests:vrt_usage_tracker_test - VRTUsageTrackerTest.BumpWithIOTagTest"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/opt"
+        ],
+        "target_source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "hermit_source_revision": "79da523137dbac400faca6130593361b58a01468",
+        "hermit_binary_sha256": "000eeb5e59345b6c9c14bf194d6d5b392294a52d25d40209e553376f3a84764a",
+        "test_artifact_sha256": "2260515c49fefee45b6901a4e150e6bca98320202bf83f7b03d3fe6bb5f1abf7",
+        "guest": {
+          "argv": [
+            "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0efe3c206fb136e0/zippydb/common/tests/__vrt_usage_tracker_test__/vrt_usage_tracker_test",
+            "--gtest_filter=VRTUsageTrackerTest.BumpWithIOTagTest"
+          ],
+          "environment": {
+            "LC_ALL": "C",
+            "TZ": "UTC"
+          },
+          "mounts": [
+            "type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+          ],
+          "immutable_inputs": [
+            {
+              "artifact_id": "vrt-opt-test-elf",
+              "kind": "OTHER",
+              "storage": "LOCAL_IGNORED",
+              "locator": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0efe3c206fb136e0/zippydb/common/tests/__vrt_usage_tracker_test__/vrt_usage_tracker_test",
+              "sha256": "2260515c49fefee45b6901a4e150e6bca98320202bf83f7b03d3fe6bb5f1abf7",
+              "bytes": 1106613656,
+              "capture_limit_bytes": 1106613656,
+              "truncated": false,
+              "media_type": "application/x-executable"
+            }
+          ],
+          "working_directory": "/home/newton/work/dev-hermit/worktrees/slots/hermit-904-tfa-layout/experiments/tfa-flaky-tests_20260917"
+        },
+        "hermit": {
+          "backend": "ptrace",
+          "strict": true,
+          "chaos": true,
+          "relaxations": [],
+          "argv": [
+            "bin/safehermit",
+            "--sh-report",
+            "{SAFEHERMIT_REPORT}",
+            "--sh-deadline",
+            "900",
+            "--sh-max-log-bytes",
+            "67108864",
+            "--sh-disk-limit",
+            "8G",
+            "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+            "run",
+            "--backend",
+            "ptrace",
+            "--strict",
+            "--chaos",
+            "--base-env=minimal",
+            "--env",
+            "LC_ALL=C",
+            "--env",
+            "TZ=UTC",
+            "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+            "--seed",
+            "0",
+            "--rng-seed",
+            "0",
+            "--fuzz-seed",
+            "0",
+            "--sched-seed",
+            "{SWEEP}",
+            "--sched-heuristic",
+            "random",
+            "--max-timeslice",
+            "200000000",
+            "--verify",
+            "--verify-strict",
+            "--verify-allow",
+            "both",
+            "--",
+            "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0efe3c206fb136e0/zippydb/common/tests/__vrt_usage_tracker_test__/vrt_usage_tracker_test",
+            "--gtest_filter=VRTUsageTrackerTest.BumpWithIOTagTest"
+          ],
+          "scheduler_heuristic": "random",
+          "swept_coordinate": "--sched-seed",
+          "fixed_seed_roots": {
+            "--seed": 0,
+            "--rng-seed": 0,
+            "--sched-seed": null,
+            "--fuzz-seed": 0
+          }
+        },
+        "timing": {
+          "requested_max_timeslice": 200000000,
+          "effective_max_timeslice": 200000000
+        },
+        "pmu": {
+          "available": true,
+          "effective_timer": "RCB",
+          "fallback_recorded": false
+        },
+        "host": {
+          "hostname": "devbig030.atn3.facebook.com",
+          "kernel": "Linux 6.13.2-0_fbk17_hardened_0_g2ae417e0caa0",
+          "architecture": "x86_64",
+          "cpu": "AMD EPYC 9D85 158-Core Processor",
+          "capabilities": {
+            "pmu": true,
+            "mount_namespace": true,
+            "buck_out_bind": true,
+            "safehermit_disk_qgroup": true
+          }
+        },
+        "oracle_id": "zippydb-vrt-gtest-exact-v1",
+        "resource_bounds": {
+          "wall_seconds": 900,
+          "memory_bytes": 17179869184,
+          "swap_bytes": 0,
+          "stderr_bytes": 67108864,
+          "retained_log_bytes": 67108864,
+          "disk_guard": "8G"
+        }
+      }
+    ],
+    "events": [
+      {
+        "event_id": "event-seed-000-discovery",
+        "kind": "HERMIT_EXECUTION",
+        "plan_sha256": "e19582a19dddd8beff7196f6d18dc3a4112b7140e0c4b7e5c45b75d8e9410dc5",
+        "route_id": "zippydb-vrt-opt-direct-elf-buck-out-bind",
+        "route_sha256": "e7bac9a0455fe6594f612401e0aa79ddd78822333fb7024858644f5086f97876",
+        "canonical_target": "fbcode//zippydb/common/tests:vrt_usage_tracker_test",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//zippydb/common/tests:vrt_usage_tracker_test - VRTUsageTrackerTest.BumpWithIOTagTest"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/opt"
+        ],
+        "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "cell_id": "zippydb-vrt-opt-direct-elf-ptrace-strict-chaos",
+        "cell_sha256": "e5b6e8b7e56a7d3f87239f41d61036e8d914468c21b0258f835a0203a2cbf049",
+        "measurement_role": "DISCOVERY",
+        "started_at": "2026-09-20T05:45:53Z",
+        "finished_at": "2026-09-20T05:46:33Z",
+        "argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "services/zippydb/vrt-usage-tracker-test--5a123a3ebda4/evidence/seed-000-discovery.safehermit.txt",
+          "--sh-deadline",
+          "900",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0efe3c206fb136e0/zippydb/common/tests/__vrt_usage_tracker_test__/vrt_usage_tracker_test",
+          "--gtest_filter=VRTUsageTrackerTest.BumpWithIOTagTest"
+        ],
+        "result": {
+          "exit_code": 1,
+          "signal": null,
+          "timed_out": false,
+          "timeout_origin": "NONE",
+          "guest_started": true,
+          "selected_test_executed_count": 1,
+          "target_oracle": "AMBIGUOUS",
+          "failure_class_id": null,
+          "harness_status": "ERROR",
+          "diagnostic": "Both strict-verify replicas started VRTUsageTrackerTest.BumpWithIOTagTest, but their stdout and canonical INFO streams diverged; BitwiseInfoV1 reported nondeterministic with no relaxations."
+        },
+        "invocation_id": "verify-seed-000-20260920T054553Z-2384200",
+        "replica_index": 1,
+        "seed": {
+          "flag": "--sched-seed",
+          "value": 0
+        },
+        "effective_config_sha256": "e5b6e8b7e56a7d3f87239f41d61036e8d914468c21b0258f835a0203a2cbf049",
+        "artifacts": [
+          {
+            "artifact_id": "vrt-seed-000-stdout",
+            "kind": "STDOUT",
+            "storage": "TRACKED",
+            "locator": "services/zippydb/vrt-usage-tracker-test--5a123a3ebda4/evidence/seed-000-discovery.stdout.txt",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0,
+            "capture_limit_bytes": 67108864,
+            "truncated": false,
+            "media_type": "text/plain"
+          },
+          {
+            "artifact_id": "vrt-seed-000-stderr",
+            "kind": "STDERR",
+            "storage": "TRACKED",
+            "locator": "services/zippydb/vrt-usage-tracker-test--5a123a3ebda4/evidence/seed-000-discovery.stderr.txt",
+            "sha256": "6ef9174978503ea737c7303947f2e4badaac8393fd1d49b8347c016a4a44b018",
+            "bytes": 97547,
+            "capture_limit_bytes": 67108864,
+            "truncated": false,
+            "media_type": "text/plain"
+          },
+          {
+            "artifact_id": "vrt-seed-000-result",
+            "kind": "RESULT",
+            "storage": "TRACKED",
+            "locator": "services/zippydb/vrt-usage-tracker-test--5a123a3ebda4/evidence/seed-000-discovery.result.json",
+            "sha256": "d3c4b28028f229c9fca73191db6a2669db4867244be09d7c7bae1ac22a84bfae",
+            "bytes": 2023,
+            "capture_limit_bytes": 67108864,
+            "truncated": false,
+            "media_type": "application/json"
+          },
+          {
+            "artifact_id": "vrt-seed-000-safehermit",
+            "kind": "SAFEHERMIT_REPORT",
+            "storage": "TRACKED",
+            "locator": "services/zippydb/vrt-usage-tracker-test--5a123a3ebda4/evidence/seed-000-discovery.safehermit.txt",
+            "sha256": "345980f65210b5a3dab12fa605fad34f7286a78fd214015f1e1a0cd356fe1751",
+            "bytes": 1799,
+            "capture_limit_bytes": 67108864,
+            "truncated": false,
+            "media_type": "text/plain"
+          },
+          {
+            "artifact_id": "vrt-seed-000-divergence",
+            "kind": "DIAGNOSTIC",
+            "storage": "TRACKED",
+            "locator": "services/zippydb/vrt-usage-tracker-test--5a123a3ebda4/evidence/seed-000-discovery.verify-divergence.txt",
+            "sha256": "8a88a530f61fdee2f2b33f4186988880e15f4e5227e8bf9de3f2d266d460555b",
+            "bytes": 2221,
+            "capture_limit_bytes": 67108864,
+            "truncated": false,
+            "media_type": "text/plain"
+          },
+          {
+            "artifact_id": "vrt-seed-000-run1-full-info",
+            "kind": "CANONICAL_INFO",
+            "storage": "LOCAL_IGNORED",
+            "locator": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-safehermit-20260920T054553Z-2384200-2384882-1789883154032374843/verify-run1.info.log",
+            "sha256": "9f140022bf61cd3ae182bd99d62b2878244e9d0cbc74ca420a20779e6eddba51",
+            "bytes": 196217277,
+            "capture_limit_bytes": 268435456,
+            "truncated": false,
+            "media_type": "text/plain"
+          },
+          {
+            "artifact_id": "vrt-seed-000-run2-full-info",
+            "kind": "CANONICAL_INFO",
+            "storage": "LOCAL_IGNORED",
+            "locator": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-safehermit-20260920T054553Z-2384200-2384882-1789883154032374843/verify-run2.info.log",
+            "sha256": "50b8bfa2b314c7d8d3f302fb5a2a862b6376ffdf6356ed55211bb3a3835e6cd6",
+            "bytes": 28010755,
+            "capture_limit_bytes": 67108864,
+            "truncated": false,
+            "media_type": "text/plain"
+          }
+        ]
+      }
+    ],
+    "samples": [
+      {
+        "sample_id": "sample-seed-000",
+        "cell_id": "zippydb-vrt-opt-direct-elf-ptrace-strict-chaos",
+        "seed": {
+          "flag": "--sched-seed",
+          "value": 0
+        },
+        "selection_index": 0,
+        "status": "CENSORED",
+        "target_outcome": null,
+        "failure_class_id": null,
+        "censor_reason": "The two built-in strict-verify replicas diverged in selected-test output and canonical INFO, so no agreeing target outcome exists for this tuple.",
+        "execution_event_ids": [
+          "event-seed-000-discovery"
+        ]
+      }
+    ],
+    "matchers": [],
+    "outcome_history": [
+      {
+        "classification_id": "classification-not-determinable-20260920T055215Z",
+        "classified_at": "2026-09-20T05:52:15Z",
+        "supersedes": null,
+        "evidence_refs": [
+          "event-seed-000-discovery",
+          "sample-seed-000",
+          "vrt-seed-000-divergence",
+          "vrt-seed-000-safehermit"
+        ],
+        "kind": "NOT-DETERMINABLE",
+        "route_evidence": [
+          {
+            "route_id": "zippydb-vrt-opt-direct-elf-buck-out-bind",
+            "cell_ids": [
+              "zippydb-vrt-opt-direct-elf-ptrace-strict-chaos"
+            ],
+            "evidence_event_ids": [
+              "event-seed-000-discovery"
+            ]
+          }
+        ],
+        "inspected_commands": [
+          [
+            "bin/safehermit",
+            "--sh-report",
+            "services/zippydb/vrt-usage-tracker-test--5a123a3ebda4/evidence/seed-000-discovery.safehermit.txt",
+            "--sh-deadline",
+            "900",
+            "--sh-max-log-bytes",
+            "67108864",
+            "--sh-disk-limit",
+            "8G",
+            "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+            "run",
+            "--backend",
+            "ptrace",
+            "--strict",
+            "--chaos",
+            "--base-env=minimal",
+            "--env",
+            "LC_ALL=C",
+            "--env",
+            "TZ=UTC",
+            "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+            "--seed",
+            "0",
+            "--rng-seed",
+            "0",
+            "--fuzz-seed",
+            "0",
+            "--sched-seed",
+            "0",
+            "--sched-heuristic",
+            "random",
+            "--max-timeslice",
+            "200000000",
+            "--verify",
+            "--verify-strict",
+            "--verify-allow",
+            "both",
+            "--",
+            "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0efe3c206fb136e0/zippydb/common/tests/__vrt_usage_tracker_test__/vrt_usage_tracker_test",
+            "--gtest_filter=VRTUsageTrackerTest.BumpWithIOTagTest"
+          ]
+        ],
+        "inspected_artifacts": [
+          "vrt-seed-000-stderr",
+          "vrt-seed-000-result",
+          "vrt-seed-000-safehermit",
+          "vrt-seed-000-divergence",
+          "vrt-seed-000-run1-full-info",
+          "vrt-seed-000-run2-full-info"
+        ],
+        "missing_or_ambiguous_facts": [
+          "Seed 0 has no single reproducible target outcome because its two strict-verify replicas diverged.",
+          "No distinct valid scheduler seed has established a PASS arm; the only attempted tuple is censored.",
+          "The retained full canonical logs are diagnostic LOCAL_IGNORED evidence and are not durable campaign evidence."
+        ],
+        "measurement_budget_exhausted": false,
+        "pending_in_scope_measurements": [
+          "Select a different predeclared candidate; this target's sweep is stopped after its failed readiness checkpoint."
+        ]
+      }
+    ],
+    "current_outcome": {
+      "classification_id": "classification-not-determinable-20260920T055215Z",
+      "classified_at": "2026-09-20T05:52:15Z",
+      "supersedes": null,
+      "evidence_refs": [
+        "event-seed-000-discovery",
+        "sample-seed-000",
+        "vrt-seed-000-divergence",
+        "vrt-seed-000-safehermit"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "zippydb-vrt-opt-direct-elf-buck-out-bind",
+          "cell_ids": [
+            "zippydb-vrt-opt-direct-elf-ptrace-strict-chaos"
+          ],
+          "evidence_event_ids": [
+            "event-seed-000-discovery"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/zippydb/vrt-usage-tracker-test--5a123a3ebda4/evidence/seed-000-discovery.safehermit.txt",
+          "--sh-deadline",
+          "900",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0efe3c206fb136e0/zippydb/common/tests/__vrt_usage_tracker_test__/vrt_usage_tracker_test",
+          "--gtest_filter=VRTUsageTrackerTest.BumpWithIOTagTest"
+        ]
+      ],
+      "inspected_artifacts": [
+        "vrt-seed-000-stderr",
+        "vrt-seed-000-result",
+        "vrt-seed-000-safehermit",
+        "vrt-seed-000-divergence",
+        "vrt-seed-000-run1-full-info",
+        "vrt-seed-000-run2-full-info"
+      ],
+      "missing_or_ambiguous_facts": [
+        "Seed 0 has no single reproducible target outcome because its two strict-verify replicas diverged.",
+        "No distinct valid scheduler seed has established a PASS arm; the only attempted tuple is censored.",
+        "The retained full canonical logs are diagnostic LOCAL_IGNORED evidence and are not durable campaign evidence."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Select a different predeclared candidate; this target's sweep is stopped after its failed readiness checkpoint."
+      ]
+    }
 }
