@@ -150,11 +150,14 @@ def publish(
                 str(state_dir / "disk.json"),
             ],
         )
+        aggregate_returncode = 0
         for command in commands:
             completed = run(command, env=environment, check=False)
-            if completed.returncode != 0:
-                return completed.returncode if completed.returncode > 0 else 1
-    return 0
+            if completed.returncode != 0 and aggregate_returncode == 0:
+                aggregate_returncode = (
+                    completed.returncode if completed.returncode > 0 else 1
+                )
+    return aggregate_returncode
 
 
 def build_parser() -> argparse.ArgumentParser:

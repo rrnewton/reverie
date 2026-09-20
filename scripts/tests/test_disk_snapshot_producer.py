@@ -131,25 +131,38 @@ def test_producer_runs_exact_commands_serially(tmp_path: Path) -> None:
     assert all(kwargs["check"] is False for _command, kwargs in calls)
 
 
-def test_first_failure_is_closed_and_skips_second_publication(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("returncodes", "expected"),
+    [
+        ([42, 0], 42),
+        ([0, 43], 43),
+        ([42, 43], 42),
+    ],
+)
+def test_each_independent_publication_runs_and_failures_aggregate(
+    tmp_path: Path, returncodes: list[int], expected: int
+) -> None:
     state_root = tmp_path / "state"
     state_root.mkdir()
     calls: list[list[str]] = []
+    remaining = list(returncodes)
 
-    def fail(
+    def run(
         command: list[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[object]:
         calls.append(command)
-        return subprocess.CompletedProcess(command, 42)
+        return subprocess.CompletedProcess(command, remaining.pop(0))
 
     result = publish_disk_snapshots.publish(
         state_root=state_root,
         population_timeout=180,
-        run=fail,
+        run=run,
     )
-    assert result == 42
-    assert len(calls) == 1
+    assert result == expected
+    assert not remaining
+    assert len(calls) == 2
     assert "cache-disk-paths" in calls[0]
+    assert "cache-disk" in calls[1]
 
 
 def test_lock_contention_refuses_without_publishing(tmp_path: Path) -> None:
@@ -273,21 +286,24 @@ def test_check_is_read_only(tmp_path: Path) -> None:
     assert not (state_root / "ignored").exists()
 
 
-def _installer_environment(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
+def _installer_environment(
+    tmp_path: Path, *, preinstall: bool = True
+) -> tuple[dict[str, str], Path, Path, Path]:
     home = tmp_path / "home"
     state_root = home / "work/dev-hermit"
     state_root.mkdir(parents=True)
     libexec = home / ".local/libexec/dev-hermit"
     libexec.mkdir(parents=True)
     bootstrap = libexec / "operational-tool"
-    bootstrap.write_bytes(BOOTSTRAP_SOURCE.read_bytes())
-    bootstrap.chmod(0o555)
     helper_source = tmp_path / "fixture-gh"
     helper_source.write_text("#!/bin/sh\nexit 0\n")
     helper_source.chmod(0o755)
     github_helper = libexec / "gh"
-    github_helper.write_bytes(helper_source.read_bytes())
-    github_helper.chmod(0o555)
+    if preinstall:
+        bootstrap.write_bytes(BOOTSTRAP_SOURCE.read_bytes())
+        bootstrap.chmod(0o555)
+        github_helper.write_bytes(helper_source.read_bytes())
+        github_helper.chmod(0o555)
     fake_bin = tmp_path / "system-bin"
     fake_bin.mkdir()
     log = tmp_path / "systemctl.log"
@@ -297,18 +313,38 @@ def _installer_environment(tmp_path: Path) -> tuple[dict[str, str], Path, Path, 
         "set -eu\n"
         'printf \'%s\\n\' "$*" >> "$SYSTEMCTL_LOG"\n'
         "case \" $* \" in *' status '*) exit 3;; esac\n"
+        'case "${FAKE_FAIL_COMMAND:-}:$*" in\n'
+        "  'enable:--user enable hermit-disk-snapshot.timer') exit 17;;\n"
+        "  'restart:--user restart hermit-disk-snapshot.timer') exit 19;;\n"
+        "  'service-active:--user show --no-pager --property=ActiveState --value hermit-disk-snapshot.service') exit 23;;\n"
+        "esac\n"
+        "service_load=not-found\n"
+        "timer_load=not-found\n"
+        '[[ -f "$HERMIT_USER_UNIT_DIR/hermit-disk-snapshot.service" ]] && service_load=loaded\n'
+        '[[ -f "$HERMIT_USER_UNIT_DIR/hermit-disk-snapshot.timer" ]] && timer_load=loaded\n'
+        "timer_active=inactive\n"
+        "timer_sub=dead\n"
+        'if grep -Fq -- "--user restart hermit-disk-snapshot.timer" "$SYSTEMCTL_LOG"; then\n'
+        "  timer_active=active\n"
+        "  timer_sub=waiting\n"
+        "fi\n"
         "property= unit=\n"
         'for argument in "$@"; do\n'
         "  case $argument in --property=*) property=${argument#--property=};; esac\n"
         "  unit=$argument\n"
         "done\n"
         'case "$unit:$property" in\n'
-        "  hermit-disk-snapshot.service:LoadState) printf '%s\\n' \"${FAKE_SERVICE_LOAD:-loaded}\";;\n"
-        "  hermit-disk-snapshot.service:ActiveState) printf '%s\\n' \"${FAKE_SERVICE_ACTIVE:-inactive}\";;\n"
+        "  hermit-disk-snapshot.service:LoadState) printf '%s\\n' \"${FAKE_SERVICE_LOAD:-$service_load}\";;\n"
+        "  hermit-disk-snapshot.service:ActiveState)\n"
+        "    if [[ -n ${FAKE_POST_SERVICE_ACTIVE:-} ]] && grep -Fq -- '--user daemon-reload' \"$SYSTEMCTL_LOG\"; then\n"
+        "      printf '%s\\n' \"$FAKE_POST_SERVICE_ACTIVE\"\n"
+        "    else\n"
+        "      printf '%s\\n' \"${FAKE_SERVICE_ACTIVE:-inactive}\"\n"
+        "    fi;;\n"
         "  hermit-disk-snapshot.service:SubState) printf '%s\\n' \"${FAKE_SERVICE_SUB:-dead}\";;\n"
-        "  hermit-disk-snapshot.timer:LoadState) printf '%s\\n' \"${FAKE_TIMER_LOAD:-loaded}\";;\n"
-        "  hermit-disk-snapshot.timer:ActiveState) printf '%s\\n' \"${FAKE_TIMER_ACTIVE:-active}\";;\n"
-        "  hermit-disk-snapshot.timer:SubState) printf '%s\\n' \"${FAKE_TIMER_SUB:-waiting}\";;\n"
+        "  hermit-disk-snapshot.timer:LoadState) printf '%s\\n' \"${FAKE_TIMER_LOAD:-$timer_load}\";;\n"
+        "  hermit-disk-snapshot.timer:ActiveState) printf '%s\\n' \"${FAKE_TIMER_ACTIVE:-$timer_active}\";;\n"
+        "  hermit-disk-snapshot.timer:SubState) printf '%s\\n' \"${FAKE_TIMER_SUB:-$timer_sub}\";;\n"
         "esac\n"
     )
     systemctl.chmod(0o755)
@@ -425,10 +461,128 @@ def test_installer_copies_bootstrap_and_units_before_explicit_start(
     assert (unit_dir / SERVICE.name).read_bytes() == SERVICE.read_bytes()
     assert (unit_dir / TIMER.name).read_bytes() == TIMER.read_bytes()
     assert log.read_text().splitlines() == [
+        "--user show --no-pager --property=LoadState --value hermit-disk-snapshot.timer",
+        "--user show --no-pager --property=ActiveState --value hermit-disk-snapshot.timer",
+        "--user show --no-pager --property=LoadState --value hermit-disk-snapshot.service",
+        "--user show --no-pager --property=ActiveState --value hermit-disk-snapshot.service",
         "--user daemon-reload",
-        "--user enable hermit-disk-snapshot.timer",
+        "--user disable --now hermit-disk-snapshot.timer",
+        "--user show --no-pager --property=LoadState --value hermit-disk-snapshot.timer",
+        "--user show --no-pager --property=ActiveState --value hermit-disk-snapshot.timer",
+        "--user show --no-pager --property=SubState --value hermit-disk-snapshot.timer",
+        "--user show --no-pager --property=LoadState --value hermit-disk-snapshot.service",
+        "--user show --no-pager --property=ActiveState --value hermit-disk-snapshot.service",
+        "--user show --no-pager --property=SubState --value hermit-disk-snapshot.service",
     ]
-    assert "timer enabled but not started" in result.stdout
+    assert "timer installed disabled and inactive" in result.stdout
+
+
+def test_cold_install_then_check_is_executable_and_keeps_timer_disabled(
+    tmp_path: Path,
+) -> None:
+    environment, unit_dir, log, bootstrap = _installer_environment(
+        tmp_path, preinstall=False
+    )
+    github_helper = bootstrap.parent / "gh"
+    assert not bootstrap.exists()
+    assert not github_helper.exists()
+
+    installed = subprocess.run(
+        [str(INSTALLER), "--no-start"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert installed.returncode == 0, installed.stderr
+    assert bootstrap.read_bytes() == BOOTSTRAP_SOURCE.read_bytes()
+    assert (
+        github_helper.read_bytes()
+        == Path(environment["DEV_HERMIT_GH_SOURCE"]).read_bytes()
+    )
+    assert (unit_dir / TIMER.name).exists()
+    calls_after_install = log.read_text()
+    assert " enable " not in f" {calls_after_install} "
+    assert "--user disable --now hermit-disk-snapshot.timer" in calls_after_install
+
+    checked = subprocess.run(
+        [str(INSTALLER), "--check"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert checked.returncode == 0, checked.stderr
+    assert "match reviewed sources" in checked.stdout
+    assert log.read_text() == calls_after_install
+
+
+@pytest.mark.parametrize("active_unit", ["timer", "service"])
+def test_no_start_refuses_an_active_existing_unit_before_installing(
+    tmp_path: Path, active_unit: str
+) -> None:
+    environment, unit_dir, log, bootstrap = _installer_environment(tmp_path)
+    unit_dir.mkdir()
+    unit_source = TIMER if active_unit == "timer" else SERVICE
+    (unit_dir / unit_source.name).write_bytes(unit_source.read_bytes())
+    original_bootstrap = bootstrap.read_bytes()
+    github_helper = bootstrap.parent / "gh"
+    original_helper = github_helper.read_bytes()
+    if active_unit == "timer":
+        environment.update(
+            {
+                "FAKE_TIMER_ACTIVE": "active",
+                "FAKE_TIMER_SUB": "waiting",
+            }
+        )
+        expected_state = "loaded/active + not-found/inactive"
+    else:
+        environment.update(
+            {
+                "FAKE_SERVICE_ACTIVE": "activating",
+                "FAKE_SERVICE_SUB": "start",
+            }
+        )
+        expected_state = "not-found/inactive + loaded/activating"
+    result = subprocess.run(
+        [str(INSTALLER), "--no-start"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert f"existing timer/service is {expected_state}" in result.stderr
+    assert bootstrap.read_bytes() == original_bootstrap
+    assert github_helper.read_bytes() == original_helper
+    assert log.read_text().splitlines() == [
+        "--user show --no-pager --property=LoadState --value hermit-disk-snapshot.timer",
+        "--user show --no-pager --property=ActiveState --value hermit-disk-snapshot.timer",
+        "--user show --no-pager --property=LoadState --value hermit-disk-snapshot.service",
+        "--user show --no-pager --property=ActiveState --value hermit-disk-snapshot.service",
+    ]
+
+
+def test_no_start_postcondition_failure_stops_both_units(tmp_path: Path) -> None:
+    environment, _unit_dir, log, _bootstrap = _installer_environment(tmp_path)
+    environment["FAKE_POST_SERVICE_ACTIVE"] = "activating"
+    result = subprocess.run(
+        [str(INSTALLER), "--no-start"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "timer/service did not remain inactive" in result.stderr
+    assert log.read_text().splitlines()[-2:] == [
+        "--user disable --now hermit-disk-snapshot.timer",
+        "--user stop hermit-disk-snapshot.service",
+    ]
 
 
 def test_installer_start_accepts_healthy_inactive_oneshot_without_status_rc3(
@@ -498,6 +652,35 @@ def test_installer_start_accepts_coherent_activating_service_and_running_timer(
 
 
 @pytest.mark.parametrize(
+    ("failure", "expected_returncode"),
+    [
+        ("enable", 17),
+        ("restart", 19),
+        ("service-active", 23),
+    ],
+)
+def test_installer_start_failure_rolls_back_timer_and_service(
+    tmp_path: Path, failure: str, expected_returncode: int
+) -> None:
+    environment, _unit_dir, log, _bootstrap = _installer_environment(tmp_path)
+    environment["FAKE_FAIL_COMMAND"] = failure
+    result = subprocess.run(
+        [str(INSTALLER), "--start"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == expected_returncode
+    assert "service=" not in result.stdout
+    assert log.read_text().splitlines()[-2:] == [
+        "--user disable --now hermit-disk-snapshot.timer",
+        "--user stop hermit-disk-snapshot.service",
+    ]
+
+
+@pytest.mark.parametrize(
     ("service_active", "service_sub", "timer_active", "timer_sub"),
     [
         ("activating", "start", "active", "waiting"),
@@ -513,7 +696,7 @@ def test_installer_start_rejects_incoherent_service_timer_pairs(
     timer_active: str,
     timer_sub: str,
 ) -> None:
-    environment, _unit_dir, _log, _bootstrap = _installer_environment(tmp_path)
+    environment, _unit_dir, log, _bootstrap = _installer_environment(tmp_path)
     environment.update(
         {
             "FAKE_SERVICE_ACTIVE": service_active,
@@ -532,3 +715,7 @@ def test_installer_start_rejects_incoherent_service_timer_pairs(
     )
     assert result.returncode == 1
     assert "incoherent service/timer state" in result.stderr
+    assert log.read_text().splitlines()[-2:] == [
+        "--user disable --now hermit-disk-snapshot.timer",
+        "--user stop hermit-disk-snapshot.service",
+    ]

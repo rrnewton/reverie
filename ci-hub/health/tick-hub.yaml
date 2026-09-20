@@ -1,18 +1,17 @@
 description: |-
-  Operational health polling for the dev-hermit coordinator. The outer ORC
-  workflow runs one tick every thirty minutes; this config owns each check's
-  cadence and only emits actions when a hard warning is required. No active
-  reminder declares a cadence below the outer interval: such a value cannot be
-  honored and would read as configuration while controlling nothing.
+  Operational health polling for the dev-hermit coordinator. The durable
+  hermit-health-tick.timer runs one tick every thirty minutes; this config owns
+  each check's cadence and only emits actions when a hard warning is required.
+  No active reminder declares a cadence below the outer interval: such a value
+  cannot be honored and would read as configuration while controlling nothing.
 
   ADMISSION TEST FOR ANY NEW REMINDER (owner directive, 2026-08-08).
-  Ask: CAN ORC OBSERVE THIS DIRECTLY?
-    YES -> it does not belong here. ORC holds the authoritative view of agents,
-           panes, tasks and ownership; a second observer of the same fact cannot
-           be more right, only differently wrong, and its disagreement arrives
-           as an instruction to a coordinator mandated to close and respawn
-           agents without asking. Agent liveness, task ownership, and TaskGraph
-           census are permanently out of scope.
+  Ask: CAN THE COORDINATOR'S PRIMARY AUTHORITY OBSERVE THIS DIRECTLY?
+    YES -> it does not belong here. Herdr plus the exact TaskGraph-bound agent
+           snapshot holds the authoritative view of agents, panes, tasks and
+           ownership; a second observer of the same fact cannot be more right,
+           only differently wrong. Agent liveness, task ownership, and
+           TaskGraph census remain out of scope for reminder inference.
     NO  -> it belongs here. GitHub, GH Actions queues, runner lanes, merge gates,
            local disk consumption and local git state are exactly the things the
            coordinator genuinely cannot see, and reminding it is the whole point.

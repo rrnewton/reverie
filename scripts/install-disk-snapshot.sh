@@ -6,9 +6,9 @@ usage() {
     cat <<'EOF'
 Usage: scripts/install-disk-snapshot.sh [--check] [--start|--no-start]
 
---check     Validate producer dependencies, state root, bootstrap, and GitHub helper.
+--check     Validate dependencies, state root, and installed bootstrap/helper bytes.
 --start     Install, enable, and restart the timer.
---no-start  Install and enable the timer without starting it (the default).
+--no-start  Install with the timer disabled and inactive (the default).
 EOF
 }
 
@@ -45,6 +45,11 @@ install_label=disk-snapshot
 producer=$source_root/scripts/publish-disk-snapshots.py
 service=hermit-disk-snapshot.service
 timer=hermit-disk-snapshot.timer
+
+unit_property() {
+    "$systemctl_bin" --user show --no-pager \
+        --property="$2" --value "$1"
+}
 
 # ⚠️ A SINGLE FIXED PATH UNDER $HOME WAS THE FAILURE, AND RERUNNING THIS COULD
 # NOT REPAIR IT. The installers read $HOME/bin/gh. Measured 2026-09-05 on
@@ -130,11 +135,60 @@ if [[ $mode == check ]]; then
     exit 0
 fi
 
+# `--no-start` is the cold-takeover path. An already-active timer means this is
+# not a cold install at all; replacing its launcher while it can fire would
+# defeat the retirement proof this mode exists to establish. Refuse before any
+# installed byte changes. A loaded but inactive old unit is disabled first so a
+# user-manager restart cannot activate it during the copy below.
+if ((!start)); then
+    existing_timer_load=$(unit_property "$timer" LoadState)
+    existing_timer_active=$(unit_property "$timer" ActiveState)
+    existing_service_load=$(unit_property "$service" LoadState)
+    existing_service_active=$(unit_property "$service" ActiveState)
+    existing_units_supported=1
+    case "$existing_timer_load:$existing_service_load" in
+        not-found:not-found|not-found:loaded|loaded:not-found|loaded:loaded) ;;
+        *) existing_units_supported=0 ;;
+    esac
+    if [[ $existing_units_supported -ne 1 || \
+        $existing_timer_active != inactive || $existing_service_active != inactive ]]; then
+        printf 'install-disk-snapshot: refusing --no-start while existing timer/service is %s/%s + %s/%s; stop and disable it explicitly, then retry\n' \
+            "$existing_timer_load" "$existing_timer_active" \
+            "$existing_service_load" "$existing_service_active" >&2
+        exit 1
+    fi
+    if [[ $existing_timer_load == loaded ]]; then
+        "$systemctl_bin" --user disable --now "$timer"
+    fi
+fi
+
 install -d -m 0700 "$unit_dir"
 install -d -m 0755 "$libexec_dir"
 bootstrap_staging=
 github_helper_staging=
-trap '[[ -z ${bootstrap_staging:-} ]] || rm -f -- "$bootstrap_staging"; [[ -z ${github_helper_staging:-} ]] || rm -f -- "$github_helper_staging"' EXIT
+timer_start_armed=0
+timer_start_committed=0
+cleanup_install() {
+    local rc=$?
+    [[ -z ${bootstrap_staging:-} ]] || rm -f -- "$bootstrap_staging" || true
+    [[ -z ${github_helper_staging:-} ]] || rm -f -- "$github_helper_staging" || true
+    if ((timer_start_armed && !timer_start_committed)); then
+        # A failed `--start` must not become an enabled timer at the next login
+        # or leave the oneshot writing after this command reports failure.
+        if ! "$systemctl_bin" --user disable --now "$timer"; then
+            printf 'install-disk-snapshot: rollback could not disable/stop %s\n' \
+                "$timer" >&2
+        fi
+        if ! "$systemctl_bin" --user stop "$service"; then
+            printf 'install-disk-snapshot: rollback could not stop %s\n' \
+                "$service" >&2
+        fi
+    fi
+    # Preserve the command or explicit refusal status. A successful cleanup is
+    # not evidence that the operation which triggered it succeeded.
+    exit "$rc"
+}
+trap cleanup_install EXIT
 bootstrap_staging=$(mktemp "$libexec_dir/.operational-tool.XXXXXX")
 github_helper_staging=$(mktemp "$libexec_dir/.gh.XXXXXX")
 install -m 0555 "$bootstrap_source" "$bootstrap_staging"
@@ -183,17 +237,14 @@ grep -Fq \
 }
 
 "$systemctl_bin" --user daemon-reload
-"$systemctl_bin" --user enable "$timer"
 bootstrap_sha=$(sha256sum -- "$bootstrap" | awk '{print $1}')
 github_helper_sha=$(sha256sum -- "$github_helper" | awk '{print $1}')
 printf 'install-disk-snapshot: bootstrap_sha256=%s bootstrap=%s github_helper_source=%s github_helper_sha256=%s github_helper=%s\n' \
     "$bootstrap_sha" "$bootstrap" "$github_helper_source" "$github_helper_sha" "$github_helper"
 if ((start)); then
+    timer_start_armed=1
+    "$systemctl_bin" --user enable "$timer"
     "$systemctl_bin" --user restart "$timer"
-    unit_property() {
-        "$systemctl_bin" --user show --no-pager \
-            --property="$2" --value "$1"
-    }
     service_load=$(unit_property "$service" LoadState)
     service_active=$(unit_property "$service" ActiveState)
     service_sub=$(unit_property "$service" SubState)
@@ -213,8 +264,25 @@ if ((start)); then
             exit 1
             ;;
     esac
+    timer_start_committed=1
     printf 'install-disk-snapshot: service=%s/%s timer=%s/%s\n' \
         "$service_active" "$service_sub" "$timer_active" "$timer_sub"
 else
-    printf 'install-disk-snapshot: timer enabled but not started; require hermitDevStatus().workflowRetirementAtStartup.pass=true before starting it\n'
+    timer_start_armed=1
+    "$systemctl_bin" --user disable --now "$timer"
+    timer_load=$(unit_property "$timer" LoadState)
+    timer_active=$(unit_property "$timer" ActiveState)
+    timer_sub=$(unit_property "$timer" SubState)
+    service_load=$(unit_property "$service" LoadState)
+    service_active=$(unit_property "$service" ActiveState)
+    service_sub=$(unit_property "$service" SubState)
+    [[ $timer_load == loaded && $timer_active == inactive && $timer_sub == dead && \
+        $service_load == loaded && $service_active == inactive && $service_sub == dead ]] || {
+        printf 'install-disk-snapshot: timer/service did not remain inactive: %s/%s/%s + %s/%s/%s\n' \
+            "$timer_load" "$timer_active" "$timer_sub" \
+            "$service_load" "$service_active" "$service_sub" >&2
+        exit 1
+    }
+    timer_start_committed=1
+    printf 'install-disk-snapshot: timer installed disabled and inactive; prove competing ORC producers absent, run --check, then use --start\n'
 fi

@@ -111,6 +111,16 @@ class HelperSourceResolution(unittest.TestCase):
         systemctl.write_text(
             "#!/usr/bin/env bash\nset -eu\n"
             'printf \'%s\\n\' "$*" >> "$FAKE_SYSTEMCTL_LOG"\n'
+            'case " $* " in\n'
+            "  *' --property=LoadState '*' hermit-disk-snapshot.service '*)\n"
+            '    if [[ -f "$XDG_CONFIG_HOME/systemd/user/hermit-disk-snapshot.service" ]]; then printf \'loaded\\n\'; else printf \'not-found\\n\'; fi;;\n'
+            "  *' --property=ActiveState '*' hermit-disk-snapshot.service '*) printf 'inactive\\n';;\n"
+            "  *' --property=SubState '*' hermit-disk-snapshot.service '*) printf 'dead\\n';;\n"
+            "  *' --property=LoadState '*' hermit-disk-snapshot.timer '*)\n"
+            '    if [[ -f "$XDG_CONFIG_HOME/systemd/user/hermit-disk-snapshot.timer" ]]; then printf \'loaded\\n\'; else printf \'not-found\\n\'; fi;;\n'
+            "  *' --property=ActiveState '*' hermit-disk-snapshot.timer '*) printf 'inactive\\n';;\n"
+            "  *' --property=SubState '*' hermit-disk-snapshot.timer '*) printf 'dead\\n';;\n"
+            "esac\n"
         )
         systemctl.chmod(0o755)
 

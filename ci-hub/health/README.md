@@ -91,16 +91,24 @@ lowest normal CPU priority, with a 180-second bound per concurrently measured
 population. `TimeoutStartSec=540` is the fail-closed bound on the complete
 service path, including immutable-tool setup and both publications; no measured
 cold-run component is treated as a code-enforced sub-bound. The service also
-has explicit memory, swap, and task caps; any command failure fails the
-oneshot.
+has explicit memory, swap, and task caps. Both independent publications are
+attempted serially under the shared lock, and any command failure fails the
+oneshot without suppressing the other source of disk evidence.
 
-Validate with `scripts/install-disk-snapshot.sh --check`, then install and
-enable without starting with `scripts/install-disk-snapshot.sh --no-start`.
-Load or restart ORC and require
+For a cold or repair installation, first run
+`scripts/install-disk-snapshot.sh --no-start`. It checks producer dependencies,
+installs the exact bootstrap and GitHub helper, and leaves the disk timer both
+disabled and inactive; it refuses if an existing timer or service is active.
+Then run
+`scripts/install-disk-snapshot.sh --check` to bind the installed bytes back to
+the reviewed source. On a host with a live transitional ORC, load or restart it
+and require
 `orc.hermitDevStatus().workflowRetirementAtStartup.pass === true`; that receipt
-is a pre/post-registry observation that all replaced workflows are absent.
-Only then use the explicit `scripts/install-disk-snapshot.sh --start`, so old
-and new producers never write the same artifacts concurrently.
+is a pre/post-registry observation that all replaced workflows are absent. On a
+host where ORC has already been removed, record the bounded process and service
+census proving that no ORC scheduler remains. Only then use the explicit
+`scripts/install-disk-snapshot.sh --start`, so old and new producers never write
+the same artifacts concurrently.
 
 The five populations are registered slots, disposable validation checkouts,
 the shared Hermit/Reverie/LiteInst2 checkouts, the parent Git object database,
@@ -125,17 +133,17 @@ hub creations ... They are trying to rigidly remind the agent of things it may
 not notice. This is good for external systems like github but it seems dangerous
 in other cases."*
 
-The admission test for any reminder is **can ORC observe this directly?** If yes,
-it does not belong here: ORC is the authority on agents, panes, tasks and
+The owner directive used ORC as the coordinator substrate then in service. The
+current admission test is **can the coordinator's primary authority observe
+this directly?** If yes, it does not belong here: Herdr plus the exact
+TaskGraph-bound agent snapshot is the authority on agents, panes, tasks and
 ownership, so a second observer of the same fact cannot be more right, only
-differently wrong — and its disagreement arrives as an instruction to a
-coordinator mandated to close and respawn agents without asking. If no — GitHub,
-GH Actions queues, runner lanes, merge gates, local disk, local git — reminding
-the coordinator is the entire point.
+differently wrong. If no — GitHub, GH Actions queues, runner lanes, merge gates,
+local disk, local git — reminding the coordinator is the entire point.
 
 Weigh a proposal by what its alarm **causes**, not only by whether it is
 accurate. A false alarm about GitHub costs a wasted check; a false alarm about
-ORC-internal state costs an agent.
+coordinator-internal state costs an agent.
 
 Four reminders were removed on 2026-08-08 under that test: `stuck_agents`,
 `active_work_reconciliation`, `unowned_high_priority_backlog`, and
@@ -150,14 +158,15 @@ was withdrawn is their standing authority to interrupt and instruct.
 
 ### Worktree disk residue
 
-`slot_disk_residue.py` keeps the one genuine, non-ORC need that the removed
-liveness gate was carrying: huge slots accumulate under `worktrees/` long after
-anything was working in them, and nothing reclaims them. Its predecessor asked
+`slot_disk_residue.py` keeps the one genuine need outside the coordinator
+census that the removed liveness gate was carrying: huge slots accumulate under
+`worktrees/` long after anything was working in them, and nothing reclaims
+them. Its predecessor asked
 *"is the owning agent dead?"* and, on 2026-08-08, answered wrongly for the agent
 holding the freshest activity timestamp on the box.
 
 The replacement asks only the disk question — **on disk, consuming space, and no
-live process inside** — and reads no agent name, no ORC fleet, no TaskGraph
+live process inside** — and reads no agent name, no Herdr fleet, no TaskGraph
 owner, and not even the `worktree-state.json` status field. Occupancy comes from
 `/proc/<pid>/cwd`, which cannot go stale and cannot be forged by editing a file.
 Idleness must be sustained (default 24h) and size material (default 1 GiB), so

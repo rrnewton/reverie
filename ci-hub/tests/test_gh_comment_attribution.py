@@ -202,6 +202,12 @@ class FleetGhTest(unittest.TestCase):
             NOTE_CAPTURE=str(self.note_capture),
         )
         self.env["DG_AGENT_NAME"] = TEST_AGENT
+        # The test process may itself run below Codex, Claude, or another live
+        # coordinator whose ancestor model is legitimately resolvable. Default
+        # fixtures assert an unresolved model and must not inherit that external
+        # process identity; tests for resolved/disagreeing models replace this
+        # stub explicitly below.
+        self.install_identity_stub()
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -1017,6 +1023,13 @@ class FleetGhTest(unittest.TestCase):
         self.assertFalse(self.capture.exists())
 
     def test_environment_and_ancestry_disagreement_is_visible_metadata(self) -> None:
+        self.install_identity_stub(
+            state="DISAGREEMENT",
+            agent=None,
+            signal_state="resolved",
+            signal_agent="different-process-agent",
+            signal_candidates=(TEST_AGENT,),
+        )
         env = dict(self.env, DG_AGENT_NAME="different-process-agent")
         result = self.run_shim(
             *self.identity(),

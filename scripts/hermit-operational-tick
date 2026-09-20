@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CPU-bounded entry point shared by the ORC workflow and the durable timer.
+# CPU-bounded entry point owned by the durable systemd timer.
 set -uo pipefail
 
 # BOUND DERIVATION, measured 2026-09-17/18 on devbig014.

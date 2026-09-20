@@ -88,13 +88,24 @@ def test_systemd_replaced_orc_producers_are_retirement_only() -> None:
         assert forbidden not in plugin
 
 
-def test_active_runbooks_do_not_restore_the_retired_orc_container_bridge() -> None:
+def test_active_runbooks_name_systemd_as_the_sole_driver() -> None:
     config = read("ci-hub/health/tick-hub.yaml")
     containers = read("ci-hub/containers/README.md")
     bridge = read("ci-hub/health/agent-container-reconcile-bridge.rs")
+    ci_hub_readme = read("ci-hub/README.md")
+    health_readme = read("ci-hub/health/README.md")
+    operational_tick = read("scripts/hermit-operational-tick")
+    installer = read("scripts/install-disk-snapshot.sh")
 
     assert "operationalHealthHeartbeat re-reads this file" not in config
     assert "hermit-health-tick.timer re-reads this file" in config
+    assert "The outer ORC workflow" not in config
+    assert "The outer ORC workflow" not in ci_hub_readme
+    assert "shared by the ORC workflow" not in operational_tick
+    assert "hermit-health-tick.timer" in ci_hub_readme
+    assert "owned by the durable systemd timer" in operational_tick
+    assert "The admission test for any reminder is **can ORC" not in health_readme
+    assert "Herdr plus the exact\nTaskGraph-bound agent snapshot" in health_readme
     assert "## Retired ORC bridge" in containers
     assert (
         "Do not launch `ci-hub/health/agent-container-reconcile-bridge.rs`"
@@ -105,6 +116,9 @@ def test_active_runbooks_do_not_restore_the_retired_orc_container_bridge() -> No
         not in containers
     )
     assert "This is retired under Herdr and must not be launched" in bridge
+    assert "first run\n`scripts/install-disk-snapshot.sh --no-start`" in health_readme
+    assert "leaves the disk timer both\ndisabled and inactive" in health_readme
+    assert '"$systemctl_bin" --user disable --now "$timer"' in installer
 
 
 def test_orc_retirement_is_observed_and_fails_closed() -> None:
