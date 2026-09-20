@@ -3529,7 +3529,9 @@ impl ElfExecutor {
 
         let info = event.siginfo();
         let code = i32::from_ne_bytes(info[8..12].try_into().expect("siginfo code"));
-        if event.signal() != libc::SIGCHLD || code != libc::CLD_EXITED {
+        if event.signal() != libc::SIGCHLD
+            || !matches!(code, libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED)
+        {
             return Err((Unsupported, Errno::ENOSYS));
         }
         let reverie::SignalTarget::Process { pid } = event.target() else {
@@ -3543,20 +3545,27 @@ impl ElfExecutor {
         let status = i32::from_ne_bytes(info[24..28].try_into().expect("siginfo child status"));
         let user_time = i64::from_ne_bytes(info[32..40].try_into().expect("siginfo child utime"));
         let system_time = i64::from_ne_bytes(info[40..48].try_into().expect("siginfo child stime"));
-        if errno != 0
-            || child <= 0
-            || !(0..=255).contains(&status)
-            || user_time < 0
-            || system_time < 0
-        {
+        // Linux stores an unsigned exit byte for CLD_EXITED and the raw signal
+        // number for CLD_KILLED/CLD_DUMPED. Keep those domains distinct: a
+        // status that is coherent for one class must not validate another.
+        let valid_status = match code {
+            libc::CLD_EXITED => (0..=i32::from(u8::MAX)).contains(&status),
+            libc::CLD_KILLED => {
+                (1..=64).contains(&status)
+                    && default_signal_disposition(status) == SignalDisposition::Terminate
+            }
+            libc::CLD_DUMPED => signal_has_core_default(status),
+            _ => false,
+        };
+        if errno != 0 || child <= 0 || !valid_status || user_time < 0 || system_time < 0 {
             return Err((Invalid, Errno::EINVAL));
         }
         Ok(())
     }
 
-    /// Publishes a Tool-selected normal child-exit event into its process's
-    /// pending set. The Tool owns child identity/status provenance; the backend
-    /// owns receiver validation, coalescing, and the later delivery boundary.
+    /// Publishes a Tool-selected terminal child event into its process's pending
+    /// set. The Tool owns child identity/status provenance; the backend owns
+    /// receiver validation, coalescing, and the later delivery boundary.
     pub(crate) fn queue_child_exit_signal(
         &mut self,
         event: reverie::SignalEvent,
@@ -8620,7 +8629,12 @@ fn encode_signalfd_siginfo(event: reverie::SignalEvent) -> [u8; SIGNALFD_RECORD_
         let value = u64::from_ne_bytes(raw[24..32].try_into().expect("siginfo timer value"));
         info.ssi_ptr = value;
         info.ssi_int = value as i32;
-    } else if info.ssi_signo == libc::SIGCHLD as u32 && info.ssi_code == libc::CLD_EXITED {
+    } else if info.ssi_signo == libc::SIGCHLD as u32
+        && matches!(
+            info.ssi_code,
+            libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED
+        )
+    {
         info.ssi_pid = u32::from_ne_bytes(raw[16..20].try_into().expect("siginfo child pid"));
         info.ssi_uid = u32::from_ne_bytes(raw[20..24].try_into().expect("siginfo child uid"));
         info.ssi_status = i32::from_ne_bytes(raw[24..28].try_into().expect("siginfo child status"));
@@ -15293,21 +15307,24 @@ fn process_dumpable(state: &LoadedStaticElf) -> bool {
 
 fn terminating_signal_status(signal: libc::c_int, dumpable: bool) -> Option<ExitStatus> {
     let signal_kind = Signal::try_from(signal).ok()?;
-    let core_dumped = dumpable
-        && matches!(
-            signal,
-            libc::SIGQUIT
-                | libc::SIGILL
-                | libc::SIGTRAP
-                | libc::SIGABRT
-                | libc::SIGBUS
-                | libc::SIGFPE
-                | libc::SIGSEGV
-                | libc::SIGXCPU
-                | libc::SIGXFSZ
-                | libc::SIGSYS
-        );
+    let core_dumped = dumpable && signal_has_core_default(signal);
     Some(ExitStatus::Signaled(signal_kind, core_dumped))
+}
+
+fn signal_has_core_default(signal: libc::c_int) -> bool {
+    matches!(
+        signal,
+        libc::SIGQUIT
+            | libc::SIGILL
+            | libc::SIGTRAP
+            | libc::SIGABRT
+            | libc::SIGBUS
+            | libc::SIGFPE
+            | libc::SIGSEGV
+            | libc::SIGXCPU
+            | libc::SIGXFSZ
+            | libc::SIGSYS
+    )
 }
 
 /// Resolves the effective disposition of `signal`, honoring any installed
