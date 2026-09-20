@@ -33,6 +33,7 @@ import git_env  # noqa: E402
 import qualifying_receipt
 import pane_owner
 import run_registry
+import reverie_node
 import tree_disposition
 import tree_disposition
 import service_result
@@ -4471,6 +4472,7 @@ def build_systemd_command(
         # state.  Without it KVM tests silently skip on a host where /dev/kvm
         # is absent or unusable, and a partial suite can look green.
         build_budget_env.extend(["--setenv", "REVERIE_REQUIRE_KVM=1"])
+        build_budget_env.extend(["--setenv", f"{reverie_node.COUNT_HANDLE_ENV}={record.absolute()}"])
     else:
         e2e_result_root, runner_log_dir = _validate_output_paths(state_root, unit)
         build_budget_env.extend(
@@ -5988,6 +5990,32 @@ def bookkeep_record(
         return snapshot
 
 
+def finalize_reverie_counts(
+    root: Path, tool_root: Path, record_path: Path, *, record: dict[str, Any]
+) -> dict[str, Any]:
+    """One direct/attach (including recovery) count path; never choose a latest row."""
+    if "reverie_count_request" not in record:
+        return record  # Historical handles are not backfilled.
+    try:
+        if record.get("state") not in {"completed", "killed"}:
+            raise RuntimeError("no observed terminal handle for count handoff")
+        evidence = reverie_node.consume_count_handoff(tool_root, root, record_path, record)
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
+        refusal = str(error)
+        print(f"validate-run: REVERIE COUNT-HANDOFF REFUSED: {refusal}; verdict unchanged", file=sys.stderr)
+        evidence = None
+    else:
+        refusal = None
+    try:
+        return run_registry.update_reverie_counts(record_path, record, evidence=evidence, refusal=refusal)
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
+        # A contended/changed handle must not withhold the already known result.
+        # Do not pretend the in-memory refusal has been persisted.
+        print(f"validate-run: REVERIE COUNT-HANDOFF NOT RECORDED: {error}; verdict unchanged", file=sys.stderr)
+        return {**record, "executed_tests": None, "passed_tests": None,
+                "reverie_count_refusal": f"count bookkeeping unavailable: {error}"}
+
+
 def finalize_ledger_mirror(
     root: Path,
     tool_root: Path,
@@ -6385,6 +6413,7 @@ def attach(
         sleep=sleep,
     )
     updated = bookkeep_record(record_path, base_record=record, **final)
+    updated = finalize_reverie_counts(root, tool_root, record_path, record=updated)
     if record.get("validation_kind") == FROZEN_VALIDATE_KIND:
         try:
             target = str(record["target"])
@@ -7226,6 +7255,13 @@ def main(
         output_fields: dict[str, object] = {
             "validate_lock_child_deadline_seconds": child_deadline
         }
+        if repo == "rrnewton/reverie":
+            if reverie_node.count_sidecar_path(record_path).exists():
+                raise ValueError("Reverie count sidecar already exists; choose a different --unit")
+            output_fields["reverie_count_request"] = {
+                "schema": reverie_node.COUNT_SCHEMA, "nonce": secrets.token_hex(16),
+                "producer_files": reverie_node.count_source_hashes(tool_root),
+            }
         if repo == "rrnewton/hermit":
             output_fields.update(
                 {
@@ -7564,6 +7600,7 @@ def main(
             "to resume watching it, or read its log directly",
         )
 
+    updated = finalize_reverie_counts(state_root, tool_root, record_path, record=updated)
     if args.frozen_validate:
         try:
             if frozen_result is None or current_main_before_launch is None:

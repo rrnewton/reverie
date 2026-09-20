@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping, TypedDict, cast
 
 import service_result
+import reverie_node
 
 
 SCHEMA_VERSION = 1
@@ -159,6 +160,9 @@ class RunRecord(TypedDict, total=False):
     executed_nodes: int | None
     executed_tests: int | None
     passed_tests: int | None
+    reverie_count_request: dict[str, Any]
+    reverie_count_evidence: dict[str, Any]
+    reverie_count_refusal: str | None
     final_validate_status: str | None
     service_result_schema: int
     selection_mode: str | None
@@ -319,6 +323,9 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "executed_nodes",
         "executed_tests",
         "passed_tests",
+        "reverie_count_request",
+        "reverie_count_evidence",
+        "reverie_count_refusal",
         "final_validate_status",
         "service_result_schema",
         "selection_mode",
@@ -375,6 +382,7 @@ _OPTIONAL_TEXT_FIELDS = frozenset(
         "host",
         "results",
         "cleanup_error",
+        "reverie_count_refusal",
     }
 )
 _OPTIONAL_INTEGER_FIELDS = frozenset(
@@ -938,6 +946,7 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
         if (
             marker not in service_result.TEST_COUNTS_SCHEMA_VERSIONS
             and value.get("passed_tests") is not None
+            and value.get("reverie_count_evidence") is None
         ):
             raise _error(
                 "passed_tests",
@@ -972,6 +981,35 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
     for field in ("executed_nodes", "executed_tests", "passed_tests"):
         if value.get(field) is not None:
             _nonnegative_integer(value, field)
+
+    count_fields = {"reverie_count_request", "reverie_count_evidence", "reverie_count_refusal"}
+    if count_fields.intersection(value):
+        if kind is not RunKind.REVERIE_VALIDATE:
+            raise _error("reverie_count_evidence", "is valid only for Reverie validation handles")
+        try:
+            if "reverie_count_request" in value:
+                reverie_node.validate_count_request(value["reverie_count_request"])
+            evidence = value.get("reverie_count_evidence")
+            if evidence is not None:
+                evidence_path = Path(evidence["binding"]["context"]["record_path"])
+                if not evidence_path.is_absolute():
+                    raise ValueError("count evidence path is not absolute")
+                executed, passed, _filtered = reverie_node.validate_count_evidence(
+                    evidence, dict(value), evidence_path
+                )
+                if state not in {RunState.COMPLETED, RunState.KILLED}:
+                    raise ValueError("count evidence requires an observed terminal handle")
+                if value.get("reverie_count_refusal") is None and (
+                    value.get("executed_tests"), value.get("passed_tests")
+                ) != (executed, passed):
+                    raise ValueError("registry counts disagree with the exact event evidence")
+            if evidence is None or value.get("reverie_count_refusal") is not None:
+                if any(value.get(key) is not None for key in ("executed_tests", "passed_tests")):
+                    raise ValueError("unavailable/refused count evidence requires null counts")
+            if value.get("executed_nodes") is not None:
+                raise ValueError("framework test counts do not establish executed DAG nodes")
+        except (KeyError, TypeError, ValueError, RuntimeError) as error:
+            raise _error("reverie_count_evidence", str(error)) from error
 
     if state is RunState.REFUSED:
         for field in ("result", "detail", "finished_at", "exit_code"):
@@ -1295,9 +1333,42 @@ def update_record(
     # vice versa) while retaining atomic replacement for readers.
     with exclusive_record(path, blocking=blocking):
         value = read_record(path)
+        if "reverie_count_request" in value:
+            # Generic terminal observers have no exact-event count authority.
+            fields = {key: item for key, item in fields.items()
+                      if key not in {"executed_nodes", "executed_tests", "passed_tests"}}
         value.update(fields)
         _write_unlocked(path, value)
     return value
+
+
+def update_reverie_counts(
+    path: Path, expected: dict[str, Any], *, evidence: dict[str, Any] | None = None,
+    refusal: str | None = None,
+) -> dict[str, Any]:
+    """Bind counts under the existing record lock without changing any outcome.
+
+    Retain an earlier proof when a later read refuses; its counts cease to have
+    current authority, and the distinct refusal remains visible. A conflicting
+    second handoff can never replace the original proof.
+    """
+    with exclusive_record(path, blocking=False):
+        value = read_record(path)
+        if any(value.get(key) != expected.get(key) for key in reverie_node.COUNT_CONTEXT_FIELDS):
+            raise _error("reverie_count_evidence", "handle identity changed during canonical read")
+        if evidence is not None:
+            executed, passed, _filtered = reverie_node.validate_count_evidence(evidence, value, path)
+            previous = value.get("reverie_count_evidence")
+            if previous is not None and previous != evidence:
+                refusal = "conflicting second Reverie count handoff; original proof retained"
+            else:
+                value["reverie_count_evidence"] = evidence
+                value.update(executed_tests=executed, passed_tests=passed)
+        if refusal is not None:
+            value.update(executed_tests=None, passed_tests=None)
+        value["reverie_count_refusal"] = refusal
+        _write_unlocked(path, value)
+        return value
 
 
 def record_termination_request(
@@ -1395,6 +1466,9 @@ def update_from_observer(
             fields["observed_safe_ci_cgroups"] = sorted(
                 set(value.get("observed_safe_ci_cgroups", [])) | set(groups)
             )
+        if "reverie_count_request" in value:
+            fields = {key: item for key, item in fields.items()
+                      if key not in {"executed_nodes", "executed_tests", "passed_tests"}}
         if fields:
             value.update(fields)
             _write_unlocked(path, value)

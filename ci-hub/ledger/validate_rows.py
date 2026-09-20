@@ -1111,6 +1111,77 @@ def record_reverie_finalization(
         return _spool_record_event(event, root)
 
 
+def _select_reverie_finalization(
+    items: list[dict], source_id: str, final_id: str, run_id: str, *, root: Path
+) -> dict:
+    """Select a retained two-event chain, never the newest matching row.
+
+    The caller supplies one already-validated union. Keep the full correction
+    graph check: an otherwise unrelated malformed/conflicting chain is not an
+    excuse to read a partial authority view.
+    """
+    _rows_from_events(items, root=root)
+    if not all(isinstance(value, str) and value for value in (source_id, final_id, run_id)):
+        raise ValueError("Reverie finalization requires three nonempty identities")
+    sources = [event for event in items if event.get("event_id") == source_id]
+    finals = [event for event in items if event.get("event_id") == final_id]
+    if source_id == final_id or len(sources) != 1 or len(finals) != 1:
+        raise ValueError("Reverie source/final event is missing or ambiguous")
+    source, final = sources[0], finals[0]
+    original, row = source.get("legacy_row"), final.get("legacy_row")
+    if (source.get("event_type") != "run.result"
+            or source.get("team") != "reverie"
+            or source.get("producer", {}).get("tool") != "reverie-validate-sh"
+            or source.get("producer", {}).get("source") != "observed"
+            or not isinstance(original, dict)
+            or original.get("producer") != "reverie-validate-sh"
+            or type(original.get("schema_version")) is not int
+            or original.get("schema_version") not in {3, 4, 5}
+            or original.get("repo") not in {"reverie", "rrnewton/reverie"}
+            or final.get("event_type") != "run.correct"
+            or final.get("team") != "reverie"
+            or final.get("supersedes") != source_id
+            or source.get("run_id") != run_id or final.get("run_id") != run_id
+            or final.get("producer", {}).get("tool") != "ci-hub-reverie-validate-run"
+            or final.get("producer", {}).get("source") != "observed"
+            or not isinstance(row, dict)):
+        raise ValueError("Reverie finalization does not bind the requested producer chain")
+    normalized = {"schema_version": 5, "producer": "ci-hub-reverie-validate-run", "repo": "rrnewton/reverie"}
+    additions = {
+        "tree", "raw_result", "gates_run", "gates_expected", "coverage",
+        "admission", "concurrent_validates", "concurrency_proof", "safe_ci",
+        "validate_lock_authority", "reverie_validation_policy",
+    }
+    if (any(row.get(key) != value for key, value in normalized.items())
+            or any(key not in row or _admission_event_identity(row[key]) != _admission_event_identity(value)
+                   for key, value in original.items() if key not in normalized)
+            or set(row) - set(original) - set(normalized) - additions
+            or row.get("raw_result") != original.get("result")):
+        raise ValueError("Reverie finalization changed immutable execution facts")
+    for field in ("commit", "host", "started_at", "emitted_at", "outcome", "run_number"):
+        if source.get(field) != final.get(field):
+            raise ValueError(f"Reverie finalization changed envelope field {field!r}")
+    if any(event.get("supersedes") == final_id or (
+        event.get("run_id") == run_id
+        and event.get("event_type") in {"run.result", "run.correct"}
+        and event.get("event_id") not in {source_id, final_id}
+    ) for event in items):
+        raise ValueError("Reverie finalization has a different or moving chain")
+    projected = _rows_from_events([source, final], root=root)
+    if len(projected) != 1:
+        raise ValueError("Reverie finalization has no single projected row")
+    return {"source": source, "final": final, "row": projected[0]}
+
+
+def reverie_finalization(
+    source_id: str, final_id: str, run_id: str, *, root: Path | None = None
+) -> dict:
+    """Read exact finalization objects from one strict canonical snapshot."""
+    root = (root or repository_root()).resolve()
+    items, _ = _validated_events(root=root, preserve_admission=True)
+    return _select_reverie_finalization(items, source_id, final_id, run_id, root=root)
+
+
 def _read_rows(path: Path) -> list[dict]:
     text = path.read_text()
     if text and not text.endswith("\n"):
@@ -1587,6 +1658,9 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("target", "checkout", "log", "started"):
         source_command.add_argument("--" + name, required=True)
     commands.add_parser("record-reverie-finalization", help="append finalizer provenance for one retained Reverie source event")
+    final_command = commands.add_parser("reverie-finalization", help="read one exact validated Reverie finalization chain")
+    for name in ("source-id", "final-id", "run-id"):
+        final_command.add_argument("--" + name, required=True)
     summary = commands.add_parser(
         "summary",
         description="coverage-aware breakdown of one receipt: gates_run beside the "
@@ -1616,9 +1690,11 @@ def main(argv: list[str] | None = None) -> int:
         s = summarise(row)
         print(json.dumps(s, sort_keys=True) if args.json else render_summary(s))
         return 0
-    if args.command == "reverie-source":
+    if args.command in {"reverie-source", "reverie-finalization"}:
         try:
-            value = reverie_source(args.target, args.checkout, args.log, args.started)
+            value = (reverie_source(args.target, args.checkout, args.log, args.started)
+                     if args.command == "reverie-source" else
+                     reverie_finalization(args.source_id, args.final_id, args.run_id))
             print(qualifying_receipt.admission_json_dumps(value, sort_keys=True))
             return 0
         except (OSError, ValueError) as error:

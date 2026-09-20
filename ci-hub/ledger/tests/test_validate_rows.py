@@ -1786,6 +1786,111 @@ def reverie_finalization_fixture(root: Path, *, run_number: int = 153) -> tuple[
     return event, final
 
 
+def count_handoff_fixture(root: Path) -> tuple[Path, dict, dict, dict]:
+    """Normal writer/query data fixture with a real Git object store.
+
+    Constrained hosts may reuse an explicitly supplied, already materialized
+    Reverie checkout through a disposable alias. No Git metadata or object is
+    written in that case; both routes exercise the same cwd normalization and
+    real commit/tree checks. No executed guest is claimed by this fixture.
+    """
+    sys.path.insert(0, str(HERE.parent.parent / "validate/tests"))
+    from test_reverie_validate import count_transport_fixture
+    import run_registry
+
+    alias = root / "worktrees" / "counted" / "reverie"
+    alias.parent.mkdir(parents=True)
+    existing = os.environ.get("REVERIE_COUNT_TEST_CHECKOUT")
+    if existing is not None:
+        checkout = Path(existing).resolve(strict=True)
+        if not checkout.is_dir():
+            raise ValueError("existing count fixture checkout is not a directory")
+        alias.symlink_to(checkout, target_is_directory=True)
+        target = git(checkout, "rev-parse", "HEAD^{commit}").stdout.strip()
+    else:
+        target = repository(alias)
+    tree = git(alias, "rev-parse", target + "^{tree}").stdout.strip()
+    path, handle, template = count_transport_fixture(root)
+    handle.update(target=target, checkout=str(alias), source_checkout=str(alias))
+    original = copy.deepcopy(template["canonical"]["source"]["legacy_row"])
+    original.update(commit=target, cwd=str(alias))
+    # The canonical event envelope requires UTC's Z spelling; preserve instants.
+    for field in ("started_at", "finished_at"):
+        original[field] = original[field].replace("+00:00", "Z")
+    Path(original["log_file"]).write_text("fixture: one failed framework execution\n")
+    raw_receipt = validate_rows.record(original, root=root)
+    source_reply = validate_rows.reverie_source(target, str(alias), handle["log"],
+                                              original["started_at"], root=root)
+    source = source_reply["event"]
+    assert source["event_id"] == raw_receipt["event_id"]
+    final = {**source_reply["row"], "schema_version": 5, "producer": "ci-hub-reverie-validate-run",
+             "repo": "rrnewton/reverie", "tree": tree, "raw_result": "fail", "gates_run": 8,
+             "gates_expected": 8, "reverie_validation_policy": "reverie-local-validation/v5",
+             "coverage": template["canonical"]["row"]["coverage"],
+             "validate_lock_authority": {"holder": {
+                 key: handle[key] for key in ("unit", "target", "started_at", "process_identity")}}}
+    receipt = validate_rows.record_reverie_finalization(source, final, root=root)
+    canonical = validate_rows.reverie_finalization(source["event_id"], receipt["event_id"], receipt["run_id"], root=root)
+    assert canonical["row"]["cwd"] == str(alias)
+    assert Path(canonical["row"]["cwd"]).resolve() == alias.resolve()
+    binding = {**template, "context": reverie_node.count_context(handle, path),
+               "source_id": source["event_id"], "final_id": receipt["event_id"], "run_id": receipt["run_id"],
+               "canonical": canonical, "canonical_sha256": hashlib.sha256(reverie_node.count_json(canonical)).hexdigest()}
+    run_registry.create_record(path, handle)
+    reverie_node.publish_count_sidecar(reverie_node.count_sidecar_path(path), binding)
+    return path, handle, binding, receipt
+
+
+def test_reverie_count_real_writer_reader_registry_preserves_failure(tmp_path: Path):
+    import run_registry
+    path, handle, binding, receipt = count_handoff_fixture(tmp_path)
+    code_root = HERE.parents[2]
+    evidence = reverie_node.consume_count_handoff(code_root, tmp_path, path, handle)
+    result = run_registry.update_reverie_counts(path, handle, evidence=evidence)
+    assert (result["executed_tests"], result["passed_tests"]) == (20, 19)
+    assert result["exit_code"] == 1 and result["wrapper_exit_code"] == 4
+    assert result["final_validate_status"] == "FAILED" and result["canonical_verdict"] == "NEEDS-RERUN"
+    assert result.get("executed_nodes") is None
+    assert run_registry.update_reverie_counts(path, handle, evidence=evidence) == result
+    replay = validate_rows.record_reverie_finalization(binding["canonical"]["source"], binding["canonical"]["row"], root=tmp_path)
+    assert replay["event_id"] == receipt["event_id"] and replay["already_recorded"] is True
+    assert len(validate_rows.events(root=tmp_path)) == 2
+
+
+def test_reverie_count_exact_query_refuses_missing_wrong_and_moving_chain(tmp_path: Path):
+    path, handle, binding, _receipt = count_handoff_fixture(tmp_path)
+    for source_id, final_id, run_id in (("absent", binding["final_id"], binding["run_id"]),
+                                       (binding["source_id"], "absent", binding["run_id"]),
+                                       (binding["source_id"], binding["final_id"], "other-run"),
+                                       (binding["final_id"], binding["source_id"], binding["run_id"])):
+        with pytest.raises(ValueError):
+            validate_rows.reverie_finalization(source_id, final_id, run_id, root=tmp_path)
+    # A later, intrinsically valid correction must invalidate the old handoff.
+    later = copy.deepcopy(binding["canonical"]["final"])
+    later.update(event_id="later-count", supersedes=binding["final_id"], reason="opposing later correction")
+    validate_rows._spool_record_event(later, tmp_path)
+    with pytest.raises(ValueError, match="moving chain"):
+        validate_rows.reverie_finalization(binding["source_id"], binding["final_id"], binding["run_id"], root=tmp_path)
+    with pytest.raises(reverie_node.Refusal, match="unavailable"):
+        reverie_node.consume_count_handoff(HERE.parents[2], tmp_path, path, handle)
+
+
+def test_reverie_count_query_refuses_conflicting_canonical_union(tmp_path: Path):
+    _path, _handle, binding, _receipt = count_handoff_fixture(tmp_path)
+    conflicting = copy.deepcopy(binding["canonical"]["final"])
+    conflicting["legacy_row"]["tree"] = "d" * 40
+    # Use the actual shard reader's conflicting-ID contract, not a mocked query.
+    shard = tmp_path / "ledger/reverie/count-test/2026-09.jsonl"
+    shard.parent.mkdir(parents=True)
+    shard.write_text(json.dumps(conflicting) + "\n")
+    with pytest.raises(ledger.ConflictingEventId) as refusal:
+        validate_rows.reverie_finalization(binding["source_id"], binding["final_id"], binding["run_id"], root=tmp_path)
+    assert str(refusal.value) == (
+        f"event_id {binding['final_id']!r} appears twice with different bodies; "
+        "refusing last-writer-wins (§5.2)"
+    )
+
+
 def test_reverie_finalization_preserves_one_failed_run_and_raw_source(tmp_path: Path):
     event, final = reverie_finalization_fixture(tmp_path)
     spool_dir = validate_rows.live_spool_dir(tmp_path)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import copy
+import hashlib
 import os
 import shlex
 import subprocess
@@ -26,6 +28,150 @@ from test_immutable_tool_authority import ExecutingAuthorityFixture
 
 
 DEFAULT_PASSED = object()
+
+
+def count_transport_fixture(directory: Path) -> tuple[Path, dict, dict]:
+    """Data-only transport input, never a claim of canonical-ledger admission."""
+    path = directory / "validate-count.json"
+    request = {"schema": reverie_node.COUNT_SCHEMA, "nonce": "1" * 32,
+               "producer_files": dict.fromkeys(reverie_node.COUNT_SOURCE_PATHS, "2" * 64)}
+    record = {
+        "schema_version": 1, "producer": "ci-hub/validate/run_registry.py",
+        "kind": "reverie-validate", "state": "completed", "unit": "validate-count.service",
+        "repo": "rrnewton/reverie", "target": "a" * 40,
+        "checkout": str(directory / "checkout"), "source_checkout": str(directory / "checkout"),
+        "cargo_home": str(directory / "cargo"), "log": str(directory / "run.log"),
+        "agent": "count-test", "admission": "ci-hub validate-lock", "pane_role": "observer-only",
+        "temporary_checkout": False,
+        "started_at": "2026-09-20T00:00:00.123456+00:00",
+        "parent_checkout_head": "b" * 40, "validate_lock_child_deadline_seconds": 3600,
+        "process_identity": {"pid": 123, "start_ticks": 456, "boot_id": "data-only"},
+        "reverie_count_request": request, "result": "failure", "exit_code": 1,
+        "final_validate_status": "FAILED", "finished_at": "2026-09-20T00:01:00+00:00",
+        "canonical_verdict": "NEEDS-RERUN", "wrapper_exit_code": 4,
+    }
+    gates = [{"name": name, "result": "pass"} for name in reverie_node.V5_GATES]
+    for gate in gates:
+        if gate["name"] in reverie_node.V5_TEST_GATES:
+            gate.update(executed_tests=10, passed_tests=10, filtered_tests=2)
+        if gate["name"] == reverie_node.V5_TEST_GATES[0]:
+            gate.update(result="fail", passed_tests=9)
+    original = {
+        "schema_version": 5, "producer": "reverie-validate-sh", "repo": "reverie",
+        "record_id": "source-count", "commit": record["target"], "host": "count-test",
+        "cwd": record["checkout"], "log_file": record["log"],
+        "started_at": "2026-09-20T00:00:00+00:00", "finished_at": record["finished_at"],
+        "result": "fail", "exit_code": 1, "checks": 8, "failures": 1,
+        "executed_tests": 20, "passed_tests": 19, "filtered_tests": 4, "gates": gates,
+    }
+    row = {**copy.deepcopy(original), "schema_version": 5, "producer": "ci-hub-reverie-validate-run",
+           "repo": "rrnewton/reverie", "tree": "c" * 40, "raw_result": "fail",
+           "reverie_validation_policy": "reverie-local-validation/v5", "gates_expected": 8,
+           "gates_run": 8, "coverage": {"planned_test_nodes": 2, "executed_test_nodes": 2,
+                                        "zero_executed_nodes": [], "absent_nodes": []},
+           "validate_lock_authority": {"holder": {
+               key: record[key] for key in ("unit", "target", "started_at", "process_identity")}}}
+    source = {"schema": "validate-ledger/v1", "event_id": "source-count", "run_id": "source-count",
+              "event_type": "run.result", "team": "reverie", "host": "count-test",
+              "commit": record["target"], "started_at": original["started_at"],
+              "emitted_at": original["finished_at"], "outcome": "fail",
+              "producer": {"source": "observed", "tool": "reverie-validate-sh", "tool_version": "5"},
+              "legacy_row": original}
+    final = {**copy.deepcopy(source), "event_id": "final-count", "event_type": "run.correct",
+             "supersedes": source["event_id"], "reason": "count fixture",
+             "producer": {"source": "observed", "tool": "ci-hub-reverie-validate-run", "tool_version": "5"},
+             "legacy_row": copy.deepcopy(row)}
+    canonical = {"source": source, "final": final, "row": row}
+    binding = {"schema": reverie_node.COUNT_SCHEMA, "context": reverie_node.count_context(record, path),
+               "invocation_id": "3" * 32, "source_id": source["event_id"], "final_id": final["event_id"],
+               "run_id": source["run_id"], "canonical": canonical,
+               "canonical_sha256": hashlib.sha256(reverie_node.count_json(canonical)).hexdigest()}
+    return path, record, binding
+
+
+def count_evidence(binding: dict) -> dict:
+    return {"schema": reverie_node.COUNT_EVIDENCE_SCHEMA, "binding": binding,
+            "sidecar_sha256": hashlib.sha256(reverie_node.count_json(binding)).hexdigest()}
+
+
+class ReverieCountTransportTests(unittest.TestCase):
+    def test_transport_failure_preserves_each_original_main_exit(self) -> None:
+        for raw, status in ((0, "PASSED"), (1, "FAILED"), (75, "COULD_NOT_RUN")):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                checkout = root / "reverie"
+                checkout.mkdir()
+                with mock.patch.object(reverie_node, "produce_count_handoff", side_effect=OSError("sidecar refused")):
+                    result, final, _row = ReverieValidateTest.run_reverie_node(root, checkout, validate_exit=raw)
+                self.assertEqual(raw, result)
+                self.assertEqual(f"FINAL_VALIDATE_STATUS: {status}\n", final)
+
+    def test_failed_execution_counts_and_repeated_gate_executions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path, record, binding = count_transport_fixture(Path(temporary))
+            self.assertEqual((20, 19, 4), reverie_node.validate_count_binding(binding, record, path))
+            self.assertEqual("fail", binding["canonical"]["row"]["result"])
+            # These are executions in two gates, never ten globally unique tests.
+            self.assertEqual(2, len(reverie_node.V5_TEST_GATES))
+
+    def test_wrong_handle_source_generation_or_invocation_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path, record, binding = count_transport_fixture(Path(temporary))
+            for field in ("unit", "target", "checkout", "log", "started_at", "parent_checkout_head", "process_identity"):
+                with self.subTest(field=field):
+                    changed = copy.deepcopy(binding)
+                    changed["context"][field] = "different"
+                    with self.assertRaises(reverie_node.Refusal):
+                        reverie_node.validate_count_binding(changed, record, path)
+            for nonce in ("", "g" * 32):
+                changed = copy.deepcopy(binding)
+                changed["invocation_id"] = nonce
+                with self.assertRaises(reverie_node.Refusal):
+                    reverie_node.validate_count_binding(changed, record, path)
+
+    def test_counts_refuse_boolean_overflow_partial_and_changed_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path, record, binding = count_transport_fixture(Path(temporary))
+            for field, value in (("executed_tests", True), ("passed_tests", 21),
+                                 ("filtered_tests", 1 << 63), ("executed_tests", None),
+                                 ("reverie_validation_policy", "invented")):
+                with self.subTest(field=field, value=value):
+                    changed = copy.deepcopy(binding)
+                    changed["canonical"]["row"][field] = value
+                    changed["canonical_sha256"] = hashlib.sha256(reverie_node.count_json(changed["canonical"])).hexdigest()
+                    with self.assertRaises(reverie_node.Refusal):
+                        reverie_node.validate_count_binding(changed, record, path)
+
+    def test_exclusive_sidecar_retry_conflict_and_unsafe_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path, _record, binding = count_transport_fixture(Path(temporary))
+            sidecar = reverie_node.count_sidecar_path(path)
+            reverie_node.publish_count_sidecar(sidecar, binding)
+            first = sidecar.read_bytes()
+            reverie_node.publish_count_sidecar(sidecar, binding)
+            changed = copy.deepcopy(binding)
+            changed["run_id"] = "second-run"
+            with self.assertRaisesRegex(reverie_node.Refusal, "different count sidecar"):
+                reverie_node.publish_count_sidecar(sidecar, changed)
+            self.assertEqual(first, sidecar.read_bytes())
+            link = path.with_name("link.json")
+            link.symlink_to(sidecar)
+            with self.assertRaises(OSError):
+                reverie_node.read_count_sidecar(link)
+            for raw in (b'{"x":1,"x":2}\n', b'{}', b'{"x":NaN}\n'):
+                malformed = path.with_name("malformed.json")
+                malformed.write_bytes(raw)
+                with self.assertRaises((reverie_node.Refusal, ValueError)):
+                    reverie_node.read_count_sidecar(malformed)
+
+    def test_unavailable_canonical_reader_is_not_sidecar_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            path, record, binding = count_transport_fixture(directory)
+            reverie_node.publish_count_sidecar(reverie_node.count_sidecar_path(path), binding)
+            with mock.patch.object(reverie_node, "read_finalization", side_effect=reverie_node.Refusal("checker unavailable")):
+                with self.assertRaisesRegex(reverie_node.Refusal, "checker unavailable"):
+                    reverie_node.consume_count_handoff(directory, directory, path, record)
 
 
 class ReverieValidateTest(unittest.TestCase):

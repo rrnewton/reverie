@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -85,10 +87,262 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SAFE_CI_STEP = "validate.reverie-full"
 I64_MAX = (1 << 63) - 1
 TEST_COUNT_FIELDS = ("executed_tests", "passed_tests", "filtered_tests")
+COUNT_SCHEMA = "reverie-count-handoff/v1"
+COUNT_EVIDENCE_SCHEMA = "reverie-count-evidence/v1"
+COUNT_HANDLE_ENV = "CI_HUB_REVERIE_COUNT_HANDLE"
+COUNT_SOURCE_PATHS = (
+    "ci-hub/validate/start_unit.py", "ci-hub/validate/run_registry.py",
+    "ci-hub/validate/reverie_node.py", "ci-hub/ledger/validate_rows.py",
+)
+COUNT_CONTEXT_FIELDS = (
+    "unit", "repo", "target", "checkout", "log", "started_at",
+    "parent_checkout_head", "process_identity", "reverie_count_request",
+)
+COUNT_MAX_BYTES = 1024 * 1024
 
 
 class Refusal(RuntimeError):
     pass
+
+
+def count_json(value: Any) -> bytes:
+    """Documented canonical JSON encoding, not an original ledger-line hash."""
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=True, allow_nan=False) + "\n").encode()
+
+
+def strict_count_json(raw: str | bytes) -> dict[str, Any]:
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in items:
+            if key in value:
+                raise Refusal(f"duplicate count-evidence JSON key {key!r}")
+            value[key] = item
+        return value
+
+    def invalid_constant(value: str) -> None:
+        raise Refusal(f"invalid count-evidence JSON constant {value}")
+
+    value = json.loads(raw, object_pairs_hook=pairs, parse_constant=invalid_constant)
+    if not isinstance(value, dict):
+        raise Refusal("count evidence must be a JSON object")
+    return value
+
+
+def count_source_hashes(root: Path) -> dict[str, str]:
+    return {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+            for name in COUNT_SOURCE_PATHS}
+
+
+def validate_count_request(value: object) -> None:
+    if (not isinstance(value, dict) or set(value) != {"schema", "nonce", "producer_files"}
+            or value.get("schema") != COUNT_SCHEMA
+            or not isinstance(value.get("nonce"), str)
+            or re.fullmatch(r"[0-9a-f]{32}", value["nonce"]) is None):
+        raise Refusal("invalid Reverie count request")
+    files = value["producer_files"]
+    if (not isinstance(files, dict) or set(files) != set(COUNT_SOURCE_PATHS)
+            or any(not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                   for digest in files.values())):
+        raise Refusal("count request does not bind all producer sources")
+
+
+def count_sidecar_path(record_path: Path) -> Path:
+    return record_path.with_name(record_path.name + ".reverie-count.json")
+
+
+def count_context(record: dict[str, Any], record_path: Path) -> dict[str, Any]:
+    if record.get("kind") != "reverie-validate" or record.get("repo") != "rrnewton/reverie":
+        raise Refusal("count handoff requires a Reverie validation handle")
+    validate_count_request(record.get("reverie_count_request"))
+    if not SHA_RE.fullmatch(str(record.get("parent_checkout_head", ""))):
+        raise Refusal("count handoff has no exact producer source commit")
+    identity = record.get("process_identity")
+    if (not isinstance(identity, dict) or set(identity) != {"pid", "start_ticks", "boot_id"}
+            or any(type(identity.get(key)) is not int or identity[key] <= 0
+                   for key in ("pid", "start_ticks"))
+            or not isinstance(identity.get("boot_id"), str) or not identity["boot_id"]):
+        raise Refusal("count handoff has no validation process generation")
+    return {"record_path": str(record_path.absolute()),
+            **{key: record[key] for key in COUNT_CONTEXT_FIELDS}}
+
+
+def _file_generation(value: os.stat_result) -> tuple[int, ...]:
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def read_count_sidecar(path: Path) -> tuple[dict[str, Any], str, tuple[int, ...]]:
+    """Read a bounded regular file through one descriptor; refuse named movement."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > COUNT_MAX_BYTES:
+            raise Refusal("count sidecar is not a bounded regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            raw = stream.read(COUNT_MAX_BYTES + 1)
+        generation = _file_generation(before)
+        if (len(raw) > COUNT_MAX_BYTES or generation != _file_generation(os.fstat(descriptor))
+                or generation != _file_generation(path.lstat()) or not raw.endswith(b"\n")):
+            raise Refusal("count sidecar moved or is truncated")
+        return strict_count_json(raw), hashlib.sha256(raw).hexdigest(), generation
+    finally:
+        os.close(descriptor)
+
+
+def publish_count_sidecar(path: Path, value: dict[str, Any]) -> None:
+    """Publish once without replacement. A retry must have identical bytes."""
+    raw = count_json(value)
+    if len(raw) > COUNT_MAX_BYTES:
+        raise Refusal("count sidecar exceeds its byte bound")
+    with tempfile.NamedTemporaryFile(prefix=f".{path.name}.", dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    try:
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            _value, digest, _generation = read_count_sidecar(path)
+            if digest != hashlib.sha256(raw).hexdigest():
+                raise Refusal("a different count sidecar already exists")
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink()
+
+
+def read_finalization(
+    root: Path, source_id: str, final_id: str, run_id: str, *, state_root: Path | None = None
+) -> dict[str, Any]:
+    result = run(
+        [sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "reverie-finalization",
+         "--source-id", source_id, "--final-id", final_id, "--run-id", run_id],
+        cwd=state_root or root,
+        env={**os.environ, **({"DEV_HERMIT_PARENT": str(state_root)} if state_root else {})},
+    )
+    if result.returncode:
+        raise Refusal("canonical finalization unavailable: " +
+                      (result.stderr.strip() or result.stdout.strip() or str(result.returncode)))
+    value = strict_count_json(result.stdout)
+    if set(value) != {"source", "final", "row"} or not all(isinstance(item, dict) for item in value.values()):
+        raise Refusal("canonical finalization has no exact event/row binding")
+    return value
+
+
+def validate_count_binding(
+    value: object, record: dict[str, Any], record_path: Path
+) -> tuple[int, int, int]:
+    """Validate transport shape and framework populations; no ledger authority here."""
+    if (not isinstance(value, dict)
+            or set(value) != {"schema", "context", "invocation_id", "source_id", "final_id",
+                              "run_id", "canonical", "canonical_sha256"}
+            or value.get("schema") != COUNT_SCHEMA
+            or value.get("context") != count_context(record, record_path)
+            or not isinstance(value.get("invocation_id"), str)
+            or re.fullmatch(r"[0-9a-f]{32}", value["invocation_id"]) is None):
+        raise Refusal("count sidecar does not bind this handle/invocation/source")
+    canonical = value["canonical"]
+    if (not isinstance(canonical, dict) or set(canonical) != {"source", "final", "row"}
+            or not all(isinstance(item, dict) for item in canonical.values())
+            or hashlib.sha256(count_json(canonical)).hexdigest() != value["canonical_sha256"]):
+        raise Refusal("count canonical-encoding digest disagrees")
+    source, final, row = (canonical[key] for key in ("source", "final", "row"))
+    if (any(not isinstance(value.get(key), str) or not value[key] for key in ("source_id", "final_id", "run_id"))
+            or source.get("event_id") != value["source_id"] or final.get("event_id") != value["final_id"]
+            or source.get("run_id") != value["run_id"] or final.get("run_id") != value["run_id"]
+            or final.get("supersedes") != value["source_id"]
+            or source.get("event_type") != "run.result" or final.get("event_type") != "run.correct"
+            or row.get("producer") != "ci-hub-reverie-validate-run" or row.get("schema_version") != 5
+            or row.get("repo") != record["repo"] or row.get("commit") != record["target"]
+            or row.get("cwd") != record["checkout"] or row.get("log_file") != record["log"]
+            or not SHA_RE.fullmatch(str(row.get("tree", "")))):
+        raise Refusal("count source/final event or measured checkout does not match")
+    if any(not isinstance(item, str) for item in
+           (record.get("started_at"), row.get("started_at"), row.get("finished_at"))):
+        raise Refusal("count start/finish boundaries must be timestamp strings")
+    authority = row.get("validate_lock_authority")
+    if not isinstance(authority, dict) or not isinstance(authority.get("holder"), dict):
+        raise Refusal("count validation authority must contain a holder object")
+    holder = authority["holder"]
+    boundary = datetime.fromisoformat(record["started_at"].replace("Z", "+00:00")).replace(microsecond=0)
+    started = datetime.fromisoformat(row["started_at"].replace("Z", "+00:00"))
+    finished = datetime.fromisoformat(row["finished_at"].replace("Z", "+00:00"))
+    if any(item.tzinfo is None for item in (boundary, started, finished)) or not boundary <= started <= finished:
+        raise Refusal("count row does not bind this run's start boundary")
+    if any(holder.get(key) != record.get(key) for key in ("unit", "target", "started_at", "process_identity")):
+        raise Refusal("count row's validation authority belongs to a different handle")
+    policy, expected, counted = require_expected_gate_set(row.get("gates"))
+    totals = recorded_test_counts(row)
+    executed, passed, filtered, zero, absent = recorded_gate_coverage(row, counted)
+    if (totals != (executed, passed, filtered) or row.get("reverie_validation_policy") != policy
+            or row.get("gates_expected") != len(expected)
+            or (policy in {"reverie-local-validation/v4", "reverie-local-validation/v5"} and (zero or absent))):
+        raise Refusal("count selection policy or aggregate differs from the counted gates")
+    return totals
+
+
+def produce_count_handoff(
+    root: Path, row: dict[str, Any], source: dict[str, Any], receipt: str
+) -> None:
+    raw_handle = os.environ.get(COUNT_HANDLE_ENV)
+    if raw_handle is None:
+        return  # Older/standalone producers retain their existing null-count contract.
+    import run_registry
+
+    record_path = Path(raw_handle)
+    if not record_path.is_absolute():
+        raise Refusal("count handle path is not absolute")
+    handle = run_registry.read_record(record_path)
+    context = count_context(handle, record_path)
+    if context["reverie_count_request"]["producer_files"] != count_source_hashes(root):
+        raise Refusal("executing count producer differs from the launch source")
+    invocation = os.environ.get("INVOCATION_ID", "")
+    cgroup = Path("/proc/self/cgroup").read_text()
+    if not any(handle["unit"] in line.split(":", 2)[-1].split("/") for line in cgroup.splitlines()):
+        raise Refusal("count producer is outside the named service")
+    ack = strict_count_json(receipt)
+    if (ack.get("schema") != "ci-hub-validate-ledger-record/v1"
+            or ack.get("run_id") != source.get("run_id")
+            or not isinstance(ack.get("event_id"), str) or not ack["event_id"]):
+        raise Refusal("ledger writer did not acknowledge an exact final event")
+    canonical = read_finalization(root, source["event_id"], ack["event_id"], ack["run_id"])
+    if count_json(canonical["source"]) != count_json(source) or count_json(canonical["row"]) != count_json(row):
+        raise Refusal("acknowledged finalization differs from the producer's objects")
+    value = {"schema": COUNT_SCHEMA, "context": context, "invocation_id": invocation,
+             "source_id": source["event_id"], "final_id": ack["event_id"], "run_id": ack["run_id"],
+             "canonical": canonical, "canonical_sha256": hashlib.sha256(count_json(canonical)).hexdigest()}
+    validate_count_binding(value, handle, record_path)
+    publish_count_sidecar(count_sidecar_path(record_path), value)
+
+
+def consume_count_handoff(
+    root: Path, state_root: Path, record_path: Path, record: dict[str, Any]
+) -> dict[str, Any]:
+    """Authenticate the locator against one current strict canonical snapshot."""
+    path = count_sidecar_path(record_path)
+    value, digest, generation = read_count_sidecar(path)
+    validate_count_binding(value, record, record_path)
+    canonical = read_finalization(root, value["source_id"], value["final_id"], value["run_id"], state_root=state_root)
+    if count_json(canonical) != count_json(value["canonical"]):
+        raise Refusal("canonical finalization changed after the sidecar was published")
+    _again, after_digest, after_generation = read_count_sidecar(path)
+    if after_digest != digest or after_generation != generation:
+        raise Refusal("count sidecar moved during canonical validation")
+    return {"schema": COUNT_EVIDENCE_SCHEMA, "sidecar_sha256": digest, "binding": value}
+
+
+def validate_count_evidence(
+    value: object, record: dict[str, Any], record_path: Path
+) -> tuple[int, int, int]:
+    if (not isinstance(value, dict) or set(value) != {"schema", "sidecar_sha256", "binding"}
+            or value.get("schema") != COUNT_EVIDENCE_SCHEMA
+            or value.get("sidecar_sha256") != hashlib.sha256(count_json(value.get("binding"))).hexdigest()):
+        raise Refusal("count evidence does not bind the published sidecar bytes")
+    return validate_count_binding(value["binding"], record, record_path)
 
 
 def require_kvm_environment() -> None:
@@ -365,7 +619,7 @@ def require_expected_gate_set(
     raise Refusal(f"Reverie gate set drifted: {gate_names!r}")
 
 
-def record(root: Path, row: dict[str, Any], source: dict[str, Any]) -> None:
+def record(root: Path, row: dict[str, Any], source: dict[str, Any]) -> str:
     result = bounded_capture.capture(
         [sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "record-reverie-finalization"],
         input=json.dumps({"source": source, "row": row}, sort_keys=True) + "\n",
@@ -374,6 +628,7 @@ def record(root: Path, row: dict[str, Any], source: dict[str, Any]) -> None:
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
         raise Refusal(f"canonical ledger writer refused Reverie row: {detail}")
+    return result.stdout
 
 
 def write_final_status(path: Path, status: str) -> None:
@@ -495,7 +750,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         # The canonical row records even a product red. Shape failures are not
         # repaired here; the reader will refuse them rather than minting green.
-        record(root, canonical, source_event)
+        receipt = record(root, canonical, source_event)
         if result.returncode == 0:
             status = "PASSED"
         elif result.returncode == 1:
@@ -503,6 +758,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             status = "COULD_NOT_RUN"
         write_final_status(status_file, status)
+        try:
+            produce_count_handoff(root, canonical, source_event, receipt)
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
+            # The ledger append and payload verdict already exist. Count
+            # transport is separate bookkeeping and must not replace either.
+            print(f"reverie-safe-validate: COUNT-HANDOFF-REFUSED: {error}", file=sys.stderr)
         return FINAL_VALIDATE_STATUS_EXIT_CODES[status]
     except (OSError, Refusal) as error:
         print(f"reverie-safe-validate: REFUSED: {error}", file=sys.stderr)

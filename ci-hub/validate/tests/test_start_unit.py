@@ -10716,5 +10716,66 @@ class CleanupRecordAdmissionTests(unittest.TestCase):
         )
 
 
+class ReverieCountFinalizerTests(unittest.TestCase):
+    def test_malformed_nested_sidecar_refuses_counts_and_preserves_failed_verdict(self) -> None:
+        import hashlib
+        from test_reverie_validate import count_transport_fixture
+        for field in ("validate_lock_authority", "holder", "started_at", "finished_at"):
+            for value in (None, [], 17):
+                with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    path, record, binding = count_transport_fixture(root)
+                    row = binding["canonical"]["row"]
+                    if field == "holder":
+                        row["validate_lock_authority"]["holder"] = value
+                    else:
+                        row[field] = value
+                    binding["canonical_sha256"] = hashlib.sha256(
+                        start_unit.reverie_node.count_json(binding["canonical"])
+                    ).hexdigest()
+                    run_registry.create_record(path, record)
+                    start_unit.reverie_node.publish_count_sidecar(
+                        start_unit.reverie_node.count_sidecar_path(path), binding
+                    )
+                    with mock.patch.object(start_unit.reverie_node, "read_finalization",
+                                           side_effect=AssertionError("malformed transport must refuse before ledger query")):
+                        with contextlib.redirect_stderr(io.StringIO()):
+                            final = start_unit.finalize_reverie_counts(root, root, path, record=record)
+                    for key in ("state", "result", "exit_code", "canonical_verdict", "wrapper_exit_code", "final_validate_status"):
+                        self.assertEqual(record[key], final[key])
+                    self.assertIsNone(final["executed_tests"])
+                    self.assertIsNone(final["passed_tests"])
+                    self.assertTrue(final["reverie_count_refusal"])
+                    self.assertEqual(final, run_registry.read_record(path))
+
+    def test_missing_sidecar_does_not_change_failed_result_or_wrapper_verdict(self) -> None:
+        from test_reverie_validate import count_transport_fixture
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path, record, _binding = count_transport_fixture(root)
+            run_registry.create_record(path, record)
+            with contextlib.redirect_stderr(io.StringIO()):
+                final = start_unit.finalize_reverie_counts(root, root, path, record=record)
+            for key in ("state", "result", "exit_code", "canonical_verdict", "wrapper_exit_code", "final_validate_status"):
+                self.assertEqual(record[key], final[key])
+            self.assertIsNone(final["executed_tests"])
+            self.assertIsNone(final["passed_tests"])
+            self.assertIn("No such file", final["reverie_count_refusal"])
+            self.assertEqual(final, run_registry.read_record(path))
+
+    def test_historical_handle_is_not_read_or_backfilled(self) -> None:
+        record = {"kind": "reverie-validate", "passed_tests": None}
+        with mock.patch.object(start_unit.reverie_node, "consume_count_handoff", side_effect=AssertionError("must not run")):
+            self.assertIs(record, start_unit.finalize_reverie_counts(Path("/absent"), Path("/absent"), Path("/absent/handle.json"), record=record))
+
+    def test_direct_and_attach_recovery_have_the_same_finalizer(self) -> None:
+        import ast
+        tree = ast.parse(Path(start_unit.__file__).read_text())
+        callers = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)
+                   and any(isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                           and child.func.id == "finalize_reverie_counts" for child in ast.walk(node))}
+        self.assertEqual({"main", "attach"}, callers)
+
+
 if __name__ == "__main__":
     unittest.main()

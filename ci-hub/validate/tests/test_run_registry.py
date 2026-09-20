@@ -1191,5 +1191,75 @@ class RunRegistryContractTests(unittest.TestCase):
             )
 
 
+class ReverieCountRegistryTests(unittest.TestCase):
+    def test_exact_evidence_counts_failure_and_idempotent_replay(self) -> None:
+        from test_reverie_validate import count_transport_fixture, count_evidence
+        with tempfile.TemporaryDirectory() as temporary:
+            path, record, binding = count_transport_fixture(Path(temporary))
+            run_registry.create_record(path, record)
+            proof = count_evidence(binding)
+            first = run_registry.update_reverie_counts(path, record, evidence=proof)
+            self.assertEqual((20, 19), (first["executed_tests"], first["passed_tests"]))
+            self.assertEqual(first, run_registry.update_reverie_counts(path, record, evidence=proof))
+            for key in ("exit_code", "result", "final_validate_status", "canonical_verdict", "wrapper_exit_code"):
+                self.assertEqual(record[key], first[key])
+            observed = run_registry.update_record(path, executed_tests=None, passed_tests=None)
+            self.assertEqual((20, 19), (observed["executed_tests"], observed["passed_tests"]))
+            self.assertIsNone(observed.get("executed_nodes"))
+
+    def test_conflict_and_later_refusal_keep_original_proof_but_null_counts(self) -> None:
+        from test_reverie_validate import count_transport_fixture, count_evidence
+        import copy
+        with tempfile.TemporaryDirectory() as temporary:
+            path, record, binding = count_transport_fixture(Path(temporary))
+            run_registry.create_record(path, record)
+            first = count_evidence(binding)
+            run_registry.update_reverie_counts(path, record, evidence=first)
+            second = copy.deepcopy(binding)
+            second["invocation_id"] = "4" * 32
+            refused = run_registry.update_reverie_counts(path, record, evidence=count_evidence(second))
+            self.assertIn("conflicting second", refused["reverie_count_refusal"])
+            self.assertEqual(first, refused["reverie_count_evidence"])
+            self.assertIsNone(refused["executed_tests"])
+            self.assertIsNone(refused["passed_tests"])
+            self.assertEqual(1, refused["exit_code"])
+            retried = run_registry.update_reverie_counts(path, record, evidence=first)
+            self.assertIsNone(retried["reverie_count_refusal"])
+            self.assertEqual(19, retried["passed_tests"])
+            unavailable = run_registry.update_reverie_counts(path, record, refusal="canonical checker unavailable")
+            self.assertEqual(first, unavailable["reverie_count_evidence"])
+            self.assertIsNone(unavailable["executed_tests"])
+
+    def test_count_lock_contention_and_handle_generation_change_refuse(self) -> None:
+        from test_reverie_validate import count_transport_fixture, count_evidence
+        import copy
+        with tempfile.TemporaryDirectory() as temporary:
+            path, record, binding = count_transport_fixture(Path(temporary))
+            run_registry.create_record(path, record)
+            before = path.read_bytes()
+            with run_registry.exclusive_record(path):
+                with self.assertRaises(run_registry.RecordLocked):
+                    run_registry.update_reverie_counts(path, record, evidence=count_evidence(binding))
+            self.assertEqual(before, path.read_bytes())
+            wrong = copy.deepcopy(record)
+            wrong["process_identity"]["start_ticks"] += 1
+            with self.assertRaisesRegex(RuntimeError, "identity changed"):
+                run_registry.update_reverie_counts(path, wrong, evidence=count_evidence(binding))
+            self.assertEqual(before, path.read_bytes())
+
+    def test_no_evidence_no_counts_and_other_repository_cannot_borrow_marker(self) -> None:
+        from test_reverie_validate import count_transport_fixture
+        with tempfile.TemporaryDirectory() as temporary:
+            _path, record, _binding = count_transport_fixture(Path(temporary))
+            run_registry.parse_current_record(record)
+            for counts in ({"executed_tests": 0}, {"passed_tests": 0}):
+                with self.assertRaises(RuntimeError):
+                    run_registry.parse_current_record({**record, **counts})
+            legacy = {key: value for key, value in record.items() if key != "reverie_count_request"}
+            self.assertIsNone(run_registry.parse_current_record(legacy).raw.get("passed_tests"))
+            with self.assertRaisesRegex(RuntimeError, "only for Reverie"):
+                run_registry.parse_current_record(validation_handle(reverie_count_request=record["reverie_count_request"]))
+
+
 if __name__ == "__main__":
     unittest.main()
