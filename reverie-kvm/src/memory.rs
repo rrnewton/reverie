@@ -15,15 +15,21 @@ use std::os::fd::RawFd;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
 
+use kvm_ioctls::Cap;
+use kvm_ioctls::Kvm;
 use reverie::syscalls::Errno;
 use reverie::syscalls::MemoryAccess;
 
 use crate::Error;
 use crate::Result;
+use crate::entry::Closed;
 use crate::entry::CopyAccess;
 use crate::entry::EntryGate;
 use crate::entry::EntryOrigin;
+use crate::entry::MappingGeneration;
+use crate::entry::RetainedOperand;
 use crate::entry::owner::OperationOrigin;
 use crate::failure::FailureContext;
 
@@ -140,6 +146,14 @@ impl BackingSlice {
 #[derive(Debug)]
 struct Mapping {
     mapping: NonNull<u8>,
+    /// Numeric start of the stable KVM slot. The initial mmap pointer is
+    /// exposed once so address-only syscalls can keep naming this range after
+    /// individual pages acquire distinct mmap provenance.
+    base_address: usize,
+    /// Page-start pointers derived while the original whole-range mmap was
+    /// intact. After a partial MAP_FIXED, Rust accesses use these only within
+    /// an untouched page and never span a replaced hole.
+    original_pages: Box<[NonNull<u8>]>,
     slice: BackingSlice,
     guest_base: u64,
     address_space: Mutex<AddressSpaceState>,
@@ -154,6 +168,25 @@ struct AddressSpaceState {
     reservations: BTreeMap<u64, RegionKind>,
     enabled: bool,
     pages: BTreeMap<u64, UserPageState>,
+    /// Pages whose stable slot-0 HVA now names a separately retained backing.
+    /// The current source increment keeps guest placement identity-only.
+    backing_pages: BTreeMap<u64, InstalledBackingPage>,
+}
+
+#[derive(Clone, Debug)]
+struct InstalledBackingPage {
+    _generation: MappingGeneration,
+    _slice: BackingSlice,
+    /// Exact pointer returned by the latest MAP_FIXED for this page. Repeated
+    /// replacements can expose several provenances at one numeric address, so
+    /// reconstructing this pointer from the address would be ambiguous.
+    mapping: NonNull<u8>,
+}
+
+#[derive(Clone, Copy)]
+struct HostChunk {
+    mapping: NonNull<u8>,
+    length: usize,
 }
 
 /// Compatibility placement for the current fixed physical arena. Coverage is
@@ -206,6 +239,7 @@ impl AddressSpaceState {
             reservations: BTreeMap::new(),
             enabled: false,
             pages: BTreeMap::new(),
+            backing_pages: BTreeMap::new(),
         }
     }
 
@@ -240,13 +274,95 @@ pub(crate) struct UserMemory {
 #[derive(Debug)]
 pub(crate) struct HostMemoryOperand {
     _memory: GuestMemory,
+    _retained: RetainedOperand,
     address: usize,
+    _length: usize,
+}
+
+/// Proof returned only after the memory owner has retained an installed mmap
+/// view. Closed admission consumes this receipt before advancing the sole
+/// mapping generation.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the mapping publisher is deliberately non-activating"
+    )
+)]
+pub(crate) struct InstalledMapping {
+    generation: MappingGeneration,
+}
+
+impl InstalledMapping {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the mapping publisher is deliberately non-activating"
+        )
+    )]
+    fn new(generation: MappingGeneration) -> Self {
+        Self { generation }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the mapping publisher is deliberately non-activating"
+        )
+    )]
+    pub(crate) fn generation(&self) -> MappingGeneration {
+        self.generation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gate_control(generation: MappingGeneration) -> Self {
+        Self::new(generation)
+    }
 }
 
 impl HostMemoryOperand {
     pub(crate) fn address(&self) -> usize {
         self.address
     }
+
+    #[cfg(test)]
+    pub(crate) unsafe fn read_volatile<T: Copy>(&self) -> T {
+        let length = std::mem::size_of::<T>();
+        assert!(length != 0 && length <= self._length);
+        assert!(self.address.is_multiple_of(std::mem::align_of::<T>()));
+        let offset = self
+            .address
+            .checked_sub(self._memory.mapping.base_address)
+            .expect("retained host operand belongs to its mapping");
+        let chunks = self._memory.mapping.host_chunks(offset, length);
+        assert_eq!(chunks.len(), 1, "test value crosses an mmap boundary");
+        let chunk = chunks[0];
+        // SAFETY: the caller excludes concurrent writers. The retained operand
+        // prevents publication, and host_chunks returned the exact live mmap
+        // pointer rather than reconstructing it from the numeric HVA.
+        unsafe { chunk.mapping.as_ptr().cast::<T>().read_volatile() }
+    }
+}
+
+/// One completely prepared physical page whose installation is deferred until
+/// a matching address-space close token is held. The allocation guard prevents
+/// another layout transaction from passing preparation before this one either
+/// publishes or is abandoned.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the generation-bound physical-page publisher is not activated by guest mappings yet"
+    )
+)]
+pub(crate) struct PendingBackingPage<'a> {
+    memory: &'a GuestMemory,
+    _allocation: MutexGuard<'a, ()>,
+    page: u64,
+    expected_generation: MappingGeneration,
+    slice: Option<BackingSlice>,
 }
 
 /// An allocation owns its proposed physical pages before initialization. A
@@ -294,11 +410,13 @@ enum UserPageState {
     NoAccess,
 }
 
-// SAFETY: Mapping owns its mmap allocation until Drop, not a Rust reference.
-// Arc<Backing> retains the shared host_access mutex and the file descriptor
+// SAFETY: Mapping owns every mmap view until Drop, not a Rust reference.
+// Arc<Backing> retains the shared host_access mutex and each file descriptor
 // needed for backing operations. Host access through all views is serialized
-// by that mutex. The KVM backend exposes handles only while its single vCPU
-// is stopped at an exit; the host mutex does not stop vCPU access.
+// by the original backing's mutex. Rust dereferences are split at mmap page
+// boundaries and use the exact live pointer for that page. The KVM backend
+// exposes handles only while its single vCPU is stopped at an exit; the host
+// mutex does not stop vCPU access.
 unsafe impl Send for Mapping {}
 // SAFETY: See the Send implementation. All host reads and writes take the
 // backing's mutex before dereferencing the pointer.
@@ -346,10 +464,22 @@ impl GuestMemory {
             return Err(Error::MemoryMapping(std::io::Error::last_os_error()));
         }
 
+        let mapping: NonNull<u8> =
+            NonNull::new(mapping.cast()).expect("mmap returned a null mapping");
+        let base_address = mapping.as_ptr().expose_provenance();
+        let original_pages = (0..slice.length / PAGE_SIZE)
+            .map(|page| {
+                // SAFETY: this is derived while the original whole-range mmap
+                // is intact, and every offset names the start of a live page.
+                unsafe { NonNull::new_unchecked(mapping.as_ptr().add(page * PAGE_SIZE)) }
+            })
+            .collect();
         let size = slice.length;
         Ok(Self {
             mapping: Arc::new(Mapping {
-                mapping: NonNull::new(mapping.cast()).expect("mmap returned a null mapping"),
+                mapping,
+                base_address,
+                original_pages,
                 slice,
                 guest_base,
                 address_space: Mutex::new(AddressSpaceState::new(guest_base, size)),
@@ -519,31 +649,33 @@ impl GuestMemory {
         // The sparse helper requires whole, equal-sized files at offset zero.
         // A subset uses the existing view-relative copy without extending that
         // contract or copying bytes outside the view.
-        let copied_sparse =
-            if self.mapping.slice.offset == 0 && self.len() == self.mapping.slice.backing.length {
-                let _source_guard = self
-                    .mapping
-                    .slice
-                    .backing
-                    .host_access
-                    .lock()
-                    .expect("guest memory lock poisoned");
-                let _destination_guard = snapshot
-                    .mapping
-                    .slice
-                    .backing
-                    .host_access
-                    .lock()
-                    .expect("guest memory lock poisoned");
-                sparse_copy(
-                    self.mapping.slice.backing.fd.as_raw_fd(),
-                    snapshot.mapping.slice.backing.fd.as_raw_fd(),
-                    self.len(),
-                )
-                .is_ok()
-            } else {
-                false
-            };
+        let copied_sparse = if user_access.backing_pages.is_empty()
+            && self.mapping.slice.offset == 0
+            && self.len() == self.mapping.slice.backing.length
+        {
+            let _source_guard = self
+                .mapping
+                .slice
+                .backing
+                .host_access
+                .lock()
+                .expect("guest memory lock poisoned");
+            let _destination_guard = snapshot
+                .mapping
+                .slice
+                .backing
+                .host_access
+                .lock()
+                .expect("guest memory lock poisoned");
+            sparse_copy(
+                self.mapping.slice.backing.fd.as_raw_fd(),
+                snapshot.mapping.slice.backing.fd.as_raw_fd(),
+                self.len(),
+            )
+            .is_ok()
+        } else {
+            false
+        };
 
         // SEEK_DATA/SEEK_HOLE and copy_file_range are Linux optimizations, not
         // correctness requirements. If either is unavailable or cannot finish
@@ -560,11 +692,17 @@ impl GuestMemory {
                 offset += length;
             }
         }
+        let mut snapshot_state = user_access;
+        // Snapshot copied the currently installed HVA bytes into its own one-
+        // backing image. It starts an independent publication history and must
+        // not claim that the source's separately retained page backings are
+        // installed in the new HVA.
+        snapshot_state.backing_pages.clear();
         *snapshot
             .mapping
             .address_space
             .lock()
-            .expect("guest memory access map lock poisoned") = user_access;
+            .expect("guest memory access map lock poisoned") = snapshot_state;
         // The sparse fd operation is not a copy lease or a global snapshot
         // fence. Fallback byte copies each take their own short admission.
         self.check_copy_failure()?;
@@ -603,6 +741,71 @@ impl GuestMemory {
             .allocation
             .lock()
             .expect("KVM allocation transaction lock poisoned")
+    }
+
+    /// Prepare one page replacement without changing the live HVA or KVM
+    /// translation. KVM's synchronous-MMU capability is checked before the
+    /// allocation transaction is retained; publication performs no allocation
+    /// and has a terminal failure contract.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the generation-bound physical-page publisher is not activated by guest mappings yet"
+        )
+    )]
+    pub(crate) fn stage_backing_page<'a>(
+        &'a self,
+        guest_address: u64,
+        contents: &[u8],
+    ) -> Result<PendingBackingPage<'a>> {
+        if !guest_address.is_multiple_of(PAGE_SIZE as u64) || contents.len() != PAGE_SIZE {
+            return Err(Error::InvalidMemoryLayout {
+                guest_base: guest_address,
+                size: contents.len(),
+            });
+        }
+        self.checked_offset(guest_address, PAGE_SIZE)?;
+        let kvm = Kvm::new()?;
+        if !kvm.check_extension(Cap::SyncMmu) {
+            return Err(Error::SynchronousMmuUnsupported);
+        }
+
+        let backing = Arc::new(Backing::new(PAGE_SIZE).map_err(Error::MemoryMapping)?);
+        write_backing(&backing, contents).map_err(Error::MemoryMapping)?;
+        let slice = BackingSlice::new(backing, 0, PAGE_SIZE).map_err(Error::MemoryMapping)?;
+        let allocation = self.allocation_guard();
+        // Recheck after acquiring the transaction guard. The immutable bounds
+        // cannot change today, but keeping validation here makes that ordering
+        // explicit for the later virtual-map owner.
+        self.checked_offset(guest_address, PAGE_SIZE)?;
+        let expected_generation = self
+            .mapping
+            .entry_gate
+            .generation()
+            .map_err(|failure| failure.error())?;
+        Ok(PendingBackingPage {
+            memory: self,
+            _allocation: allocation,
+            page: guest_address / PAGE_SIZE as u64,
+            expected_generation,
+            slice: Some(slice),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backing_generation(&self) -> MappingGeneration {
+        self.mapping.entry_gate.generation().unwrap()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn separately_backed_pages(&self) -> usize {
+        self.mapping
+            .address_space
+            .lock()
+            .unwrap()
+            .backing_pages
+            .len()
     }
 
     pub(crate) fn allocation_cursors(&self) -> Option<AllocationCursors> {
@@ -967,6 +1170,7 @@ impl GuestMemory {
         _copy: &CopyAccess,
     ) -> Result<()> {
         let offset = self.checked_offset(guest_address, destination.len())?;
+        let chunks = self.mapping.host_chunks(offset, destination.len());
         #[cfg(test)]
         if let Some(observe) = &self.test_backing_contention {
             // Record a real failed lock attempt while the actual short-copy
@@ -987,15 +1191,21 @@ impl GuestMemory {
             .host_access
             .lock()
             .expect("guest memory lock poisoned");
-        // SAFETY: checked_offset proves that both ends of the copy lie within
-        // the live mapping, and destination is a distinct mutable slice.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                self.mapping.mapping.as_ptr().add(offset),
-                destination.as_mut_ptr(),
-                destination.len(),
-            );
+        let mut copied = 0;
+        for chunk in chunks {
+            // SAFETY: host_chunks split the validated range at mmap boundaries
+            // and returned the exact live pointer for this chunk. Destination
+            // is a distinct mutable slice with the same remaining length.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    chunk.mapping.as_ptr(),
+                    destination.as_mut_ptr().add(copied),
+                    chunk.length,
+                );
+            }
+            copied += chunk.length;
         }
+        debug_assert_eq!(copied, destination.len());
         Ok(())
     }
 
@@ -1066,6 +1276,15 @@ impl GuestMemory {
         _copy: &CopyAccess,
     ) -> Result<()> {
         let offset = self.checked_offset(guest_address, source.len())?;
+        let chunks = self.mapping.host_chunks(offset, source.len());
+        self.write_host_chunks(&chunks, source);
+        Ok(())
+    }
+
+    /// Write through pointers already resolved under the caller's applicable
+    /// address-space guard. Keeping resolution separate lets permission-aware
+    /// copyout retain that guard through the actual write without re-locking.
+    fn write_host_chunks(&self, chunks: &[HostChunk], source: &[u8]) {
         let _guard = self
             .mapping
             .slice
@@ -1073,16 +1292,22 @@ impl GuestMemory {
             .host_access
             .lock()
             .expect("guest memory lock poisoned");
-        // SAFETY: checked_offset proves that both ends of the copy lie within
-        // the live mapping, and host writes are serialized by host_access.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                source.as_ptr(),
-                self.mapping.mapping.as_ptr().add(offset),
-                source.len(),
-            );
+        let mut copied = 0;
+        for chunk in chunks {
+            // SAFETY: host_chunks split the validated range at mmap boundaries
+            // and returned the exact live pointer for this chunk. The source
+            // slice has the same remaining length and does not overlap guest
+            // RAM.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    source.as_ptr().add(copied),
+                    chunk.mapping.as_ptr(),
+                    chunk.length,
+                );
+            }
+            copied += chunk.length;
         }
-        Ok(())
+        debug_assert_eq!(copied, source.len());
     }
     /// Zeros a guest-physical address range.
     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
@@ -1115,6 +1340,7 @@ impl GuestMemory {
         _copy: &CopyAccess,
     ) -> Result<()> {
         let offset = self.checked_offset(guest_address, length)?;
+        let chunks = self.mapping.host_chunks(offset, length);
         let _guard = self
             .mapping
             .slice
@@ -1122,11 +1348,16 @@ impl GuestMemory {
             .host_access
             .lock()
             .expect("guest memory lock poisoned");
-        // SAFETY: checked_offset proves that the full range lies within the
-        // live mapping, and host writes are serialized by host_access.
-        unsafe {
-            std::ptr::write_bytes(self.mapping.mapping.as_ptr().add(offset), 0, length);
+        let mut zeroed = 0;
+        for chunk in chunks {
+            // SAFETY: host_chunks split the validated range at mmap boundaries
+            // and returned the exact live pointer for this chunk.
+            unsafe {
+                std::ptr::write_bytes(chunk.mapping.as_ptr(), 0, chunk.length);
+            }
+            zeroed += chunk.length;
         }
+        debug_assert_eq!(zeroed, length);
         Ok(())
     }
 
@@ -1156,6 +1387,7 @@ impl GuestMemory {
                 size: length,
             });
         }
+        let chunks = self.mapping.host_chunks(offset, length);
         let _guard = self
             .mapping
             .slice
@@ -1163,32 +1395,33 @@ impl GuestMemory {
             .host_access
             .lock()
             .expect("guest memory lock poisoned");
-        // SAFETY: checked_offset proves that the page-aligned range lies within
-        // the live MAP_SHARED memfd-backed mapping. MADV_REMOVE preserves the
-        // virtual mapping and replaces discarded pages with demand-zero pages.
-        let result = unsafe {
-            libc::madvise(
-                self.mapping.mapping.as_ptr().add(offset).cast(),
-                length,
-                libc::MADV_REMOVE,
-            )
-        };
-        if result != 0 {
-            // MADV_REMOVE is an optimization. Preserve the previous reset
-            // semantics on kernels that reject it (or after a partial discard)
-            // by explicitly zeroing the complete range while holding the same
-            // host-access lock.
-            // SAFETY: checked_offset established the same bounds used for the
-            // madvise call, and the host-access guard serializes this write.
-            unsafe {
-                std::ptr::write_bytes(self.mapping.mapping.as_ptr().add(offset), 0, length);
+        for chunk in chunks {
+            let address = chunk.mapping.as_ptr().expose_provenance();
+            // SAFETY: checked_offset proved that this complete page lies in a
+            // live MAP_SHARED memfd view. madvise consumes only its numeric
+            // address; Rust dereferences below retain the exact mmap pointer.
+            let result = unsafe {
+                libc::madvise(
+                    std::ptr::with_exposed_provenance_mut::<u8>(address).cast(),
+                    chunk.length,
+                    libc::MADV_REMOVE,
+                )
+            };
+            if result != 0 {
+                // MADV_REMOVE is an optimization. Preserve reset semantics on
+                // kernels that reject it by zeroing this exact mapping chunk.
+                // SAFETY: host_chunks supplied the current pointer and length,
+                // and the host-access guard serializes this write.
+                unsafe {
+                    std::ptr::write_bytes(chunk.mapping.as_ptr(), 0, chunk.length);
+                }
             }
         }
         Ok(())
     }
 
     pub(crate) fn host_address(&self) -> u64 {
-        self.mapping.mapping.as_ptr() as u64
+        self.mapping.base_address as u64
     }
 
     fn checked_offset(&self, guest_address: u64, length: usize) -> Result<usize> {
@@ -1236,6 +1469,87 @@ impl GuestMemory {
     #[cfg(test)]
     pub(crate) fn user_writable_prefix(&self, guest_address: u64, length: usize) -> Result<usize> {
         self.user().user_writable_prefix(guest_address, length)
+    }
+}
+
+impl PendingBackingPage<'_> {
+    /// Replace the stable HVA page and bind it to the next gate generation.
+    /// Linux KVM specifies that mmap changes to a registered userspace memory
+    /// region are reflected immediately; keeping every vCPU outside KVM_RUN
+    /// makes the transition one deterministic boundary for all VMs sharing the
+    /// Mapping. MAP_FIXED failure is terminal because the previous host mapping
+    /// may already have been disturbed.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the generation-bound page publisher is not activated by guest mappings yet"
+        )
+    )]
+    pub(crate) fn publish(mut self, closed: &mut Closed) -> Result<MappingGeneration> {
+        let gate = self.memory.entry_gate();
+        if !closed.belongs_to(&gate) {
+            return Err(Error::MappingPublicationGateMismatch);
+        }
+        let page = self.page;
+        let expected_generation = self.expected_generation;
+        let slice = self.slice.take().unwrap();
+        let mapping = &self.memory.mapping;
+        let offset = usize::try_from(
+            page.checked_mul(PAGE_SIZE as u64)
+                .and_then(|address| address.checked_sub(mapping.guest_base))
+                .expect("staged page remains inside its mapping"),
+        )
+        .expect("mapping offset must fit usize");
+        let origin = self.memory.entry_origin();
+        let generation = closed
+            .publish(origin, expected_generation, |generation| {
+                let mut state = mapping
+                    .address_space
+                    .lock()
+                    .expect("guest memory access map lock poisoned");
+                let target_address = mapping
+                    .base_address
+                    .checked_add(offset)
+                    .expect("validated mapping address cannot overflow");
+                // SAFETY: admission is closed, every short copy is drained,
+                // retained operands were refused by Closed::publish, and slice
+                // owns a page-aligned live memfd. MAP_FIXED is the intended
+                // backing replacement. The target pointer supplies only the
+                // exposed numeric HVA; Rust dereferences retain mmap's returned
+                // pointer below. Failure poisons the gate.
+                let installed = unsafe {
+                    libc::mmap(
+                        std::ptr::with_exposed_provenance_mut::<u8>(target_address).cast(),
+                        PAGE_SIZE,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_SHARED | libc::MAP_FIXED,
+                        slice.backing.fd.as_raw_fd(),
+                        slice.offset as libc::off_t,
+                    )
+                };
+                if installed == libc::MAP_FAILED {
+                    return Err(Error::MemoryMapping(std::io::Error::last_os_error()));
+                }
+                let installed: NonNull<u8> =
+                    NonNull::new(installed.cast()).expect("MAP_FIXED returned a null guest page");
+                if installed.as_ptr().expose_provenance() != target_address {
+                    return Err(Error::MemoryMapping(std::io::Error::other(
+                        "MAP_FIXED installed a guest page at an unexpected address",
+                    )));
+                }
+                state.backing_pages.insert(
+                    page,
+                    InstalledBackingPage {
+                        _generation: generation,
+                        _slice: slice,
+                        mapping: installed,
+                    },
+                );
+                Ok(InstalledMapping::new(generation))
+            })
+            .map_err(|failure| failure.error())?;
+        Ok(generation)
     }
 }
 
@@ -1320,9 +1634,17 @@ impl UserMemory {
     ) -> Result<HostMemoryOperand> {
         let physical = self.translate_admitted(address, length, copy)?;
         let offset = self.memory.checked_offset(physical, length)?;
+        let retained = self
+            .memory
+            .mapping
+            .entry_gate
+            .retain_operand(copy)
+            .map_err(|failure| failure.error())?;
         Ok(HostMemoryOperand {
             _memory: self.memory.clone(),
+            _retained: retained,
             address: (self.memory.host_address() as usize) + offset,
+            _length: length,
         })
     }
     pub fn read(&self, guest_address: u64, destination: &mut [u8]) -> Result<()> {
@@ -1431,9 +1753,15 @@ impl UserMemory {
         let length = usize::try_from(cursor - guest_address).expect("copyout prefix fits usize");
         if length == source.len() || (partial && length != 0) {
             let physical = access.translate(guest_address, length)?;
-            self.memory
-                .write_raw_admitted(physical, &source[..length], copy)?;
+            let offset = self.memory.checked_offset(physical, length)?;
+            let chunks = self
+                .memory
+                .mapping
+                .host_chunks_from_state(&access, offset, length);
+            self.memory.write_host_chunks(&chunks, &source[..length]);
         }
+        // Preserve the API's permission-atomicity contract through the write.
+        drop(access);
         Ok(length)
     }
 
@@ -1696,6 +2024,39 @@ impl MemoryAccess for GuestMemory {
     }
 }
 
+fn write_backing(backing: &Backing, bytes: &[u8]) -> io::Result<()> {
+    let mut written = 0;
+    while written < bytes.len() {
+        let offset = libc::off_t::try_from(written)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "backing offset overflow"))?;
+        // SAFETY: backing owns a writable memfd for at least bytes.len()
+        // bytes, and this live slice supplies the remaining initialized input.
+        let result = unsafe {
+            libc::pwrite(
+                backing.fd.as_raw_fd(),
+                bytes[written..].as_ptr().cast(),
+                bytes.len() - written,
+                offset,
+            )
+        };
+        if result < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if result == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "guest backing write made no progress",
+            ));
+        }
+        written += usize::try_from(result).expect("positive pwrite result must fit usize");
+    }
+    Ok(())
+}
+
 fn create_memory_backing() -> io::Result<OwnedFd> {
     let name = c"reverie-kvm-guest-memory";
     // Guest RAM is never executable in the host mapping. Prefer the flag that
@@ -1798,12 +2159,75 @@ fn copy_sparse_file(source: RawFd, destination: RawFd, length: usize) -> io::Res
     Ok(())
 }
 
+impl Mapping {
+    /// Resolve a validated relative range into exact live mmap pointers. Once a
+    /// page has been replaced, no Rust operation may cross that mapping
+    /// boundary with a pointer derived from the original whole-arena mmap.
+    fn host_chunks(&self, offset: usize, length: usize) -> Vec<HostChunk> {
+        let state = self
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        self.host_chunks_from_state(&state, offset, length)
+    }
+
+    /// Resolve while a caller-owned address-space guard remains live. This is
+    /// used by permission-aware copyout so validation and write stay atomic.
+    fn host_chunks_from_state(
+        &self,
+        state: &AddressSpaceState,
+        offset: usize,
+        length: usize,
+    ) -> Vec<HostChunk> {
+        let end = offset
+            .checked_add(length)
+            .expect("validated guest-memory range cannot overflow");
+        debug_assert!(end <= self.slice.length);
+        if length == 0 {
+            return Vec::new();
+        }
+
+        if state.backing_pages.is_empty() {
+            // SAFETY: no page of the original whole-range mmap has ever been
+            // replaced, and the validated range remains within that mapping.
+            let mapping = unsafe { NonNull::new_unchecked(self.mapping.as_ptr().add(offset)) };
+            return vec![HostChunk { mapping, length }];
+        }
+
+        let mut chunks = Vec::with_capacity(length.div_ceil(PAGE_SIZE) + 1);
+        let mut cursor = offset;
+        while cursor < end {
+            let relative_page = cursor / PAGE_SIZE;
+            let within_page = cursor % PAGE_SIZE;
+            let chunk_length = (PAGE_SIZE - within_page).min(end - cursor);
+            let page = self.guest_base / PAGE_SIZE as u64 + relative_page as u64;
+            let page_start = match state.backing_pages.get(&page) {
+                Some(installed) => installed.mapping,
+                None => self.original_pages[relative_page],
+            };
+            // SAFETY: page_start is the exact live pointer for this page and
+            // chunk_length cannot cross the page boundary.
+            let mapping = unsafe { NonNull::new_unchecked(page_start.as_ptr().add(within_page)) };
+            chunks.push(HostChunk {
+                mapping,
+                length: chunk_length,
+            });
+            cursor += chunk_length;
+        }
+        chunks
+    }
+}
+
 impl Drop for Mapping {
     fn drop(&mut self) {
-        // SAFETY: mapping and slice length are the exact mmap view bounds and
-        // this Drop is the unique owner of that mapping.
+        // SAFETY: base_address and slice length are the exact stable arena
+        // bounds. munmap consumes the numeric address and releases every
+        // current VMA in that range, including installed page replacements.
         unsafe {
-            libc::munmap(self.mapping.as_ptr().cast(), self.slice.length);
+            libc::munmap(
+                std::ptr::with_exposed_provenance_mut::<u8>(self.base_address).cast(),
+                self.slice.length,
+            );
         }
     }
 }
@@ -2248,7 +2672,7 @@ mod tests {
         }
 
         #[test]
-        fn admitted_nested_copies_finish_while_close_waits_and_operands_hold_no_lease() {
+        fn admitted_nested_copies_finish_and_retained_operands_do_not_block_unchanged_close() {
             let memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
             memory.write_raw(BASE, b"data").unwrap();
             let gate = memory.entry_gate();
@@ -2275,13 +2699,14 @@ mod tests {
             assert!(gate.try_copy(None).unwrap().is_none());
             drop(closed);
             let operand = user.host_operand(BASE, 4).unwrap();
+            assert_eq!(gate.test_state().retained_operands, 1);
             let closed = gate
                 .try_close()
                 .unwrap()
                 .unwrap()
                 .finish()
                 .now_or_never()
-                .expect("retained operand held a copy lease")
+                .expect("retained operand blocked an unchanged close")
                 .unwrap();
             assert!(memory.mapping.address_space.try_lock().is_ok());
             assert!(memory.mapping.slice.backing.host_access.try_lock().is_ok());
@@ -2690,8 +3115,8 @@ mod tests {
         memory.unmap_user_range(0x2_0000, PAGE_SIZE as u64).unwrap();
         drop(memory);
         assert!(weak.upgrade().is_some());
-        // SAFETY: operand owns the checked, aligned mmap word for both calls.
-        assert_eq!(unsafe { (operand.address() as *const u32).read() }, 7);
+        // SAFETY: no guest or host thread writes this exact retained word.
+        assert_eq!(unsafe { operand.read_volatile::<u32>() }, 7);
         assert_eq!(
             unsafe {
                 libc::syscall(
@@ -3340,6 +3765,45 @@ mod tests {
                 .copy_to_user_prefix(2 * PAGE_SIZE as u64, b"x")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn copyout_holds_permission_lock_through_the_backing_write() {
+        let memory = GuestMemory::new(0, PAGE_SIZE).unwrap();
+        memory.map_user_range(0, PAGE_SIZE as u64, false).unwrap();
+        memory.enable_user_access();
+        let backing = memory.mapping.slice.backing.host_access.lock().unwrap();
+        let worker_memory = memory.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sender.send(worker_memory.copy_to_user(0, b"x")).unwrap();
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match memory.mapping.address_space.try_lock() {
+                Err(std::sync::TryLockError::WouldBlock) => break,
+                Err(std::sync::TryLockError::Poisoned(error)) => {
+                    panic!("address-space lock poisoned: {error}")
+                }
+                Ok(guard) => drop(guard),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "copyout released permission state before waiting on the backing"
+            );
+            std::thread::yield_now();
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        drop(backing);
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
     }
 
     #[test]

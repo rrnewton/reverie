@@ -218,6 +218,14 @@ pub enum Error {
     #[error("failed to allocate guest memory: {0}")]
     MemoryMapping(#[source] std::io::Error),
 
+    /// Live backing replacement requires KVM to observe host mmap changes.
+    #[error("KVM does not support synchronous host memory-map updates")]
+    SynchronousMmuUnsupported,
+
+    /// A prepared page was paired with a close token from another mapping.
+    #[error("KVM mapping publication used an unrelated entry gate")]
+    MappingPublicationGateMismatch,
+
     /// The ELF image could not be parsed.
     #[error("failed to parse ELF image: {0}")]
     ElfParse(#[from] goblin::error::Error),

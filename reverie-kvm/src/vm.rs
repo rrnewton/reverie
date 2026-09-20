@@ -5006,6 +5006,7 @@ mod tests {
     include!("vm/entry_action_tests.rs");
     include!("vm/entry_wait_tests.rs");
     include!("vm/entry_eintr_tests.rs");
+    include!("vm/memory_publication_tests.rs");
 
     #[test]
     fn action_parent_captures_yield_for_close_and_keep_stop_and_validation() {
