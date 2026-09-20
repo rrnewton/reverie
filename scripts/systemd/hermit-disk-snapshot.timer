@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh dev-hermit disk-health snapshots every fifteen minutes
+Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/publish-disk-snapshots.sh
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*:0/15
+Persistent=true
+AccuracySec=1min
+Unit=hermit-disk-snapshot.service
+
+[Install]
+WantedBy=timers.target

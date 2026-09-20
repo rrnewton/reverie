@@ -79,14 +79,24 @@ parent `main`. A dirty checkout, detached or stale branch, Hermit/Reverie pin
 mismatch, or parent-main race is preserved and hard-warned instead. Green ticks
 stay quiet; an `ACTION:` or `ERROR:` wakes the coordinator with a `HARD WARNING`.
 
-Two independent ORC workflows publish disk evidence every fifteen minutes.
-`hermit-dev-disk-free-15m-v1` writes the fresh whole-filesystem Btrfs allocator
-reading to `ignored/ops-state/disk.json`. `hermit-dev-disk-paths-15m-v1` writes
-bounded `compsize -b -x` readings for the main top-level populations to
-`ignored/ops-state/disk-paths.json` and retains the preceding published run at
-`ignored/ops-state/disk-paths.previous.json`. The path scan runs at idle I/O
-and lowest normal CPU priority, with a 180-second bound per concurrently
-measured population.
+A durable user-systemd timer publishes disk evidence every fifteen minutes,
+independently of an ORC session. `hermit-disk-snapshot.service` runs one current,
+immutable `scripts/publish-disk-snapshots.sh` and serializes both publications
+under one lock. It writes the fresh whole-filesystem Btrfs allocator reading to
+`ignored/ops-state/disk.json`, writes bounded `compsize -b -x` readings for the
+main top-level populations to `ignored/ops-state/disk-paths.json`, and retains
+the preceding published path run at
+`ignored/ops-state/disk-paths.previous.json`. The path scan runs at idle I/O and
+lowest normal CPU priority, with a 180-second bound per concurrently measured
+population. The service has an outer 420-second runtime bound plus explicit
+memory, swap, and task caps; any command failure fails the oneshot.
+
+Validate with `scripts/install-disk-snapshot.sh --check`, then install and
+enable without starting with `scripts/install-disk-snapshot.sh --no-start`.
+Disable the legacy `hermit-dev-disk-free-15m-v1` and
+`hermit-dev-disk-paths-15m-v1` ORC workflows before the explicit
+`scripts/install-disk-snapshot.sh --start`, so old and new producers never
+write the same artifacts concurrently.
 
 The five populations are registered slots, disposable validation checkouts,
 the shared Hermit/Reverie/LiteInst2 checkouts, the parent Git object database,

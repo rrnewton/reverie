@@ -1,0 +1,31 @@
+[Unit]
+Description=Publish serialized bounded dev-hermit disk-health snapshots
+Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/publish-disk-snapshots.sh
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/libexec/dev-hermit:%h/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin
+# Match the independently validated bounds on the immutable-tool bootstrap.
+Environment=GOMAXPROCS=4
+Environment=MALLOC_CONF=background_thread:false,narenas:4
+WorkingDirectory=%h
+Nice=19
+IOSchedulingClass=idle
+UMask=0077
+# One immutable current-origin tool invocation runs both publishers serially;
+# the wrapper's lock also refuses overlapping direct/manual invocations.
+ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative scripts/publish-disk-snapshots.sh -- --state-root %h/work/dev-hermit --population-timeout 180
+# Worst case: 110s cold immutable-tool bootstrap + two 30s bracketing btrfs
+# reads + one concurrent 180s population window + the final 30s disk read =
+# 380s. Keep 40s for process startup and atomic publication, while remaining
+# below the timer's 15-minute period.
+TimeoutStartSec=420
+TimeoutStopSec=5s
+KillMode=control-group
+MemoryHigh=512M
+MemoryMax=768M
+MemorySwapMax=128M
+TasksMax=512
+
+[Install]
+WantedBy=default.target
