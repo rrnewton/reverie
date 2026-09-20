@@ -576,6 +576,44 @@ async fn host_hybrid_exec_requires_preload_and_selector_before_entry() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn host_hybrid_fork_child_exec_completes_before_and_after_root_exit() {
+    const CHILD_ENV: &str = "REVERIE_LITEINST_FORK_EXEC_REAPER_TEST_CHILD";
+    const TEST: &str = "host_hybrid_fork_child_exec_completes_before_and_after_root_exit";
+    if std::env::var(CHILD_ENV).as_deref() != Ok(TEST) {
+        use std::os::unix::process::CommandExt;
+
+        // Own the orphan's real-parent wait as well as its ptrace wait. A
+        // foreign init/subreaper may retain a released zero-exit zombie after
+        // the backend returns. Isolate this process-wide setting from every
+        // other test, and keep the immediate reaping assertions below intact.
+        let mut child = ProcessCommand::new(std::env::current_exe().unwrap());
+        child
+            .args([TEST, "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD_ENV, TEST);
+        // SAFETY: the post-fork callback makes only the Linux prctl syscall;
+        // it does not allocate, lock, or alter the parent test process.
+        unsafe {
+            child.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let status = child.status().unwrap();
+        assert!(
+            status.success(),
+            "isolated fork/exec reaping test failed: {status}"
+        );
+        return;
+    }
+    let mut subreaper: libc::c_int = 0;
+    // SAFETY: PR_GET_CHILD_SUBREAPER writes one integer to this live pointer.
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_GET_CHILD_SUBREAPER, &mut subreaper, 0, 0, 0) },
+        0
+    );
+    assert_eq!(subreaper, 1, "isolated test must own the real-parent reap");
+
     for fixture in ["hybrid_fork_exec.c", "hybrid_fork_exec_after_root_exit.c"] {
         let (_directory, guest) = compile_fixture(fixture);
         let name = unique_process_name();
