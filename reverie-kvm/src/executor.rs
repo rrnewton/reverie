@@ -59,6 +59,7 @@ use crate::signal::signal_info_user;
 
 #[path = "process_signal_publication.rs"]
 mod process_signal_publication;
+pub(crate) use process_signal_publication::ProcessFamilyExit;
 
 #[path = "capture_identity.rs"]
 mod capture_identity;
@@ -1319,7 +1320,7 @@ struct OwnedChildProcesses {
 
 struct PendingProcess {
     start: ChildStartGate,
-    completion: Arc<Mutex<Option<ChildCompletion>>>,
+    completion: Arc<ChildCompletionSlot>,
     handle: ChildProcessHandle,
 }
 
@@ -1401,7 +1402,6 @@ impl ChildProcessHandle {
 pub(crate) enum ChildCompletion {
     Waitable(ExitStatus),
     AutoReaped(ExitStatus),
-    Failed,
 }
 
 impl ChildCompletion {
@@ -1410,6 +1410,87 @@ impl ChildCompletion {
             Self::Waitable(status)
         } else {
             Self::AutoReaped(status)
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ChildCompletionSlot {
+    state: Mutex<ChildCompletionState>,
+}
+
+#[derive(Debug, Default)]
+enum ChildCompletionState {
+    #[default]
+    Pending,
+    Ready(ChildCompletion),
+    Failed,
+    Consumed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChildCompletionSlotError {
+    Failed,
+    Poisoned,
+}
+
+impl ChildCompletionSlot {
+    #[cfg(test)]
+    pub(crate) fn with_completion(completion: ChildCompletion) -> Self {
+        Self {
+            state: Mutex::new(ChildCompletionState::Ready(completion)),
+        }
+    }
+
+    /// Publish the logical wait result exactly once. A consumed result remains
+    /// terminal, so later physical-cleanup failure cannot resurrect or replace
+    /// it.
+    pub(crate) fn publish(&self, completion: ChildCompletion) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("KVM child completion lock poisoned");
+        if matches!(*state, ChildCompletionState::Pending) {
+            *state = ChildCompletionState::Ready(completion);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn fail_if_pending(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("KVM child completion lock poisoned");
+        if matches!(*state, ChildCompletionState::Pending) {
+            *state = ChildCompletionState::Failed;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn is_pending(&self) -> bool {
+        matches!(
+            *self
+                .state
+                .lock()
+                .expect("KVM child completion lock poisoned"),
+            ChildCompletionState::Pending
+        )
+    }
+
+    fn take(&self) -> Result<Option<ChildCompletion>, ChildCompletionSlotError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ChildCompletionSlotError::Poisoned)?;
+        match std::mem::replace(&mut *state, ChildCompletionState::Consumed) {
+            ChildCompletionState::Ready(completion) => Ok(Some(completion)),
+            ChildCompletionState::Failed => Err(ChildCompletionSlotError::Failed),
+            ChildCompletionState::Pending => Ok(None),
+            ChildCompletionState::Consumed => Ok(None),
         }
     }
 }
@@ -2072,8 +2153,9 @@ impl ElfExecutor {
         ));
         state.fdinfo_table = Arc::downgrade(&file_table);
         let signal_registry = Arc::new(ProcessSignalRegistry::default());
-        let signal_binding =
-            signal_registry.register(&state, &file_table, process_generation, None);
+        let signal_binding = signal_registry
+            .register(&state, &file_table, process_generation, None)
+            .expect("a traced root has no parent registration to reject");
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         Self {
             state,
@@ -2500,7 +2582,7 @@ impl ElfExecutor {
             .expect("registered KVM task exists")
             .process_generation;
         let sigchld_auto_reap = sigchld_auto_reaps(&state);
-        let signal_binding = self.signal_registry.register(
+        let signal_binding = match self.signal_registry.register(
             &state,
             &file_table,
             process_generation,
@@ -2508,7 +2590,22 @@ impl ElfExecutor {
                 tgid: reverie::Pid::from_raw(self.state.pid),
                 generation: self.process_generation,
             }),
-        );
+        ) {
+            Ok(binding) => binding,
+            Err(parent) => {
+                state
+                    .task_lifecycle
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(state.tid, task_generation);
+                return Err(crate::Error::UnexpectedVcpuExit(format!(
+                    "KVM process {} registered a child after parent generation {}:{} became terminal",
+                    state.pid,
+                    parent.tgid.as_raw(),
+                    parent.generation,
+                )));
+            }
+        };
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         let child = Self {
             state,
@@ -2650,6 +2747,7 @@ impl ElfExecutor {
         self.clear_child_tid = address;
     }
 
+    #[cfg(any(test, feature = "native-test-support"))]
     pub(crate) fn child_exit_policy(&self) -> Arc<AtomicBool> {
         self.sigchld_auto_reap.clone()
     }
@@ -2658,6 +2756,7 @@ impl ElfExecutor {
         self.child_completion_sender.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn child_completion(&self, status: ExitStatus) -> ChildCompletion {
         ChildCompletion::from_waitability(status, !self.sigchld_auto_reap.load(Ordering::SeqCst))
     }
@@ -2673,9 +2772,6 @@ impl ElfExecutor {
                 Ok(())
             }
             ChildCompletion::AutoReaped(_) => Ok(()),
-            ChildCompletion::Failed => Err(crate::Error::UnexpectedVcpuExit(format!(
-                "KVM child process {pid} failed before publishing its status"
-            ))),
         }
     }
 
@@ -2685,7 +2781,7 @@ impl ElfExecutor {
         &mut self,
         pid: i32,
         start: std::sync::mpsc::Sender<ChildStartCommand>,
-        completion: Arc<Mutex<Option<ChildCompletion>>>,
+        completion: Arc<ChildCompletionSlot>,
         handle: std::thread::JoinHandle<crate::Result<()>>,
     ) {
         self.register_child_process_with_gate(pid, ChildStartGate::new(start), completion, handle);
@@ -2696,7 +2792,7 @@ impl ElfExecutor {
         &mut self,
         pid: i32,
         start: ChildStartGate,
-        completion: Arc<Mutex<Option<ChildCompletion>>>,
+        completion: Arc<ChildCompletionSlot>,
         handle: std::thread::JoinHandle<crate::Result<()>>,
     ) {
         self.register_child_process_with_panic_owner(pid, start, completion, handle, None);
@@ -2706,7 +2802,7 @@ impl ElfExecutor {
         &mut self,
         pid: i32,
         start: ChildStartGate,
-        completion: Arc<Mutex<Option<ChildCompletion>>>,
+        completion: Arc<ChildCompletionSlot>,
         handle: std::thread::JoinHandle<crate::Result<()>>,
         panic_owner: Option<Arc<ChildProcessPanicOwner>>,
     ) {
@@ -2778,13 +2874,7 @@ impl ElfExecutor {
             ))
         })?;
 
-        if !block
-            && process
-                .completion
-                .lock()
-                .expect("KVM child completion lock poisoned")
-                .is_none()
-        {
+        if !block && process.completion.is_pending() {
             return Ok(false);
         }
 
@@ -2801,15 +2891,21 @@ impl ElfExecutor {
         } else {
             self.completed_processes.push(handle);
         }
-        let completion = completion
-            .lock()
-            .expect("KVM child completion lock poisoned")
-            .take()
-            .ok_or_else(|| {
-                crate::Error::UnexpectedVcpuExit(format!(
-                    "KVM child process {pid} exited without publishing its status"
-                ))
-            })?;
+        let completion = completion.take().map_err(|reason| {
+            crate::Error::UnexpectedVcpuExit(match reason {
+                ChildCompletionSlotError::Failed => {
+                    format!("KVM child process {pid} failed before publishing its status")
+                }
+                ChildCompletionSlotError::Poisoned => {
+                    format!("KVM child process {pid} completion lock poisoned")
+                }
+            })
+        })?;
+        let completion = completion.ok_or_else(|| {
+            crate::Error::UnexpectedVcpuExit(format!(
+                "KVM child process {pid} exited without publishing its status"
+            ))
+        })?;
         self.record_child_completion(pid, completion)?;
         Ok(true)
     }
@@ -2922,21 +3018,23 @@ impl ElfExecutor {
             match result {
                 Err(error) => errors.push(error),
                 Ok(()) => {
-                    let completion = process
-                        .completion
-                        .lock()
-                        .map_err(|_| {
+                    let completion = process.completion.take().map_err(|reason| {
+                        crate::Error::UnexpectedVcpuExit(match reason {
+                            ChildCompletionSlotError::Failed => format!(
+                                "KVM child process {pid} failed before publishing its status"
+                            ),
+                            ChildCompletionSlotError::Poisoned => {
+                                format!("KVM child process {pid} completion lock poisoned")
+                            }
+                        })
+                    });
+                    let completion = completion.and_then(|completion| {
+                        completion.ok_or_else(|| {
                             crate::Error::UnexpectedVcpuExit(format!(
-                                "KVM child process {pid} completion lock poisoned"
+                                "KVM child process {pid} exited without publishing its status"
                             ))
                         })
-                        .and_then(|mut completion| {
-                            completion.take().ok_or_else(|| {
-                                crate::Error::UnexpectedVcpuExit(format!(
-                                    "KVM child process {pid} exited without publishing its status"
-                                ))
-                            })
-                        });
+                    });
                     if let Err(error) = completion
                         .and_then(|completion| self.record_child_completion(pid, completion))
                     {
@@ -3369,6 +3467,12 @@ impl ElfExecutor {
         use reverie::ChildExitSignalOutcome::RejectedBeforeCommit;
         use reverie::syscalls::Errno;
 
+        if self.signal_controlled() {
+            return RejectedBeforeCommit {
+                kind: Unsupported,
+                errno: Errno::ENOSYS,
+            };
+        }
         if let Err((kind, errno)) = self.validate_child_exit_signal_event(event) {
             return RejectedBeforeCommit { kind, errno };
         }
@@ -4196,6 +4300,28 @@ impl ElfExecutor {
         }
     }
 
+    pub(crate) fn process_family_exit(&self) -> crate::Result<ProcessFamilyExit> {
+        let process = self.admitted_signal_identity().process;
+        match self.signal_registry.process_family_exit(process) {
+            Some(exit @ ProcessFamilyExit::Root)
+            | Some(exit @ ProcessFamilyExit::Child(_))
+            | Some(exit @ ProcessFamilyExit::RunTeardownChild { .. }) => Ok(exit),
+            Some(ProcessFamilyExit::Failed) => Err(crate::Error::RunAborted),
+            Some(ProcessFamilyExit::DescendantReparentingUnsupported { child }) => {
+                Err(crate::Error::DescendantReparentingUnsupported { process, child })
+            }
+            None => Err(crate::Error::UnexpectedVcpuExit(format!(
+                "KVM process {} lost its terminal family transition",
+                process.tgid.as_raw()
+            ))),
+        }
+    }
+
+    fn record_consumed_child_wait(&self, child_pid: i32) {
+        let parent = self.admitted_signal_identity().process;
+        let _ = self.signal_registry.consume_child_wait(parent, child_pid);
+    }
+
     pub(crate) fn sole_signal_receiver(&self) -> bool {
         let lifecycle = self
             .state
@@ -4579,12 +4705,34 @@ impl ElfExecutor {
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let status = self.exit_status.take()?;
         let group = std::mem::take(&mut self.exit_group);
-        let status = self
-            .state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .exit(self.state.tid, self.task_generation, status, group);
+        let (status, process_status, group_started) = {
+            let mut lifecycle = self
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (status, group_started) =
+                lifecycle.exit(self.state.tid, self.task_generation, status, group);
+            let process_status =
+                lifecycle.process_exit_status(self.state.pid, self.process_generation);
+            (status, process_status, group_started)
+        };
+        // A group exit is the logical process-exit transition even while host
+        // cancellation is still retiring peer task handles. Record it at the
+        // initiating task's ordered exit point; otherwise a descendant given a
+        // later scheduler turn could race the final peer's host retirement and
+        // change success into an unsupported-reparenting error.
+        let family_status = process_status.or(group_started.then_some(status));
+        if let Some(process_status) = family_status {
+            // Keep the exact process transaction held across both the final
+            // lifecycle removal and its family-ledger transition. A direct
+            // child samples this transaction before inspecting the parent's
+            // lifecycle, so it cannot observe a dead parent generation before
+            // `record_process_exit` makes the corresponding terminal state
+            // visible.
+            self.signal_registry
+                .record_process_exit(self.admitted_signal_identity().process, process_status);
+        }
         Some(ProcessExit { status, group })
     }
 
@@ -4604,11 +4752,18 @@ impl ElfExecutor {
     pub(crate) fn retire_failed_thread(&mut self) {
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-        self.state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .fail(self.state.tid, self.task_generation);
+        let task_failed = {
+            let mut lifecycle = self
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            lifecycle.fail(self.state.tid, self.task_generation)
+        };
+        if task_failed {
+            self.signal_registry
+                .record_process_failure(self.admitted_signal_identity().process);
+        }
     }
 
     pub(crate) fn process_exit_status(&self) -> Option<ExitStatus> {
@@ -4698,6 +4853,16 @@ impl SyscallExecutor for ElfExecutor {
             && request.args()[0] as libc::c_int == libc::SIGCHLD
             && request.args()[1] != 0)
             .then(|| installed_signal_action(&self.state, libc::SIGCHLD));
+        let waitid_consumption = (request.number() == libc::SYS_waitid as u64
+            && request.args()[3] & libc::WNOWAIT as u64 == 0)
+            .then(|| match request.args()[0] as libc::idtype_t {
+                libc::P_PID => libc::pid_t::try_from(request.args()[1])
+                    .ok()
+                    .filter(|pid| self.state.children.contains_key(pid)),
+                libc::P_ALL | libc::P_PGID => self.state.children.keys().next().copied(),
+                _ => None,
+            })
+            .flatten();
         let action = execute_basic_syscall_with_output(
             &mut memory,
             &mut self.state,
@@ -4721,6 +4886,16 @@ impl SyscallExecutor for ElfExecutor {
             SyscallAction::Continue { result, segment } => {
                 if segment.is_some() {
                     self.pending_segment = segment;
+                }
+                let consumed_child = if request.number() == libc::SYS_wait4 as u64 && result > 0 {
+                    i32::try_from(result).ok()
+                } else if request.number() == libc::SYS_waitid as u64 && result == 0 {
+                    waitid_consumption
+                } else {
+                    None
+                };
+                if let Some(child) = consumed_child {
+                    self.record_consumed_child_wait(child);
                 }
                 result
             }
@@ -36981,15 +37156,14 @@ mod tests {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let (running_sender, running_receiver) = std::sync::mpsc::channel();
         let (exit_sender, exit_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(Mutex::new(None));
+        let completion = Arc::new(ChildCompletionSlot::default());
         let child_completion = completion.clone();
         let completion_notifier = executor.child_completion_notifier();
         let handle = std::thread::spawn(move || {
             running_sender.send(()).unwrap();
             start_receiver.recv().unwrap();
             exit_receiver.recv().unwrap();
-            *child_completion.lock().unwrap() =
-                Some(ChildCompletion::Waitable(ExitStatus::Exited(9)));
+            assert!(child_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(9))));
             completion_notifier.send(2).unwrap();
             Ok(())
         });
@@ -37057,9 +37231,9 @@ mod tests {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let (callback_started_sender, callback_started_receiver) = std::sync::mpsc::channel();
         let (callback_release_sender, callback_release_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(Mutex::new(Some(ChildCompletion::Waitable(
-            ExitStatus::Exited(7),
-        ))));
+        let completion = Arc::new(ChildCompletionSlot::with_completion(
+            ChildCompletion::Waitable(ExitStatus::Exited(7)),
+        ));
         let handle = std::thread::spawn(move || {
             start_receiver.recv().unwrap();
             callback_started_sender.send(()).unwrap();
@@ -37101,7 +37275,7 @@ mod tests {
 
     fn register_published_child(executor: &mut ElfExecutor, pid: i32, completion: ChildCompletion) {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(Mutex::new(Some(completion)));
+        let completion = Arc::new(ChildCompletionSlot::with_completion(completion));
         let handle = std::thread::spawn(move || {
             start_receiver.recv().unwrap();
             Ok(())
@@ -37113,26 +37287,28 @@ mod tests {
         let notifier = executor.child_completion_notifier();
         let (release_sender, release_receiver) = std::sync::mpsc::channel();
         let (low_start_sender, low_start_receiver) = std::sync::mpsc::channel();
-        let low_completion = Arc::new(Mutex::new(None));
+        let low_completion = Arc::new(ChildCompletionSlot::default());
         let child_low_completion = low_completion.clone();
         let low_notifier = notifier.clone();
         let low_handle = std::thread::spawn(move || {
             low_start_receiver.recv().unwrap();
             release_receiver.recv().unwrap();
-            *child_low_completion.lock().unwrap() =
-                Some(ChildCompletion::AutoReaped(ExitStatus::Exited(2)));
+            assert!(
+                child_low_completion.publish(ChildCompletion::AutoReaped(ExitStatus::Exited(2)))
+            );
             low_notifier.send(2).unwrap();
             Ok(())
         });
         executor.register_child_process(2, low_start_sender, low_completion, low_handle);
 
         let (high_start_sender, high_start_receiver) = std::sync::mpsc::channel();
-        let high_completion = Arc::new(Mutex::new(None));
+        let high_completion = Arc::new(ChildCompletionSlot::default());
         let child_high_completion = high_completion.clone();
         let high_handle = std::thread::spawn(move || {
             high_start_receiver.recv().unwrap();
-            *child_high_completion.lock().unwrap() =
-                Some(ChildCompletion::Waitable(ExitStatus::Exited(3)));
+            assert!(
+                child_high_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(3)))
+            );
             notifier.send(3).unwrap();
             Ok(())
         });
@@ -37685,14 +37861,13 @@ mod tests {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
         let (started_sender, started_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(Mutex::new(None));
+        let completion = Arc::new(ChildCompletionSlot::default());
         let child_completion = completion.clone();
         let handle = std::thread::spawn(move || {
             ready_sender.send(()).unwrap();
             assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Start);
             started_sender.send(()).unwrap();
-            *child_completion.lock().unwrap() =
-                Some(ChildCompletion::Waitable(ExitStatus::SUCCESS));
+            assert!(child_completion.publish(ChildCompletion::Waitable(ExitStatus::SUCCESS)));
             Ok(())
         });
 
@@ -37739,7 +37914,12 @@ mod tests {
                         "transferred pending {pid}"
                     )))
                 });
-                worker.register_child_process(pid, start, Arc::new(Mutex::new(None)), handle);
+                worker.register_child_process(
+                    pid,
+                    start,
+                    Arc::new(ChildCompletionSlot::default()),
+                    handle,
+                );
                 let child_lifetime = lifetime.clone();
                 worker.completed_processes.push(
                     std::thread::spawn(move || {
@@ -37869,7 +38049,7 @@ mod tests {
         let lifetime = Arc::new(());
         for pid in 2..=7 {
             let (start_sender, start_receiver) = std::sync::mpsc::channel();
-            let completion = Arc::new(Mutex::new(None));
+            let completion = Arc::new(ChildCompletionSlot::default());
             let child_completion = completion.clone();
             let child_lifetime = lifetime.clone();
             let receiver = if pid == 2 {
@@ -37890,19 +38070,21 @@ mod tests {
                     3 => panic!("forced pending child panic"),
                     4 => Ok(()),
                     5 => {
-                        *child_completion.lock().unwrap() = Some(ChildCompletion::Failed);
+                        assert!(child_completion.fail_if_pending());
                         Ok(())
                     }
                     6 => {
                         let _ = std::panic::catch_unwind(|| {
-                            let _guard = child_completion.lock().unwrap();
+                            let _guard = child_completion.state.lock().unwrap();
                             panic!("forced completion lock poison");
                         });
                         Ok(())
                     }
                     7 => {
-                        *child_completion.lock().unwrap() =
-                            Some(ChildCompletion::Waitable(ExitStatus::SUCCESS));
+                        assert!(
+                            child_completion
+                                .publish(ChildCompletion::Waitable(ExitStatus::SUCCESS))
+                        );
                         Ok(())
                     }
                     _ => unreachable!(),
@@ -38022,7 +38204,7 @@ mod tests {
             executor.register_child_process_with_gate(
                 pid,
                 gate,
-                Arc::new(Mutex::new(None)),
+                Arc::new(ChildCompletionSlot::default()),
                 handle,
             );
         }
@@ -38136,7 +38318,7 @@ mod tests {
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancelled_in_child = cancelled.clone();
         let (cancel_sender, cancel_receiver) = std::sync::mpsc::channel();
-        let cancel_completion = Arc::new(Mutex::new(None));
+        let cancel_completion = Arc::new(ChildCompletionSlot::default());
         let cancel_handle = std::thread::spawn(move || match cancel_receiver.recv() {
             Ok(ChildStartCommand::Cancel) => {
                 cancelled_in_child.store(true, Ordering::Release);
@@ -38152,7 +38334,7 @@ mod tests {
         let sibling_finished_in_child = sibling_finished.clone();
         let (sibling_start_sender, sibling_start_receiver) = std::sync::mpsc::channel();
         let (sibling_release_sender, sibling_release_receiver) = std::sync::mpsc::channel();
-        let sibling_completion = Arc::new(Mutex::new(None));
+        let sibling_completion = Arc::new(ChildCompletionSlot::default());
         let sibling_handle = std::thread::spawn(move || {
             assert_eq!(
                 sibling_start_receiver.recv().unwrap(),
@@ -38197,7 +38379,7 @@ mod tests {
         let root = TestDir::new();
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(Mutex::new(None));
+        let completion = Arc::new(ChildCompletionSlot::default());
         let handle = std::thread::spawn(move || {
             assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Cancel);
             Err(crate::Error::UnexpectedVcpuExit(
@@ -38535,6 +38717,13 @@ mod tests {
         let mut new_worker = leader.thread_child(2).unwrap();
         assert_ne!(old_worker.task_generation, new_worker.task_generation);
         old_worker.retire_current_thread(ExitStatus::Exited(99), true);
+        assert_eq!(
+            leader
+                .signal_registry
+                .process_family_exit(leader.admitted_signal_identity().process),
+            None,
+            "a stale pre-exec worker cannot freeze the live process family outcome",
+        );
         commit_test_exit(&mut leader, 37, false);
         assert_eq!(leader.process_exit_status(), None);
         commit_test_exit(&mut new_worker, 73, false);
@@ -41957,7 +42146,7 @@ mod child_panic_owner_tests {
             let (secondary, secondary_address) = payload(&dropped);
             let (sender, receiver) = std::sync::mpsc::channel();
             let gate = ChildStartGate::new(sender);
-            let completion = Arc::new(Mutex::new(None));
+            let completion = Arc::new(ChildCompletionSlot::default());
             let child_completion = completion.clone();
             let (ready, wait_ready) = std::sync::mpsc::channel();
             let handle = std::thread::spawn(move || -> crate::Result<()> {
@@ -41975,7 +42164,7 @@ mod child_panic_owner_tests {
                     crate::Error::SharedFailure(child_cause),
                     vec![secondary],
                 );
-                *child_completion.lock().unwrap() = Some(ChildCompletion::Failed);
+                assert!(child_completion.fail_if_pending());
                 let _ = ready.send(());
                 std::panic::resume_unwind(original)
             });

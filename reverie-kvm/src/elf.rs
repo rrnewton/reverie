@@ -257,24 +257,25 @@ impl TaskLifecycleTable {
         generation: u64,
         status: ExitStatus,
         group: bool,
-    ) -> ExitStatus {
+    ) -> (ExitStatus, bool) {
         let Some(task) = self.tasks.get(&tid).copied() else {
-            return status;
+            return (status, false);
         };
         if task.generation != generation {
-            return status;
+            return (status, false);
         }
         let exit = self
             .process_exits
             .entry((task.tgid, task.process_generation))
             .or_default();
-        if group {
-            exit.group.get_or_insert(status);
+        let group_started = group && exit.group.is_none();
+        if group_started {
+            exit.group = Some(status);
         }
         exit.last_thread = Some(status);
         let status = exit.group.unwrap_or(status);
         self.remove(tid, generation);
-        status
+        (status, group_started)
     }
 
     pub(crate) fn process_exit_status(
@@ -307,18 +308,19 @@ impl TaskLifecycleTable {
         }
     }
 
-    pub(crate) fn fail(&mut self, tid: i32, generation: u64) {
+    pub(crate) fn fail(&mut self, tid: i32, generation: u64) -> bool {
         let Some(task) = self.tasks.get(&tid).copied() else {
-            return;
+            return false;
         };
         if task.generation != generation {
-            return;
+            return false;
         }
         self.process_exits
             .entry((task.tgid, task.process_generation))
             .or_default()
             .failed = true;
         self.remove(tid, generation);
+        true
     }
 
     pub(crate) fn reset_after_exec(&mut self, tid: i32, tgid: i32, pgid: i32) -> u64 {

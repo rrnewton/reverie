@@ -94,6 +94,9 @@ pub enum ChildExitPublicationEffect {
     Coalesced,
     /// An explicit `SIG_IGN` suppressed SIGCHLD generation.
     SuppressedExplicitIgnore,
+    /// A later ignored-disposition transition discarded the generation in
+    /// which this child event was authorized before delayed publication ran.
+    DiscardedByDispositionChange,
 }
 
 /// Receipt for an irreversible child-completion publication.
@@ -195,7 +198,8 @@ pub trait ProcessSignalControl: Debug + Send + Sync {
     /// Publish one scheduler-authorized terminal child transition.
     ///
     /// The caller supplies the causal scheduler fence. A committed or
-    /// failed-after-commit result must never be retried.
+    /// failed-after-commit result must never be retried; backends may return the
+    /// retained receipt idempotently if an exact duplicate nevertheless arrives.
     fn publish_child_exit(&self, _completion: ChildExitCompletion) -> ChildExitPublicationResult {
         ChildExitPublicationResult::RejectedBeforeCommit(Errno::ENOSYS)
     }
@@ -207,17 +211,13 @@ pub trait ProcessSignalControl: Debug + Send + Sync {
         &self,
         process: SignalProcessId,
         signal: i32,
-    ) -> Result<Vec<SignalRecipient>, Errno> {
-        if signal == libc::SIGALRM {
-            self.alarm_recipients(process)
-        } else {
-            Err(Errno::ENOSYS)
-        }
-    }
+    ) -> Result<Vec<SignalRecipient>, Errno>;
 
     /// Eligible live recipients, in ascending numeric TID order. The caller
     /// intersects these with its causally admitted task generations.
-    fn alarm_recipients(&self, process: SignalProcessId) -> Result<Vec<SignalRecipient>, Errno>;
+    fn alarm_recipients(&self, process: SignalProcessId) -> Result<Vec<SignalRecipient>, Errno> {
+        self.signal_recipients(process, libc::SIGALRM)
+    }
 
     /// Register one selected task. A second outstanding permit is not a retry.
     fn reserve_delivery(&self, permit: SignalDeliveryPermit) -> Result<(), Errno>;

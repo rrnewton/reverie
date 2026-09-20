@@ -43,6 +43,19 @@ pub enum Error {
     #[error("KVM execution stopped after a fatal run failure")]
     RunAborted,
 
+    /// A process exited while it still owned a logical child. Reparenting is
+    /// deliberately fail-closed until wait ownership can be transferred to an
+    /// in-tree PID 1 or an out-of-tree namespace reaper atomically.
+    #[error(
+        "KVM process {process:?} exited with child {child:?} still requiring unsupported reparenting"
+    )]
+    DescendantReparentingUnsupported {
+        /// Exiting process generation.
+        process: reverie::SignalProcessId,
+        /// Direct child generation that still needs a reaper.
+        child: reverie::SignalProcessId,
+    },
+
     /// Terminal failure with irreversible pending-state effects retained intact.
     #[error("{cause}; committed signal effects: {} removals, {} publication receipts", dequeues.len(), publications.len())]
     SignalEffects {

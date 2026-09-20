@@ -15,6 +15,7 @@
 use futures::future::BoxFuture;
 
 use super::*;
+use crate::executor::ChildCompletionSlot;
 use crate::executor::ChildStartCommand;
 use crate::vm::GuestThreadGroup;
 
@@ -367,7 +368,7 @@ where
         let pid = child.identity.0.as_raw();
         let (sender, receiver) = std::sync::mpsc::channel();
         let gate = ChildStartGate::new(sender);
-        let completion = Arc::new(Mutex::new(None));
+        let completion = Arc::new(ChildCompletionSlot::default());
         let child_completion = completion.clone();
         let (observed, observations) = std::sync::mpsc::channel();
         let handle =
@@ -407,11 +408,12 @@ where
                 let result = futures::executor::block_on(child.finish_retired(outcome, Ok(())));
                 if let Ok((status, _, _)) = &result {
                     // No output is captured by this native fixture.
-                    *child_completion.lock().unwrap() =
-                        Some(crate::executor::ChildCompletion::from_waitability(
+                    assert!(child_completion.publish(
+                        crate::executor::ChildCompletion::from_waitability(
                             *status,
                             !exit_policy.load(Ordering::SeqCst),
-                        ));
+                        )
+                    ));
                 }
                 result.map(|_| ())
             });

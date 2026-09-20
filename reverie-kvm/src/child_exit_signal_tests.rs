@@ -58,6 +58,36 @@ fn child_exit_signal_preserves_process_ownership_and_first_complete_siginfo() {
 }
 
 #[test]
+fn legacy_child_exit_surface_refuses_tool_controlled_runs_before_mutation() {
+    use reverie::ChildExitSignalErrorKind::Unsupported;
+    use reverie::ChildExitSignalOutcome::RejectedBeforeCommit;
+    use reverie::syscalls::Errno;
+
+    let root = TestDir::new();
+    let mut executor = ElfExecutor::new(test_state(&root.0), false);
+    let global = Arc::new(());
+    let run = crate::failure::RunFailure::new(&global);
+    executor.install_signal_control(reverie::BackendSignalControlMode::ToolControlled, &run);
+    let event = child_exit_test_event(executor.state.pid, 41, 37, 0xa5);
+    assert_eq!(
+        executor.queue_child_exit_signal(event),
+        RejectedBeforeCommit {
+            kind: Unsupported,
+            errno: Errno::ENOSYS,
+        }
+    );
+    assert!(
+        executor
+            .state
+            .process_signals
+            .lock()
+            .unwrap()
+            .shared_pending
+            .is_empty()
+    );
+}
+
+#[test]
 fn child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility() {
     use reverie::ChildExitSignalDisposition::Ignored;
     use reverie::ChildExitSignalDisposition::PendingBlocked;

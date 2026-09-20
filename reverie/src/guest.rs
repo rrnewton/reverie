@@ -273,8 +273,13 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     ///
     /// Backends may refuse unsupported contexts or process lifetimes. In
     /// particular, KVM initially supports only a live single-thread parent at
-    /// a transported return-to-user boundary. The historical private deferral
-    /// operation and its refusal policy are unchanged.
+    /// a transported return-to-user boundary. A KVM run that installs
+    /// [`crate::BackendSignalControlMode::ToolControlled`] must instead use the
+    /// generation-bound run-scoped
+    /// [`crate::ProcessSignalControl::publish_child_exit`] operation; this
+    /// generation-free compatibility surface is then refused before mutation.
+    /// The historical private deferral operation and its refusal policy are
+    /// otherwise unchanged.
     async fn queue_child_exit_signal(
         &mut self,
         _event: SignalEvent,

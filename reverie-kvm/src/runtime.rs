@@ -2855,6 +2855,7 @@ async fn finish_tool_process_after_workers<T: Tool>(
         failure,
         &panics,
         None,
+        None,
     )
     .await;
     let mut payloads = panics.take();
@@ -2872,8 +2873,9 @@ pub struct ToolRunCompletion<G> {
     pub result: Result<(i32, Vec<u8>, Vec<u8>)>,
 }
 
-/// Complete the owner after physical worker joins, publishing every newly
-/// discovered failure before consuming hooks or joining independent children.
+/// Complete the owner after physical worker joins. A fork child's logical wait
+/// result and callback publish immediately after its authoritative process
+/// status, before consuming hooks or recursively joining descendants.
 #[allow(clippy::too_many_arguments)]
 async fn finish_tool_process_after_workers_with_panics<T: Tool>(
     executor: &mut ElfExecutor,
@@ -2888,6 +2890,7 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
     failure: Option<&FailureContext>,
     panics: &crate::failure::tool_panics::ToolPanics,
     backend: Option<&KvmBackend>,
+    child_exit: Option<crate::vm::OwnChildExitContext>,
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
     let (pid, tid) = identity;
     let report = |phase, error| match failure {
@@ -2939,6 +2942,111 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
             }
         }
     }
+    let child_wait = match (
+        child_exit,
+        outcome.is_ok() && workers.is_ok() && process_status.is_ok(),
+    ) {
+        (Some(context), true) => {
+            let family_exit = executor
+                .process_family_exit()
+                .map_err(|error| report("child family exit", error));
+            match family_exit {
+                Err(error) => Err(error),
+                Ok(crate::executor::ProcessFamilyExit::Child(snapshot)) => {
+                    debug_assert_eq!(snapshot.completion.child, context.child);
+                    debug_assert_eq!(snapshot.completion.status, status);
+                    let completion = crate::executor::ChildCompletion::from_waitability(
+                        snapshot.completion.status,
+                        snapshot.completion.waitable,
+                    );
+                    let event = reverie::BackendChildWaitEvent {
+                        parent: snapshot.completion.parent,
+                        child: context.child,
+                        state: reverie::BackendChildWaitState::Exited {
+                            status: snapshot.completion.status,
+                            waitable: snapshot.completion.waitable,
+                            uid: snapshot.completion.uid,
+                            user_ticks: snapshot.completion.user_ticks,
+                            system_ticks: snapshot.completion.system_ticks,
+                        },
+                    };
+                    let mut callback =
+                        Box::pin(crate::failure::owned_future::catch_owned_future_from(
+                            || global_state.on_backend_child_wait_event(event),
+                        ));
+                    // Poll through the Tool's synchronous admission prefix
+                    // before exposing waitability. The retained future may
+                    // then suspend on parent progress without hiding the
+                    // already-committed publication decision.
+                    let first_poll = poll_fn(|cx| Poll::Ready(callback.as_mut().poll(cx))).await;
+                    let waitability = if context.completion.publish(completion) {
+                        let _ = context.completion_notifier.send(context.raw_child_pid);
+                        Ok(())
+                    } else {
+                        Err(report(
+                            "child wait completion",
+                            Error::UnexpectedVcpuExit(format!(
+                                "KVM child process {} published its logical completion twice",
+                                context.raw_child_pid
+                            )),
+                        ))
+                    };
+                    let caught = match first_poll {
+                        Poll::Ready(caught) => caught,
+                        Poll::Pending => callback.await,
+                    };
+                    let hook = panics
+                        .finish(
+                            crate::failure::owned_future::CaughtFuture {
+                                output: caught.output.map(|result| result.map_err(Error::Reverie)),
+                                panics: caught.panics,
+                            },
+                            "child wait hook",
+                        )
+                        .map_err(|error| report("child wait hook", error));
+                    match (waitability, hook) {
+                        (Ok(()), result) | (result, Ok(())) => result,
+                        (Err(error), Err(hook)) => Err(error.with_cleanup(vec![hook])),
+                    }
+                }
+                Ok(crate::executor::ProcessFamilyExit::RunTeardownChild { status }) => {
+                    if !context
+                        .completion
+                        .publish(crate::executor::ChildCompletion::AutoReaped(status))
+                    {
+                        Err(report(
+                            "child teardown completion",
+                            Error::UnexpectedVcpuExit(format!(
+                                "KVM child process {} published its teardown completion twice",
+                                context.raw_child_pid
+                            )),
+                        ))
+                    } else {
+                        let _ = context.completion_notifier.send(context.raw_child_pid);
+                        Ok(())
+                    }
+                }
+                Ok(crate::executor::ProcessFamilyExit::Root) => Err(report(
+                    "child family exit",
+                    Error::UnexpectedVcpuExit(format!(
+                        "KVM child process {} was recorded as a traced root",
+                        context.raw_child_pid
+                    )),
+                )),
+                Ok(crate::executor::ProcessFamilyExit::Failed) => {
+                    unreachable!("executor maps failed family state to an error")
+                }
+                Ok(crate::executor::ProcessFamilyExit::DescendantReparentingUnsupported {
+                    ..
+                }) => unreachable!("executor maps unsupported reparenting to an error"),
+            }
+        }
+        (None, true) if pid == tid => executor
+            .process_family_exit()
+            .map(|_| ())
+            .map_err(|error| report("process family exit", error)),
+        (Some(_), false) | (None, _) => Ok(()),
+    };
     // Worker hooks precede the leader. Owner hooks precede independent forks
     // that may need the parent's deregistration/accounting to finish.
     let owner = notify_tool_exit_with_panics(
@@ -2975,6 +3083,7 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
             || owner.is_err()
             || workers.is_err()
             || process_status.is_err()
+            || child_wait.is_err()
             || entry.is_err()
         {
             executor.join_child_processes_after_failure()
@@ -2989,6 +3098,7 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
         outcome.map(|_| ()),
         workers,
         process_status,
+        child_wait,
         owner,
         entry,
         children,
@@ -3494,6 +3604,7 @@ impl KvmBackend {
         thread_state: T::ThreadState,
         outcome: Result<ToolProcessExit>,
         start_permitted: bool,
+        child_exit: Option<crate::vm::OwnChildExitContext>,
     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
         let (pid, tid) = identity;
         // Failed exec already reports the joined worker errors as its primary
@@ -3609,6 +3720,7 @@ impl KvmBackend {
             self.tool_failure.as_ref(),
             &self.tool_panic_owner(),
             Some(self),
+            child_exit,
         )
         .await
     }
@@ -3639,6 +3751,7 @@ impl KvmBackend {
             thread_state,
             outcome,
             false,
+            None,
         )
         .await
     }
@@ -4102,6 +4215,7 @@ impl KvmBackend {
                 &config,
                 &subscriptions,
                 true,
+                None,
             )
             .await;
         let result = match (result, executor.take_process_publication_failure()) {
@@ -4464,6 +4578,7 @@ impl KvmBackend {
         config: &<T::GlobalState as GlobalTool>::Config,
         subscriptions: &Subscription,
         initial_post_exec: bool,
+        child_exit: Option<crate::vm::OwnChildExitContext>,
     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)>
     where
         T: Tool + 'static,
@@ -5622,6 +5737,7 @@ impl KvmBackend {
             thread_state,
             outcome,
             true,
+            child_exit,
         )
         .await
     }

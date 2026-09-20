@@ -109,15 +109,22 @@ impl GlobalTool for Log {
             BackendChildWaitState::Exited {
                 status: ExitStatus::SUCCESS,
                 waitable: true,
+                uid: 0,
+                user_ticks: 0,
+                system_ticks: 0,
             }
         );
         self.control
             .record("wait-event", event.child.tgid.as_raw(), 0);
-        if self.mode == 2 {
-            // The backend publishes the waitable status before invoking this
-            // callback. Hold its failure until the parent has collected that
-            // status and reached the intended cancellation point.
+        if matches!(self.mode, 2 | 6) {
+            // The backend polls this synchronous admission before publishing
+            // waitability, then retains this same suspended callback. Hold its
+            // remainder until the parent has collected the now-visible status
+            // and reached the intended cancellation point.
             self.control.wait_for(|state| state.release_child).await;
+            if self.mode == 6 {
+                panic!("controlled child wait callback panic");
+            }
             return Err(if event.child.tgid.as_raw() == 2 {
                 Errno::EIO
             } else {
@@ -190,14 +197,14 @@ impl Tool for ForkTool {
         assert_eq!(guest.thread_state(), &(self.pid, true));
         if syscall.number() == Sysno::getpid {
             assert_eq!(self.pid, 1);
-            let count = if self.mode >= 2 { 2 } else { 1 };
+            let count = if (2..=5).contains(&self.mode) { 2 } else { 1 };
             let mut children = Vec::new();
             for expected in 2..2 + count {
                 let child = guest.inject(Fork::new()).await?;
                 assert_eq!(child, expected);
                 children.push(child as i32);
             }
-            if self.mode == 2 {
+            if matches!(self.mode, 2 | 6) {
                 self.control
                     .wait_for(|state| {
                         children.iter().all(|pid| {
@@ -209,8 +216,9 @@ impl Tool for ForkTool {
                     })
                     .await;
                 for child in &children {
-                    // Waitable completion is published before the held callback.
-                    // This actual wait moves its live handle into completed_processes.
+                    // Waitable completion is published after the callback's
+                    // synchronous prefix and before its held remainder. This
+                    // actual wait moves its live handle into completed_processes.
                     let wait = Syscall::from_raw(
                         Sysno::wait4,
                         SyscallArgs::new(*child as usize, 0, libc::WNOHANG as usize, 0, 0, 0),
@@ -309,7 +317,7 @@ impl Tool for ForkTool {
         assert_eq!(pid.as_raw(), self.pid);
         assert_eq!(status, ExitStatus::SUCCESS);
         self.control.record("process-exit", self.pid, 0);
-        if self.mode >= 3 && self.pid == 2 {
+        if (3..=5).contains(&self.mode) && self.pid == 2 {
             // Failure is run-wide. Inject it only after the parent reaches the
             // intended terminal path and the sibling has captured its output.
             self.control
@@ -317,7 +325,7 @@ impl Tool for ForkTool {
                 .await;
             return Err(Errno::EIO.into());
         }
-        if self.mode >= 3 && self.pid == 3 {
+        if (3..=5).contains(&self.mode) && self.pid == 3 {
             // Keep the later worker alive after its output and success status
             // are known. The controller releases it after the first error's
             // worker has exited, preserving the ordered cleanup obligation.
@@ -466,7 +474,7 @@ fn run_case(test: &str, mode: u8) {
         !timeout.timed_out(),
         "parent never reached cancellation/exit: {state:?}"
     );
-    if mode != 2 {
+    if !matches!(mode, 2 | 6) {
         let child = if mode < 3 { 2 } else { 3 };
         let tid = state
             .events
@@ -482,12 +490,12 @@ fn run_case(test: &str, mode: u8) {
     drop(state);
     // Except for the deliberately completed-child case, the child is held by
     // an explicit gate. No public result is permitted before that release.
-    let early = if mode == 2 {
+    let early = if matches!(mode, 2 | 6) {
         None
     } else {
         receiver.recv_timeout(Duration::from_millis(100)).ok()
     };
-    if mode >= 3 {
+    if (3..=5).contains(&mode) {
         let mut state = control.state.lock().unwrap();
         state.release_first_error = true;
         control.changed.notify_all();
@@ -515,7 +523,7 @@ fn run_case(test: &str, mode: u8) {
         early.unwrap_or_else(|| receiver.recv_timeout(Duration::from_secs(5)).unwrap());
     worker.join().unwrap();
     // Clean up even a broken baseline that detached its child before asserting.
-    let child_count = if mode >= 2 { 2 } else { 1 };
+    let child_count = if (2..=5).contains(&mode) { 2 } else { 1 };
     let state = control.state.lock().unwrap();
     let (state, timeout) = control
         .changed
@@ -552,6 +560,34 @@ fn run_case(test: &str, mode: u8) {
             );
         }
         if pid != 1 {
+            let position = |kind| {
+                at_return
+                    .iter()
+                    .position(|event| event.pid == pid && event.kind == kind)
+            };
+            let expected_wait_event = (2..=6).contains(&mode);
+            assert_eq!(
+                at_return
+                    .iter()
+                    .filter(|event| event.pid == pid && event.kind == "wait-event")
+                    .count(),
+                usize::from(expected_wait_event),
+                "child wait publication must follow the causally controlled mode/PID order: pid={pid} events={at_return:?}",
+            );
+            if expected_wait_event {
+                let wait_event = position("wait-event").unwrap();
+                assert!(
+                    wait_event < position("thread-exit").unwrap()
+                        && position("thread-exit").unwrap() < position("process-exit").unwrap(),
+                    "logical wait publication must precede consuming exit hooks: pid={pid} events={at_return:?}"
+                );
+            }
+            if matches!(mode, 2 | 6) {
+                assert!(
+                    position("wait-collected").unwrap() < position("thread-exit").unwrap(),
+                    "the parent must be able to reap while the callback still holds physical cleanup: pid={pid} events={at_return:?}"
+                );
+            }
             // A successfully joined native pthread can briefly remain in
             // /proc during kernel exit bookkeeping, after releasing its mm.
             // Any remaining entry must have no userspace address space; TLS
@@ -600,7 +636,7 @@ fn run_case(test: &str, mode: u8) {
     } else {
         let error = result.unwrap_err().to_string();
         for (name, count) in [
-            ("EIO", 1),
+            ("EIO", usize::from((2..=5).contains(&mode))),
             ("E2BIG", usize::from(matches!(mode, 2 | 4))),
             ("ENOSPC", usize::from(mode == 4)),
             ("EACCES", usize::from(mode == 4)),
@@ -619,6 +655,22 @@ fn run_case(test: &str, mode: u8) {
                     .filter(|event| event.kind == "wait-collected")
                     .count(),
                 2
+            );
+        } else if mode == 6 {
+            assert_eq!(error.matches("child wait hook").count(), 1, "{error}");
+            assert_eq!(
+                error
+                    .matches("guest thread panicked during teardown")
+                    .count(),
+                1,
+                "{error}"
+            );
+            assert_eq!(
+                at_return
+                    .iter()
+                    .filter(|event| event.kind == "wait-collected")
+                    .count(),
+                1
             );
         }
     }
@@ -666,6 +718,14 @@ fn ordinary_exit_finishes_later_children_after_first_child_error() {
     run_case(
         "terminal_fork::ordinary_exit_finishes_later_children_after_first_child_error",
         5,
+    );
+}
+
+#[test]
+fn cancellation_preserves_status_across_child_wait_callback_panic() {
+    run_case(
+        "terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic",
+        6,
     );
 }
 
