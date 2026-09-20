@@ -31,6 +31,51 @@ pub(super) mod lifecycle;
 use lifecycle::Lifecycle;
 pub use lifecycle::LifecycleSnapshot;
 
+/// Sticky classes of independently fatal capture faults. Detailed legacy
+/// reports retain their original text; these bits never depend on that text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u64)]
+pub enum IntegrityFault {
+    SharedFailure = 1,
+    OwnedChild = 1 << 1,
+    CancellationOrDeadline = 1 << 2,
+    Collector = 1 << 3,
+    Lifecycle = 1 << 4,
+    Publication = 1 << 5,
+    Rpc = 1 << 6,
+    Coordinator = 1 << 7,
+    DecodeBinding = 1 << 8,
+    MissingEvidence = 1 << 9,
+    Teardown = 1 << 10,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct IntegrityFaultSet(u64);
+impl IntegrityFaultSet {
+    pub fn contains(self, fault: IntegrityFault) -> bool {
+        self.0 & fault as u64 != 0
+    }
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+    fn insert(&mut self, fault: IntegrityFault) {
+        self.0 |= fault as u64;
+    }
+}
+
+/// Complete captured bytes and owned teardown, independently of guest success.
+/// `Complete` with exit 7 is not a successful verification. The unsafe adapter
+/// still owes the real G wait represented by the returned status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalCaptureIntegrity {
+    Complete {
+        guest_status: std::process::ExitStatus,
+    },
+    Incomplete {
+        faults: IntegrityFaultSet,
+    },
+}
+
 /// Inactive mappings/endpoints only. Construct before the first clone.
 pub struct SplitCapturePlan {
     inert: InertCapturePlan,
@@ -91,6 +136,17 @@ impl CoordinatorFacts {
         self.disposition == CoordinatorDisposition::Completed
             && self.guest_wait_status == 0
             && self.rpc_issues.is_empty()
+    }
+    fn bound_terminal_status(
+        &self,
+        lifecycle: Option<LifecycleSnapshot>,
+    ) -> Option<std::process::ExitStatus> {
+        let status = terminal_guest_status(self.guest_wait_status)?;
+        let lifecycle = lifecycle?;
+        (lifecycle.disposition == self.disposition.number()
+            && lifecycle.guest_success == status.success()
+            && lifecycle.rpc_issues == self.rpc_issues.len() as u64)
+            .then_some(status)
     }
 }
 
@@ -395,6 +451,7 @@ impl Workers {
                 deadline: None,
                 commits_observed: false,
                 collector_finished: false,
+                collector_witness: None,
                 error: None,
                 streams: Vec::new(),
                 omitted_diagnostic_bytes: 0,
@@ -406,6 +463,7 @@ impl Workers {
             active_host_calls: AtomicUsize::new(0),
             late_host_writes: AtomicU64::new(0),
             omitted_issues: AtomicU64::new(0),
+            integrity_faults: AtomicU64::new(0),
             collector: Mutex::new(None),
         });
         assert!(handle.0.capture.set(shared.clone()).is_ok());
@@ -431,6 +489,9 @@ impl Workers {
                     }
                     {
                         let mut state = worker.state.lock().unwrap();
+                        if let Some(witness) = &mut state.collector_witness {
+                            witness.normal_return = result.is_ok();
+                        }
                         state.collector_finished = true;
                         if !matches!(state.guest_phase, Phase::Complete | Phase::Incomplete) {
                             state.guest_phase = Phase::Incomplete;
@@ -549,6 +610,8 @@ pub struct SplitCaptureRun<T, P, B> {
     status: Option<ExitStatus>,
     failure: Option<String>,
     frozen: Option<SplitReport>,
+    integrity_faults: IntegrityFaultSet,
+    frozen_integrity: Option<IntegrityFaultSet>,
     failed_bytes: Vec<u8>,
 }
 pub enum SplitCaptureOutcome<T, P, B> {
@@ -558,6 +621,9 @@ pub enum SplitCaptureOutcome<T, P, B> {
 /// Only capture-owned quiescence is certified. User Drop/Deserialize may create
 /// unrelated workers; re-establish the threadless contract before another clone.
 pub struct JoinedCapture<T> {
+    /// Frozen at the first settlement report, then only narrowed by decoding
+    /// and binding the final envelope. Later cleanup can never upgrade it.
+    pub integrity: TerminalCaptureIntegrity,
     /// Actual joins at return, independent of any earlier frozen failure snapshot.
     pub actual_joins: (bool, bool),
     pub actual_coordinator_status: Option<ExitStatus>,
@@ -568,7 +634,8 @@ pub struct JoinedCapture<T> {
 }
 
 impl<T, P, B> SplitCaptureRun<T, P, B> {
-    fn fail(&mut self, reason: impl Into<String>) {
+    fn fail(&mut self, fault: IntegrityFault, reason: impl Into<String>) {
+        self.integrity_faults.insert(fault);
         self.failure.get_or_insert_with(|| reason.into());
     }
     fn observe(&mut self, deadline: Instant, cancel: bool) {
@@ -598,7 +665,10 @@ impl<T, P, B> SplitCaptureRun<T, P, B> {
             }
             OwnedFinalize::Pending(run) => self.child = Some(Child::Pending(run)),
             OwnedFinalize::Failed { cause, cleanup } => {
-                self.fail(format!("owned coordinator failure: {cause:?}"));
+                self.fail(
+                    IntegrityFault::OwnedChild,
+                    format!("owned coordinator failure: {cause:?}"),
+                );
                 self.failed_bytes = cleanup.provisional_bytes().to_vec();
                 match cleanup.cleanup().observation() {
                     ChildCleanupObservation::Reaped(status) => {
@@ -631,11 +701,96 @@ impl<T, P, B> SplitCaptureRun<T, P, B> {
             failure: self.failure.clone(),
         }
     }
+    fn freeze(&mut self, report: SplitReport) {
+        if self.frozen.is_some() {
+            return;
+        }
+        let mut faults = self.integrity_faults;
+        if report.collector_join != Some(true) || report.publication_join != Some(true) {
+            faults.insert(IntegrityFault::Teardown);
+        }
+        if !report
+            .coordinator_status
+            .is_some_and(|status| status.success())
+        {
+            faults.insert(IntegrityFault::Coordinator);
+        }
+        if !report
+            .lifecycle
+            .is_some_and(LifecycleSnapshot::integrity_ready)
+        {
+            faults.insert(IntegrityFault::Lifecycle);
+        }
+        if report.lifecycle.is_some_and(|life| life.rpc_issues != 0) {
+            faults.insert(IntegrityFault::Rpc);
+        }
+        if !report.host_complete {
+            faults.insert(IntegrityFault::Collector);
+        }
+        if let Some(owner) = &self.workers.owner {
+            faults.0 |= owner.shared.integrity_faults.load(Ordering::Acquire);
+            if !owner
+                .shared
+                .state
+                .lock()
+                .unwrap()
+                .collector_witness
+                .is_some_and(CollectorWitness::complete)
+            {
+                faults.insert(IntegrityFault::Collector);
+            }
+        } else {
+            faults.insert(IntegrityFault::MissingEvidence);
+        }
+        if let Some(capture) = &report.capture {
+            if !capture.guest.root_reaped
+                || !capture.guest.peer_closed
+                || !capture.host.closed
+                || capture.host.entrants != 0
+                || !capture.guest_admission.closed
+                || capture.guest_admission.entrants != 0
+                || capture.active_host_calls != 0
+                || capture.late_host_writes != 0
+                || !capture.commits_observed
+                || !capture.collector_finished
+            {
+                faults.insert(IntegrityFault::Collector);
+            }
+            if !capture.guest.rpc_issues.is_empty() {
+                faults.insert(IntegrityFault::Rpc);
+            }
+            if capture.omitted_issues != 0 {
+                faults.insert(IntegrityFault::MissingEvidence);
+            }
+            let publication = &capture.publication;
+            if !publication.ready
+                || !publication.finalized
+                || !publication.drained
+                || publication.stability != ArtifactStability::Stable
+                || publication.error.is_some()
+                || publication.attempt.is_some()
+                || publication.unpublished_bytes != 0
+                || publication.first_unpublished_order.is_some()
+                || publication.progress.discarded_bytes != 0
+                || publication.progress.output_ceiling
+                || publication.progress.marker_failed
+            {
+                faults.insert(IntegrityFault::Publication);
+            }
+        } else {
+            faults.insert(IntegrityFault::MissingEvidence);
+        }
+        self.frozen_integrity = Some(faults);
+        self.frozen = Some(report);
+    }
     pub fn cancel_until(mut self, deadline: Instant) -> SplitCaptureOutcome<T, P, B>
     where
         T: DeserializeOwned,
     {
-        self.fail("caller cancelled split capture");
+        self.fail(
+            IntegrityFault::CancellationOrDeadline,
+            "caller cancelled split capture",
+        );
         self.settle_until(deadline)
     }
     pub fn settle_until(mut self, deadline: Instant) -> SplitCaptureOutcome<T, P, B>
@@ -644,10 +799,11 @@ impl<T, P, B> SplitCaptureRun<T, P, B> {
     {
         self.observe(deadline, self.failure.is_some());
         if self.child.is_some() {
-            self.fail("coordinator unsettled at observation deadline");
-            if self.frozen.is_none() {
-                self.frozen = Some(self.report(None));
-            }
+            self.fail(
+                IntegrityFault::CancellationOrDeadline,
+                "coordinator unsettled at observation deadline",
+            );
+            self.freeze(self.report(None));
             return SplitCaptureOutcome::Unjoined(Box::new(self));
         }
         if let Some(owner) = &self.workers.owner {
@@ -664,20 +820,26 @@ impl<T, P, B> SplitCaptureRun<T, P, B> {
                         });
                 }
                 if !facts.qualifies() {
-                    owner
-                        .shared
-                        .fail("split coordinator facts/teardown do not qualify");
+                    if facts.integrity_ready()
+                        && !facts.guest_success
+                        && self.status.is_some_and(|status| status.success())
+                        && self.result.is_some()
+                    {
+                        owner.shared.record_guest_outcome_policy_failure();
+                    } else {
+                        owner
+                            .shared
+                            .fail("split coordinator facts/teardown do not qualify");
+                    }
                 }
             }
         }
         let capture = self.workers.finish(deadline);
         let report = self.report(capture);
-        if self.frozen.is_none() {
-            self.frozen = Some(report);
-        }
+        self.freeze(report);
         let (collector, publication) = self.workers.wait_joins(deadline);
         if collector.is_none() || publication.is_none() {
-            self.fail("capture workers remain unjoined");
+            self.fail(IntegrityFault::Teardown, "capture workers remain unjoined");
             return SplitCaptureOutcome::Unjoined(Box::new(self));
         }
         // Resources and generic factories are reclaimed before arbitrary decode.
@@ -689,6 +851,12 @@ impl<T, P, B> SplitCaptureRun<T, P, B> {
         let mut encoded_bytes = std::mem::take(&mut self.failed_bytes);
         let mut facts = None;
         let mut value = None;
+        let mut guest_status = None;
+        let mut faults = self.frozen_integrity.take().expect("frozen with report");
+        faults.0 |= self.integrity_faults.0;
+        if let Some(owner) = &self.workers.owner {
+            faults.0 |= owner.shared.integrity_faults.load(Ordering::Acquire);
+        }
         if let Some(result) = self.result.take() {
             encoded_bytes.extend_from_slice(result.encoded_bytes());
             match result.decode() {
@@ -698,17 +866,37 @@ impl<T, P, B> SplitCaptureRun<T, P, B> {
                             .failure
                             .get_or_insert_with(|| "coordinator result does not qualify".into());
                     }
+                    guest_status = envelope.facts.bound_terminal_status(report.lifecycle);
+                    if guest_status.is_none() {
+                        faults.insert(IntegrityFault::DecodeBinding);
+                    }
+                    if envelope.facts.disposition != CoordinatorDisposition::Completed {
+                        faults.insert(IntegrityFault::Coordinator);
+                    }
+                    if !envelope.facts.rpc_issues.is_empty() {
+                        faults.insert(IntegrityFault::Rpc);
+                    }
                     facts = Some(envelope.facts.clone());
                     value = envelope.value.take();
                 }
                 Err(error) => {
+                    faults.insert(IntegrityFault::DecodeBinding);
                     report
                         .failure
                         .get_or_insert_with(|| format!("coordinator decode refused: {error:?}"));
                 }
             }
+        } else {
+            faults.insert(IntegrityFault::MissingEvidence);
         }
+        let integrity = match guest_status {
+            Some(guest_status) if faults.is_empty() => {
+                TerminalCaptureIntegrity::Complete { guest_status }
+            }
+            _ => TerminalCaptureIntegrity::Incomplete { faults },
+        };
         SplitCaptureOutcome::Joined(Box::new(JoinedCapture {
+            integrity,
             actual_joins: (collector.unwrap(), publication.unwrap()),
             actual_coordinator_status: self.status,
             report,
@@ -718,6 +906,21 @@ impl<T, P, B> SplitCaptureRun<T, P, B> {
         }))
     }
 }
+
+// Decode only canonical terminal wait statuses. ExitStatus::from_raw assumes
+// a named signal and may panic even for valid realtime-signal termination.
+fn terminal_guest_status(raw: i32) -> Option<std::process::ExitStatus> {
+    use std::os::unix::process::ExitStatusExt;
+    // Linux wait status uses eight exit-code bits or seven signal bits plus
+    // core-dump evidence. Standard ExitStatus also preserves realtime signals,
+    // unlike the named-signal enum used by the existing adapter API.
+    let terminal = (libc::WIFEXITED(raw) && raw & !0xff00 == 0)
+        || (libc::WIFSIGNALED(raw)
+            && raw & !0xff == 0
+            && (1..=libc::SIGRTMAX()).contains(&libc::WTERMSIG(raw)));
+    terminal.then(|| std::process::ExitStatus::from_raw(raw))
+}
+
 impl<T, P, B> Drop for SplitCaptureRun<T, P, B> {
     fn drop(&mut self) {
         if let Some(owner) = &self.workers.owner {
@@ -773,6 +976,8 @@ where
         status: None,
         failure: None,
         frozen: None,
+        integrity_faults: IntegrityFaultSet::default(),
+        frozen_integrity: None,
         failed_bytes: Vec::new(),
     };
     let plan = &owner.plan;
@@ -816,11 +1021,15 @@ where
     };
     match container.run_with_startup_owned(timeout, &mut parent, &mut child, &mut run) {
         Ok(run) => owner.child = Some(Child::Running(run)),
-        Err(StartupOwnedFailure::BeforeClone { cause }) => {
-            owner.fail(format!("startup before clone: {cause:?}"))
-        }
+        Err(StartupOwnedFailure::BeforeClone { cause }) => owner.fail(
+            IntegrityFault::OwnedChild,
+            format!("startup before clone: {cause:?}"),
+        ),
         Err(StartupOwnedFailure::AfterClone { cause, run }) => {
-            owner.fail(format!("startup after clone: {cause:?}"));
+            owner.fail(
+                IntegrityFault::OwnedChild,
+                format!("startup after clone: {cause:?}"),
+            );
             owner.child = Some(Child::Pending(run));
         }
     }

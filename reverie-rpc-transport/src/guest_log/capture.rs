@@ -194,9 +194,41 @@ struct State {
     deadline: Option<Instant>,
     commits_observed: bool,
     collector_finished: bool,
+    collector_witness: Option<CollectorWitness>,
     error: Option<String>,
     streams: Vec<Stream>,
     omitted_diagnostic_bytes: u64,
+}
+
+// Raw facts retained by the actual finalizing collector, independent of the
+// legacy phase (which also incorporates guest exit policy).
+#[derive(Clone, Copy)]
+struct CollectorWitness {
+    peer_closed: bool,
+    guest_complete: bool,
+    host_complete: bool,
+    commits_observed: bool,
+    host: ordered::Admission,
+    guest: ordered::Admission,
+    active_host_calls: usize,
+    late_host_writes: u64,
+    normal_return: bool,
+}
+
+impl CollectorWitness {
+    fn complete(self) -> bool {
+        self.peer_closed
+            && self.guest_complete
+            && self.host_complete
+            && self.commits_observed
+            && self.host.closed
+            && self.host.entrants == 0
+            && self.guest.closed
+            && self.guest.entrants == 0
+            && self.active_host_calls == 0
+            && self.late_host_writes == 0
+            && self.normal_return
+    }
 }
 
 pub(super) struct Shared {
@@ -212,6 +244,7 @@ pub(super) struct Shared {
     active_host_calls: AtomicUsize,
     late_host_writes: AtomicU64,
     pub(super) omitted_issues: AtomicU64,
+    integrity_faults: AtomicU64,
     collector: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -240,13 +273,32 @@ impl Shared {
     }
 
     fn fail(&self, message: &str) {
+        self.latch_integrity_fault(IntegrityFault::SharedFailure);
+        self.record_failure(message, super::IssueOrigin::Integrity);
+    }
+
+    pub(super) fn latch_integrity_fault(&self, fault: IntegrityFault) {
+        self.integrity_faults
+            .fetch_or(fault as u64, Ordering::AcqRel);
+    }
+
+    // Only the settled split lifecycle may select this origin. It preserves
+    // every old issue/stop/first-message effect without calling exit 7 success.
+    fn record_guest_outcome_policy_failure(&self) {
+        self.record_failure(
+            "split coordinator facts/teardown do not qualify",
+            super::IssueOrigin::GuestOutcomePolicy,
+        );
+    }
+
+    fn record_failure(&self, message: &str, origin: super::IssueOrigin) {
         self.state
             .lock()
             .unwrap()
             .error
             .get_or_insert_with(|| message.to_owned());
         if let Some(retention) = self.retention.upgrade() {
-            LogHandle(retention).stop(IssueKind::Publication, message);
+            LogHandle(retention).stop_with_origin(IssueKind::Publication, message, origin);
         } else {
             self.stop_guest();
         }
@@ -527,6 +579,7 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
             deadline: None,
             commits_observed: false,
             collector_finished: false,
+            collector_witness: None,
             error: None,
             streams: Vec::new(),
             omitted_diagnostic_bytes: 0,
@@ -538,6 +591,7 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
         active_host_calls: AtomicUsize::new(0),
         late_host_writes: AtomicU64::new(0),
         omitted_issues: AtomicU64::new(0),
+        integrity_faults: AtomicU64::new(0),
         collector: Mutex::new(None),
     });
     assert!(handle.0.capture.set(shared.clone()).is_ok());
@@ -556,6 +610,9 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
             worker.fail("capture collector panicked");
         }
         let mut state = worker.state.lock().unwrap();
+        if let Some(witness) = &mut state.collector_witness {
+            witness.normal_return = result.is_ok();
+        }
         state.collector_finished = true;
         if !matches!(state.guest_phase, Phase::Complete | Phase::Incomplete) {
             state.guest_phase = Phase::Incomplete;
@@ -715,6 +772,17 @@ fn collect(shared: &Shared, socket: UnixStream, mut collector: ordered::Collecto
             }
             let mut state = shared.state.lock().unwrap();
             state.commits_observed = observed && pending.is_none();
+            state.collector_witness = Some(CollectorWitness {
+                peer_closed: closed,
+                guest_complete: complete,
+                host_complete,
+                commits_observed: observed && pending.is_none(),
+                host: shared.buffer.admission(ordered::Role::Host),
+                guest: shared.buffer.admission(ordered::Role::Guest),
+                active_host_calls: shared.active_host_calls.load(Ordering::Acquire),
+                late_host_writes: shared.late_host_writes.load(Ordering::Acquire),
+                normal_return: false,
+            });
             (state.streams, state.omitted_diagnostic_bytes) =
                 collector.diagnostics(shared.options.limits.diagnostic_bytes);
             if !complete {

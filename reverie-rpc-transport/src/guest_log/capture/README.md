@@ -150,3 +150,27 @@ Drop or Deserialize may create unrelated threads. Re-establish the ordinary
 threadless/no-competing-reaper contract before another clone. No backend wiring,
 root identity policy, loader/fork-exec/signal/TLS implementation, deterministic
 scheduler proof, strict parity or harness flip is provided by this API.
+
+
+`JoinedCapture::integrity` separately reports terminal capture integrity. A
+`Complete { guest_status }` retains the genuine standard Unix wait status; it
+requires the actual raw collector FINISH/EOF/order/admission witnesses, complete
+publication, successful owned joins and matching coordinator facts. A guest
+exit of 7 can have complete bytes while every existing success qualifier stays
+false and all existing guest-policy failures remain recorded. Integrity is not
+verification success, deterministic execution, or proof of arbitrary unsafe
+adapter claims.
+
+A bounded sticky fault set is independent of first-error text and bounded issue
+retention. Guest policy has one private typed origin; transport, publication,
+RPC, lifecycle, decoding and teardown faults never inherit that exception.
+Structural integrity freezes with the first settlement report. Later joins are
+cleanup facts and cannot repair an earlier deadline or `MayAppend` result; final
+decoding can only add faults. Diagnostic-prefix omission is not lost canonical
+output, while omitted issues and discarded/unpublished canonical bytes prevent
+complete integrity.
+
+The new status representation preserves canonical Linux realtime-signal deaths
+as well as named signals. The existing `after_teardown` argument remains
+Reverie's narrower `ExitStatus`; widening that producer API is separate work.
+No failure text is parsed to distinguish guest outcome from capture integrity.
