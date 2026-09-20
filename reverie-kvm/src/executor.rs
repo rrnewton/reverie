@@ -1012,41 +1012,100 @@ fn execute_basic_syscall_inner(
 
 // TODO-HUMAN-REVIEW(PR-172): Review host-backed futex address and timeout translation.
 fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
-    const FUTEX_CMD_MASK: libc::c_int = !(128 | 256);
+    const FUTEX_PRIVATE_FLAG: libc::c_int = 128;
+    const FUTEX_CLOCK_REALTIME: libc::c_int = 256;
+    const FUTEX_CMD_MASK: libc::c_int = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
     const FUTEX_WAIT: libc::c_int = 0;
+    const FUTEX_WAKE: libc::c_int = 1;
     const FUTEX_REQUEUE: libc::c_int = 3;
     const FUTEX_CMP_REQUEUE: libc::c_int = 4;
     const FUTEX_WAKE_OP: libc::c_int = 5;
     const FUTEX_LOCK_PI: libc::c_int = 6;
+    const FUTEX_UNLOCK_PI: libc::c_int = 7;
+    const FUTEX_TRYLOCK_PI: libc::c_int = 8;
     const FUTEX_WAIT_BITSET: libc::c_int = 9;
+    const FUTEX_WAKE_BITSET: libc::c_int = 10;
     const FUTEX_WAIT_REQUEUE_PI: libc::c_int = 11;
     const FUTEX_CMP_REQUEUE_PI: libc::c_int = 12;
     const FUTEX_LOCK_PI2: libc::c_int = 13;
 
+    let operation = args[1] as libc::c_int;
+    let command = operation & FUTEX_CMD_MASK;
+    // sys_futex imports and validates timeout-bearing commands before
+    // do_futex observes either futex word. Own that copied value instead of
+    // retaining a guest mapping for the duration of a blocking host wait.
+    let timeout = if args[3] != 0
+        && matches!(
+            command,
+            FUTEX_WAIT | FUTEX_LOCK_PI | FUTEX_WAIT_BITSET | FUTEX_WAIT_REQUEUE_PI | FUTEX_LOCK_PI2
+        ) {
+        let timeout = match read_guest_struct::<libc::timespec>(memory, args[3]) {
+            Ok(timeout) => timeout,
+            Err(error) => return error,
+        };
+        if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+            return negative_errno(libc::EINVAL);
+        }
+        Some(timeout)
+    } else {
+        None
+    };
+
+    // do_futex rejects unsupported commands and clock-flag combinations
+    // before get_futex_key inspects either word.
+    if operation & FUTEX_CLOCK_REALTIME != 0
+        && !matches!(
+            command,
+            FUTEX_WAIT_BITSET | FUTEX_WAIT_REQUEUE_PI | FUTEX_LOCK_PI2
+        )
+    {
+        return negative_errno(libc::ENOSYS);
+    }
+    if !matches!(
+        command,
+        FUTEX_WAIT
+            | FUTEX_WAKE
+            | FUTEX_REQUEUE
+            | FUTEX_CMP_REQUEUE
+            | FUTEX_WAKE_OP
+            | FUTEX_LOCK_PI
+            | FUTEX_UNLOCK_PI
+            | FUTEX_TRYLOCK_PI
+            | FUTEX_WAIT_BITSET
+            | FUTEX_WAKE_BITSET
+            | FUTEX_WAIT_REQUEUE_PI
+            | FUTEX_CMP_REQUEUE_PI
+            | FUTEX_LOCK_PI2
+    ) {
+        return negative_errno(libc::ENOSYS);
+    }
+
+    // These non-PI handlers enter get_futex_key before any error with a
+    // different errno, and key lookup rejects natural-alignment violations
+    // before inspecting the word. PI handlers have earlier configuration,
+    // allocation, ownership, or second-word work, so retain their existing
+    // adapter ordering. Host placement must not decide the covered cases.
+    if matches!(
+        command,
+        FUTEX_WAIT
+            | FUTEX_WAKE
+            | FUTEX_REQUEUE
+            | FUTEX_CMP_REQUEUE
+            | FUTEX_WAKE_OP
+            | FUTEX_WAIT_BITSET
+            | FUTEX_WAKE_BITSET
+    ) && !args[0].is_multiple_of(std::mem::size_of::<u32>() as u64)
+    {
+        return negative_errno(libc::EINVAL);
+    }
     let Ok(uaddr) = guest_host_address(memory, args[0], std::mem::size_of::<u32>()) else {
         return negative_errno(libc::EFAULT);
     };
-    let operation = args[1] as libc::c_int;
-    let command = operation & FUTEX_CMD_MASK;
-    let mut timeout_operand = None;
+
     let mut second_operand = None;
-    let fourth = if args[3] == 0 {
-        0
-    } else if matches!(
-        command,
-        FUTEX_WAIT | FUTEX_LOCK_PI | FUTEX_WAIT_BITSET | FUTEX_WAIT_REQUEUE_PI | FUTEX_LOCK_PI2
-    ) {
-        match guest_host_address(memory, args[3], std::mem::size_of::<libc::timespec>()) {
-            Ok(operand) => {
-                let address = operand.address();
-                timeout_operand = Some(operand);
-                address
-            }
-            Err(error) => return error,
-        }
-    } else {
-        args[3] as usize
-    };
+    let fourth = timeout
+        .as_ref()
+        .map_or(args[3] as usize, |value| std::ptr::from_ref(value) as usize);
     let uaddr2 = if matches!(
         command,
         FUTEX_REQUEUE
@@ -1055,6 +1114,11 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
             | FUTEX_WAIT_REQUEUE_PI
             | FUTEX_CMP_REQUEUE_PI
     ) {
+        if matches!(command, FUTEX_REQUEUE | FUTEX_CMP_REQUEUE | FUTEX_WAKE_OP)
+            && !args[4].is_multiple_of(std::mem::size_of::<u32>() as u64)
+        {
+            return negative_errno(libc::EINVAL);
+        }
         match guest_host_address(memory, args[4], std::mem::size_of::<u32>()) {
             Ok(operand) => {
                 let address = operand.address();
@@ -1086,7 +1150,7 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     } else {
         result as i64
     };
-    drop((uaddr, timeout_operand, second_operand));
+    drop((uaddr, second_operand));
     result
 }
 
@@ -16213,14 +16277,15 @@ mod tests {
             )
         };
         memory.write_raw(TIMEOUT, timeout_bytes).unwrap();
-        // Invalid timeout and second pointers still refuse at their old stage.
+        // An unreadable timeout still faults during the outer syscall import.
+        // A misaligned second futex word is rejected before mapping access.
         assert_eq!(
             futex(&memory, &[WORD, libc::FUTEX_WAIT as u64, 0, 1, 0, 0]),
             negative_errno(libc::EFAULT)
         );
         assert_eq!(
             futex(&memory, &[WORD, libc::FUTEX_CMP_REQUEUE as u64, 0, 1, 1, 0]),
-            negative_errno(libc::EFAULT)
+            negative_errno(libc::EINVAL)
         );
         let waiting_memory = memory.clone();
         let waiter = std::thread::spawn(move || {
