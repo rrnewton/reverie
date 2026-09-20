@@ -1,6 +1,6 @@
 [Unit]
 Description=Publish serialized bounded dev-hermit disk-health snapshots
-Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/publish-disk-snapshots.sh
+Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/publish-disk-snapshots.py
 
 [Service]
 Type=oneshot
@@ -8,18 +8,21 @@ Environment=PATH=%h/.local/libexec/dev-hermit:%h/bin:%h/.local/bin:%h/.cargo/bin
 # Match the independently validated bounds on the immutable-tool bootstrap.
 Environment=GOMAXPROCS=4
 Environment=MALLOC_CONF=background_thread:false,narenas:4
+# Make the bootstrap's materialization-lock wait explicit so it is a tested
+# part of this service's complete-run envelope rather than a hidden default.
+Environment=HERMIT_HEALTH_TOOL_LOCK_TIMEOUT=120
 WorkingDirectory=%h
 Nice=19
 IOSchedulingClass=idle
 UMask=0077
 # One immutable current-origin tool invocation runs both publishers serially;
 # the wrapper's lock also refuses overlapping direct/manual invocations.
-ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative scripts/publish-disk-snapshots.sh -- --state-root %h/work/dev-hermit --population-timeout 180
-# Worst case: 110s cold immutable-tool bootstrap + two 30s bracketing btrfs
-# reads + one concurrent 180s population window + the final 30s disk read =
-# 380s. Keep 40s for process startup and atomic publication, while remaining
-# below the timer's 15-minute period.
-TimeoutStartSec=420
+ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative scripts/publish-disk-snapshots.py -- --state-root %h/work/dev-hermit --population-timeout 180
+# Worst case: 120s materialization-lock wait + 110s cold immutable-tool work +
+# two 30s bracketing btrfs reads + one concurrent 180s population window + the
+# final 30s disk read = 500s. Keep 40s for process startup and atomic
+# publication, while remaining below the timer's 15-minute period.
+TimeoutStartSec=540
 TimeoutStopSec=5s
 KillMode=control-group
 MemoryHigh=512M

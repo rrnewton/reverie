@@ -499,10 +499,12 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
 
     def test_production_entrypoint_and_config_keep_state_paths_explicit(self) -> None:
         plugin = ORC_PLUGIN.read_text(encoding="utf-8")
-        self.assertIn("./scripts/hermit-operational-tick --emit-output", plugin)
+        self.assertNotIn("./scripts/hermit-operational-tick", plugin)
+        self.assertNotIn("hermitOperationalTick", plugin)
         self.assertNotIn(
             'HERMIT_AGENT_SNAPSHOT_JSON="$1" ./ci-hub/bin/health-tick', plugin
         )
+        self.assertIn('operationalHealthOwner: "hermit-health-tick.timer"', plugin)
         service = SYSTEMD_SERVICE.read_text(encoding="utf-8")
         self.assertIn(
             "ExecStart=%h/.local/libexec/dev-hermit/operational-tool "

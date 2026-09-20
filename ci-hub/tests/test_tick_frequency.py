@@ -4,8 +4,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 TICK_MINUTES = 30
-AGENT_SNAPSHOT_MINUTES = 5
-DISK_FREE_MINUTES = 15
+AGENT_SNAPSHOT_MINUTES = 1
+DISK_SNAPSHOT_MINUTES = 15
 
 
 def read(relative: str) -> str:
@@ -13,10 +13,6 @@ def read(relative: str) -> str:
 
 
 def test_every_outer_tick_frequency_source_says_thirty_minutes() -> None:
-    assert (
-        f"const OPERATIONAL_TICK_INTERVAL_MS = {TICK_MINUTES} * 60 * 1000;"
-        in read(".orc/plugins/hermit-dev/index.ts")
-    )
     assert (
         f"--current-tick-min {TICK_MINUTES} \\"
         in read("ci-hub/bin/health-tick")
@@ -35,28 +31,22 @@ def test_every_outer_tick_frequency_source_says_thirty_minutes() -> None:
     )
 
 
-def test_agent_snapshot_refresh_is_independent_and_inside_freshness_limit() -> None:
+def test_systemd_health_and_agent_snapshot_are_the_sole_operational_drivers() -> None:
     plugin = read(".orc/plugins/hermit-dev/index.ts")
     operational_health = read("ci-hub/health/operational_health.py")
+    health_service = read("scripts/systemd/hermit-health-tick.service")
+    health_timer = read("scripts/systemd/hermit-health-tick.timer")
+    agent_service = read("scripts/systemd/hermit-herdr-agent-snapshot.service")
+    agent_timer = read("scripts/systemd/hermit-herdr-agent-snapshot.timer")
 
-    assert (
-        f"const AGENT_SNAPSHOT_INTERVAL_MS = {AGENT_SNAPSHOT_MINUTES} * 60 * 1000;"
-        in plugin
-    )
-    assert '"hermit-dev-agent-snapshot-5m-v1"' in plugin
-    assert 'const AGENT_SNAPSHOT_SCRIPT_NAME = "hermitCacheAgentSnapshot";' in plugin
-    assert "./ci-hub/health/operational_health.py cache-agents" in plugin
-    assert "/usr/bin/python3 ci-hub/health/operational_health.py cache-agents" not in plugin
-    assert "orc.registerScript(AGENT_SNAPSHOT_SCRIPT_NAME" in plugin
-    assert "orc.workflow(\n    agentSnapshotHeartbeat" in plugin
-    assert "await wf.sleep(AGENT_SNAPSHOT_INTERVAL_MS);" in plugin
-    assert "await reportAgentSnapshotFailure(failure);" in plugin
-    assert "Number(count[1]) !== agents.length" in plugin
-    assert "AGENT_SNAPSHOT_WARNING_INTERVAL_MS = 30 * 60 * 1000" in plugin
-    assert "hermitOperationalTick" not in plugin[
-        plugin.index("export async function agentSnapshotHeartbeat") :
-        plugin.index("export async function policyReloadHeartbeat")
-    ]
+    assert f"OnUnitActiveSec={TICK_MINUTES}min" in health_timer
+    assert "--tool-relative scripts/hermit-operational-tick" in health_service
+    assert f"OnUnitInactiveSec={AGENT_SNAPSHOT_MINUTES}min" in agent_timer
+    assert "--tool-relative ci-hub/health/herdr_agent_snapshot.py" in agent_service
+    assert "--output %h/work/dev-hermit/ignored/ci-hub/agent-snapshot.json" in agent_service
+    assert 'operationalHealthOwner: "hermit-health-tick.timer"' in plugin
+    assert 'agentSnapshotOwner: "hermit-herdr-agent-snapshot.timer"' in plugin
+    assert "retiredSystemdReplacedWorkflows" in plugin
 
     match = re.search(
         r"DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECS\s*=\s*(\d+)\s*\*\s*60",
@@ -66,37 +56,48 @@ def test_agent_snapshot_refresh_is_independent_and_inside_freshness_limit() -> N
     assert AGENT_SNAPSHOT_MINUTES < int(match.group(1))
 
 
-def test_disk_free_writer_has_an_independent_fifteen_minute_schedule() -> None:
+def test_systemd_replaced_orc_producers_are_retirement_only() -> None:
     plugin = read(".orc/plugins/hermit-dev/index.ts")
 
-    assert (
-        f"const DISK_FREE_INTERVAL_MS = {DISK_FREE_MINUTES} * 60 * 1000;"
-        in plugin
-    )
-    assert 'const DISK_FREE_WORKFLOW_NAME = "hermit-dev-disk-free-15m-v1";' in plugin
-    assert 'const DISK_FREE_SCRIPT_NAME = "hermitCacheDiskFree";' in plugin
-    assert "./ci-hub/health/operational_health.py cache-disk" in plugin
-    assert "/ignored/ops-state/disk.json" in plugin
-    assert "orc.registerScript(DISK_FREE_SCRIPT_NAME" in plugin
-    assert "orc.workflow(\n    diskFreeHeartbeat" in plugin
-    assert "await wf.sleep(DISK_FREE_INTERVAL_MS);" in plugin
+    assert "const RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES = [" in plugin
+    for workflow in (
+        "hermit-dev-operational-health-v1",
+        "hermit-dev-agent-snapshot-5m-v1",
+        "hermit-dev-disk-free-15m-v1",
+        "hermit-dev-disk-paths-15m-v1",
+    ):
+        assert plugin.count(f'"{workflow}"') == 1
+    assert "...RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES" in plugin
+    for forbidden in (
+        "OPERATIONAL_TICK_SCRIPT_NAME",
+        "AGENT_SNAPSHOT_SCRIPT_NAME",
+        "DISK_FREE_SCRIPT_NAME",
+        "DISK_PATH_SCRIPT_NAME",
+        "hermitOperationalTick",
+        "hermitCacheAgentSnapshot",
+        "hermitCacheDiskFree",
+        "hermitCacheDiskPaths",
+        "operationalHealthHeartbeat",
+        "agentSnapshotHeartbeat",
+        "diskFreeHeartbeat",
+        "diskPathHeartbeat",
+        "./scripts/hermit-operational-tick",
+        "operational_health.py cache-agents",
+        "operational_health.py cache-disk",
+    ):
+        assert forbidden not in plugin
 
 
-def test_disk_path_writer_has_an_independent_fifteen_minute_schedule() -> None:
-    plugin = read(".orc/plugins/hermit-dev/index.ts")
+def test_disk_writer_has_a_durable_fifteen_minute_systemd_schedule() -> None:
+    service = read("scripts/systemd/hermit-disk-snapshot.service")
+    timer = read("scripts/systemd/hermit-disk-snapshot.timer")
 
-    assert (
-        f"const DISK_PATH_INTERVAL_MS = {DISK_FREE_MINUTES} * 60 * 1000;"
-        in plugin
-    )
-    assert 'const DISK_PATH_WORKFLOW_NAME = "hermit-dev-disk-paths-15m-v1";' in plugin
-    assert 'const DISK_PATH_SCRIPT_NAME = "hermitCacheDiskPaths";' in plugin
-    assert "./ci-hub/health/operational_health.py cache-disk-paths" in plugin
-    assert "/ignored/ops-state/disk-paths.json" in plugin
-    assert "/ignored/ops-state/disk-paths.previous.json" in plugin
-    assert "orc.registerScript(DISK_PATH_SCRIPT_NAME" in plugin
-    assert "orc.workflow(\n    diskPathHeartbeat" in plugin
-    assert "await wf.sleep(DISK_PATH_INTERVAL_MS);" in plugin
+    assert f"OnCalendar=*:0/{DISK_SNAPSHOT_MINUTES}" in timer
+    assert "Persistent=true" in timer
+    assert "Unit=hermit-disk-snapshot.service" in timer
+    assert "operational-tool --run-current-tool" in service
+    assert "--tool-relative scripts/publish-disk-snapshots.py" in service
+    assert "--population-timeout 180" in service
 
 
 def test_no_tick_hub_reminder_claims_a_faster_cadence_than_the_outer_tick() -> None:
@@ -126,7 +127,10 @@ def test_expensive_wrkslots_audit_has_a_persistent_calendar_schedule() -> None:
     assert "IOSchedulingClass=idle" in service
     assert "ci-hub/health/wrkslots_audit_result.py" in config
     assert 'cmd: ci-hub/bin/wrkslots --project-root' not in config
-    assert "advance intentionally creates that visible NO_RESULT window" in config
+    assert (
+        "NO_RESULT WINDOW UNTIL THE NEXT INDEPENDENT AUDIT PUBLISHES EVIDENCE"
+        in config
+    )
 
 
 def test_health_tick_uses_the_installed_immutable_bootstrap() -> None:

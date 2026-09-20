@@ -1397,6 +1397,19 @@ def cache_disk_paths(
             state: sum(reading["state"] == state for reading in readings)
             for state in ("complete", "partial", "unavailable")
         }
+        usable = counts["complete"] + counts["partial"]
+        if not usable:
+            _emit(
+                {
+                    "state": "unknown",
+                    "populations": len(readings),
+                    "complete": counts["complete"],
+                    "partial": counts["partial"],
+                    "unavailable": counts["unavailable"],
+                    "summary": "cannot-cache-disk-paths:no-usable-populations",
+                }
+            )
+            return 1
         document = {
             "schema_version": 1,
             "captured_at": time.time() if now is None else now,
@@ -1418,7 +1431,6 @@ def cache_disk_paths(
         _emit({"state": "unknown", "summary": f"cannot-cache-disk-paths:{error}"})
         return 1
 
-    usable = counts["complete"] + counts["partial"]
     state = "ok" if counts["partial"] == counts["unavailable"] == 0 else "partial"
     _emit(
         {
@@ -1430,7 +1442,7 @@ def cache_disk_paths(
             "summary": "disk-paths-cached",
         }
     )
-    return 0 if usable else 1
+    return 0
 
 
 def cache_disk_free(

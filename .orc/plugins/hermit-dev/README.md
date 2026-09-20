@@ -1,7 +1,7 @@
 # hermit-dev ORC plugin
 
 This version-controlled project plugin loads the canonical `dev-hermit`
-coordinator policies and owns the thin ORC adapter for operational polling.
+coordinator policies and retires superseded ORC operational producers.
 The policy text is not duplicated: startup reads the workspace `AGENTS.md` and
 registers it as the `hermit-dev` skill.
 
@@ -20,29 +20,23 @@ registers it as the `hermit-dev` skill.
 - Restore `globalThis.gchatSafe` on every config load before any registration
   effect can fail, preserving the coordinator's existing no-caps check.
 - Register the fork-safe `gh-issue-create` wrapper.
-- Run the real `agent-utils/tick-hub` operational poll every thirty minutes.
-  The versioned config is `ci-hub/health/tick-hub.yaml`; the plugin only supplies the
-  live `orc.listAgents()` snapshot, invokes `ci-hub/bin/health-tick`, and sends a
-  `HARD WARNING` wakeup when the hub emits an action/error or fails.
-- Refresh `ignored/ci-hub/agent-snapshot.json` from the complete live
-  `orc.listAgents()` result every five minutes, independently of the heavier
-  operational poll. This stays inside the claim authority's ten-minute
-  freshness limit even when the operational poll times out.
-- Publish the Btrfs whole-filesystem free-space reading every fifteen minutes,
-  and independently publish current and previous `compsize -b -x` readings for
-  the bounded top-level path populations on the same cadence.
-- Through that tick, gently fast-forward clean product primaries and publish a
+- Retire the legacy `hermit-dev-operational-health-v1`,
+  `hermit-dev-agent-snapshot-5m-v1`, `hermit-dev-disk-free-15m-v1`, and
+  `hermit-dev-disk-paths-15m-v1` workflow specifications at every startup.
+  The bounded user-systemd `hermit-health-tick.timer`,
+  `hermit-herdr-agent-snapshot.timer`, and `hermit-disk-snapshot.timer` own
+  those operations; this plugin must not register competing scripts or
+  workflows.
+- Through the systemd-owned health tick, gently fast-forward clean product primaries and publish a
   coherent parent gitlink snapshot; dirty or inconsistent state is preserved
   and surfaced as a hard warning.
-- Through that tick, reconcile containers created by
+- Through the systemd-owned health tick, reconcile containers created by
   `scripts/agent-podman.rs`. Only a labelled `agent`-lifetime container whose
   exact creator invocation is gone is gracefully stopped and removed.
   Task-retained, owner-unknown, and legacy containers are surfaced without
   deletion; see `ci-hub/containers/README.md`.
 - Kill the obsolete `hermit-dev-pr-health` reminder workflow at startup. The
-  replacement workflow has the distinct ID
-  `hermit-dev-operational-health-v1`, so an old durable source cannot be
-  silently retained.
+  user-systemd health timer is its sole replacement.
 - Kill the unversioned `policy-reload-2h` workflow at startup. It called
   `activateSkill` after the skill was already active, so stdlib returned
   `already activated` without an interjection while its wakeup claimed the
@@ -83,17 +77,17 @@ From the dev-hermit root:
 HERMIT_AGENT_SNAPSHOT_JSON='[]' ./ci-hub/bin/health-tick --no-header
 ```
 
-A live session's `orc.hermitDevStatus()` must report the thirty-minute tick
-interval, `ci-hub/health/tick-hub.yaml` config, and a non-null
+A live session's `orc.hermitDevStatus()` must report the systemd health and
+agent-snapshot timer owners and a non-null
 `lastPolicyContextInjection` receipt with `contextInjected: true`.
 `await orc.hermitDevSelfTest()` must report all registered scripts and
 the advertised functions present, exercise the inert argv echo through
 `orc.scripts`, and exercise `globalThis.gchatSafe` on allowed and refused text.
-`orc.listWorkflows()` must show the sleeping
+`orc.listWorkflows()` must show only the plugin's sleeping
+`hermit-dev-policy-reload-2h-v1` workflow and must not show
 `hermit-dev-operational-health-v1`, `hermit-dev-agent-snapshot-5m-v1`,
-`hermit-dev-disk-free-15m-v1`, `hermit-dev-disk-paths-15m-v1`, and
-`hermit-dev-policy-reload-2h-v1` workflows and must not show
-`hermit-dev-pr-health` or `policy-reload-2h`.
+`hermit-dev-disk-free-15m-v1`, `hermit-dev-disk-paths-15m-v1`,
+`hermit-dev-pr-health`, or `policy-reload-2h`.
 
 ## Calling a registered script (read this before "fixing" an empty `$1`)
 
@@ -122,10 +116,8 @@ Three things mislead people here, and all three cost time on 2026-08-10:
   not valid JSON, so **no positionals bind and the script runs with an empty
   `$1`**. Nothing was dropped — nothing well-formed was supplied.
 
-That the binding works is measured, not assumed:
-`hermitOperationalTick` (`HERMIT_AGENT_SNAPSHOT_JSON="$1"`) runs on its argument
-continuously, and `verifyScriptArgs()` brackets the same surface with an inert,
-distinctive multi-argument payload.
+That the binding works is measured, not assumed: `verifyScriptArgs()` brackets
+the live surface with an inert, distinctive multi-argument payload.
 
 To answer "did my arguments arrive?" with evidence rather than inference:
 

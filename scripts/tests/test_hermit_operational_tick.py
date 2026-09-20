@@ -205,12 +205,13 @@ class OperationalTickBoundTest(unittest.TestCase):
             self.assertIn("cpu_seconds=not_available", history)
             self.assertNotIn("cpu_seconds=0", history)
 
-    def test_both_operational_drivers_use_the_bounded_entry_point(self) -> None:
+    def test_systemd_is_the_only_operational_driver(self) -> None:
         plugin = PLUGIN.read_text()
         service = SERVICE.read_text()
-        self.assertIn("./scripts/hermit-operational-tick --emit-output", plugin)
-        self.assertIn("OPERATIONAL_TICK_SCRIPT_TIMEOUT_SECONDS = 650", plugin)
-        self.assertIn("timeoutSec: OPERATIONAL_TICK_SCRIPT_TIMEOUT_SECONDS", plugin)
+        self.assertNotIn("./scripts/hermit-operational-tick", plugin)
+        self.assertNotIn("hermitOperationalTick", plugin)
+        self.assertNotIn("operationalHealthHeartbeat", plugin)
+        self.assertIn('operationalHealthOwner: "hermit-health-tick.timer"', plugin)
         self.assertIn("--tool-relative scripts/hermit-operational-tick", service)
         self.assertIn("TimeoutStartSec=650", service)
 

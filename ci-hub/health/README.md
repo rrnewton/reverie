@@ -81,14 +81,15 @@ stay quiet; an `ACTION:` or `ERROR:` wakes the coordinator with a `HARD WARNING`
 
 A durable user-systemd timer publishes disk evidence every fifteen minutes,
 independently of an ORC session. `hermit-disk-snapshot.service` runs one current,
-immutable `scripts/publish-disk-snapshots.sh` and serializes both publications
+immutable `scripts/publish-disk-snapshots.py` and serializes both publications
 under one lock. It writes the fresh whole-filesystem Btrfs allocator reading to
 `ignored/ops-state/disk.json`, writes bounded `compsize -b -x` readings for the
 main top-level populations to `ignored/ops-state/disk-paths.json`, and retains
 the preceding published path run at
 `ignored/ops-state/disk-paths.previous.json`. The path scan runs at idle I/O and
 lowest normal CPU priority, with a 180-second bound per concurrently measured
-population. The service has an outer 420-second runtime bound plus explicit
+population. The service explicitly includes the immutable-tool's 120-second
+lock wait and has an outer 540-second runtime bound plus explicit
 memory, swap, and task caps; any command failure fails the oneshot.
 
 Validate with `scripts/install-disk-snapshot.sh --check`, then install and
@@ -229,9 +230,10 @@ Run and persist due times:
 ./ci-hub/bin/health-tick --flush --no-header
 ```
 
-The scheduled ORC workflow supplies `HERMIT_AGENT_SNAPSHOT_JSON`; manual runs
-must not invent that value. An empty array is no observation and is refused
-before it can replace the last usable agent snapshot.
+The scheduled systemd path reads the independently published typed Herdr
+snapshot; it does not inject ambient `HERMIT_AGENT_SNAPSHOT_JSON`. Manual runs
+must not invent that compatibility input. An empty array is no observation and
+is refused before it can replace the last usable agent snapshot.
 
 The parent `agent-utils` path is a symlink to `hermit/agent-utils`. A recursive
 checkout initializes that nested submodule. For a selective checkout, initialize

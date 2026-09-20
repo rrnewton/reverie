@@ -13,8 +13,8 @@
 //
 // The diagnosis that followed was wrong in an instructive way, and this file
 // pins the correction so it is not re-derived: the surface does NOT drop
-// arguments. `hermitOperationalTick` runs on `$1` continuously, and the inert
-// echo checks below bracket the same binding with multiple distinctive values.
+// arguments. The inert echo checks below bracket the live registered-script
+// binding with multiple distinctive values.
 // What actually breaks is calling `orc.callScriptInternal` by hand, whose
 // `argsJson` parameter is a JSON STRING -- pass an array and the dispatcher
 // rejects it, pass a bare name and NO positionals bind.
@@ -56,13 +56,14 @@ function check(name, cond, detail = "") {
 }
 
 check(
-  "operational workflow source line remains stable",
-  sourceLineOf("export async function operationalHealthHeartbeat") === 632,
+  "retired operational workflow source stays absent",
+  sourceLineOf("export async function operationalHealthHeartbeat") === -1,
   String(sourceLineOf("export async function operationalHealthHeartbeat")),
 );
 check(
-  "policy reload workflow source line remains stable",
-  sourceLineOf("export async function policyReloadHeartbeat") === 733,
+  "policy reload remains the sole declared heartbeat source",
+  sourceLineOf("export async function policyReloadHeartbeat") > 0 &&
+    (SOURCE.match(/export async function \w+Heartbeat/g) || []).length === 1,
   String(sourceLineOf("export async function policyReloadHeartbeat")),
 );
 

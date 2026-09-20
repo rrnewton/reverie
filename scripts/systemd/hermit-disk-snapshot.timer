@@ -1,6 +1,6 @@
 [Unit]
 Description=Refresh dev-hermit disk-health snapshots every fifteen minutes
-Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/publish-disk-snapshots.sh
+Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/publish-disk-snapshots.py
 
 [Timer]
 OnBootSec=2min

@@ -69,7 +69,6 @@ const REQUIRED_ORC_SURFACE = [
   "killWorkflow",
   "kvGet",
   "kvSet",
-  "listAgents",
   "log",
   "pluginDir",
   "readFile",
@@ -104,33 +103,6 @@ const PLUGIN_DIR_WORKSPACE_ROOT = REGISTERED_PLUGIN_DIRECTORY
 const SHELL_WORKSPACE_ROOT = PLUGIN_DIR_WORKSPACE_ROOT ||
   ("$HOME/" + WORKSPACE_SUBPATH);
 
-const PR_STATUS_COMMAND = 'cd "' + SHELL_WORKSPACE_ROOT +
-  '" && ./ci-hub/ci-hub health';
-const OPERATIONAL_TICK_SCRIPT_NAME = "hermitOperationalTick";
-const OPERATIONAL_TICK_COMMAND =
-  'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
-  'HERMIT_AGENT_SNAPSHOT_JSON="$1" ' +
-  './scripts/hermit-operational-tick --emit-output';
-// The bounded entry point reaps at 619s. Give its cgroup accounting and report
-// persistence 31s to finish before ORC applies its last-resort outer kill.
-const OPERATIONAL_TICK_SCRIPT_TIMEOUT_SECONDS = 650;
-const OPERATIONAL_TICK_INTERVAL_MS = 30 * 60 * 1000;
-const OPERATIONAL_TICK_WORKFLOW_NAME = "hermit-dev-operational-health-v1";
-// Claim ownership expires after ten minutes without a complete ORC snapshot.
-// Keep this producer independent of the heavier health tick and comfortably
-// inside that bound. The old design refreshed only at the start of a 30-minute
-// tick and then exhausted its workflow restarts when the tick exceeded ORC's
-// 180-second registered-script timeout.
-const AGENT_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
-const AGENT_SNAPSHOT_WARNING_INTERVAL_MS = 30 * 60 * 1000;
-const AGENT_SNAPSHOT_WORKFLOW_NAME = "hermit-dev-agent-snapshot-5m-v1";
-const AGENT_SNAPSHOT_SCRIPT_NAME = "hermitCacheAgentSnapshot";
-const AGENT_SNAPSHOT_COMMAND =
-  'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
-  'HERMIT_AGENT_SNAPSHOT_JSON="$1" ' +
-  "./ci-hub/health/operational_health.py cache-agents " +
-  '--snapshot-file "' + SHELL_WORKSPACE_ROOT +
-  '/ignored/ci-hub/agent-snapshot.json"';
 // MANDATORY before close+respawn. The mission mandate authorizes replacing a
 // broken agent with no permission, which pairs an UNVERIFIED alarm with an
 // IRREVERSIBLE action. This is the check that must sit between them, and it is
@@ -153,10 +125,8 @@ const AGENT_LIVENESS_COMMAND =
 // literal in ARGV_ECHO_COMMAND was replaced by the first argument (measured
 // 2026-08-27). Avoid braces in script bodies; use `"$1"` for arguments.
 //
-// The binding is measured rather than inferred:
-// `hermitOperationalTick` (`HERMIT_AGENT_SNAPSHOT_JSON="$1"`) runs through
-// `orc.scripts.<name>(...)` continuously, and `verifyScriptArgPassing()` below
-// brackets the same surface with a distinctive multi-argument payload.
+// The binding is measured rather than inferred: `verifyScriptArgPassing()`
+// brackets the live script surface with a distinctive multi-argument payload.
 //
 // WHAT DOES BREAK, and how an empty `$1` is actually produced: calling
 // `orc.callScriptInternal` by hand. Its signature is
@@ -186,8 +156,8 @@ const LEGACY_SPECULATIVE_LAND_WORKFLOW_NAME =
   "hermit-dev-speculative-land-remediation-v1";
 const LEGACY_PR_HEALTH_WORKFLOW_NAME = "hermit-dev-pr-health";
 
-// The recurring workflows are load-bearing for the self-healing fleet, and
-// cold boot routinely restarts them for reasons that have nothing to do with this plugin
+// The policy-reload workflow is load-bearing for long coordinator sessions,
+// and cold boot routinely restarts it for reasons that have nothing to do with this plugin
 // ("restore: timed out waiting for restored effect registration" hit ~14
 // workflows in the crash-loop boot). The stock policy burned all four attempts
 // inside one second and left the heartbeat permanently dead; back off instead.
@@ -256,7 +226,6 @@ interface PolicyInjectionReceipt {
 }
 
 let resolvedSources: HermitDevSources | null = null;
-let lastAgentSnapshotWarningAt = 0;
 let lastSurfaceGap: string[] = [];
 let lastSelfTest: SelfTestResult | null = null;
 let lastPolicyInjection: PolicyInjectionReceipt | null = null;
@@ -618,116 +587,6 @@ async function activateHermitDevPolicies(
   reason: PolicyInjectionReason = "manual",
 ): Promise<string> {
   return JSON.stringify(await injectHermitDevPolicies(reason));
-}
-
-function actionableTickLines(report: string): string[] {
-  return report.split("\n").filter((line) => {
-    if (line.startsWith("ACTION:") || line.startsWith("ERROR:")) {
-      return true;
-    }
-    return line.startsWith("HEALTH:") && !line.includes(" ok ");
-  });
-}
-
-export async function operationalHealthHeartbeat(wf: WfContext): Promise<void> {
-  await wf.loop(async () => {
-    const agents = await orc.listAgents();
-    const result = await orc.scripts.hermitOperationalTick(
-      JSON.stringify(agents),
-    ) as {
-      exitCode: number;
-      stdout?: string;
-      stderr?: string;
-    };
-    const exitCode = Number(result.exitCode);
-    const stdout = String(result.stdout || "").trim();
-    const stderr = String(result.stderr || "").trim();
-    const report = [stdout, stderr].filter(Boolean).join("\n");
-    const actionable = actionableTickLines(stdout);
-    if (exitCode !== 0 || actionable.length > 0) {
-      const title = exitCode === 0
-        ? "HARD WARNING: operational health requires action"
-        : "HARD WARNING: operational health poll failed";
-      await orc.sendWakeup(
-        [],
-        title,
-        (report || "tick-hub returned no diagnostic output") +
-          "\nRun " + PR_STATUS_COMMAND + " for the full GitHub/PR report.",
-      );
-    }
-    await wf.sleep(OPERATIONAL_TICK_INTERVAL_MS);
-  });
-}
-
-async function reportAgentSnapshotFailure(detail: string): Promise<void> {
-  try {
-    orc.log("error", "hermit-dev agent snapshot refresh failed: " + detail);
-  } catch (_err) {
-    // Logging is secondary to keeping the refresh loop alive.
-  }
-  const now = Date.now();
-  if (now - lastAgentSnapshotWarningAt < AGENT_SNAPSHOT_WARNING_INTERVAL_MS) {
-    return;
-  }
-  try {
-    await orc.sendWakeup(
-      [],
-      "HARD WARNING: agent snapshot refresh failed",
-      detail +
-        "; claim ownership and every dependent current-work answer remain unknown",
-    );
-    lastAgentSnapshotWarningAt = now;
-  } catch (err) {
-    // Delivery failure must not terminate this producer. A terminated workflow
-    // rapidly consumes its finite restart allowance and permanently stops the
-    // refreshes it exists to provide.
-    try {
-      orc.log(
-        "error",
-        "hermit-dev could not deliver the agent snapshot warning: " +
-          String(err),
-      );
-    } catch (_logError) {
-      // Neither reporting path may terminate the producer.
-    }
-  }
-}
-
-export async function agentSnapshotHeartbeat(wf: WfContext): Promise<void> {
-  await wf.loop(async () => {
-    let failure: string | null = null;
-    try {
-      const agents = await orc.listAgents();
-      const result = await callRegisteredScript(
-        AGENT_SNAPSHOT_SCRIPT_NAME,
-        [JSON.stringify(agents)],
-      );
-      const exitCode = Number(result.exitCode);
-      const stdout = String(result.stdout || "").trim();
-      const stderr = String(result.stderr || "").trim();
-      const count = stdout.match(/(?:^|\n)count=(\d+)(?:\n|$)/);
-      if (
-        exitCode !== 0 ||
-        !/(?:^|\n)state=ok(?:\n|$)/.test(stdout) ||
-        !/(?:^|\n)summary=agent-snapshot-cached(?:\n|$)/.test(stdout) ||
-        count === null ||
-        Number(count[1]) !== agents.length
-      ) {
-        failure =
-          "cache command did not confirm the complete listAgents snapshot " +
-          "(agents=" + agents.length + ", exit=" + exitCode + "): " +
-          ([stdout, stderr].filter(Boolean).join("\n") || "no output");
-      }
-    } catch (err) {
-      failure = "snapshot refresh threw: " + String(err);
-    }
-    if (failure !== null) {
-      await reportAgentSnapshotFailure(failure);
-    }
-    // Sleep even after a refusal. Retrying immediately turns one persistent
-    // fault into restart exhaustion and removes all chance of later recovery.
-    await wf.sleep(AGENT_SNAPSHOT_INTERVAL_MS);
-  });
 }
 
 export async function policyReloadHeartbeat(wf: WfContext): Promise<void> {
@@ -1139,10 +998,6 @@ async function verifyRegisteredSurface(): Promise<SelfTestResult> {
     add("script-registry-readable", false, "orc.listScripts() failed: " + String(err));
   }
   const requiredScripts = [
-    OPERATIONAL_TICK_SCRIPT_NAME,
-    AGENT_SNAPSHOT_SCRIPT_NAME,
-    DISK_FREE_SCRIPT_NAME,
-    DISK_PATH_SCRIPT_NAME,
     AGENT_LIVENESS_SCRIPT_NAME,
     ARGV_ECHO_SCRIPT_NAME,
   ];
@@ -1268,20 +1123,11 @@ function hermitDevStatus() {
     hermitUpstream: "facebookexperimental/hermit",
     reverieIssueRepo: "rrnewton/reverie",
     issueCreateWrapper: sourceDirectory + "/" + ISSUE_CREATE_WRAPPER_FILE,
-    prStatusCommand: PR_STATUS_COMMAND,
-    operationalTickCommand: OPERATIONAL_TICK_COMMAND,
-    operationalTickConfig: SHELL_WORKSPACE_ROOT +
-      "/ci-hub/health/tick-hub.yaml",
-    operationalTickIntervalMinutes: OPERATIONAL_TICK_INTERVAL_MS / 60000,
-    operationalTickTimeoutSeconds: OPERATIONAL_TICK_SCRIPT_TIMEOUT_SECONDS,
-    agentSnapshotWorkflow: AGENT_SNAPSHOT_WORKFLOW_NAME,
-    agentSnapshotIntervalMinutes: AGENT_SNAPSHOT_INTERVAL_MS / 60000,
-    agentSnapshotWarningIntervalMinutes:
-      AGENT_SNAPSHOT_WARNING_INTERVAL_MS / 60000,
-    diskFreeWorkflow: DISK_FREE_WORKFLOW_NAME,
-    diskFreeIntervalMinutes: DISK_FREE_INTERVAL_MS / 60000,
-    diskPathWorkflow: DISK_PATH_WORKFLOW_NAME,
-    diskPathIntervalMinutes: DISK_PATH_INTERVAL_MS / 60000,
+    operationalHealthOwner: "hermit-health-tick.timer",
+    agentSnapshotOwner: "hermit-herdr-agent-snapshot.timer",
+    retiredSystemdReplacedWorkflows: [
+      ...RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES,
+    ],
     policyReloadWorkflow: POLICY_RELOAD_WORKFLOW_NAME,
     policyReloadIntervalMinutes: POLICY_RELOAD_INTERVAL_MS / 60000,
     agentLivenessCommand: AGENT_LIVENESS_COMMAND,
@@ -1292,89 +1138,18 @@ function hermitDevStatus() {
   };
 }
 
-const DISK_FREE_INTERVAL_MS = 15 * 60 * 1000;
-const DISK_FREE_WORKFLOW_NAME = "hermit-dev-disk-free-15m-v1";
-const DISK_FREE_SCRIPT_NAME = "hermitCacheDiskFree";
-const DISK_FREE_COMMAND =
-  'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
-  "./ci-hub/health/operational_health.py cache-disk " +
-  '--filesystem-path "' + SHELL_WORKSPACE_ROOT + '" ' +
-  '--state-file "' + SHELL_WORKSPACE_ROOT +
-  '/ignored/ops-state/disk.json"';
-
-const DISK_PATH_INTERVAL_MS = 15 * 60 * 1000;
-const DISK_PATH_WORKFLOW_NAME = "hermit-dev-disk-paths-15m-v1";
-const DISK_PATH_SCRIPT_NAME = "hermitCacheDiskPaths";
-const DISK_PATH_COMMAND =
-  'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
-  "./ci-hub/health/operational_health.py cache-disk-paths " +
-  '--state-root "' + SHELL_WORKSPACE_ROOT + '" ' +
-  '--state-file "' + SHELL_WORKSPACE_ROOT +
-  '/ignored/ops-state/disk-paths.json" ' +
-  '--previous-state-file "' + SHELL_WORKSPACE_ROOT +
-  '/ignored/ops-state/disk-paths.previous.json"';
-
-export async function diskFreeHeartbeat(wf: WfContext): Promise<void> {
-  await wf.loop(async () => {
-    let failure: string | null = null;
-    try {
-      const result = await callRegisteredScript(DISK_FREE_SCRIPT_NAME, []);
-      const exitCode = Number(result.exitCode);
-      const stdout = String(result.stdout || "").trim();
-      const stderr = String(result.stderr || "").trim();
-      if (
-        exitCode !== 0 ||
-        !/(?:^|\n)state=ok(?:\n|$)/.test(stdout) ||
-        !/(?:^|\n)free_bytes=[0-9]+(?:\n|$)/.test(stdout) ||
-        !/(?:^|\n)summary=disk-free-cached(?:\n|$)/.test(stdout)
-      ) {
-        failure =
-          "disk writer did not confirm a fresh btrfs free-space reading " +
-          "(exit=" + exitCode + "): " +
-          ([stdout, stderr].filter(Boolean).join("\n") || "no output");
-      }
-    } catch (err) {
-      failure = "disk writer threw: " + String(err);
-    }
-    if (failure !== null) {
-      orc.log("error", "hermit-dev disk free-space writer failed: " + failure);
-    }
-    await wf.sleep(DISK_FREE_INTERVAL_MS);
-  });
-}
-
-export async function diskPathHeartbeat(wf: WfContext): Promise<void> {
-  await wf.loop(async () => {
-    let failure: string | null = null;
-    try {
-      const result = await callRegisteredScript(DISK_PATH_SCRIPT_NAME, []);
-      const exitCode = Number(result.exitCode);
-      const stdout = String(result.stdout || "").trim();
-      const stderr = String(result.stderr || "").trim();
-      const state = stdout.match(/(?:^|\n)state=(ok|partial)(?:\n|$)/);
-      if (
-        exitCode !== 0 ||
-        state === null ||
-        !/(?:^|\n)populations=[1-9][0-9]*(?:\n|$)/.test(stdout) ||
-        !/(?:^|\n)summary=disk-paths-cached(?:\n|$)/.test(stdout)
-      ) {
-        failure =
-          "disk path writer did not confirm a physical per-path reading " +
-          "(exit=" + exitCode + "): " +
-          ([stdout, stderr].filter(Boolean).join("\n") || "no output");
-      }
-    } catch (err) {
-      failure = "disk path writer threw: " + String(err);
-    }
-    if (failure !== null) {
-      orc.log("error", "hermit-dev disk path writer failed: " + failure);
-    }
-    await wf.sleep(DISK_PATH_INTERVAL_MS);
-  });
-}
+// These durable ORC specifications predate their user-systemd replacements.
+// Keep their exact names only as retirement authority: startup kills every
+// legacy workflow on every boot, and no script or workflow below recreates them.
+const RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES = [
+  "hermit-dev-operational-health-v1",
+  "hermit-dev-agent-snapshot-5m-v1",
+  "hermit-dev-disk-free-15m-v1",
+  "hermit-dev-disk-paths-15m-v1",
+] as const;
 
 // --- heartbeat declaration ---------------------------------------------------
-// MEASURED 2026-09-14, and the reason the five heartbeats below are declared
+// MEASURED 2026-09-14, and the reason the sole policy heartbeat is declared
 // from a startup hook instead of from a plain module-scope `orc.workflow()`
 // call.
 //
@@ -1387,8 +1162,9 @@ export async function diskPathHeartbeat(wf: WfContext): Promise<void> {
 //
 //   unsupported module specifier '<this file>' from 'orc-internal:workflow-compiler'
 //
-// The specification fingerprint is per MODULE, not per workflow, so ANY edit to
-// this file marks all five as updated and kills all five at the next boot. They
+// The specification fingerprint is per MODULE, not per workflow. At the time of
+// the measurement this file owned five workflows, so an edit marked all five
+// as updated and killed all five at the next boot. They
 // return only at the boot after that, because the retirement deletes the
 // specification and the declaration is then an addition again. That is what
 // left four of them dead for eleven hours while disk-paths, which happened to
@@ -1420,10 +1196,6 @@ async function retireDurableWorkflowSpec(name: string): Promise<void> {
  * them, which is exactly the reassuring silence that hid this outage. */
 async function verifyRegisteredWorkflows(): Promise<SelfTestResult> {
   const required = [
-    OPERATIONAL_TICK_WORKFLOW_NAME,
-    AGENT_SNAPSHOT_WORKFLOW_NAME,
-    DISK_FREE_WORKFLOW_NAME,
-    DISK_PATH_WORKFLOW_NAME,
     POLICY_RELOAD_WORKFLOW_NAME,
   ];
   const checks: SelfTestCheck[] = [];
@@ -1462,6 +1234,7 @@ async function verifyRegisteredWorkflows(): Promise<SelfTestResult> {
     LEGACY_PR_HEALTH_WORKFLOW_NAME,
     LEGACY_POLICY_RELOAD_WORKFLOW_NAME,
     LEGACY_SPECULATIVE_LAND_WORKFLOW_NAME,
+    ...RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES,
   ];
   const stillPresent = retired.filter((name) =>
     missingRegisteredNames(listed, [name]).length === 0
@@ -1551,31 +1324,6 @@ function registerPluginSurface(): void {
   // activated AGENTS.md policy with the "loaded during startup" stub and leave
   // the coordinator running on a placeholder until the next activation — a
   // silent policy downgrade, worse than the crash it replaced. Do not reorder.
-  orc.registerScript(OPERATIONAL_TICK_SCRIPT_NAME, {
-    script: OPERATIONAL_TICK_COMMAND,
-    description: "Run the version-pinned dev-hermit tick-hub operational poll",
-    timeoutSec: OPERATIONAL_TICK_SCRIPT_TIMEOUT_SECONDS,
-  });
-
-  orc.registerScript(AGENT_SNAPSHOT_SCRIPT_NAME, {
-    script: AGENT_SNAPSHOT_COMMAND,
-    description:
-      "Cache the complete live ORC agent list for claim ownership readers",
-    timeoutSec: 60,
-  });
-
-  orc.registerScript(DISK_FREE_SCRIPT_NAME, {
-    script: DISK_FREE_COMMAND,
-    description: "Publish a fresh btrfs free-space reading for the disk watcher",
-    timeoutSec: 60,
-  });
-
-  orc.registerScript(DISK_PATH_SCRIPT_NAME, {
-    script: DISK_PATH_COMMAND,
-    description: "Publish bounded physical usage for top-level disk populations",
-    timeoutSec: 240,
-  });
-
   orc.registerScript(AGENT_LIVENESS_SCRIPT_NAME, {
     script: AGENT_LIVENESS_COMMAND,
     description:
@@ -1732,55 +1480,16 @@ function registerPluginSurface(): void {
     async function hermitDevWorkflows() {
       for (
         const heartbeat of [
-          OPERATIONAL_TICK_WORKFLOW_NAME,
-          AGENT_SNAPSHOT_WORKFLOW_NAME,
-          DISK_FREE_WORKFLOW_NAME,
-          DISK_PATH_WORKFLOW_NAME,
           POLICY_RELOAD_WORKFLOW_NAME,
+          ...RETIRED_SYSTEMD_REPLACED_WORKFLOW_NAMES,
         ]
       ) {
         await retireDurableWorkflowSpec(heartbeat);
       }
 
-      // Five separate calls, not a loop: the workflow compiler reads the entry
+      // Keep the entry literal at this call site: the workflow compiler reads its
       // name from the argument expression at the call site, so the function
       // has to be named there literally.
-      orc.workflow(
-        operationalHealthHeartbeat,
-        "Run tick-hub operational checks and hard-warn the coordinator on failures",
-        {
-          name: OPERATIONAL_TICK_WORKFLOW_NAME,
-          restartable: HEARTBEAT_RESTARTABLE,
-        },
-      );
-
-      orc.workflow(
-        agentSnapshotHeartbeat,
-        "Refresh the complete ORC agent snapshot inside its freshness window",
-        {
-          name: AGENT_SNAPSHOT_WORKFLOW_NAME,
-          restartable: HEARTBEAT_RESTARTABLE,
-        },
-      );
-
-      orc.workflow(
-        diskFreeHeartbeat,
-        "Publish a fresh btrfs free-space reading every fifteen minutes",
-        {
-          name: DISK_FREE_WORKFLOW_NAME,
-          restartable: HEARTBEAT_RESTARTABLE,
-        },
-      );
-
-      orc.workflow(
-        diskPathHeartbeat,
-        "Publish physical usage for top-level disk populations every fifteen minutes",
-        {
-          name: DISK_PATH_WORKFLOW_NAME,
-          restartable: HEARTBEAT_RESTARTABLE,
-        },
-      );
-
       orc.workflow(
         policyReloadHeartbeat,
         "Re-inject AGENTS.md into coordinator context every two hours and report " +

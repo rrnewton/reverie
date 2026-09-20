@@ -1534,6 +1534,96 @@ class OperationalHealthTest(unittest.TestCase):
             document["counts"], {"complete": 1, "partial": 1, "unavailable": 0}
         )
 
+    def test_cache_disk_paths_partial_population_is_usable_and_publishes(self) -> None:
+        def partial_population(
+            name: str, paths: tuple[Path, ...], *, timeout: float
+        ) -> dict[str, object]:
+            return {
+                "name": name,
+                "paths": [str(path) for path in paths],
+                "state": "partial",
+                "physical_bytes": 17,
+                "elapsed_seconds": 0.1,
+                "diagnostics": ["one unreadable extent"],
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / "disk-paths.json"
+            previous = root / "disk-paths.previous.json"
+            old = b'{"captured_at": 100}\n'
+            current.write_bytes(old)
+            with mock.patch.object(
+                operational_health,
+                "_fresh_btrfs_reading",
+                side_effect=[(700, 1000), (690, 1000)],
+            ), mock.patch.object(
+                operational_health,
+                "_measure_disk_population",
+                side_effect=partial_population,
+            ):
+                result, output = self.capture(
+                    operational_health.cache_disk_paths,
+                    state_root=root,
+                    state_file=current,
+                    previous_state_file=previous,
+                    populations=(("partial", (root,)),),
+                    now=200,
+                )
+            document = json.loads(current.read_text())
+            previous_bytes = previous.read_bytes()
+
+        self.assertEqual(result, 0)
+        self.assertIn("state=partial", output)
+        self.assertEqual(document["counts"]["partial"], 1)
+        self.assertEqual(previous_bytes, old)
+
+    def test_cache_disk_paths_zero_usable_preserves_both_authority_files(self) -> None:
+        def unavailable_population(
+            name: str, paths: tuple[Path, ...], *, timeout: float
+        ) -> dict[str, object]:
+            return {
+                "name": name,
+                "paths": [str(path) for path in paths],
+                "state": "unavailable",
+                "physical_bytes": None,
+                "elapsed_seconds": 0.1,
+                "diagnostics": ["timed out"],
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / "disk-paths.json"
+            previous = root / "disk-paths.previous.json"
+            current_before = b'{"current": "last usable"}\n'
+            previous_before = b'{"previous": "older usable"}\n'
+            current.write_bytes(current_before)
+            previous.write_bytes(previous_before)
+            with mock.patch.object(
+                operational_health,
+                "_fresh_btrfs_reading",
+                side_effect=[(700, 1000), (690, 1000)],
+            ), mock.patch.object(
+                operational_health,
+                "_measure_disk_population",
+                side_effect=unavailable_population,
+            ):
+                result, output = self.capture(
+                    operational_health.cache_disk_paths,
+                    state_root=root,
+                    state_file=current,
+                    previous_state_file=previous,
+                    populations=(("unavailable", (root,)),),
+                    now=200,
+                )
+
+            self.assertEqual(current.read_bytes(), current_before)
+            self.assertEqual(previous.read_bytes(), previous_before)
+
+        self.assertEqual(result, 1)
+        self.assertIn("state=unknown", output)
+        self.assertIn("summary=cannot-cache-disk-paths:no-usable-populations", output)
+
     def test_cache_disk_paths_command_dispatches_to_the_writer(self) -> None:
         with mock.patch.object(
             operational_health, "cache_disk_paths", return_value=7
