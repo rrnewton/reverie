@@ -56,7 +56,8 @@ TICK_REPORT_COMPLETE=0
 # to deploy itself. Direct/manual runs have no immutable root and retain the
 # parent copy as their fallback.
 PARENT_MAIN_WRITE="${DEV_HERMIT_TOOL_ROOT:-$ROOT}/scripts/parent-main-write"
-ESCALATE="${HERMIT_HEALTH_ESCALATE:-$ROOT/ci-hub/bin/escalate}"
+ESCALATE="${HERMIT_HEALTH_ESCALATE:-${DEV_HERMIT_TOOL_ROOT:-$ROOT}/ci-hub/bin/escalate}"
+ENQUEUE_HEALTH_ESCALATION="${DEV_HERMIT_TOOL_ROOT:-$ROOT}/ci-hub/bin/enqueue-health-escalation"
 ESCALATION_AGENT="health-tick"
 # BOTH SINKS, because they cover different outages and neither one covers the
 # other. The fork is off this host and survives the whole fleet being down, which
@@ -202,7 +203,7 @@ escalate_live_report_findings() {
     [ "$LIVE_REPORT_ESCALATED" -eq 1 ] && return 0
     [ -n "$LIVE_REPORT_STAMP" ] || return 0
     LIVE_REPORT_ESCALATED=1
-    local temporary event kind count suffix
+    local temporary event kind count origin_host enqueue_error
     mkdir -p -- "$ESCALATION_PENDING_DIR" 2>/dev/null || return 0
     temporary=$(mktemp "$ESCALATION_PENDING_DIR/.event-$(date -u +%Y%m%dT%H%M%S%NZ)-$$-XXXXXX") || return 0
     if [ -s "$LIVE_REPORT" ]; then
@@ -227,9 +228,23 @@ escalate_live_report_findings() {
     else
         kind=alarm
     fi
-    suffix=${temporary##*-}
-    event="$ESCALATION_PENDING_DIR/event-$(date -u +%Y%m%dT%H%M%S%NZ)-$$-$suffix.$kind"
-    mv -- "$temporary" "$event" || { rm -f -- "$temporary"; return 0; }
+    origin_host=$(uname -n) || { rm -f -- "$temporary"; return 0; }
+    if ! event=$("$ENQUEUE_HEALTH_ESCALATION" \
+        --queue "$ESCALATION_PENDING_DIR" \
+        --kind "$kind" \
+        --payload-file "$temporary" \
+        --origin-host "$origin_host" \
+        --findings "$count" 2>"$temporary.error"); then
+        enqueue_error=$(tr '\n' ';' <"$temporary.error" | cut -c1-1000)
+        printf '%s escalation_enqueue_refused kind=%s findings=%s staged=%q diagnostic=%q detail=%q\n' \
+            "$LIVE_REPORT_STAMP" "$kind" "$count" "$temporary" \
+            "$temporary.error" "$enqueue_error" >>"$INVLOG"
+        # Keep both inputs as recovery evidence. This file is hidden and is not
+        # a queue event: without a validated envelope the worker must not guess
+        # its host/key or publish it under a new identity.
+        return 0
+    fi
+    rm -f -- "$temporary" "$temporary.error"
     if launch_health_escalation; then
         printf '%s escalation=queued event=%q kind=%s findings=%s\n' \
             "$LIVE_REPORT_STAMP" "$event" "$kind" "$count" >>"$INVLOG"
@@ -287,7 +302,7 @@ launch_health_escalation() {
 retry_pending_health_escalations() {
     [[ -d $ESCALATION_PENDING_DIR ]] || return 0
     find "$ESCALATION_PENDING_DIR" -maxdepth 1 -type f \
-        \( -name 'event-*.alarm' -o -name 'event-*.resolve' \) -print -quit \
+        -name 'event-*.json' ! -name '*.circuit.json' -print -quit \
         | grep -q . || return 0
     launch_health_escalation || true
 }

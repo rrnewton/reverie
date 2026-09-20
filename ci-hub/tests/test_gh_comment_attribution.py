@@ -165,12 +165,16 @@ class FleetGhTest(unittest.TestCase):
         self.write_registry(owner_row())
 
         self.capture = self.root / "capture.json"
+        self.body_capture = self.root / "capture-body.txt"
         self.fake = self.root / "real-gh"
         self.fake.write_text(
             "#!/usr/bin/env python3\n"
             "import json, os, sys\n"
             "from pathlib import Path\n"
             "Path(os.environ['GH_CAPTURE']).write_text(json.dumps(sys.argv[1:]))\n"
+            "if '--body-file' in sys.argv:\n"
+            "    source = Path(sys.argv[sys.argv.index('--body-file') + 1])\n"
+            "    Path(os.environ['GH_CAPTURE_BODY']).write_text(source.read_text())\n"
             "sys.stdout.write(os.environ.get('GH_STDOUT', ''))\n"
         )
         self.fake.chmod(0o755)
@@ -194,6 +198,7 @@ class FleetGhTest(unittest.TestCase):
         self.env.update(
             FLEET_REAL_GH=str(self.fake),
             GH_CAPTURE=str(self.capture),
+            GH_CAPTURE_BODY=str(self.body_capture),
             NOTE_CAPTURE=str(self.note_capture),
         )
         self.env["DG_AGENT_NAME"] = TEST_AGENT
@@ -623,6 +628,23 @@ class FleetGhTest(unittest.TestCase):
             f"Unverified --who metadata: {TEST_AGENT}\n"
             "filed from a file",
         )
+
+    def test_227307_byte_body_stays_off_exec_argv_and_is_not_truncated(self) -> None:
+        payload = "z" * 227_307
+        source = self.root / "large-body.md"
+        source.write_text(payload)
+
+        result = self.run_shim(
+            "issue", "create", "--title", "large", "--body-file", str(source)
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        captured = self.captured()
+        self.assertNotIn("--body", captured)
+        self.assertIn("--body-file", captured)
+        staged = Path(captured[captured.index("--body-file") + 1])
+        self.assertEqual(self.body_capture.read_text(), payload)
+        self.assertFalse(staged.exists(), "the private staging file must be cleaned up")
 
     def test_create_without_metadata_preserves_exact_body(self) -> None:
         result = self.run_shim("issue", "create", "--title", "t", "--body", "anonymous")

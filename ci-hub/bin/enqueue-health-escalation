@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Atomically enqueue one schema-v1 operational-health event."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "ci-hub/lib"))
+
+from health_escalation_event import InvalidEvent, make_event, write_event  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--queue", type=Path, required=True)
+    parser.add_argument("--kind", choices=("alarm", "resolve"), required=True)
+    parser.add_argument("--payload-file", type=Path, required=True)
+    parser.add_argument("--origin-host", required=True)
+    parser.add_argument("--findings", type=int, required=True)
+    args = parser.parse_args()
+    try:
+        payload = args.payload_file.read_text(encoding="utf-8")
+        event = make_event(
+            kind=args.kind, payload=payload, origin_host=args.origin_host,
+            findings=args.findings,
+        )
+        path = write_event(args.queue, event)
+    except (OSError, UnicodeError, InvalidEvent) as error:
+        print(f"enqueue-health-escalation: REFUSED: {error}", file=sys.stderr)
+        return 2
+    print(path)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

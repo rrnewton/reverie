@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import re
@@ -64,6 +65,7 @@ def bench(tmp_path: Path):
                 f"ESCALATION_PENDING_DIR={queue}",
                 f"ESCALATION_LOG={tmp_path / 'delivery.log'}",
                 f"ESCALATE={tmp_path / 'escalate'}",
+                f"ENQUEUE_HEALTH_ESCALATION={ROOT / 'ci-hub/bin/enqueue-health-escalation'}",
                 f"DEV_HERMIT_OPERATIONAL_TOOL={operational_tool}",
                 f"DEV_HERMIT_TOOL_PARENT_SHA={'a' * 40}",
                 "ts() { printf '2026-09-03T00:00:00Z\\n'; }",
@@ -102,11 +104,15 @@ def test_action_and_error_are_one_alarm_event(bench) -> None:
     )
     assert result["returncode"] == 0
     events = result["events"]
-    assert len(events) == 1 and str(events[0]).endswith(".alarm")
-    assert events[0].read_text().splitlines() == [
+    assert len(events) == 1 and str(events[0]).endswith(".json")
+    envelope = json.loads(events[0].read_text())
+    assert envelope["kind"] == "alarm"
+    assert envelope["payload"].splitlines() == [
         "ACTION: hard-warn-coordinator component=a",
         "ERROR: reminder b could not run",
     ]
+    assert envelope["origin_host"] == os.uname().nodename
+    assert envelope["key"].startswith("operational-tick-findings-")
     assert "kind=alarm findings=2" in result["invlog"]
 
 
@@ -121,7 +127,7 @@ def test_interrupted_empty_report_does_not_create_retry_event(bench) -> None:
 def test_interrupted_findings_are_queued(bench) -> None:
     result = bench("ACTION: hard-warn-coordinator component=a\n", complete=False)
     assert len(result["events"]) == 1
-    assert str(result["events"][0]).endswith(".alarm")
+    assert json.loads(result["events"][0].read_text())["kind"] == "alarm"
     assert any(
         arg.startswith("--unit=hermit-health-escalation-")
         for arg in result["calls"]
@@ -134,8 +140,9 @@ def test_complete_clean_report_queues_resolve_after_prior_alarm(bench) -> None:
     second = bench("NOTE: emitted 0 instruction(s) this tick\n", complete=True)
     events = second["events"]
     assert len(events) == 2
-    assert str(events[0]).endswith(".alarm")
-    assert str(events[1]).endswith(".resolve")
+    assert [json.loads(event.read_text())["kind"] for event in events] == [
+        "alarm", "resolve"
+    ]
 
 
 def test_normal_path_and_exit_trap_queue_only_once(bench) -> None:

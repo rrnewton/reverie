@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -33,6 +34,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 ESCALATE = ROOT / "ci-hub/bin/escalate"
 TG = shutil.which("tg")
+sys.path.insert(0, str(ROOT / "ci-hub/lib"))
+from health_escalation_event import (  # noqa: E402
+    PART_BEGIN,
+    make_event,
+    parse_part,
+    stable_task_id,
+    write_event,
+)
 
 pytestmark = pytest.mark.skipif(TG is None, reason="tg is not installed on this host")
 
@@ -441,3 +450,125 @@ def test_an_unreachable_queue_is_never_reported_as_published(bench, tmp_path: Pa
     assert "outcome=published" not in completed.stdout
     outcomes = [r["outcome"] for r in records()]
     assert "recorded" in outcomes, "the alarm reaches disk before anything can fail"
+
+
+def test_event_uses_explicit_id_after_100_terminal_slugs_and_keeps_227307_bytes(
+    tmp_path: Path,
+) -> None:
+    """The historical blocker was tg add's hard ceiling after suffix `_100`."""
+    home = tmp_path / "home"
+    home.mkdir()
+    database = "future-events"
+    environment = {**os.environ, "HOME": str(home)}
+
+    def named_tg(*args: str) -> subprocess.CompletedProcess[str]:
+        completed = subprocess.run(
+            [TG, "--db", database, *args],
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=180,
+        )
+        assert completed.returncode == 0, completed.stderr or completed.stdout
+        return completed
+
+    created = subprocess.run(
+        [TG, "db", "create", database],
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=180,
+    )
+    assert created.returncode == 0, created.stderr
+    named_tg("add", "Root goal", "--impact", "90", "--effort", "5", "--tags", "goal")
+    title = "operational health tick reports 1 finding(s) on devbig014"
+    for _ in range(100):
+        named_tg(
+            "add", title, "--impact", "1", "--effort", "1", "--tags", "historical"
+        )
+    db = home / ".tg" / f"{database}.db"
+    with sqlite3.connect(db) as connection:
+        connection.execute("UPDATE tasks SET status='CLOSED' WHERE title=?", (title,))
+        terminal = connection.execute(
+            "SELECT COUNT(*) FROM tasks WHERE title=? AND status='CLOSED'", (title,)
+        ).fetchone()[0]
+    assert terminal == 100
+
+    payload = "ACTION: taskgraph-large\n" + "q" * (227_307 - 24)
+    assert len(payload.encode()) == 227_307
+    envelope = make_event(
+        kind="alarm",
+        payload=payload,
+        origin_host="devbig014",
+        findings=1,
+        event_id="event-20260920T020304123456Z-123-deadbeef",
+        created_at="2026-09-20T02:03:04Z",
+    )
+    event_path = write_event(tmp_path / "events", envelope)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ESCALATE),
+            "--sink", "taskgraph",
+            "--tg-db", database,
+            "--tg-blocks", GOAL,
+            "--log-file", str(tmp_path / "event.log"),
+            "--event-file", str(event_path),
+        ],
+        capture_output=True,
+        text=True,
+        env={**environment, "DG_AGENT_NAME": "health-tick"},
+        timeout=300,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    local_id = stable_task_id(envelope)
+    with sqlite3.connect(db) as connection:
+        row = connection.execute(
+            "SELECT description FROM tasks WHERE local_id=?", (local_id,)
+        ).fetchone()
+        notes = connection.execute(
+            "SELECT content FROM task_notes WHERE task_id=? ORDER BY created_at, id",
+            (local_id,),
+        ).fetchall()
+    assert row is not None
+    assert f"escalation-event-id: {envelope['event_id']}" in row[0]
+    parsed = [parse_part(note[0]) for note in notes]
+    assert all(part is not None for part in parsed)
+    rebuilt = "".join(
+        part["payload"] for part in sorted(parsed, key=lambda part: part["number"])
+    )
+    assert rebuilt == payload
+
+    named_tg(
+        "import",
+        "--from-string",
+        json.dumps({"ops": [{"note": {"id": local_id, "message": PART_BEGIN}}]}),
+    )
+    later = make_event(
+        kind="alarm",
+        payload="ACTION: later event\n",
+        origin_host="devbig014",
+        findings=1,
+        event_id="event-20260920T020305123456Z-123-feedface",
+        created_at="2026-09-20T02:03:05Z",
+    )
+    later_path = write_event(tmp_path / "events", later)
+    refused = subprocess.run(
+        [
+            sys.executable,
+            str(ESCALATE),
+            "--sink", "taskgraph",
+            "--tg-db", database,
+            "--tg-blocks", GOAL,
+            "--log-file", str(tmp_path / "event.log"),
+            "--event-file", str(later_path),
+        ],
+        capture_output=True,
+        text=True,
+        env={**environment, "DG_AGENT_NAME": "health-tick"},
+        timeout=300,
+    )
+    assert refused.returncode == 78
+    assert "malformed or truncated" in refused.stderr

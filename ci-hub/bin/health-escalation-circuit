@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Inspect or compare-and-clear one health-escalation permanent circuit.
+
+Clearing is deliberately not an acknowledgement and does not invoke delivery.
+It only authorizes a later worker run to retry after an operator has repaired
+the recorded permanent condition.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def sha_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def event_sha(path: Path) -> str:
+    return sha_bytes(path.read_bytes())
+
+
+def circuit_path(event: Path, sink: str) -> Path:
+    return Path(f"{event}.{sink}.circuit.json")
+
+
+def read_record(event: Path, sink: str) -> tuple[Path, bytes, dict]:
+    path = circuit_path(event, sink)
+    try:
+        raw = path.read_bytes()
+        value = json.loads(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read circuit {path}: {error}") from error
+    if value.get("schema") != "hermit-health-escalation-circuit/v1":
+        raise ValueError(f"unsupported circuit schema in {path}")
+    if value.get("sink") != sink:
+        raise ValueError(f"circuit {path} belongs to sink {value.get('sink')!r}, not {sink!r}")
+    if not event.is_file():
+        raise ValueError(f"blocked event is absent: {event}")
+    actual_event_sha = event_sha(event)
+    if value.get("event_file_sha256") != actual_event_sha:
+        raise ValueError(
+            f"event content no longer matches circuit: expected "
+            f"{value.get('event_file_sha256')}, found {actual_event_sha}"
+        )
+    return path, raw, value
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("show", "clear"))
+    parser.add_argument("--event", type=Path, required=True)
+    parser.add_argument("--sink", choices=("taskgraph", "github"), required=True)
+    parser.add_argument(
+        "--expected-circuit-sha256",
+        help="required for clear; the exact record digest printed by show",
+    )
+    args = parser.parse_args(argv)
+    if args.action == "clear" and not args.expected_circuit_sha256:
+        parser.error("clear requires --expected-circuit-sha256 from a current show")
+    lock_path = args.event.parent / ".worker.lock"
+    try:
+        with lock_path.open("a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            path, raw, value = read_record(args.event, args.sink)
+            record_sha = sha_bytes(raw)
+            output = dict(value, circuit_path=str(path), circuit_record_sha256=record_sha)
+            if args.action == "show":
+                print(json.dumps(output, sort_keys=True))
+                return 0
+            if args.expected_circuit_sha256 != record_sha:
+                print(
+                    "health-escalation-circuit: REFUSED: circuit changed; "
+                    f"expected {args.expected_circuit_sha256}, found {record_sha}",
+                    file=sys.stderr,
+                )
+                return 2
+            path.unlink()
+            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            print(
+                f"cleared {path}; no acknowledgement was created and no delivery was invoked"
+            )
+            return 0
+    except ValueError as error:
+        print(f"health-escalation-circuit: REFUSED: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

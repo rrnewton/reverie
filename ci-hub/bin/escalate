@@ -62,6 +62,7 @@ local copy is the only one -- never 0, because a caller that cannot tell
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -69,8 +70,19 @@ import re
 import subprocess
 import sys
 import time
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from health_escalation_event import (  # noqa: E402
+    InvalidEvent,
+    PART_BEGIN,
+    load_event,
+    parse_part,
+    part_documents,
+    stable_task_id,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_REPOSITORY = "rrnewton/dev-hermit"
@@ -89,6 +101,11 @@ DEFAULT_TG_BLOCKS = "ci_hub_trust"
 ACTIVE_TASK_STATUSES = frozenset(("BACKLOG", "OPEN", "IN_PROGRESS"))
 TERMINAL_TASK_STATUSES = frozenset(("CLOSED", "RESOLVED"))
 DIGEST_RE = re.compile(rf"^{DIGEST_MARKER}\s*([0-9a-f]{{12}})\s*$", re.MULTILINE)
+RELAY_DISCLOSURE_RE = re.compile(
+    r"^\[[A-Za-z0-9_.-]+, [A-Za-z0-9_.-]+, [^,\[\]\r\n]+, "
+    r"[A-Za-z0-9_.-]+, role=relay\]\n"
+    r"(?:Unverified --who metadata: [^\r\n]+\n)?"
+)
 
 PUBLISHED = "published"
 UNCHANGED = "unchanged"
@@ -151,6 +168,26 @@ class TaskGraphUnavailable(SinkUnavailable):
     """The work queue could not be read or written."""
 
 
+class PermanentSinkFailure(SinkUnavailable):
+    """Retrying the same immutable event with the same publisher cannot work."""
+
+
+class PermanentGitHubFailure(PermanentSinkFailure, GitHubUnavailable):
+    pass
+
+
+class PermanentTaskGraphFailure(PermanentSinkFailure, TaskGraphUnavailable):
+    pass
+
+
+def bounded_detail(text: str, limit: int = 400) -> str:
+    """Keep both the command framing and its root cause."""
+    collapsed = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", text).split())
+    if len(collapsed) <= limit * 2:
+        return collapsed
+    return collapsed[:limit] + " ...[middle omitted]... " + collapsed[-limit:]
+
+
 def run_gh(
     args: list[str],
     *,
@@ -167,11 +204,22 @@ def run_gh(
             timeout=timeout,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except OSError as error:
+        if getattr(error, "errno", None) == errno.E2BIG:
+            raise PermanentGitHubFailure(
+                f"{' '.join(args[:3])}: exec argument list too long: {error}"
+            ) from error
+        raise GitHubUnavailable(f"{' '.join(args[:3])}: {error}") from error
+    except subprocess.TimeoutExpired as error:
         raise GitHubUnavailable(f"{' '.join(args[:3])}: {error}") from error
     if completed.returncode != 0:
-        detail = " ".join((completed.stderr or completed.stdout or "").split())[:400]
-        raise GitHubUnavailable(
+        detail = bounded_detail(completed.stderr or completed.stdout or "")
+        failure = (
+            PermanentGitHubFailure
+            if completed.returncode in {2, 64} or "HTTP 422" in detail or "body is too long" in detail.lower()
+            else GitHubUnavailable
+        )
+        raise failure(
             f"{' '.join(args[:3])} exited {completed.returncode}: {detail}"
         )
     return completed.stdout
@@ -193,9 +241,9 @@ def find_open_issue(key: str, *, repository: str, gh: Path, timeout: int) -> dic
             "--state",
             "open",
             "--limit",
-            "100",
+            "1000",
             "--json",
-            "number,title,body",
+            "number,title,body,author",
         ],
         gh=gh,
         timeout=timeout,
@@ -205,7 +253,15 @@ def find_open_issue(key: str, *, repository: str, gh: Path, timeout: int) -> dic
     except json.JSONDecodeError as error:
         raise GitHubUnavailable(f"issue list returned unreadable JSON: {error}") from error
     wanted = f"{KEY_MARKER} {key}"
-    matches = [issue for issue in issues if wanted in (issue.get("body") or "")]
+    marker = re.compile(rf"(?m)^{re.escape(wanted)}$")
+    trusted_author = repository.split("/", 1)[0].lower()
+    matches = [
+        issue
+        for issue in issues
+        if marker.search(issue.get("body") or "") is not None
+        and ((issue.get("author") or {}).get("login") or "").lower()
+        == trusted_author
+    ]
     if len(matches) > 1:
         numbers = ", ".join(f"#{issue['number']}" for issue in matches)
         raise GitHubUnavailable(
@@ -221,29 +277,22 @@ def latest_digest(issue_number: int, *, repository: str, gh: Path, timeout: int)
     Read from the body and every comment, so the answer survives losing any local
     state and reflects what a human would actually see on the issue.
     """
-    raw = run_gh(
-        [
-            "issue",
-            "view",
-            str(issue_number),
-            "--repo",
-            repository,
-            "--json",
-            "body,comments,createdAt",
-        ],
-        gh=gh,
-        timeout=timeout,
+    document = issue_document(
+        issue_number, repository=repository, gh=gh, timeout=timeout
     )
-    try:
-        document = json.loads(raw or "{}")
-    except json.JSONDecodeError as error:
-        raise GitHubUnavailable(f"issue view returned unreadable JSON: {error}") from error
     entries: list[tuple[str, str]] = []
+    trusted_author = repository.split("/", 1)[0].lower()
     body = document.get("body") or ""
-    found = DIGEST_RE.findall(body)
+    body_is_trusted = (
+        ((document.get("author") or {}).get("login") or "").lower()
+        == trusted_author
+    )
+    found = DIGEST_RE.findall(body) if body_is_trusted else []
     if found:
         entries.append((document.get("createdAt") or "", found[-1]))
     for comment in document.get("comments") or []:
+        if ((comment.get("author") or {}).get("login") or "").lower() != trusted_author:
+            continue
         found = DIGEST_RE.findall(comment.get("body") or "")
         if found:
             entries.append((comment.get("createdAt") or "", found[-1]))
@@ -365,6 +414,7 @@ def resolve(args: argparse.Namespace) -> int:
         "action": "resolve",
     }
     failures = 0
+    permanent = False
     for sink in args.sink:
         try:
             if sink == GITHUB:
@@ -377,6 +427,19 @@ def resolve(args: argparse.Namespace) -> int:
                     lambda: resolve_taskgraph(args), attempts=args.tg_attempts
                 )
                 destination = f"queue-row={where} database={args.tg_db}" if where else ""
+        except PermanentSinkFailure as error:
+            failures += 1
+            permanent = True
+            append_local_record(
+                args.log_file,
+                dict(record, sink=sink, outcome=RECORDED_ONLY, classification="permanent", error=str(error)),
+            )
+            print(
+                f"escalate: sink={sink} outcome={RECORDED_ONLY} classification=permanent "
+                f"key={args.key} error={error}",
+                file=sys.stderr,
+            )
+            continue
         except SinkUnavailable as error:
             failures += 1
             append_local_record(
@@ -394,7 +457,7 @@ def resolve(args: argparse.Namespace) -> int:
         print(
             f"escalate: sink={sink} outcome={outcome} key={args.key} {destination}".rstrip()
         )
-    return 1 if failures else 0
+    return 78 if permanent else (1 if failures else 0)
 
 
 def resolve_github(args: argparse.Namespace, observed_at: str) -> tuple[str, int | str]:
@@ -442,7 +505,9 @@ def escalate(args: argparse.Namespace, message: str) -> int:
             file=sys.stderr,
         )
         return 2
-    message = message.strip("\n")
+    event = getattr(args, "event", None)
+    if event is None:
+        message = message.strip("\n")
     if not message.strip():
         print("escalate: REFUSED: refusing to publish an empty alarm", file=sys.stderr)
         return 2
@@ -454,7 +519,11 @@ def escalate(args: argparse.Namespace, message: str) -> int:
     except re.error as error:
         print(f"escalate: REFUSED: --digest-ignore {pattern!r} is not a regex: {error}", file=sys.stderr)
         return 2
-    digest = digest_of(message, tuple(args.digest_ignore))
+    digest = (
+        event["normalized_sha256"][:12]
+        if event is not None
+        else digest_of(message, tuple(args.digest_ignore))
+    )
     record: dict[str, object] = {
         "timestamp": observed_at,
         "key": key,
@@ -463,24 +532,55 @@ def escalate(args: argparse.Namespace, message: str) -> int:
         "message_bytes": len(message.encode("utf-8")),
         "repository": args.repo,
     }
+    if event is not None:
+        record.update(
+            event_id=event["event_id"], origin_host=event["origin_host"],
+            payload_sha256=event["payload_sha256"],
+        )
 
     # DISK FIRST. Everything after this point can fail; the alarm must not.
     local_error = append_local_record(args.log_file, dict(record, outcome="recorded"))
 
-    body = f"{message}\n\n{marker_block(key, digest, observed_at)}"
+    body = (
+        ""
+        if event is not None
+        else f"{message}\n\n{marker_block(key, digest, observed_at)}"
+    )
 
     failures = 0
+    permanent = False
     for sink in args.sink:
         try:
             if sink == GITHUB:
-                outcome, where = publish_github(args, key, digest, body)
+                outcome, where = (
+                    publish_github_event(args, event)
+                    if event is not None
+                    else publish_github(args, key, digest, body)
+                )
                 destination = f"issue=https://github.com/{args.repo}/issues/{where}"
             else:
                 outcome, where = with_retry(
-                    lambda: publish_taskgraph(args, key, digest, body),
+                    lambda: (
+                        publish_taskgraph_event(args, event)
+                        if event is not None
+                        else publish_taskgraph(args, key, digest, body)
+                    ),
                     attempts=args.tg_attempts,
                 )
                 destination = f"queue-row={where} database={args.tg_db}"
+        except PermanentSinkFailure as error:
+            failures += 1
+            permanent = True
+            append_local_record(
+                args.log_file,
+                dict(record, sink=sink, outcome=RECORDED_ONLY, classification="permanent", error=str(error)),
+            )
+            print(
+                f"escalate: sink={sink} outcome={RECORDED_ONLY} classification=permanent "
+                f"key={key} error={error}",
+                file=sys.stderr,
+            )
+            continue
         except SinkUnavailable as error:
             failures += 1
             append_local_record(
@@ -510,7 +610,7 @@ def escalate(args: argparse.Namespace, message: str) -> int:
                 "nobody has been told",
                 file=sys.stderr,
             )
-        return 1
+        return 78 if permanent else 1
     if local_error is not None:
         print(
             f"escalate: WARNING: published, but the local record failed: {local_error}",
@@ -569,6 +669,195 @@ def publish_github(
             timeout=args.timeout,
         )
     return outcome, number
+
+
+def issue_document(
+    number: int, *, repository: str, gh: Path, timeout: int
+) -> dict:
+    raw = run_gh(
+        [
+            "issue", "view", str(number), "--repo", repository,
+            "--json", "body,createdAt,author",
+        ],
+        gh=gh,
+        timeout=timeout,
+    )
+    try:
+        value = json.loads(raw or "{}")
+    except json.JSONDecodeError as error:
+        raise GitHubUnavailable(f"issue view returned unreadable JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise GitHubUnavailable("issue view returned a non-object JSON document")
+    endpoint = f"repos/{repository}/issues/{number}/comments?per_page=100"
+    raw_comments = run_gh(
+        ["api", "--paginate", "--slurp", endpoint],
+        gh=gh,
+        timeout=timeout,
+    )
+    try:
+        pages = json.loads(raw_comments or "[]")
+    except json.JSONDecodeError as error:
+        raise GitHubUnavailable(
+            f"paginated issue comments returned unreadable JSON: {error}"
+        ) from error
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        raise GitHubUnavailable("paginated issue comments returned an unexpected shape")
+    value["comments"] = [
+        {
+            "body": comment.get("body") or "",
+            "createdAt": comment.get("created_at") or comment.get("createdAt") or "",
+            "author": comment.get("user") or comment.get("author") or {},
+        }
+        for page in pages
+        for comment in page
+        if isinstance(comment, dict)
+    ]
+    return value
+
+
+def extract_part(text: str) -> dict | None:
+    """Recognize only a complete machine document at its allowed position."""
+    if text.startswith(PART_BEGIN):
+        start = 0
+    else:
+        disclosure = RELAY_DISCLOSURE_RE.match(text)
+        if disclosure is None or not text.startswith(PART_BEGIN, disclosure.end()):
+            return None
+        start = disclosure.end()
+    if not text.startswith(PART_BEGIN, start):
+        return None
+    parsed = parse_part(text[start:])
+    if parsed is None:
+        raise PermanentGitHubFailure("published escalation part is malformed or truncated")
+    return parsed
+
+
+def github_part_groups(
+    document: dict, *, key: str, trusted_author: str
+) -> tuple[dict[str, dict[int, dict]], dict[str, str]]:
+    entries: list[tuple[str, str]] = []
+    if (
+        ((document.get("author") or {}).get("login") or "").lower()
+        == trusted_author.lower()
+    ):
+        entries.append((document.get("body") or "", document.get("createdAt") or ""))
+    entries.extend(
+        ((comment.get("body") or ""), (comment.get("createdAt") or ""))
+        for comment in document.get("comments") or []
+        if ((comment.get("author") or {}).get("login") or "").lower()
+        == trusted_author.lower()
+    )
+    groups: dict[str, dict[int, dict]] = {}
+    newest: dict[str, str] = {}
+    for text, when in entries:
+        part = extract_part(text)
+        if part is None or part["escalation-key"] != key:
+            continue
+        event_id = part["escalation-event-id"]
+        number = int(part["number"])
+        existing = groups.setdefault(event_id, {}).get(number)
+        if existing is not None and existing != part:
+            raise PermanentGitHubFailure(
+                f"event {event_id} has conflicting published part {number}"
+            )
+        groups[event_id][number] = part
+        newest[event_id] = when or newest.get(event_id, "")
+    return groups, newest
+
+
+def complete_part_group(parts: dict[int, dict]) -> tuple[str, str] | None:
+    if not parts:
+        return None
+    totals = {int(part["total"]) for part in parts.values()}
+    payload_hashes = {part["escalation-payload-sha256"] for part in parts.values()}
+    digests = {part["escalation-digest"] for part in parts.values()}
+    if len(totals) != 1 or len(payload_hashes) != 1 or len(digests) != 1:
+        raise PermanentSinkFailure("published event parts disagree on their manifest identity")
+    total = totals.pop()
+    if set(parts) != set(range(1, total + 1)):
+        return None
+    payload = "".join(parts[index]["payload"] for index in range(1, total + 1))
+    payload_sha = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    expected_sha = payload_hashes.pop()
+    if payload_sha != expected_sha:
+        raise PermanentSinkFailure(
+            f"complete published part set reconstructs {payload_sha}, expected {expected_sha}"
+        )
+    return digests.pop(), expected_sha
+
+
+def publish_github_event(args: argparse.Namespace, event: dict) -> tuple[str, int]:
+    """Publish a durable event in independently verifiable, resumable parts."""
+    expected = part_documents(event)
+    gh = Path(args.gh)
+    trusted_author = args.repo.split("/", 1)[0]
+    issue = find_open_issue(event["key"], repository=args.repo, gh=gh, timeout=args.timeout)
+    if issue is None:
+        number = create_issue(
+            title=event["title"], body=expected[0], repository=args.repo, gh=gh,
+            timeout=args.timeout, who=args.who, team=args.team, role=args.role,
+        )
+    else:
+        number = int(issue["number"])
+
+    document = issue_document(number, repository=args.repo, gh=gh, timeout=args.timeout)
+    groups, newest = github_part_groups(
+        document, key=event["key"], trusted_author=trusted_author
+    )
+    current = groups.get(event["event_id"], {})
+    if not current:
+        for other_event_id, parts in groups.items():
+            completed = complete_part_group(parts)
+            if completed is None:
+                raise PermanentGitHubFailure(
+                    f"issue #{number} contains incomplete event {other_event_id}; "
+                    f"refusing to overtake it with {event['event_id']}"
+                )
+        complete_candidates = [
+            (newest.get(event_id, ""), complete_part_group(parts))
+            for event_id, parts in groups.items()
+        ]
+        matching = [
+            (when, complete) for when, complete in complete_candidates
+            if complete is not None and complete[0] == event["normalized_sha256"]
+        ]
+        if matching:
+            published_at, _identity = sorted(matching)[-1]
+            age = seconds_since(published_at)
+            stale = args.repeat_after > 0 and (age is None or age >= args.repeat_after)
+            if not stale:
+                return UNCHANGED, number
+
+    for index, expected_document in enumerate(expected, 1):
+        parsed_expected = parse_part(expected_document)
+        assert parsed_expected is not None
+        if index in current:
+            if current[index] != parsed_expected:
+                raise PermanentGitHubFailure(
+                    f"event {event['event_id']} part {index} conflicts with durable payload"
+                )
+            continue
+        # Part one is already the body after a successful create. If create had
+        # an ambiguous result, the next invocation discovers it by key above.
+        comment_issue(
+            number=number, body=expected_document, repository=args.repo, gh=gh,
+            timeout=args.timeout, who=args.who, team=args.team, role=args.role,
+        )
+
+    # One complete read-back verifies every part together. If a post above had
+    # an ambiguous outcome, the next invocation performs this same scan first
+    # and resumes at the first absent part without duplicating exact ones.
+    final = issue_document(number, repository=args.repo, gh=gh, timeout=args.timeout)
+    final_groups, _ = github_part_groups(
+        final, key=event["key"], trusted_author=trusted_author
+    )
+    completed = complete_part_group(final_groups.get(event["event_id"], {}))
+    wanted = (event["normalized_sha256"], event["payload_sha256"])
+    if completed != wanted:
+        raise GitHubUnavailable(
+            f"complete read-back of issue #{number} found {completed!r}, expected {wanted!r}"
+        )
+    return PUBLISHED, number
 
 
 # ---------------------------------------------------------------- taskgraph sink
@@ -632,8 +921,7 @@ def tg_detail(text: str) -> str:
     bottom, so a head-clamped copy stops at the framing and says "database ope"
     where it should say what actually went wrong. Keep the tail.
     """
-    collapsed = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", text).split())
-    return collapsed if len(collapsed) <= 500 else "..." + collapsed[-500:]
+    return bounded_detail(text, 500)
 
 
 def looks_transient(message: str) -> bool:
@@ -649,7 +937,8 @@ def looks_transient(message: str) -> bool:
 
 
 def run_tg(
-    args: list[str], *, tg: str, database: str, db_path: Path, timeout: int
+    args: list[str], *, tg: str, database: str, db_path: Path, timeout: int,
+    stdin_text: str | None = None,
 ) -> str:
     environment = dict(os.environ)
     # Both spellings, deliberately. `--db` covers tg's own subcommands; TG_DB_PATH
@@ -662,6 +951,7 @@ def run_tg(
             [tg, *selector, *args],
             capture_output=True,
             text=True,
+            input=stdin_text,
             timeout=timeout,
             check=False,
             env=environment,
@@ -893,6 +1183,190 @@ def publish_taskgraph(
     return outcome, local_id
 
 
+def sqlite_task(db_path: Path, local_id: str) -> tuple[str, str] | None:
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5) as connection:
+            row = connection.execute(
+                "SELECT status, description FROM tasks WHERE local_id=?", (local_id,)
+            ).fetchone()
+    except sqlite3.Error as error:
+        raise TaskGraphUnavailable(f"read-back of queue row {local_id}: {error}") from error
+    if row is None:
+        return None
+    return str(row[0]), str(row[1] or "")
+
+
+def sqlite_notes(db_path: Path, local_id: str) -> list[tuple[str, str]]:
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5) as connection:
+            rows = connection.execute(
+                "SELECT content, created_at FROM task_notes WHERE task_id=? "
+                "ORDER BY created_at, id",
+                (local_id,),
+            ).fetchall()
+    except sqlite3.Error as error:
+        raise TaskGraphUnavailable(f"read-back of queue notes on {local_id}: {error}") from error
+    return [(str(content), str(created_at)) for content, created_at in rows]
+
+
+def taskgraph_part_groups(
+    notes: list[tuple[str, str]], *, key: str
+) -> tuple[dict[str, dict[int, dict]], dict[str, str]]:
+    groups: dict[str, dict[int, dict]] = {}
+    newest: dict[str, str] = {}
+    for content, when in notes:
+        part = parse_part(content)
+        if part is None and content.startswith(PART_BEGIN):
+            raise PermanentTaskGraphFailure(
+                "queue row contains a malformed or truncated v1 escalation part"
+            )
+        if part is None or part["escalation-key"] != key:
+            continue
+        event_id = part["escalation-event-id"]
+        number = int(part["number"])
+        existing = groups.setdefault(event_id, {}).get(number)
+        if existing is not None and existing != part:
+            raise PermanentTaskGraphFailure(
+                f"queue event {event_id} has conflicting part {number}"
+            )
+        groups[event_id][number] = part
+        newest[event_id] = when
+    return groups, newest
+
+
+def import_ops(
+    ops: list[dict], *, args: argparse.Namespace, common: dict[str, object]
+) -> None:
+    if "/" in args.tg_db:
+        raise PermanentTaskGraphFailure(
+            "event publication requires a named TaskGraph database because tg import "
+            "requires an explicit --db selector"
+        )
+    payload = json.dumps({"ops": ops}, ensure_ascii=False, separators=(",", ":"))
+    run_tg(["import", "--from-file", "-"], stdin_text=payload, **common)
+
+
+def create_event_task(
+    *, args: argparse.Namespace, event: dict, local_id: str,
+    common: dict[str, object], db_path: Path,
+) -> None:
+    marker = (
+        f"{KEY_MARKER} {event['key']}\n"
+        f"escalation-event-id: {event['event_id']}\n"
+        f"escalation-origin-host: {event['origin_host']}\n"
+        f"escalation-payload-sha256: {event['payload_sha256']}\n"
+        f"{DIGEST_MARKER} {event['normalized_sha256']}"
+    )
+    existing = sqlite_task(db_path, local_id)
+    if existing is not None:
+        if marker not in existing[1]:
+            raise PermanentTaskGraphFailure(
+                f"stable queue id {local_id} already exists with a different event identity"
+            )
+        if existing[0] not in ACTIVE_TASK_STATUSES:
+            raise PermanentTaskGraphFailure(
+                f"stable queue id {local_id} exists in terminal state {existing[0]}; "
+                "refusing to append after closure"
+            )
+        return
+    create = {
+        "id": local_id,
+        "title": event["title"],
+        "impact": args.tg_impact,
+        "effort": args.tg_effort,
+        "tags": [tag for tag in args.tg_tags.split(",") if tag],
+        "description": marker,
+        "blocks": args.tg_blocks,
+        "priority": args.tg_priority,
+        "status": "open",
+    }
+    import_ops([{"create": create}], args=args, common=common)
+    readback = sqlite_task(db_path, local_id)
+    if readback is None or marker not in readback[1]:
+        raise TaskGraphUnavailable(
+            f"imported stable queue row {local_id} but exact identity read-back failed"
+        )
+
+
+def publish_taskgraph_event(args: argparse.Namespace, event: dict) -> tuple[str, str]:
+    database = args.tg_db
+    db_path = taskgraph_database(database)
+    common: dict[str, object] = {
+        "tg": args.tg, "database": database, "db_path": db_path,
+        "timeout": args.timeout,
+    }
+    local_id = find_open_task(event["key"], **common)
+    if local_id is None:
+        local_id = stable_task_id(event)
+        create_event_task(
+            args=args, event=event, local_id=local_id, common=common, db_path=db_path
+        )
+
+    notes = sqlite_notes(db_path, local_id)
+    groups, newest = taskgraph_part_groups(notes, key=event["key"])
+    current = groups.get(event["event_id"], {})
+    if not current:
+        for other_event_id, parts in groups.items():
+            if complete_part_group(parts) is None:
+                raise PermanentTaskGraphFailure(
+                    f"queue row {local_id} contains incomplete event {other_event_id}; "
+                    f"refusing to overtake it with {event['event_id']}"
+                )
+        matches = [
+            (newest.get(event_id, ""), complete_part_group(parts))
+            for event_id, parts in groups.items()
+        ]
+        matches = [
+            (when, identity) for when, identity in matches
+            if identity is not None and identity[0] == event["normalized_sha256"]
+        ]
+        if matches:
+            noted_at, _identity = sorted(matches)[-1]
+            age = seconds_since(noted_at)
+            stale = args.repeat_after > 0 and (age is None or age >= args.repeat_after)
+            if not stale:
+                return UNCHANGED, local_id
+
+    expected = part_documents(event)
+    for index, document in enumerate(expected, 1):
+        notes = sqlite_notes(db_path, local_id)
+        groups, _ = taskgraph_part_groups(notes, key=event["key"])
+        current = groups.get(event["event_id"], {})
+        parsed_expected = parse_part(document)
+        assert parsed_expected is not None
+        if index in current:
+            if current[index] != parsed_expected:
+                raise PermanentTaskGraphFailure(
+                    f"event {event['event_id']} part {index} conflicts with durable payload"
+                )
+            continue
+        import_ops(
+            [{"note": {"id": local_id, "message": document}}],
+            args=args,
+            common=common,
+        )
+        read_groups, _ = taskgraph_part_groups(
+            sqlite_notes(db_path, local_id), key=event["key"]
+        )
+        if read_groups.get(event["event_id"], {}).get(index) != parsed_expected:
+            raise TaskGraphUnavailable(
+                f"exact read-back of queue row {local_id} did not contain event "
+                f"{event['event_id']} part {index}/{len(expected)}"
+            )
+
+    final_groups, _ = taskgraph_part_groups(
+        sqlite_notes(db_path, local_id), key=event["key"]
+    )
+    completed = complete_part_group(final_groups.get(event["event_id"], {}))
+    wanted = (event["normalized_sha256"], event["payload_sha256"])
+    if completed != wanted:
+        raise TaskGraphUnavailable(
+            f"complete read-back of queue row {local_id} found {completed!r}, "
+            f"expected {wanted!r}"
+        )
+    return PUBLISHED, local_id
+
+
 def resolve_taskgraph(args: argparse.Namespace) -> tuple[str, str]:
     """Close this key's queue row through the supported verifier.
 
@@ -957,6 +1431,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--message-file",
         type=Path,
         help="read the alarm from this file instead of standard input",
+    )
+    parser.add_argument(
+        "--event-file",
+        type=Path,
+        help=(
+            "publish one durable schema-v1 health event; its key, host, kind, "
+            "title and payload identity come only from the envelope"
+        ),
     )
     parser.add_argument("--log-file", type=Path, default=DEFAULT_LOG)
     parser.add_argument(
@@ -1124,6 +1606,34 @@ def main(argv: list[str] | None = None) -> int:
         args.sink = [GITHUB]
     else:
         args.sink = list(dict.fromkeys(args.sink))
+    args.event = None
+    if args.event_file is not None:
+        conflicting = []
+        for name, value in (
+            ("--key", args.key), ("--title", args.title),
+            ("--message-file", args.message_file), ("--resolve", args.resolve),
+        ):
+            if value:
+                conflicting.append(name)
+        if args.digest_ignore:
+            conflicting.append("--digest-ignore")
+        if conflicting:
+            print(
+                "escalate: REFUSED: --event-file owns delivery identity and cannot be "
+                "combined with " + ", ".join(conflicting),
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            args.event = load_event(args.event_file)
+        except InvalidEvent as error:
+            print(f"escalate: REFUSED: permanent invalid event envelope: {error}", file=sys.stderr)
+            return 78
+        args.key = args.event["key"]
+        args.title = args.event["title"]
+        args.resolve = args.event["kind"] == "resolve"
+        args.digest_ignore = list(args.event["digest_ignore"])
+
     required = ("key",) if args.resolve else ("key", "title")
     missing = [name for name in required if not getattr(args, name)]
     if missing:
@@ -1147,7 +1657,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.resolve:
         return resolve(args)
-    if args.message_file is not None:
+    if args.event is not None:
+        message = args.event["payload"]
+    elif args.message_file is not None:
         try:
             message = args.message_file.read_text(encoding="utf-8")
         except OSError as error:

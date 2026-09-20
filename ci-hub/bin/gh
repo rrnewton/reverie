@@ -58,6 +58,7 @@ from closure import publication_record  # noqa: E402
 _bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent / "landing"))
 import task_pr_record  # noqa: E402
 
+import atexit
 import os
 import re
 import subprocess
@@ -73,6 +74,25 @@ sys.path.insert(0, str(ROOT / "ci-hub/lib"))
 
 import agent_identity  # noqa: E402
 import disclosure_tag  # noqa: E402
+
+
+# Keep large attributed bodies out of one execve argument. Linux limits each
+# argument independently (normally 128 KiB), before the GitHub CLI even gets a
+# chance to enforce its own body limit. The smaller threshold also leaves room
+# for disclosure metadata and unusual environments.
+BODY_FILE_THRESHOLD = 30_000
+_TEMP_BODY_FILES: list[Path] = []
+
+
+def _cleanup_temp_body_files() -> None:
+    for path in _TEMP_BODY_FILES:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+atexit.register(_cleanup_temp_body_files)
 
 
 DISCLOSURE_RE = re.compile(
@@ -435,12 +455,26 @@ def rewrite_body_option(
     found = body_option(args)
     if found is None:
         if required:
-            return args + ["--body", attributed("", disclosure, verdict)]
+            rewritten_body = attributed("", disclosure, verdict)
+            return args + ["--body", rewritten_body]
         die("command has no supported --body/--body-file argument")
     index, consumed, body = found
+    rewritten_body = attributed(body, disclosure, verdict)
+    if len(rewritten_body.encode("utf-8")) > BODY_FILE_THRESHOLD:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix="gh-attributed-body-",
+            suffix=".txt", delete=False,
+        ) as handle:
+            handle.write(rewritten_body)
+            staged = Path(handle.name)
+        staged.chmod(0o600)
+        _TEMP_BODY_FILES.append(staged)
+        replacement = ["--body-file", str(staged)]
+    else:
+        replacement = ["--body", rewritten_body]
     return (
         args[:index]
-        + ["--body", attributed(body, disclosure, verdict)]
+        + replacement
         + args[index + consumed :]
     )
 

@@ -1,88 +1,350 @@
-#!/usr/bin/env bash
-# Drain retained operational-health events in chronological order. A single
-# detached service owns the queue so an older alarm cannot race a newer resolve.
-set -uo pipefail
+#!/usr/bin/env python3
+"""Drain durable operational-health envelopes without overtaking a blocker."""
 
-ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-ESCALATE=${HERMIT_HEALTH_ESCALATE:-$ROOT/ci-hub/bin/escalate}
-TG_DB=${HERMIT_HEALTH_TG_DB:-hermit2}
-LOG=${HERMIT_HEALTH_ESCALATION_LOG:-$HOME/.local/state/hermit-health-escalation.log}
+from __future__ import annotations
 
-usage() {
-    cat <<'EOF'
-usage: run-health-escalation --queue DIR
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 
-Publish retained operational-health events to TaskGraph and GitHub in filename
-order. Successfully delivered events are removed; failures remain for retry.
-EOF
-}
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "ci-hub/lib"))
 
-queue=
-while (($#)); do
-    case $1 in
-        -h|--help) usage; exit 0 ;;
-        --queue) [[ $# -ge 2 ]] || { printf 'run-health-escalation: --queue requires DIR\n' >&2; exit 2; }; queue=$2; shift 2 ;;
-        --queue=*) queue=${1#*=}; shift ;;
-        *) printf 'run-health-escalation: unknown argument %s; run --help for usage\n' "$1" >&2; exit 2 ;;
-    esac
-done
-[[ -n $queue ]] || { printf 'run-health-escalation: --queue DIR is required; run --help for usage\n' >&2; exit 2; }
-[[ -d $queue ]] || { printf 'run-health-escalation: queue is not a directory: %s; create it or pass the retained queue path\n' "$queue" >&2; exit 2; }
-[[ -x $ESCALATE ]] || { printf 'run-health-escalation: publisher is unavailable at %s; retain the queue and retry after restoring it\n' "$ESCALATE" >&2; exit 2; }
+from health_escalation_event import EVENT_RE, InvalidEvent, load_event  # noqa: E402
 
-mkdir -p -- "$(dirname -- "$LOG")"
-exec 9>"$queue/.worker.lock"
-flock -x 9
-failures=0
-for sink in taskgraph github; do
-    while IFS= read -r -d '' event; do
-        acknowledgement="$event.$sink.done"
-        [[ ! -e $acknowledgement ]] || continue
-        count=0
-        case $event in
-            *.alarm)
-                count=$(grep -c . "$event" 2>/dev/null)
-                if [[ ! $count =~ ^[1-9][0-9]*$ ]]; then
-                    printf 'run-health-escalation: alarm event has no findings: %s; inspect it and remove it only if empty is intended\n' "$event" >&2
-                    exit 2
-                fi
-                args=(
-                    --sink "$sink" --tg-db "$TG_DB"
-                    --key operational-tick-findings
-                    --title "operational health tick reports $count finding(s) on $(uname -n)"
-                    --digest-ignore 'observed_at=[0-9TZ:+-]+'
-                    --digest-ignore 'input_sha=[0-9a-f]{7,40}'
-                    --team hermit2 --role relay --message-file "$event"
+PERMANENT_EXIT = 78
+SINKS = ("taskgraph", "github")
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def file_sha(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def stream_diagnostic(text: str, limit: int = 4096) -> dict[str, object]:
+    encoded = text.encode("utf-8", "replace")
+    if len(encoded) <= limit * 2:
+        head = tail = text
+    else:
+        head = encoded[:limit].decode("utf-8", "replace")
+        tail = encoded[-limit:].decode("utf-8", "replace")
+    return {
+        "bytes": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "head": head,
+        "tail": tail,
+    }
+
+
+def atomic_json(path: Path, value: dict[str, object]) -> None:
+    fd, raw = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(raw)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def append_log(path: Path, value: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(value, sort_keys=True) + "\n")
+
+
+def circuit_path(event: Path, sink: str) -> Path:
+    return Path(f"{event}.{sink}.circuit.json")
+
+
+def queued_events(queue: Path) -> list[Path]:
+    """Only primary envelopes; circuit records also deliberately end in JSON."""
+    return sorted(
+        path
+        for path in queue.glob("event-*.json")
+        if EVENT_RE.fullmatch(path.stem)
+    )
+
+
+def legacy_events(queue: Path) -> list[Path]:
+    return sorted((*queue.glob("event-*.alarm"), *queue.glob("event-*.resolve")))
+
+
+def refuse_legacy(queue: Path) -> bool:
+    legacy = legacy_events(queue)
+    if not legacy:
+        return False
+    shown = legacy if len(legacy) <= 6 else [*legacy[:3], *legacy[-3:]]
+    print(
+        "run-health-escalation: REFUSED: legacy payload-only events require "
+        "explicit recovery attribution; they will not be reinterpreted: "
+        f"count={len(legacy)} first-and-last="
+        + ", ".join(path.name for path in shown),
+        file=sys.stderr,
+    )
+    return True
+
+
+def refuse_unroutable_json(queue: Path) -> bool:
+    unknown = sorted(
+        path
+        for path in queue.glob("event-*.json")
+        if not EVENT_RE.fullmatch(path.stem)
+        and not path.name.endswith(".circuit.json")
+    )
+    if not unknown:
+        return False
+    print(
+        "run-health-escalation: REFUSED: event-like JSON filenames do not match "
+        "the schema-v1 event identity: " + ", ".join(path.name for path in unknown[:6]),
+        file=sys.stderr,
+    )
+    return True
+
+
+def refuse_unmigrated(queue: Path) -> bool:
+    return refuse_legacy(queue) or refuse_unroutable_json(queue)
+
+
+def matching_circuit(path: Path, identity: dict[str, str]) -> bool:
+    if not path.exists():
+        return False
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot validate existing circuit {path}: {error}") from error
+    if value.get("schema") != "hermit-health-escalation-circuit/v1":
+        raise ValueError(f"existing circuit {path} has an unsupported schema")
+    for immutable in ("sink", "event_file_sha256"):
+        if value.get(immutable) != identity[immutable]:
+            raise ValueError(
+                f"existing circuit {path} no longer matches immutable {immutable}"
+            )
+    # A changed publisher is an intentional new implementation attempt. The
+    # old circuit remains evidence until that attempt succeeds or replaces it.
+    return value.get("publisher_sha256") == identity["publisher_sha256"]
+
+
+def write_circuit(
+    path: Path, *, identity: dict[str, str], event_id: str, returncode: int,
+    stdout: str, stderr: str, error_class: str,
+) -> None:
+    previous: dict[str, object] = {}
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+        pass
+    timestamp = now()
+    record: dict[str, object] = {
+        "schema": "hermit-health-escalation-circuit/v1",
+        **identity,
+        "event_id": event_id,
+        "classification": "permanent",
+        "error_class": error_class,
+        "returncode": returncode,
+        "first_observed_at": previous.get("first_observed_at", timestamp),
+        "last_observed_at": timestamp,
+        "stdout": stream_diagnostic(stdout),
+        "stderr": stream_diagnostic(stderr),
+    }
+    atomic_json(path, record)
+
+
+def mark_done(path: Path) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as handle:
+        handle.write(now() + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--queue", metavar="DIR", type=Path, required=True)
+    actual_argv = sys.argv[1:] if argv is None else argv
+    if not actual_argv:
+        print(
+            "run-health-escalation: --queue DIR is required; run --help for usage",
+            file=sys.stderr,
+        )
+        return 2
+    args = parser.parse_args(actual_argv)
+    queue = args.queue
+    if not queue.is_dir():
+        parser.error(f"queue is not a directory: {queue}")
+
+    if refuse_unmigrated(queue):
+        return 2
+
+    publisher = Path(os.environ.get("HERMIT_HEALTH_ESCALATE", ROOT / "ci-hub/bin/escalate"))
+    if not publisher.is_file() or not os.access(publisher, os.X_OK):
+        print(f"run-health-escalation: publisher is unavailable at {publisher}", file=sys.stderr)
+        return 2
+    proxy = shutil.which("with-proxy")
+    if proxy is None:
+        print("run-health-escalation: with-proxy is unavailable", file=sys.stderr)
+        return 2
+    database = os.environ.get("HERMIT_HEALTH_TG_DB", "hermit2")
+    log = Path(
+        os.environ.get(
+            "HERMIT_HEALTH_ESCALATION_LOG",
+            str(Path.home() / ".local/state/hermit-health-escalation.log"),
+        )
+    )
+    publisher_sha = file_sha(publisher)
+    failures = False
+
+    lock = (queue / ".worker.lock").open("a+")
+    with lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if refuse_unmigrated(queue):
+            return 2
+        events = queued_events(queue)
+        for sink in SINKS:
+            for event_path in events:
+                if refuse_unmigrated(queue):
+                    return 2
+                acknowledgement = Path(f"{event_path}.{sink}.done")
+                if acknowledgement.exists():
+                    continue
+                event_file_sha = file_sha(event_path)
+                identity = {
+                    "sink": sink,
+                    "event_file_sha256": event_file_sha,
+                    "publisher_sha256": publisher_sha,
+                }
+                circuit = circuit_path(event_path, sink)
+                try:
+                    blocked_by_circuit = matching_circuit(circuit, identity)
+                except ValueError as error:
+                    append_log(
+                        log,
+                        {
+                            "timestamp": now(), "event": str(event_path), "sink": sink,
+                            "outcome": "circuit-validation-refused", "detail": str(error),
+                        },
+                    )
+                    print(f"run-health-escalation: REFUSED: {error}", file=sys.stderr)
+                    failures = True
+                    break
+                if blocked_by_circuit:
+                    append_log(
+                        log,
+                        {
+                            "timestamp": now(), "event": str(event_path), "sink": sink,
+                            "outcome": "permanent-circuit-suppressed", **identity,
+                        },
+                    )
+                    print(
+                        f"run-health-escalation: sink={sink} event={event_path.name} "
+                        f"blocked-by={circuit.name} (publisher not invoked)",
+                        file=sys.stderr,
+                    )
+                    failures = True
+                    break
+                try:
+                    event = load_event(event_path)
+                except InvalidEvent as error:
+                    detail = str(error)
+                    write_circuit(
+                        circuit, identity=identity, event_id=event_path.stem,
+                        returncode=PERMANENT_EXIT, stdout="", stderr=detail,
+                        error_class="invalid-envelope",
+                    )
+                    append_log(
+                        log,
+                        {
+                            "timestamp": now(), "event": str(event_path), "sink": sink,
+                            "outcome": "permanent-circuit-created",
+                            "error_class": "invalid-envelope", "detail": detail,
+                        },
+                    )
+                    failures = True
+                    break
+                completed = subprocess.run(
+                    [
+                        proxy, str(publisher), "--sink", sink, "--tg-db", database,
+                        "--team", "hermit2", "--role", "relay",
+                        "--event-file", str(event_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    env=os.environ | {"DG_AGENT_NAME": os.environ.get("DG_AGENT_NAME", "health-tick")},
                 )
-                ;;
-            *.resolve)
-                args=(
-                    --sink "$sink" --tg-db "$TG_DB"
-                    --key operational-tick-findings --resolve
-                    --team hermit2 --role relay
-                )
-                ;;
-            *) continue ;;
-        esac
-        outcome=$(DG_AGENT_NAME=${DG_AGENT_NAME:-health-tick} \
-            with-proxy "$ESCALATE" "${args[@]}" 2>&1)
-        rc=$?
-        printf '%s event=%q sink=%s escalation_rc=%s findings=%s detail=%q\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$event" "$sink" "$rc" "$count" \
-            "$(printf '%s' "$outcome" | tr '\n' ';' | cut -c1-300)" >>"$LOG"
-        if [[ $rc -ne 0 ]]; then
-            failures=1
-            break
-        fi
-        : >"$acknowledgement"
-    done < <(find "$queue" -maxdepth 1 -type f \
-        \( -name 'event-*.alarm' -o -name 'event-*.resolve' \) -print0 | sort -z)
-done
+                diagnostic = {
+                    "timestamp": now(), "event": str(event_path),
+                    "event_id": event["event_id"], "sink": sink,
+                    "returncode": completed.returncode,
+                    "stdout": stream_diagnostic(completed.stdout),
+                    "stderr": stream_diagnostic(completed.stderr),
+                }
+                if completed.returncode == 0:
+                    mark_done(acknowledgement)
+                    try:
+                        circuit.unlink()
+                    except FileNotFoundError:
+                        pass
+                    append_log(log, diagnostic | {"outcome": "acknowledged"})
+                    continue
+                failures = True
+                if completed.returncode == PERMANENT_EXIT:
+                    write_circuit(
+                        circuit, identity=identity, event_id=event["event_id"],
+                        returncode=completed.returncode, stdout=completed.stdout,
+                        stderr=completed.stderr, error_class="publisher-permanent",
+                    )
+                    diagnostic["outcome"] = "permanent-circuit-created"
+                else:
+                    diagnostic["outcome"] = "transient-failure"
+                append_log(log, diagnostic)
+                break
 
-while IFS= read -r -d '' event; do
-    if [[ -e $event.taskgraph.done && -e $event.github.done ]]; then
-        rm -f -- "$event" "$event.taskgraph.done" "$event.github.done"
-    fi
-done < <(find "$queue" -maxdepth 1 -type f \
-    \( -name 'event-*.alarm' -o -name 'event-*.resolve' \) -print0 | sort -z)
-exit "$failures"
+        for event_path in queued_events(queue):
+            done = [Path(f"{event_path}.{sink}.done") for sink in SINKS]
+            if all(path.exists() for path in done):
+                event_path.unlink()
+                for path in done:
+                    path.unlink()
+                for sink in SINKS:
+                    try:
+                        circuit_path(event_path, sink).unlink()
+                    except FileNotFoundError:
+                        pass
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
