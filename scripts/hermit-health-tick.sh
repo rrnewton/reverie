@@ -14,6 +14,163 @@
 # retained for its direct wakeup path; main() serializes their complete runs.
 set -uo pipefail
 
+# Argument inspection is pure: neither help nor a usage refusal may reach
+# operational initialization, traps, locks, reports, or tool materialization.
+# The bounded entry point sources only these definitions, sharing this grammar.
+operational_tool_usage() {
+    printf '%s\n' \
+        'usage: operational-tool [--emit-output]' \
+        '       operational-tool --run-current-tool [--state-root PATH] [--state-identity DEV:INO] [--target-identity DEV:INO] [--cache-root PATH] [--tool-parent-sha SHA] --tool-relative PATH [-- ARGS...]' \
+        '       operational-tool -h | --help' \
+        '' \
+        'With no arguments, run operational health; --emit-output also streams its report.' \
+        '--run-current-tool materializes verified immutable tooling and runs the relative' \
+        'executable. Arguments after -- belong to that executable, including --help.' \
+        'State defaults to DEV_HERMIT_PARENT or HOME/work/dev-hermit for delegation.' \
+        'Cache defaults to DEV_HERMIT_TOOL_CACHE, HERMIT_HEALTH_TOOL_CACHE, or' \
+        'HOME/.local/state/hermit-health-tool. --tool-parent-sha requires an exact cached' \
+        'parent; identity options bind detached reentry to the recorded DEV:INO pair.'
+}
+
+parse_current_tool_arguments() {
+    # Bash dynamic scope fills the caller's declared locals. Both callers below
+    # declare the same fields; this function performs no filesystem operations.
+    local component
+    local -a tool_components=()
+    shift
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --state-root)
+                [[ $# -ge 2 ]] || {
+                    printf 'operational-tool: --state-root requires a path\n' >&2
+                    return 2
+                }
+                state_root=$2
+                shift 2
+                ;;
+            --cache-root)
+                [[ $# -ge 2 ]] || {
+                    printf 'operational-tool: --cache-root requires a path\n' >&2
+                    return 2
+                }
+                cache_root=$2
+                shift 2
+                ;;
+            --state-identity)
+                [[ $# -ge 2 ]] || {
+                    printf 'operational-tool: --state-identity requires DEV:INO\n' >&2
+                    return 2
+                }
+                expected_state_identity=$2
+                shift 2
+                ;;
+            --target-identity)
+                [[ $# -ge 2 ]] || {
+                    printf 'operational-tool: --target-identity requires DEV:INO\n' >&2
+                    return 2
+                }
+                expected_target_identity=$2
+                shift 2
+                ;;
+            --tool-relative)
+                [[ $# -ge 2 ]] || {
+                    printf 'operational-tool: --tool-relative requires a path\n' >&2
+                    return 2
+                }
+                tool_relative=$2
+                shift 2
+                ;;
+            --tool-parent-sha)
+                [[ $# -ge 2 ]] || {
+                    printf 'operational-tool: --tool-parent-sha requires a commit SHA\n' >&2
+                    return 2
+                }
+                requested_parent_sha=$2
+                shift 2
+                ;;
+            -h|--help)
+                show_help=1
+                return 0
+                ;;
+            --)
+                shift
+                payload=("$@")
+                break
+                ;;
+            *)
+                printf 'operational-tool: unknown argument %s\n' "$1" >&2
+                return 2
+                ;;
+        esac
+    done
+
+    [[ -n $tool_relative ]] || {
+        printf 'operational-tool: --tool-relative is required\n' >&2
+        return 2
+    }
+    if [[ -n $expected_state_identity && \
+          ! $expected_state_identity =~ ^[0-9]+:[0-9]+$ ]]; then
+        printf 'operational-tool: --state-identity must be one DEV:INO pair\n' >&2
+        return 2
+    fi
+    if [[ -n $expected_target_identity && \
+          ! $expected_target_identity =~ ^[0-9]+:[0-9]+$ ]]; then
+        printf 'operational-tool: --target-identity must be one DEV:INO pair\n' >&2
+        return 2
+    fi
+    [[ $tool_relative != /* ]] || {
+        printf 'operational-tool: tool path must be relative to the immutable tool root\n' >&2
+        return 2
+    }
+    IFS=/ read -r -a tool_components <<<"$tool_relative"
+    for component in "${tool_components[@]}"; do
+        [[ -n $component && $component != . && $component != .. ]] || {
+            printf 'operational-tool: unsafe tool path %s\n' "$tool_relative" >&2
+            return 2
+        }
+    done
+
+}
+
+check_operational_invocation() {
+    [[ $# -gt 0 ]] || return 0
+    case $1 in
+        -h|--help)
+            if [[ $# == 1 ]]; then
+                operational_tool_usage
+                exit 0
+            fi
+            ;;
+        --emit-output)
+            [[ $# == 1 ]] && return 0
+            ;;
+        --run-current-tool)
+            local state_root="" cache_root="" requested_parent_sha=""
+            local expected_state_identity="" expected_target_identity="" tool_relative=""
+            local show_help=0
+            local -a payload=()
+            if ! parse_current_tool_arguments "$@"; then
+                printf 'Try operational-tool --help for supported arguments.\n' >&2
+                return 2
+            fi
+            if [[ $show_help == 1 ]]; then
+                operational_tool_usage
+                exit 0
+            fi
+            return 0
+            ;;
+    esac
+    printf 'operational-tool: unsupported health arguments; use no arguments or --emit-output.\nTry operational-tool --help for usage.\n' >&2
+    return 2
+}
+
+# Sourcing is deliberately limited to the pure parser used by the bounded
+# wrapper. Executing this file keeps the normal operational entry point below.
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then
+    return 0
+fi
+check_operational_invocation "$@" || exit $?
+
 # $HOME, not a literal: this file is version-controlled and the parent's
 # portability gate rejects owner-specific paths. A shell DOES expand $HOME
 # (unlike a systemd unit, which needs %h).
@@ -2378,106 +2535,14 @@ run_current_tool() {
     local expected_state_identity=""
     local expected_target_identity=""
     local tool_relative=""
-    local component
-    local -a tool_components=()
     local -a payload=()
 
-    shift
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --state-root)
-                [[ $# -ge 2 ]] || {
-                    printf 'operational-tool: --state-root requires a path\n' >&2
-                    return 2
-                }
-                state_root=$2
-                shift 2
-                ;;
-            --cache-root)
-                [[ $# -ge 2 ]] || {
-                    printf 'operational-tool: --cache-root requires a path\n' >&2
-                    return 2
-                }
-                cache_root=$2
-                shift 2
-                ;;
-            --state-identity)
-                [[ $# -ge 2 ]] || {
-                    printf 'operational-tool: --state-identity requires DEV:INO\n' >&2
-                    return 2
-                }
-                expected_state_identity=$2
-                shift 2
-                ;;
-            --target-identity)
-                [[ $# -ge 2 ]] || {
-                    printf 'operational-tool: --target-identity requires DEV:INO\n' >&2
-                    return 2
-                }
-                expected_target_identity=$2
-                shift 2
-                ;;
-            --tool-relative)
-                [[ $# -ge 2 ]] || {
-                    printf 'operational-tool: --tool-relative requires a path\n' >&2
-                    return 2
-                }
-                tool_relative=$2
-                shift 2
-                ;;
-            --tool-parent-sha)
-                [[ $# -ge 2 ]] || {
-                    printf 'operational-tool: --tool-parent-sha requires a commit SHA\n' >&2
-                    return 2
-                }
-                requested_parent_sha=$2
-                shift 2
-                ;;
-            -h|--help)
-                printf '%s\n' \
-                    'usage: operational-tool --run-current-tool --state-root PATH [--state-identity DEV:INO] [--target-identity DEV:INO] [--cache-root PATH] [--tool-parent-sha SHA] --tool-relative PATH [-- ARGS...]' \
-                    '' \
-                    'Materialize current origin/main into a verified private tool root and run one' \
-                    'repository-relative executable. Mutable operational state remains under PATH.'
-                return 0
-                ;;
-            --)
-                shift
-                payload=("$@")
-                break
-                ;;
-            *)
-                printf 'operational-tool: unknown argument %s\n' "$1" >&2
-                return 2
-                ;;
-        esac
-    done
-
-    [[ -n $tool_relative ]] || {
-        printf 'operational-tool: --tool-relative is required\n' >&2
-        return 2
-    }
-    if [[ -n $expected_state_identity && \
-          ! $expected_state_identity =~ ^[0-9]+:[0-9]+$ ]]; then
-        printf 'operational-tool: --state-identity must be one DEV:INO pair\n' >&2
-        return 2
+    local show_help=0
+    parse_current_tool_arguments "$@" || return $?
+    if [[ $show_help == 1 ]]; then
+        operational_tool_usage
+        return 0
     fi
-    if [[ -n $expected_target_identity && \
-          ! $expected_target_identity =~ ^[0-9]+:[0-9]+$ ]]; then
-        printf 'operational-tool: --target-identity must be one DEV:INO pair\n' >&2
-        return 2
-    fi
-    [[ $tool_relative != /* ]] || {
-        printf 'operational-tool: tool path must be relative to the immutable tool root\n' >&2
-        return 2
-    }
-    IFS=/ read -r -a tool_components <<<"$tool_relative"
-    for component in "${tool_components[@]}"; do
-        [[ -n $component && $component != . && $component != .. ]] || {
-            printf 'operational-tool: unsafe tool path %s\n' "$tool_relative" >&2
-            return 2
-        }
-    done
 
     ROOT=$(realpath -e -- "$state_root") || {
         printf 'operational-tool: state root does not exist: %s\n' "$state_root" >&2

@@ -2,12 +2,6 @@
 # CPU-bounded entry point shared by the ORC workflow and the durable timer.
 set -uo pipefail
 
-SCRIPT_ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)
-STATE_DIR="${HERMIT_HEALTH_TICK_STATE_DIR:-${HOME:?HOME must be set}/.local/state}"
-INVLOG="$STATE_DIR/hermit-health-tick-invocations.log"
-BOX_RUN="${HERMIT_HEALTH_TICK_BOX_RUN:-$SCRIPT_ROOT/scripts/hermit-box-run}"
-HEALTH_TICK="${HERMIT_HEALTH_TICK_COMMAND:-$SCRIPT_ROOT/scripts/hermit-health-tick.sh}"
-
 # BOUND DERIVATION, measured 2026-09-17/18 on devbig014.
 #
 # Cheap ticks are a different population: a 2.4s run emitted 3 instructions
@@ -26,12 +20,44 @@ HEALTH_TICK="${HERMIT_HEALTH_TICK_COMMAND:-$SCRIPT_ROOT/scripts/hermit-health-ti
 OPERATIONAL_TICK_CPU_BUDGET_SECONDS=1200
 OPERATIONAL_TICK_WALL_BACKSTOP_SECONDS=619
 
-if [[ ${1:-} == --print-bounds ]]; then
-    printf 'cpu_budget_seconds=%s wall_backstop_seconds=%s\n' \
-        "$OPERATIONAL_TICK_CPU_BUDGET_SECONDS" \
-        "$OPERATIONAL_TICK_WALL_BACKSTOP_SECONDS"
-    exit 0
-fi
+# Resolve the sibling parser with shell expansion, before git, HOME, or state
+# setup. Sourcing the health wrapper only defines its pure argument functions.
+operational_parser_dir=${BASH_SOURCE[0]%/*}
+[[ $operational_parser_dir != "${BASH_SOURCE[0]}" ]] || operational_parser_dir=.
+source "$operational_parser_dir/hermit-health-tick.sh" || exit $?
+case ${1:-} in
+    -h|--help)
+        if [[ $# == 1 ]]; then
+            printf '%s\n' \
+                'usage: hermit-operational-tick [--emit-output]' \
+                '       hermit-operational-tick --print-bounds' \
+                '       hermit-operational-tick --run-current-tool ... [-- ARGS...]' \
+                '       hermit-operational-tick -h | --help' \
+                '' \
+                'Run the operational command under the declared CPU and wall bounds.' \
+                '--print-bounds prints those bounds without running health or creating state.' \
+                'Overrides: HERMIT_HEALTH_TICK_STATE_DIR, HERMIT_HEALTH_TICK_BOX_RUN,' \
+                'and HERMIT_HEALTH_TICK_COMMAND. Other supported arguments are:'
+            operational_tool_usage
+            exit 0
+        fi
+        ;;
+    --print-bounds)
+        if [[ $# == 1 ]]; then
+            printf 'cpu_budget_seconds=%s wall_backstop_seconds=%s\n' \
+                "$OPERATIONAL_TICK_CPU_BUDGET_SECONDS" \
+                "$OPERATIONAL_TICK_WALL_BACKSTOP_SECONDS"
+            exit 0
+        fi
+        ;;
+esac
+check_operational_invocation "$@" || exit $?
+
+SCRIPT_ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/.." rev-parse --show-toplevel)
+STATE_DIR="${HERMIT_HEALTH_TICK_STATE_DIR:-${HOME:?HOME must be set}/.local/state}"
+INVLOG="$STATE_DIR/hermit-health-tick-invocations.log"
+BOX_RUN="${HERMIT_HEALTH_TICK_BOX_RUN:-$SCRIPT_ROOT/scripts/hermit-box-run}"
+HEALTH_TICK="${HERMIT_HEALTH_TICK_COMMAND:-$SCRIPT_ROOT/scripts/hermit-health-tick.sh}"
 
 mkdir -p -- "$STATE_DIR" || exit 73
 measurement_dir=$(mktemp -d "$STATE_DIR/.hermit-operational-tick.XXXXXX") || exit 73
