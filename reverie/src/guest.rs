@@ -261,13 +261,16 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         Err(Errno::ENOSYS.into())
     }
 
-    /// Queues a Tool-selected normal child-exit event for the current process.
+    /// Queues a Tool-selected terminal child event for the current process.
     ///
-    /// The caller supplies a complete process-directed `SIGCHLD`/`CLD_EXITED`
-    /// event and owns its child-status provenance and deterministic ordering.
-    /// The backend validates the receiver and metadata, preserves process-wide
-    /// pending ownership and first-siginfo coalescing, and reports whether queue
-    /// publication preceded any failure. Wait status and child reaping remain
+    /// The caller supplies a complete process-directed `SIGCHLD` event with
+    /// `CLD_EXITED`, `CLD_KILLED`, or `CLD_DUMPED`, and owns its child-status
+    /// provenance and deterministic ordering. `CLD_EXITED` carries an unsigned
+    /// exit byte; `CLD_KILLED` carries a terminal-default Linux signal number;
+    /// `CLD_DUMPED` carries a core-default signal number. The backend validates
+    /// the receiver and that class-specific status domain, preserves
+    /// process-wide pending ownership and first-siginfo coalescing, and reports
+    /// whether queue publication preceded any failure. Wait status and child reaping remain
     /// independent. This operation never recursively invokes a Tool hook or
     /// resumes guest instructions; normal receiver boundaries own delivery.
     ///
