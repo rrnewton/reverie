@@ -1479,6 +1479,56 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertIsNone(result["physical_bytes"])
         self.assertEqual(result["diagnostics"], ["timed out after 5s"])
 
+    def test_registered_slots_uses_tighter_timeout_without_widening_others(self) -> None:
+        observed: dict[str, float] = {}
+
+        def population_result(
+            name: str, paths: tuple[Path, ...], *, timeout: float
+        ) -> dict[str, object]:
+            observed[name] = timeout
+            return {
+                "name": name,
+                "paths": [str(path) for path in paths],
+                "state": "complete",
+                "physical_bytes": 100,
+                "elapsed_seconds": 0.25,
+                "diagnostics": [],
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / "disk-paths.json"
+            previous = root / "disk-paths.previous.json"
+            with mock.patch.object(
+                operational_health,
+                "_fresh_btrfs_reading",
+                side_effect=[(700, 1000), (690, 1000)],
+            ), mock.patch.object(
+                operational_health,
+                "_measure_disk_population",
+                side_effect=population_result,
+            ), mock.patch.object(operational_health, "_emit"):
+                result = operational_health.cache_disk_paths(
+                    state_root=root,
+                    state_file=current,
+                    previous_state_file=previous,
+                    population_timeout=180,
+                    populations=(
+                        ("registered_slots", (root,)),
+                        ("validation_checkouts", (root,)),
+                    ),
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            observed,
+            {"registered_slots": 30.0, "validation_checkouts": 180},
+        )
+        self.assertEqual(
+            operational_health._disk_population_timeout("registered_slots", 9),
+            9,
+        )
+
     def test_cache_disk_paths_retains_previous_and_brackets_measurement(self) -> None:
         def population_result(
             name: str, paths: tuple[Path, ...], *, timeout: float

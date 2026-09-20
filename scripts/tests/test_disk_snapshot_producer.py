@@ -78,7 +78,7 @@ def test_unit_uses_one_exact_bounded_serial_producer() -> None:
         )
     ]
     assert resource_limits == [
-        "MemoryHigh=704M",
+        "MemoryHigh=512M",
         "MemoryMax=768M",
         "MemorySwapMax=128M",
         "TasksMax=512",

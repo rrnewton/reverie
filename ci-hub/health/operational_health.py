@@ -132,6 +132,12 @@ DEFAULT_DISK_PATH_PREVIOUS_STATE = (
 )
 DISK_PATH_INSTRUMENT = "compsize -b -x"
 DEFAULT_DISK_PATH_TIMEOUT_SECS = 180.0
+# The registered-slot tree repeatedly failed to produce a result at the full
+# bound while keeping the cgroup in heavy reclaim for the entire three minutes.
+# Preserve the configured bound for every other population, but stop this one
+# known-unproductive scan early.  A timeout remains explicit unavailable
+# evidence; it is never converted to a zero or partial size.
+DISK_PATH_POPULATION_TIMEOUT_CAP_SECS = {"registered_slots": 30.0}
 # Even one serialized compsize process crossed the former 512 MiB soft memory
 # boundary, exhausted the unit's 128 MiB swap allowance, and spent sustained
 # time in full memory pressure. Keep population scans serialized; the unit's
@@ -1334,6 +1340,12 @@ def _measure_disk_population(
     }
 
 
+def _disk_population_timeout(name: str, configured_timeout: float) -> float:
+    """Apply an evidence-backed tighter bound to one known-expensive population."""
+    cap = DISK_PATH_POPULATION_TIMEOUT_CAP_SECS.get(name, configured_timeout)
+    return min(configured_timeout, cap)
+
+
 def _fresh_btrfs_reading(filesystem_path: Path) -> tuple[int, int]:
     measured = subprocess.run(
         ["btrfs", "filesystem", "usage", "-b", str(filesystem_path)],
@@ -1390,7 +1402,11 @@ def cache_disk_paths(
             readings = list(
                 executor.map(
                     lambda item: _measure_disk_population(
-                        item[0], item[1], timeout=population_timeout
+                        item[0],
+                        item[1],
+                        timeout=_disk_population_timeout(
+                            item[0], population_timeout
+                        ),
                     ),
                     selected,
                 )

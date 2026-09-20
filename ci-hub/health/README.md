@@ -87,9 +87,10 @@ under one lock. It writes the fresh whole-filesystem Btrfs allocator reading to
 main top-level populations to `ignored/ops-state/disk-paths.json`, and retains
 the preceding published path run at
 `ignored/ops-state/disk-paths.previous.json`. The path scan runs at idle I/O and
-lowest normal CPU priority, with exactly one population measured at a time and
-a 180-second bound per population. The observed small populations clear
-rapidly. A 2026-09-20 devbig014 run showed that serialization alone does not
+lowest normal CPU priority, with exactly one population measured at a time.
+Four populations retain the configured 180-second bound; `registered_slots`
+has a tighter 30-second cap. The observed small populations clear rapidly. A
+2026-09-20 devbig014 run showed that serialization alone does not
 make the former 512 MiB soft memory threshold usable: the unit finished with a
 569,753,600-byte `memory.peak` and a 134,217,728-byte swap peak. At 03:33:10
 PDT, a concurrent sample showed 568,283,136 bytes of `memory.current` plus the
@@ -100,21 +101,28 @@ recorded 31,194 high events and 98.84 seconds of total full pressure. The
 complete path scan finished in 216.62 seconds with the other four populations
 complete.
 
-`MemoryHigh=704M` is the first 64-MiB-aligned soft threshold above that observed
-resident-plus-swap footprint and leaves 64 MiB before the unchanged
-`MemoryMax=768M`. This is a real widening of the soft reclaim threshold, not
-evidence that the scan's footprint decreased. The hard 768 MiB memory maximum,
-128 MiB swap maximum, 512-task maximum, one-worker cap, 180-second population
-timeout, and 540-second complete-service wall remain unchanged. If every
-population consumes its full bound, their serialized worst case exceeds that
-wall; the service then fails closed rather than relaxing a hard resource cap or
-publishing a partly assembled path document. The wall includes immutable-tool
-setup and both publications; no measured cold-run component is treated as a
-code-enforced sub-bound. The producer ordinarily attempts both independent
-publications serially under the shared lock; a command that returns nonzero
-does not suppress the later source of disk evidence. The outer service wall is
-stronger: if it terminates the unit during population measurement, no later
-command is attempted and the prior current authority files remain in place.
+Raising `MemoryHigh` to 704 MiB did not repair that scan. The exact follow-up
+run still timed out `registered_slots` after 182.016 seconds, reached a
+776,224,768-byte memory peak (about 740 MiB), consumed the full 134,217,728-byte
+swap allowance, and spent its final samples above 90% full memory-pressure PSI.
+The widening is therefore reverted to `MemoryHigh=512M`. The hard 768 MiB
+memory maximum, 128 MiB swap maximum, 512-task maximum, one-worker cap, and
+540-second complete-service wall remain unchanged.
+
+The 30-second `registered_slots` cap is a deliberate reduction in evidence for
+that row: a timeout remains `unavailable`, never zero or partial, and the other
+four populations keep the configured 180-second bound. It removes 150 seconds
+from a repeatedly unproductive scan rather than claiming a measurement that
+did not complete. If every population consumes its full bound, their serialized
+worst case still exceeds the service wall; the service then fails closed rather
+than relaxing a hard resource cap or publishing a partly assembled path
+document. The wall includes immutable-tool setup and both publications; no
+measured cold-run component is treated as a code-enforced sub-bound. The
+producer ordinarily attempts both independent publications serially under the
+shared lock; a command that returns nonzero does not suppress the later source
+of disk evidence. The outer service wall is stronger: if it terminates the unit
+during population measurement, no later command is attempted and the prior
+current authority files remain in place.
 
 For a cold or repair installation, first run
 `scripts/install-disk-snapshot.sh --no-start`. It checks producer dependencies,
