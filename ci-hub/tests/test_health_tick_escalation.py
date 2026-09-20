@@ -47,39 +47,44 @@ def bench(tmp_path: Path):
     )
 
     def run(
-        report_lines: str, *, complete: bool, twice: bool = False
+        report_lines: str, *, complete: bool, twice: bool = False,
+        publisher_override: str | None = None,
     ) -> dict[str, object]:
         report.write_text(report_lines)
         invlog.write_text("")
         calls.write_text("")
-        preamble = "\n".join(
-            [
-                "set -uo pipefail",
-                f"ROOT={tmp_path}",
-                f"INVLOG={invlog}",
-                f"LIVE_REPORT={report}",
-                "LIVE_REPORT_STAMP=2026-09-03T00:00:00Z",
-                "LIVE_REPORT_ESCALATED=0",
-                f"TICK_REPORT_COMPLETE={1 if complete else 0}",
-                "TICK_CANCEL_STATUS=",
-                "ESCALATION_AGENT=health-tick",
-                "ESCALATION_TG_DB=hermit2",
-                f"ESCALATION_PENDING_DIR={queue}",
-                f"ESCALATION_STAGING_DIR={tmp_path / 'staging'}",
-                f"ESCALATION_LOG={tmp_path / 'delivery.log'}",
-                f"ESCALATE={tmp_path / 'escalate'}",
-                f"ENQUEUE_HEALTH_ESCALATION={ROOT / 'ci-hub/bin/enqueue-health-escalation'}",
-                f"DEV_HERMIT_OPERATIONAL_TOOL={operational_tool}",
-                f"DEV_HERMIT_TOOL_PARENT_SHA={'a' * 40}",
-                "ts() { printf '2026-09-03T00:00:00Z\\n'; }",
-            ]
-        )
+        preamble_lines = [
+            "set -uo pipefail",
+            f"ROOT={tmp_path}",
+            f"INVLOG={invlog}",
+            f"LIVE_REPORT={report}",
+            "LIVE_REPORT_STAMP=2026-09-03T00:00:00Z",
+            "LIVE_REPORT_ESCALATED=0",
+            f"TICK_REPORT_COMPLETE={1 if complete else 0}",
+            "TICK_CANCEL_STATUS=",
+            "ESCALATION_AGENT=health-tick",
+            "ESCALATION_TG_DB=hermit2",
+            f"ESCALATION_PENDING_DIR={queue}",
+            f"ESCALATION_STAGING_DIR={tmp_path / 'staging'}",
+            f"ESCALATION_LOG={tmp_path / 'delivery.log'}",
+            f"ENQUEUE_HEALTH_ESCALATION={ROOT / 'ci-hub/bin/enqueue-health-escalation'}",
+            f"DEV_HERMIT_OPERATIONAL_TOOL={operational_tool}",
+            f"DEV_HERMIT_TOOL_PARENT_SHA={'a' * 40}",
+            "ts() { printf '2026-09-03T00:00:00Z\\n'; }",
+        ]
+        if publisher_override is not None:
+            preamble_lines.append(
+                f"HERMIT_HEALTH_ESCALATE={publisher_override}"
+            )
+        preamble = "\n".join(preamble_lines)
         body = "\nescalate_live_report_findings" * (2 if twice else 1)
+        environment = dict(os.environ)
+        environment.pop("HERMIT_HEALTH_ESCALATE", None)
         completed = subprocess.run(
             ["bash", "-c", f"{preamble}\n{functions}{body}"],
             text=True,
             capture_output=True,
-            env=os.environ
+            env=environment
             | {
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
                 "SYSTEMD_RUN_ARGS": str(calls),
@@ -160,6 +165,9 @@ def test_detached_worker_has_durable_output_and_exact_queue(bench) -> None:
     arguments = result["calls"]
     assert any(arg.startswith("--property=StandardOutput=append:") for arg in arguments)
     assert any(arg.startswith("--property=StandardError=append:") for arg in arguments)
+    assert not any(
+        arg.startswith("--setenv=HERMIT_HEALTH_ESCALATE=") for arg in arguments
+    )
     command_index = arguments.index("--")
     assert arguments[command_index + 1].endswith("operational-tool")
     assert arguments[command_index + 2 : command_index + 10] == [
@@ -174,3 +182,13 @@ def test_detached_worker_has_durable_output_and_exact_queue(bench) -> None:
     ]
     queue_index = arguments.index("--queue")
     assert arguments[queue_index + 1].endswith("queue")
+
+
+def test_detached_worker_preserves_explicit_publisher_override(bench) -> None:
+    publisher = "/explicit/operator/escalate"
+    result = bench(
+        "ACTION: hard-warn-coordinator component=a\n",
+        complete=True,
+        publisher_override=publisher,
+    )
+    assert f"--setenv=HERMIT_HEALTH_ESCALATE={publisher}" in result["calls"]

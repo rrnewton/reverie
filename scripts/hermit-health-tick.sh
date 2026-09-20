@@ -213,7 +213,6 @@ TICK_REPORT_COMPLETE=0
 # to deploy itself. Direct/manual runs have no immutable root and retain the
 # parent copy as their fallback.
 PARENT_MAIN_WRITE="${DEV_HERMIT_TOOL_ROOT:-$ROOT}/scripts/parent-main-write"
-ESCALATE="${HERMIT_HEALTH_ESCALATE:-${DEV_HERMIT_TOOL_ROOT:-$ROOT}/ci-hub/bin/escalate}"
 ENQUEUE_HEALTH_ESCALATION="${DEV_HERMIT_TOOL_ROOT:-$ROOT}/ci-hub/bin/enqueue-health-escalation"
 ESCALATION_AGENT="health-tick"
 # BOTH SINKS, because they cover different outages and neither one covers the
@@ -418,9 +417,19 @@ escalate_live_report_findings() {
 
 launch_health_escalation() {
     local unit launch_error
-    local -a delivery_command
+    local -a delivery_command publisher_environment
     unit="hermit-health-escalation-$(date -u +%Y%m%dT%H%M%S%NZ)-$$-$RANDOM"
     mkdir -p -- "$ESCALATION_PENDING_DIR" 2>/dev/null || return 1
+    publisher_environment=()
+    # The default publisher belongs to the DETACHED runner's own retained tool
+    # tree.  Do not pass the tick's derived /proc/<tick-pid>/fd path: that path
+    # disappears as soon as this process exits, racing the worker that was just
+    # launched.  Preserve only a deliberate caller-supplied override.
+    if [[ -n ${HERMIT_HEALTH_ESCALATE:-} ]]; then
+        publisher_environment=(
+            --setenv="HERMIT_HEALTH_ESCALATE=$HERMIT_HEALTH_ESCALATE"
+        )
+    fi
     if [[ -n ${DEV_HERMIT_OPERATIONAL_TOOL:-} && \
           -x ${DEV_HERMIT_OPERATIONAL_TOOL:-} && \
           ${DEV_HERMIT_TOOL_PARENT_SHA:-} =~ ^[0-9a-f]{40}$ ]]; then
@@ -450,8 +459,8 @@ launch_health_escalation() {
         --setenv="PATH=$PATH" \
         --setenv="DG_AGENT_NAME=$ESCALATION_AGENT" \
         --setenv="DEV_HERMIT_PARENT=$ROOT" \
-        --setenv="HERMIT_HEALTH_ESCALATE=$ESCALATE" \
         --setenv="HERMIT_HEALTH_TG_DB=$ESCALATION_TG_DB" \
+        "${publisher_environment[@]}" \
         -- "${delivery_command[@]}" \
         2>&1 >/dev/null); then
         return 0
