@@ -1,0 +1,19 @@
+[Unit]
+Description=Publish exact Herdr worker identities for dev-hermit health authority
+Documentation=https://github.com/rrnewton/dev-hermit/blob/main/ci-hub/health/herdr_agent_snapshot.py
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/libexec/dev-hermit:%h/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h
+# Current origin/main supplies the producer; the mutable parent supplies only
+# coordinator-owned bindings and the atomically replaced evidence artifact.
+ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative ci-hub/health/herdr_agent_snapshot.py -- --root %h/work/dev-hermit --bindings %h/work/dev-hermit/.tick-hub/herdr-agent-bindings.json --output %h/work/dev-hermit/ignored/ci-hub/agent-snapshot.json --herdr-bin %h/bin/herdr --agentctl-bin %h/.local/bin/agentctl --gate
+TimeoutStartSec=90
+TimeoutStopSec=2s
+KillMode=control-group
+MemoryMax=256M
+TasksMax=32
+
+[Install]
+WantedBy=default.target

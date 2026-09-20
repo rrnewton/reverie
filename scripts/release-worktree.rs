@@ -20,7 +20,7 @@
 //! ```
 // rust-script does not track #[path] dependencies in its cache key. Keep this
 // marker synchronized with agent_snapshot.rs status-contract changes.
-// agent-snapshot-schema-1-statuses-v3
+// agent-snapshot-schema-1-pane-identities-roles-authority-v6
 #[allow(dead_code)]
 #[path = "agent_snapshot.rs"]
 mod agent_snapshot;
@@ -1355,6 +1355,9 @@ fn agent_snapshot(root: &Path) -> Result<BTreeMap<String, AgentPresence>, String
     })?;
     let snapshot = agent_snapshot::AgentSnapshot::parse(&bytes)
         .map_err(|error| format!("parse canonical ORC owner snapshot: {error}"))?;
+    snapshot
+        .ensure_canonical_authority(&path)
+        .map_err(|error| format!("canonical owner snapshot authority: {error}"))?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?

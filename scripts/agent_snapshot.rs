@@ -1,19 +1,25 @@
 //! Shared contract for `ignored/ci-hub/agent-snapshot.json` schema 1.
 //!
-//! The stored snapshot is produced from ORC state by both Python and Rust. It
-//! is consumed by slot allocation, release, container reconciliation, active
-//! work reporting, and slot/agent parity. Those consumers ask different
-//! questions, but they must not maintain different answers to whether one
-//! serialized agent status is live, busy, or broken.
+//! The stored snapshot is produced from identity-checked coordinator state
+//! (ORC or Herdr) by both Python and Rust. It is consumed by slot allocation,
+//! release, container reconciliation, active work reporting, and slot/agent
+//! parity. Those consumers ask different questions, but they must not maintain
+//! different answers to whether one serialized agent status is live, busy, or
+//! broken.
 //!
-//! ORC owns fields that this repository does not interpret. They remain in
-//! `extra`; every field used by a repository consumer is typed here.
+//! Coordinator producers own fields that this repository does not interpret.
+//! They remain in `extra`; every field used by a repository consumer is typed
+//! here.
 
 #![allow(dead_code)]
 
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::ErrorKind;
+use std::path::Path;
 
 pub const SCHEMA_VERSION: u64 = 1;
 
@@ -197,6 +203,13 @@ impl<'de> Deserialize<'de> for AgentStatus {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentRole {
+    Coordinator,
+    Worker,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct Agent {
     pub name: String,
@@ -206,9 +219,29 @@ pub struct Agent {
     #[serde(default)]
     pub tmux_pane_id: Option<String>,
     #[serde(default)]
+    pub herdr_pane_id: Option<String>,
+    #[serde(default)]
     pub last_activity: Option<f64>,
+    #[serde(default)]
+    pub role: Option<AgentRole>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedTask {
+    pub local_id: String,
+    pub owner: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotAuthority {
+    pub source: String,
+    pub taskgraph_db: String,
+    pub binding_sha256: String,
+    pub owned_in_progress: Vec<OwnedTask>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -217,6 +250,8 @@ pub struct AgentSnapshot {
     pub schema_version: u64,
     pub captured_at: f64,
     pub agents: Vec<Agent>,
+    #[serde(default)]
+    pub authority: Option<SnapshotAuthority>,
 }
 
 impl AgentSnapshot {
@@ -263,6 +298,9 @@ impl AgentSnapshot {
                 ));
             }
         }
+        if let Some(authority) = &self.authority {
+            authority.validate()?;
+        }
         Ok(())
     }
 
@@ -286,8 +324,108 @@ impl AgentSnapshot {
         }
     }
 
+    pub fn ensure_canonical_authority(&self, snapshot_path: &Path) -> Result<(), String> {
+        if !snapshot_path.ends_with(Path::new("ignored/ci-hub/agent-snapshot.json")) {
+            return Ok(());
+        }
+        let Some(root) = snapshot_path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+        else {
+            return Ok(());
+        };
+        let binding_path = root.join(".tick-hub/herdr-agent-bindings.json");
+        let binding_bytes = match fs::read(&binding_path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect Herdr authority binding {}: {error}",
+                    binding_path.display()
+                ));
+            }
+        };
+        let binding: Value = serde_json::from_slice(&binding_bytes).map_err(|error| {
+            format!(
+                "invalid Herdr authority binding {}: {error}",
+                binding_path.display()
+            )
+        })?;
+        if binding.get("schema_version").and_then(Value::as_u64) != Some(2) {
+            return Err(
+                "unsupported Herdr authority binding; legacy snapshot remains disabled".into(),
+            );
+        }
+        let expected_db = binding
+            .get("taskgraph_db")
+            .and_then(Value::as_str)
+            .filter(|value| Path::new(value).is_absolute())
+            .ok_or_else(|| "Herdr authority binding has no absolute taskgraph_db".to_string())?;
+        let expected_db = fs::canonicalize(expected_db).map_err(|error| {
+            format!("cannot canonicalize Herdr authority taskgraph_db: {error}")
+        })?;
+        let authority = self
+            .authority
+            .as_ref()
+            .ok_or_else(|| "canonical Herdr snapshot lacks composite authority".to_string())?;
+        let binding_sha256 = format!("{:x}", Sha256::digest(&binding_bytes));
+        if authority.source != "herdr-agentctl-snapshot-v2"
+            || authority.binding_sha256 != binding_sha256
+            || authority.taskgraph_db != expected_db.to_string_lossy()
+        {
+            return Err(
+                "canonical Herdr snapshot composite authority does not match its binding".into(),
+            );
+        }
+        Ok(())
+    }
+
     pub fn agent(&self, name: &str) -> Option<&Agent> {
         self.agents.iter().find(|agent| agent.name == name)
+    }
+}
+
+impl SnapshotAuthority {
+    fn validate(&self) -> Result<(), String> {
+        if self.source != "herdr-agentctl-snapshot-v2" {
+            return Err(format!(
+                "unsupported agent snapshot authority source {:?}",
+                self.source
+            ));
+        }
+        if !self.taskgraph_db.starts_with('/') || self.taskgraph_db.contains('\0') {
+            return Err("agent snapshot authority taskgraph_db is not an absolute path".into());
+        }
+        if self.binding_sha256.len() != 64
+            || !self
+                .binding_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err("agent snapshot authority binding_sha256 is not lowercase SHA-256".into());
+        }
+        let mut previous: Option<(&str, &str)> = None;
+        for (index, task) in self.owned_in_progress.iter().enumerate() {
+            if task.local_id.is_empty()
+                || task.local_id.trim() != task.local_id
+                || task.owner.is_empty()
+                || task.owner.trim() != task.owner
+            {
+                return Err(format!(
+                    "agent snapshot authority owned task {index} is empty or untrimmed"
+                ));
+            }
+            let current = (task.local_id.as_str(), task.owner.as_str());
+            if previous.is_some_and(|value| value >= current) {
+                return Err(
+                    "agent snapshot authority owned tasks are not strictly sorted and unique"
+                        .into(),
+                );
+            }
+            previous = Some(current);
+        }
+        Ok(())
     }
 }
 
@@ -312,6 +450,27 @@ impl Agent {
                     "agent snapshot entry {index} has invalid tmux_pane_id {pane:?}"
                 ));
             }
+        }
+        if let Some(pane) = &self.herdr_pane_id {
+            let valid = pane
+                .strip_prefix('w')
+                .and_then(|value| value.split_once(":p"))
+                .is_some_and(|(workspace, pane)| {
+                    !workspace.is_empty()
+                        && !pane.is_empty()
+                        && workspace.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                        && pane.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                });
+            if !valid {
+                return Err(format!(
+                    "agent snapshot entry {index} has invalid herdr_pane_id {pane:?}"
+                ));
+            }
+        }
+        if self.tmux_pane_id.is_some() && self.herdr_pane_id.is_some() {
+            return Err(format!(
+                "agent snapshot entry {index} carries both tmux and Herdr pane identities"
+            ));
         }
         if let Some(last_activity) = self.last_activity {
             if !last_activity.is_finite() || last_activity < 0.0 {
@@ -349,6 +508,118 @@ mod tests {
         let snapshot = AgentSnapshot::from_value(&valid_snapshot()).unwrap();
         assert_eq!(snapshot.agents.len(), 1);
         assert_eq!(snapshot.agents[0].extra["backend"], "cloud-agent");
+    }
+
+    #[test]
+    fn accepts_one_exact_herdr_pane_identity() {
+        let mut value = valid_snapshot();
+        let agent = value["agents"][0].as_object_mut().unwrap();
+        agent.remove("tmux_pane_id");
+        agent.insert("herdr_pane_id".to_string(), json!("wK:p2"));
+        let snapshot = AgentSnapshot::from_value(&value).unwrap();
+        assert_eq!(snapshot.agents[0].herdr_pane_id.as_deref(), Some("wK:p2"));
+    }
+
+    #[test]
+    fn accepts_only_schema_checked_coordinator_or_worker_roles() {
+        let mut coordinator = valid_snapshot();
+        coordinator["agents"][0]["role"] = json!("coordinator");
+        let snapshot = AgentSnapshot::from_value(&coordinator).unwrap();
+        assert_eq!(snapshot.agents[0].role, Some(AgentRole::Coordinator));
+
+        let mut malformed = valid_snapshot();
+        malformed["agents"][0]["role"] = json!("observer");
+        assert!(AgentSnapshot::from_value(&malformed)
+            .unwrap_err()
+            .contains("unknown variant"));
+    }
+
+    #[test]
+    fn accepts_only_bound_sorted_composite_authority() {
+        let mut value = valid_snapshot();
+        value["authority"] = json!({
+            "source": "herdr-agentctl-snapshot-v2",
+            "taskgraph_db": "/state/tasks.db",
+            "binding_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "owned_in_progress": [
+                {"local_id": "a", "owner": "worker-a"},
+                {"local_id": "b", "owner": "worker-b"}
+            ]
+        });
+        assert!(AgentSnapshot::from_value(&value)
+            .unwrap()
+            .authority
+            .is_some());
+
+        value["authority"]["owned_in_progress"] = json!([
+            {"local_id": "b", "owner": "worker-b"},
+            {"local_id": "a", "owner": "worker-a"}
+        ]);
+        assert!(AgentSnapshot::from_value(&value)
+            .unwrap_err()
+            .contains("strictly sorted"));
+    }
+
+    #[test]
+    fn canonical_binding_requires_matching_composite_generation() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-snapshot-authority-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = root.join("ignored/ci-hub/agent-snapshot.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::create_dir_all(root.join(".tick-hub")).unwrap();
+        fs::create_dir_all(root.join("state")).unwrap();
+        fs::write(root.join("state/tasks.db"), b"fixture").unwrap();
+        let binding = format!(
+            "{{\"schema_version\":2,\"taskgraph_db\":\"{}/state/../state/tasks.db\"}}",
+            root.display()
+        );
+        fs::write(
+            root.join(".tick-hub/herdr-agent-bindings.json"),
+            binding.as_bytes(),
+        )
+        .unwrap();
+
+        let legacy = AgentSnapshot::from_value(&valid_snapshot()).unwrap();
+        assert!(legacy
+            .ensure_canonical_authority(&path)
+            .unwrap_err()
+            .contains("lacks composite authority"));
+
+        let mut composite = valid_snapshot();
+        composite["authority"] = json!({
+            "source": "herdr-agentctl-snapshot-v2",
+            "taskgraph_db": root.join("state/tasks.db").to_string_lossy(),
+            "binding_sha256": format!("{:x}", Sha256::digest(binding.as_bytes())),
+            "owned_in_progress": []
+        });
+        AgentSnapshot::from_value(&composite)
+            .unwrap()
+            .ensure_canonical_authority(&path)
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_malformed_herdr_pane_identity() {
+        let mut both = valid_snapshot();
+        both["agents"][0]["herdr_pane_id"] = json!("wK:p2");
+        assert!(AgentSnapshot::from_value(&both)
+            .unwrap_err()
+            .contains("both tmux and Herdr"));
+
+        let mut malformed = valid_snapshot();
+        let agent = malformed["agents"][0].as_object_mut().unwrap();
+        agent.remove("tmux_pane_id");
+        agent.insert("herdr_pane_id".to_string(), json!("not-a-pane"));
+        assert!(AgentSnapshot::from_value(&malformed)
+            .unwrap_err()
+            .contains("invalid herdr_pane_id"));
     }
 
     #[test]

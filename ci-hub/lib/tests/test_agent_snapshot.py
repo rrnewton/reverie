@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -68,6 +69,27 @@ class AgentSnapshotTests(unittest.TestCase):
             agent_snapshot.AgentSnapshotSchemaError, "future-state"
         ):
             agent_snapshot.parse_snapshot_bytes(self.snapshot("future-state"))
+
+    def test_canonical_binding_refuses_legacy_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "ignored/ci-hub/agent-snapshot.json"
+            path.parent.mkdir(parents=True)
+            binding = root / ".tick-hub/herdr-agent-bindings.json"
+            binding.parent.mkdir()
+            binding.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "taskgraph_db": str(root / "tasks.db"),
+                    }
+                )
+            )
+            document = agent_snapshot.parse_snapshot_bytes(self.snapshot())
+            with self.assertRaisesRegex(
+                agent_snapshot.AgentSnapshotSchemaError, "composite authority"
+            ):
+                agent_snapshot.require_canonical_authority(document, path)
 
 
 if __name__ == "__main__":

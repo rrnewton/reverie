@@ -22,6 +22,7 @@
 #   scripts/resource_audit.sh            # human-readable report
 #   scripts/resource_audit.sh --quiet    # only print WARN/CRIT lines + summary
 #   scripts/resource_audit.sh --json     # one machine-readable JSON object
+#   scripts/resource_audit.sh --tick-gate # key=value fields for tick-hub
 #
 # Thresholds are overridable via environment variables (see CONFIG below).
 
@@ -53,10 +54,12 @@ DISK_PATHS=${DISK_PATHS:-"/ /tmp /data"}
 
 QUIET=0
 JSON=0
+TICK_GATE=0
 for arg in "$@"; do
     case "$arg" in
         --quiet) QUIET=1 ;;
         --json) JSON=1 ;;
+        --tick-gate) TICK_GATE=1 ;;
         -h | --help)
             sed -n '3,32p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
@@ -64,6 +67,10 @@ for arg in "$@"; do
         *) echo "resource_audit.sh: unknown argument: $arg" >&2; exit 64 ;;
     esac
 done
+if ((JSON + TICK_GATE > 1)); then
+    echo "resource_audit.sh: --json and --tick-gate are mutually exclusive" >&2
+    exit 64
+fi
 
 # ---------------------------------------------------------------------------
 # Result accumulation. Each finding is "LEVEL\tKEY\tMESSAGE".
@@ -71,6 +78,8 @@ done
 declare -a FINDINGS=()
 WORST=0  # 0 OK, 1 WARN, 2 CRIT
 declare -a JSON_METRICS=()
+declare -a GATE_METRICS=()
+declare -a COLLECTION_ERRORS=()
 
 # escalate LEVEL KEY MESSAGE   (LEVEL in OK|WARN|CRIT)
 function finding {
@@ -91,7 +100,14 @@ function level_for {
     else echo OK; fi
 }
 
-function metric { JSON_METRICS+=("\"$1\":$2"); }
+function metric {
+    JSON_METRICS+=("\"$1\":$2")
+    GATE_METRICS+=("$1=$2")
+}
+
+function collection_error {
+    COLLECTION_ERRORS+=("$1")
+}
 
 # bytes_h BYTES -> human-readable (GiB with one decimal, or MiB when small)
 function bytes_h {
@@ -122,7 +138,9 @@ function user_slice_cgroup {
     return 1
 }
 
-# psi_some FILE -> avg10 for the "some" line (integer floor), or empty
+# psi_some FILE -> avg10 for the "some" line (integer floor), or empty.
+# PSI is an optional diagnostic on kernels/cgroups that expose it; the memory,
+# disk, process, and zombie observations below are mandatory gate authority.
 function psi_some {
     [[ -r $1 ]] || return 0
     awk '/^some/{sub("avg10=","",$2); print $2}' "$1" 2>/dev/null | head -1
@@ -133,23 +151,52 @@ function psi_some {
 # ---------------------------------------------------------------------------
 CG=$(user_slice_cgroup || true)
 if [[ -n ${CG:-} ]]; then
-    mem_cur=$(cat "$CG/memory.current" 2>/dev/null || echo 0)
-    mem_max=$(cat "$CG/memory.max" 2>/dev/null || echo max)
-    if [[ $mem_max == max || $mem_max -le 0 ]]; then
-        # No cap on the slice: fall back to physical RAM.
-        mem_max=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo) * 1024 ))
+    if ! mem_cur=$(cat "$CG/memory.current" 2>/dev/null); then
+        collection_error "cannot read cgroup memory.current"
+        mem_cur=
     fi
-    mem_pct=$(( mem_cur * 100 / mem_max ))
-    lvl=$(level_for "$mem_pct" "$MEM_WARN" "$MEM_CRIT")
-    finding "$lvl" memory \
-        "cgroup memory ${mem_pct}% of cap ($(bytes_h "$mem_cur")/$(bytes_h "$mem_max"))"
-    metric memory_pct "$mem_pct"
+    if ! mem_max=$(cat "$CG/memory.max" 2>/dev/null); then
+        collection_error "cannot read cgroup memory.max"
+        mem_max=
+    fi
+    use_physical_memory=0
+    if [[ ${mem_max:-} == max ]]; then
+        use_physical_memory=1
+    elif [[ ${mem_max:-} =~ ^[0-9]+$ ]]; then
+        ((mem_max <= 0)) && use_physical_memory=1
+    elif [[ -n ${mem_max:-} ]]; then
+        collection_error "cgroup memory.max is not numeric or max"
+        mem_max=
+    fi
+    if ((use_physical_memory)); then
+        # No cap on the slice: fall back to physical RAM.
+        if mem_total_kib=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null) \
+            && [[ $mem_total_kib =~ ^[0-9]+$ ]] && ((mem_total_kib > 0)); then
+            mem_max=$(( mem_total_kib * 1024 ))
+        else
+            collection_error "cannot read physical memory capacity"
+            mem_max=
+        fi
+    fi
+    if [[ ${mem_cur:-} =~ ^[0-9]+$ && ${mem_max:-} =~ ^[0-9]+$ ]] && ((mem_max > 0)); then
+        mem_pct=$(( mem_cur * 100 / mem_max ))
+        lvl=$(level_for "$mem_pct" "$MEM_WARN" "$MEM_CRIT")
+        finding "$lvl" memory \
+            "cgroup memory ${mem_pct}% of cap ($(bytes_h "$mem_cur")/$(bytes_h "$mem_max"))"
+        metric memory_pct "$mem_pct"
+    else
+        collection_error "cgroup memory accounting is not numeric"
+    fi
 
-    swap_cur=$(cat "$CG/memory.swap.current" 2>/dev/null || echo 0)
-    swap_gb=$(( swap_cur / 1073741824 ))
-    lvl=$(level_for "$swap_gb" "$SWAP_WARN_GB" "$SWAP_CRIT_GB")
-    finding "$lvl" swap "swap in use ${swap_gb}GiB"
-    metric swap_gb "$swap_gb"
+    if swap_cur=$(cat "$CG/memory.swap.current" 2>/dev/null) \
+        && [[ $swap_cur =~ ^[0-9]+$ ]]; then
+        swap_gb=$(( swap_cur / 1073741824 ))
+        lvl=$(level_for "$swap_gb" "$SWAP_WARN_GB" "$SWAP_CRIT_GB")
+        finding "$lvl" swap "swap in use ${swap_gb}GiB"
+        metric swap_gb "$swap_gb"
+    else
+        collection_error "cannot read cgroup swap accounting"
+    fi
 
     mpsi=$(psi_some "$CG/memory.pressure")
     if [[ -n $mpsi ]]; then
@@ -159,6 +206,7 @@ if [[ -n ${CG:-} ]]; then
     fi
 else
     finding WARN memory "could not read user-slice cgroup v2 accounting"
+    collection_error "cannot locate user-slice cgroup v2 accounting"
 fi
 
 # ---------------------------------------------------------------------------
@@ -193,9 +241,24 @@ fi
 # ---------------------------------------------------------------------------
 declare -A seen_dev=()
 for p in $DISK_PATHS; do
-    [[ -e $p ]] || continue
-    read -r dev use mnt < <(df -P "$p" 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $1, $5, $6}')
-    [[ -z ${dev:-} ]] && continue
+    if [[ ! -e $p ]]; then
+        collection_error "configured disk path does not exist: $p"
+        continue
+    fi
+    if ! df_output=$(df -P "$p" 2>/dev/null); then
+        collection_error "df failed for configured path $p"
+        continue
+    fi
+    if ! disk_row=$(awk 'NR==2{gsub("%","",$5); print $1, $5, $6}' <<<"$df_output") \
+        || [[ -z $disk_row ]]; then
+        collection_error "df returned no filesystem row for configured path $p"
+        continue
+    fi
+    read -r dev use mnt <<<"$disk_row"
+    if [[ -z ${dev:-} || ! ${use:-} =~ ^[0-9]+$ || -z ${mnt:-} ]]; then
+        collection_error "df returned an invalid filesystem row for configured path $p"
+        continue
+    fi
     [[ -n ${seen_dev[$dev]:-} ]] && continue   # dedupe by backing device
     seen_dev[$dev]=1
     lvl=$(level_for "$use" "$DISK_WARN" "$DISK_CRIT")
@@ -206,10 +269,14 @@ done
 # ---------------------------------------------------------------------------
 # 4. Process counts + heavy build fan-out + concurrent validates.
 # ---------------------------------------------------------------------------
-my_procs=$(ps -u "$(id -u)" --no-headers 2>/dev/null | wc -l)
-lvl=$(level_for "$my_procs" "$PROC_WARN" "$PROC_CRIT")
-finding "$lvl" procs "$my_procs processes owned by $(id -un)"
-metric my_procs "$my_procs"
+if ps_output=$(ps -u "$(id -u)" --no-headers 2>/dev/null); then
+    my_procs=$(awk 'NF{count++} END{print count+0}' <<<"$ps_output")
+    lvl=$(level_for "$my_procs" "$PROC_WARN" "$PROC_CRIT")
+    finding "$lvl" procs "$my_procs processes owned by $(id -un)"
+    metric my_procs "$my_procs"
+else
+    collection_error "cannot enumerate user processes"
+fi
 
 builders=$(pgrep -u "$(id -u)" -c -x 'cc1|cc1plus|rustc|cargo|ld|lld|as|buck2' 2>/dev/null) || builders=0
 metric build_procs "$builders"
@@ -223,17 +290,20 @@ metric validate_runs "$validates"
 # ---------------------------------------------------------------------------
 # 5. Zombie (defunct) processes.
 # ---------------------------------------------------------------------------
-zombies=$(ps -eo stat --no-headers 2>/dev/null | grep -c '^Z' || true)
-zombies=${zombies:-0}
-lvl=$(level_for "$zombies" "$ZOMBIE_WARN" "$ZOMBIE_CRIT")
-zmsg="$zombies zombie/defunct processes"
-if ((zombies > 0)); then
-    top=$(ps -eo stat,comm --no-headers 2>/dev/null | awk '$1 ~ /^Z/{print $2}' \
-        | sort | uniq -c | sort -rn | head -3 | awk '{printf "%s(%s) ", $2, $1}')
-    zmsg="$zmsg [${top% }]"
+if zombie_rows=$(ps -eo stat,comm --no-headers 2>/dev/null); then
+    zombies=$(awk '$1 ~ /^Z/{count++} END{print count+0}' <<<"$zombie_rows")
+    lvl=$(level_for "$zombies" "$ZOMBIE_WARN" "$ZOMBIE_CRIT")
+    zmsg="$zombies zombie/defunct processes"
+    if ((zombies > 0)); then
+        top=$(awk '$1 ~ /^Z/{print $2}' <<<"$zombie_rows" \
+            | sort | uniq -c | sort -rn | head -3 | awk '{printf "%s(%s) ", $2, $1}')
+        zmsg="$zmsg [${top% }]"
+    fi
+    finding "$lvl" zombies "$zmsg"
+    metric zombies "$zombies"
+else
+    collection_error "cannot enumerate zombie processes"
 fi
-finding "$lvl" zombies "$zmsg"
-metric zombies "$zombies"
 
 # ---------------------------------------------------------------------------
 # 6. Stale eden/codesync mounts from fbsource imports.
@@ -263,6 +333,20 @@ fi
 # ---------------------------------------------------------------------------
 # Output.
 # ---------------------------------------------------------------------------
+nwarn=0
+ncrit=0
+declare -a ATTENTION=()
+for f in "${FINDINGS[@]}"; do
+    IFS=$'\t' read -r level key msg <<<"$f"
+    if [[ $level == WARN ]]; then
+        ((nwarn++))
+        ATTENTION+=("$key: $msg")
+    elif [[ $level == CRIT ]]; then
+        ((ncrit++))
+        ATTENTION+=("$key: $msg")
+    fi
+done
+
 if ((JSON == 1)); then
     ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     worst_s=OK; ((WORST == 1)) && worst_s=WARN; ((WORST == 2)) && worst_s=CRIT
@@ -271,13 +355,54 @@ if ((JSON == 1)); then
     exit "$WORST"
 fi
 
+if ((TICK_GATE == 1)); then
+    worst_s=ok
+    ((WORST == 1)) && worst_s=warn
+    ((WORST == 2)) && worst_s=critical
+    if ((${#ATTENTION[@]})); then
+        printf -v summary '%s; ' "${ATTENTION[@]}"
+        summary=${summary%; }
+    else
+        summary="all resource thresholds are below warning levels"
+    fi
+    if ((${#COLLECTION_ERRORS[@]})); then
+        printf -v missing_summary '%s; ' "${COLLECTION_ERRORS[@]}"
+        missing_summary=${missing_summary%; }
+        missing_summary="mandatory resource observation unavailable: $missing_summary"
+        if ((WORST == 0)); then
+            worst_s=unknown
+            summary=$missing_summary
+            result=75
+        else
+            # Unknown coverage must never erase a warning or critical condition
+            # that another mandatory observation already proved.
+            summary="$summary; $missing_summary"
+            result=$WORST
+        fi
+        summary=${summary//\{/(}
+        summary=${summary//\}/)}
+        printf 'state=%s\n' "$worst_s"
+        printf 'summary=%s\n' "$summary"
+        printf 'collection_errors=%s\n' "${#COLLECTION_ERRORS[@]}"
+        printf 'critical_findings=%s\nwarning_findings=%s\n' "$ncrit" "$nwarn"
+        printf '%s\n' "${GATE_METRICS[@]}"
+        exit "$result"
+    fi
+    # Captured values are templates in tick-hub. Diagnostics containing braces
+    # must not become a second round of unresolved placeholders.
+    summary=${summary//\{/(}
+    summary=${summary//\}/)}
+    printf 'state=%s\n' "$worst_s"
+    printf 'summary=%s\n' "$summary"
+    printf 'critical_findings=%s\nwarning_findings=%s\n' "$ncrit" "$nwarn"
+    printf '%s\n' "${GATE_METRICS[@]}"
+    exit "$WORST"
+fi
+
 icon() { case "$1" in OK) echo "  ok";; WARN) echo "⚠️ WARN";; CRIT) echo "🚨 CRIT";; esac; }
 
-nwarn=0; ncrit=0
 for f in "${FINDINGS[@]}"; do
     IFS=$'\t' read -r level key msg <<<"$f"
-    [[ $level == WARN ]] && ((nwarn++))
-    [[ $level == CRIT ]] && ((ncrit++))
     if ((QUIET == 1)) && [[ $level == OK ]]; then continue; fi
     printf "%s  %-14s %s\n" "$(icon "$level")" "$key" "$msg"
 done

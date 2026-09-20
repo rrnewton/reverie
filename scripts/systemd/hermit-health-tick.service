@@ -9,6 +9,10 @@ Type=oneshot
 # portability gate.
 Environment=PATH=%h/.local/libexec/dev-hermit:%h/bin:%h/.local/bin:%h/.cargo/bin:%h/orc-bin:/usr/local/bin:/usr/bin:/bin
 Environment=FLEET_REAL_GH=%h/.local/libexec/dev-hermit/gh
+# Coordinator substrate is runtime state, not portable repository policy.  The
+# local file explicitly binds TG_DB_PATH (for example %h/.tg/hermit2.db); when
+# it is absent, TaskGraph consumers retain their existing fail-closed result.
+EnvironmentFile=-%h/.config/dev-hermit/health.env
 WorkingDirectory=%h
 # The installed bootstrap materializes and verifies current origin/main before
 # it executes the version-controlled health wrapper. The shared parent checkout

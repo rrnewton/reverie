@@ -10,6 +10,10 @@
 //! [dependencies]
 //! serde = { version = "1", features = ["derive"] }
 //! serde_json = "1"
+//! sha2 = "0.10"
+//!
+//! [dev-dependencies]
+//! libc = "0.2"
 //! ```
 
 // ZERO-WARNINGS, MADE INTRINSIC RATHER THAN DELEGATED TO AN EXTERNAL GATE.
@@ -32,7 +36,7 @@
 )]
 // rust-script does not track #[path] dependencies in its cache key. Keep this
 // marker synchronized with agent_snapshot.rs status-contract changes.
-// agent-snapshot-schema-1-statuses-v3
+// agent-snapshot-schema-1-pane-identities-roles-authority-v6
 #[allow(dead_code)]
 #[path = "../../scripts/agent_snapshot.rs"]
 mod agent_snapshot;
@@ -103,6 +107,7 @@ struct AgentSnapshot<'a> {
 enum Cycle {
     Continue,
     CanonicalActive,
+    HerdrActive,
 }
 
 fn main() {
@@ -127,6 +132,12 @@ fn run() -> Result<(), String> {
             Ok(Cycle::CanonicalActive) => {
                 println!(
                     "state=canonical-active workflow={CANONICAL_WORKFLOW} summary=temporary-container-reconcile-bridge-stopping"
+                );
+                return Ok(());
+            }
+            Ok(Cycle::HerdrActive) => {
+                println!(
+                    "state=herdr-active summary=temporary-container-reconcile-bridge-stopping"
                 );
                 return Ok(());
             }
@@ -201,6 +212,9 @@ fn validate_root(root: &Path) -> Result<(), String> {
 }
 
 fn run_cycle(args: &Args) -> Result<Cycle, String> {
+    if herdr_authority_marker_exists(&args.root) {
+        return Ok(Cycle::HerdrActive);
+    }
     let state = fetch_state(&args.state_url)?;
     if canonical_workflow_alive(&state) {
         return Ok(Cycle::CanonicalActive);
@@ -226,6 +240,15 @@ fn run_cycle(args: &Args) -> Result<Cycle, String> {
         code
     );
     Ok(Cycle::Continue)
+}
+
+fn herdr_authority_marker_exists(root: &Path) -> bool {
+    let binding = root.join(".tick-hub/herdr-agent-bindings.json");
+    match binding.try_exists() {
+        Ok(present) => present,
+        // An unreadable marker is never permission to resume the legacy writer.
+        Err(_) => true,
+    }
 }
 
 fn fetch_state(url: &str) -> Result<OrcState, String> {
@@ -258,6 +281,14 @@ fn canonical_workflow_alive(state: &OrcState) -> bool {
 }
 
 fn persist_snapshot(path: &Path, agents: &[Value]) -> Result<(), String> {
+    let state_root = path.parent().and_then(Path::parent).and_then(Path::parent);
+    if path.file_name().and_then(|value| value.to_str()) == Some("agent-snapshot.json") {
+        if let Some(root) = state_root {
+            if herdr_authority_marker_exists(root) {
+                return Err("refuse legacy snapshot: Herdr authority marker is active".to_string());
+            }
+        }
+    }
     let parent = path
         .parent()
         .ok_or_else(|| format!("snapshot path has no parent: {}", path.display()))?;
@@ -351,5 +382,65 @@ mod tests {
         assert!(error.contains("future-state"), "{error}");
         assert_eq!(fs::read(&path).unwrap(), b"last usable observation\n");
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn schema_v2_binding_blocks_legacy_writer_without_replacing_canonical_bytes() {
+        let root = env::temp_dir().join(format!(
+            "agent-snapshot-bridge-authority-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = root.join("ignored/ci-hub/agent-snapshot.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::create_dir_all(root.join(".tick-hub")).unwrap();
+        fs::write(&path, b"last composite observation\n").unwrap();
+        fs::write(
+            root.join(".tick-hub/herdr-agent-bindings.json"),
+            br#"{"schema_version":2}"#,
+        )
+        .unwrap();
+        let error = persist_snapshot(
+            &path,
+            &[serde_json::json!({
+                "name": "legacy-worker",
+                "status": "working",
+                "tmux_pane_id": "%7"
+            })],
+        )
+        .unwrap_err();
+        assert!(error.contains("Herdr authority marker"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), b"last composite observation\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn herdr_binding_stops_bridge_before_fetching_or_writing() {
+        let root = env::temp_dir().join(format!(
+            "agent-snapshot-bridge-stop-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join(".tick-hub")).unwrap();
+        fs::write(
+            root.join(".tick-hub/herdr-agent-bindings.json"),
+            b"corrupt-but-authoritative-marker\n",
+        )
+        .unwrap();
+        let args = Args {
+            once: false,
+            interval_secs: 1,
+            state_url: "http://127.0.0.1:1/must-not-be-fetched".into(),
+            root: root.clone(),
+        };
+        assert!(matches!(run_cycle(&args), Ok(Cycle::HerdrActive)));
+        assert!(!root.join("ignored/ci-hub/agent-snapshot.json").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }

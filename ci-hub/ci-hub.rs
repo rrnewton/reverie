@@ -127,7 +127,7 @@ START HERE
   Begin with fleet-wide truth and ownership before narrowing the question.
   quickstart              Print the opinionated five-step agent workflow
   health                  Combine current-main, open-PR, and ownership diagnostics
-  active-work             Reconcile tasks, owners, and live ORC agents
+  active-work             Reconcile tasks, owners, and live coordinator agents
 
 READ-ONLY STATUS AND HISTORY
   Inspect current and retained state without changing product source, labels, or queues.

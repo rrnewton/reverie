@@ -1,0 +1,16 @@
+[Unit]
+Description=Refresh the exact dev-hermit Herdr agent census every minute
+Documentation=https://github.com/rrnewton/dev-hermit/blob/main/ci-hub/health/herdr_agent_snapshot.py
+
+[Timer]
+OnBootSec=45s
+# The producer timestamps the START of observation, never publication. In the
+# fully conservative case, one prior 90s collection + 60s inactive interval +
+# 5s accuracy + one next 90s collection is 245s from evidence start to the next
+# publication, below slot parity's 300s refusal bound.
+OnUnitInactiveSec=1min
+AccuracySec=5s
+Unit=hermit-herdr-agent-snapshot.service
+
+[Install]
+WantedBy=timers.target

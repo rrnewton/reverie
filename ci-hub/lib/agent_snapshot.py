@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from dataclasses import dataclass
@@ -72,6 +73,49 @@ def parse_snapshot_payload(payload: object, *, captured_at: float = 0.0) -> list
     agents = document["agents"]
     assert isinstance(agents, list)
     return agents
+
+
+def require_canonical_authority(document: dict[str, Any], snapshot_path: Path) -> None:
+    """Require composite provenance when a canonical Herdr marker exists."""
+    path = snapshot_path.absolute()
+    if tuple(path.parts[-3:]) != ("ignored", "ci-hub", "agent-snapshot.json"):
+        return
+    binding_path = path.parents[2] / ".tick-hub/herdr-agent-bindings.json"
+    try:
+        binding_raw = binding_path.read_bytes()
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise AgentSnapshotSchemaError(
+            f"cannot inspect Herdr authority binding {binding_path}: {error}"
+        ) from error
+    try:
+        binding = json.loads(binding_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AgentSnapshotSchemaError(
+            f"invalid Herdr authority binding {binding_path}: {error}"
+        ) from error
+    if not isinstance(binding, dict) or binding.get("schema_version") != 2:
+        raise AgentSnapshotSchemaError(
+            "unsupported Herdr authority binding; legacy snapshot remains disabled"
+        )
+    authority = document.get("authority")
+    if not isinstance(authority, dict):
+        raise AgentSnapshotSchemaError(
+            "canonical Herdr snapshot lacks composite authority"
+        )
+    expected_db = binding.get("taskgraph_db")
+    if (
+        authority.get("source") != "herdr-agentctl-snapshot-v2"
+        or authority.get("binding_sha256")
+        != hashlib.sha256(binding_raw).hexdigest()
+        or not isinstance(expected_db, str)
+        or not Path(expected_db).is_absolute()
+        or authority.get("taskgraph_db") != str(Path(expected_db).resolve())
+    ):
+        raise AgentSnapshotSchemaError(
+            "canonical Herdr snapshot composite authority does not match its binding"
+        )
 
 
 @lru_cache(maxsize=None)

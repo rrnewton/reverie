@@ -75,6 +75,9 @@ REQUIRED: dict[str, str] = {
     # out-of-disk incident; nothing watched the filesystem in that window.
     "btrfs_headroom": "filesystem headroom and runaway writers on /data",
     "orphaned_hermit_reaper": "orphaned Hermit and test processes that no live owner will reap",
+    "host_resource_audit": "memory, swap, process, zombie, and disk pressure on the host",
+    "operational_input_freshness": "agent and disk snapshots whose producers silently stopped",
+    "stale_tick_processes": "health-tick invocations that escaped their complete-run bound",
     # Per-slot disk residue; one of only two mechanisms found genuinely live
     # during the 2026-08-19 invocation audit.
     "worktree_disk_residue": "slots accumulating on disk with no live process",
@@ -95,6 +98,66 @@ REQUIRED: dict[str, str] = {
     # failed was a docstring: this entry is what makes the mechanism itself
     # non-removable, which is the same argument as the line above.
     "deleted_tool_absent": "deliberately-deleted tools reappearing on disk",
+}
+
+# These transition gates are new enough that their names alone are not a
+# durable mechanism.  Pin the complete execution shape: retaining the reminder
+# while deleting its command, changing it to an always-successful probe, or
+# disabling capture must be as loud as deleting the reminder itself.
+REQUIRED_GATE_SHAPES: dict[str, dict[str, object]] = {
+    "host_resource_audit": {
+        "cadence_secs": 1800,
+        "gate": {
+            "timeout_secs": 30,
+            "cmd": "scripts/resource_audit.sh --tick-gate",
+            "when": "failure",
+            "capture": True,
+        },
+        "emit_kind": "action",
+        "emit_component": "host-resource-audit",
+        "emit_skill": "hard-warn-coordinator",
+        "emit_title": (
+            "host memory, swap, process, zombie, or disk pressure needs "
+            "attention: {summary}"
+        ),
+    },
+    "operational_input_freshness": {
+        "cadence_secs": 1800,
+        "gate": {
+            "timeout_secs": 10,
+            "cmd": (
+                "python3 ci-hub/health/operational_health.py input-freshness "
+                '--state-root "$DEV_HERMIT_PARENT"'
+            ),
+            "when": "failure",
+            "capture": True,
+        },
+        "emit_kind": "action",
+        "emit_component": "operational-input-freshness",
+        "emit_skill": "hard-warn-coordinator",
+        "emit_title": (
+            "agent or disk producer snapshots are stale, missing, or invalid: "
+            "{summary}"
+        ),
+    },
+    "stale_tick_processes": {
+        "cadence_secs": 1800,
+        "gate": {
+            "timeout_secs": 10,
+            "cmd": (
+                "python3 ci-hub/health/stale_tick_processes.py --gate "
+                '--root "$DEV_HERMIT_PARENT" --max-age-secs 900'
+            ),
+            "when": "failure",
+            "capture": True,
+        },
+        "emit_kind": "action",
+        "emit_component": "stale-tick-processes",
+        "emit_skill": "hard-warn-coordinator",
+        "emit_title": (
+            "health-tick invocations outlived their complete-run bound: {summary}"
+        ),
+    },
 }
 
 DEFAULT_CONFIG = "ci-hub/health/tick-hub.yaml"
@@ -173,14 +236,37 @@ def unrunnable_required_gates(path: Path) -> tuple[list[str], str]:
     for r in reminders:
         if not isinstance(r, dict) or r.get("name") not in REQUIRED:
             continue
-        cmd = ((r.get("gate") or {}).get("cmd") or "").strip()
-        if not cmd:
-            # A reminder with no gate command is not necessarily broken -- it may
-            # legitimately emit without gating. Only a NAMED script that is
-            # absent is evidence of the failure this checks for. Flagging the
-            # absence of a command instead produced false positives against
-            # minimal configs, which is how this was caught.
+        name = str(r["name"])
+        gate = r.get("gate")
+        if not isinstance(gate, dict):
+            broken.append(f"{name} -> gate definition is missing")
             continue
+        cmd = gate.get("cmd")
+        if not isinstance(cmd, str) or not cmd.strip():
+            broken.append(f"{name} -> gate command is missing")
+            continue
+        cmd = cmd.strip()
+        if gate.get("when") != "failure" or gate.get("capture") is not True:
+            broken.append(
+                f"{name} -> gate must use when=failure and capture=true"
+            )
+            continue
+        expected = REQUIRED_GATE_SHAPES.get(name)
+        if expected is not None:
+            emit = r.get("emit")
+            fields = emit.get("fields") if isinstance(emit, dict) else None
+            if (
+                r.get("cadence_secs") != expected["cadence_secs"]
+                or gate != expected["gate"]
+                or not isinstance(emit, dict)
+                or emit.get("kind") != expected["emit_kind"]
+                or emit.get("skill") != expected["emit_skill"]
+                or emit.get("title") != expected["emit_title"]
+                or not isinstance(fields, dict)
+                or fields.get("component") != expected["emit_component"]
+            ):
+                broken.append(f"{name} -> protected gate execution shape changed")
+                continue
         # The script is the first token that looks like a repo-relative path.
         # Deliberately conservative: only a token we can resolve is judged, so an
         # exotic command line is left alone rather than reported as broken.

@@ -198,6 +198,7 @@ def live_agents_from_snapshot(path: Path, max_age_secs: int, now: float) -> set[
     """
     try:
         doc = agent_snapshot_contract.parse_snapshot_bytes(path.read_bytes())
+        agent_snapshot_contract.require_canonical_authority(doc, path)
     except (OSError, agent_snapshot_contract.AgentSnapshotSchemaError) as exc:
         raise ParityUnavailable(f"cannot read agent snapshot {path}: {exc}") from exc
     captured_at = float(doc["captured_at"])
@@ -395,6 +396,12 @@ def main(argv: list[str] | None = None) -> int:
         fields = {"live_agents_examined": 0}
         if database is not None:
             fields["taskgraph_db"] = str(database)
+
+    # Captured values are rendered as tick-hub templates. The tmux diagnostic
+    # format contains fields such as ``#{session_name}``; passing those braces
+    # through made the intended refusal become a second, unrelated unresolved-
+    # placeholder error. Preserve the evidence as inert text.
+    summary = summary.replace("{", "(").replace("}", ")")
 
     if args.json:
         print(json.dumps({"state": state, "summary": summary, **fields}, indent=2, sort_keys=True))

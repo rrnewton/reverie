@@ -38,7 +38,13 @@ def run(argv):
 
 def write_config(tmp_path, names):
     cfg = tmp_path / "tick-hub.yaml"
-    cfg.write_text(yaml.safe_dump({"reminders": [{"name": n} for n in names]}))
+    live = {
+        row["name"]: row
+        for row in yaml.safe_load(LIVE_CONFIG.read_text())["reminders"]
+    }
+    cfg.write_text(
+        yaml.safe_dump({"reminders": [live.get(n, {"name": n}) for n in names]})
+    )
     return cfg
 
 
@@ -122,6 +128,76 @@ def test_every_required_entry_explains_what_goes_unwatched():
         assert why and len(why) > 10, f"{name} has no meaningful explanation"
 
 
+def test_transition_gate_name_cannot_survive_with_an_inert_shape(tmp_path):
+    live = {
+        row["name"]: row
+        for row in yaml.safe_load(LIVE_CONFIG.read_text())["reminders"]
+    }
+    live["stale_tick_processes"]["gate"] = {
+        "cmd": "true",
+        "when": "failure",
+        "capture": True,
+    }
+    cfg = tmp_path / "tick-hub.yaml"
+    cfg.write_text(yaml.safe_dump({"reminders": list(live.values())}))
+    code, fields = run(["--config", str(cfg), "--no-drift"])
+    assert code == 1
+    assert "protected gate execution shape changed" in fields["summary"]
+
+
+def test_transition_gate_name_cannot_survive_without_its_runtime_bound(tmp_path):
+    live = {
+        row["name"]: row
+        for row in yaml.safe_load(LIVE_CONFIG.read_text())["reminders"]
+    }
+    live["host_resource_audit"]["gate"].pop("timeout_secs")
+    cfg = tmp_path / "tick-hub.yaml"
+    cfg.write_text(yaml.safe_dump({"reminders": list(live.values())}))
+    code, fields = run(["--config", str(cfg), "--no-drift"])
+    assert code == 1
+    assert "protected gate execution shape changed" in fields["summary"]
+
+
+def test_transition_gate_name_cannot_survive_with_an_inert_cadence(tmp_path):
+    live = {
+        row["name"]: row
+        for row in yaml.safe_load(LIVE_CONFIG.read_text())["reminders"]
+    }
+    live["host_resource_audit"]["cadence_secs"] = 31_536_000
+    cfg = tmp_path / "tick-hub.yaml"
+    cfg.write_text(yaml.safe_dump({"reminders": list(live.values())}))
+    code, fields = run(["--config", str(cfg), "--no-drift"])
+    assert code == 1
+    assert "protected gate execution shape changed" in fields["summary"]
+
+
+def test_transition_gate_name_cannot_survive_without_escalating_emit(tmp_path):
+    live = {
+        row["name"]: row
+        for row in yaml.safe_load(LIVE_CONFIG.read_text())["reminders"]
+    }
+    live["host_resource_audit"]["emit"].pop("skill")
+    live["host_resource_audit"]["emit"]["title"] = "resource check ran"
+    cfg = tmp_path / "tick-hub.yaml"
+    cfg.write_text(yaml.safe_dump({"reminders": list(live.values())}))
+    code, fields = run(["--config", str(cfg), "--no-drift"])
+    assert code == 1
+    assert "protected gate execution shape changed" in fields["summary"]
+
+
+def test_required_gate_name_cannot_survive_without_a_command(tmp_path):
+    live = {
+        row["name"]: row
+        for row in yaml.safe_load(LIVE_CONFIG.read_text())["reminders"]
+    }
+    live["btrfs_headroom"].pop("gate")
+    cfg = tmp_path / "tick-hub.yaml"
+    cfg.write_text(yaml.safe_dump({"reminders": list(live.values())}))
+    code, fields = run(["--config", str(cfg), "--no-drift"])
+    assert code == 1
+    assert "gate definition is missing" in fields["summary"]
+
+
 def test_orphan_reaper_schedule_is_detection_only_and_bounded():
     """The scheduled path must report candidates without gaining kill authority."""
     config = yaml.safe_load(LIVE_CONFIG.read_text())
@@ -137,3 +213,43 @@ def test_orphan_reaper_schedule_is_detection_only_and_bounded():
     }
     assert "--apply" not in reminder["gate"]["cmd"]
     assert reminder["emit"]["title"].endswith("{summary}")
+
+
+def test_transition_resource_schedules_share_the_existing_tick_and_only_report():
+    config = yaml.safe_load(LIVE_CONFIG.read_text())
+    reminders = {row["name"]: row for row in config["reminders"]}
+    expected = {
+        "host_resource_audit": {
+            "timeout_secs": 30,
+            "cmd": "scripts/resource_audit.sh --tick-gate",
+            "when": "failure",
+            "capture": True,
+        },
+        "operational_input_freshness": {
+            "timeout_secs": 10,
+            "cmd": (
+                "python3 ci-hub/health/operational_health.py input-freshness "
+                '--state-root "$DEV_HERMIT_PARENT"'
+            ),
+            "when": "failure",
+            "capture": True,
+        },
+        "stale_tick_processes": {
+            "timeout_secs": 10,
+            "cmd": (
+                "python3 ci-hub/health/stale_tick_processes.py --gate "
+                '--root "$DEV_HERMIT_PARENT" --max-age-secs 900'
+            ),
+            "when": "failure",
+            "capture": True,
+        },
+    }
+    for name, gate in expected.items():
+        reminder = reminders[name]
+        assert reminder["cadence_secs"] == 1800
+        assert reminder["gate"] == gate
+        assert reminder["emit"]["kind"] == "action"
+        assert reminder["emit"]["title"].endswith("{summary}")
+        command = reminder["gate"]["cmd"]
+        for mutator in ("--apply", " kill ", " remove ", " delete "):
+            assert mutator not in f" {command} "

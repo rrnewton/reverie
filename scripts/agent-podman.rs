@@ -11,11 +11,12 @@
 //! fs2 = "0.4"
 //! serde = { version = "1", features = ["derive"] }
 //! serde_json = "1"
+//! sha2 = "0.10"
 //! ```
 
 // rust-script does not track #[path] dependencies in its cache key. Keep this
 // marker synchronized with agent_snapshot.rs status-contract changes.
-// agent-snapshot-schema-1-statuses-v3
+// agent-snapshot-schema-1-pane-identities-roles-authority-v6
 #[allow(dead_code)]
 #[path = "agent_snapshot.rs"]
 mod agent_snapshot;
@@ -87,6 +88,11 @@ Environment:
   TMUX_PANE                  Owning pane recorded for diagnosis.
   DEV_HERMIT_CONTAINER_STATE Override the ignored ownership registry path.
   AGENT_PODMAN_BIN           Override podman (tests only).
+
+Herdr compatibility:
+  Herdr pane identities in the agent snapshot are read-only reconcile evidence.
+  A Herdr-launched process that lacks DG_AGENT_NAME, invocation metadata, or
+  TMUX_PANE cannot run/create/transfer a managed container and is refused.
 "#;
 
 const QUICKSTART: &str = r#"agent-podman quickstart
@@ -101,6 +107,8 @@ const QUICKSTART: &str = r#"agent-podman quickstart
 4. Inspect without mutation:
    ./scripts/agent-podman.rs audit --agents-json ignored/ci-hub/agent-snapshot.json
 5. Legacy unlabelled containers are warnings, never automatic deletion targets.
+6. Herdr snapshots support read-only reconcile. Herdr lanes without the required
+   DG_AGENT_NAME, invocation metadata, and TMUX_PANE cannot mutate ownership.
 "#;
 
 #[derive(Debug)]
@@ -1438,6 +1446,9 @@ fn load_live_agents(path: &Path) -> Result<BTreeMap<String, String>> {
         source,
     })?;
     let snapshot = agent_snapshot::AgentSnapshot::parse(&raw).map_err(AppError::Message)?;
+    snapshot
+        .ensure_canonical_authority(path)
+        .map_err(AppError::Message)?;
     // ⚠️ A FILE THAT EXISTS AND PARSES READS AS FRESH, AND THAT IS THE WHOLE
     // HAZARD HERE. The envelope form carries `captured_at` and was age-checked;
     // the BARE-ARRAY form set `captured_at = None` and the check below was
@@ -1562,12 +1573,100 @@ fn discover_live_invocations(
 /// "nobody is alive".
 fn all_process_invocations() -> Option<BTreeSet<String>> {
     use std::os::unix::fs::MetadataExt;
-    let entries = fs::read_dir("/proc").ok()?;
     // Our own uid without pulling in a libc dependency for one call.
     let uid = fs::metadata("/proc/self").ok()?.uid();
+    all_process_invocations_at(Path::new("/proc"), uid)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProcIdentity {
+    state: u8,
+    start_ticks: u64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum StableEnvironment {
+    Observed(Vec<u8>),
+    Churn,
+    Unknown,
+}
+
+fn proc_identity(path: &Path) -> io::Result<Option<ProcIdentity>> {
+    let raw = match fs::read(path.join("stat")) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    // The second stat field is `(comm)` and may contain whitespace or `)`, so
+    // split only after its final close delimiter. The following fields begin at
+    // field 3 (`state`); `starttime` is field 22 and therefore index 19 here.
+    let close = raw.iter().rposition(|byte| *byte == b')').ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "proc stat has no comm terminator",
+        )
+    })?;
+    let fields: Vec<&[u8]> = raw[close + 1..]
+        .split(|byte| byte.is_ascii_whitespace())
+        .filter(|field| !field.is_empty())
+        .collect();
+    let state = fields
+        .first()
+        .and_then(|field| (field.len() == 1).then_some(field[0]))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "proc stat has no state"))?;
+    let start_ticks = fields
+        .get(19)
+        .and_then(|field| std::str::from_utf8(field).ok())
+        .and_then(|field| field.parse::<u64>().ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "proc stat has no starttime"))?;
+    Ok(Some(ProcIdentity { state, start_ticks }))
+}
+
+/// Read one process's environment only when the same PID incarnation brackets
+/// the read. A vanished or reused PID is ordinary churn. Any persistent read
+/// failure is an unknown fleet scan and therefore cannot authorize deletion.
+fn stable_process_environment_with<Identity, Environment>(
+    mut identity: Identity,
+    mut environment: Environment,
+) -> StableEnvironment
+where
+    Identity: FnMut() -> io::Result<Option<ProcIdentity>>,
+    Environment: FnMut() -> io::Result<Vec<u8>>,
+{
+    let before = match identity() {
+        Ok(Some(identity)) => identity,
+        Ok(None) => return StableEnvironment::Churn,
+        Err(_) => return StableEnvironment::Unknown,
+    };
+    // Zombies have no executing agent and often refuse environ reads. They are
+    // not evidence of a live invocation and do not make the sweep incomplete.
+    if before.state == b'Z' {
+        return StableEnvironment::Churn;
+    }
+    let raw = environment();
+    let after = match identity() {
+        Ok(Some(identity)) => identity,
+        Ok(None) => return StableEnvironment::Churn,
+        Err(_) => return StableEnvironment::Unknown,
+    };
+    if before.start_ticks != after.start_ticks {
+        return StableEnvironment::Churn;
+    }
+    match raw {
+        Ok(raw) => StableEnvironment::Observed(raw),
+        Err(_) => StableEnvironment::Unknown,
+    }
+}
+
+fn all_process_invocations_at(proc_root: &Path, uid: u32) -> Option<BTreeSet<String>> {
+    use std::os::unix::fs::MetadataExt;
+    let entries = fs::read_dir(proc_root).ok()?;
     let mut invocations = BTreeSet::new();
-    for entry in entries.flatten() {
-        let Some(pid) = entry
+    for result in entries {
+        // An enumeration error means the sweep did not complete. Never flatten
+        // it into proof that an owner is absent.
+        let entry = result.ok()?;
+        let Some(_pid) = entry
             .file_name()
             .to_str()
             .and_then(|name| name.parse::<u32>().ok())
@@ -1577,10 +1676,18 @@ fn all_process_invocations() -> Option<BTreeSet<String>> {
         // Only same-uid processes are readable, and only ours are ours to judge.
         match fs::metadata(entry.path()) {
             Ok(meta) if meta.uid() == uid => {}
-            _ => continue,
+            Ok(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
         }
-        let Ok(raw) = fs::read(format!("/proc/{pid}/environ")) else {
-            continue;
+        let path = entry.path();
+        let raw = match stable_process_environment_with(
+            || proc_identity(&path),
+            || fs::read(path.join("environ")),
+        ) {
+            StableEnvironment::Observed(raw) => raw,
+            StableEnvironment::Churn => continue,
+            StableEnvironment::Unknown => return None,
         };
         for field in raw.split(|byte| *byte == 0) {
             let text = String::from_utf8_lossy(field);
@@ -2228,6 +2335,8 @@ fn exit_code(status: ExitStatus) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::os::unix::fs::MetadataExt;
 
     fn ownership(lifetime: Lifetime) -> Ownership {
         Ownership {
@@ -2249,6 +2358,33 @@ mod tests {
             PROCESS_SCAN_KEY.to_string(),
             found.iter().map(|s| (*s).to_string()).collect(),
         )])
+    }
+
+    fn fake_proc_root(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = env::temp_dir().join(format!(
+            "agent-podman-proc-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).unwrap();
+        path
+    }
+
+    fn fake_process(root: &Path, pid: u32, state: u8, start_ticks: u64) -> PathBuf {
+        let path = root.join(pid.to_string());
+        fs::create_dir(&path).unwrap();
+        let mut fields = vec![(state as char).to_string()];
+        fields.extend((0..18).map(|_| "0".to_string()));
+        fields.push(start_ticks.to_string());
+        fs::write(
+            path.join("stat"),
+            format!("{pid} (agent with ) delimiter) {}\n", fields.join(" ")),
+        )
+        .unwrap();
+        path
     }
 
     // ---- POSITIVE SIDE: reclamation still fires, or we have lost the capability ----
@@ -2341,6 +2477,79 @@ mod tests {
     }
 
     #[test]
+    fn readable_proc_entry_finds_exact_invocation() {
+        let root = fake_proc_root("readable");
+        let process = fake_process(&root, 41001, b'R', 7001);
+        fs::write(
+            process.join("environ"),
+            b"A=B\0META_3PAI_INVOCATION_ID=inv-old\0",
+        )
+        .unwrap();
+        let uid = fs::metadata(&process).unwrap().uid();
+
+        assert_eq!(
+            all_process_invocations_at(&root, uid),
+            Some(BTreeSet::from(["inv-old".to_string()]))
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persistent_same_uid_environ_failure_withholds_completed_scan() {
+        let root = fake_proc_root("unreadable");
+        let process = fake_process(&root, 41002, b'S', 7002);
+        // A directory is deterministically unreadable through fs::read even for
+        // privileged test users, while both stat reads preserve PID identity.
+        fs::create_dir(process.join("environ")).unwrap();
+        let uid = fs::metadata(&process).unwrap().uid();
+
+        let mut evidence = BTreeMap::new();
+        if let Some(found) = all_process_invocations_at(&root, uid) {
+            evidence.insert(PROCESS_SCAN_KEY.to_string(), found);
+        }
+        assert!(!evidence.contains_key(PROCESS_SCAN_KEY));
+        assert_eq!(
+            classify(&ownership(Lifetime::Agent), &evidence),
+            Disposition::OwnerUnknown
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pid_reuse_during_environ_read_is_churn_not_spliced_evidence() {
+        let mut identities = VecDeque::from([
+            Ok(Some(ProcIdentity {
+                state: b'R',
+                start_ticks: 7003,
+            })),
+            Ok(Some(ProcIdentity {
+                state: b'R',
+                start_ticks: 9003,
+            })),
+        ]);
+        let observed = stable_process_environment_with(
+            || identities.pop_front().unwrap(),
+            || Ok(b"META_3PAI_INVOCATION_ID=wrong-incarnation\0".to_vec()),
+        );
+        assert_eq!(observed, StableEnvironment::Churn);
+    }
+
+    #[test]
+    fn foreign_uid_unreadability_is_outside_the_sweep() {
+        let root = fake_proc_root("foreign");
+        let process = fake_process(&root, 41004, b'R', 7004);
+        fs::create_dir(process.join("environ")).unwrap();
+        let foreign_uid = fs::metadata(&process).unwrap().uid();
+        let our_uid = foreign_uid.checked_add(1).unwrap_or(foreign_uid - 1);
+
+        assert_eq!(
+            all_process_invocations_at(&root, our_uid),
+            Some(BTreeSet::new())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn a_degenerate_agent_census_cannot_authorize_removal() {
         // Exactly the 2026-08-08 shape: the snapshot held one synthetic row and
         // named no real agent. classify no longer takes the census at all, so the
@@ -2362,6 +2571,8 @@ mod tests {
     #[test]
     fn quickstart_is_nonempty_and_consequence_led() {
         assert!(QUICKSTART.contains("never automatic deletion targets"));
+        assert!(QUICKSTART.contains("Herdr snapshots support read-only reconcile"));
+        assert!(QUICKSTART.contains("cannot mutate ownership"));
         assert!(QUICKSTART.lines().count() < 20);
     }
 

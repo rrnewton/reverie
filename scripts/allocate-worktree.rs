@@ -25,10 +25,11 @@
 //! fs2 = "0.4"
 //! serde = { version = "1", features = ["derive"] }
 //! serde_json = "1"
+//! sha2 = "0.10"
 //! ```
 // rust-script does not track #[path] dependencies in its cache key. Keep this
 // marker synchronized with agent_snapshot.rs status-contract changes.
-// agent-snapshot-schema-1-statuses-v3
+// agent-snapshot-schema-1-pane-identities-roles-authority-v6
 #[allow(dead_code)]
 #[path = "agent_snapshot.rs"]
 mod agent_snapshot;
@@ -1524,6 +1525,9 @@ fn observe_owner_lease(root: &Path, agent: &str) -> Result<ObservedOwnerLease, S
         .map_err(|error| format!("read {}: {error}", snapshot_path.display()))?;
     let snapshot = agent_snapshot::AgentSnapshot::parse(&raw)
         .map_err(|error| format!("owner snapshot is invalid: {error}"))?;
+    snapshot
+        .ensure_canonical_authority(&snapshot_path)
+        .map_err(|error| format!("owner snapshot authority is invalid: {error}"))?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?

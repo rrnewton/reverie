@@ -17,6 +17,7 @@ FORMERLY_LONG = (
     "pr_tip_reachability.py",
     "reverie_pin_lag.py",
     "slot_agent_parity.py",
+    "stale_tick_processes.py",
     "tick_code_currency.py",
     "unevaluated_head.py",
     "unpushed_change_clone_commits.py",

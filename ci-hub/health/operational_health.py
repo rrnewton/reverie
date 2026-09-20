@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
+import math
 import os
 import re
 import signal
@@ -16,7 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from io import StringIO
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE_ROOT = Path(os.environ.get("DEV_HERMIT_PARENT", ROOT)).resolve()
@@ -37,6 +39,7 @@ import queue_health
 
 DEFAULT_STUCK_AFTER_SECS = 60 * 60
 DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECS = 10 * 60
+DEFAULT_DISK_SNAPSHOT_MAX_AGE_SECS = 45 * 60
 # Per-repo wall-clock budget for the auto-invoked PR-health gate, including its
 # bounded exact-job dereferences. tick-hub's SubprocessGateRunner hard-kills any
 # gate at 30s, so the gate MUST resolve well under that: two repos queried
@@ -119,6 +122,7 @@ MERGE_GATE_AUTHORITY_CHECKER = (
     ROOT / "hermit" / "scripts" / "configure-merge-gate-ruleset.sh"
 )
 DEFAULT_AGENT_SNAPSHOT = STATE_ROOT / "ignored" / "ci-hub" / "agent-snapshot.json"
+HERDR_COMPOSITE_SOURCE = "herdr-agentctl-snapshot-v2"
 DEFAULT_DISK_STATE = STATE_ROOT / "ignored" / "ops-state" / "disk.json"
 DEFAULT_DISK_FILESYSTEM_PATH = STATE_ROOT
 DISK_FREE_INSTRUMENT = "btrfs filesystem usage -b"
@@ -220,7 +224,9 @@ class AgentRecord:
     status: str
     current_task: str | None
     tmux_pane_id: str | None = None
+    herdr_pane_id: str | None = None
     last_activity: float | None = None
+    role: str = "worker"
 
     @property
     def live(self) -> bool:
@@ -843,10 +849,148 @@ def _parse_agents(payload: object) -> tuple[AgentRecord, ...]:
                 status=status,
                 current_task=current_task or None,
                 tmux_pane_id=raw.get("tmux_pane_id"),
+                herdr_pane_id=raw.get("herdr_pane_id"),
                 last_activity=_last_activity_seconds(raw.get("last_activity")),
+                role=str(raw.get("role", "worker")),
             )
         )
     return tuple(sorted(agents, key=lambda agent: agent.name))
+
+
+def _active_herdr_authority(
+    snapshot_file: Path,
+) -> tuple[str, Path, str, dict[str, dict[str, object]]] | None:
+    """Return schema-v2 binding expectations for the canonical state path."""
+    path = snapshot_file.absolute()
+    if tuple(path.parts[-3:]) != ("ignored", "ci-hub", "agent-snapshot.json"):
+        return None
+    binding_path = path.parents[2] / ".tick-hub" / "herdr-agent-bindings.json"
+    try:
+        raw = binding_path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise RuntimeError(f"cannot inspect Herdr authority binding: {error}") from error
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"invalid Herdr authority binding: {error}") from error
+    if not isinstance(document, dict):
+        raise RuntimeError("invalid Herdr authority binding: root is not an object")
+    if document.get("schema_version") != 2:
+        raise RuntimeError(
+            "unsupported Herdr authority binding schema; legacy writers remain disabled"
+        )
+    workspace = document.get("workspace")
+    taskgraph_db_path = document.get("taskgraph_db")
+    rows = document.get("agents")
+    if (
+        not isinstance(workspace, str)
+        or not workspace
+        or not isinstance(taskgraph_db_path, str)
+        or not Path(taskgraph_db_path).is_absolute()
+        or not isinstance(rows, list)
+    ):
+        raise RuntimeError("invalid schema-v2 Herdr authority binding")
+    expected: dict[str, dict[str, object]] = {}
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise RuntimeError(
+                f"invalid schema-v2 Herdr authority binding agent {index}"
+            )
+        name = row.get("snapshot_name")
+        role = row.get("role")
+        fields = {
+            "name": name,
+            "herdr_pane_id": row.get("pane_id"),
+            "herdr_name": row.get("herdr_name"),
+            "herdr_workspace": workspace,
+            "harness": row.get("harness"),
+            "role": role,
+            "source": HERDR_COMPOSITE_SOURCE,
+            "current_task": row.get("current_task"),
+        }
+        if (
+            not isinstance(name, str)
+            or not name
+            or role not in {"coordinator", "worker"}
+            or any(
+                not isinstance(fields[key], str) or not fields[key]
+                for key in ("herdr_pane_id", "herdr_name", "harness")
+            )
+        ):
+            raise RuntimeError(
+                f"invalid schema-v2 Herdr authority binding agent {index}"
+            )
+        if name in expected:
+            raise RuntimeError(
+                f"invalid schema-v2 Herdr authority binding duplicate {name!r}"
+            )
+        expected[name] = fields
+    if not expected:
+        raise RuntimeError("invalid schema-v2 Herdr authority binding: no agents")
+    return (
+        workspace,
+        Path(taskgraph_db_path).resolve(),
+        hashlib.sha256(raw).hexdigest(),
+        expected,
+    )
+
+
+def _assert_herdr_composite_provenance(
+    payload: object, authority_payload: object, snapshot_file: Path
+) -> None:
+    authority = _active_herdr_authority(snapshot_file)
+    if authority is None:
+        return
+    _workspace, taskgraph_path, binding_sha256, expected = authority
+    if not isinstance(authority_payload, dict):
+        raise RuntimeError(
+            "canonical Herdr snapshot lacks composite provenance authority"
+        )
+    if authority_payload.get("source") != HERDR_COMPOSITE_SOURCE:
+        raise RuntimeError("canonical Herdr snapshot lacks composite authority source")
+    if authority_payload.get("binding_sha256") != binding_sha256:
+        raise RuntimeError(
+            "canonical Herdr snapshot binding generation fingerprint changed"
+        )
+    recorded_db = authority_payload.get("taskgraph_db")
+    if (
+        not isinstance(recorded_db, str)
+        or not Path(recorded_db).is_absolute()
+        or Path(recorded_db).resolve() != taskgraph_path
+    ):
+        raise RuntimeError(
+            "canonical Herdr snapshot TaskGraph path does not match its binding"
+        )
+    owned = authority_payload.get("owned_in_progress")
+    if not isinstance(owned, list) or any(
+        not isinstance(row, dict)
+        or set(row) != {"local_id", "owner"}
+        or not isinstance(row.get("local_id"), str)
+        or not isinstance(row.get("owner"), str)
+        for row in owned
+    ):
+        raise RuntimeError("canonical Herdr snapshot lacks owned TaskGraph proof")
+    if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
+        raise RuntimeError("canonical Herdr snapshot payload is not an agent list")
+    rows = {str(row.get("name")): row for row in payload}
+    if len(rows) != len(payload) or set(rows) != set(expected):
+        raise RuntimeError(
+            "canonical Herdr snapshot does not match the complete schema-v2 bound fleet"
+        )
+    for name, fields in expected.items():
+        row = rows[name]
+        for key, value in fields.items():
+            if row.get(key) != value:
+                raise RuntimeError(
+                    f"canonical Herdr snapshot agent {name!r} lacks composite "
+                    f"provenance: {key}={row.get(key)!r}, expected {value!r}"
+                )
+        if row.get("tmux_pane_id") is not None:
+            raise RuntimeError(
+                f"canonical Herdr snapshot agent {name!r} carries a tmux identity"
+            )
 
 
 def _persist_agent_snapshot(
@@ -855,6 +999,10 @@ def _persist_agent_snapshot(
     *,
     captured_at: float,
 ) -> None:
+    if _active_herdr_authority(path) is not None:
+        raise RuntimeError(
+            "legacy agent snapshot writer disabled while schema-v2 Herdr authority is active"
+        )
     document = {
         "schema_version": 1,
         "captured_at": captured_at,
@@ -886,7 +1034,8 @@ def _assert_plausible_agent_payload(payload: object, *, source: str) -> None:
 
     This promotes the environment-independent half of the predicate that
     `scripts/allocate-worktree.rs::observe_owner_lease` already relies on: a
-    pane-bound ORC agent carries a `%NN` pane identity. The full ORC array also
+    pane-bound ORC agent carries a `%NN` identity and a Herdr agent carries an
+    exact `wX:pY` identity. The full ORC array also
     contains managed, free, and unreachable entries with no pane, so requiring
     one from EVERY entry would refuse the real producer. Require at least one
     pane-bound entry and retain the complete array. Its OTHER half -- resolving
@@ -912,7 +1061,10 @@ def _assert_plausible_agent_payload(payload: object, *, source: str) -> None:
         # Zero agents is indistinguishable from no observation, so it must read
         # as could-not-measure -- never as a healthy, empty fleet.
         raise RuntimeError(f"agent-snapshot-implausible:{source}:zero-agents")
-    pane_bound = sum(agent.tmux_pane_id is not None for agent in agents)
+    pane_bound = sum(
+        agent.tmux_pane_id is not None or agent.herdr_pane_id is not None
+        for agent in agents
+    )
     if pane_bound == 0:
         raise RuntimeError(
             f"agent-snapshot-implausible:{source}:no-pane-bound-agents"
@@ -926,21 +1078,30 @@ def load_agent_snapshot(
     max_age_secs: int = DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECS,
     now: float | None = None,
     persist: bool = True,
-) -> tuple[tuple[AgentRecord, ...], float]:
+    include_authority: bool = False,
+) -> (
+    tuple[tuple[AgentRecord, ...], float]
+    | tuple[tuple[AgentRecord, ...], float, dict[str, object] | None]
+):
     observed_at = time.time() if now is None else now
-    text = (
-        snapshot
-        if snapshot is not None
-        else os.environ.get("HERMIT_AGENT_SNAPSHOT_JSON")
-    )
+    # Ambient ORC input belongs only to `cache-agents`. Claim authority reads a
+    # named envelope; an environment variable must never outrank that file.
+    text = snapshot
     if text is not None:
         try:
             payload: object = json.loads(text)
         except json.JSONDecodeError as error:
             raise RuntimeError(f"invalid-agent-snapshot:{error.msg}") from error
         agents = _parse_agents(payload)
+        _assert_plausible_agent_payload(payload, source="explicit")
+        if _active_herdr_authority(snapshot_file) is not None:
+            raise RuntimeError(
+                "bare explicit snapshot cannot replace schema-v2 composite authority"
+            )
         if persist:
             _persist_agent_snapshot(snapshot_file, payload, captured_at=observed_at)
+        if include_authority:
+            return agents, observed_at, None
         return agents, observed_at
 
     try:
@@ -965,106 +1126,16 @@ def load_agent_snapshot(
     # AFTER the staleness check, so a stale snapshot still reports STALE and
     # keeps its existing, more specific diagnostic.
     _assert_plausible_agent_payload(agents_payload, source="cache")
-    return _parse_agents(agents_payload), float(captured_at)
-
-
-def _emit_live_names_report(
-    names: Sequence[str], *, reason: str, json_output: bool
-) -> int:
-    """Report claim EXPIRY from a name-only live fleet, and refuse the rest by name.
-
-    ⚠️ ONE OF THREE QUESTIONS. `orphaned` is exactly `owner not in live_by_name`,
-    which a name read settles. `claimed`, `actually_active` and `misrouted` each
-    need an agent's `current_task`, which a name read does not carry -- computing
-    them from names would mark EVERY LIVE agent's claim misrouted. Naming them in
-    `not_determined` beats returning a confident wrong number for them.
-    """
-    owned = [
-        task
-        for task in _taskgraph_in_progress()
-        if task.status.strip().upper() == "IN_PROGRESS"
-        and not task.implemented
-        and task.owner
-    ]
-    orphaned = sorted(task.id for task in owned if task.owner not in set(names))
-    payload = {
-        "schema_version": 1,
-        "state": "degraded",
-        "census_mode": "live-names-only",
-        "reason": reason,
-        "live_agents_examined": len(names),
-        "live_agents": list(names),
-        "orphaned": orphaned,
-        "orphaned_count": len(orphaned),
-        "not_determined": ["claimed", "actually_active", "misrouted"],
-        "summary": (
-            f"{reason}; read the fleet LIVE instead. {len(orphaned)} owned "
-            f"IN_PROGRESS task(s) have an owner absent from a {len(names)}-agent "
-            "live fleet and ARE reclaimable. claimed/actually_active/misrouted are "
-            "NOT DETERMINED in this mode: they need each agent's current_task, "
-            "which a name-only read does not carry."
-        ),
-    }
-    if json_output:
-        print(json.dumps(payload))
-    else:
-        print(payload["summary"])
-        for task_id in orphaned:
-            print(f"  ORPHANED (owner absent from live fleet): {task_id}")
-    # Non-zero: a degraded answer to one of three questions. A caller that treats
-    # 0 as "census complete" must not get it from here.
-    return 1
-
-
-def live_agent_names() -> tuple[str, ...] | None:
-    """Read the fleet LIVE, by name, when the cached snapshot cannot be trusted.
-
-    ⚠️ THIS EXISTS BECAUSE THE AUTHORITY COULD NOT ANSWER ITS OWN QUESTION.
-    `CLAUDE.md` names `active-work` the machine-readable authority for claim
-    expiry: a claim expires when a fresh ORC snapshot proves its owner is gone.
-    Measured 2026-08-26, `ignored/ci-hub/agent-snapshot.json` was 356283s -- 4.12
-    days -- old against a 600s window, so `load_agent_snapshot` raised and NO
-    claim on the board could be expired by the documented mechanism, however dead
-    its owner. The scheduled ORC workflow already carried the full snapshot, but
-    its receiver had been deleted, leaving this fallback as the only answer.
-
-    ⚠️ AND THE ANSWER WAS ALREADY IN THE TREE. `slot_agent_parity.py` hit the same
-    file at 65.8 hours and responded by reading the census live through
-    `residue_sweep.read_live_fleet()`. This calls that same function rather than
-    inventing a second fleet source, so the two cannot disagree.
-    """
-    try:
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location(
-            "_residue_sweep", ROOT / "ci-hub" / "health" / "residue_sweep.py"
+    authority_payload = envelope.get("authority")
+    _assert_herdr_composite_provenance(
+        agents_payload, authority_payload, snapshot_file
+    )
+    parsed = _parse_agents(agents_payload)
+    if include_authority:
+        return parsed, float(captured_at), (
+            authority_payload if isinstance(authority_payload, dict) else None
         )
-        if spec is None or spec.loader is None:
-            return None
-        module = importlib.util.module_from_spec(spec)
-        # ⚠️ REGISTER BEFORE exec_module, AND THIS IS NOT STYLE. `dataclasses`
-        # resolves a class's annotations through `sys.modules[cls.__module__]`,
-        # so exec'ing a module that is not yet registered makes that lookup
-        # return None and every `@dataclass` in it dies with
-        # `'NoneType' object has no attribute '__dict__'`. Cost me a debugging
-        # pass: the failure surfaced as "no live read available", which reads
-        # like the fleet being unreachable rather than a loader bug here.
-        sys.modules.setdefault("_residue_sweep", module)
-        spec.loader.exec_module(module)
-        fleet, _residues = module.read_live_fleet()
-    except Exception as error:
-        # A failed live read is NOT an empty fleet. Returning () here would make
-        # every owned task look orphaned, which is the reclaim-a-live-agent's-work
-        # direction; None keeps the caller on the existing hard refusal.
-        #
-        # ⚠️ SAY WHY. A bare `return None` reported a loader bug in this very
-        # function as "the fleet is unreachable" -- indistinguishable from the
-        # condition it exists to handle, and it hid a real defect for a whole
-        # debugging pass.
-        print(f"live-fleet-read-failed:{type(error).__name__}:{error}", file=sys.stderr)
-        return None
-    names = tuple(sorted(str(name) for name in fleet))
-    return names or None
+    return parsed, float(captured_at)
 
 
 def cache_agent_snapshot(
@@ -1408,6 +1479,216 @@ def cache_disk_free(
     return 0
 
 
+def _nonnegative_number(value: object, name: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"{name} is not numeric")
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(f"{name} is not a nonnegative finite number")
+    return number
+
+
+def _nonnegative_integer(value: object, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{name} is not a nonnegative integer")
+    return value
+
+
+def _validate_disk_free_artifact(document: dict[str, object]) -> None:
+    if document.get("instrument") != DISK_FREE_INSTRUMENT:
+        raise ValueError("unexpected disk-free instrument")
+    filesystem = document.get("filesystem_path")
+    if not isinstance(filesystem, str) or not filesystem or not Path(filesystem).is_absolute():
+        raise ValueError("filesystem_path is not an absolute path")
+    free = _nonnegative_integer(document.get("free_bytes"), "free_bytes")
+    size = _nonnegative_integer(
+        document.get("device_size_bytes"), "device_size_bytes"
+    )
+    if size == 0 or free > size:
+        raise ValueError("disk-free byte counts are outside the device size")
+
+
+def _validate_disk_paths_artifact(document: dict[str, object]) -> None:
+    if document.get("instrument") != DISK_PATH_INSTRUMENT:
+        raise ValueError("unexpected disk-path instrument")
+    if document.get("values_are_additive") is not False:
+        raise ValueError("disk-path values_are_additive must be false")
+    _nonnegative_number(document.get("elapsed_seconds"), "elapsed_seconds")
+    filesystem = document.get("filesystem")
+    if not isinstance(filesystem, dict):
+        raise ValueError("filesystem is not an object")
+    if filesystem.get("instrument") != DISK_FREE_INSTRUMENT:
+        raise ValueError("unexpected filesystem instrument")
+    path = filesystem.get("path")
+    if not isinstance(path, str) or not path or not Path(path).is_absolute():
+        raise ValueError("filesystem.path is not an absolute path")
+    size = _nonnegative_integer(
+        filesystem.get("device_size_bytes"), "filesystem.device_size_bytes"
+    )
+    before = _nonnegative_integer(
+        filesystem.get("free_bytes_before"), "filesystem.free_bytes_before"
+    )
+    after = _nonnegative_integer(
+        filesystem.get("free_bytes_after"), "filesystem.free_bytes_after"
+    )
+    if size == 0 or before > size or after > size:
+        raise ValueError("filesystem free byte counts are outside the device size")
+
+    states = ("complete", "partial", "unavailable")
+    counts = document.get("counts")
+    populations = document.get("populations")
+    if not isinstance(counts, dict) or set(counts) != set(states):
+        raise ValueError("counts does not name the complete disk-path state set")
+    if not isinstance(populations, list) or not populations:
+        raise ValueError("populations is not a nonempty list")
+    typed_counts = {
+        state: _nonnegative_integer(counts.get(state), f"counts.{state}")
+        for state in states
+    }
+    observed = {state: 0 for state in states}
+    names: set[str] = set()
+    for index, population in enumerate(populations):
+        if not isinstance(population, dict):
+            raise ValueError(f"population {index} is not an object")
+        name = population.get("name")
+        if not isinstance(name, str) or not name or name in names:
+            raise ValueError(f"population {index} has an empty or duplicate name")
+        names.add(name)
+        state = population.get("state")
+        if state not in states:
+            raise ValueError(f"population {index} has an unsupported state")
+        observed[str(state)] += 1
+        paths = population.get("paths")
+        diagnostics = population.get("diagnostics")
+        if not isinstance(paths, list) or not all(
+            isinstance(item, str) and item for item in paths
+        ):
+            raise ValueError(f"population {index} paths are invalid")
+        if not isinstance(diagnostics, list) or not all(
+            isinstance(item, str) for item in diagnostics
+        ):
+            raise ValueError(f"population {index} diagnostics are invalid")
+        _nonnegative_number(
+            population.get("elapsed_seconds"),
+            f"population {index} elapsed_seconds",
+        )
+        physical = population.get("physical_bytes")
+        if physical is not None:
+            _nonnegative_integer(physical, f"population {index} physical_bytes")
+        if state == "complete" and physical is None:
+            raise ValueError(f"complete population {index} has no physical_bytes")
+    if typed_counts != observed:
+        raise ValueError("counts does not match the population states")
+
+
+def _artifact_freshness(
+    path: Path, *, kind: str, now: float, max_age_secs: int
+) -> tuple[str, int | None, str]:
+    """Read a producer timestamp from one typed JSON artifact.
+
+    Content time, not mtime, is authoritative: touching or copying an old
+    snapshot must not make its observation current again.
+    """
+    try:
+        raw = path.read_bytes()
+        document = json.loads(raw)
+        if not isinstance(document, dict) or document.get("schema_version") != 1:
+            raise ValueError("expected a schema_version=1 object")
+        if kind == "agent":
+            document = agent_snapshot_contract.parse_snapshot_bytes(raw)
+            try:
+                _assert_plausible_agent_payload(
+                    document["agents"], source="freshness"
+                )
+                _assert_herdr_composite_provenance(
+                    document["agents"], document.get("authority"), path
+                )
+            except RuntimeError as error:
+                raise ValueError(str(error)) from error
+        elif kind == "disk-free":
+            _validate_disk_free_artifact(document)
+        elif kind == "disk-paths":
+            _validate_disk_paths_artifact(document)
+        else:
+            raise ValueError(f"unsupported artifact kind {kind!r}")
+        captured_at = document.get("captured_at")
+        captured = _nonnegative_number(captured_at, "captured_at")
+        age = now - captured
+        if age < 0:
+            return "invalid", None, f"captured_at is {-age:.0f}s in the future"
+        rounded_age = int(age)
+        if age > max_age_secs:
+            return "stale", rounded_age, f"age={rounded_age}s max={max_age_secs}s"
+        return "fresh", rounded_age, f"age={rounded_age}s max={max_age_secs}s"
+    except FileNotFoundError:
+        return "missing", None, "file does not exist"
+    except (
+        OSError,
+        json.JSONDecodeError,
+        ValueError,
+        agent_snapshot_contract.AgentSnapshotSchemaError,
+    ) as error:
+        return "invalid", None, " ".join(str(error).split())
+
+
+def operational_input_freshness_gate(
+    *,
+    state_root: Path = STATE_ROOT,
+    agent_max_age_secs: int = DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECS,
+    disk_max_age_secs: int = DEFAULT_DISK_SNAPSHOT_MAX_AGE_SECS,
+    now: float | None = None,
+) -> int:
+    """Report stale producer inputs without refreshing or deleting them."""
+    observed_at = time.time() if now is None else now
+    inputs = (
+        (
+            "agent_snapshot",
+            "agent",
+            state_root / "ignored" / "ci-hub" / "agent-snapshot.json",
+            agent_max_age_secs,
+        ),
+        (
+            "disk_free_snapshot",
+            "disk-free",
+            state_root / "ignored" / "ops-state" / "disk.json",
+            disk_max_age_secs,
+        ),
+        (
+            "disk_paths_snapshot",
+            "disk-paths",
+            state_root / "ignored" / "ops-state" / "disk-paths.json",
+            disk_max_age_secs,
+        ),
+    )
+    fields: dict[str, object] = {}
+    findings: list[str] = []
+    for name, kind, path, max_age in inputs:
+        state, age, detail = _artifact_freshness(
+            path, kind=kind, now=observed_at, max_age_secs=max_age
+        )
+        fields[f"{name}_state"] = state
+        fields[f"{name}_age_secs"] = "unavailable" if age is None else age
+        if state != "fresh":
+            findings.append(f"{name} {state} ({detail})")
+
+    if findings:
+        state = "actionable"
+        summary = (
+            f"{len(findings)} operational input snapshot(s) need attention: "
+            + "; ".join(findings)
+        )
+        code = 1
+    else:
+        state = "ok"
+        summary = "agent and disk producer snapshots are within their freshness bounds"
+        code = 0
+    # Captured values are tick templates; diagnostics may contain braces from a
+    # path or parser and must not create recursive placeholders.
+    summary = summary.replace("{", "(").replace("}", ")")
+    _emit({"state": state, "summary": summary, **fields})
+    return code
+
+
 def _taskgraph_json_rows(output: str) -> tuple[dict[str, Any], ...]:
     """Read every JSON row and prove it matches TaskGraph's reported count.
 
@@ -1441,7 +1722,9 @@ def _taskgraph_json_rows(output: str) -> tuple[dict[str, Any], ...]:
     return tuple(rows)
 
 
-def _taskgraph_in_progress() -> tuple[TaskRecord, ...]:
+def _taskgraph_in_progress(
+    resolution: taskgraph_db.Resolution | None = None,
+) -> tuple[TaskRecord, ...]:
     # Two populations, deliberately in one query:
     #   * IN_PROGRESS       -- the live queue (activity, staleness, routing)
     #   * implemented, ANY status -- the landing debt, which under the
@@ -1470,6 +1753,16 @@ WHERE status = 'IN_PROGRESS'
       )
 ORDER BY local_id
 """.strip()
+    try:
+        bound_resolution = (
+            taskgraph_db.resolve() if resolution is None else resolution
+        )
+    except taskgraph_db.TaskGraphUnavailable as error:
+        raise RuntimeError(f"taskgraph-query-unavailable:{error}") from error
+    if not bound_resolution.path.is_absolute():
+        raise RuntimeError(
+            "taskgraph-query-unavailable: TaskGraph binding must be an absolute path"
+        )
     last_error = "unknown failure"
     for attempt in range(3):
         try:
@@ -1479,7 +1772,7 @@ ORDER BY local_id
                 capture_output=True,
                 text=True,
                 timeout=60,
-                env=taskgraph_db.child_env(taskgraph_db.resolve()),
+                env=taskgraph_db.child_env(bound_resolution),
             )
         except taskgraph_db.TaskGraphUnavailable as error:
             raise RuntimeError(f"taskgraph-query-unavailable:{error}") from error
@@ -1577,7 +1870,13 @@ def reconcile_active_work(
     live_agents = tuple(
         sorted((agent for agent in agents if agent.live), key=lambda a: a.name)
     )
-    busy_agents = tuple(agent for agent in live_agents if agent.busy)
+    # Coordinators are required census members but intentionally have no
+    # current_task. Only workers participate in off-book/routing semantics.
+    busy_agents = tuple(
+        agent
+        for agent in live_agents
+        if agent.role != "coordinator" and agent.busy
+    )
     live_by_name = {agent.name: agent for agent in live_agents}
     task_by_id = {task.id: task for task in in_progress}
     current_task_candidates = {
@@ -1731,34 +2030,109 @@ def active_work_gate(
     now: float | None = None,
     persist: bool = True,
 ) -> int:
-    # The ORC production workflow supplies the full agent array to health-tick
-    # every thirty minutes. health-tick persists that observation through the
-    # explicit `cache-agents` command after validating its structure. Prefer the
-    # fresh full snapshot because `claimed`, `actually_active`, and `misrouted`
-    # require status and current_task; the live fallback has names only and can
-    # determine `orphaned` but must refuse those other questions.
+    # Claim expiry requires a fresh, complete snapshot carrying identity,
+    # status, and current_task. A name-only process census cannot prove that a
+    # Herdr parent or one of its nested native workers is absent, so a missing or
+    # stale snapshot makes every claim question unknown.
     try:
-        agents, captured_at = load_agent_snapshot(
-            snapshot,
-            snapshot_file=snapshot_file,
-            max_age_secs=max_age_secs,
-            now=now,
-            persist=persist,
+        agents, captured_at, authority = cast(
+            tuple[
+                tuple[AgentRecord, ...],
+                float,
+                dict[str, object] | None,
+            ],
+            load_agent_snapshot(
+                snapshot,
+                snapshot_file=snapshot_file,
+                max_age_secs=max_age_secs,
+                now=now,
+                persist=persist,
+                include_authority=True,
+            ),
         )
-        report = reconcile_active_work(_taskgraph_in_progress(), agents)
-    except RuntimeError as error:
-        # ⚠️ EXPIRY IS ANSWERABLE FROM NAMES ALONE; THE REST IS NOT. `orphaned` is
-        # exactly `owner not in live_by_name`, which a name-only live read
-        # settles. `claimed`, `actually_active` and `misrouted` all need each
-        # agent's `current_task`, which a name read does not carry -- computing
-        # them from names would mark EVERY live agent's claim misrouted. So this
-        # answers the expiry question, labels itself, and refuses the others by
-        # name rather than by returning a wrong number for them.
-        names = live_agent_names()
-        if names is not None:
-            return _emit_live_names_report(
-                names, reason=str(error), json_output=json_output
+        resolution: taskgraph_db.Resolution | None = None
+        herdr_binding = _active_herdr_authority(snapshot_file)
+        if herdr_binding is not None:
+            _workspace, bound_db, binding_sha256, _expected = herdr_binding
+            if (
+                authority is None
+                or authority.get("binding_sha256") != binding_sha256
+                or authority.get("taskgraph_db") != str(bound_db)
+            ):
+                raise RuntimeError(
+                    "agent snapshot authority changed after its binding was read"
+                )
+            # The schema-v2 binding and its fingerprint are the authority.  An
+            # interactive caller must not need to inherit TG_DB_PATH from the
+            # health service, and an unrelated ambient value must not redirect
+            # this read after the snapshot has named and proven an exact DB.
+            resolved = taskgraph_db.resolve(bound_db, env={})
+            if resolved.path.resolve() != bound_db:
+                raise RuntimeError(
+                    "agent snapshot TaskGraph binding differs from resolved database"
+                )
+            resolution = taskgraph_db.Resolution(
+                resolved.path, "herdr-snapshot-binding"
             )
+        elif authority is not None:
+            # Legacy/noncanonical envelopes do not acquire authority merely by
+            # carrying an `authority` object.  They retain the original
+            # fail-closed ambient resolver until a local binding activates the
+            # composite contract.
+            resolution = taskgraph_db.resolve()
+        if resolution is not None and not resolution.path.is_absolute():
+            raise RuntimeError(
+                "active-work TaskGraph binding must be an absolute path"
+            )
+        tasks = _taskgraph_in_progress(resolution)
+        if authority is not None:
+            observed_owned = tuple(
+                sorted(
+                    (task.id, task.owner)
+                    for task in tasks
+                    if task.status.strip().upper() == "IN_PROGRESS" and task.owner
+                )
+            )
+            owned_rows = authority.get("owned_in_progress")
+            if not isinstance(owned_rows, list) or any(
+                not isinstance(row, dict) for row in owned_rows
+            ):
+                raise RuntimeError("agent snapshot owned TaskGraph proof is malformed")
+            recorded_owned = tuple(
+                (str(row["local_id"]), str(row["owner"]))
+                for row in owned_rows
+                if isinstance(row, dict)
+            )
+            if recorded_owned != observed_owned:
+                raise RuntimeError(
+                    "TaskGraph owned IN_PROGRESS population changed after the "
+                    f"agent snapshot proof: recorded={recorded_owned!r}, "
+                    f"current={observed_owned!r}"
+                )
+        if herdr_binding is not None:
+            final_binding = _active_herdr_authority(snapshot_file)
+            if final_binding != herdr_binding:
+                raise RuntimeError(
+                    "Herdr authority binding changed during active-work reconciliation"
+                )
+        represented = {agent.name for agent in agents}
+        unrepresented = sorted(
+            (task.id, task.owner)
+            for task in tasks
+            if task.status.strip().upper() == "IN_PROGRESS"
+            and task.owner
+            and task.owner not in represented
+        )
+        if unrepresented:
+            missing_detail = ", ".join(
+                f"{task} owner={owner}" for task, owner in unrepresented
+            )
+            raise RuntimeError(
+                "fresh agent snapshot no longer covers the current owned "
+                f"TaskGraph population: {missing_detail}"
+            )
+        report = reconcile_active_work(tasks, agents)
+    except RuntimeError as error:
         if json_output:
             print(
                 json.dumps(
@@ -1810,7 +2184,10 @@ def _add_active_work_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--agent-snapshot",
         type=Path,
-        help="read the ORC agent snapshot from this file",
+        help=(
+            "read a persisted schema-checked snapshot envelope, or a deliberate "
+            "bare agent-array fixture, from this file"
+        ),
     )
     parser.add_argument(
         "--max-snapshot-age",
@@ -1830,13 +2207,29 @@ def _run_active_work(
     if parsed.max_snapshot_age < 0:
         parser.error("--max-snapshot-age must be non-negative")
     snapshot = None
+    snapshot_file = DEFAULT_AGENT_SNAPSHOT
     if parsed.agent_snapshot is not None:
         try:
             snapshot = parsed.agent_snapshot.read_text()
         except OSError as error:
             parser.error(f"cannot read --agent-snapshot: {error}")
+        try:
+            explicit_document = json.loads(snapshot)
+        except json.JSONDecodeError:
+            # Preserve the existing structured invalid-JSON result from
+            # load_agent_snapshot rather than converting data errors to argparse.
+            pass
+        else:
+            if isinstance(explicit_document, dict):
+                # Real producers persist an envelope. Point the cache reader at
+                # the named file so captured_at is honored; passing its text as
+                # `snapshot` would incorrectly parse the root mapping as the
+                # bare agent sequence used by deliberate fixtures.
+                snapshot = None
+                snapshot_file = parsed.agent_snapshot
     return active_work_gate(
         snapshot=snapshot,
+        snapshot_file=snapshot_file,
         max_age_secs=parsed.max_snapshot_age,
         json_output=parsed.json,
         gate_output=parsed.gate,
@@ -1861,7 +2254,7 @@ def _run_active_work(
 def active_work_command(args: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="operational_health.py active-work",
-        description="Reconcile TaskGraph state, task ownership, and live ORC agents.",
+        description="Reconcile TaskGraph state, task ownership, and live coordinator agents.",
     )
     _add_active_work_options(parser)
     return _run_active_work(parser.parse_args(args), parser)
@@ -2506,6 +2899,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cache_disk_paths_parser.set_defaults(_command_parser=cache_disk_paths_parser)
 
+    input_freshness = subparsers.add_parser(
+        "input-freshness",
+        help="report stale agent and disk producer snapshots",
+        description="Report stale agent and disk producer snapshots.",
+    )
+    input_freshness.add_argument(
+        "--state-root",
+        type=Path,
+        default=STATE_ROOT,
+        help="state root containing ignored producer snapshots (default: %(default)s)",
+    )
+    input_freshness.add_argument(
+        "--agent-max-age-secs",
+        type=int,
+        default=DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECS,
+        help="maximum agent snapshot age in seconds (default: %(default)s)",
+    )
+    input_freshness.add_argument(
+        "--disk-max-age-secs",
+        type=int,
+        default=DEFAULT_DISK_SNAPSHOT_MAX_AGE_SECS,
+        help="maximum disk snapshot age in seconds (default: %(default)s)",
+    )
+    input_freshness.set_defaults(_command_parser=input_freshness)
+
     pull_requests = subparsers.add_parser(
         "pull-requests",
         help="report pull-request validation and queue health",
@@ -2568,6 +2986,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             state_file=parsed.state_file,
             previous_state_file=parsed.previous_state_file,
             population_timeout=parsed.population_timeout,
+        )
+    if parsed.command == "input-freshness":
+        if parsed.agent_max_age_secs <= 0:
+            parsed._command_parser.error("--agent-max-age-secs must be positive")
+        if parsed.disk_max_age_secs <= 0:
+            parsed._command_parser.error("--disk-max-age-secs must be positive")
+        return operational_input_freshness_gate(
+            state_root=parsed.state_root.resolve(),
+            agent_max_age_secs=parsed.agent_max_age_secs,
+            disk_max_age_secs=parsed.disk_max_age_secs,
         )
     if parsed.command == "pull-requests":
         return pull_request_gate(census_cache_dir=parsed.census_cache_dir)

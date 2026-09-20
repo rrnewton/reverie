@@ -119,7 +119,7 @@ reminders:
   - name: slot_agent_parity
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/health/slot_agent_parity.py --gate --root "$DEV_HERMIT_PARENT"
+      cmd: python3 ci-hub/health/slot_agent_parity.py --gate --root "$DEV_HERMIT_PARENT" --agent-source snapshot
       when: failure
       capture: true
     emit:
@@ -1194,6 +1194,62 @@ reminders:
       fields:
         component: gate-runner-presence
       title: "gate runner is not confirmably present on all four surfaces: {summary}"
+
+  # HOST RESOURCE PRESSURE, DETECTION ONLY. This is the existing read-only
+  # heartbeat audit, exposed as captured key=value fields rather than adding a
+  # second timer. WARN and CRIT both fail the gate; neither path kills, unmounts,
+  # cleans, or throttles anything.
+  - name: host_resource_audit
+    cadence_secs: 1800
+    gate:
+      timeout_secs: 30
+      cmd: scripts/resource_audit.sh --tick-gate
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: host-resource-audit
+      title: "host memory, swap, process, zombie, or disk pressure needs attention: {summary}"
+
+  # PRODUCER FRESHNESS, DETECTION ONLY. The disk writers were ORC workflows;
+  # during coordinator transition their files can remain well-formed while the
+  # observations age indefinitely. Content timestamps, never mtimes, are read.
+  # The 45-minute disk bound is three missed 15-minute producer periods; the
+  # agent snapshot retains its existing ten-minute authority window.
+  - name: operational_input_freshness
+    cadence_secs: 1800
+    gate:
+      timeout_secs: 10
+      cmd: python3 ci-hub/health/operational_health.py input-freshness --state-root "$DEV_HERMIT_PARENT"
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: operational-input-freshness
+      title: "agent or disk producer snapshots are stale, missing, or invalid: {summary}"
+
+  # LEAKED TICK PROCESSES, DETECTION ONLY. The complete scheduled path has a
+  # 619s wall bound and a 650s systemd backstop. A 900s threshold leaves margin,
+  # collapses the Python launcher/interpreter pair into one invocation, and
+  # excludes the exact ancestor chain running this probe. There is no signal or
+  # process-removal option in the probe.
+  - name: stale_tick_processes
+    cadence_secs: 1800
+    gate:
+      timeout_secs: 10
+      cmd: python3 ci-hub/health/stale_tick_processes.py --gate --root "$DEV_HERMIT_PARENT" --max-age-secs 900
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: stale-tick-processes
+      title: "health-tick invocations outlived their complete-run bound: {summary}"
 
   # ORPHAN REAPER, DETECTION ONLY. The reaper's --apply path requires explicit
   # PIDs from a prior report and an acknowledgement, so this scheduled path

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -848,6 +851,30 @@ class OperationalHealthTest(unittest.TestCase):
                     now=1061,
                 )
 
+    def test_cached_claim_authority_ignores_ambient_bare_orc_array(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agents.json"
+            operational_health._persist_agent_snapshot(
+                path,
+                [
+                    {
+                        "name": "worker",
+                        "status": "busy",
+                        "current_task": "task",
+                        "tmux_pane_id": "%7",
+                    }
+                ],
+                captured_at=1000,
+            )
+            with mock.patch.dict(
+                os.environ, {"HERMIT_AGENT_SNAPSHOT_JSON": "[]"}, clear=False
+            ):
+                agents, captured_at = operational_health.load_agent_snapshot(
+                    None, snapshot_file=path, now=1001
+                )
+        self.assertEqual([agent.name for agent in agents], ["worker"])
+        self.assertEqual(captured_at, 1000)
+
     def test_cache_agent_snapshot_validates_before_replacing_the_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "agents.json"
@@ -935,6 +962,270 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual(envelope["captured_at"], 1000)
         self.assertEqual(envelope["agents"], json.loads(snapshot))
         self.assertEqual(envelope["agents"][1]["status"], "spawning")
+
+    def test_schema_v2_herdr_authority_disables_legacy_canonical_writer(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "ignored/ci-hub/agent-snapshot.json"
+            path.parent.mkdir(parents=True)
+            path.write_text("last composite observation\n")
+            binding = root / ".tick-hub/herdr-agent-bindings.json"
+            binding.parent.mkdir()
+            binding.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "workspace": "chat-bridge",
+                        "taskgraph_db": str(root / "taskgraph.db"),
+                        "agents": [
+                            {
+                                "snapshot_name": "worker",
+                                "herdr_name": "worker-pane",
+                                "pane_id": "wK:p2",
+                                "harness": "codex",
+                                "role": "worker",
+                                "current_task": "task",
+                            }
+                        ],
+                    }
+                )
+            )
+            result, output = self.capture(
+                operational_health.cache_agent_snapshot,
+                '[{"name":"worker","status":"busy","current_task":"task",'
+                '"tmux_pane_id":"%7"}]',
+                snapshot_file=path,
+                now=1000,
+            )
+            self.assertEqual(result, 1)
+            self.assertIn("legacy agent snapshot writer disabled", output)
+            self.assertEqual(path.read_text(), "last composite observation\n")
+
+    def test_schema_v2_canonical_reader_requires_composite_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "ignored/ci-hub/agent-snapshot.json"
+            path.parent.mkdir(parents=True)
+            binding = root / ".tick-hub/herdr-agent-bindings.json"
+            binding.parent.mkdir()
+            binding.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "workspace": "chat-bridge",
+                        "taskgraph_db": str(root / "taskgraph.db"),
+                        "agents": [
+                            {
+                                "snapshot_name": "worker",
+                                "herdr_name": "worker-pane",
+                                "pane_id": "wK:p2",
+                                "harness": "codex",
+                                "role": "worker",
+                                "current_task": "task",
+                            }
+                        ],
+                    }
+                )
+            )
+            binding_sha256 = hashlib.sha256(binding.read_bytes()).hexdigest()
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "captured_at": 1000,
+                        "agents": [
+                            {
+                                "name": "worker",
+                                "status": "busy",
+                                "current_task": "task",
+                                "tmux_pane_id": "%7",
+                            }
+                        ],
+                    }
+                )
+            )
+            with self.assertRaisesRegex(RuntimeError, "composite provenance"):
+                operational_health.load_agent_snapshot(
+                    None, snapshot_file=path, now=1000
+                )
+
+    def test_binding_generation_change_invalidates_composite_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            taskgraph = root / "tasks.db"
+            path = root / "ignored/ci-hub/agent-snapshot.json"
+            path.parent.mkdir(parents=True)
+            binding = root / ".tick-hub/herdr-agent-bindings.json"
+            binding.parent.mkdir()
+            binding_document = {
+                "schema_version": 2,
+                "workspace": "chat-bridge",
+                "taskgraph_db": str(taskgraph),
+                "agents": [
+                    {
+                        "snapshot_name": "worker",
+                        "herdr_name": "worker-pane",
+                        "pane_id": "wK:p2",
+                        "harness": "codex",
+                        "role": "worker",
+                        "current_task": "task",
+                        "agentctl_token": "generation-one",
+                    }
+                ],
+            }
+            binding.write_text(json.dumps(binding_document))
+            fingerprint = hashlib.sha256(binding.read_bytes()).hexdigest()
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "captured_at": 1000,
+                        "agents": [
+                            {
+                                "name": "worker",
+                                "status": "busy",
+                                "current_task": "task",
+                                "herdr_pane_id": "wK:p2",
+                                "herdr_name": "worker-pane",
+                                "herdr_workspace": "chat-bridge",
+                                "harness": "codex",
+                                "role": "worker",
+                                "source": "herdr-agentctl-snapshot-v2",
+                            }
+                        ],
+                        "authority": {
+                            "source": "herdr-agentctl-snapshot-v2",
+                            "taskgraph_db": str(taskgraph),
+                            "binding_sha256": fingerprint,
+                            "owned_in_progress": [
+                                {"local_id": "task", "owner": "worker"}
+                            ],
+                        },
+                    }
+                )
+            )
+            binding_document["agents"][0]["agentctl_token"] = "generation-two"
+            binding.write_text(json.dumps(binding_document))
+            result, output = self.capture(
+                operational_health.active_work_gate,
+                snapshot_file=path,
+                json_output=True,
+                now=1001,
+            )
+        payload = json.loads(output)
+        self.assertEqual(result, 2)
+        self.assertEqual(payload["state"], "unknown")
+        self.assertNotIn("orphaned", payload)
+        self.assertIn("fingerprint changed", payload["error"])
+
+    def test_binding_change_during_taskgraph_read_makes_claims_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            taskgraph = root / "tasks.db"
+            path = root / "ignored/ci-hub/agent-snapshot.json"
+            path.parent.mkdir(parents=True)
+            binding = root / ".tick-hub/herdr-agent-bindings.json"
+            binding.parent.mkdir()
+            binding_document = {
+                "schema_version": 2,
+                "workspace": "chat-bridge",
+                "taskgraph_db": str(taskgraph),
+                "agents": [
+                    {
+                        "snapshot_name": "worker",
+                        "herdr_name": "worker-pane",
+                        "pane_id": "wK:p2",
+                        "harness": "codex",
+                        "role": "worker",
+                        "current_task": "task",
+                        "agentctl_token": "generation-one",
+                    }
+                ],
+            }
+            binding.write_text(json.dumps(binding_document))
+            fingerprint = hashlib.sha256(binding.read_bytes()).hexdigest()
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "captured_at": 1000,
+                        "agents": [
+                            {
+                                "name": "worker",
+                                "status": "busy",
+                                "current_task": "task",
+                                "herdr_pane_id": "wK:p2",
+                                "herdr_name": "worker-pane",
+                                "herdr_workspace": "chat-bridge",
+                                "harness": "codex",
+                                "role": "worker",
+                                "source": "herdr-agentctl-snapshot-v2",
+                            }
+                        ],
+                        "authority": {
+                            "source": "herdr-agentctl-snapshot-v2",
+                            "taskgraph_db": str(taskgraph),
+                            "binding_sha256": fingerprint,
+                            "owned_in_progress": [
+                                {"local_id": "task", "owner": "worker"}
+                            ],
+                        },
+                    }
+                )
+            )
+
+            def mutate_binding(
+                _resolution: operational_health.taskgraph_db.Resolution,
+            ) -> tuple[operational_health.TaskRecord, ...]:
+                binding_document["agents"][0]["agentctl_token"] = "generation-two"
+                binding.write_text(json.dumps(binding_document))
+                return (
+                    operational_health.TaskRecord("task", "Task", "worker", ()),
+                )
+
+            resolution = operational_health.taskgraph_db.Resolution(
+                taskgraph, "test"
+            )
+            with mock.patch.object(
+                operational_health.taskgraph_db, "resolve", return_value=resolution
+            ), mock.patch.object(
+                operational_health,
+                "_taskgraph_in_progress",
+                side_effect=mutate_binding,
+            ):
+                result, output = self.capture(
+                    operational_health.active_work_gate,
+                    snapshot_file=path,
+                    json_output=True,
+                    now=1001,
+                )
+        payload = json.loads(output)
+        self.assertEqual(result, 2)
+        self.assertEqual(payload["state"], "unknown")
+        self.assertNotIn("claimed", payload)
+        self.assertIn("changed during active-work", payload["error"])
+
+    def test_existing_unsupported_binding_never_reenables_legacy_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "ignored/ci-hub/agent-snapshot.json"
+            path.parent.mkdir(parents=True)
+            path.write_text("last composite observation\n")
+            binding = root / ".tick-hub/herdr-agent-bindings.json"
+            binding.parent.mkdir()
+            binding.write_text('{"schema_version":1}')
+            result, output = self.capture(
+                operational_health.cache_agent_snapshot,
+                '[{"name":"worker","status":"busy","tmux_pane_id":"%7"}]',
+                snapshot_file=path,
+                now=1000,
+            )
+            retained = path.read_text()
+        self.assertEqual(result, 1)
+        self.assertIn("unsupported Herdr authority binding", output)
+        self.assertEqual(retained, "last composite observation\n")
 
     def test_cache_agents_command_dispatches_to_the_snapshot_writer(self) -> None:
         with mock.patch.object(
@@ -1256,6 +1547,173 @@ class OperationalHealthTest(unittest.TestCase):
             population_timeout=operational_health.DEFAULT_DISK_PATH_TIMEOUT_SECS,
         )
 
+    def test_operational_input_freshness_uses_content_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            documents = {
+                root / "ignored/ci-hub/agent-snapshot.json": {
+                    "schema_version": 1,
+                    "captured_at": 900,
+                    "agents": [{
+                        "name": "worker",
+                        "status": "working",
+                        "tmux_pane_id": "%1",
+                    }],
+                },
+                root / "ignored/ops-state/disk.json": {
+                    "schema_version": 1,
+                    "captured_at": 900,
+                    "instrument": operational_health.DISK_FREE_INSTRUMENT,
+                    "filesystem_path": "/data",
+                    "free_bytes": 50,
+                    "device_size_bytes": 100,
+                },
+                root / "ignored/ops-state/disk-paths.json": {
+                    "schema_version": 1,
+                    "captured_at": 900,
+                    "elapsed_seconds": 1,
+                    "instrument": operational_health.DISK_PATH_INSTRUMENT,
+                    "values_are_additive": False,
+                    "filesystem": {
+                        "path": "/data",
+                        "instrument": operational_health.DISK_FREE_INSTRUMENT,
+                        "device_size_bytes": 100,
+                        "free_bytes_before": 50,
+                        "free_bytes_after": 49,
+                    },
+                    "counts": {"complete": 1, "partial": 0, "unavailable": 0},
+                    "populations": [{
+                        "name": "slots",
+                        "paths": ["/data/slots"],
+                        "state": "complete",
+                        "physical_bytes": 10,
+                        "elapsed_seconds": 1,
+                        "diagnostics": [],
+                    }],
+                },
+            }
+            for path, document in documents.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(document) + "\n")
+                os.utime(path, (1, 1))
+            result, output = self.capture(
+                operational_health.operational_input_freshness_gate,
+                state_root=root,
+                now=1000,
+            )
+        self.assertEqual(result, 0)
+        self.assertIn("state=ok", output)
+        self.assertIn("agent_snapshot_age_secs=100", output)
+        self.assertIn("disk_paths_snapshot_state=fresh", output)
+
+    def test_input_freshness_rejects_fresh_legacy_under_herdr_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "ignored/ci-hub/agent-snapshot.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "captured_at": 1000,
+                        "agents": [
+                            {
+                                "name": "legacy-worker",
+                                "status": "busy",
+                                "tmux_pane_id": "%7",
+                            }
+                        ],
+                    }
+                )
+            )
+            binding = root / ".tick-hub/herdr-agent-bindings.json"
+            binding.parent.mkdir()
+            binding.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "workspace": "chat-bridge",
+                        "taskgraph_db": str(root / "tasks.db"),
+                        "agents": [
+                            {
+                                "snapshot_name": "worker",
+                                "herdr_name": "worker-pane",
+                                "pane_id": "wK:p2",
+                                "harness": "codex",
+                                "role": "worker",
+                                "current_task": "task",
+                            }
+                        ],
+                    }
+                )
+            )
+            state, age, detail = operational_health._artifact_freshness(
+                path, kind="agent", now=1001, max_age_secs=600
+            )
+        self.assertEqual(state, "invalid")
+        self.assertIsNone(age)
+        self.assertIn("composite provenance", detail)
+
+    def test_operational_input_freshness_names_every_unusable_input(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = root / "ignored/ci-hub/agent-snapshot.json"
+            disk_paths = root / "ignored/ops-state/disk-paths.json"
+            agent.parent.mkdir(parents=True)
+            disk_paths.parent.mkdir(parents=True)
+            agent.write_text(json.dumps({
+                "schema_version": 1,
+                "captured_at": 0,
+                "agents": [{
+                    "name": "worker",
+                    "status": "working",
+                    "tmux_pane_id": "%1",
+                }],
+            }))
+            disk_paths.write_text("not json\n")
+            result, output = self.capture(
+                operational_health.operational_input_freshness_gate,
+                state_root=root,
+                now=3000,
+            )
+        self.assertEqual(result, 1)
+        self.assertIn("state=actionable", output)
+        self.assertIn("agent_snapshot_state=stale", output)
+        self.assertIn("disk_free_snapshot_state=missing", output)
+        self.assertIn("disk_paths_snapshot_state=invalid", output)
+        self.assertIn("3 operational input snapshot(s) need attention", output)
+
+    def test_operational_input_freshness_rejects_fresh_but_empty_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            agent = root / "ignored/ci-hub/agent-snapshot.json"
+            agent.parent.mkdir(parents=True)
+            agent.write_text(json.dumps({
+                "schema_version": 1,
+                "captured_at": 1000,
+                "agents": [],
+            }))
+            result, output = self.capture(
+                operational_health.operational_input_freshness_gate,
+                state_root=root,
+                now=1001,
+            )
+        self.assertEqual(result, 1)
+        self.assertIn("agent_snapshot_state=invalid", output)
+        self.assertNotIn("agent_snapshot_state=fresh", output)
+
+    def test_input_freshness_command_dispatches_with_existing_bounds(self) -> None:
+        with mock.patch.object(
+            operational_health, "operational_input_freshness_gate", return_value=7
+        ) as gate:
+            result = operational_health.main(["input-freshness"])
+        self.assertEqual(result, 7)
+        gate.assert_called_once_with(
+            state_root=operational_health.STATE_ROOT,
+            agent_max_age_secs=operational_health.DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECS,
+            disk_max_age_secs=operational_health.DEFAULT_DISK_SNAPSHOT_MAX_AGE_SECS,
+        )
+
     def test_taskgraph_query_parses_exact_tag_array(self) -> None:
         output = """task_json
 ---------------
@@ -1279,7 +1737,11 @@ class OperationalHealthTest(unittest.TestCase):
         # coverage in ci-hub/health/tests/test_orphaned_task_detector_fails_closed.py,
         # where an unresolvable graph must be COULD NOT MEASURE and never a clean zero.
         with mock.patch.object(
-            operational_health.taskgraph_db, "resolve", return_value=None
+            operational_health.taskgraph_db,
+            "resolve",
+            return_value=operational_health.taskgraph_db.Resolution(
+                Path("/tmp/test-taskgraph.db"), "test"
+            ),
         ), mock.patch.object(
             operational_health.taskgraph_db, "child_env", return_value={}
         ), mock.patch.object(
@@ -1298,7 +1760,11 @@ class OperationalHealthTest(unittest.TestCase):
             stderr="",
         )
         with mock.patch.object(
-            operational_health.taskgraph_db, "resolve", return_value=None
+            operational_health.taskgraph_db,
+            "resolve",
+            return_value=operational_health.taskgraph_db.Resolution(
+                Path("/tmp/test-taskgraph.db"), "test"
+            ),
         ), mock.patch.object(
             operational_health.taskgraph_db, "child_env", return_value={}
         ), mock.patch.object(
@@ -1319,7 +1785,11 @@ class OperationalHealthTest(unittest.TestCase):
             stderr="",
         )
         with mock.patch.object(
-            operational_health.taskgraph_db, "resolve", return_value=None
+            operational_health.taskgraph_db,
+            "resolve",
+            return_value=operational_health.taskgraph_db.Resolution(
+                Path("/tmp/test-taskgraph.db"), "test"
+            ),
         ), mock.patch.object(
             operational_health.taskgraph_db, "child_env", return_value={}
         ), mock.patch.object(
@@ -1340,7 +1810,11 @@ class OperationalHealthTest(unittest.TestCase):
             stderr="",
         )
         with mock.patch.object(
-            operational_health.taskgraph_db, "resolve", return_value=None
+            operational_health.taskgraph_db,
+            "resolve",
+            return_value=operational_health.taskgraph_db.Resolution(
+                Path("/tmp/test-taskgraph.db"), "test"
+            ),
         ), mock.patch.object(
             operational_health.taskgraph_db, "child_env", return_value={}
         ), mock.patch.object(
@@ -1357,10 +1831,6 @@ class OperationalHealthTest(unittest.TestCase):
         tasks = (operational_health.TaskRecord("held", "Held", "worker", ()),)
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(
             operational_health, "_taskgraph_in_progress", return_value=tasks
-        ), mock.patch.object(
-            operational_health,
-            "live_agent_names",
-            side_effect=AssertionError("a fresh full snapshot must not go name-only"),
         ):
             path = Path(directory) / "agents.json"
             operational_health._persist_agent_snapshot(
@@ -1396,14 +1866,13 @@ class OperationalHealthTest(unittest.TestCase):
         tasks = (operational_health.TaskRecord("active", "Active", "worker", ()),)
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(
             operational_health, "_taskgraph_in_progress", return_value=tasks
-        ), mock.patch.object(
-            operational_health,
-            "live_agent_names",
-            side_effect=AssertionError("explicit snapshot must not go live"),
         ):
             result, output = self.capture(
                 operational_health.active_work_gate,
-                snapshot='[{"name":"worker","status":"busy","current_task":"active"}]',
+                snapshot=(
+                    '[{"name":"worker","status":"busy","current_task":"active",'
+                    '"tmux_pane_id":"%7"}]'
+                ),
                 snapshot_file=Path(directory) / "agents.json",
                 json_output=True,
                 now=1000,
@@ -1418,86 +1887,234 @@ class OperationalHealthTest(unittest.TestCase):
         # what distinguishes this path from the degraded one, which never returns 0.
         self.assertEqual(result, 0)
 
-    def test_a_stale_snapshot_still_expires_claims_from_a_live_name_read(self) -> None:
-        """⚠️ THE AUTHORITY MUST NOT GO DARK WHEN ITS CACHE ROTS.
+    def test_active_work_cli_accepts_the_persisted_snapshot_envelope(self) -> None:
+        """The explicit file flag must accept the shape real producers write."""
+        tasks = (operational_health.TaskRecord("active", "Active", "worker", ()),)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            operational_health, "_taskgraph_in_progress", return_value=tasks
+        ):
+            path = Path(directory) / "agents.json"
+            operational_health._persist_agent_snapshot(
+                path,
+                [
+                    {
+                        "name": "worker",
+                        "status": "busy",
+                        "current_task": "active",
+                        "herdr_pane_id": "wK:p3",
+                    }
+                ],
+                captured_at=time.time(),
+            )
+            result, output = self.capture(
+                operational_health.active_work_command,
+                ["--agent-snapshot", str(path), "--json"],
+            )
+        payload = json.loads(output)
+        self.assertEqual(result, 0)
+        self.assertEqual([item["id"] for item in payload["claimed"]], ["active"])
+        self.assertNotIn("census_mode", payload)
 
-        Measured 2026-08-26: `ignored/ci-hub/agent-snapshot.json` was 356283s --
-        4.12 days -- old against a 600s window, so `load_agent_snapshot` raised and
-        `active-work` returned `state=unknown` for EVERY query. CLAUDE.md names this
-        the machine-readable authority for claim expiry, so no claim on the board
-        could be expired by the documented mechanism however dead its owner.
-        """
+    def test_a_stale_snapshot_expires_nothing_and_reports_unknown(self) -> None:
+        """A name-only census cannot prove Herdr or nested-worker absence."""
         tasks = (
             operational_health.TaskRecord("held-by-dead", "Held", "ghost", ()),
             operational_health.TaskRecord("held-by-live", "Held", "worker", ()),
         )
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
-            operational_health, "_taskgraph_in_progress", return_value=tasks
-        ), mock.patch.object(
-            operational_health, "live_agent_names", return_value=("worker",)
-        ):
-            result, output = self.capture(
-                operational_health.active_work_gate,
-                snapshot_file=Path(directory) / "absent.json",
-                json_output=True,
-                now=1000,
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "stale.json"
+            operational_health._persist_agent_snapshot(
+                snapshot,
+                [
+                    {
+                        "name": "worker",
+                        "status": "busy",
+                        "current_task": "held-by-live",
+                        "herdr_pane_id": "wK:p3",
+                    }
+                ],
+                captured_at=1,
             )
-        payload = json.loads(output)
-        self.assertEqual(payload["state"], "degraded")
-        self.assertEqual(payload["census_mode"], "live-names-only")
-        # The dead owner's claim is reclaimable; the live owner's is NOT.
-        self.assertEqual(payload["orphaned"], ["held-by-dead"])
-        self.assertEqual(payload["live_agents_examined"], 1)
-        # ⚠️ AND IT MUST REFUSE THE QUESTIONS IT CANNOT ANSWER BY NAME. A name-only
-        # read carries no `current_task`, so computing `claimed`/`misrouted` from it
-        # would mark every LIVE agent's claim misrouted. Naming them beats guessing.
-        self.assertEqual(
-            payload["not_determined"], ["claimed", "actually_active", "misrouted"]
-        )
-        # Non-zero: a degraded answer to one of three questions is not a clean census.
-        self.assertEqual(result, 1)
-
-    def test_live_agent_names_returns_none_not_empty_when_the_read_fails(self) -> None:
-        """⚠️ PINS THE HELPER, NOT ONLY ITS CALLER, AND THAT DISTINCTION HAS TEETH.
-
-        The sibling control mocks `live_agent_names`, so it pins what the CALLER
-        does with `None` and says nothing about what the helper RETURNS. Mutating
-        the helper's failure path from `None` to `()` left that control green --
-        caught by running the mutation rather than reasoning about it. An empty
-        tuple is the dangerous value: it makes every owned task's owner "absent
-        from the live fleet", authorising reclamation of a LIVE agent's work.
-        """
-        with mock.patch(
-            "importlib.util.spec_from_file_location", side_effect=OSError("boom")
-        ):
-            self.assertIsNone(operational_health.live_agent_names())
-
-    def test_a_failed_live_read_keeps_the_hard_refusal_and_expires_nothing(
-        self,
-    ) -> None:
-        """⚠️ THE CONTROL, AND IT GUARDS THE DANGEROUS DIRECTION.
-
-        An empty fleet would make every owned task look orphaned -- i.e. authorise
-        reclaiming a LIVE agent's work. `live_agent_names` returns None rather than
-        `()` when the read fails, and this pins that the caller then keeps the
-        original refusal instead of inventing a zero-agent census.
-        """
-        tasks = (operational_health.TaskRecord("held", "Held", "worker", ()),)
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
-            operational_health, "_taskgraph_in_progress", return_value=tasks
-        ), mock.patch.object(
-            operational_health, "live_agent_names", return_value=None
-        ):
             result, output = self.capture(
                 operational_health.active_work_gate,
-                snapshot_file=Path(directory) / "absent.json",
+                snapshot_file=snapshot,
                 json_output=True,
                 now=1000,
             )
         payload = json.loads(output)
         self.assertEqual(payload["state"], "unknown")
         self.assertNotIn("orphaned", payload)
+        self.assertIn("agent-snapshot-stale", payload["error"])
         self.assertEqual(result, 2)
+
+    def test_taskgraph_query_refuses_relative_resolution_before_spawn(self) -> None:
+        relative = operational_health.taskgraph_db.Resolution(
+            Path("relative-taskgraph.db"), "test"
+        )
+        with mock.patch.object(operational_health.subprocess, "run") as run:
+            with self.assertRaisesRegex(RuntimeError, "absolute path"):
+                operational_health._taskgraph_in_progress(relative)
+        run.assert_not_called()
+
+    def test_new_taskgraph_owner_after_snapshot_makes_claims_unknown(self) -> None:
+        tasks = (
+            operational_health.TaskRecord("known", "Known", "worker", ()),
+            operational_health.TaskRecord("new", "New", "nested-worker", ()),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            taskgraph = root / "taskgraph.db"
+            path = root / "ignored/ci-hub/agent-snapshot.json"
+            path.parent.mkdir(parents=True)
+            binding = root / ".tick-hub/herdr-agent-bindings.json"
+            binding.parent.mkdir()
+            binding.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "workspace": "chat-bridge",
+                        "taskgraph_db": str(taskgraph),
+                        "agents": [
+                            {
+                                "snapshot_name": "worker",
+                                "herdr_name": "worker-pane",
+                                "pane_id": "wK:p2",
+                                "harness": "codex",
+                                "role": "worker",
+                                "current_task": "known",
+                            }
+                        ],
+                    }
+                )
+            )
+            binding_sha256 = hashlib.sha256(binding.read_bytes()).hexdigest()
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "captured_at": 1000,
+                        "agents": [
+                            {
+                                "name": "worker",
+                                "status": "busy",
+                                "current_task": "known",
+                                "herdr_pane_id": "wK:p2",
+                                "herdr_name": "worker-pane",
+                                "herdr_workspace": "chat-bridge",
+                                "harness": "codex",
+                                "role": "worker",
+                                "source": "herdr-agentctl-snapshot-v2",
+                            }
+                        ],
+                        "authority": {
+                            "source": "herdr-agentctl-snapshot-v2",
+                            "taskgraph_db": str(taskgraph),
+                            "binding_sha256": binding_sha256,
+                            "owned_in_progress": [
+                                {"local_id": "known", "owner": "worker"}
+                            ],
+                        },
+                    }
+                )
+            )
+            resolution = operational_health.taskgraph_db.Resolution(
+                taskgraph, "test"
+            )
+            environment = dict(os.environ)
+            environment.pop("TG_DB_PATH", None)
+            with mock.patch.dict(os.environ, environment, clear=True), mock.patch.object(
+                operational_health, "_taskgraph_in_progress", return_value=tasks
+            ), mock.patch.object(
+                operational_health.taskgraph_db, "resolve", return_value=resolution
+            ) as resolver:
+                result, output = self.capture(
+                    operational_health.active_work_gate,
+                    snapshot_file=path,
+                    json_output=True,
+                    now=1001,
+                )
+            resolver.assert_called_once_with(taskgraph, env={})
+        payload = json.loads(output)
+        self.assertEqual(result, 2)
+        self.assertEqual(payload["state"], "unknown")
+        self.assertNotIn("orphaned", payload)
+        self.assertIn("population changed", payload["error"])
+        self.assertIn("nested-worker", payload["error"])
+
+    def test_composite_snapshot_taskgraph_path_mismatch_is_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bound_db = root / "bound.db"
+            path = root / "ignored/ci-hub/agent-snapshot.json"
+            path.parent.mkdir(parents=True)
+            binding = root / ".tick-hub/herdr-agent-bindings.json"
+            binding.parent.mkdir()
+            binding.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "workspace": "chat-bridge",
+                        "taskgraph_db": str(bound_db),
+                        "agents": [
+                            {
+                                "snapshot_name": "worker",
+                                "herdr_name": "worker-pane",
+                                "pane_id": "wK:p2",
+                                "harness": "codex",
+                                "role": "worker",
+                                "current_task": "known",
+                            }
+                        ],
+                    }
+                )
+            )
+            binding_sha256 = hashlib.sha256(binding.read_bytes()).hexdigest()
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "captured_at": 1000,
+                        "agents": [
+                            {
+                                "name": "worker",
+                                "status": "busy",
+                                "current_task": "known",
+                                "herdr_pane_id": "wK:p2",
+                                "herdr_name": "worker-pane",
+                                "herdr_workspace": "chat-bridge",
+                                "harness": "codex",
+                                "role": "worker",
+                                "source": "herdr-agentctl-snapshot-v2",
+                            }
+                        ],
+                        "authority": {
+                            "source": "herdr-agentctl-snapshot-v2",
+                            "taskgraph_db": str(bound_db),
+                            "binding_sha256": binding_sha256,
+                            "owned_in_progress": [
+                                {"local_id": "known", "owner": "worker"}
+                            ],
+                        },
+                    }
+                )
+            )
+            resolution = operational_health.taskgraph_db.Resolution(
+                root / "other.db", "test"
+            )
+            with mock.patch.object(
+                operational_health.taskgraph_db, "resolve", return_value=resolution
+            ):
+                result, output = self.capture(
+                    operational_health.active_work_gate,
+                    snapshot_file=path,
+                    json_output=True,
+                    now=1001,
+                )
+        payload = json.loads(output)
+        self.assertEqual(result, 2)
+        self.assertEqual(payload["state"], "unknown")
+        self.assertNotIn("orphaned", payload)
+        self.assertIn("binding differs", payload["error"])
 
     def test_active_work_gate_emits_counts_and_items(self) -> None:
         tasks = (
@@ -1512,7 +2129,8 @@ class OperationalHealthTest(unittest.TestCase):
             result, output = self.capture(
                 operational_health.active_work_gate,
                 snapshot=(
-                    '[{"name":"worker","status":"busy",' '"current_task":"active"}]'
+                    '[{"name":"worker","status":"busy","current_task":"active",'
+                    '"tmux_pane_id":"%7"}]'
                 ),
                 snapshot_file=Path(directory) / "agents.json",
                 gate_output=True,
