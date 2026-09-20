@@ -88,6 +88,25 @@ def test_systemd_replaced_orc_producers_are_retirement_only() -> None:
         assert forbidden not in plugin
 
 
+def test_active_runbooks_do_not_restore_the_retired_orc_container_bridge() -> None:
+    config = read("ci-hub/health/tick-hub.yaml")
+    containers = read("ci-hub/containers/README.md")
+    bridge = read("ci-hub/health/agent-container-reconcile-bridge.rs")
+
+    assert "operationalHealthHeartbeat re-reads this file" not in config
+    assert "hermit-health-tick.timer re-reads this file" in config
+    assert "## Retired ORC bridge" in containers
+    assert (
+        "Do not launch `ci-hub/health/agent-container-reconcile-bridge.rs`"
+        in containers
+    )
+    assert (
+        "systemd-run --user --unit=dev-hermit-agent-container-reconcile-bridge"
+        not in containers
+    )
+    assert "This is retired under Herdr and must not be launched" in bridge
+
+
 def test_orc_retirement_is_observed_and_fails_closed() -> None:
     plugin = read(".orc/plugins/hermit-dev/index.ts")
     start = plugin.index("async function reconcileWorkflowRetirement")

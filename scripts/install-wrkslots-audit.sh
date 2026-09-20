@@ -23,12 +23,12 @@ if [[ $# -ne 0 ]]; then
 fi
 
 # ⚠️ A SINGLE FIXED PATH UNDER $HOME WAS THE FAILURE, AND RERUNNING THIS COULD
-# NOT REPAIR IT. Both installers read $HOME/bin/gh. Measured 2026-09-05 on
+# NOT REPAIR IT. The installers read $HOME/bin/gh. Measured 2026-09-05 on
 # devbig014: that path is a symlink into /home/newton/opt, /home/newton/opt DOES
 # NOT EXIST, so the link dangles, ~/.local/libexec/dev-hermit/gh is absent, and
 # hermit-health-tick.sh refuses every networked git call -- the tick reported no
 # signal for GitHub rather than a verdict. Recreating the link, or rerunning
-# either installer, reproduces exactly that state.
+# any installer, reproduces exactly that state.
 #
 # So resolve over an ordered list and take the first entry that opens as an
 # executable regular file. /usr/bin/gh comes FIRST because the host package
@@ -43,9 +43,9 @@ fi
 # installing something else; that also makes every branch here reachable from a
 # test, including the refusal.
 #
-# This block is byte-identical in the other installer; the only per-installer
+# This block is byte-identical in the other installers; the only per-installer
 # text is $install_label. scripts/test_install_github_helper_source.py asserts
-# that identity and exercises both files, because two copies that drift is the
+# that identity and exercises every file, because copies that drift are the
 # shape this repository keeps finding.
 if [[ -n ${DEV_HERMIT_GH_SOURCE:-} ]]; then
     github_helper_candidates=("$DEV_HERMIT_GH_SOURCE")

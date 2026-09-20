@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""How both installers choose the GitHub credential helper source.
+"""How operational installers choose the GitHub credential helper source.
 
-THE DEFECT THIS GUARDS. Measured 2026-09-05 on devbig014: both installers read a
+THE DEFECT THIS GUARDS. Measured 2026-09-05 on devbig014: the installers read a
 single fixed ``$HOME/bin/gh``, that path was a symlink into ``/home/newton/opt``,
 and ``/home/newton/opt`` did not exist. The link dangled, so
 ``~/.local/libexec/dev-hermit/gh`` was absent, ``hermit-health-tick.sh`` refused
 every networked git call, and the tick reported no signal for GitHub instead of a
-verdict. Rerunning either installer could not repair it, because both read that
+verdict. Rerunning an installer could not repair it, because all read that
 same missing path.
 
 WHY THIS FILE SITS IN ``scripts/`` AND NOT ``scripts/tests/``. The Makefile's
@@ -34,14 +34,15 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLERS = {
+    "disk-snapshot": ROOT / "scripts/install-disk-snapshot.sh",
     "owner-watch": ROOT / "scripts/install-owner-checkout-validate-watch.sh",
     "wrkslots-audit": ROOT / "scripts/install-wrkslots-audit.sh",
 }
 
 #: The resolution block runs from this comment line to the first line that is
 #: exactly ``fi``. It is duplicated rather than sourced because this repository
-#: has no shared shell library and introducing one for two callers would add a
-#: file whose absence breaks both.
+#: has no shared shell library and introducing one for these callers would add a
+#: file whose absence breaks every caller.
 BLOCK_START = "# ⚠️ A SINGLE FIXED PATH UNDER $HOME WAS THE FAILURE"
 
 
@@ -58,16 +59,21 @@ def resolution_block(path: Path) -> str:
     raise AssertionError(f"{path}: resolution block is unterminated")
 
 
-class BothInstallersShareOneResolution(unittest.TestCase):
-    """Two copies that drift is the shape this repository keeps finding."""
+class InstallersShareOneResolution(unittest.TestCase):
+    """Copies that drift are the shape this repository keeps finding."""
 
-    def test_the_resolution_block_is_byte_identical_in_both_installers(self) -> None:
-        owner = resolution_block(INSTALLERS["owner-watch"])
-        wrkslots = resolution_block(INSTALLERS["wrkslots-audit"])
-        self.assertEqual(owner, wrkslots)
+    def test_the_resolution_block_is_byte_identical_in_all_installers(self) -> None:
+        blocks = {name: resolution_block(path) for name, path in INSTALLERS.items()}
+        owner = blocks["owner-watch"]
+        for name, block in blocks.items():
+            with self.subTest(installer=name):
+                self.assertEqual(owner, block)
         # An empty or trivial match would satisfy equality without covering
         # anything, so require the block to actually contain the ordered list.
-        self.assertIn('github_helper_candidates=(/usr/bin/gh /usr/local/bin/gh "$HOME/bin/gh")', owner)
+        self.assertIn(
+            'github_helper_candidates=(/usr/bin/gh /usr/local/bin/gh "$HOME/bin/gh")',
+            owner,
+        )
 
     def test_the_package_path_is_tried_before_the_home_path(self) -> None:
         """Ordering IS the fix; a list containing both in the wrong order is not."""
@@ -95,6 +101,7 @@ class HelperSourceResolution(unittest.TestCase):
         self.home.mkdir()
         self.fake_bin.mkdir()
         (self.home / "bin").mkdir()
+        (self.home / "work/dev-hermit").mkdir(parents=True)
 
         self.fixture = base / "fixture-gh"
         self.fixture.write_text("#!/bin/sh\nexit 0\n")

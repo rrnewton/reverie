@@ -1,10 +1,10 @@
 #!/usr/bin/env rust-script
-//! Bridge container reconciliation into an ORC process that predates the
-//! canonical operational-health workflow.
+//! Legacy bridge for an ORC process that predates the canonical
+//! operational-health workflow.
 //!
-//! The bridge is deliberately temporary. It exits successfully as soon as the
-//! live ORC state reports `hermit-dev-operational-health-v1` alive, leaving the
-//! canonical workflow as the only scheduler.
+//! This is retired under Herdr and must not be launched as a current producer.
+//! It exits before observation or mutation when the Herdr authority marker is
+//! present. It remains only for historical migration compatibility and tests.
 //!
 //! ```cargo
 //! [dependencies]
@@ -62,9 +62,9 @@ const DEFAULT_INTERVAL_SECS: u64 = 300;
 
 const USAGE: &str = r#"Usage: agent-container-reconcile-bridge.rs [OPTIONS]
 
-Temporarily reconcile managed agent containers while the running ORC process
-predates the canonical operational-health workflow. The bridge exits when that
-workflow becomes live.
+Legacy migration only: reconcile managed agent containers while a running ORC
+process predates the canonical operational-health workflow. Do not launch this
+under Herdr; the bridge exits when Herdr authority or that workflow is live.
 
 Options:
   --once                 Run one observation/reconciliation cycle and exit.

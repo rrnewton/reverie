@@ -6,7 +6,7 @@ usage() {
     cat <<'EOF'
 Usage: scripts/install-disk-snapshot.sh [--check] [--start|--no-start]
 
---check     Validate the producer, dependencies, state root, and bootstrap only.
+--check     Validate producer dependencies, state root, bootstrap, and GitHub helper.
 --start     Install, enable, and restart the timer.
 --no-start  Install and enable the timer without starting it (the default).
 EOF
@@ -40,9 +40,69 @@ systemctl_bin=${SYSTEMCTL_BIN:-systemctl}
 libexec_dir=$HOME/.local/libexec/dev-hermit
 bootstrap_source=$source_root/scripts/hermit-health-tick.sh
 bootstrap=$libexec_dir/operational-tool
+github_helper=$libexec_dir/gh
+install_label=disk-snapshot
 producer=$source_root/scripts/publish-disk-snapshots.py
 service=hermit-disk-snapshot.service
 timer=hermit-disk-snapshot.timer
+
+# ⚠️ A SINGLE FIXED PATH UNDER $HOME WAS THE FAILURE, AND RERUNNING THIS COULD
+# NOT REPAIR IT. The installers read $HOME/bin/gh. Measured 2026-09-05 on
+# devbig014: that path is a symlink into /home/newton/opt, /home/newton/opt DOES
+# NOT EXIST, so the link dangles, ~/.local/libexec/dev-hermit/gh is absent, and
+# hermit-health-tick.sh refuses every networked git call -- the tick reported no
+# signal for GitHub rather than a verdict. Recreating the link, or rerunning
+# any installer, reproduces exactly that state.
+#
+# So resolve over an ordered list and take the first entry that opens as an
+# executable regular file. /usr/bin/gh comes FIRST because the host package
+# manager maintains it (rpm gh-2.97.0-2.el9.x86_64 on devbig014), whereas
+# $HOME/bin/gh is maintained by nobody in particular. $HOME/bin/gh is kept LAST
+# rather than dropped, so a host that deliberately supplies its own is still
+# honoured -- and a dangling one is now skipped instead of fatal, which is the
+# whole defect.
+#
+# ⚠️ DEV_HERMIT_GH_SOURCE REPLACES THE LIST, it does not extend it. An explicit
+# choice that turns out to be broken must fail loudly rather than quietly
+# installing something else; that also makes every branch here reachable from a
+# test, including the refusal.
+#
+# This block is byte-identical in the other installers; the only per-installer
+# text is $install_label. scripts/test_install_github_helper_source.py asserts
+# that identity and exercises every file, because copies that drift are the
+# shape this repository keeps finding.
+if [[ -n ${DEV_HERMIT_GH_SOURCE:-} ]]; then
+    github_helper_candidates=("$DEV_HERMIT_GH_SOURCE")
+else
+    github_helper_candidates=(/usr/bin/gh /usr/local/bin/gh "$HOME/bin/gh")
+fi
+
+github_helper_source=
+github_helper_fd=
+for github_helper_candidate in "${github_helper_candidates[@]}"; do
+    if ! exec {github_helper_fd}<"$github_helper_candidate"; then
+        continue
+    fi
+    # Everything downstream reads the DESCRIPTOR, never the path again. That is
+    # what stops the source being swapped between this check and the copy below,
+    # and it is also what dereferences a symlink so the installed helper is a
+    # regular file rather than a link that can later be repointed.
+    github_helper_source_fd=/proc/self/fd/$github_helper_fd
+    if [[ -f $github_helper_source_fd && -x $github_helper_source_fd ]]; then
+        github_helper_source=$github_helper_candidate
+        break
+    fi
+    exec {github_helper_fd}<&-
+    github_helper_fd=
+done
+if [[ -z $github_helper_source ]]; then
+    printf '%s install: required GitHub credential helper is unavailable; no candidate opened as an executable regular file. Tried:\n' \
+        "$install_label" >&2
+    printf '  %s\n' "${github_helper_candidates[@]}" >&2
+    printf '%s install: set DEV_HERMIT_GH_SOURCE to a real gh binary, or install one at /usr/bin/gh\n' \
+        "$install_label" >&2
+    exit 1
+fi
 
 [[ -x $bootstrap_source && ! -L $bootstrap_source ]] || {
     printf 'install-disk-snapshot: reviewed bootstrap source is unavailable: %s\n' "$bootstrap_source" >&2
@@ -59,26 +119,52 @@ if [[ $mode == check ]]; then
         printf 'install-disk-snapshot: installed bootstrap is absent or differs from reviewed source: %s\n' "$bootstrap" >&2
         exit 2
     }
-    printf 'install-disk-snapshot: installed bootstrap matches reviewed source\n'
+    [[ -x $github_helper && -f $github_helper && ! -L $github_helper ]] && \
+        cmp --silent "$github_helper_source_fd" "$github_helper" || {
+        printf 'install-disk-snapshot: installed GitHub credential helper is absent or differs from selected source: %s\n' \
+            "$github_helper" >&2
+        exit 2
+    }
+    exec {github_helper_fd}<&-
+    printf 'install-disk-snapshot: installed bootstrap and GitHub credential helper match reviewed sources\n'
     exit 0
 fi
 
 install -d -m 0700 "$unit_dir"
 install -d -m 0755 "$libexec_dir"
+bootstrap_staging=
+github_helper_staging=
+trap '[[ -z ${bootstrap_staging:-} ]] || rm -f -- "$bootstrap_staging"; [[ -z ${github_helper_staging:-} ]] || rm -f -- "$github_helper_staging"' EXIT
 bootstrap_staging=$(mktemp "$libexec_dir/.operational-tool.XXXXXX")
-trap '[[ -z ${bootstrap_staging:-} ]] || rm -f -- "$bootstrap_staging"' EXIT
+github_helper_staging=$(mktemp "$libexec_dir/.gh.XXXXXX")
 install -m 0555 "$bootstrap_source" "$bootstrap_staging"
 cmp --silent "$bootstrap_source" "$bootstrap_staging" || {
     printf 'install-disk-snapshot: staged bootstrap differs from reviewed source\n' >&2
     exit 1
 }
+install -m 0555 "$github_helper_source_fd" "$github_helper_staging"
+cmp --silent "$github_helper_source_fd" "$github_helper_staging" || {
+    printf 'install-disk-snapshot: staged GitHub credential helper differs from selected source\n' >&2
+    exit 1
+}
 mv -fT -- "$bootstrap_staging" "$bootstrap"
 bootstrap_staging=
+mv -fT -- "$github_helper_staging" "$github_helper"
+github_helper_staging=
 [[ -x $bootstrap && -f $bootstrap && ! -L $bootstrap ]] && \
     cmp --silent "$bootstrap_source" "$bootstrap" || {
     printf 'install-disk-snapshot: installed bootstrap differs from reviewed source\n' >&2
     exit 1
 }
+[[ -x $github_helper && -f $github_helper && ! -L $github_helper ]] || {
+    printf 'install-disk-snapshot: installed GitHub credential helper is not a regular executable\n' >&2
+    exit 1
+}
+cmp --silent "$github_helper_source_fd" "$github_helper" || {
+    printf 'install-disk-snapshot: installed GitHub credential helper differs from selected source\n' >&2
+    exit 1
+}
+exec {github_helper_fd}<&-
 install -m 0644 "$source_root/scripts/systemd/$service" "$unit_dir/$service"
 install -m 0644 "$source_root/scripts/systemd/$timer" "$unit_dir/$timer"
 cmp --silent "$source_root/scripts/systemd/$service" "$unit_dir/$service" || {
@@ -98,6 +184,10 @@ grep -Fq \
 
 "$systemctl_bin" --user daemon-reload
 "$systemctl_bin" --user enable "$timer"
+bootstrap_sha=$(sha256sum -- "$bootstrap" | awk '{print $1}')
+github_helper_sha=$(sha256sum -- "$github_helper" | awk '{print $1}')
+printf 'install-disk-snapshot: bootstrap_sha256=%s bootstrap=%s github_helper_source=%s github_helper_sha256=%s github_helper=%s\n' \
+    "$bootstrap_sha" "$bootstrap" "$github_helper_source" "$github_helper_sha" "$github_helper"
 if ((start)); then
     "$systemctl_bin" --user restart "$timer"
     unit_property() {

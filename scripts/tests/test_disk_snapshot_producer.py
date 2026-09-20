@@ -282,6 +282,12 @@ def _installer_environment(tmp_path: Path) -> tuple[dict[str, str], Path, Path, 
     bootstrap = libexec / "operational-tool"
     bootstrap.write_bytes(BOOTSTRAP_SOURCE.read_bytes())
     bootstrap.chmod(0o555)
+    helper_source = tmp_path / "fixture-gh"
+    helper_source.write_text("#!/bin/sh\nexit 0\n")
+    helper_source.chmod(0o755)
+    github_helper = libexec / "gh"
+    github_helper.write_bytes(helper_source.read_bytes())
+    github_helper.chmod(0o555)
     fake_bin = tmp_path / "system-bin"
     fake_bin.mkdir()
     log = tmp_path / "systemctl.log"
@@ -315,6 +321,7 @@ def _installer_environment(tmp_path: Path) -> tuple[dict[str, str], Path, Path, 
             "HERMIT_USER_UNIT_DIR": str(unit_dir),
             "SYSTEMCTL_BIN": str(systemctl),
             "SYSTEMCTL_LOG": str(log),
+            "DEV_HERMIT_GH_SOURCE": str(helper_source),
         }
     )
     return environment, unit_dir, log, bootstrap
@@ -334,8 +341,37 @@ def test_installer_check_binds_exact_installed_bootstrap_without_writes(
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert "installed bootstrap matches reviewed source" in result.stdout
+    assert (
+        "installed bootstrap and GitHub credential helper match reviewed sources"
+        in result.stdout
+    )
     assert bootstrap.read_bytes() == before
+    assert not unit_dir.exists()
+    assert not log.exists()
+
+
+@pytest.mark.parametrize("helper_state", ["missing", "different"])
+def test_installer_check_rejects_absent_or_mismatched_github_helper_without_writes(
+    tmp_path: Path, helper_state: str
+) -> None:
+    environment, unit_dir, log, bootstrap = _installer_environment(tmp_path)
+    github_helper = bootstrap.parent / "gh"
+    if helper_state == "missing":
+        github_helper.unlink()
+    else:
+        github_helper.chmod(0o755)
+        github_helper.write_text("#!/bin/sh\nexit 17\n")
+        github_helper.chmod(0o555)
+    result = subprocess.run(
+        [str(INSTALLER), "--check"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "installed GitHub credential helper is absent or differs" in result.stderr
     assert not unit_dir.exists()
     assert not log.exists()
 
@@ -381,6 +417,11 @@ def test_installer_copies_bootstrap_and_units_before_explicit_start(
     assert bootstrap.read_bytes() == BOOTSTRAP_SOURCE.read_bytes()
     assert not bootstrap.is_symlink()
     assert bootstrap.stat().st_mode & stat.S_IWUSR == 0
+    github_helper = bootstrap.parent / "gh"
+    helper_source = Path(environment["DEV_HERMIT_GH_SOURCE"])
+    assert github_helper.read_bytes() == helper_source.read_bytes()
+    assert not github_helper.is_symlink()
+    assert github_helper.stat().st_mode & stat.S_IWUSR == 0
     assert (unit_dir / SERVICE.name).read_bytes() == SERVICE.read_bytes()
     assert (unit_dir / TIMER.name).read_bytes() == TIMER.read_bytes()
     assert log.read_text().splitlines() == [

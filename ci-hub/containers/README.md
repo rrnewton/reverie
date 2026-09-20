@@ -23,9 +23,9 @@ Podman never reaches its automatic removal step.
 
 The wrapper records the agent name, exact 3pai invocation, task, pane, and
 lifetime as Podman labels. It also writes a transferable ownership record under
-`ignored/ci-hub/`. The exact invocation matters because ORC reuses agent names;
-seeing a new `hermit-238b` does not prove it owns containers created by an older
-`hermit-238b` process.
+`ignored/ci-hub/`. The exact invocation matters because coordinator substrates
+can reuse agent names; seeing a new `hermit-238b` does not prove it owns
+containers created by an older `hermit-238b` process.
 
 The default `agent` lifetime means the operational tick may gracefully stop and
 remove the container after that exact agent invocation disappears. There is no
@@ -62,10 +62,10 @@ and it carries no `--apply`:
 ORC agent snapshot", above a copy-pasteable `--apply` command. BOTH HALVES WERE
 FALSE, and together they invited a reader to paste a destructive command on the
 strength of two untrue claims. `--apply` was withdrawn from the tick (see the
-comment above `agent_container_lifecycle` in `ci-hub/health/tick-hub.yaml`), and
-the snapshot is not fresh -- measured 2026-08-26 it was over five hours old,
-because its only producer, `ci-hub/health/agent-container-reconcile-bridge.rs`,
-is scheduled by nothing.
+comment above `agent_container_lifecycle` in `ci-hub/health/tick-hub.yaml`). The
+current snapshot is instead published from exact Herdr pane identities by
+`hermit-herdr-agent-snapshot.timer` every minute; consumers still enforce their
+own freshness bounds and must fail closed when that evidence is absent.
 
 The applying form still exists and is still the right tool for reclaiming leaked
 containers, but run it deliberately rather than because this page said the tick
@@ -87,25 +87,18 @@ The reconciler refuses to act on a stale agent snapshot. If a live agent's exact
 invocation cannot be established, the result is `owner-unknown` and no removal
 occurs. These fail-closed cases distinguish “safe to clean” from “looks idle.”
 
-## Bridging an old ORC process
+## Retired ORC bridge
 
-The canonical scheduler is the ORC workflow
-`hermit-dev-operational-health-v1`. An ORC process started before that workflow
-was added cannot load it without a restart. Do not restart a live fleet solely
-for this poll. Start the bounded bridge as a user service instead:
+Do not launch `ci-hub/health/agent-container-reconcile-bridge.rs`. It is a
+legacy migration bridge retained for historical compatibility and tests, not a
+current producer. Herdr pane identity plus `.tick-hub/herdr-agent-bindings.json`
+is the current census authority, and `hermit-herdr-agent-snapshot.timer`
+publishes its snapshot. The bridge detects that binding marker and exits before
+writing or reconciling, but running a second producer is still an operational
+error rather than a fallback.
 
-```bash
-systemd-run --user --unit=dev-hermit-agent-container-reconcile-bridge \
-  --property=Restart=on-failure --property=RestartSec=15s \
-  --setenv=PATH="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin" \
-  --working-directory="$HOME/work/dev-hermit" \
-  "$HOME/work/dev-hermit/ci-hub/health/agent-container-reconcile-bridge.rs"
-```
-
-The bridge refreshes the same agent snapshot and invokes the same reconciler.
-It survives agent recycling because systemd owns it. It exits successfully as
-soon as the canonical workflow is observed alive, so a later ORC restart cannot
-leave two schedulers running. Inspect it without mutation with:
+An old transient bridge should therefore be absent or inactive. Inspect it
+without mutation with:
 
 ```bash
 systemctl --user status dev-hermit-agent-container-reconcile-bridge.service

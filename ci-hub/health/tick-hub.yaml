@@ -1006,10 +1006,10 @@ reminders:
   #
   # >>> INACTIVE / NOT YET WIRED <<<  This reminder is committed but DISABLED.
   # Uncommenting the block below is what takes the mechanical layer LIVE: the
-  # existing operationalHealthHeartbeat re-reads this file every 30 min and will
+  # durable hermit-health-tick.timer re-reads this file every 30 min and will
   # begin firing the hourly memory<->skill hard-warn. Activation is the owner's
-  # call. TO ACTIVATE: remove the leading '# ' from the block below (no ORC
-  # restart needed; the next heartbeat tick picks it up).
+  # call. TO ACTIVATE: remove the leading '# ' from the block below (no service
+  # restart needed; the next timer firing picks it up).
   # - name: memory_skill_sync
   #   cadence_secs: 3600
   #   gate:
