@@ -2734,6 +2734,47 @@ impl TerminalCleanup {
         *self.event.event().registration_error.lock()
     }
 
+    /// Requests fatal cancellation of this already-bound tracee generation.
+    ///
+    /// Uses the notifier's retained thread pidfd; this never captures a new
+    /// identity or signals a numeric PID. Registration failure is returned
+    /// without a fallback. Neither success nor ESRCH acknowledges an exit:
+    /// callers must still consume the actual exit and terminal wait status.
+    pub fn request_sigkill(&self) -> Result<(), Errno> {
+        self.request_cancellation_signal(libc::SIGKILL)
+    }
+
+    /// Stops this already-bound generation for fatal tree cancellation.
+    /// Like `request_sigkill`, delivery is not a stopped-state acknowledgment.
+    /// The caller must consume an actual owned ptrace stop before discovery.
+    pub fn request_sigstop(&self) -> Result<(), Errno> {
+        self.request_cancellation_signal(libc::SIGSTOP)
+    }
+
+    fn request_cancellation_signal(&self, signal: i32) -> Result<(), Errno> {
+        if let Some(error) = self.registration_error() {
+            return Err(error);
+        }
+        let identity = self
+            .event
+            .identity()
+            .ok_or_else(|| self.registration_error().unwrap_or(Errno::ENODATA))?;
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                identity.pidfd.as_raw_fd(),
+                signal,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io_errno(io::Error::last_os_error()))
+        }
+    }
+
     #[cfg(test)]
     fn try_claim_unstarted_raw_cleanup(&self) -> Result<RawCleanupClaim, Errno> {
         NOTIFIER.try_claim_unstarted_raw_cleanup(self.pid, &self.event)
@@ -4734,6 +4775,105 @@ mod test {
 
             reap_stopped_process(cleanup);
         }
+    }
+
+    #[test]
+    fn fatal_signal_preserves_registration_refusal() {
+        let (pid, mut cleanup) = spawn_stopped_process(None).expect("spawn registration control");
+        let running = Running::new(pid.into());
+        let terminal = TerminalCleanup::new_unregistered(pid.into(), &running.1);
+        CAPTURE_ERRORS.lock().insert(pid.into(), Errno::EMFILE);
+        assert_eq!(terminal.ensure_registered(), Err(Errno::EMFILE));
+        assert_eq!(terminal.request_sigkill(), Err(Errno::EMFILE));
+        assert!(
+            terminal.event.identity().is_none(),
+            "signal recaptured identity"
+        );
+        assert!(!terminal.wait(Duration::ZERO));
+        assert!(
+            !pidfd_exited(&cleanup.pidfd).unwrap(),
+            "refusal signalled the child"
+        );
+        cleanup
+            .cleanup()
+            .expect("reap refused control through its test-owned pidfd");
+    }
+
+    #[test]
+    fn fatal_signal_preserves_worker_spawn_refusal() {
+        let (pid, mut cleanup) = spawn_stopped_process(None).unwrap();
+        let running = Running::new(pid.into());
+        SPAWN_WORKER_ERRORS.lock().insert(pid.into(), libc::EAGAIN);
+        assert!(cleanup.bind_running_notifier(&running).is_err());
+        let terminal = cleanup.terminal().unwrap();
+        assert_eq!(terminal.registration_error(), Some(Errno::EAGAIN));
+        assert_eq!(terminal.request_sigkill(), Err(Errno::EAGAIN));
+        assert!(!terminal.wait(Duration::ZERO));
+        assert!(!pidfd_exited(&cleanup.pidfd).unwrap());
+        cleanup.cleanup().unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fatal_signal_requires_real_exit_and_exclusive_exit_capability() {
+        let (pid, stopped, mut cleanup) = spawn_traced_process(None).unwrap();
+        stopped.setoptions(Options::PTRACE_O_TRACEEXIT).unwrap();
+        let exit = cleanup.exit_event(&stopped).unwrap();
+        let duplicate = stopped.exit_event();
+        let terminal = stopped.terminal_cleanup();
+        terminal.request_sigkill().unwrap();
+        drop(stopped);
+        let exit_stopped = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, exit)
+            .await
+            .unwrap()
+            .unwrap();
+        cleanup.mark_claimed_exit();
+        assert!(
+            !terminal.wait(Duration::ZERO),
+            "signal fabricated terminal acknowledgment"
+        );
+        assert!(matches!(
+            tokio::time::timeout(TRACEE_WAIT_TIMEOUT, duplicate)
+                .await
+                .unwrap(),
+            Err(Error::Errno(Errno::EALREADY))
+        ));
+        let waited = tokio::time::timeout(
+            TRACEE_WAIT_TIMEOUT,
+            exit_stopped.resume(None).unwrap().next_state(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            waited.assume_exited(),
+            (
+                pid.into(),
+                crate::ExitStatus::Signaled(Signal::SIGKILL, false)
+            )
+        );
+        assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        assert_eq!(terminal.request_sigkill(), Err(Errno::ESRCH));
+        cleanup.disarm();
+    }
+
+    #[test]
+    fn fatal_signal_does_not_follow_a_replaced_numeric_pid_label() {
+        let (pid, mut cleanup) = spawn_stopped_process(None).unwrap();
+        let running = Running::new(pid.into());
+        cleanup.bind_running_notifier(&running).unwrap();
+        let mut stale = running.terminal_cleanup();
+        stale.request_sigkill().unwrap();
+        assert!(stale.wait(TRACEE_WAIT_TIMEOUT));
+        cleanup.disarm();
+        let (other_pid, other_cleanup) = spawn_stopped_process(None).unwrap();
+        // Model an adversarial replacement of the numeric routing label while
+        // retaining the real, already-reaped old pidfd. This is not a claim
+        // that the kernel reused the same PID during this control.
+        stale.pid = other_pid.into();
+        assert_eq!(stale.request_sigkill(), Err(Errno::ESRCH));
+        assert!(!pidfd_exited(&other_cleanup.pidfd).unwrap());
+        reap_stopped_process(other_cleanup);
     }
 
     #[test]

@@ -102,6 +102,8 @@ use crate::stack::GuestStack;
 use crate::timer::HandleFailure;
 use crate::timer::Timer;
 use crate::timer::TimerEventRequest;
+use crate::tracer::FatalNewborn;
+use crate::tracer::FatalTaskStop;
 use crate::tracer::HeldRootStop;
 use crate::tracer::NewbornTracee;
 use crate::tracer::RootStopLease;
@@ -199,7 +201,7 @@ pub struct Child {
     /// `daemonize()` is called.
     pub(crate) daemonizer_rx: Option<mpsc::Receiver<broadcast::Receiver<()>>>,
     /// Join handle to let child task exit gracefully.
-    pub(crate) handle: JoinHandle<ExitStatus>,
+    pub(crate) handle: JoinHandle<Option<ExitStatus>>,
 }
 
 impl Child {
@@ -216,7 +218,7 @@ impl fmt::Debug for Child {
 }
 
 impl Future for Child {
-    type Output = Result<ExitStatus, JoinError>;
+    type Output = Result<Option<ExitStatus>, JoinError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         self.handle.poll_unpin(cx)
@@ -869,6 +871,278 @@ enum LiteinstTrap {
     Invalid,
 }
 
+/// The first ordinary-ptrace fatal error cancels every followed task. Keep the
+/// actual error until the entire tree has completed its real terminal waits.
+#[derive(Default)]
+pub(crate) struct FatalSession {
+    failure: StdMutex<Option<reverie::Error>>,
+    changed: Notify,
+    tree: StdMutex<FatalTree>,
+}
+
+#[derive(Default)]
+struct FatalTree {
+    tasks: Vec<Arc<FatalTaskStop>>,
+    newborns: Vec<FatalNewborn>,
+    unconfirmed_newborns: Vec<(Pid, Arc<safeptrace::TerminalCleanup>)>,
+    killing: bool,
+    cleanup_refusal: Option<String>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct FatalForkPause {
+    pub(crate) ready: Notify,
+    pub(crate) child: StdMutex<Option<Running>>,
+    pub(crate) waiting_word: std::sync::atomic::AtomicUsize,
+    pub(crate) generation: StdMutex<Option<(u64, u64)>>,
+    pub(crate) terminal_status: StdMutex<Option<(Pid, ExitStatus)>>,
+    pub(crate) live_stop_opponent: AtomicBool,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct FatalSetupControl {
+    pub(crate) child: StdMutex<Option<(Pid, Arc<safeptrace::TerminalCleanup>)>>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct FatalFreezeControl {
+    pub(crate) calls: std::sync::atomic::AtomicUsize,
+    pub(crate) session: StdMutex<Option<Arc<FatalSession>>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FATAL_FORK_PAUSE: std::cell::RefCell<Option<Arc<FatalForkPause>>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static FATAL_SETUP_CONTROL: std::cell::RefCell<Option<Arc<FatalSetupControl>>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static FATAL_FREEZE_CONTROL: std::cell::RefCell<Option<Arc<FatalFreezeControl>>> = const { std::cell::RefCell::new(None) };
+}
+
+impl FatalSession {
+    fn capture(&self, parent: Pid, child: &Running) {
+        let mut tree = self.tree.lock().unwrap();
+        if !tree.newborns.iter().any(|entry| entry.tid == child.pid())
+            && !tree.tasks.iter().any(|entry| entry.tid == child.pid())
+        {
+            tree.newborns.push(FatalNewborn::new(parent, child));
+        }
+    }
+
+    fn handed(&self, child: Pid) {
+        let mut tree = self.tree.lock().unwrap();
+        tree.newborns
+            .iter_mut()
+            .find(|entry| entry.tid == child)
+            .expect("child handoff requires retained kernel edge")
+            .handed = true;
+    }
+
+    fn handoff_failed(&self, child: Pid) {
+        if let Some(entry) = self
+            .tree
+            .lock()
+            .unwrap()
+            .newborns
+            .iter_mut()
+            .find(|entry| entry.tid == child)
+        {
+            entry.handed = false;
+        }
+        self.changed.notify_waiters();
+    }
+
+    fn newborn_exited(&self, child: Pid) {
+        self.tree
+            .lock()
+            .unwrap()
+            .newborns
+            .retain(|entry| entry.tid != child);
+        self.changed.notify_waiters();
+    }
+
+    fn refuse_cleanup(&self, error: reverie::Error) -> reverie::Error {
+        let message = error.to_string();
+        self.fail(error);
+        self.tree
+            .lock()
+            .unwrap()
+            .cleanup_refusal
+            .get_or_insert(message.clone());
+        // Retain every unconfirmed task/newborn authority. Refusal releases
+        // other barrier waiters, but never marks those tracees as completed.
+        self.changed.notify_waiters();
+        anyhow::anyhow!("fatal ptrace cleanup refused: {message}").into()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unconfirmed_task_count(&self) -> usize {
+        self.tree.lock().unwrap().tasks.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cleanup_was_refused(&self) -> bool {
+        self.tree.lock().unwrap().cleanup_refusal.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_task_stop(&self, tid: Pid) -> Arc<StdMutex<Option<HeldRootStop>>> {
+        self.tree
+            .lock()
+            .unwrap()
+            .tasks
+            .iter()
+            .find(|task| task.tid == tid)
+            .expect("test cleanup requires an actually retained task")
+            .held
+            .clone()
+    }
+
+    fn register(&self, task: Arc<FatalTaskStop>) {
+        let mut tree = self.tree.lock().unwrap();
+        tree.newborns.retain(|entry| entry.tid != task.tid);
+        tree.tasks.push(task);
+        self.changed.notify_waiters();
+    }
+
+    fn finished(&self, tid: Pid) {
+        self.tree
+            .lock()
+            .unwrap()
+            .tasks
+            .retain(|task| task.tid != tid);
+        self.changed.notify_waiters();
+    }
+
+    async fn freeze_and_kill(&self, task: &FatalTaskStop) -> Result<(), reverie::Error> {
+        if let Err(error) = task.freeze(|parent, child| self.capture(parent, child)) {
+            return Err(self.refuse_cleanup(error));
+        }
+        #[cfg(test)]
+        if FATAL_FREEZE_CONTROL.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .is_some_and(|control| control.calls.fetch_add(1, Ordering::SeqCst) == 1)
+        }) {
+            return Err(self.refuse_cleanup(
+                anyhow::anyhow!("injected refusal after actual owned freeze stop").into(),
+            ));
+        }
+        task.frozen.store(true, Ordering::Release);
+        self.changed.notify_waiters();
+        loop {
+            let changed = self.changed.notified();
+            let cleanup = {
+                let mut tree = self.tree.lock().unwrap();
+                if let Some(message) = &tree.cleanup_refusal {
+                    return Err(anyhow::anyhow!("fatal ptrace cleanup refused: {message}").into());
+                }
+                if tree.killing {
+                    return Ok(());
+                }
+                if tree
+                    .tasks
+                    .iter()
+                    .all(|task| task.frozen.load(Ordering::Acquire))
+                    && tree.newborns.iter().all(|child| !child.handed)
+                {
+                    tree.killing = true;
+                    tree.unconfirmed_newborns = tree
+                        .newborns
+                        .iter()
+                        .map(|child| (child.tid, child.terminal.clone()))
+                        .collect();
+                    Some((tree.tasks.clone(), std::mem::take(&mut tree.newborns)))
+                } else {
+                    None
+                }
+            };
+            if let Some((tasks, newborns)) = cleanup {
+                // Every possible producer is now stopped. Signal the retained
+                // children and tasks before awaiting any reap; vfork cannot
+                // leave a parent waiting behind an unsignalled child.
+                let mut refused = None;
+                for child in &newborns {
+                    if let Err(error) = child.signal()
+                        && error != Errno::ESRCH
+                    {
+                        tracing::error!(tid = %child.tid, parent = %child.parent, %error, "fatal newborn signal refused");
+                        refused.get_or_insert(error);
+                    }
+                }
+                for task in &tasks {
+                    if let Err(error) = task.terminal.request_sigkill()
+                        && error != Errno::ESRCH
+                    {
+                        tracing::error!(tid = %task.tid, %error, "fatal task signal refused");
+                        refused.get_or_insert(error);
+                    }
+                }
+                self.changed.notify_waiters();
+                if let Some(error) = refused {
+                    return Err(self.refuse_cleanup(error.into()));
+                }
+                let reaps = future::try_join_all(newborns.into_iter().map(|child| async move {
+                    let tid = child.tid;
+                    child.reap().await?;
+                    self.tree
+                        .lock()
+                        .unwrap()
+                        .unconfirmed_newborns
+                        .retain(|(pid, _)| *pid != tid);
+                    Ok::<(), reverie::Error>(())
+                }));
+                let result = tokio::time::timeout(std::time::Duration::from_secs(2), reaps).await;
+                match result {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => return Err(self.refuse_cleanup(error)),
+                    Err(_) => {
+                        return Err(self.refuse_cleanup(
+                            anyhow::anyhow!("unhanded newborn terminal cleanup timed out").into(),
+                        ));
+                    }
+                }
+                return Ok(());
+            }
+            changed.await;
+        }
+    }
+    pub(crate) fn fail(&self, error: reverie::Error) {
+        let mut failure = self.failure.lock().unwrap();
+        if failure.is_none() {
+            *failure = Some(error);
+            self.changed.notify_waiters();
+        } else {
+            tracing::error!(%error, "additional error during fatal ptrace cleanup");
+        }
+    }
+
+    async fn cancelled(&self) {
+        loop {
+            let changed = self.changed.notified();
+            if self.failure.lock().unwrap().is_some() {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    async fn cleanup_refused(&self) -> reverie::Error {
+        loop {
+            let changed = self.changed.notified();
+            if let Some(message) = &self.tree.lock().unwrap().cleanup_refusal {
+                return anyhow::anyhow!("fatal ptrace cleanup refused: {message}").into();
+            }
+            changed.await;
+        }
+    }
+
+    pub(crate) fn take_failure(&self) -> Option<reverie::Error> {
+        self.failure.lock().unwrap().take()
+    }
+}
+
 /// All the info needed to be able to interact with the global state.
 struct GlobalState<G: GlobalTool> {
     /// The tool's static configuration data.
@@ -890,6 +1164,8 @@ struct GlobalState<G: GlobalTool> {
     /// Optional dynamic LiteInst runtime configuration.
     liteinst_runtime: Option<LiteinstRuntimeConfig>,
 
+    fatal_session: Arc<FatalSession>,
+
     /// Optional collector for general ptrace lifecycle activity.
     backend_stats: Option<PtraceBackendStatsSource>,
 }
@@ -903,6 +1179,7 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             sequentialized_guest: self.sequentialized_guest.clone(),
             injected_syscall_trap: self.injected_syscall_trap.clone(),
             liteinst_runtime: self.liteinst_runtime.clone(),
+            fatal_session: self.fatal_session.clone(),
             backend_stats: self.backend_stats.clone(),
         }
     }
@@ -957,6 +1234,7 @@ pub(crate) struct TracedTaskOptions<'a> {
 /// Our runtime representation of what Reverie knows about a guest thread. Its
 /// lifetime matches the lifetime of the thread.
 pub struct TracedTask<L: Tool> {
+    ordinary_held_stop: Arc<StdMutex<Option<HeldRootStop>>>,
     /// Thread ID.
     tid: Pid,
 
@@ -1151,6 +1429,7 @@ impl<L: Tool> TracedTask<L> {
             ),
             injected_syscall_trap: options.injected_syscall_trap.clone(),
             liteinst_runtime: options.liteinst_runtime,
+            fatal_session: Arc::new(FatalSession::default()),
             backend_stats: options.backend_stats,
         };
         let thread_state = process_state.init_thread_state(tid, None);
@@ -1166,6 +1445,7 @@ impl<L: Tool> TracedTask<L> {
             thread_state,
             process_state,
             global_state,
+            ordinary_held_stop: Arc::new(StdMutex::new(None)),
             command_bootstrap: options.command_bootstrap,
             has_cpuid_interception: false,
             pending_syscall: None,
@@ -1231,6 +1511,7 @@ impl<L: Tool> TracedTask<L> {
             thread_state,
             process_state,
             global_state,
+            ordinary_held_stop: Arc::new(StdMutex::new(None)),
             command_bootstrap: false,
             has_cpuid_interception: self.has_cpuid_interception,
             pending_syscall: None,
@@ -1289,6 +1570,7 @@ impl<L: Tool> TracedTask<L> {
             thread_state,
             process_state,
             global_state: self.global_state.clone(),
+            ordinary_held_stop: Arc::new(StdMutex::new(None)),
             command_bootstrap: false,
             has_cpuid_interception: self.has_cpuid_interception,
             pending_syscall: None,
@@ -1662,9 +1944,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     pub async fn tracee_preinit(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
         // A forked child can initialize a replacement image too. It must not
         // consume or overwrite the session root's held-stop cleanup lease.
-        let held_root_stop = self
-            .liteinst_root_runtime(&task)
-            .map(|runtime| Arc::clone(&runtime.held_root_stop));
+        let held_root_stop = self.liteinst_root_stop_slot(&task);
         let reject_activation_signals = self.global_state.liteinst_runtime.is_some();
         let unexpected_preinit_signal = Arc::new(StdMutex::new(None));
         #[cfg(test)]
@@ -4221,15 +4501,19 @@ impl<L: Tool + 'static> TracedTask<L> {
         &self,
         task: &Stopped,
     ) -> Option<Arc<StdMutex<Option<HeldRootStop>>>> {
-        self.liteinst_root_runtime(task)
-            .map(|runtime| Arc::clone(&runtime.held_root_stop))
+        if self.global_state.liteinst_runtime.is_none() {
+            Some(self.ordinary_held_stop.clone())
+        } else {
+            self.liteinst_root_runtime(task)
+                .map(|runtime| Arc::clone(&runtime.held_root_stop))
+        }
     }
 
     fn liteinst_root_stop_armer(&self, task: &Stopped) -> Option<LiteinstRootStopArmer> {
-        let runtime = self.liteinst_root_runtime(task)?;
+        let slot = self.liteinst_root_stop_slot(task)?;
         Some(LiteinstRootStopArmer {
             root_tid: task.pid(),
-            held_root_stop: Arc::clone(&runtime.held_root_stop),
+            held_root_stop: slot,
         })
     }
 
@@ -4250,6 +4534,12 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// A grandchild is reported to its own non-root parent, so scoping this to
     /// the root leaves it unregistered.
     fn register_liteinst_newborn(&self, task: &Stopped, event: &Event) {
+        if self.global_state.liteinst_runtime.is_none() {
+            if let Event::NewChild(_, child) = event {
+                self.global_state.fatal_session.capture(task.pid(), child);
+            }
+            return;
+        }
         let Some(runtime) = self.global_state.liteinst_runtime.as_ref() else {
             return;
         };
@@ -4467,6 +4757,34 @@ impl<L: Tool + 'static> TracedTask<L> {
             op
         );
 
+        #[cfg(test)]
+        if op == ChildOp::Fork && self.global_state.liteinst_runtime.is_none() {
+            let pause = FATAL_FORK_PAUSE.with(|slot| slot.borrow().clone());
+            if let Some(pause) = pause {
+                // Retain this real Event::NewChild capability for emergency
+                // test cleanup, before any child TracedTask has been created.
+                child.terminal_cleanup();
+                let stat = std::fs::read_to_string(format!("/proc/{}/stat", child.pid())).unwrap();
+                let start = stat
+                    .rsplit_once(") ")
+                    .unwrap()
+                    .1
+                    .split_whitespace()
+                    .nth(19)
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                use std::os::unix::fs::MetadataExt;
+                let inode = std::fs::metadata(format!("/proc/{}", child.pid()))
+                    .unwrap()
+                    .ino();
+                *pause.generation.lock().unwrap() = Some((start, inode));
+                *pause.child.lock().unwrap() = Some(child);
+                pause.ready.notify_waiters();
+                return future::pending().await;
+            }
+        }
+
         let mut child_task = match op {
             ChildOp::Clone => self.cloned(child.pid()),
             ChildOp::Fork => self.forked(child.pid()),
@@ -4493,20 +4811,25 @@ impl<L: Tool + 'static> TracedTask<L> {
         let child_restore_context = child_context.or(context);
 
         let id = child.pid();
-        // Under the LiteInst runtime the cleanup guard registers every newborn
-        // with the notifier the moment its parent reports `Event::NewChild`, so
+        // Both cancellation domains register every newborn with the notifier
+        // the moment its parent reports `Event::NewChild`, so
         // the "notifier is not yet aware of this PID" precondition for the raw
         // `wait` below no longer holds: the notifier worker would consume the
         // initial stop and the raw `wait` would block forever. Take the initial
         // stop from the notifier instead, which is the same state by a
         // registered route.
-        let notifier_owns_initial_stop = self.global_state.liteinst_runtime.is_some();
 
         // A panic anywhere in this body would otherwise be caught by tokio's
         // task harness and silently wedge the whole run; see
         // `guest_task_panic_is_fatal`. The body is built as its own future so
         // the catch sits at the task boundary and covers all of it.
         let panic_tid = id;
+        let ordinary_failure = self
+            .global_state
+            .liteinst_runtime
+            .is_none()
+            .then(|| self.fatal_session());
+        let report_failure = ordinary_failure.clone();
         let body = async move {
             // The child could potentially exit here. In most cases the first
             // event we get here should be `Event::Signal(Signal::SIGSTOP)`, but
@@ -4514,15 +4837,16 @@ impl<L: Tool + 'static> TracedTask<L> {
             // `clone`, but immediately killed via an `exit_group`. We have to
             // handle that rare case here.
             //
-            // NOTE: It is okay to call `wait` instead of the async `next_state`
-            // here because the notifier is not yet aware of the new process.
-            let initial_stop = if notifier_owns_initial_stop {
-                child.next_state().await
-            } else {
-                child.wait()
-            };
+            // The notifier already owns this exact child generation.
+            let initial_stop = child.next_state().await;
             let (child, event) = match initial_stop {
-                Ok(wait) => wait.assume_stopped(),
+                Ok(Wait::Stopped(child, event)) => (child, event),
+                Ok(Wait::Exited(_, exit_status)) => {
+                    if let Some(failure) = &ordinary_failure {
+                        failure.newborn_exited(id);
+                    }
+                    return Ok(exit_status);
+                }
                 Err(TraceError::Died(zombie)) => {
                     let exit_status = match zombie.reap().await {
                         Ok(exit_status) => exit_status,
@@ -4533,7 +4857,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                                 %error,
                                 "failed to reap new tracee after its initial-stop race"
                             );
-                            return ExitStatus::Exited(1);
+                            if ordinary_failure.is_some() {
+                                return Err(anyhow::anyhow!(
+                                    "newborn {id} terminal wait failed: {error}"
+                                )
+                                .into());
+                            }
+                            return Ok(ExitStatus::Exited(1));
                         }
                     };
                     tracing::error!(
@@ -4542,7 +4872,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                         ?exit_status,
                         "new tracee exited before its initial stop"
                     );
-                    return exit_status;
+                    if let Some(failure) = &ordinary_failure {
+                        failure.newborn_exited(id);
+                    }
+                    return Ok(exit_status);
                 }
                 Err(TraceError::Errno(errno)) => {
                     tracing::error!(
@@ -4551,7 +4884,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                         %errno,
                         "failed waiting for new tracee initial stop"
                     );
-                    return ExitStatus::Exited(1);
+                    if ordinary_failure.is_some() {
+                        return Err(errno.into());
+                    }
+                    return Ok(ExitStatus::Exited(1));
                 }
             };
 
@@ -4561,6 +4897,19 @@ impl<L: Tool + 'static> TracedTask<L> {
                 event
             );
 
+            child_task.arm_liteinst_root_stop(&child, &event);
+            #[cfg(test)]
+            if ordinary_failure.is_some() {
+                let control = FATAL_SETUP_CONTROL.with(|slot| slot.borrow_mut().take());
+                if let Some(control) = control {
+                    *control.child.lock().unwrap() = Some((id, Arc::new(child.terminal_cleanup())));
+                    return Err(
+                        anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EIO))
+                            .context("injected newborn setup refusal after its actual initial stop")
+                            .into(),
+                    );
+                }
+            }
             if let Some(context) = child_restore_context {
                 // Restore context, but only if the child hasn't arrived at
                 // `Event::Exit`.
@@ -4572,7 +4921,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                         error = %err,
                         "failed to restore new tracee register context"
                     );
-                    return ExitStatus::Exited(1);
+                    if ordinary_failure.is_some() {
+                        return Err(anyhow::anyhow!(
+                            "restore newborn {id} register context failed: {err}"
+                        )
+                        .into());
+                    }
+                    return Ok(ExitStatus::Exited(1));
                 }
             }
 
@@ -4584,7 +4939,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             let detach_held_root_stop = child_task
                 .liteinst_root_config()
                 .map(|runtime| Arc::clone(&runtime.held_root_stop));
-            match child_task.run(child).await {
+            let result = child_task.run(child).await;
+            if ordinary_failure.is_some() {
+                // A failed cleanup has no exit status. Never detach it or
+                // invent one; the session retains its original fatal error.
+                return result;
+            }
+            Ok(match result {
                 Err(err) => {
                     tracing::error!("Error in tracee tid {}: {}", tid, err);
 
@@ -4596,7 +4957,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         // before that notifier acknowledges terminal status.
                         // This includes failed reactivation after exec, as well
                         // as a refused exec or a kernel-frozen vfork parent.
-                        return ExitStatus::Exited(1);
+                        return Ok(ExitStatus::Exited(1));
                     }
 
                     // We assume the tracee is stopped since this error likely
@@ -4620,7 +4981,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             // If we get an error here, the child process may
                             // not be in a ptrace stop.
                             tracing::error!("Failed to detach from {}: {}", tid, err);
-                            return ExitStatus::Exited(1);
+                            return Ok(ExitStatus::Exited(1));
                         }
                         Ok(running) => running,
                     };
@@ -4650,11 +5011,24 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }
                 }
                 Ok(exit_status) => exit_status,
-            }
+            })
         };
+        if self.global_state.liteinst_runtime.is_none() {
+            self.global_state.fatal_session.handed(id);
+        }
         let task = tokio::task::spawn_local(async move {
             match AssertUnwindSafe(body).catch_unwind().await {
-                Ok(exit_status) => exit_status,
+                Ok(Ok(exit_status)) => Some(exit_status),
+                Ok(Err(error)) => {
+                    if let Some(failure) = report_failure {
+                        // Until run_ordinary registers the task, the retained
+                        // newborn owns cleanup. A failed setup must release
+                        // its handoff barrier without dropping that authority.
+                        failure.handoff_failed(id);
+                        failure.fail(error);
+                    }
+                    None
+                }
                 Err(payload) => guest_task_panic_is_fatal(panic_tid, payload),
             }
         });
@@ -5000,9 +5374,109 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    pub(crate) fn fatal_session(&self) -> Arc<FatalSession> {
+        self.global_state.fatal_session.clone()
+    }
+
+    async fn ordinary_terminal_exit(
+        stopped: Result<Stopped, TraceError>,
+        held: Arc<StdMutex<Option<HeldRootStop>>>,
+    ) -> Result<ExitStatus, reverie::Error> {
+        let result = match stopped {
+            Ok(stopped) => Self::wait_after_exit_event(stopped, Some(held)).await,
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(wait) => Ok(wait.assume_exited().1),
+            Err(error) => handle_internal_error(error.into()).await,
+        }
+    }
+
+    async fn run_ordinary(mut self, child: Stopped) -> Result<ExitStatus, reverie::Error> {
+        let session = self.fatal_session();
+        #[cfg(test)]
+        FATAL_FREEZE_CONTROL.with(|slot| {
+            if let Some(control) = slot.borrow().as_ref() {
+                *control.session.lock().unwrap() = Some(session.clone());
+            }
+        });
+        // ExitFuture would register this same generation on its first poll.
+        // Retaining its terminal handle adds no host capability requirement.
+        let terminal = child.terminal_cleanup();
+        let stop = Arc::new(FatalTaskStop {
+            tid: self.tid(),
+            terminal,
+            held: self.ordinary_held_stop.clone(),
+            frozen: AtomicBool::new(false),
+        });
+        session.register(stop.clone());
+        let exit_event = child.exit_event().fuse();
+        futures::pin_mut!(exit_event);
+        let outcome = {
+            let run_loop = self.run_loop(child).fuse();
+            let cancelled = session.cancelled().fuse();
+            futures::pin_mut!(run_loop, cancelled);
+            futures::select_biased! {
+                task = exit_event => Some(Either::Left(task)),
+                () = cancelled => None,
+                result = run_loop => Some(Either::Right(result)),
+            }
+        };
+        // The run-loop (including a pending Tool callback) is dropped before
+        // cancellation. No detached or resumed guest continuation is created.
+        let exit_status = match outcome {
+            Some(Either::Right(Ok(status))) => status,
+            Some(Either::Left(Ok(stopped))) => {
+                stop.frozen.store(true, Ordering::Release);
+                session.changed.notify_waiters();
+                match Self::ordinary_terminal_exit(Ok(stopped), self.ordinary_held_stop.clone())
+                    .await
+                {
+                    Ok(status) => status,
+                    Err(error) => return Err(session.refuse_cleanup(error)),
+                }
+            }
+            Some(Either::Left(Err(error))) => match handle_internal_error(error.into()).await {
+                Ok(status) => status,
+                Err(error) => return Err(session.refuse_cleanup(error)),
+            },
+            failure => {
+                if let Some(Either::Right(Err(error))) = failure {
+                    session.fail(error);
+                }
+                if let Err(error) = session.freeze_and_kill(&stop).await {
+                    tracing::error!(tid = %self.tid(), %error, "fatal ptrace cleanup refused; terminal cleanup is unconfirmed");
+                    return Err(error);
+                }
+                let refusal = session.cleanup_refused().fuse();
+                futures::pin_mut!(refusal);
+                let stopped = futures::select_biased! {
+                    task = exit_event => task,
+                    error = refusal => return Err(error),
+                };
+                match Self::ordinary_terminal_exit(stopped, self.ordinary_held_stop.clone()).await {
+                    Ok(status) => status,
+                    Err(error) => return Err(session.refuse_cleanup(error)),
+                }
+            }
+        };
+        session.finished(self.tid());
+        if let Some(stats) = &self.global_state.backend_stats {
+            stats.record_tracee_exit();
+        }
+        log_guest_exit(self.tid(), self.pid(), exit_status);
+        if let Err(error) = self.tool_exit(exit_status).await {
+            session.fail(error);
+        }
+        Ok(exit_status)
+    }
+
     /// Drive a single guest thread to completion. Returns the final exit code
     /// when that guest thread exits.
     pub async fn run(mut self, child: Stopped) -> Result<ExitStatus, reverie::Error> {
+        if self.global_state.liteinst_runtime.is_none() {
+            return self.run_ordinary(child).await;
+        }
         // Only the session root owns the shared root-stop lease; a child task
         // that superseded it would strand the root's cleanup handoff.
         let exit_held_root_stop = self
