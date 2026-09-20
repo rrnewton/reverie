@@ -272,12 +272,512 @@
       "digest_algorithm": "sha256"
     }
   },
-  "plan_receipt": null,
-  "attempt_state": "PLANNED",
-  "cells": [],
-  "events": [],
-  "samples": [],
+  "plan_receipt": {
+    "commit": "5385751aafe9aedaa899ddcab962bd751ae5f28b",
+    "path": "services/folly/timerfd-timeout-manager-test--246a62382461/experiment.json",
+    "blob": "32cd0ef8db40e8670b392d2909a87a75dc9dd5b2"
+  },
+  "attempt_state": "MATERIAL",
+  "cells": [
+    {
+      "cell_id": "folly-timerfd-dev-tsan-direct-elf-ptrace-strict-chaos",
+      "route_id": "folly-timerfd-dev-tsan-direct-elf-buck-out-bind",
+      "route_sha256": "f9523891e8c2b3009d08b24cbce16190335b6ce4b0d54962c7111b815be47521",
+      "plan_sha256": "c40a5edfb39e6c57f82034435d401bd9edab0d868cd22e13ad61392df222ccd6",
+      "frozen_at": "2026-09-20T13:13:27Z",
+      "cell_sha256": "a1ab5be7f8817452f2c922025a74f294589f39fa4ee5f07ba955ce0815a36067",
+      "canonical_target": "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//folly/io/async/test:timerfd_timeout_manager_test - TimerFDTimeoutManagerTest.ReschedTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "target_source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "hermit_source_revision": "79da523137dbac400faca6130593361b58a01468",
+      "hermit_binary_sha256": "000eeb5e59345b6c9c14bf194d6d5b392294a52d25d40209e553376f3a84764a",
+      "test_artifact_sha256": "f1e2b15c30e0b32e05378b5be9f2d59032bb00c1108f1bd2005aa9cb68692be7",
+      "guest": {
+        "argv": [
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0a1a6e1cc8764b0f/folly/io/async/test/__timerfd_timeout_manager_test__/timerfd_timeout_manager_test",
+          "--gtest_filter=TimerFDTimeoutManagerTest.ReschedTest",
+          "--gtest_also_run_disabled_tests"
+        ],
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "mounts": [
+          "type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+        ],
+        "immutable_inputs": [
+          {
+            "artifact_id": "folly-timerfd-dev-tsan-test-elf",
+            "kind": "OTHER",
+            "storage": "LOCAL_IGNORED",
+            "locator": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0a1a6e1cc8764b0f/folly/io/async/test/__timerfd_timeout_manager_test__/timerfd_timeout_manager_test",
+            "sha256": "f1e2b15c30e0b32e05378b5be9f2d59032bb00c1108f1bd2005aa9cb68692be7",
+            "bytes": 8743112,
+            "capture_limit_bytes": 8743112,
+            "truncated": false,
+            "media_type": "application/x-executable"
+          }
+        ],
+        "working_directory": "/home/newton/work/dev-hermit/worktrees/slots/hermit-904-tfa-layout/experiments/tfa-flaky-tests_20260917"
+      },
+      "hermit": {
+        "backend": "ptrace",
+        "strict": true,
+        "chaos": true,
+        "relaxations": [],
+        "argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "900",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-folly-timerfd-verify-2088150-1789909892153926966",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0a1a6e1cc8764b0f/folly/io/async/test/__timerfd_timeout_manager_test__/timerfd_timeout_manager_test",
+          "--gtest_filter=TimerFDTimeoutManagerTest.ReschedTest",
+          "--gtest_also_run_disabled_tests"
+        ],
+        "scheduler_heuristic": "random",
+        "swept_coordinate": "--sched-seed",
+        "fixed_seed_roots": {
+          "--seed": 0,
+          "--rng-seed": 0,
+          "--sched-seed": null,
+          "--fuzz-seed": 0
+        }
+      },
+      "timing": {
+        "requested_max_timeslice": 200000000,
+        "effective_max_timeslice": 200000000
+      },
+      "pmu": {
+        "available": true,
+        "effective_timer": "RCB",
+        "fallback_recorded": false
+      },
+      "host": {
+        "hostname": "devbig030.atn3.facebook.com",
+        "kernel": "Linux 6.13.2-0_fbk17_hardened_0_g2ae417e0caa0",
+        "architecture": "x86_64",
+        "cpu": "AMD EPYC 9D85 158-Core Processor",
+        "capabilities": {
+          "pmu": true,
+          "mount_namespace": true,
+          "buck_out_bind": true,
+          "safehermit_disk_qgroup": true
+        }
+      },
+      "oracle_id": "folly-timerfd-gtest-exact-v1",
+      "resource_bounds": {
+        "wall_seconds": 900,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "stderr_bytes": 67108864,
+        "retained_log_bytes": 67108864,
+        "disk_guard": "8G"
+      }
+    }
+  ],
+  "events": [
+    {
+      "event_id": "event-seed-000-discovery",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "c40a5edfb39e6c57f82034435d401bd9edab0d868cd22e13ad61392df222ccd6",
+      "route_id": "folly-timerfd-dev-tsan-direct-elf-buck-out-bind",
+      "route_sha256": "f9523891e8c2b3009d08b24cbce16190335b6ce4b0d54962c7111b815be47521",
+      "canonical_target": "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//folly/io/async/test:timerfd_timeout_manager_test - TimerFDTimeoutManagerTest.ReschedTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "folly-timerfd-dev-tsan-direct-elf-ptrace-strict-chaos",
+      "cell_sha256": "a1ab5be7f8817452f2c922025a74f294589f39fa4ee5f07ba955ce0815a36067",
+      "measurement_role": "DISCOVERY",
+      "started_at": "2026-09-20T13:13:28Z",
+      "finished_at": "2026-09-20T13:13:31Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/folly/timerfd-timeout-manager-test--246a62382461/evidence/seed-000-discovery.safehermit.txt",
+        "--sh-deadline",
+        "900",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-folly-timerfd-verify-2088150-1789909892153926966",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0a1a6e1cc8764b0f/folly/io/async/test/__timerfd_timeout_manager_test__/timerfd_timeout_manager_test",
+        "--gtest_filter=TimerFDTimeoutManagerTest.ReschedTest",
+        "--gtest_also_run_disabled_tests"
+      ],
+      "result": {
+        "exit_code": 132,
+        "signal": 4,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 0,
+        "target_oracle": "NOT_RUN",
+        "failure_class_id": null,
+        "harness_status": "ERROR",
+        "diagnostic": "Both strict-verify replicas matched under BitwiseInfoV1, but ThreadSanitizer aborted on failed setrlimit(RLIMIT_CORE) before TimerFDTimeoutManagerTest.ReschedTest emitted an execution marker; process signal 4, exit 132."
+      },
+      "invocation_id": "verify-seed-000-20260920T131328Z-2313520",
+      "replica_index": 1,
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 0
+      },
+      "effective_config_sha256": "a1ab5be7f8817452f2c922025a74f294589f39fa4ee5f07ba955ce0815a36067",
+      "artifacts": [
+        {
+          "artifact_id": "folly-timerfd-seed-000-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/folly/timerfd-timeout-manager-test--246a62382461/evidence/seed-000-discovery.stdout.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "folly-timerfd-seed-000-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/folly/timerfd-timeout-manager-test--246a62382461/evidence/seed-000-discovery.stderr.txt",
+          "sha256": "f40b58ffeb94bc9373bb0ed06a01aeedf507d0cf752f9d8660260d0e32813d2e",
+          "bytes": 1460,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "folly-timerfd-seed-000-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/folly/timerfd-timeout-manager-test--246a62382461/evidence/seed-000-discovery.result.json",
+          "sha256": "6196c442bcff3b386100732bf0d5c3bb1b4fd65ee3881960975bbef7dbf16c50",
+          "bytes": 2290,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "folly-timerfd-seed-000-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/folly/timerfd-timeout-manager-test--246a62382461/evidence/seed-000-discovery.safehermit.txt",
+          "sha256": "502b16444a70e8bc02e3a685b26853cb8b78df16c1c168aa688a2a1bfc23f72a",
+          "bytes": 1828,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "folly-timerfd-seed-000-tsan-rlimit-core",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/folly/timerfd-timeout-manager-test--246a62382461/evidence/seed-000-discovery.tsan-rlimit-core.txt",
+          "sha256": "661f5972073b42a576047d42026c30f93c38ac9b05d0d6b2956cb830b071d29e",
+          "bytes": 986,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "folly-timerfd-seed-000-run1-full-info",
+          "kind": "CANONICAL_INFO",
+          "storage": "LOCAL_IGNORED",
+          "locator": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-folly-timerfd-verify-2088150-1789909892153926966/run1_log_lZrUi",
+          "sha256": "42e2e034a2d55adbe2a107fd16f6ecc56e8bb87a6f0376129768e07393a44357",
+          "bytes": 1103494,
+          "capture_limit_bytes": 8000000000,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "folly-timerfd-seed-000-run2-full-info",
+          "kind": "CANONICAL_INFO",
+          "storage": "LOCAL_IGNORED",
+          "locator": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-folly-timerfd-verify-2088150-1789909892153926966/run2_log_FK3WW",
+          "sha256": "e9f0f5d199e01f26dc099427d3480d33bc103a05ad27f0b3c69897055f4efe71",
+          "bytes": 1103494,
+          "capture_limit_bytes": 8000000000,
+          "truncated": false,
+          "media_type": "text/plain"
+        }
+      ]
+    }
+  ],
+  "samples": [
+    {
+      "sample_id": "sample-seed-000",
+      "cell_id": "folly-timerfd-dev-tsan-direct-elf-ptrace-strict-chaos",
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 0
+      },
+      "selection_index": 0,
+      "status": "CENSORED",
+      "target_outcome": null,
+      "failure_class_id": null,
+      "censor_reason": "Both strict-verify replicas matched, but the guest ThreadSanitizer runtime aborted on setrlimit(RLIMIT_CORE) before the selected test emitted an execution marker.",
+      "execution_event_ids": [
+        "event-seed-000-discovery"
+      ]
+    }
+  ],
   "matchers": [],
-  "outcome_history": [],
-  "current_outcome": null
+  "outcome_history": [
+    {
+      "classification_id": "classification-not-determinable-20260920T131600Z",
+      "classified_at": "2026-09-20T13:16:00Z",
+      "supersedes": null,
+      "evidence_refs": [
+        "event-seed-000-discovery",
+        "sample-seed-000",
+        "folly-timerfd-seed-000-tsan-rlimit-core",
+        "folly-timerfd-seed-000-safehermit"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "folly-timerfd-dev-tsan-direct-elf-buck-out-bind",
+          "cell_ids": [
+            "folly-timerfd-dev-tsan-direct-elf-ptrace-strict-chaos"
+          ],
+          "evidence_event_ids": [
+            "event-seed-000-discovery"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/folly/timerfd-timeout-manager-test--246a62382461/evidence/seed-000-discovery.safehermit.txt",
+          "--sh-deadline",
+          "900",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-folly-timerfd-verify-2088150-1789909892153926966",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0a1a6e1cc8764b0f/folly/io/async/test/__timerfd_timeout_manager_test__/timerfd_timeout_manager_test",
+          "--gtest_filter=TimerFDTimeoutManagerTest.ReschedTest",
+          "--gtest_also_run_disabled_tests"
+        ]
+      ],
+      "inspected_artifacts": [
+        "folly-timerfd-seed-000-stderr",
+        "folly-timerfd-seed-000-result",
+        "folly-timerfd-seed-000-safehermit",
+        "folly-timerfd-seed-000-tsan-rlimit-core",
+        "folly-timerfd-seed-000-run1-full-info",
+        "folly-timerfd-seed-000-run2-full-info"
+      ],
+      "missing_or_ambiguous_facts": [
+        "Seed 0 produced no target oracle because ThreadSanitizer aborted before the selected GoogleTest emitted an execution marker.",
+        "The two Hermit replicas agree under strict BitwiseInfoV1, but agreement on a pre-oracle compatibility abort is not a PASS or target-owned FAIL arm.",
+        "No valid scheduler-seed tuple has established either target arm."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Select a different short predeclared candidate; this target sweep is stopped after its failed readiness checkpoint."
+      ]
+    }
+  ],
+  "current_outcome": {
+    "classification_id": "classification-not-determinable-20260920T131600Z",
+    "classified_at": "2026-09-20T13:16:00Z",
+    "supersedes": null,
+    "evidence_refs": [
+      "event-seed-000-discovery",
+      "sample-seed-000",
+      "folly-timerfd-seed-000-tsan-rlimit-core",
+      "folly-timerfd-seed-000-safehermit"
+    ],
+    "kind": "NOT-DETERMINABLE",
+    "route_evidence": [
+      {
+        "route_id": "folly-timerfd-dev-tsan-direct-elf-buck-out-bind",
+        "cell_ids": [
+          "folly-timerfd-dev-tsan-direct-elf-ptrace-strict-chaos"
+        ],
+        "evidence_event_ids": [
+          "event-seed-000-discovery"
+        ]
+      }
+    ],
+    "inspected_commands": [
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/folly/timerfd-timeout-manager-test--246a62382461/evidence/seed-000-discovery.safehermit.txt",
+        "--sh-deadline",
+        "900",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-folly-timerfd-verify-2088150-1789909892153926966",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0a1a6e1cc8764b0f/folly/io/async/test/__timerfd_timeout_manager_test__/timerfd_timeout_manager_test",
+        "--gtest_filter=TimerFDTimeoutManagerTest.ReschedTest",
+        "--gtest_also_run_disabled_tests"
+      ]
+    ],
+    "inspected_artifacts": [
+      "folly-timerfd-seed-000-stderr",
+      "folly-timerfd-seed-000-result",
+      "folly-timerfd-seed-000-safehermit",
+      "folly-timerfd-seed-000-tsan-rlimit-core",
+      "folly-timerfd-seed-000-run1-full-info",
+      "folly-timerfd-seed-000-run2-full-info"
+    ],
+    "missing_or_ambiguous_facts": [
+      "Seed 0 produced no target oracle because ThreadSanitizer aborted before the selected GoogleTest emitted an execution marker.",
+      "The two Hermit replicas agree under strict BitwiseInfoV1, but agreement on a pre-oracle compatibility abort is not a PASS or target-owned FAIL arm.",
+      "No valid scheduler-seed tuple has established either target arm."
+    ],
+    "measurement_budget_exhausted": false,
+    "pending_in_scope_measurements": [
+      "Select a different short predeclared candidate; this target sweep is stopped after its failed readiness checkpoint."
+    ]
+  }
 }
