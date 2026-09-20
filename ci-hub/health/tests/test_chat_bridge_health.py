@@ -41,9 +41,21 @@ def unit_properties(name: str, **changes: str) -> dict[str, str]:
         "ActiveState": "active",
         "SubState": "running",
         "MemoryMax": str(768 * 1024 * 1024),
+        "MemorySwapMax": str(128 * 1024 * 1024),
         "TasksMax": "256",
+        "LimitNOFILE": "1024",
         "LimitCORE": "0",
         "KillMode": "control-group",
+        "OOMPolicy": "kill",
+        "AllowedCPUs": "0-3",
+        "Restart": (
+            "always" if name.startswith(probe.EVENT_UNIT_PREFIX) else "on-failure"
+        ),
+        "StartLimitBurst": "5",
+        "StartLimitIntervalUSec": "10min",
+        "TimeoutStopUSec": (
+            "30s" if name.startswith(probe.EVENT_UNIT_PREFIX) else "2min 30s"
+        ),
         "MemoryAccounting": "yes",
         "TasksAccounting": "yes",
         "IOAccounting": "yes",
@@ -480,6 +492,73 @@ def test_enabled_inactive_unit_is_unhealthy_without_live_counters(
     assert f"{CHAT}:enabled-not-active" in str(report.fields["policy_issues"])
 
 
+def test_disabled_inactive_unit_still_validates_installed_resource_policy(
+    tmp_path: Path,
+) -> None:
+    props = unit_properties(
+        CHAT,
+        UnitFileState="disabled",
+        ActiveState="inactive",
+        SubState="dead",
+        MemoryMax=str(probe.MAX_MEMORY_BY_PREFIX[probe.CHAT_UNIT_PREFIX] + 1),
+        IOWriteBytes="[not set]",
+        CPUUsageNSec="[not set]",
+        InvocationID="",
+    )
+    report = run(tmp_path, FakeSystemd({CHAT: props}))
+    assert report.returncode == 1
+    assert (
+        f"{CHAT}:MemoryMax-above-"
+        f"{probe.MAX_MEMORY_BY_PREFIX[probe.CHAT_UNIT_PREFIX]}"
+    ) in str(report.fields["policy_issues"])
+
+
+@pytest.mark.parametrize("active_state", ["active", "inactive"])
+def test_masked_unit_is_unhealthy_and_live_counters_cannot_hide(
+    tmp_path: Path, active_state: str
+) -> None:
+    live = active_state == "active"
+    props = unit_properties(
+        CHAT,
+        LoadState="masked",
+        UnitFileState="masked",
+        ActiveState=active_state,
+        SubState="running" if live else "dead",
+        IOWriteBytes="1000" if live else "[not set]",
+        CPUUsageNSec="2000" if live else "[not set]",
+        InvocationID=INVOCATION_A if live else "",
+    )
+    report = run(tmp_path, FakeSystemd({CHAT: props}))
+    assert report.returncode == 1
+    assert f"{CHAT}:masked" in str(report.fields["policy_issues"])
+    assert report.fields["baseline_units"] == (1 if live else 0)
+
+
+def test_deactivating_unit_preserves_and_compares_live_counters(
+    tmp_path: Path,
+) -> None:
+    seed_state(
+        tmp_path,
+        observed_ns=NOW_NS - 1800 * probe.NSEC_PER_SEC,
+        rows={CHAT: (0, 0, INVOCATION_A)},
+    )
+    props = unit_properties(
+        CHAT,
+        UnitFileState="disabled",
+        ActiveState="deactivating",
+        SubState="stop-sigterm",
+        IOWriteBytes=str(3 * probe.GIB),
+        CPUUsageNSec=str(probe.NSEC_PER_SEC),
+    )
+    report = run(tmp_path, FakeSystemd({CHAT: props}))
+    assert report.returncode == 1
+    assert report.fields["baseline_units"] == 0
+    assert report.fields["compared_units"] == 1
+    assert report.fields["io_write_delta_bytes"] == 3 * probe.GIB
+    assert report.fields["io_write_rate_bytes_per_hour"] == 6 * probe.GIB
+    assert CHAT in saved_state(tmp_path)["units"]
+
+
 def test_failed_unit_alerts_even_when_disabled(tmp_path: Path) -> None:
     props = unit_properties(
         CHAT,
@@ -509,9 +588,17 @@ def test_disabled_but_active_unit_must_have_every_resource_guard(
         CHAT,
         UnitFileState="disabled",
         MemoryMax="infinity",
+        MemorySwapMax="infinity",
         TasksMax=str((1 << 64) - 1),
+        LimitNOFILE="infinity",
         LimitCORE="infinity",
         KillMode="process",
+        OOMPolicy="stop",
+        AllowedCPUs="0-7",
+        Restart="no",
+        StartLimitBurst="6",
+        StartLimitIntervalUSec="1s",
+        TimeoutStopUSec="infinity",
         MemoryAccounting="no",
         TasksAccounting="no",
         IOAccounting="no",
@@ -521,9 +608,17 @@ def test_disabled_but_active_unit_must_have_every_resource_guard(
     issues = str(report.fields["policy_issues"])
     for fragment in (
         "MemoryMax-infinity",
+        "MemorySwapMax-infinity",
         "TasksMax-uint64-max",
+        "LimitNOFILE-infinity",
         "LimitCORE-not-zero",
         "KillMode-not-control-group",
+        "OOMPolicy-not-kill",
+        "AllowedCPUs-above-4",
+        "Restart-not-on-failure",
+        "StartLimitBurst-above-5",
+        "StartLimitIntervalUSec-too-short",
+        "TimeoutStopUSec-out-of-range",
         "MemoryAccounting-not-yes",
         "TasksAccounting-not-yes",
         "IOAccounting-not-yes",
@@ -532,11 +627,48 @@ def test_disabled_but_active_unit_must_have_every_resource_guard(
 
 
 @pytest.mark.parametrize(
+    ("property_name", "bad_value", "fragment"),
+    [
+        (
+            "MemoryMax",
+            str(probe.MAX_MEMORY_BY_PREFIX[probe.CHAT_UNIT_PREFIX] + 1),
+            "MemoryMax-above-",
+        ),
+        (
+            "MemorySwapMax",
+            str(probe.MAX_SWAP_BYTES + 1),
+            "MemorySwapMax-above-",
+        ),
+        ("TasksMax", str(probe.MAX_TASKS + 1), "TasksMax-above-"),
+        ("LimitNOFILE", str(probe.MAX_NOFILE + 1), "LimitNOFILE-above-"),
+    ],
+)
+def test_finite_resource_values_above_policy_are_unhealthy(
+    tmp_path: Path,
+    property_name: str,
+    bad_value: str,
+    fragment: str,
+) -> None:
+    report = run(
+        tmp_path,
+        FakeSystemd({CHAT: unit_properties(CHAT, **{property_name: bad_value})}),
+    )
+    assert report.returncode == 1
+    assert f"{CHAT}:{fragment}" in str(report.fields["policy_issues"])
+
+
+@pytest.mark.parametrize(
     ("property_name", "bad_value"),
     [
         ("MemoryMax", "many"),
+        ("MemorySwapMax", "many"),
         ("TasksMax", "many"),
+        ("LimitNOFILE", "many"),
         ("LimitCORE", "many"),
+        ("AllowedCPUs", "many"),
+        ("StartLimitBurst", "many"),
+        ("StartLimitIntervalUSec", "many"),
+        ("TimeoutStopUSec", "many"),
         ("MemoryAccounting", "maybe"),
         ("IOWriteBytes", "[not set]"),
         ("CPUUsageNSec", "[not set]"),

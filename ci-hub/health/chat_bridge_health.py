@@ -22,6 +22,13 @@ the prior sample. Only a changed InvocationID is a clean reset baseline; a
 monotonic counter decrease within one invocation is inconsistent evidence and
 refuses without changing state.
 
+Installed units are checked before first start as well as while active. The
+event broker is capped at 1280 MiB and the bridge at 896 MiB; both are limited
+to 128 MiB swap, 384 tasks, 1024 file descriptors, and four CPUs. Restart
+backoff, stop deadlines, group teardown, OOM behavior, core limits, and resource
+accounting are also part of the standing policy. These are the deployed bounds,
+not merely checks that a very large finite number was written in the unit.
+
 COST
 ====
 An empty-host preflight uses two bounded systemctl discovery calls. A nonempty
@@ -57,6 +64,7 @@ from typing import Any
 
 
 GIB = 1 << 30
+MIB = 1 << 20
 NSEC_PER_SEC = 1_000_000_000
 STATE_VERSION = 2
 WRITE_LIMIT_BYTES_PER_HOUR = 5 * GIB
@@ -75,6 +83,26 @@ UNIT_PATTERNS = (
 UNIT_NAME = re.compile(
     r"agentctl-(?:chat-|gchat-events-)[A-Za-z0-9_.:@\\-]+[.]service\Z"
 )
+EVENT_UNIT_PREFIX = "agentctl-gchat-events-"
+CHAT_UNIT_PREFIX = "agentctl-chat-"
+MAX_MEMORY_BY_PREFIX = {
+    EVENT_UNIT_PREFIX: 1280 * MIB,
+    CHAT_UNIT_PREFIX: 896 * MIB,
+}
+RESTART_BY_PREFIX = {
+    EVENT_UNIT_PREFIX: "always",
+    CHAT_UNIT_PREFIX: "on-failure",
+}
+MAX_STOP_USEC_BY_PREFIX = {
+    EVENT_UNIT_PREFIX: 60 * 1_000_000,
+    CHAT_UNIT_PREFIX: 180 * 1_000_000,
+}
+MAX_SWAP_BYTES = 128 * MIB
+MAX_TASKS = 384
+MAX_NOFILE = 1024
+MAX_ALLOWED_CPUS = 4
+MAX_START_LIMIT_BURST = 5
+MIN_START_LIMIT_INTERVAL_USEC = 10 * 60 * 1_000_000
 ENABLED_STATES = frozenset({"enabled", "enabled-runtime"})
 ACTIVE_STATES = frozenset(
     {
@@ -94,9 +122,17 @@ SHOW_PROPERTIES = (
     "ActiveState",
     "SubState",
     "MemoryMax",
+    "MemorySwapMax",
     "TasksMax",
+    "LimitNOFILE",
     "LimitCORE",
     "KillMode",
+    "OOMPolicy",
+    "AllowedCPUs",
+    "Restart",
+    "StartLimitBurst",
+    "StartLimitIntervalUSec",
+    "TimeoutStopUSec",
     "MemoryAccounting",
     "TasksAccounting",
     "IOAccounting",
@@ -127,8 +163,14 @@ class UnitEvidence:
 
     @property
     def needs_resource_guards(self) -> bool:
-        # Transitional states can still own processes.  A disabled unit must not
-        # evade the guard check merely because it was sampled while stopping.
+        # Validate the installed policy before first start as well as while live.
+        # A disabled/inactive unit is exactly where preflight must catch drift.
+        return self.properties["LoadState"] in {"loaded", "masked"}
+
+    @property
+    def has_live_counters(self) -> bool:
+        # Transitional cgroups still accumulate CPU and I/O. Preserve their
+        # InvocationID-bound baseline until systemd proves the unit inactive.
         return self.properties["ActiveState"] not in {"inactive", "failed"}
 
     @property
@@ -326,6 +368,68 @@ def _bounded_integer(value: str, *, name: str, unit: str) -> tuple[int | None, s
     return parsed, "finite"
 
 
+def _unit_policy_value(unit: str, values: Mapping[str, object]) -> object:
+    for prefix, value in values.items():
+        if unit.startswith(prefix):
+            return value
+    raise EvidenceUnavailable(f"no resource policy for {unit}")
+
+
+def _duration_usec(value: str, *, name: str, unit: str) -> int | None:
+    if value == "infinity":
+        return None
+    if value.isdigit():
+        return int(value, 10)
+    multipliers = {
+        "us": 1,
+        "ms": 1_000,
+        "s": 1_000_000,
+        "min": 60 * 1_000_000,
+        "h": 60 * 60 * 1_000_000,
+        "d": 24 * 60 * 60 * 1_000_000,
+    }
+    if len(value) > 128:
+        raise EvidenceUnavailable(f"{unit} has malformed {name}={value!r}")
+    total = 0
+    position = 0
+    for match in re.finditer(r"([0-9]+)(us|ms|s|min|h|d)", value):
+        if value[position : match.start()].strip():
+            raise EvidenceUnavailable(f"{unit} has malformed {name}={value!r}")
+        total += int(match.group(1), 10) * multipliers[match.group(2)]
+        position = match.end()
+    if position == 0 or value[position:].strip():
+        raise EvidenceUnavailable(f"{unit} has malformed {name}={value!r}")
+    return total
+
+
+def _allowed_cpu_count(value: str, *, unit: str) -> int:
+    if not value or len(value) > 1024:
+        raise EvidenceUnavailable(f"{unit} has unbounded AllowedCPUs={value!r}")
+    cpus: set[int] = set()
+    for token in re.split(r"[ ,]+", value):
+        if not token:
+            continue
+        match = re.fullmatch(r"([0-9]+)(?:-([0-9]+))?", token)
+        if match is None:
+            raise EvidenceUnavailable(
+                f"{unit} has malformed AllowedCPUs={value!r}"
+            )
+        first = int(match.group(1), 10)
+        last = int(match.group(2), 10) if match.group(2) is not None else first
+        if last < first:
+            raise EvidenceUnavailable(
+                f"{unit} has malformed AllowedCPUs={value!r}"
+            )
+        if last - first + 1 > MAX_ALLOWED_CPUS:
+            return MAX_ALLOWED_CPUS + 1
+        cpus.update(range(first, last + 1))
+        if len(cpus) > MAX_ALLOWED_CPUS:
+            break
+    if not cpus:
+        raise EvidenceUnavailable(f"{unit} has empty AllowedCPUs")
+    return len(cpus)
+
+
 def _counter(value: str, *, name: str, unit: str) -> int:
     try:
         parsed = int(value, 10)
@@ -345,6 +449,8 @@ def active_policy_and_counters(
     counters: dict[str, Counters] = {}
     for unit in units:
         props = unit.properties
+        if props["LoadState"] == "masked":
+            issues.append(f"{unit.name}:masked")
         if unit.failed:
             issues.append(f"{unit.name}:failed")
         if unit.enabled and not unit.active:
@@ -355,20 +461,76 @@ def active_policy_and_counters(
         memory, memory_kind = _bounded_integer(
             props["MemoryMax"], name="MemoryMax", unit=unit.name
         )
+        swap, swap_kind = _bounded_integer(
+            props["MemorySwapMax"], name="MemorySwapMax", unit=unit.name
+        )
         tasks, tasks_kind = _bounded_integer(
             props["TasksMax"], name="TasksMax", unit=unit.name
+        )
+        nofile, nofile_kind = _bounded_integer(
+            props["LimitNOFILE"], name="LimitNOFILE", unit=unit.name
         )
         core, core_kind = _bounded_integer(
             props["LimitCORE"], name="LimitCORE", unit=unit.name
         )
+        memory_limit = int(_unit_policy_value(unit.name, MAX_MEMORY_BY_PREFIX))
         if memory is None or memory <= 0:
             issues.append(f"{unit.name}:MemoryMax-{memory_kind}")
+        elif memory > memory_limit:
+            issues.append(f"{unit.name}:MemoryMax-above-{memory_limit}")
+        if swap is None:
+            issues.append(f"{unit.name}:MemorySwapMax-{swap_kind}")
+        elif swap > MAX_SWAP_BYTES:
+            issues.append(f"{unit.name}:MemorySwapMax-above-{MAX_SWAP_BYTES}")
         if tasks is None or tasks <= 0:
             issues.append(f"{unit.name}:TasksMax-{tasks_kind}")
+        elif tasks > MAX_TASKS:
+            issues.append(f"{unit.name}:TasksMax-above-{MAX_TASKS}")
+        if nofile is None or nofile <= 0:
+            issues.append(f"{unit.name}:LimitNOFILE-{nofile_kind}")
+        elif nofile > MAX_NOFILE:
+            issues.append(f"{unit.name}:LimitNOFILE-above-{MAX_NOFILE}")
         if core_kind != "finite" or core != 0:
             issues.append(f"{unit.name}:LimitCORE-not-zero")
         if props["KillMode"] != "control-group":
             issues.append(f"{unit.name}:KillMode-not-control-group")
+        if props["OOMPolicy"] != "kill":
+            issues.append(f"{unit.name}:OOMPolicy-not-kill")
+        cpu_count = _allowed_cpu_count(props["AllowedCPUs"], unit=unit.name)
+        if cpu_count > MAX_ALLOWED_CPUS:
+            issues.append(f"{unit.name}:AllowedCPUs-above-{MAX_ALLOWED_CPUS}")
+        expected_restart = str(
+            _unit_policy_value(unit.name, RESTART_BY_PREFIX)
+        )
+        if props["Restart"] != expected_restart:
+            issues.append(
+                f"{unit.name}:Restart-not-{expected_restart}"
+            )
+        start_burst, start_burst_kind = _bounded_integer(
+            props["StartLimitBurst"], name="StartLimitBurst", unit=unit.name
+        )
+        if start_burst is None or start_burst <= 0:
+            issues.append(f"{unit.name}:StartLimitBurst-{start_burst_kind}")
+        elif start_burst > MAX_START_LIMIT_BURST:
+            issues.append(
+                f"{unit.name}:StartLimitBurst-above-{MAX_START_LIMIT_BURST}"
+            )
+        start_interval = _duration_usec(
+            props["StartLimitIntervalUSec"],
+            name="StartLimitIntervalUSec",
+            unit=unit.name,
+        )
+        if (
+            start_interval is None
+            or start_interval < MIN_START_LIMIT_INTERVAL_USEC
+        ):
+            issues.append(f"{unit.name}:StartLimitIntervalUSec-too-short")
+        stop_timeout = _duration_usec(
+            props["TimeoutStopUSec"], name="TimeoutStopUSec", unit=unit.name
+        )
+        max_stop = int(_unit_policy_value(unit.name, MAX_STOP_USEC_BY_PREFIX))
+        if stop_timeout is None or not 1 <= stop_timeout <= max_stop:
+            issues.append(f"{unit.name}:TimeoutStopUSec-out-of-range")
         for prop in ("MemoryAccounting", "TasksAccounting", "IOAccounting"):
             value = props[prop]
             if value not in {"yes", "no"}:
@@ -377,6 +539,8 @@ def active_policy_and_counters(
                 )
             if value != "yes":
                 issues.append(f"{unit.name}:{prop}-not-yes")
+        if not unit.has_live_counters:
+            continue
         invocation_id = props["InvocationID"]
         if re.fullmatch(r"[0-9a-f]{32}", invocation_id) is None:
             raise EvidenceUnavailable(
