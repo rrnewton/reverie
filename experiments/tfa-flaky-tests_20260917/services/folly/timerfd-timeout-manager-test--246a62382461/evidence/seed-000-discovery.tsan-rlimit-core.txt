@@ -1,0 +1,9 @@
+Candidate: fbcode//folly/io/async/test:timerfd_timeout_manager_test
+Selected test: TimerFDTimeoutManagerTest.ReschedTest; scheduler seed 0.
+Native: PASS in 0.18 seconds wall.
+Hermit: exit 132 / SIGILL in 3.048133820 seconds outer wall; safehermit elapsed_secs=2.
+All bounds were APPLIED and truncated=false.
+BitwiseInfoV1 compared 4151 INFO records per replica and found no substantive differences.
+The target oracle did not run: ThreadSanitizer aborted on failed setrlimit(RLIMIT_CORE), followed by an allocator CHECK failure.
+This is a censored sanitizer/Hermit compatibility failure, not target FAIL.
+Retained logs (LOCAL_IGNORED): run1_log_lZrUi, 1103494 bytes, SHA-256 42e2e034a2d55adbe2a107fd16f6ecc56e8bb87a6f0376129768e07393a44357; run2_log_FK3WW, 1103494 bytes, SHA-256 e9f0f5d199e01f26dc099427d3480d33bc103a05ad27f0b3c69897055f4efe71; both under /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-folly-timerfd-verify-2088150-1789909892153926966.
