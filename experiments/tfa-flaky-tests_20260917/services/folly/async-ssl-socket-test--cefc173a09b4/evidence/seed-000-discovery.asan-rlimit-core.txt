@@ -1,0 +1,35 @@
+Candidate: fbcode//folly/io/async/test:async_ssl_socket_test
+Selected test: AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect
+Scheduler seed: 0
+
+Native control
+- started: 2026-09-20T12:44:54Z
+- finished: 2026-09-20T12:44:58Z
+- wall: 3.48 seconds
+- exit: 0
+- oracle: one selected test ran and passed
+
+Hermit strict ptrace chaos readiness run
+- started: 2026-09-20T12:45:40Z
+- finished: 2026-09-20T12:45:42Z
+- outer measured wall: 1.890506125 seconds
+- safehermit elapsed_secs: 1
+- wrapper/Hermit exit: 1
+- safehermit bounds: wall APPLIED 900s; cgroup APPLIED MemoryMax=16G MemorySwapMax=0; disk APPLIED 8G; stderr bytes APPLIED 67108864; truncated=false
+- selected-test oracle: NOT_RUN; stdout is empty and has no GoogleTest execution marker
+
+Strict verifier result
+- 5081 INFO messages were compared in each replica with BitwiseInfoV1 and no relaxations.
+- The comparator found no substantive differences and reported deterministic verification success.
+- Both replicas nevertheless ended before the selected test oracle because AddressSanitizer aborted on setrlimit(RLIMIT_CORE).
+
+Decisive retained stderr
+AddressSanitizer: CHECK failed: sanitizer_posix_libcdep.cpp:127 "((0)) == ((setrlimit(RLIMIT_CORE, &rlim)))" (0x0, 0xffffffffffffffff) (tid=3)
+    <empty stack>
+
+Retained verifier logs (LOCAL_IGNORED, bounded live qgroup during diagnosis)
+- /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-folly-async-ssl-verify-286018-1789908245004333083/run1_log_TzYkj: 1366947 bytes, SHA-256 2ff95dac813eb8698b60cd9026fffc5dbc4e599c0b50c5f9aec3c1b0334b2e94
+- /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-folly-async-ssl-verify-286018-1789908245004333083/run2_log_ElC6I: 1366947 bytes, SHA-256 28d4f13507ff926e9752f43fc58ee64f6c0cfc5f3e944e89f792f94e2bbc803c
+
+Classification
+This is a censored Hermit-compatibility failure, not the target-owned FAIL arm. The guest began execution and both replicas were deterministic, but the selected test never emitted its execution marker. The 11-tuple route remains non-exhausted; the readiness policy stops this target after seed 0 and proceeds to another short candidate.
