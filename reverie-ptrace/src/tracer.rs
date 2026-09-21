@@ -1590,6 +1590,43 @@ fn from_nix_error(err: nix::Error) -> Errno {
     Errno::new(err as i32)
 }
 
+// Private initialization outcomes. Exited carries an already observed status,
+// never a manufactured Running/Stopped/Zombie capability.
+#[derive(Debug)]
+enum PostspawnError {
+    Trace(TraceError),
+    Exited { pid: Pid, exit_status: ExitStatus },
+}
+
+impl From<TraceError> for PostspawnError {
+    fn from(error: TraceError) -> Self {
+        Self::Trace(error)
+    }
+}
+
+impl From<Errno> for PostspawnError {
+    fn from(error: Errno) -> Self {
+        Self::Trace(error.into())
+    }
+}
+
+fn initialization_exit_error(pid: Pid, exit_status: ExitStatus) -> Error {
+    tracing::error!(
+        target: "reverie_ptrace::lifecycle",
+        %pid,
+        ?exit_status,
+        "guest exited during ptrace initialization"
+    );
+    anyhow::anyhow!("tracee {pid} exited during ptrace initialization with {exit_status:?}").into()
+}
+
+async fn postspawn_error(pid: Pid, error: PostspawnError) -> Error {
+    match error {
+        PostspawnError::Trace(error) => initialization_error(pid, error).await,
+        PostspawnError::Exited { pid, exit_status } => initialization_exit_error(pid, exit_status),
+    }
+}
+
 async fn initialization_error(pid: Pid, err: TraceError) -> Error {
     match err {
         TraceError::Errno(errno) => {
@@ -1605,14 +1642,7 @@ async fn initialization_error(pid: Pid, err: TraceError) -> Error {
                     .into();
                 }
             };
-            tracing::error!(
-                target: "reverie_ptrace::lifecycle",
-                %pid,
-                ?exit_status,
-                "guest exited during ptrace initialization"
-            );
-            anyhow::anyhow!("tracee {pid} exited during ptrace initialization with {exit_status:?}")
-                .into()
+            initialization_exit_error(pid, exit_status)
         }
     }
 }
@@ -1809,7 +1839,7 @@ async fn postspawn<L: Tool + 'static>(
     config: <L::GlobalState as GlobalTool>::Config,
     options: TracedTaskOptions<'_>,
     gdbserver: Option<GdbServer>,
-) -> Result<BoxFuture<'static, Result<ExitStatus, Error>>, TraceError> {
+) -> Result<BoxFuture<'static, Result<ExitStatus, Error>>, PostspawnError> {
     let pid = child.pid();
 
     // Wait for the child to enter a stopped state. The child will enter a
@@ -1817,10 +1847,12 @@ async fn postspawn<L: Tool + 'static>(
     //
     // NOTE: We may rarely get spurious signals here, like SIGWINCH, so we must
     // skip past them.
-    let (mut child, event) = child
-        .wait_for_signal(Signal::SIGSTOP)
-        .await?
-        .assume_stopped();
+    let (mut child, event) = match child.wait_for_signal(Signal::SIGSTOP).await? {
+        Wait::Stopped(child, event) => (child, event),
+        Wait::Exited(pid, exit_status) => {
+            return Err(PostspawnError::Exited { pid, exit_status });
+        }
+    };
     assert_eq!(event, Event::Signal(Signal::SIGSTOP));
 
     child.setoptions(
@@ -2538,7 +2570,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         {
             Ok(tracer) => tracer,
             Err(err) => {
-                let error = initialization_error(guest_pid, err).await;
+                let error = postspawn_error(guest_pid, err).await;
                 if let Some(cleanup) = liteinst_cleanup.as_mut()
                     && let Err(cleanup_error) = cleanup.terminate_and_confirm()
                 {
@@ -2689,7 +2721,7 @@ where
             .await
             {
                 Ok(tracer) => tracer,
-                Err(err) => return Err(initialization_error(guest_pid, err).await),
+                Err(err) => return Err(postspawn_error(guest_pid, err).await),
             };
 
             Ok(Tracer {
@@ -4579,5 +4611,328 @@ mod tests {
         drop(wait);
         assert_reaped("root", root_pid);
         assert_reaped("CLONE_PARENT sibling", sibling_pid);
+    }
+
+    // Start from a real consumed SIGSTOP, retain that capability, and make the
+    // kernel report its death without consuming the terminal wait status.
+    // This deliberately uses only synchronous waiting until initialization_error
+    // takes over: an async notifier must not pre-consume the pending test status.
+    async fn initial_wait_pending_death_control(consume_elsewhere: bool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let pid = match unsafe { unistd::fork() }.expect("fork stopped initialization child") {
+            ForkResult::Child => {
+                if safeptrace::traceme_and_stop().is_err() {
+                    unsafe { libc::_exit(91) };
+                }
+                unsafe { libc::_exit(92) };
+            }
+            ForkResult::Parent { child } => Pid::from(child),
+        };
+        let peek = |options: i32| {
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid.as_raw() as u32,
+                        &mut info,
+                        options | libc::WNOWAIT | libc::WNOHANG,
+                    )
+                },
+                0,
+                "nonconsuming exact-child wait failed: {}",
+                Errno::last()
+            );
+            info
+        };
+        loop {
+            let info = peek(libc::WSTOPPED);
+            if unsafe { info.si_pid() } == pid.as_raw() {
+                assert_eq!(unsafe { info.si_status() }, libc::SIGSTOP);
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "initial stop deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let (stopped, event) = Running::new(pid)
+            .wait()
+            .expect("consume the already observed stop")
+            .assume_stopped();
+        assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+        let before = tracee_snapshot(pid).expect("real stopped child generation");
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), 0) };
+        assert!(fd >= 0, "open held child pidfd: {}", Errno::last());
+        let pidfd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+        assert_eq!(
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    pidfd.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            },
+            0,
+            "signal only the held stopped generation"
+        );
+        loop {
+            let info = peek(libc::WEXITED);
+            if unsafe { info.si_pid() } == pid.as_raw() {
+                assert_eq!(info.si_code, libc::CLD_KILLED);
+                assert_eq!(unsafe { info.si_status() }, libc::SIGKILL);
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "pending death deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let zombie = tracee_snapshot(pid).expect("WNOWAIT must retain the actual zombie");
+        assert_eq!(before.start_time, zombie.start_time);
+        let died = stopped
+            .getregs()
+            .expect_err("actual killed stop must report death");
+        assert!(matches!(died, TraceError::Died(_)));
+        eprintln!(
+            "initial-wait pending-reap pid={pid} start={} kernel_signal={} consume_elsewhere={consume_elsewhere}",
+            zombie.start_time,
+            libc::SIGKILL
+        );
+        if consume_elsewhere {
+            let mut status = 0;
+            assert_eq!(
+                unsafe { libc::waitpid(pid.as_raw(), &mut status, libc::WNOHANG) },
+                pid.as_raw(),
+                "opposing waiter consumes the already observed real status"
+            );
+            assert!(libc::WIFSIGNALED(status));
+            assert_eq!(libc::WTERMSIG(status), libc::SIGKILL);
+        }
+        let error = tokio::time::timeout_at(deadline, initialization_error(pid, died))
+            .await
+            .expect("initialization conversion exceeded the one total three-second bound");
+        assert!(matches!(error, Error::Tool(_)));
+        let message = error.to_string();
+        if consume_elsewhere {
+            assert!(
+                message.contains("terminal status could not be reaped"),
+                "{message}"
+            );
+            assert!(
+                !message.contains("exited during ptrace initialization with"),
+                "{message}"
+            );
+        } else {
+            assert_eq!(
+                message,
+                format!(
+                    "tracee {pid} exited during ptrace initialization with Signaled(SIGKILL, false)"
+                )
+            );
+        }
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "real child remains after its terminal status should be consumed"
+        );
+        assert!(tokio::time::Instant::now() <= deadline);
+        eprintln!("initial-wait final pid={pid} root_absent=true error={message}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn initial_wait_reaps_a_genuinely_pending_died_status() {
+        initial_wait_pending_death_control(false).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn initial_wait_refuses_a_died_status_consumed_by_another_waiter() {
+        initial_wait_pending_death_control(true).await;
+    }
+
+    static INITIAL_WAIT_CALLBACKS: [std::sync::atomic::AtomicUsize; 3] =
+        [const { std::sync::atomic::AtomicUsize::new(0) }; 3];
+
+    #[derive(Default)]
+    struct InitialWaitCallbackWitness;
+
+    #[reverie::tool]
+    impl Tool for InitialWaitCallbackWitness {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::none()
+        }
+
+        async fn handle_thread_start<G: Guest<Self>>(&self, _guest: &mut G) -> Result<(), Error> {
+            INITIAL_WAIT_CALLBACKS[0].fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn on_exit_thread<G: reverie::GlobalRPC<Self::GlobalState>>(
+            &self,
+            _tid: reverie::Tid,
+            _global: &G,
+            _state: Self::ThreadState,
+            _status: ExitStatus,
+        ) -> Result<(), Error> {
+            INITIAL_WAIT_CALLBACKS[1].fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn on_exit_process<G: reverie::GlobalRPC<Self::GlobalState>>(
+            self,
+            _pid: Pid,
+            _global: &G,
+            _status: ExitStatus,
+        ) -> Result<(), Error> {
+            INITIAL_WAIT_CALLBACKS[2].fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn initial_wait_monotonic_ns() -> u64 {
+        let mut now: libc::timespec = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) },
+            0
+        );
+        u64::try_from(now.tv_sec)
+            .unwrap()
+            .checked_mul(1_000_000_000)
+            .unwrap()
+            .checked_add(u64::try_from(now.tv_nsec).unwrap())
+            .unwrap()
+    }
+
+    fn command_pretraceme_exit_control(expected_exit: i32, test_name: &str) {
+        const INNER: &str = "REVERIE_INITIAL_WAIT_EXIT_CHILD";
+        const DEADLINE: &str = "REVERIE_INITIAL_WAIT_EXIT_DEADLINE_NS";
+
+        if let Some(selected_test) = std::env::var_os(INNER) {
+            assert_eq!(selected_test, test_name);
+            let deadline: u64 = std::env::var(DEADLINE)
+                .expect("parent-issued absolute deadline")
+                .parse()
+                .expect("monotonic deadline must be an integer");
+            assert!(initial_wait_monotonic_ns() < deadline);
+
+            // This fresh exact-test process owns its signal policy and callback
+            // counters. The parallel library runner's process is not changed.
+            let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+            action.sa_sigaction = libc::SIG_DFL;
+            assert_eq!(unsafe { libc::sigemptyset(&mut action.sa_mask) }, 0);
+            assert_eq!(
+                unsafe { libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut()) },
+                0
+            );
+
+            let (mut witness, child_witness) =
+                std::os::unix::net::UnixStream::pair().expect("initial-wait PID witness");
+            witness.set_nonblocking(true).unwrap();
+            let witness_fd = child_witness.as_raw_fd();
+            let mut command = Command::new("/bin/true");
+            unsafe {
+                command.pre_exec(move || {
+                    let bytes = libc::getpid().to_ne_bytes();
+                    let written = libc::write(witness_fd, bytes.as_ptr().cast(), bytes.len());
+                    if written != bytes.len() as isize {
+                        return Err(Errno::EIO);
+                    }
+                    // Caller callbacks precede Reverie's TRACEME/init callback.
+                    libc::_exit(expected_exit);
+                });
+            }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("initial-wait test runtime");
+            let error = runtime.block_on(async {
+                let remaining =
+                    Duration::from_nanos(deadline.saturating_sub(initial_wait_monotonic_ns()));
+                match tokio::time::timeout(
+                    remaining,
+                    TracerBuilder::<InitialWaitCallbackWitness>::new(command).spawn(),
+                )
+                .await
+                .expect("public spawn exceeded the one total three-second bound")
+                {
+                    Err(error) => error,
+                    Ok(_) => panic!("early pre-TRACEME exit must not construct a Tracer"),
+                }
+            });
+            drop(child_witness);
+            let mut bytes = [0; std::mem::size_of::<i32>()];
+            std::io::Read::read_exact(&mut witness, &mut bytes)
+                .expect("the real pre_exec callback must publish its PID before exiting");
+            let pid = i32::from_ne_bytes(bytes);
+            assert!(pid > 0);
+            assert!(matches!(error, Error::Tool(_)), "{error}");
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "tracee {pid} exited during ptrace initialization with Exited({expected_exit})"
+                )
+            );
+            assert_eq!(
+                INITIAL_WAIT_CALLBACKS
+                    .each_ref()
+                    .map(|count| count.load(Ordering::SeqCst)),
+                [0; 3],
+                "an uninitialized guest must not receive Tool lifecycle callbacks"
+            );
+            assert!(
+                !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+                "early-exit guest remains after its observed terminal status"
+            );
+            assert!(initial_wait_monotonic_ns() <= deadline);
+            eprintln!("initial-wait public pid={pid} callbacks=0 error={error}");
+            return;
+        }
+
+        // As with the precise-timer control, re-exec just this test to isolate
+        // process-global state. One deadline includes startup and final wait.
+        let deadline = initial_wait_monotonic_ns() + 3_000_000_000;
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
+            .env(INNER, test_name)
+            .env(DEADLINE, deadline.to_string())
+            .spawn()
+            .expect("spawn isolated initial-wait regression");
+        loop {
+            if let Some(status) = child.try_wait().expect("observe exact regression child") {
+                assert!(
+                    status.success(),
+                    "isolated initial-wait regression: {status}"
+                );
+                assert!(initial_wait_monotonic_ns() <= deadline);
+                return;
+            }
+            assert!(
+                initial_wait_monotonic_ns() < deadline,
+                "initial-wait regression exceeded its one total three-second bound; child not known terminal"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn command_pretraceme_exit_zero_is_initialization_error() {
+        command_pretraceme_exit_control(
+            0,
+            "tracer::tests::command_pretraceme_exit_zero_is_initialization_error",
+        );
+    }
+
+    #[test]
+    fn command_pretraceme_exit_73_is_initialization_error() {
+        command_pretraceme_exit_control(
+            73,
+            "tracer::tests::command_pretraceme_exit_73_is_initialization_error",
+        );
     }
 }
