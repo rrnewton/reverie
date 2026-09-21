@@ -1,0 +1,133 @@
+{
+  "argv": [
+    "bin/safehermit",
+    "--sh-report",
+    "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-001-sched-seed-00000000000000000005-replica-1.safehermit.txt",
+    "--sh-deadline",
+    "120",
+    "--sh-max-log-bytes",
+    "67108864",
+    "--sh-disk-limit",
+    "8G",
+    "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+    "run",
+    "--backend",
+    "ptrace",
+    "--strict",
+    "--chaos",
+    "--base-env=minimal",
+    "--env",
+    "LC_ALL=C",
+    "--env",
+    "TZ=UTC",
+    "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+    "--epoch=2026-09-21T18:14:41Z",
+    "--clock-multiplier=0.125",
+    "--chaos-per-thread-slowdown",
+    "--chaos-slowdown-max-factor=10.0",
+    "--chaos-epoch-length-ns=0",
+    "--seed",
+    "0",
+    "--rng-seed",
+    "0",
+    "--sched-seed",
+    "5",
+    "--fuzz-seed",
+    "0",
+    "--sched-heuristic",
+    "random",
+    "--max-timeslice",
+    "200000000",
+    "--verify",
+    "--verify-strict",
+    "--verify-allow",
+    "both",
+    "--keep-logs",
+    "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-time-2936582-20260921-2670399-1790014467662735185",
+    "--",
+    "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+    "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-time-input-campaign_20260921",
+  "execution_boundary": {
+    "head_commit": "51f2c9dea87a5437adde11922d5afab7761f051e",
+    "plan_receipt": {
+      "blob": "85f9f209d34269eb4c2b2f6f312619007dcf27db",
+      "commit": "1859ca5db565e24922b8894cb163f700e3e30ba2",
+      "path": "services/proxygen/httpcorosessiontests--e3f69b337304/experiment.json"
+    },
+    "plan_sha256": "54c9f09c3005d9bac78e634fcf4dca2a14d3b2a3a1cc83bdab53397ebb22f6ce",
+    "record_blob": "d61cdb627c8480f18580359566917587930294dc",
+    "record_repository_path": "experiments/tfa-kernel71-time-input-campaign_20260921/services/proxygen/httpcorosessiontests--e3f69b337304/experiment.json",
+    "route_id": "httpcoro-kernel71-time-input-existing-elf-v1",
+    "route_sha256": "f80a5f21b75b0eec7e24d771f4fe243568cd655e737b36236dfc4bf6f18c19a6"
+  },
+  "finished_at": "2026-09-21T18:39:29Z",
+  "host_environment": {
+    "HERMIT_BIN": null,
+    "RUST_LOG": null,
+    "SAFEHERMIT_LOG_ROOT": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit"
+  },
+  "paths": {
+    "safehermit_qgroup_after": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/httpcoro-time-input/selection-001-sched-seed-00000000000000000005/safehermit-qgroup-after.txt",
+    "safehermit_report": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-time-input-campaign_20260921/services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-001-sched-seed-00000000000000000005-replica-1.safehermit.txt",
+    "stderr": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/httpcoro-time-input/selection-001-sched-seed-00000000000000000005/stderr.txt",
+    "stdout": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/httpcoro-time-input/selection-001-sched-seed-00000000000000000005/stdout.txt",
+    "verifier_qgroup_after": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/httpcoro-time-input/selection-001-sched-seed-00000000000000000005/verifier-qgroup-after.txt",
+    "verifier_qgroup_before": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/httpcoro-time-input/selection-001-sched-seed-00000000000000000005/verifier-qgroup-before.txt"
+  },
+  "postcheck_errors": [],
+  "preflight": {
+    "binaries": [
+      {
+        "bytes": 415330552,
+        "label": "Hermit",
+        "path": "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a"
+      },
+      {
+        "bytes": 48908168,
+        "label": "test",
+        "path": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+        "sha256": "00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc"
+      }
+    ],
+    "host": {
+      "cpu": "AMD EPYC 9D85 158-Core Processor",
+      "hostname": "devbig030.atn3.facebook.com",
+      "kernel_release": "7.1.3-0_fbk0_0_g295ad0959f34",
+      "machine": "x86_64",
+      "perf_event_paranoid": "1",
+      "pmu_type": "4",
+      "system": "Linux"
+    },
+    "mount": "/dev/loop1 btrfs",
+    "qgroup": {
+      "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-time-2936582-20260921-2670399-1790014467662735185",
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "referenced=9912320 exclusive=9912320 limit=8000000000\n"
+    }
+  },
+  "process_returncode": 0,
+  "safehermit_qgroup_after": {
+    "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-safehermit-20260921T183914Z-2032865-2033792-1790015954661443023",
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "referenced=0 exclusive=0 limit=8000000000\n"
+  },
+  "schema_version": 1,
+  "seed": {
+    "flag": "--sched-seed",
+    "value": 5
+  },
+  "selection_index": 1,
+  "started_at": "2026-09-21T18:39:14Z",
+  "state": "COMPLETE",
+  "verifier_qgroup_after": {
+    "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-time-2936582-20260921-2670399-1790014467662735185",
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "referenced=9912320 exclusive=9912320 limit=8000000000\n"
+  }
+}
