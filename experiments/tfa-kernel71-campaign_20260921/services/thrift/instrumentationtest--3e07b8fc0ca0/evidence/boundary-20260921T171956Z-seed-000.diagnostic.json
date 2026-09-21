@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "diagnostic_id": "thrift-seed-000-safehermit-disk-boundary",
+  "kind": "INTENDED_FORMAL_INVOCATION_REJECTED_AT_RESOURCE_BOUNDARY",
+  "run_id": "20260921T171956Z-1228877",
+  "cause": {
+    "component": "safehermit",
+    "stage": "LAUNCH",
+    "code": "DISK_BOUND_NOT_APPLIED",
+    "message": "safehermit reported bound.disk=NOT_APPLIED because SAFEHERMIT_LOG_ROOT was unset and its default log root was not on the bounded Btrfs filesystem"
+  },
+  "eligibility_rule": "Any invocation whose safehermit report has a NOT_APPLIED resource bound is ineligible as a cell-bound HERMIT_EXECUTION, PASS/FAIL sample, confirmation, guest-execution count, or stopping evidence, regardless of target output.",
+  "observed_but_ineligible": {
+    "selected_test_executed_count": 1,
+    "gtest_outcome": "PASS",
+    "strict_bitwise_info_v1_matched": true,
+    "elapsed_seconds": 16,
+    "internal_guest_runs": 2
+  },
+  "formal_count_effect": {
+    "attempted_target": 1,
+    "valid_seed_tuples": 0,
+    "censored_seed_tuples": 0,
+    "attempted_seed_tuples": 0,
+    "guest_execution_events": 0
+  },
+  "original_wrapper_paths": {
+    "log_dir": "/home/newton/work/dev-hermit/ignored/safehermit/brs-safehermit-20260921T171956Z-1228877-1228970-1790011196587320051",
+    "registry": "/home/newton/work/dev-hermit/ignored/safehermit/registry/20260921T171956Z-1228877.json"
+  },
+  "relocated_wrapper_paths": {
+    "log_dir": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/rejected-wrapper-run-20260921T171956Z/brs-safehermit-20260921T171956Z-1228877-1228970-1790011196587320051",
+    "registry": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/rejected-wrapper-run-20260921T171956Z/20260921T171956Z-1228877.json"
+  },
+  "pending_recovery": "Commit this rejected LAUNCH boundary, prospectively instantiate the already-authorized frozen cell, set host-only SAFEHERMIT_LOG_ROOT to /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit, require bound.disk=APPLIED:8G, and then execute seed 0 as the first eligible discovery tuple."
+}

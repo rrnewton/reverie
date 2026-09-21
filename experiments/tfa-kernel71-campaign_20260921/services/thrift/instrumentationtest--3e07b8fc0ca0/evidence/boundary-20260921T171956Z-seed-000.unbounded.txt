@@ -1,0 +1,5 @@
+This directory was NOT bounded.
+directory=/home/newton/work/dev-hermit/ignored/safehermit/brs-safehermit-20260921T171956Z-1228877-1228970-1790011196587320051
+device_inode=4194340:256
+reason: qgroup limit not in force (readback='unreadable', wanted=8000000000; ERROR: unable to limit requested quota group: quota not enabled)
+Nothing limited how many bytes were written here. Totals below are not a guarantee.
