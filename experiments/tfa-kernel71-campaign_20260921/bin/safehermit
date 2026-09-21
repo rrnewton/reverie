@@ -1,1 +1,2 @@
-/home/newton/work/dev-hermit/bin/safehermit
+#!/bin/sh
+exec /home/newton/work/dev-hermit/bin/safehermit "$@"
