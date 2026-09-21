@@ -14,7 +14,7 @@ SOURCE_REVISION = "7f239d5b37dfbecf32fed144468da461f998add5"
 HERMIT_REVISION = "4630ee2a61f93221a43e2baec0a15f34102a2c61"
 HERMIT_BINARY = "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a"
 HERMIT_SHA256 = "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a"
-SEALED_AT = "2026-09-21T14:56:22Z"
+SEALED_AT = "2026-09-21T14:58:36Z"
 HOST_KERNEL = "Linux 7.1.3-0_fbk0_0_g295ad0959f34"
 HOSTNAME = "devbig030.atn3.facebook.com"
 CPU = "AMD EPYC 9D85 158-Core Processor"
@@ -126,6 +126,19 @@ CONFIGS = [
         "required_n": 31,
         "attempt_cap": 35,
         "verify_dir": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987",
+    },
+    {
+        "name": "mcrefill",
+        "target": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+        "binary": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test",
+        "binary_sha256": "3eaa55b7765bee4a5dbf578a535e24438d757d76b0d3e0d8f0da5185ff29b369",
+        "binary_bytes": 12366336,
+        "gtest_filter": "McRefillWrapperBucketized/0.refillOnMiss",
+        "gtest_display": "McRefillWrapperBucketized/0.refillOnMiss",
+        "run_disabled": False,
+        "required_n": 13,
+        "attempt_cap": 17,
+        "verify_dir": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-mcrefill-verify-3174621-1790002707339803842",
     },
 ]
 
