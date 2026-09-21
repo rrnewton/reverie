@@ -1,0 +1,2106 @@
+{
+  "schema_version": 2,
+  "source": {
+    "commit": "ee6562142e3796bb56a1dd0e28b77c1c16a78cc2",
+    "path": "ai_docs/tfa-candidate-sourcing-2026-09-17.md",
+    "blob": "ff01b534352e15a5685b8a41032973d46c089274"
+  },
+  "counting_key": "canonical_target",
+  "expected_target_count": 30,
+  "test_selector_convention": "EXACT_FILTER preserves the --exact argument; NAMED_TEST preserves the launcher --tests argument; WHOLE_TARGET means the pinned invocation has neither selector flag.",
+  "build_mode_selector_convention": "exact shlex token slice after buck test/run and before the invoked fbcode// target; an empty array means no explicit build-mode selector",
+  "row_digest_convention": "sha256 of exact UTF-8 Markdown table-row bytes, excluding the line terminator",
+  "targets_digest_convention": "sha256 of UTF-8 json.dumps(targets, sort_keys=True, separators=(',', ':'), ensure_ascii=False)",
+  "targets_sha256": "49e1952b2bd857229646842f6a6da845e5b7ecea14e14cd9c077190a699750c0",
+  "targets": [
+    {
+      "service": "cachelib",
+      "canonical_target": "fbcode//cachelib/facebook/cogwheel:cogwheel_cachelib_sanitizer_free_list_stress-test",
+      "target_key_sha256": "28c4166cdcc434c445136920e2fcea24a34930fc015294082cb32905765af597",
+      "target_directory": "services/cachelib/cogwheel-cachelib-sanitizer-free-list-stress-test--28c4166cdcc4",
+      "testinfra_id": "281475243051108",
+      "test_name": "cachelib_cogwheel_test",
+      "source_label_qualifier": "sanitizer free-list stress",
+      "test_selector": {
+        "kind": "NAMED_TEST",
+        "flag": "--tests",
+        "value": "cachelib_cogwheel_test"
+      },
+      "build_mode_selector": [],
+      "invoked_target": "fbcode//cachelib/facebook/cogwheel:cogwheel_cachelib_sanitizer_free_list_stress-launcher",
+      "standalone_argv": [
+        "buck",
+        "run",
+        "fbcode//cachelib/facebook/cogwheel:cogwheel_cachelib_sanitizer_free_list_stress-launcher",
+        "--",
+        "--build-fbpkg",
+        "--run-disabled",
+        "--tests",
+        "cachelib_cogwheel_test"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.3104,
+          "displayed_percent": "31.04%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 21,
+          "executed": 60,
+          "rate": 0.35,
+          "rate_fraction": "21/60",
+          "displayed_percent": "35.00%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 85,
+      "source_row_sha256": "243a14051b45d54f0673e736df5563e40a16c17a8089b53ee56e1fc61d6c69e4"
+    },
+    {
+      "service": "cachelib",
+      "canonical_target": "fbcode//cachelib/facebook/cogwheel:cogwheel_cachelib_free_list_stress-test",
+      "target_key_sha256": "c4e673aaba705aca1adecd3b4e7bd1b389a017ff52fbb1be8c757a34ecbd8dba",
+      "target_directory": "services/cachelib/cogwheel-cachelib-free-list-stress-test--c4e673aaba70",
+      "testinfra_id": "281475243043222",
+      "test_name": "cachelib_cogwheel_test",
+      "source_label_qualifier": "free-list stress",
+      "test_selector": {
+        "kind": "NAMED_TEST",
+        "flag": "--tests",
+        "value": "cachelib_cogwheel_test"
+      },
+      "build_mode_selector": [],
+      "invoked_target": "fbcode//cachelib/facebook/cogwheel:cogwheel_cachelib_free_list_stress-launcher",
+      "standalone_argv": [
+        "buck",
+        "run",
+        "fbcode//cachelib/facebook/cogwheel:cogwheel_cachelib_free_list_stress-launcher",
+        "--",
+        "--build-fbpkg",
+        "--run-disabled",
+        "--tests",
+        "cachelib_cogwheel_test"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.278,
+          "displayed_percent": "27.80%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 7,
+          "executed": 26,
+          "rate": 0.2692307692307692,
+          "rate_fraction": "7/26",
+          "displayed_percent": "26.92%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 86,
+      "source_row_sha256": "e3cded19dd7d33533b64fd33cb7e8bdc61a2b65253741c2f02a6cd422cdf0e0b"
+    },
+    {
+      "service": "cachelib",
+      "canonical_target": "fbcode//cachelib/common/tests:event-tracker-test",
+      "target_key_sha256": "4b6700e9a3a0850f45178e2c684e6347cc9402500a1c265e8835f9b6c8551d1b",
+      "target_directory": "services/cachelib/event-tracker-test--4b6700e9a3a0",
+      "testinfra_id": "562950242844554",
+      "test_name": "EventTrackerTest.NvmCacheWithEventTracker",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//cachelib/common/tests:event-tracker-test - EventTrackerTest.NvmCacheWithEventTracker"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "invoked_target": "fbcode//cachelib/common/tests:event-tracker-test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev",
+        "fbcode//cachelib/common/tests:event-tracker-test",
+        "--",
+        "--exact",
+        "fbcode//cachelib/common/tests:event-tracker-test - EventTrackerTest.NvmCacheWithEventTracker"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.2299,
+          "displayed_percent": "22.99%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 1,
+          "executed": 29,
+          "rate": 0.034482758620689655,
+          "rate_fraction": "1/29",
+          "displayed_percent": "3.45%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 87,
+      "source_row_sha256": "8c019dada1cc6dcf2f124f71995ddfdaa46b99523dd59aacdacdeb8e94ee0c57"
+    },
+    {
+      "service": "folly",
+      "canonical_target": "fbcode//folly/io/async/test:async_ssl_socket_test",
+      "target_key_sha256": "cefc173a09b4f40477210ee411107887fe0a53291386278e689ca8885ecdba77",
+      "target_directory": "services/folly/async-ssl-socket-test--cefc173a09b4",
+      "testinfra_id": "562950211052906",
+      "test_name": "AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//folly/io/async/test:async_ssl_socket_test - AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/libcxx"
+      ],
+      "invoked_target": "fbcode//folly/io/async/test:async_ssl_socket_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/libcxx",
+        "fbcode//folly/io/async/test:async_ssl_socket_test",
+        "--",
+        "--exact",
+        "fbcode//folly/io/async/test:async_ssl_socket_test - AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+        "--run-disabled"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.3687,
+          "displayed_percent": "36.87%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 37,
+          "executed": 96,
+          "rate": 0.3854166666666667,
+          "rate_fraction": "37/96",
+          "displayed_percent": "38.54%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 93,
+      "source_row_sha256": "f9d9f67fc7497b7c9043352cfcf6985b6ee905fa6e47d18cbbfe1962493cca97"
+    },
+    {
+      "service": "folly",
+      "canonical_target": "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+      "target_key_sha256": "246a623824611aae67d9548c5de604acb3b78f6fe5ca218eb7f724c020d2d942",
+      "target_directory": "services/folly/timerfd-timeout-manager-test--246a62382461",
+      "testinfra_id": "281475234167465",
+      "test_name": "TimerFDTimeoutManagerTest.ReschedTest",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//folly/io/async/test:timerfd_timeout_manager_test - TimerFDTimeoutManagerTest.ReschedTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "invoked_target": "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev-tsan",
+        "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+        "--",
+        "--exact",
+        "fbcode//folly/io/async/test:timerfd_timeout_manager_test - TimerFDTimeoutManagerTest.ReschedTest",
+        "--run-disabled"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.3054,
+          "displayed_percent": "30.54%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 28,
+          "executed": 93,
+          "rate": 0.3010752688172043,
+          "rate_fraction": "28/93",
+          "displayed_percent": "30.11%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 94,
+      "source_row_sha256": "02fb8230c40e48b8bb3ddffe3e3942b9dc05bd3d7033f3b6730b46b972e9442d"
+    },
+    {
+      "service": "folly",
+      "canonical_target": "fbcode//folly/io/async/test:io_uring_dynamic_provided_buffer_ring_test",
+      "target_key_sha256": "2aaba8d28b701749ef8d8a634f8b337f79f2365b05a4a021aaa98d564ceaaa68",
+      "target_directory": "services/folly/io-uring-dynamic-provided-buffer-ring-test--2aaba8d28b70",
+      "testinfra_id": "562950361061616",
+      "test_name": "IoUringDynamicProvidedBufferRingTest.BufferCountCheck",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//folly/io/async/test:io_uring_dynamic_provided_buffer_ring_test - IoUringDynamicProvidedBufferRingTest.BufferCountCheck"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "invoked_target": "fbcode//folly/io/async/test:io_uring_dynamic_provided_buffer_ring_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev-tsan",
+        "fbcode//folly/io/async/test:io_uring_dynamic_provided_buffer_ring_test",
+        "--",
+        "--exact",
+        "fbcode//folly/io/async/test:io_uring_dynamic_provided_buffer_ring_test - IoUringDynamicProvidedBufferRingTest.BufferCountCheck"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.3029,
+          "displayed_percent": "30.29%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 22,
+          "executed": 100,
+          "rate": 0.22,
+          "rate_fraction": "22/100",
+          "displayed_percent": "22.00%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 95,
+      "source_row_sha256": "7f26aaae9d0cc3dd73479d7db019ad8f9ea73adca3f64498043735dff4f85eb3"
+    },
+    {
+      "service": "logdevice",
+      "canonical_target": "fbcode//logdevice/admin/health_monitor:tests",
+      "target_key_sha256": "679930c8e36e3da3f314ac024132686145527d5eb677ececc7d66043954f671e",
+      "target_directory": "services/logdevice/tests--679930c8e36e",
+      "testinfra_id": "281475244092464",
+      "test_name": "LogStoreHealthMonitorTest.DisabledRebuilding",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//logdevice/admin/health_monitor:tests - LogStoreHealthMonitorTest.DisabledRebuilding"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/opt"
+      ],
+      "invoked_target": "fbcode//logdevice/admin/health_monitor:tests",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/opt",
+        "fbcode//logdevice/admin/health_monitor:tests",
+        "--",
+        "--exact",
+        "fbcode//logdevice/admin/health_monitor:tests - LogStoreHealthMonitorTest.DisabledRebuilding",
+        "--run-disabled"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4863,
+          "displayed_percent": "48.63%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 65,
+          "executed": 96,
+          "rate": 0.6770833333333334,
+          "rate_fraction": "65/96",
+          "displayed_percent": "67.71%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 101,
+      "source_row_sha256": "3b06c25577508147766397a159c8c3fcace51b5e9eae44115bda3cc720ccfc62"
+    },
+    {
+      "service": "logdevice",
+      "canonical_target": "fbcode//logdevice/fb:tests",
+      "target_key_sha256": "4b60a9f9203a5cb87a70d41a049dbf9a766de91e52ad8a3037c19e7e104d62c5",
+      "target_directory": "services/logdevice/tests--4b60a9f9203a",
+      "testinfra_id": "844425197050049",
+      "test_name": "SslAuthenticationTest.VerifyServerAuthentication/WithoutSessionResumption",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//logdevice/fb:tests - SslAuthenticationTest/SslAuthenticationTest.VerifyServerAuthentication/WithoutSessionResumption"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "invoked_target": "fbcode//logdevice/fb:tests",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev",
+        "fbcode//logdevice/fb:tests",
+        "--",
+        "--exact",
+        "fbcode//logdevice/fb:tests - SslAuthenticationTest/SslAuthenticationTest.VerifyServerAuthentication/WithoutSessionResumption",
+        "--run-disabled"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.3177,
+          "displayed_percent": "31.77%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 33,
+          "executed": 94,
+          "rate": 0.35106382978723405,
+          "rate_fraction": "33/94",
+          "displayed_percent": "35.11%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 102,
+      "source_row_sha256": "3d85779840a7dbb7c66fc1e03c220d7beebfc5be3af2c96c9b5a6db798b60bff"
+    },
+    {
+      "service": "logdevice",
+      "canonical_target": "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+      "target_key_sha256": "589f359badefab14a350d88d995b48bc8adbd3153e07915e3d498191172b08b0",
+      "target_directory": "services/logdevice/log-store-test--589f359badef",
+      "testinfra_id": "281475271465112",
+      "test_name": "LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//logdevice/logservice/server/log_store/test:log_store_test - LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "invoked_target": "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev",
+        "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+        "--",
+        "--exact",
+        "fbcode//logdevice/logservice/server/log_store/test:log_store_test - LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.2771,
+          "displayed_percent": "27.71%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 3,
+          "executed": 32,
+          "rate": 0.09375,
+          "rate_fraction": "3/32",
+          "displayed_percent": "9.38%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 103,
+      "source_row_sha256": "457b1e40e813fd71ebae2493a1b6a45227a13583e8b6adee43bec2882ff79ce0"
+    },
+    {
+      "service": "manifold",
+      "canonical_target": "fbcode//manifold/common/versioned_prod:crypto_plugin_integration_test",
+      "target_key_sha256": "703391d3c9ffd1db36d451d74c327cff2288503a973416751187ccd98b674412",
+      "target_directory": "services/manifold/crypto-plugin-integration-test--703391d3c9ff",
+      "testinfra_id": "844425263427177",
+      "test_name": "CryptoPluginIntegrationTest.EmptyPayloadAtPluginBoundary",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//manifold/common/versioned_prod:crypto_plugin_integration_test - CryptoPluginIntegrationTest.EmptyPayloadAtPluginBoundary"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "invoked_target": "fbcode//manifold/common/versioned_prod:crypto_plugin_integration_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev",
+        "fbcode//manifold/common/versioned_prod:crypto_plugin_integration_test",
+        "--",
+        "--exact",
+        "fbcode//manifold/common/versioned_prod:crypto_plugin_integration_test - CryptoPluginIntegrationTest.EmptyPayloadAtPluginBoundary"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4899,
+          "displayed_percent": "48.99%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 72,
+          "executed": 97,
+          "rate": 0.7422680412371134,
+          "rate_fraction": "72/97",
+          "displayed_percent": "74.23%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 109,
+      "source_row_sha256": "2c1dd726fd2149539d29877b4edbe1e989547d43e63d344411563e847752aa70"
+    },
+    {
+      "service": "manifold",
+      "canonical_target": "fbcode//manifold/client/impl/tests:manifold_client_test",
+      "target_key_sha256": "e7df3a7de0ef72ec3526e5425fc7e349cf5fb199ad3cbadef2e690a1e940e98a",
+      "target_directory": "services/manifold/manifold-client-test--e7df3a7de0ef",
+      "testinfra_id": "562950216898741",
+      "test_name": "ClientTestWithBucketTypes.TestPayloadSizeBasedTimeout/sr_unified_nosidecar",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//manifold/client/impl/tests:manifold_client_test - core/ClientTestWithBucketTypes.TestPayloadSizeBasedTimeout/sr_unified_nosidecar"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "invoked_target": "fbcode//manifold/client/impl/tests:manifold_client_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev",
+        "fbcode//manifold/client/impl/tests:manifold_client_test",
+        "--",
+        "--exact",
+        "fbcode//manifold/client/impl/tests:manifold_client_test - core/ClientTestWithBucketTypes.TestPayloadSizeBasedTimeout/sr_unified_nosidecar",
+        "--run-disabled"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4831,
+          "displayed_percent": "48.31%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 39,
+          "executed": 84,
+          "rate": 0.4642857142857143,
+          "rate_fraction": "39/84",
+          "displayed_percent": "46.43%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 110,
+      "source_row_sha256": "8f0873acf6529f289dc27ff739126871336ed61a3ee1b3ea89e5b9946fb8aae4"
+    },
+    {
+      "service": "manifold",
+      "canonical_target": "fbcode//manifold/clients/rust:manifold_client_tests",
+      "target_key_sha256": "ffb0d3de4eb59d9c0af6ccfd7afa9b635efc55ae9a55333f19d3fb0c66f1b06e",
+      "target_directory": "services/manifold/manifold-client-tests--ffb0d3de4eb5",
+      "testinfra_id": "281475240048871",
+      "test_name": "test_real_create_then_delete_dir",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//manifold/clients/rust:manifold_client_tests - test_real_create_then_delete_dir"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "invoked_target": "fbcode//manifold/clients/rust:manifold_client_tests",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev",
+        "fbcode//manifold/clients/rust:manifold_client_tests",
+        "--",
+        "--exact",
+        "fbcode//manifold/clients/rust:manifold_client_tests - test_real_create_then_delete_dir"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4603,
+          "displayed_percent": "46.03%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 7,
+          "executed": 96,
+          "rate": 0.07291666666666667,
+          "rate_fraction": "7/96",
+          "displayed_percent": "7.29%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 111,
+      "source_row_sha256": "9a54a8996d0f7daf78357a681b73ebd58d944fc02948ea7f8c0d47bb9cc70361"
+    },
+    {
+      "service": "mcrouter",
+      "canonical_target": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+      "target_key_sha256": "82eb51b9426da3ea01d4a6ca05d1622eddba968c97ac511a84ed4cbc26424298",
+      "target_directory": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d",
+      "testinfra_id": "562950220120091",
+      "test_name": "McRefillWrapperBucketized/0.refillOnMiss",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test - McRefillWrapperBucketized/0.refillOnMiss"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "invoked_target": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev-tsan",
+        "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+        "--",
+        "--exact",
+        "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test - McRefillWrapperBucketized/0.refillOnMiss"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4939,
+          "displayed_percent": "49.39%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 77,
+          "executed": 97,
+          "rate": 0.7938144329896907,
+          "rate_fraction": "77/97",
+          "displayed_percent": "79.38%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 117,
+      "source_row_sha256": "bd5bb88d592c810154c76f41241b9a43f55eab930155af13dcba9061520da490"
+    },
+    {
+      "service": "mcrouter",
+      "canonical_target": "fbcode//mcrouter/routes/facebook/test/cpp_unit_tests:shadow_thread_affinity_integration_test",
+      "target_key_sha256": "affa98ddf865978e57bcca1c54bd8f5c078034d22cf67fb85ed65056ee11409b",
+      "target_directory": "services/mcrouter/shadow-thread-affinity-integration-test--affa98ddf865",
+      "testinfra_id": "281475243259972",
+      "test_name": "ShadowThreadAffinityIntegrationTest.DisableJumpThreads",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//mcrouter/routes/facebook/test/cpp_unit_tests:shadow_thread_affinity_integration_test - ShadowThreadAffinityIntegrationTest.DisableJumpThreads"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/opt-tsan"
+      ],
+      "invoked_target": "fbcode//mcrouter/routes/facebook/test/cpp_unit_tests:shadow_thread_affinity_integration_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/opt-tsan",
+        "fbcode//mcrouter/routes/facebook/test/cpp_unit_tests:shadow_thread_affinity_integration_test",
+        "--",
+        "--exact",
+        "fbcode//mcrouter/routes/facebook/test/cpp_unit_tests:shadow_thread_affinity_integration_test - ShadowThreadAffinityIntegrationTest.DisableJumpThreads",
+        "--run-disabled"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.49,
+          "displayed_percent": "49.00%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 68,
+          "executed": 98,
+          "rate": 0.6938775510204082,
+          "rate_fraction": "68/98",
+          "displayed_percent": "69.39%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 118,
+      "source_row_sha256": "85eebf90581f377a9a7155187746fdcabe55afa9c3220f67c9a89375a5bdc640"
+    },
+    {
+      "service": "mcrouter",
+      "canonical_target": "fbcode//mcrouter/facebook/test/toaster_tests:mux_io_thread_pool_executor_toaster_test",
+      "target_key_sha256": "50ce9a16ebfad9097df9d17193de3376dc0f4f08ff1efa5bf514cee4d4191e90",
+      "target_directory": "services/mcrouter/mux-io-thread-pool-executor-toaster-test--50ce9a16ebfa",
+      "testinfra_id": "281475243249473",
+      "test_name": "MuxIOThreadPoolExecutorWithThreadAffinityToasterTest/0.BasicTest",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//mcrouter/facebook/test/toaster_tests:mux_io_thread_pool_executor_toaster_test - MuxIOThreadPoolExecutorWithThreadAffinityToasterTest/0.BasicTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/opt-tsan"
+      ],
+      "invoked_target": "fbcode//mcrouter/facebook/test/toaster_tests:mux_io_thread_pool_executor_toaster_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/opt-tsan",
+        "fbcode//mcrouter/facebook/test/toaster_tests:mux_io_thread_pool_executor_toaster_test",
+        "--",
+        "--exact",
+        "fbcode//mcrouter/facebook/test/toaster_tests:mux_io_thread_pool_executor_toaster_test - MuxIOThreadPoolExecutorWithThreadAffinityToasterTest/0.BasicTest"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4857,
+          "displayed_percent": "48.57%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 50,
+          "executed": 88,
+          "rate": 0.5681818181818182,
+          "rate_fraction": "50/88",
+          "displayed_percent": "56.82%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 119,
+      "source_row_sha256": "23fd931396d97646549ea35d691a4dd4cfd99c53a9c6d3cad2d06f5e075deb7e"
+    },
+    {
+      "service": "mysql",
+      "canonical_target": "fbcode//mysql/server/mysql-test:mtr_parallel_main_1",
+      "target_key_sha256": "0cb5c3b377891219716467cfc5bfe242be60f7579399e0d8d060eee35bb51a9c",
+      "target_directory": "services/mysql/mtr-parallel-main-1--0cb5c3b37789",
+      "testinfra_id": "844425202171362",
+      "test_name": "main.explain_for_connection_small_json---rocksdb_intrinsic_table",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//mysql/server/mysql-test:mtr_parallel_main_1 - main.explain_for_connection_small_json---rocksdb_intrinsic_table"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dbgo",
+        "-c",
+        "fbcode.arch=aarch64"
+      ],
+      "invoked_target": "fbcode//mysql/server/mysql-test:mtr_parallel_main_1",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dbgo",
+        "-c",
+        "fbcode.arch=aarch64",
+        "fbcode//mysql/server/mysql-test:mtr_parallel_main_1",
+        "--",
+        "--exact",
+        "fbcode//mysql/server/mysql-test:mtr_parallel_main_1 - main.explain_for_connection_small_json---rocksdb_intrinsic_table"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4942,
+          "displayed_percent": "49.42%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 79,
+          "executed": 96,
+          "rate": 0.8229166666666666,
+          "rate_fraction": "79/96",
+          "displayed_percent": "82.29%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 125,
+      "source_row_sha256": "9b1d542578f8fd647cfa72e34e751293f6a18d944c7da3a50ffddf4dda67fb94"
+    },
+    {
+      "service": "mysql",
+      "canonical_target": "fbcode//mysql/server/mysql-test:mtr_parallel_rocksdb_stress",
+      "target_key_sha256": "654a65b8a090f2b10e865d6801b18d47af9781a88a8aaebcba7f9ef79448c71e",
+      "target_directory": "services/mysql/mtr-parallel-rocksdb-stress--654a65b8a090",
+      "testinfra_id": "844425205465381",
+      "test_name": "rocksdb_ha_consistent_snapshot_stress",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//mysql/server/mysql-test:mtr_parallel_rocksdb_stress - rocksdb_stress.rocksdb_ha_consistent_snapshot_stress"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dbgo",
+        "-c",
+        "fbcode.arch=aarch64"
+      ],
+      "invoked_target": "fbcode//mysql/server/mysql-test:mtr_parallel_rocksdb_stress",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dbgo",
+        "-c",
+        "fbcode.arch=aarch64",
+        "fbcode//mysql/server/mysql-test:mtr_parallel_rocksdb_stress",
+        "--",
+        "--exact",
+        "fbcode//mysql/server/mysql-test:mtr_parallel_rocksdb_stress - rocksdb_stress.rocksdb_ha_consistent_snapshot_stress",
+        "--run-disabled"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4939,
+          "displayed_percent": "49.39%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 82,
+          "executed": 95,
+          "rate": 0.8631578947368421,
+          "rate_fraction": "82/95",
+          "displayed_percent": "86.32%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 126,
+      "source_row_sha256": "c908b31c7163ae2be1a60798fb66b1bf3de2019e8ae7192936466f3fccf218db"
+    },
+    {
+      "service": "mysql",
+      "canonical_target": "fbcode//mysql/server/mysql-test:mtr_parallel_main_no_tp_mutex_1",
+      "target_key_sha256": "18721505580c0efeab7d2b5668b417ae3b0518224c35d01c7f98c561aab40bad",
+      "target_directory": "services/mysql/mtr-parallel-main-no-tp-mutex-1--18721505580c",
+      "testinfra_id": "562950274089363",
+      "test_name": "main.explain_for_connection_small_json---rocksdb_intrinsic_table",
+      "source_label_qualifier": "no TP mutex",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//mysql/server/mysql-test:mtr_parallel_main_no_tp_mutex_1 - main.explain_for_connection_small_json---rocksdb_intrinsic_table"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dbgo",
+        "-c",
+        "fbcode.arch=aarch64"
+      ],
+      "invoked_target": "fbcode//mysql/server/mysql-test:mtr_parallel_main_no_tp_mutex_1",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dbgo",
+        "-c",
+        "fbcode.arch=aarch64",
+        "fbcode//mysql/server/mysql-test:mtr_parallel_main_no_tp_mutex_1",
+        "--",
+        "--exact",
+        "fbcode//mysql/server/mysql-test:mtr_parallel_main_no_tp_mutex_1 - main.explain_for_connection_small_json---rocksdb_intrinsic_table"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.493,
+          "displayed_percent": "49.30%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 21,
+          "executed": 50,
+          "rate": 0.42,
+          "rate_fraction": "21/50",
+          "displayed_percent": "42.00%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 127,
+      "source_row_sha256": "9d38d2ae0e859860e983b0c4b1678d90804fbc6b33874ab0ba43425ae5a2d7c5"
+    },
+    {
+      "service": "proxygen",
+      "canonical_target": "fbcode//proxygen/facebook/lib/transport/monitor/test:proxygen_transport_monitor_test",
+      "target_key_sha256": "fcaf56433e7fd371527a9c4c261a44cb26282cd5acd323354f28e7a15a6884e3",
+      "target_directory": "services/proxygen/proxygen-transport-monitor-test--fcaf56433e7f",
+      "testinfra_id": "562950215341224",
+      "test_name": "PopulateEdgeConnectionsLoggerEvent/without_response",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//proxygen/facebook/lib/transport/monitor/test:proxygen_transport_monitor_test - PopulateEdgeConnectionsLoggerTests/PopulateEdgeConnectionsLoggerTest.PopulateEdgeConnectionsLoggerEvent/without_response"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-asan"
+      ],
+      "invoked_target": "fbcode//proxygen/facebook/lib/transport/monitor/test:proxygen_transport_monitor_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev-asan",
+        "fbcode//proxygen/facebook/lib/transport/monitor/test:proxygen_transport_monitor_test",
+        "--",
+        "--exact",
+        "fbcode//proxygen/facebook/lib/transport/monitor/test:proxygen_transport_monitor_test - PopulateEdgeConnectionsLoggerTests/PopulateEdgeConnectionsLoggerTest.PopulateEdgeConnectionsLoggerEvent/without_response"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.3398,
+          "displayed_percent": "33.98%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 2,
+          "executed": 30,
+          "rate": 0.06666666666666667,
+          "rate_fraction": "2/30",
+          "displayed_percent": "6.67%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 133,
+      "source_row_sha256": "5c636988d123a97dbbe900d4a71dcdb32b403988a65af946b8ceb0366b6752e8"
+    },
+    {
+      "service": "proxygen",
+      "canonical_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+      "target_key_sha256": "60719afd988eee8c2db83c049a52f1d217db38984e103b124eea11f2cbce04f2",
+      "target_directory": "services/proxygen/tls-terminator-test--60719afd988e",
+      "testinfra_id": "281475238796418",
+      "test_name": "TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test - TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/opt"
+      ],
+      "invoked_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/opt",
+        "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+        "--",
+        "--exact",
+        "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test - TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+        "--run-disabled"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.2344,
+          "displayed_percent": "23.44%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 23,
+          "executed": 96,
+          "rate": 0.23958333333333334,
+          "rate_fraction": "23/96",
+          "displayed_percent": "23.96%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 134,
+      "source_row_sha256": "99ca52973321055da65dece68d10ae1928cb4c9941caac43c6f51c3b9a8f68e3"
+    },
+    {
+      "service": "proxygen",
+      "canonical_target": "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests",
+      "target_key_sha256": "e3f69b337304cf7b68eab3451a695d88714bc3cd6031131e9c1203d097ba4457",
+      "target_directory": "services/proxygen/httpcorosessiontests--e3f69b337304",
+      "testinfra_id": "562950215319283",
+      "test_name": "H2DownstreamSessionTest.ResetRateLimit/h2",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests - HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-asan"
+      ],
+      "invoked_target": "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev-asan",
+        "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests",
+        "--",
+        "--exact",
+        "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests - HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.217,
+          "displayed_percent": "21.70%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 1,
+          "executed": 30,
+          "rate": 0.03333333333333333,
+          "rate_fraction": "1/30",
+          "displayed_percent": "3.33%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 135,
+      "source_row_sha256": "aa645c7095f0d7562b788abaea518c1dc860329ab74dc79c12a2fab3135c8b8f"
+    },
+    {
+      "service": "thrift",
+      "canonical_target": "fbcode//thrift/lib/cpp2/test:coroutine_test",
+      "target_key_sha256": "4534c1e98ff4b95a118bd526114d65a1b3e4d60789e630ab4d24f1ad08312b8f",
+      "target_directory": "services/thrift/coroutine-test--4534c1e98ff4",
+      "testinfra_id": "562950212033102",
+      "test_name": "CoroutineTest.SumThrowsUserExPrimitive",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//thrift/lib/cpp2/test:coroutine_test - CoroutineTest/CoroutineTest/0.SumThrowsUserExPrimitive"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "invoked_target": "fbcode//thrift/lib/cpp2/test:coroutine_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev-tsan",
+        "fbcode//thrift/lib/cpp2/test:coroutine_test",
+        "--",
+        "--exact",
+        "fbcode//thrift/lib/cpp2/test:coroutine_test - CoroutineTest/CoroutineTest/0.SumThrowsUserExPrimitive"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.231,
+          "displayed_percent": "23.10%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 0,
+          "executed": 29,
+          "rate": 0.0,
+          "rate_fraction": "0/29",
+          "displayed_percent": "0.00%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 141,
+      "source_row_sha256": "e641ca3a16f8b15fdc6b1191f213601b469b8d62681771e62b096dc261ee83fa"
+    },
+    {
+      "service": "thrift",
+      "canonical_target": "fbcode//thrift/lib/cpp2/test:coroutine_test_resource_pools",
+      "target_key_sha256": "71f6a9136aacff5ebc4492077230d8ce1c7954b8a33bd1681145a0c2dc29ab2f",
+      "target_directory": "services/thrift/coroutine-test-resource-pools--71f6a9136aac",
+      "testinfra_id": "281475235281183",
+      "test_name": "CoroutineTest.SumThrows",
+      "source_label_qualifier": "resource pools",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//thrift/lib/cpp2/test:coroutine_test_resource_pools - CoroutineTest/CoroutineTest/0.SumThrows"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/opt-tsan"
+      ],
+      "invoked_target": "fbcode//thrift/lib/cpp2/test:coroutine_test_resource_pools",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/opt-tsan",
+        "fbcode//thrift/lib/cpp2/test:coroutine_test_resource_pools",
+        "--",
+        "--exact",
+        "fbcode//thrift/lib/cpp2/test:coroutine_test_resource_pools - CoroutineTest/CoroutineTest/0.SumThrows"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.2019,
+          "displayed_percent": "20.19%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 0,
+          "executed": 22,
+          "rate": 0.0,
+          "rate_fraction": "0/22",
+          "displayed_percent": "0.00%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 142,
+      "source_row_sha256": "ef2ed66029d3ce141da72e67063f1378e7d3c0e2e940525af139772910d24d0c"
+    },
+    {
+      "service": "thrift",
+      "canonical_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "target_key_sha256": "3e07b8fc0ca0b9f498450c35f3501c1cb91f5ea46ab354b890dda91ac7e2edfe",
+      "target_directory": "services/thrift/instrumentationtest--3e07b8fc0ca0",
+      "testinfra_id": "281475235299286",
+      "test_name": "RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "invoked_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev-tsan",
+        "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+        "--",
+        "--exact",
+        "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.1722,
+          "displayed_percent": "17.22%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 0,
+          "executed": 29,
+          "rate": 0.0,
+          "rate_fraction": "0/29",
+          "displayed_percent": "0.00%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 143,
+      "source_row_sha256": "8f3fbf4ce51298f55b59ac5e7a405778e65fd9491e57e5d71ee7725cb83ef2d6"
+    },
+    {
+      "service": "warm_storage",
+      "canonical_target": "fbcode//warm_storage/integration/ws_durability:write_time_encoding_selection_test",
+      "target_key_sha256": "1f31bf714cc3b52bee2ad40a29792e02c62c9c74a5f55200c1f6241b768d6510",
+      "target_directory": "services/warm_storage/write-time-encoding-selection-test--1f31bf714cc3",
+      "testinfra_id": "562950213120998",
+      "test_name": "write_time_encoding_selection_test",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "WHOLE_TARGET",
+        "flag": null,
+        "value": null,
+        "documentation": "The pinned standalone invocation contains no --exact or --tests selector."
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/opt"
+      ],
+      "invoked_target": "fbcode//warm_storage/integration/ws_durability:write_time_encoding_selection_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/opt",
+        "fbcode//warm_storage/integration/ws_durability:write_time_encoding_selection_test"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4943,
+          "displayed_percent": "49.43%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 88,
+          "executed": 100,
+          "rate": 0.88,
+          "rate_fraction": "88/100",
+          "displayed_percent": "88.00%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 154,
+      "source_row_sha256": "fa1bb5293533bbb3458bfa8da14459c45bcb33993b7e2501c5a97cfed1f201dc"
+    },
+    {
+      "service": "warm_storage",
+      "canonical_target": "fbcode//warm_storage/file_service:file_service_tests",
+      "target_key_sha256": "bb13b85f89bf55b4edda6884aefab8fd7a87ba449393cda7df8041c4f4ffe10f",
+      "target_directory": "services/warm_storage/file-service-tests--bb13b85f89bf",
+      "testinfra_id": "281475236296488",
+      "test_name": "FileCacheTest.getFilesFromNVM",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//warm_storage/file_service:file_service_tests - FileCacheTest.getFilesFromNVM"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "invoked_target": "fbcode//warm_storage/file_service:file_service_tests",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev",
+        "fbcode//warm_storage/file_service:file_service_tests",
+        "--",
+        "--exact",
+        "fbcode//warm_storage/file_service:file_service_tests - FileCacheTest.getFilesFromNVM"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4942,
+          "displayed_percent": "49.42%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 90,
+          "executed": 96,
+          "rate": 0.9375,
+          "rate_fraction": "90/96",
+          "displayed_percent": "93.75%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 155,
+      "source_row_sha256": "c26a6e8d71d9c707f96124a5cc49bf7204cfbb63eb6a46899fc81df1b61a70ff"
+    },
+    {
+      "service": "warm_storage",
+      "canonical_target": "fbcode//warm_storage/blockio/prod/vnext/tests/api:bc_vnext_create_reader_retry_tests",
+      "target_key_sha256": "15c54e7cd9c267f9e7912cde2a3192555a4d050261d22e4d559f3352670c7fde",
+      "target_directory": "services/warm_storage/bc-vnext-create-reader-retry-tests--15c54e7cd9c2",
+      "testinfra_id": "281475250915202",
+      "test_name": "CreateReaderRetryTests.testGetBlockInfoRetryBypassesCacheOnBlockNotFound",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//warm_storage/blockio/prod/vnext/tests/api:bc_vnext_create_reader_retry_tests - CreateReaderRetryTests.testGetBlockInfoRetryBypassesCacheOnBlockNotFound"
+      },
+      "build_mode_selector": [
+        "@fbcode//warm_storage/common/client/mode-branch-dev"
+      ],
+      "invoked_target": "fbcode//warm_storage/blockio/prod/vnext/tests/api:bc_vnext_create_reader_retry_tests",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//warm_storage/common/client/mode-branch-dev",
+        "fbcode//warm_storage/blockio/prod/vnext/tests/api:bc_vnext_create_reader_retry_tests",
+        "--",
+        "--exact",
+        "fbcode//warm_storage/blockio/prod/vnext/tests/api:bc_vnext_create_reader_retry_tests - CreateReaderRetryTests.testGetBlockInfoRetryBypassesCacheOnBlockNotFound",
+        "--run-disabled"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4915,
+          "displayed_percent": "49.15%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 60,
+          "executed": 93,
+          "rate": 0.6451612903225806,
+          "rate_fraction": "60/93",
+          "displayed_percent": "64.52%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 156,
+      "source_row_sha256": "cf6d67b295fba03b19a2bdc5e55ce226cd6111fcca1831a56a7002cfa761c9fb"
+    },
+    {
+      "service": "zippydb",
+      "canonical_target": "fbcode//zippydb/common/tests:vrt_usage_tracker_test",
+      "target_key_sha256": "5a123a3ebda420ef2df69b6314b3bbb5b37903356827f0aed64e650f5cf65b73",
+      "target_directory": "services/zippydb/vrt-usage-tracker-test--5a123a3ebda4",
+      "testinfra_id": "844425193659677",
+      "test_name": "VRTUsageTrackerTest.BumpWithIOTagTest",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//zippydb/common/tests:vrt_usage_tracker_test - VRTUsageTrackerTest.BumpWithIOTagTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/opt"
+      ],
+      "invoked_target": "fbcode//zippydb/common/tests:vrt_usage_tracker_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/opt",
+        "fbcode//zippydb/common/tests:vrt_usage_tracker_test",
+        "--",
+        "--exact",
+        "fbcode//zippydb/common/tests:vrt_usage_tracker_test - VRTUsageTrackerTest.BumpWithIOTagTest",
+        "--run-disabled"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4947,
+          "displayed_percent": "49.47%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 72,
+          "executed": 75,
+          "rate": 0.96,
+          "rate_fraction": "72/75",
+          "displayed_percent": "96.00%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 162,
+      "source_row_sha256": "48f38cfcbed2b9bf7c4eacbc43265c18abcdb8d386c1f3125e775615b2bacb6c"
+    },
+    {
+      "service": "zippydb",
+      "canonical_target": "fbcode//zippydb/drocksdb/tests:DRocksDBTest",
+      "target_key_sha256": "af5789c4e31729b7ec65d1e8d876e0713b6fa6f59bdc5414928bf9a3342aa25f",
+      "target_directory": "services/zippydb/drocksdbtest--af5789c4e317",
+      "testinfra_id": "562950354325343",
+      "test_name": "DRocksDBTest.DestroySucceedsOnPopulatedBackend",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//zippydb/drocksdb/tests:DRocksDBTest - DRocksDBTest.DestroySucceedsOnPopulatedBackend"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/opt"
+      ],
+      "invoked_target": "fbcode//zippydb/drocksdb/tests:DRocksDBTest",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/opt",
+        "fbcode//zippydb/drocksdb/tests:DRocksDBTest",
+        "--",
+        "--exact",
+        "fbcode//zippydb/drocksdb/tests:DRocksDBTest - DRocksDBTest.DestroySucceedsOnPopulatedBackend"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4944,
+          "displayed_percent": "49.44%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 90,
+          "executed": 97,
+          "rate": 0.9278350515463918,
+          "rate_fraction": "90/97",
+          "displayed_percent": "92.78%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 163,
+      "source_row_sha256": "7e84fbc6b5304212f88bcedbd03a9044bd26a0d4c0b948960f0529d08661bc87"
+    },
+    {
+      "service": "zippydb",
+      "canonical_target": "fbcode//zippydb/zgateway/server/tests:admin_handler_e2e_test",
+      "target_key_sha256": "5590e90108d85b04687373e5b773fe6c99d7655a65d78943d47a67569059dac1",
+      "target_directory": "services/zippydb/admin-handler-e2e-test--5590e90108d8",
+      "testinfra_id": "281475240064369",
+      "test_name": "AdminHandlerE2ETest.CrosssShardTxnReserveWithoutConditions/0",
+      "source_label_qualifier": null,
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//zippydb/zgateway/server/tests:admin_handler_e2e_test - UseCases/AdminHandlerE2ETest.CrosssShardTxnReserveWithoutConditions/0"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "invoked_target": "fbcode//zippydb/zgateway/server/tests:admin_handler_e2e_test",
+      "standalone_argv": [
+        "buck",
+        "test",
+        "@fbcode//mode/dev",
+        "fbcode//zippydb/zgateway/server/tests:admin_handler_e2e_test",
+        "--",
+        "--exact",
+        "fbcode//zippydb/zgateway/server/tests:admin_handler_e2e_test - UseCases/AdminHandlerE2ETest.CrosssShardTxnReserveWithoutConditions/0",
+        "--run-disabled"
+      ],
+      "candidate_ranking": {
+        "pfs": {
+          "value": 0.4943,
+          "displayed_percent": "49.43%",
+          "partition": "2026-09-17",
+          "metric": "probability_of_flaky_state",
+          "role": "ranking_only",
+          "may_parameterize_seed_budget": false
+        },
+        "native_failure_rate": {
+          "failures": 38,
+          "executed": 47,
+          "rate": 0.8085106382978723,
+          "rate_fraction": "38/47",
+          "displayed_percent": "80.85%",
+          "window": "trailing one week; latest up to 100 final outcomes",
+          "limit": 100,
+          "final_only": true,
+          "purposes": [
+            "CONTINUOUS",
+            "STRESS_RUN",
+            "STRESS_RUN_NEW_TEST"
+          ],
+          "pass_statuses": [
+            "PASSED"
+          ],
+          "failure_statuses": [
+            "FAILED",
+            "FATAL",
+            "TIMEOUT"
+          ],
+          "excluded_statuses": [
+            "OMITTED",
+            "SKIPPED",
+            "INFRA_FAILURE"
+          ],
+          "source": "meta testinfra.result history",
+          "role": "planning_prior_only"
+        }
+      },
+      "source_row_line": 164,
+      "source_row_sha256": "7760469738f90e16b7fb3c2ee88a1eb430b8a723b8b8b2c4618694391c6b1722"
+    }
+  ]
+}
