@@ -1,0 +1,110 @@
+:: Run1...
+:: Run2...
+:: Comparing captured verification logs...
+Logs contain 23402 | 23402 messages total
+Logs contain 23401 | 23401 detcore-specific messages
+Logs contain 23402 | 23402 INFO messages
+Logs contain 19981 | 19981 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (23402 | 23402 INFO messages compared).
+Logs contain 1 | 1 scheduler empty-run-queue kick messages
+Logs contain 56 | 56 scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 419, committed virtual time 1790024276389428552ns, run 2 first at turn 419, committed virtual time 1790024276389428552ns)
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-sched-611100-1790025639833750331/run1_log_mNu4E
+::   run 2: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-sched-611100-1790025639833750331/run2_log_OgJfW
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Success: deterministic. Determinism verified.
+I0921 20:57:57.295219     3 TestSSLServer.cpp:103] Accepting connections on [::]:32768
+I0921 20:57:57.327627     5 TestSSLServer.h:71] Connection accepted
+SSLServerAcceptCallback::connAccepted
+writeError: bytesWritten 0, exception AsyncSocketException: write() called with socket in invalid state (peer=[::]:32768, local=<uninitialized address>), type = Socket not open
+HandshakeCallback::handshakeError AsyncSocketException: Network error, type = Network error, errno = 104 (Connection reset by peer)
+*** Aborted at 1790024277 (Unix time, try 'date -d @1790024277') ***
+*** Signal 11 (SIGSEGV) (0x0) received by PID 3 (pthread TID 0x7ffff390da80) (linux TID 3) (code: address not mapped to object), stack trace: ***
+==3==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+    @ 000000000002fd6b folly::symbolizer::(anonymous namespace)::innerSignalHandler(int, siginfo_t*, void*)
+                       ./fbcode/folly/debugging/symbolizer/SignalHandler.cpp:598
+    @ 000000000002f912 folly::symbolizer::(anonymous namespace)::signalHandler(int, siginfo_t*, void*)
+                       ./fbcode/folly/debugging/symbolizer/SignalHandler.cpp:615
+    @ 000000000004455f (unknown)
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/libc_sigaction.c:8
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c
+    @ 000000000050f982 folly::test::WriteCallbackBase::writeErr(unsigned long, folly::AsyncSocketException const&)
+                       fbcode/folly/io/async/test/AsyncSSLSocketTest.h:202
+    @ 00000000000ef3a8 folly::AsyncSocket::invalidState(folly::AsyncWriter::WriteCallback*)
+                       ./fbcode/folly/io/async/AsyncSocket.cpp:4705
+    @ 00000000000eb8e6 folly::AsyncSocket::writeImpl(folly::AsyncWriter::WriteCallback*, iovec const*, unsigned long, std::__2::unique_ptr<folly::IOBuf, std::__2::default_delete<folly::IOBuf> >&&, unsigned long, folly::WriteFlags)
+                       ./fbcode/folly/io/async/AsyncSocket.cpp:2049
+    @ 0000000000074ff0 folly::AsyncSocket::write(folly::AsyncWriter::WriteCallback*, void const*, unsigned long, folly::WriteFlags)
+                       ./fbcode/folly/io/async/AsyncSocket.cpp:1955
+    @ 00000000006a3840 AsyncSSLSocketByteEventTest::ClientConn::writeAndReflect(std::__2::vector<unsigned char, std::__2::allocator<unsigned char> > const&, folly::WriteFlags)
+                       ./fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp:3633
+    @ 00000000004dd937 AsyncSSLSocketByteEventTest_ObserverAttachedBeforeConnect_Test::TestBody()
+                       ./fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp:3793
+    @ 000000000012cbbd void testing::internal::HandleSehExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*)
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2707
+    @ 000000000012c695 void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*)
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2743
+    @ 000000000012c45d testing::Test::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2782
+    @ 000000000012f75f testing::TestInfo::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2928
+    @ 000000000013a524 testing::TestSuite::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:3106
+    @ 000000000016cfad testing::internal::UnitTestImpl::RunAllTests()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:6089
+    @ 000000000016de9d bool testing::internal::HandleSehExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*)
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2707
+    @ 000000000016b93a bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*)
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2743
+    @ 000000000016b4e5 testing::UnitTest::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:5630
+    @ 000000000077b070 RUN_ALL_TESTS()
+                       third-party/googletest/HEAD/googletest/googletest/include/gtest/gtest.h:2348
+    @ 000000000077af43 main
+                       ./fbcode/folly/io/async/test/AsyncSSLSocketTest2.cpp:276
+    @ 000000000002c656 __libc_start_call_main
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/nptl/libc_start_call_main.h:58
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86/libc-start.c
+    @ 000000000002c717 __libc_start_main
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../csu/libc-start.c:409
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86/libc-start.c
+    @ 000000000046a140 _start
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86_64/start.S:116
+AddressSanitizer:DEADLYSIGNAL
+=================================================================
+==3==ERROR: AddressSanitizer: SEGV on unknown address 0x000000000000 (pc 0x00000050f982 bp 0x7fffffffd0d0 sp 0x7fffffffd040 T0)
+==3==The signal is caused by a READ memory access.
+==3==Hint: address points to the zero page.
+SCARINESS: 10 (null-deref)
+    #0 0x00000050f982 in folly::test::WriteCallbackBase::writeErr(unsigned long, folly::AsyncSocketException const&) fbcode/folly/io/async/test/AsyncSSLSocketTest.h:202
+    #1 0x7ffff5a7b3a8 in folly::AsyncSocket::invalidState(folly::AsyncWriter::WriteCallback*) fbcode/folly/io/async/AsyncSocket.cpp:4705
+    #2 0x7ffff5a778e6 in folly::AsyncSocket::writeImpl(folly::AsyncWriter::WriteCallback*, iovec const*, unsigned long, std::__2::unique_ptr<folly::IOBuf, std::__2::default_delete<folly::IOBuf>>&&, unsigned long, folly::WriteFlags) fbcode/folly/io/async/AsyncSocket.cpp:2049
+    #3 0x7ffff5a00ff0 in folly::AsyncSocket::write(folly::AsyncWriter::WriteCallback*, void const*, unsigned long, folly::WriteFlags) fbcode/folly/io/async/AsyncSocket.cpp:1955
+    #4 0x0000006a3840 in AsyncSSLSocketByteEventTest::ClientConn::writeAndReflect(std::__2::vector<unsigned char, std::__2::allocator<unsigned char>> const&, folly::WriteFlags) fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp:3633
+    #5 0x0000004dd937 in AsyncSSLSocketByteEventTest_ObserverAttachedBeforeConnect_Test::TestBody() fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp:3793
+    #6 0x7ffff7f13bbd in void testing::internal::HandleSehExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2707
+    #7 0x7ffff7f13695 in void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2743
+    #8 0x7ffff7f1345d in testing::Test::Run() third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2782
+    #9 0x7ffff7f1675f in testing::TestInfo::Run() third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2928
+    #10 0x7ffff7f21524 in testing::TestSuite::Run() third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:3106
+    #11 0x7ffff7f53fad in testing::internal::UnitTestImpl::RunAllTests() third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:6089
+    #12 0x7ffff7f54e9d in bool testing::internal::HandleSehExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2707
+    #13 0x7ffff7f5293a in bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2743
+    #14 0x7ffff7f524e5 in testing::UnitTest::Run() third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:5630
+    #15 0x00000077b070 in RUN_ALL_TESTS() third-party/googletest/HEAD/googletest/googletest/include/gtest/gtest.h:2348
+    #16 0x00000077af43 in main fbcode/folly/io/async/test/AsyncSSLSocketTest2.cpp:276
+    #17 0x7ffff502c656 in __libc_start_call_main /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/nptl/libc_start_call_main.h:58:16
+    #18 0x7ffff502c717 in __libc_start_main@GLIBC_2.2.5 /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../csu/libc-start.c:409:3
+    #19 0x00000046a140 in _start /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86_64/start.S:116
+
+==3==Register values:
+rax = 0x0000000000000000  rbx = 0x00007fffffffd0e0  rcx = 0x0000000000000001  rdx = 0x0000000000000008  
+rdi = 0x00007bfff1a38028  rsi = 0x0000000000000001  rbp = 0x00007fffffffd0d0  rsp = 0x00007fffffffd040  
+ r8 = 0x00000f7ffe34700b   r9 = 0x0000000000000000  r10 = 0x00000f7ffe34700b  r11 = 0x0000000000000000  
+r12 = 0x00007fffffffebd8  r13 = 0x0000000000000003  r14 = 0x000000000077ae00  r15 = 0x0000000000987580  
+AddressSanitizer can not provide additional info.
+SUMMARY: AddressSanitizer: SEGV fbcode/folly/io/async/test/AsyncSSLSocketTest.h:202 in folly::test::WriteCallbackBase::writeErr(unsigned long, folly::AsyncSocketException const&)
+==3==ABORTING
