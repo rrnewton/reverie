@@ -660,7 +660,7 @@
         "selected_test_executed_count": 0,
         "target_oracle": "NOT_RUN",
         "failure_class_id": null,
-        "harness_status": "ERROR",
+        "harness_status": "TIMEOUT",
         "diagnostic": "status=CENSORED; selected=0; unit_result=timeout; exit=124; BitwiseInfoV1=not-matched"
       },
       "invocation_id": "cachelib-fuzz-000-verify",
@@ -698,8 +698,8 @@
           "kind": "RESULT",
           "storage": "TRACKED",
           "locator": "services/cachelib/event-tracker-test--4b6700e9a3a0/evidence/seed-000-replica-1.result.json",
-          "sha256": "a5326257cd2889b2683b16482620ed3b15735a1995e19b130fa0d2b105e2cade",
-          "bytes": 1752,
+          "sha256": "3c620f7a7c6cd6c3be583664cdc732909a45aecc61cc0a3cd591e9ad93844114",
+          "bytes": 1754,
           "capture_limit_bytes": 67108864,
           "truncated": false,
           "media_type": "application/json"

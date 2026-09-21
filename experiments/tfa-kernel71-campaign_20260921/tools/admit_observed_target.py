@@ -158,6 +158,8 @@ def classify(cfg: dict, stdout: str, stderr: str, fields: dict[str, str]) -> tup
         return "VALID", "PASS", "COMPLETE", None, selected
     if matched and selected == 1 and exit_code != 0:
         return "VALID", "FAIL", "COMPLETE", "gtest-selected-test-failure", selected
+    if fields["unit_result"] == "timeout":
+        return "CENSORED", None, "TIMEOUT", None, selected
     return "CENSORED", None, "ERROR", None, selected
 
 
