@@ -83,14 +83,14 @@
   },
   "plan": {
     "plan_id": "httpcoro-kernel71-ptrace-strict-midpoint-v1",
-    "plan_sha256": "3f5114737b34642973e6a705149645812cac76383e9f86421985c5a375d07000",
+    "plan_sha256": "0c62e2a530ab21f1bd8b28c2745c0c45299ace9ec8eb473e0aa87454c4fbbdf8",
     "sealed_at": "2026-09-21T21:01:52Z",
     "sealed_by": "codex-tfa-kernel71-campaign",
     "campaign_owner_identity": "rrnewton",
     "authorized_routes": [
       {
         "route_id": "httpcoro-kernel71-midpoint-existing-elf-v1",
-        "route_sha256": "698abadf599e9c621ac065913bd7443b18de42eb845a90d2c96505c9cad0f356",
+        "route_sha256": "d0daf25b0dffedba3aac75ce8c321dee093f630c5964b23846a85a721806cbae",
         "fallback_of": null,
         "authorized_cell_ids": [
           "httpcoro-kernel71-ptrace-strict-midpoint-slowdown-v1"
@@ -158,7 +158,7 @@
           "--verify-allow",
           "both",
           "--keep-logs",
-          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921-1463207-1790025873794204990",
           "--",
           "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
           "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
@@ -171,7 +171,7 @@
           "LC_ALL": "C",
           "TZ": "UTC"
         },
-        "notes": "PRE-RUN SEAL: one authorized cell httpcoro-kernel71-ptrace-strict-midpoint-slowdown-v1; Hermit revision 4630ee2a61f93221a43e2baec0a15f34102a2c61, binary SHA-256 5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; test ELF SHA-256 00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc; host devbig030.atn3.facebook.com, kernel Linux 7.1.3-0_fbk0_0_g295ad0959f34, x86_64 AMD EPYC 9D85 158-Core Processor; PMU type 4/RCB available; explicit epoch 2026-09-21T21:01:52Z; fixed clock multiplier 0.5; constant deterministic per-thread slowdown factor selected only by the swept scheduler seed; --chaos-target-races absent; target-timeslice intentionally unset because the selected phase has one guest thread; max-timeslice 200000000 virtual ns; seed/rng/fuzz roots 0; BitwiseInfoV1 with no relaxations; verifier qgroup /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921; host-only SAFEHERMIT_LOG_ROOT=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit."
+        "notes": "PRE-RUN SEAL: one authorized cell httpcoro-kernel71-ptrace-strict-midpoint-slowdown-v1; Hermit revision 4630ee2a61f93221a43e2baec0a15f34102a2c61, binary SHA-256 5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; test ELF SHA-256 00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc; host devbig030.atn3.facebook.com, kernel Linux 7.1.3-0_fbk0_0_g295ad0959f34, x86_64 AMD EPYC 9D85 158-Core Processor; PMU type 4/RCB available; explicit epoch 2026-09-21T21:01:52Z; fixed clock multiplier 0.5; constant deterministic per-thread slowdown factor selected only by the swept scheduler seed; --chaos-target-races absent; target-timeslice intentionally unset because the selected phase has one guest thread; max-timeslice 200000000 virtual ns; seed/rng/fuzz roots 0; BitwiseInfoV1 with no relaxations; verifier qgroup /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921-1463207-1790025873794204990; host-only SAFEHERMIT_LOG_ROOT=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit."
       }
     ],
     "target_oracle": {

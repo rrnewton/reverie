@@ -7,7 +7,7 @@ and test ELF SHA-256
 `00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc`.
 
 Before material execution, the fresh verifier subvolume
-`/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921`
+`/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921-1463207-1790025873794204990`
 must have a live 8,000,000,000-byte qgroup limit. Each invocation must also
 authenticate 120 seconds wall, 16 GiB memory, zero swap, 64 MiB stdout,
 stderr, and retained logs, plus the 8G disk guard. No Hermit was invoked while
