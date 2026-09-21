@@ -172,7 +172,8 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
     assert_eq!(capture_executor_stat(&mut parent, &memory, 1), stderr);
     assert_eq!(capture_executor_stat(&mut parent, &memory, alias), stdout);
     let mut child = parent.fork_child(3, false, false).unwrap();
-    child.replace_after_exec(test_state(&root.0));
+    let replacement = test_exec_replacement(&root.0, &child.state);
+    child.replace_after_exec(replacement);
     assert_eq!(capture_executor_stat(&mut child, &memory, alias), stdout);
     assert_eq!(capture_executor_stat(&mut child, &memory, 1), stderr);
     assert_eq!(

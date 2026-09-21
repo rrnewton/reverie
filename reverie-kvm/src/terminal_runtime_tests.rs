@@ -415,7 +415,10 @@ fn parked_retirement_rejects_reused_task_and_process_generations() {
     let site = executor.begin_signal_callback().unwrap();
     executor.retain_parked_effects(site).unwrap();
     let context = executor.signal_failure_context().unwrap();
-    executor.replace_after_exec(crate::executor::test_loaded_state_for_vm(&cwd));
+    let authority = executor.proc_carrier_authority();
+    executor.replace_after_exec(crate::executor::test_loaded_state_for_vm_with_authority(
+        &cwd, authority,
+    ));
     // The post-exec constructor is a new callback, not either bound driver
     // continuation. Its unchanged fresh-nonce fence invalidates the old site.
     let fresh = executor.begin_signal_callback().unwrap();
