@@ -21,7 +21,6 @@ from admit_asyncssl_exhaustion import (
     matcher_payload,
     report_times,
     replace_seed,
-    write_json,
 )
 
 
@@ -132,6 +131,22 @@ CONFIGS = {
         "seeds": [0],
         "terminal_exhausted": False,
     },
+    "thrift": {
+        "record": "services/thrift/instrumentationtest--3e07b8fc0ca0/experiment.json",
+        "plan_commit": "b819db93c2ea9e4ee8fbc49037fb752ea5fdd150",
+        "binary": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+        "binary_sha256": "2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc",
+        "binary_bytes": 11514064,
+        "display": "RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest",
+        "seeds": list(range(36)),
+        "terminal_exhausted": False,
+        "classifier": "thrift-instrumentation-snapshot-size-2",
+        "pending_measurement": (
+            "Continue the committed fuzz-seed prefix through seed 35 until both "
+            "target arms are confirmed, 29 valid tuples exhaust the rate-bound "
+            "design, or the 36-attempt cap is reached."
+        ),
+    },
 }
 
 HERMIT_REVISION = "4630ee2a61f93221a43e2baec0a15f34102a2c61"
@@ -148,19 +163,207 @@ def report_fields(path: Path) -> dict[str, str]:
     return result
 
 
-def classify(cfg: dict, stdout: str, stderr: str, fields: dict[str, str]) -> tuple[str, str | None, str, str | None, int]:
-    selected = stdout.count(f"[ RUN      ] {cfg['display']}")
-    matched = ":: Success: deterministic. Determinism verified." in stderr and ":: comparison=BitwiseInfoV1 relaxations=none" in stderr
+def write_json_once_or_verify(path: Path, value: object, verify_only: bool) -> None:
+    payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if verify_only:
+        if not path.is_file() or path.read_bytes() != payload:
+            raise SystemExit(f"prior JSON artifact changed: {path}")
+        return
+    if path.exists():
+        raise SystemExit(f"refusing to overwrite new JSON artifact: {path}")
+    path.write_bytes(payload)
+
+
+def copy_once_or_verify(source: Path, destination: Path, verify_only: bool) -> None:
+    if verify_only:
+        if not destination.is_file() or destination.read_bytes() != source.read_bytes():
+            raise SystemExit(f"prior replica artifact changed: {destination}")
+        return
+    if destination.exists():
+        raise SystemExit(f"refusing to overwrite new replica artifact: {destination}")
+    shutil.copyfile(source, destination)
+
+
+def thrift_prior_prefix(
+    record: dict, selected_seeds: list[int], plan_commit: str
+) -> list[int]:
+    current = record["current_outcome"]
+    if current["kind"] != "NOT-DETERMINABLE":
+        raise SystemExit(
+            "refusing to extend a record whose outcome is not NOT-DETERMINABLE"
+        )
+    if current.get("measurement_budget_exhausted"):
+        raise SystemExit("refusing to extend a terminal exhausted record")
+    if record["plan_receipt"]["commit"] != plan_commit:
+        raise SystemExit("repair guard failed: plan receipt commit changed")
+    existing = [sample["seed"]["value"] for sample in record["samples"]]
+    expected = selected_seeds[:-1]
+    if existing != expected:
+        raise SystemExit(
+            f"repair guard failed: expected prior admitted prefix {expected!r}, "
+            f"found {existing!r}"
+        )
+    return existing
+
+
+def assert_prior_prefix_unchanged(
+    record: dict,
+    cell: dict,
+    events: list[dict],
+    samples: list[dict],
+    matchers: list[dict],
+) -> None:
+    comparisons = (
+        (record["cells"], [cell], "frozen cell"),
+        (record["events"], events[: len(record["events"])], "execution events"),
+        (record["samples"], samples[: len(record["samples"])], "samples"),
+        (record["matchers"], matchers[: len(record["matchers"])], "matchers"),
+    )
+    for prior, rebuilt, label in comparisons:
+        if prior != rebuilt:
+            raise SystemExit(f"prior {label} changed during prefix reconstruction")
+
+
+def measurement_budget_exhausted(design: dict, samples: list[dict]) -> bool:
+    valid_count = sum(sample["status"] == "VALID" for sample in samples)
+    return (
+        valid_count >= design["required_valid_seed_tuples"]
+        or len(samples) >= design["max_attempted_seed_tuples"]
+    )
+
+
+def supersedes_id(record: dict, repairing: bool) -> str | None:
+    return record["current_outcome"]["classification_id"] if repairing else None
+
+
+def assert_first_thrift_admission(repairing: bool, selected_seeds: list[int]) -> None:
+    if not repairing and selected_seeds != [0]:
+        raise SystemExit("the first Thrift admission must contain only sealed seed 0")
+
+
+def assert_plan_receipt_preserved(
+    record: dict, receipt: dict, repairing: bool
+) -> None:
+    if repairing and record["plan_receipt"] != receipt:
+        raise SystemExit("repair guard failed: exact plan receipt changed")
+
+
+def infrastructure_failure_present(
+    stdout: str, stderr: str, fields: dict[str, str]
+) -> bool:
+    combined = stdout + "\n" + stderr
+    markers = (
+        "HERMIT_INTERNAL_FAILURE",
+        "Sandbox container exited unexpectedly",
+        "class=container-child-exit",
+        "error while loading shared libraries",
+        "safehermit: byte limit reached",
+    )
+    return fields.get("truncated") == "true" or any(
+        marker in combined for marker in markers
+    )
+
+
+def strict_bitwise_matched(stderr: str) -> bool:
+    return (
+        ":: Success: deterministic. Determinism verified." in stderr
+        and ":: comparison=BitwiseInfoV1 relaxations=none" in stderr
+    )
+
+
+def classify_thrift_instrumentation(
+    cfg: dict, stdout: str, stderr: str, fields: dict[str, str]
+) -> tuple[str, str | None, str, str | None, int]:
+    lines = stdout.splitlines()
+    run_line = f"[ RUN      ] {cfg['display']}"
+    selected = lines.count(run_line)
+    run_indices = [index for index, line in enumerate(lines) if line.startswith("[ RUN      ] ")]
+    selected_run_index = lines.index(run_line) if selected == 1 else None
+    matched = strict_bitwise_matched(stderr)
+    infra_free = not infrastructure_failure_present(stdout, stderr, fields)
     exit_code = int(fields["exit_code"])
     signal_name = None
     if "process_signal" in fields:
         signal_name = signal_module.Signals(int(fields["process_signal"])).name
+
+    if fields["unit_result"] == "timeout":
+        return "CENSORED", None, "TIMEOUT", None, selected
+
+    one_test_line = "[==========] Running 1 test from 1 test suite."
+    one_test_indices = [index for index, line in enumerate(lines) if line == one_test_line]
+    ok_line = re.compile(
+        rf"^\[       OK \] {re.escape(cfg['display'])} \([0-9]+ ms\)$"
+    )
+    ok_indices = [
+        index for index, line in enumerate(lines) if ok_line.fullmatch(line) is not None
+    ]
+    passed_line = "[  PASSED  ] 1 test."
+    passed_indices = [index for index, line in enumerate(lines) if line == passed_line]
+    pass_signature = bool(
+        selected_run_index is not None
+        and len(ok_indices) == 1
+        and len(passed_indices) == 1
+        and selected_run_index < ok_indices[0] < passed_indices[0]
+    )
+    snapshot_lines = [
+        "fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp:836: Failure",
+        "Expected equality of these values:",
+        "  reqSnapshots.size()",
+        "    Which is: 2",
+        "  3",
+    ]
+    snapshot_indices = [
+        index
+        for index in range(len(lines) - len(snapshot_lines) + 1)
+        if lines[index : index + len(snapshot_lines)] == snapshot_lines
+    ]
+    snapshot_signature = bool(
+        selected_run_index is not None
+        and len(snapshot_indices) == 1
+        and lines.count(snapshot_lines[0]) == 1
+        and selected_run_index < snapshot_indices[0]
+    )
+    common = bool(
+        matched
+        and infra_free
+        and len(run_indices) == 1
+        and selected_run_index is not None
+        and len(one_test_indices) == 1
+        and one_test_indices[0] < selected_run_index
+    )
+    complete_abnormal = (
+        fields["unit_result"] in {"exit-code", "signal", "core-dump"}
+        and (exit_code != 0 or signal_name is not None)
+    )
+
+    if (
+        common
+        and fields["unit_result"] == "success"
+        and exit_code == 0
+        and signal_name is None
+        and pass_signature
+        and not snapshot_signature
+        and "WARNING: ThreadSanitizer:" not in stderr
+    ):
+        return "VALID", "PASS", "COMPLETE", None, selected
+    if common and complete_abnormal and snapshot_signature:
+        return "VALID", "FAIL", "COMPLETE", "gtest-snapshot-size-2", selected
+    return "CENSORED", None, "ERROR", None, selected
+
+
+def classify(cfg: dict, stdout: str, stderr: str, fields: dict[str, str]) -> tuple[str, str | None, str, str | None, int]:
+    if cfg.get("classifier") == "thrift-instrumentation-snapshot-size-2":
+        return classify_thrift_instrumentation(cfg, stdout, stderr, fields)
+
+    selected = stdout.count(f"[ RUN      ] {cfg['display']}")
+    matched = strict_bitwise_matched(stderr)
+    exit_code = int(fields["exit_code"])
+    if fields["unit_result"] == "timeout":
+        return "CENSORED", None, "TIMEOUT", None, selected
     if matched and selected == 1 and "[  PASSED  ] 1 test." in stdout and exit_code == 0:
         return "VALID", "PASS", "COMPLETE", None, selected
     if matched and selected == 1 and exit_code != 0:
         return "VALID", "FAIL", "COMPLETE", "gtest-selected-test-failure", selected
-    if fields["unit_result"] == "timeout":
-        return "CENSORED", None, "TIMEOUT", None, selected
     return "CENSORED", None, "ERROR", None, selected
 
 
@@ -172,21 +375,51 @@ def main() -> None:
         action="store_true",
         help="extend the audited HTTPCoro material prefix from seeds 0-5 to 0-15",
     )
+    parser.add_argument(
+        "--extend-existing-prefix",
+        action="store_true",
+        help="extend a supported material record by exactly one committed seed prefix",
+    )
+    parser.add_argument(
+        "--through-seed",
+        type=int,
+        help="for Thrift instrumentation, admit the complete sealed prefix through this seed",
+    )
     args = parser.parse_args()
     cfg = CONFIGS[args.target]
+    if args.target == "thrift":
+        if args.repair_existing_prefix:
+            raise SystemExit("--repair-existing-prefix is reserved for HTTPCoro")
+        if args.through_seed not in cfg["seeds"]:
+            raise SystemExit("thrift requires --through-seed in the sealed range 0..35")
+        selected_seeds = list(range(args.through_seed + 1))
+    else:
+        if args.through_seed is not None or args.extend_existing_prefix:
+            raise SystemExit("prefix extension options are supported only for thrift")
+        selected_seeds = cfg["seeds"]
     record_rel = Path(cfg["record"])
     record_path = ROOT / record_rel
     record = json.loads(record_path.read_text())
     repairing = record["attempt_state"] == "MATERIAL"
+    if args.target == "thrift":
+        assert_first_thrift_admission(repairing, selected_seeds)
+    if not repairing and args.extend_existing_prefix:
+        raise SystemExit("cannot extend a PLANNED record; admit its first seed normally")
     if repairing:
-        existing_seeds = [sample["seed"]["value"] for sample in record["samples"]]
-        expected_existing_seeds = list(range(6))
-        if not args.repair_existing_prefix or args.target != "httpcoro":
+        if args.target == "httpcoro" and args.repair_existing_prefix:
+            existing_seeds = [sample["seed"]["value"] for sample in record["samples"]]
+            expected_existing_seeds = list(range(6))
+        elif args.target == "thrift" and args.extend_existing_prefix:
+            existing_seeds = thrift_prior_prefix(
+                record, selected_seeds, cfg["plan_commit"]
+            )
+            expected_existing_seeds = existing_seeds
+        else:
             raise SystemExit(f"refusing to replace material record {record_rel}")
         if existing_seeds != expected_existing_seeds:
             raise SystemExit(
-                "repair guard failed: expected the admitted HTTPCoro prefix 0-5, "
-                f"found {existing_seeds!r}"
+                "repair guard failed: expected prior admitted prefix "
+                f"{expected_existing_seeds!r}, found {existing_seeds!r}"
             )
         if record["plan_receipt"]["commit"] != cfg["plan_commit"]:
             raise SystemExit("repair guard failed: plan receipt commit changed")
@@ -233,7 +466,8 @@ def main() -> None:
     events, samples, matchers = [], [], []
     pass_witness = fail_witness = None
     last_finish = dt.datetime.fromisoformat(plan["sealed_at"].replace("Z", "+00:00"))
-    for index, seed in enumerate(cfg["seeds"]):
+    for index, seed in enumerate(selected_seeds):
+        prior_seed = repairing and index < len(existing_seeds)
         prefix = f"seed-{seed:03d}"
         source = {
             "STDOUT": evidence / f"{prefix}-replica-1.stdout.txt",
@@ -247,7 +481,7 @@ def main() -> None:
         last_finish = max(last_finish, dt.datetime.fromisoformat(finished.replace("Z", "+00:00")))
         event_ids = []
         signal_name = signal_module.Signals(int(fields["process_signal"])).name if "process_signal" in fields else None
-        verified = ":: Success: deterministic. Determinism verified." in stderr_text
+        verified = strict_bitwise_matched(stderr_text)
         replicas = (1, 2) if verified else (1,)
         for replica in replicas:
             event_id = f"{args.target}-fuzz-{seed:03d}-replica-{replica}"; event_ids.append(event_id)
@@ -255,7 +489,8 @@ def main() -> None:
             for kind, source_path in source.items():
                 suffix = {"STDOUT": "stdout.txt", "STDERR": "stderr.txt", "SAFEHERMIT_REPORT": "safehermit.txt"}[kind]
                 destination = evidence / f"{prefix}-replica-{replica}.{suffix}"
-                if replica == 2: shutil.copyfile(source_path, destination)
+                if replica == 2:
+                    copy_once_or_verify(source_path, destination, prior_seed)
                 paths[kind] = destination
             report_locator = paths["SAFEHERMIT_REPORT"].relative_to(ROOT).as_posix()
             result = {
@@ -263,7 +498,7 @@ def main() -> None:
                 "timeout_origin": "OUTER" if fields["unit_result"] == "timeout" else "NONE", "guest_started": True,
                 "selected_test_executed_count": selected_count, "target_oracle": target_outcome or ("NOT_RUN" if selected_count == 0 else "AMBIGUOUS"),
                 "failure_class_id": failure_class, "harness_status": harness_status,
-                "diagnostic": f"status={status}; selected={selected_count}; unit_result={fields['unit_result']}; exit={fields['exit_code']}; BitwiseInfoV1={'matched' if ':: Success: deterministic. Determinism verified.' in stderr_text else 'not-matched'}",
+                "diagnostic": f"status={status}; selected={selected_count}; unit_result={fields['unit_result']}; exit={fields['exit_code']}; BitwiseInfoV1={'matched' if verified else 'not-matched'}",
             }
             event = {
                 "event_id": event_id, "kind": "HERMIT_EXECUTION", "plan_sha256": plan["plan_sha256"],
@@ -275,7 +510,8 @@ def main() -> None:
                 "invocation_id": f"{args.target}-fuzz-{seed:03d}-verify", "replica_index": replica,
                 "seed": {"flag": "--fuzz-seed", "value": seed}, "effective_config_sha256": cell["cell_sha256"], "artifacts": [],
             }
-            result_path = evidence / f"{prefix}-replica-{replica}.result.json"; write_json(result_path, event_result_payload(event))
+            result_path = evidence / f"{prefix}-replica-{replica}.result.json"
+            write_json_once_or_verify(result_path, event_result_payload(event), prior_seed)
             event["artifacts"] = [
                 artifact(paths["STDOUT"], f"{event_id}-stdout", "STDOUT", "text/plain"),
                 artifact(paths["STDERR"], f"{event_id}-stderr", "STDERR", "text/plain"),
@@ -295,24 +531,35 @@ def main() -> None:
                 "same_target_outcome": True, "same_failure_class": True, "canonical_info_artifact": {},
                 "details": {"verified": True, "bitwise_parity": True, "comparison": "BitwiseInfoV1", "relaxations": []},
             }
-            info_path = evidence / f"{prefix}.canonical-info.json"; write_json(info_path, matcher_payload(matcher))
+            info_path = evidence / f"{prefix}.canonical-info.json"
+            write_json_once_or_verify(info_path, matcher_payload(matcher), prior_seed)
             matcher["canonical_info_artifact"] = artifact(info_path, f"{matcher_id}-canonical-info", "CANONICAL_INFO", "application/json"); matchers.append(matcher)
         if status == "VALID" and target_outcome == "PASS" and pass_witness is None: pass_witness = {"sample_id": sample_id, "matcher_id": matcher_id}
         if status == "VALID" and target_outcome == "FAIL" and fail_witness is None: fail_witness = {"sample_id": sample_id, "matcher_id": matcher_id}
+    if repairing:
+        assert_prior_prefix_unchanged(record, cell, events, samples, matchers)
     classified_at = (last_finish + dt.timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
     if pass_witness and fail_witness:
-        outcome = {"classification_id": f"{args.target}-kernel71-working", "classified_at": classified_at, "supersedes": None,
+        outcome = {"classification_id": f"{args.target}-kernel71-working", "classified_at": classified_at,
+                   "supersedes": supersedes_id(record, repairing),
                    "evidence_refs": [pass_witness["sample_id"], pass_witness["matcher_id"], fail_witness["sample_id"], fail_witness["matcher_id"]],
                    "kind": "WORKING", "pass_witness": pass_witness, "fail_witness": fail_witness}
     else:
         event_ids = [event["event_id"] for event in events]
-        exhausted = cfg["terminal_exhausted"]
+        if args.target == "thrift":
+            exhausted = measurement_budget_exhausted(
+                plan["measurement_design"], samples
+            )
+        else:
+            exhausted = cfg["terminal_exhausted"]
         classification_id = f"{args.target}-kernel71-{'exhausted' if exhausted else 'pending'}"
         if repairing:
-            classification_id += f"-repair-seed-{cfg['seeds'][-1]:03d}"
+            classification_id += f"-repair-seed-{selected_seeds[-1]:03d}"
+        elif args.target == "thrift":
+            classification_id += f"-through-seed-{selected_seeds[-1]:03d}"
         outcome = {
             "classification_id": classification_id, "classified_at": classified_at,
-            "supersedes": record["current_outcome"]["classification_id"] if repairing else None,
+            "supersedes": supersedes_id(record, repairing),
             "evidence_refs": event_ids, "kind": "NOT-DETERMINABLE",
             "route_evidence": [{"route_id": route["route_id"], "cell_ids": [cell["cell_id"]], "evidence_event_ids": event_ids}],
             "inspected_commands": [event["argv"] for event in events],
@@ -326,9 +573,11 @@ def main() -> None:
         }
     prefix = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--show-prefix"], check=True, capture_output=True, text=True).stdout.strip()
     blob = subprocess.run(["git", "-C", str(ROOT), "rev-parse", f"{cfg['plan_commit']}:{prefix}{record_rel.as_posix()}"], check=True, capture_output=True, text=True).stdout.strip()
+    receipt = {"commit": cfg["plan_commit"], "path": record_rel.as_posix(), "blob": blob}
+    assert_plan_receipt_preserved(record, receipt, repairing)
     outcome_history = copy.deepcopy(record["outcome_history"]) if repairing else []
     outcome_history.append(outcome)
-    record.update(plan_receipt={"commit": cfg["plan_commit"], "path": record_rel.as_posix(), "blob": blob}, attempt_state="MATERIAL",
+    record.update(plan_receipt=receipt, attempt_state="MATERIAL",
                   cells=[cell], events=events, samples=samples, matchers=matchers, outcome_history=outcome_history, current_outcome=copy.deepcopy(outcome))
     record_path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n")
 
