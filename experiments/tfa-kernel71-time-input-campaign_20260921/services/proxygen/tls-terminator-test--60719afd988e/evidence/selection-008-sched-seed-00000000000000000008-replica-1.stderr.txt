@@ -1,0 +1,595 @@
+:: Run1...
+:: Run2...
+Mismatch in stderr between run 1 and run 2:
+- E0921 18:54:35.502724    15 SmcTiers.cpp:264] Failed to get SMC tiers for localhost. Client: falcon_client_config_provider. Timeout: none. Exception: 'apache::thrift::transport::TTransportException: Dropping unsent request. Connection closed after: apache::thrift::transport::TTransportException: AsyncSocketException: connect failed, type = Socket not open, errno = 111 (Connection refused): Connection refused'
+- I0921 18:54:35.509836    15 SmcTiers.cpp:214] Reading tiers from /etc/smc.tiers
+- E0921 18:54:36.127385    11 SmcTiers.cpp:264] Failed to get SMC tiers for localhost. Client: cfgr-logger. Timeout: 1000ms. Exception: 'apache::thrift::transport::TTransportException: Dropping unsent request. Connection closed after: apache::thrift::transport::TTransportException: AsyncSocketException: connect failed, type = Socket not open, errno = 111 (Connection refused): Connection refused'
+- I0921 18:54:36.132126    11 SmcTiers.cpp:214] Reading tiers from /etc/smc.tiers
+- E0921 18:54:36.194602    11 FalconConnectionUtils.cpp:120] Exception while fetching entity: luna/sampling/justknobs/adaptive_sample_rates/empty-service-id on host devbig030.atn3.facebook.com (no retry)
++ E0921 18:54:35.516271    15 SmcTiers.cpp:264] Failed to get SMC tiers for localhost. Client: falcon_client_config_provider. Timeout: none. Exception: 'apache::thrift::transport::TTransportException: Dropping unsent request. Connection closed after: apache::thrift::transport::TTransportException: AsyncSocketException: connect failed, type = Socket not open, errno = 111 (Connection refused): Connection refused'
++ I0921 18:54:35.518525    15 SmcTiers.cpp:214] Reading tiers from /etc/smc.tiers
++ E0921 18:54:36.146538    11 SmcTiers.cpp:264] Failed to get SMC tiers for localhost. Client: cfgr-logger. Timeout: 1000ms. Exception: 'apache::thrift::transport::TTransportException: Dropping unsent request. Connection closed after: apache::thrift::transport::TTransportException: AsyncSocketException: connect failed, type = Socket not open, errno = 111 (Connection refused): Connection refused'
++ I0921 18:54:36.149780    11 SmcTiers.cpp:214] Reading tiers from /etc/smc.tiers
++ E0921 18:54:36.230091    11 FalconConnectionUtils.cpp:120] Exception while fetching entity: luna/sampling/justknobs/adaptive_sample_rates/empty-service-id on host devbig030.atn3.facebook.com (no retry)
+  /********************** IMPORTANT INFORMATION: **********************/
+  /* 1. Falcon can not respond to a request if a system is overloaded. */
+  /* 2. Please check the host status, including CPU, memory, and I/O. You can run the following command to check its status: */
+  /*    ( below replay -s devbig030.atn3.facebook.com -t 1790016871 ) */
+  /* 3. You can also check the host status in the following link: https://fburl.com/unidash/ard0dqxy. */
+  /* 4. Set a timeout to allow retries for reliable entity fetching. */
+-  Exception: std::runtime_error: A distribution error occurred, Blob entity cpentity_s3|xpress_config_content|prod:d/configerator/configs/luna/sampling/justknobs/adaptive_sample_rates|empty-service-id may or may not exist, took 42ms
+- I0921 18:54:37.564759    11 HealthTracker.cpp:46] configerator proxy2+fuse unhealthy; this may lead to timeouts or fallbacks to system configs
+- I0921 18:54:37.632170    33 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- E0921 18:54:38.229959     9 ExceptionTracer.cpp:261] terminate() called, exception stack follows
+- E0921 18:54:38.235013     9 ExceptionTracer.cpp:263] Exception type: (unknown type) (9 frames)
++  Exception: std::runtime_error: A distribution error occurred, Blob entity cpentity_s3|xpress_config_content|prod:d/configerator/configs/luna/sampling/justknobs/adaptive_sample_rates|empty-service-id may or may not exist, took 56ms
++ I0921 18:54:37.603024    11 HealthTracker.cpp:46] configerator proxy2+fuse unhealthy; this may lead to timeouts or fallbacks to system configs
++ I0921 18:54:37.611441    33 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
++ E0921 18:54:38.231568     9 ExceptionTracer.cpp:261] terminate() called, exception stack follows
++ E0921 18:54:38.234833     9 ExceptionTracer.cpp:263] Exception type: (unknown type) (9 frames)
+      @ 000000000dfcd2b8 folly::(anonymous namespace)::Initializer::Initializer()::{lambda(std::__exception_ptr::exception_ptr)#1}::__invoke(std::__exception_ptr::exception_ptr)
+                         ./xplat/folly/debugging/exception_tracer/ExceptionStackTraceLib.cpp:175
+      @ 00000000043ccada std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                         ./xplat/folly/debugging/exception_tracer/ExceptionTracerLib.cpp:86
+      @ 00000000040d143f folly::exception_wrapper::throw_exception() const
+                         fbsource/folly/ExceptionWrapper-inl.h:197
+      @ 00000000040d130e folly::coro::detail::BlockingWaitTask<void>::getVia(folly::DrivableExecutor*, folly::AsyncStackFrame&) &&
+                         fbsource/folly/Try-inl.h:241
+      @ 00000000040d117e folly::coro::detail::decay_rvalue_reference<folly::coro::await_result<decltype (folly::coro::folly_cpo__::co_viaIfAsync((static_cast<folly::ExecutorKeepAlive<folly::Executor> (*)() noexcept>(decltype(nullptr)))(), (static_cast<folly::coro::Task<void> (*)() noexcept>(decltype(nullptr)))())), void>::type>::type folly::coro::blocking_wait_fn::operator()<folly::coro::Task<void> >(folly::coro::Task<void>&&, folly::DrivableExecutor*) const
+                         fbsource/folly/coro/BlockingWait.h:400
+      @ 00000000040d0fd7 std::thread::_State_impl<std::thread::_Invoker<std::tuple<proxygen::TlsTerminatorTest_terminateTls_Test::TestBody()::$_0> > >::_M_run()
+                         ./fbcode/proxygen/facebook/fwdproxy/tlsterm/test/TlsTerminatorTest.cpp:308
+      @ 00000000000e8bc4 execute_native_thread_routine
+                         /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82
+      @ 000000000009abc8 start_thread
+                         /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_create.c:434
+      @ 000000000012cecb __clone3
+                         /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+  
+- E0921 18:54:38.405135     9 ExceptionTracer.cpp:265] exception stack complete
++ E0921 18:54:38.402937     9 ExceptionTracer.cpp:265] exception stack complete
+  terminate called after throwing an instance of 'folly::FutureTimeout'
+    what():  Timed out
+  *** Aborted at 1790016878 (Unix time, try 'date -d @1790016878') ***
+  *** Signal 6 (SIGABRT) (0x3) received by PID 3 (pthread TID 0x7ffff5afe640) (linux TID 9) (maybe from PID 3, UID 0) (code: sent by tkill or tgkill), stack trace: ***
+      @ 000000000417ff6f folly::symbolizer::(anonymous namespace)::signalHandler(int, siginfo_t*, void*)
+                         ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:598
+      @ 000000000004455f (unknown)
+                         /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/libc_sigaction.c:8
+                         -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c
+      @ 000000000009ca13 pthread_kill
+                         /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_kill.c:46
+      @ 00000000000444ac raise
+                         /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/posix/raise.c:26
+      @ 000000000002c432 abort
+                         /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/stdlib/abort.c:79
+      @ 00000000000ad594 __gnu_cxx::__verbose_terminate_handler()
+                         /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/vterminate.cc:95
+      @ 0000000005191419 folly::exception_tracer::(anonymous namespace)::terminateHandler()
+                         ./xplat/folly/debugging/exception_tracer/ExceptionTracer.cpp:270
+      @ 00000000000ab0f9 __cxxabiv1::__terminate(void (*)())
+                         /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_terminate.cc:48
+      @ 00000000000ab164 std::terminate()
+                         /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_terminate.cc:58
+      @ 00000000000ab0ef std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                         /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_ptr.cc:217
+      @ 00000000043ccb55 std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                         ./xplat/folly/debugging/exception_tracer/ExceptionTracerLib.cpp:244
+      @ 00000000040d143f folly::exception_wrapper::throw_exception() const
+                         fbsource/folly/ExceptionWrapper-inl.h:197
+      @ 00000000040d130e folly::coro::detail::BlockingWaitTask<void>::getVia(folly::DrivableExecutor*, folly::AsyncStackFrame&) &&
+                         fbsource/folly/Try-inl.h:241
+      @ 00000000040d117e folly::coro::detail::decay_rvalue_reference<folly::coro::await_result<decltype (folly::coro::folly_cpo__::co_viaIfAsync((static_cast<folly::ExecutorKeepAlive<folly::Executor> (*)() noexcept>(decltype(nullptr)))(), (static_cast<folly::coro::Task<void> (*)() noexcept>(decltype(nullptr)))())), void>::type>::type folly::coro::blocking_wait_fn::operator()<folly::coro::Task<void> >(folly::coro::Task<void>&&, folly::DrivableExecutor*) const
+                         fbsource/folly/coro/BlockingWait.h:400
+      @ 00000000040d0fd7 std::thread::_State_impl<std::thread::_Invoker<std::tuple<proxygen::TlsTerminatorTest_terminateTls_Test::TestBody()::$_0> > >::_M_run()
+                         ./fbcode/proxygen/facebook/fwdproxy/tlsterm/test/TlsTerminatorTest.cpp:308
+      @ 00000000000e8bc4 execute_native_thread_routine
+                         /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82
+      @ 000000000009abc8 start_thread
+                         /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_create.c:434
+      @ 000000000012cecb __clone3
+                         /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+  
+:: Comparing captured verification logs...
+Logs contain 138694 | 135321 messages total
+Logs contain 138668 | 135295 detcore-specific messages
+Logs contain 138669 | 135296 INFO messages
+Logs contain 128394 | 124873 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 4540 (run 1) and 4540 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG [0m[1;48;5;52;31m[syscall][detcore, dtid 11] finish syscall #89[0m[31m: [0m[1;48;5;52;31mepoll_wait(11, [0m[31m0[0m[1;48;5;52;31mx7ffff65e6000[0m[31m,[0m[1;48;5;52;31m 3[0m[31m2[0m[1;48;5;52;31m, -1[0m[31m) = [0m[1;48;5;52;31mOk(1)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:scheduler::runqueue:[0m[32m DETLOG [0m[1;48;5;22;32mSCHEDRAND[0m[32m: [0m[1;48;5;22;32m[[0m[32m0,2) =[0m[1;48;5;22;32m>[0m[32m [0m[1;48;5;22;32m0[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG [0m[1;48;5;52;31m[syscall][detcore, dtid 11] finish syscall #89[0m[31m: [0m[1;48;5;52;31mepoll_wait(11, [0m[31m0[0m[1;48;5;52;31mx7ffff65e6000[0m[31m,[0m[1;48;5;52;31m 3[0m[31m2[0m[1;48;5;52;31m, -1[0m[31m) = [0m[1;48;5;52;31mOk(1)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:scheduler::runqueue:[0m[32m DETLOG [0m[1;48;5;22;32mSCHEDRAND[0m[32m: [0m[1;48;5;22;32m[[0m[32m0,2) =[0m[1;48;5;22;32m>[0m[32m [0m[1;48;5;22;32m0[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4540: INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4541 (run 1) and 4541 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31ma[0m[31ml[0m[1;48;5;52;31ml][0m[31m[det[0m[1;48;5;52;31mco[0m[31mr[0m[1;48;5;52;31me[0m[31m, dtid [0m[1;48;5;52;31m11][0m[31m in[0m[1;48;5;52;31mb[0m[31mou[0m[1;48;5;52;31mnd[0m[31m s[0m[1;48;5;52;31my[0m[31mscall: [0m[1;48;5;52;31mcl[0m[31mo[0m[1;48;5;52;31mck[0m[31m_[0m[1;48;5;52;31mge[0m[31mtt[0m[1;48;5;52;31mim[0m[31me[0m[1;48;5;52;31m(CLOCK_MONOTONIC,[0m[31m [0m[1;48;5;52;31m0x[0m[31m7f[0m[1;48;5;52;31mfff52f74[0m[31me[0m[1;48;5;52;31m0)[0m[31m [0m[1;48;5;52;31m= ?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhedu[0m[32ml[0m[1;48;5;22;32mer: [0m[32m[[0m[1;48;5;22;32msche[0m[32md[0m[1;48;5;22;32mul[0m[32me[0m[1;48;5;22;32mr] >>>>>>>\n\n NONCOMMIT [0m[32mt[0m[1;48;5;22;32mu[0m[32mr[0m[1;48;5;22;32mn 458[0m[32m, [0m[1;48;5;22;32mSKIP [0m[32md[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32mt[0m[32mid [0m[1;48;5;22;32m9[0m[32m [0m[1;48;5;22;32mpoll[0m[32min[0m[1;48;5;22;32mg res[0m[32mou[0m[1;48;5;22;32mrce[0m[32m [0m[1;48;5;22;32mRe[0m[32ms[0m[1;48;5;22;32mource[0m[32ms[0m[1;48;5;22;32m { tid: DetPid(9), resour[0m[32mc[0m[1;48;5;22;32mes: {Intern[0m[32mal[0m[1;48;5;22;32mIOPo[0m[32ml[0m[1;48;5;22;32mling[0m[32m: [0m[1;48;5;22;32mW}, p[0m[32mo[0m[1;48;5;22;32mll[0m[32m_[0m[1;48;5;22;32ma[0m[32mtte[0m[1;48;5;22;32mmpt:[0m[32m [0m[1;48;5;22;32m8[0m[32m7[0m[1;48;5;22;32m, [0m[32mf[0m[1;48;5;22;32myi: \"[0m[32me[0m[1;48;5;22;32mpoll_wait\"[0m[32m [0m[1;48;5;22;32m}[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31ma[0m[31ml[0m[1;48;5;52;31ml][0m[31m[det[0m[1;48;5;52;31mco[0m[31mr[0m[1;48;5;52;31me[0m[31m, dtid [0m[1;48;5;52;31m11][0m[31m in[0m[1;48;5;52;31mb[0m[31mou[0m[1;48;5;52;31mnd[0m[31m s[0m[1;48;5;52;31my[0m[31mscall: [0m[1;48;5;52;31mcl[0m[31mo[0m[1;48;5;52;31mck[0m[31m_[0m[1;48;5;52;31mge[0m[31mtt[0m[1;48;5;52;31mim[0m[31me[0m[1;48;5;52;31m(CLOCK_MONOTONIC,[0m[31m [0m[1;48;5;52;31m0x[0m[31m7f[0m[1;48;5;52;31mfff52f74[0m[31me[0m[1;48;5;52;31m0)[0m[31m [0m[1;48;5;52;31m= ?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhedu[0m[32ml[0m[1;48;5;22;32mer: [0m[32m[[0m[1;48;5;22;32msche[0m[32md[0m[1;48;5;22;32mul[0m[32me[0m[1;48;5;22;32mr] >>>>>>>\n\n NONCOMMIT [0m[32mt[0m[1;48;5;22;32mu[0m[32mr[0m[1;48;5;22;32mn 458[0m[32m, [0m[1;48;5;22;32mSKIP [0m[32md[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32mt[0m[32mid [0m[1;48;5;22;32m9[0m[32m [0m[1;48;5;22;32mpoll[0m[32min[0m[1;48;5;22;32mg res[0m[32mou[0m[1;48;5;22;32mrce[0m[32m [0m[1;48;5;22;32mRe[0m[32ms[0m[1;48;5;22;32mource[0m[32ms[0m[1;48;5;22;32m { tid: DetPid(9), resour[0m[32mc[0m[1;48;5;22;32mes: {Intern[0m[32mal[0m[1;48;5;22;32mIOPo[0m[32ml[0m[1;48;5;22;32mling[0m[32m: [0m[1;48;5;22;32mW}, p[0m[32mo[0m[1;48;5;22;32mll[0m[32m_[0m[1;48;5;22;32ma[0m[32mtte[0m[1;48;5;22;32mmpt:[0m[32m [0m[1;48;5;22;32m8[0m[32m7[0m[1;48;5;22;32m, [0m[32mf[0m[1;48;5;22;32myi: \"[0m[32me[0m[1;48;5;22;32mpoll_wait\"[0m[32m [0m[1;48;5;22;32m}[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4541: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0) = ?
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4542 (run 1) and 4542 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][d[0m[31me[0m[1;48;5;52;31mtcore, [0m[31md[0m[1;48;5;52;31mtid 11] finish sysca[0m[31ml[0m[1;48;5;52;31ml #90[0m[31m:[0m[1;48;5;52;31m clock_g[0m[31me[0m[1;48;5;52;31mttim[0m[31me[0m[1;48;5;52;31m(C[0m[31mLOC[0m[1;48;5;52;31mK_MO[0m[31mN[0m[1;48;5;52;31mOTONIC, 0x7ffff52f74e0 -> { tv_sec[0m[31m: [0m[1;48;5;52;31m179[0m[31m0[0m[1;48;5;52;31m016875[0m[31m,[0m[1;48;5;52;31m tv_nsec: 3[0m[31m2[0m[1;48;5;52;31m2767460 }[0m[31m) = [0m[1;48;5;52;31mOk(0)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mh[0m[32med[0m[1;48;5;22;32mu[0m[32ml[0m[1;48;5;22;32mer[0m[32m:[0m[1;48;5;22;32m:runqu[0m[32me[0m[1;48;5;22;32mu[0m[32me[0m[1;48;5;22;32m: DET[0m[32mLO[0m[1;48;5;22;32mG S[0m[32mC[0m[1;48;5;22;32mHEDRA[0m[32mN[0m[1;48;5;22;32mD[0m[32m: [0m[1;48;5;22;32m[[0m[32m0,2) =[0m[1;48;5;22;32m>[0m[32m [0m[1;48;5;22;32m1[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][d[0m[31me[0m[1;48;5;52;31mtcore, [0m[31md[0m[1;48;5;52;31mtid 11] finish sysca[0m[31ml[0m[1;48;5;52;31ml #90[0m[31m:[0m[1;48;5;52;31m clock_g[0m[31me[0m[1;48;5;52;31mttim[0m[31me[0m[1;48;5;52;31m(C[0m[31mLOC[0m[1;48;5;52;31mK_MO[0m[31mN[0m[1;48;5;52;31mOTONIC, 0x7ffff52f74e0 -> { tv_sec[0m[31m: [0m[1;48;5;52;31m179[0m[31m0[0m[1;48;5;52;31m016875[0m[31m,[0m[1;48;5;52;31m tv_nsec: 3[0m[31m2[0m[1;48;5;52;31m2767460 }[0m[31m) = [0m[1;48;5;52;31mOk(0)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mh[0m[32med[0m[1;48;5;22;32mu[0m[32ml[0m[1;48;5;22;32mer[0m[32m:[0m[1;48;5;22;32m:runqu[0m[32me[0m[1;48;5;22;32mu[0m[32me[0m[1;48;5;22;32m: DET[0m[32mLO[0m[1;48;5;22;32mG S[0m[32mC[0m[1;48;5;22;32mHEDRA[0m[32mN[0m[1;48;5;22;32mD[0m[32m: [0m[1;48;5;22;32m[[0m[32m0,2) =[0m[1;48;5;22;32m>[0m[32m [0m[1;48;5;22;32m1[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4542: INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4543 (run 1) and 4543 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31ma[0m[31ml[0m[1;48;5;52;31ml][0m[31m[det[0m[1;48;5;52;31mco[0m[31mr[0m[1;48;5;52;31me[0m[31m, dtid [0m[1;48;5;52;31m11][0m[31m in[0m[1;48;5;52;31mbound[0m[31m s[0m[1;48;5;52;31mys[0m[31mcall: re[0m[1;48;5;52;31mc[0m[31mv[0m[1;48;5;52;31mfr[0m[31mom[0m[1;48;5;52;31m(7,[0m[31m [0m[1;48;5;52;31m0x[0m[31m7[0m[1;48;5;52;31mffff[0m[31m6[0m[1;48;5;52;31m6[0m[31m5[0m[1;48;5;52;31m6[0m[31m00[0m[1;48;5;52;31m0, 4064, 64, NULL, NULL) = ?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhedu[0m[32ml[0m[1;48;5;22;32mer: [0m[32m[[0m[1;48;5;22;32msche[0m[32md[0m[1;48;5;22;32m-st[0m[32me[0m[1;48;5;22;32mp5] >>>>>>>\n\n COMMIT [0m[32mt[0m[1;48;5;22;32mu[0m[32mr[0m[1;48;5;22;32mn 459[0m[32m, d[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32mt[0m[32mid [0m[1;48;5;22;32m9[0m[32m [0m[1;48;5;22;32mus[0m[32min[0m[1;48;5;22;32mg[0m[32m [0m[1;48;5;22;32mre[0m[32ms[0m[1;48;5;22;32mour[0m[32mc[0m[1;48;5;22;32mes {Intern[0m[32mal[0m[1;48;5;22;32mIOPo[0m[32ml[0m[1;48;5;22;32mling[0m[32m: [0m[1;48;5;22;32mW}, on p[0m[32mrev[0m[1;48;5;22;32mi[0m[32mo[0m[1;48;5;22;32musly co[0m[32mm[0m[1;48;5;22;32mmitted[0m[32m [0m[1;48;5;22;32m1_[0m[32m7[0m[1;48;5;22;32m90_01[0m[32m6[0m[1;48;5;22;32m_87[0m[32m5[0m[1;48;5;22;32m.323_257_1[0m[32m00[0m[1;48;5;22;32ms[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31ma[0m[31ml[0m[1;48;5;52;31ml][0m[31m[det[0m[1;48;5;52;31mco[0m[31mr[0m[1;48;5;52;31me[0m[31m, dtid [0m[1;48;5;52;31m11][0m[31m in[0m[1;48;5;52;31mbound[0m[31m s[0m[1;48;5;52;31mys[0m[31mcall: re[0m[1;48;5;52;31mc[0m[31mv[0m[1;48;5;52;31mfr[0m[31mom[0m[1;48;5;52;31m(7,[0m[31m [0m[1;48;5;52;31m0x[0m[31m7[0m[1;48;5;52;31mffff[0m[31m6[0m[1;48;5;52;31m6[0m[31m5[0m[1;48;5;52;31m6[0m[31m00[0m[1;48;5;52;31m0, 4064, 64, NULL, NULL) = ?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhedu[0m[32ml[0m[1;48;5;22;32mer: [0m[32m[[0m[1;48;5;22;32msche[0m[32md[0m[1;48;5;22;32m-st[0m[32me[0m[1;48;5;22;32mp5] >>>>>>>\n\n COMMIT [0m[32mt[0m[1;48;5;22;32mu[0m[32mr[0m[1;48;5;22;32mn 459[0m[32m, d[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32mt[0m[32mid [0m[1;48;5;22;32m9[0m[32m [0m[1;48;5;22;32mus[0m[32min[0m[1;48;5;22;32mg[0m[32m [0m[1;48;5;22;32mre[0m[32ms[0m[1;48;5;22;32mour[0m[32mc[0m[1;48;5;22;32mes {Intern[0m[32mal[0m[1;48;5;22;32mIOPo[0m[32ml[0m[1;48;5;22;32mling[0m[32m: [0m[1;48;5;22;32mW}, on p[0m[32mrev[0m[1;48;5;22;32mi[0m[32mo[0m[1;48;5;22;32musly co[0m[32mm[0m[1;48;5;22;32mmitted[0m[32m [0m[1;48;5;22;32m1_[0m[32m7[0m[1;48;5;22;32m90_01[0m[32m6[0m[1;48;5;22;32m_87[0m[32m5[0m[1;48;5;22;32m.323_257_1[0m[32m00[0m[1;48;5;22;32ms[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4543: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = ?
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4544 (run 1) and 4544 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: [0,2) => [0m[1;48;5;52;31m0[0m[31m"[0m
+[32m>"INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: [0,2) => [0m[1;48;5;22;32m1[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: [0,2) => [0m[1;48;5;52;31m0[0m[31m"[0m
+[32m>"INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: [0,2) => [0m[1;48;5;22;32m1[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4543: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = ?
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4545 (run 1) and 4545 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [scheduler] >>>>>>>\n\n NONCOMMIT turn 4[0m[1;48;5;52;31m58[0m[31m, SKIP dettid [0m[1;48;5;52;31m9[0m[31m polling resource Resources { tid: DetPid([0m[1;48;5;52;31m9[0m[31m), resources: {InternalIOPolling: W}, poll_attempt: [0m[1;48;5;52;31m87[0m[31m, fyi: \"epoll_wait\" }"[0m
+[32m>"INFO detcore::scheduler: [scheduler] >>>>>>>\n\n NONCOMMIT turn 4[0m[1;48;5;22;32m60[0m[32m, SKIP dettid [0m[1;48;5;22;32m11[0m[32m polling resource Resources { tid: DetPid([0m[1;48;5;22;32m11[0m[32m), resources: {InternalIOPolling: W}, poll_attempt: [0m[1;48;5;22;32m92[0m[32m, fyi: \"epoll_wait\" }"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [scheduler] >>>>>>>\n\n NONCOMMIT turn 4[0m[1;48;5;52;31m58[0m[31m, SKIP dettid [0m[1;48;5;52;31m9[0m[31m polling resource Resources { tid: DetPid([0m[1;48;5;52;31m9[0m[31m), resources: {InternalIOPolling: W}, poll_attempt: [0m[1;48;5;52;31m87[0m[31m, fyi: \"epoll_wait\" }"[0m
+[32m>"INFO detcore::scheduler: [scheduler] >>>>>>>\n\n NONCOMMIT turn 4[0m[1;48;5;22;32m60[0m[32m, SKIP dettid [0m[1;48;5;22;32m11[0m[32m polling resource Resources { tid: DetPid([0m[1;48;5;22;32m11[0m[32m), resources: {InternalIOPolling: W}, poll_attempt: [0m[1;48;5;22;32m92[0m[32m, fyi: \"epoll_wait\" }"[0m
+Divergent syscall context:
+  run 1, log message 4543: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = ?
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4546 (run 1) and 4546 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: [0,2) => [0m[1;48;5;52;31m1[0m[31m"[0m
+[32m>"INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: [0,2) => [0m[1;48;5;22;32m0[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: [0,2) => [0m[1;48;5;52;31m1[0m[31m"[0m
+[32m>"INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: [0,2) => [0m[1;48;5;22;32m0[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4543: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = ?
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4547 (run 1) and 4547 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched[0m[1;48;5;52;31m-st[0m[31me[0m[1;48;5;52;31mp5[0m[31m] >>>>>>>\n\n COMMIT turn 4[0m[1;48;5;52;31m59[0m[31m, dettid 9 [0m[1;48;5;52;31mus[0m[31ming resources {InternalIOPolling: W}, [0m[1;48;5;52;31mon [0m[31mp[0m[1;48;5;52;31mrevi[0m[31mo[0m[1;48;5;52;31mus[0m[31ml[0m[1;48;5;52;31my commi[0m[31mtte[0m[1;48;5;52;31md[0m[31m [0m[1;48;5;52;31m1_790_016_[0m[31m8[0m[1;48;5;52;31m75.323_31[0m[31m8_[0m[1;48;5;52;31m210s[0m[31m"[0m
+[32m>"INFO detcore::scheduler: [sched[0m[1;48;5;22;32mul[0m[32me[0m[1;48;5;22;32mr[0m[32m] >>>>>>>\n\n [0m[1;48;5;22;32mNON[0m[32mCOMMIT turn 4[0m[1;48;5;22;32m61[0m[32m, [0m[1;48;5;22;32mSKIP [0m[32mdettid 9 [0m[1;48;5;22;32mpoll[0m[32ming resource[0m[1;48;5;22;32m Re[0m[32ms[0m[1;48;5;22;32mources[0m[32m {[0m[1;48;5;22;32m tid: DetPid(9), resources: {[0m[32mInternalIOPolling: W}, pol[0m[1;48;5;22;32ml_a[0m[32mtte[0m[1;48;5;22;32mmpt:[0m[32m 88[0m[1;48;5;22;32m, fyi: \"epoll[0m[32m_[0m[1;48;5;22;32mwait\" }[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched[0m[1;48;5;52;31m-st[0m[31me[0m[1;48;5;52;31mp5[0m[31m] >>>>>>>\n\n COMMIT turn 4[0m[1;48;5;52;31m59[0m[31m, dettid 9 [0m[1;48;5;52;31mus[0m[31ming resources {InternalIOPolling: W}, [0m[1;48;5;52;31mon [0m[31mp[0m[1;48;5;52;31mrevi[0m[31mo[0m[1;48;5;52;31mus[0m[31ml[0m[1;48;5;52;31my commi[0m[31mtte[0m[1;48;5;52;31md[0m[31m [0m[1;48;5;52;31m1_790_016_[0m[31m8[0m[1;48;5;52;31m75.323_31[0m[31m8_[0m[1;48;5;52;31m210s[0m[31m"[0m
+[32m>"INFO detcore::scheduler: [sched[0m[1;48;5;22;32mul[0m[32me[0m[1;48;5;22;32mr[0m[32m] >>>>>>>\n\n [0m[1;48;5;22;32mNON[0m[32mCOMMIT turn 4[0m[1;48;5;22;32m61[0m[32m, [0m[1;48;5;22;32mSKIP [0m[32mdettid 9 [0m[1;48;5;22;32mpoll[0m[32ming resource[0m[1;48;5;22;32m Re[0m[32ms[0m[1;48;5;22;32mources[0m[32m {[0m[1;48;5;22;32m tid: DetPid(9), resources: {[0m[32mInternalIOPolling: W}, pol[0m[1;48;5;22;32ml_a[0m[32mtte[0m[1;48;5;22;32mmpt:[0m[32m 88[0m[1;48;5;22;32m, fyi: \"epoll[0m[32m_[0m[1;48;5;22;32mwait\" }[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4543: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = ?
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4549 (run 1) and 4549 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 46[0m[1;48;5;52;31m0[0m[31m, dettid [0m[1;48;5;52;31m11[0m[31m using resources {InternalIOPolling: W}, on previously committed 1_790_016_875.323_[0m[1;48;5;52;31m818[0m[31m_[0m[1;48;5;52;31m2[0m[31m10s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 46[0m[1;48;5;22;32m2[0m[32m, dettid [0m[1;48;5;22;32m9[0m[32m using resources {InternalIOPolling: W}, on previously committed 1_790_016_875.323_[0m[1;48;5;22;32m757[0m[32m_1[0m[1;48;5;22;32m0[0m[32m0s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 46[0m[1;48;5;52;31m0[0m[31m, dettid [0m[1;48;5;52;31m11[0m[31m using resources {InternalIOPolling: W}, on previously committed 1_790_016_875.323_[0m[1;48;5;52;31m818[0m[31m_[0m[1;48;5;52;31m2[0m[31m10s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 46[0m[1;48;5;22;32m2[0m[32m, dettid [0m[1;48;5;22;32m9[0m[32m using resources {InternalIOPolling: W}, on previously committed 1_790_016_875.323_[0m[1;48;5;22;32m757[0m[32m_1[0m[1;48;5;22;32m0[0m[32m0s"[0m
+Divergent syscall context:
+  run 1, log message 4543: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = ?
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4550 (run 1) and 4550 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][d[0m[31me[0m[1;48;5;52;31mtcore, [0m[31md[0m[1;48;5;52;31mtid 11] finish sysca[0m[31ml[0m[1;48;5;52;31ml #91[0m[31m:[0m[1;48;5;52;31m [0m[31mre[0m[1;48;5;52;31mcvfrom(7,[0m[31m [0m[1;48;5;52;31m0x7ffff6656000, 4064, 64, NU[0m[31mL[0m[1;48;5;52;31mL,[0m[31m N[0m[1;48;5;52;31mULL[0m[31m) = [0m[1;48;5;52;31mOk([0m[31m1[0m[1;48;5;52;31m15)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mh[0m[32med[0m[1;48;5;22;32mu[0m[32ml[0m[1;48;5;22;32mer[0m[32m:[0m[1;48;5;22;32m:[0m[32mr[0m[1;48;5;22;32munqu[0m[32me[0m[1;48;5;22;32mue:[0m[32m [0m[1;48;5;22;32mDET[0m[32mL[0m[1;48;5;22;32mOG[0m[32m [0m[1;48;5;22;32mSCHEDRA[0m[32mN[0m[1;48;5;22;32mD: [0,2[0m[32m) =[0m[1;48;5;22;32m>[0m[32m 1"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][d[0m[31me[0m[1;48;5;52;31mtcore, [0m[31md[0m[1;48;5;52;31mtid 11] finish sysca[0m[31ml[0m[1;48;5;52;31ml #91[0m[31m:[0m[1;48;5;52;31m [0m[31mre[0m[1;48;5;52;31mcvfrom(7,[0m[31m [0m[1;48;5;52;31m0x7ffff6656000, 4064, 64, NU[0m[31mL[0m[1;48;5;52;31mL,[0m[31m N[0m[1;48;5;52;31mULL[0m[31m) = [0m[1;48;5;52;31mOk([0m[31m1[0m[1;48;5;52;31m15)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mh[0m[32med[0m[1;48;5;22;32mu[0m[32ml[0m[1;48;5;22;32mer[0m[32m:[0m[1;48;5;22;32m:[0m[32mr[0m[1;48;5;22;32munqu[0m[32me[0m[1;48;5;22;32mue:[0m[32m [0m[1;48;5;22;32mDET[0m[32mL[0m[1;48;5;22;32mOG[0m[32m [0m[1;48;5;22;32mSCHEDRA[0m[32mN[0m[1;48;5;22;32mD: [0,2[0m[32m) =[0m[1;48;5;22;32m>[0m[32m 1"[0m
+Divergent syscall context:
+  run 1, log message 4550: INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #91: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(115)
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4551 (run 1) and 4551 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::[0m[1;48;5;52;31mio_b[0m[31mu[0m[1;48;5;52;31mff[0m[31mer[0m[1;48;5;52;31ms[0m[31m: [0m[1;48;5;52;31mDETL[0m[31mO[0m[1;48;5;52;31mG[0m[31m [0m[1;48;5;52;31m[iob[0m[31mu[0m[1;48;5;52;31mf][[0m[31mdtid 11[0m[1;48;5;52;31m][0m[31m rec[0m[1;48;5;52;31mvf[0m[31mro[0m[1;48;5;52;31mm [0m[31min [0m[1;48;5;52;31mf[0m[31md[0m[1;48;5;52;31m=7[0m[31m [0m[1;48;5;52;31m0x[0m[31m7[0m[1;48;5;52;31mffff6656[0m[31m00[0m[1;48;5;52;31m0+[0m[31m1[0m[1;48;5;52;31m15->1cb847bdfad1[0m[31m68[0m[1;48;5;52;31m92fb[0m[31m7[0m[1;48;5;52;31m1f7fd[0m[31m2[0m[1;48;5;52;31m888[0m[31m4[0m[1;48;5;52;31m6d7776eef8cc4b39[0m[31m5[0m[1;48;5;52;31mca6cd4fdcf4bfb8fe[0m[31m0"[0m
+[32m>"INFO detcore::[0m[1;48;5;22;32msched[0m[32mu[0m[1;48;5;22;32ml[0m[32mer: [0m[1;48;5;22;32m[sched-step5] >>>>>>>\n\n C[0m[32mO[0m[1;48;5;22;32mMMIT[0m[32m [0m[1;48;5;22;32mt[0m[32mu[0m[1;48;5;22;32mrn 463, [0m[32md[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32mt[0m[32mid 11 [0m[1;48;5;22;32musing [0m[32mre[0m[1;48;5;22;32msour[0m[32mc[0m[1;48;5;22;32mes {Inte[0m[32mr[0m[1;48;5;22;32mnalIOP[0m[32mo[0m[1;48;5;22;32mll[0m[32min[0m[1;48;5;22;32mg:[0m[32m [0m[1;48;5;22;32mW}, on previously committe[0m[32md [0m[1;48;5;22;32m1_[0m[32m7[0m[1;48;5;22;32m9[0m[32m0[0m[1;48;5;22;32m_[0m[32m016[0m[1;48;5;22;32m_[0m[32m87[0m[1;48;5;22;32m5.3[0m[32m24[0m[1;48;5;22;32m_2[0m[32m5[0m[1;48;5;22;32m7_1[0m[32m0[0m[1;48;5;22;32m0s[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::[0m[1;48;5;52;31mio_b[0m[31mu[0m[1;48;5;52;31mff[0m[31mer[0m[1;48;5;52;31ms[0m[31m: [0m[1;48;5;52;31mDETL[0m[31mO[0m[1;48;5;52;31mG[0m[31m [0m[1;48;5;52;31m[iob[0m[31mu[0m[1;48;5;52;31mf][[0m[31mdtid 11[0m[1;48;5;52;31m][0m[31m rec[0m[1;48;5;52;31mvf[0m[31mro[0m[1;48;5;52;31mm [0m[31min [0m[1;48;5;52;31mf[0m[31md[0m[1;48;5;52;31m=7[0m[31m [0m[1;48;5;52;31m0x[0m[31m7[0m[1;48;5;52;31mffff6656[0m[31m00[0m[1;48;5;52;31m0+[0m[31m1[0m[1;48;5;52;31m15->1cb847bdfad1[0m[31m68[0m[1;48;5;52;31m92fb[0m[31m7[0m[1;48;5;52;31m1f7fd[0m[31m2[0m[1;48;5;52;31m888[0m[31m4[0m[1;48;5;52;31m6d7776eef8cc4b39[0m[31m5[0m[1;48;5;52;31mca6cd4fdcf4bfb8fe[0m[31m0"[0m
+[32m>"INFO detcore::[0m[1;48;5;22;32msched[0m[32mu[0m[1;48;5;22;32ml[0m[32mer: [0m[1;48;5;22;32m[sched-step5] >>>>>>>\n\n C[0m[32mO[0m[1;48;5;22;32mMMIT[0m[32m [0m[1;48;5;22;32mt[0m[32mu[0m[1;48;5;22;32mrn 463, [0m[32md[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32mt[0m[32mid 11 [0m[1;48;5;22;32musing [0m[32mre[0m[1;48;5;22;32msour[0m[32mc[0m[1;48;5;22;32mes {Inte[0m[32mr[0m[1;48;5;22;32mnalIOP[0m[32mo[0m[1;48;5;22;32mll[0m[32min[0m[1;48;5;22;32mg:[0m[32m [0m[1;48;5;22;32mW}, on previously committe[0m[32md [0m[1;48;5;22;32m1_[0m[32m7[0m[1;48;5;22;32m9[0m[32m0[0m[1;48;5;22;32m_[0m[32m016[0m[1;48;5;22;32m_[0m[32m87[0m[1;48;5;22;32m5.3[0m[32m24[0m[1;48;5;22;32m_2[0m[32m5[0m[1;48;5;22;32m7_1[0m[32m0[0m[1;48;5;22;32m0s[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4550: INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #91: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(115)
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4552 (run 1) and 4552 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][d[0m[31me[0m[1;48;5;52;31mtcore, [0m[31md[0m[1;48;5;52;31mtid 11] inbo[0m[31mu[0m[1;48;5;52;31mnd sysca[0m[31ml[0m[1;48;5;52;31ml[0m[31m:[0m[1;48;5;52;31m clock_g[0m[31me[0m[1;48;5;52;31mttim[0m[31me[0m[1;48;5;52;31m(C[0m[31mLOC[0m[1;48;5;52;31mK_MO[0m[31mN[0m[1;48;5;52;31mOTONIC,[0m[31m 0[0m[1;48;5;52;31mx7ffff5[0m[31m2[0m[1;48;5;52;31mf6410[0m[31m) = [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mh[0m[32medul[0m[1;48;5;22;32mer[0m[32m:[0m[1;48;5;22;32m:runqu[0m[32me[0m[1;48;5;22;32mu[0m[32me[0m[1;48;5;22;32m: DET[0m[32mLO[0m[1;48;5;22;32mG S[0m[32mC[0m[1;48;5;22;32mHEDRA[0m[32mN[0m[1;48;5;22;32mD:[0m[32m [0m[1;48;5;22;32m[[0m[32m0[0m[1;48;5;22;32m,[0m[32m2) =[0m[1;48;5;22;32m>[0m[32m [0m[1;48;5;22;32m1[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][d[0m[31me[0m[1;48;5;52;31mtcore, [0m[31md[0m[1;48;5;52;31mtid 11] inbo[0m[31mu[0m[1;48;5;52;31mnd sysca[0m[31ml[0m[1;48;5;52;31ml[0m[31m:[0m[1;48;5;52;31m clock_g[0m[31me[0m[1;48;5;52;31mttim[0m[31me[0m[1;48;5;52;31m(C[0m[31mLOC[0m[1;48;5;52;31mK_MO[0m[31mN[0m[1;48;5;52;31mOTONIC,[0m[31m 0[0m[1;48;5;52;31mx7ffff5[0m[31m2[0m[1;48;5;52;31mf6410[0m[31m) = [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mh[0m[32medul[0m[1;48;5;22;32mer[0m[32m:[0m[1;48;5;22;32m:runqu[0m[32me[0m[1;48;5;22;32mu[0m[32me[0m[1;48;5;22;32m: DET[0m[32mLO[0m[1;48;5;22;32mG S[0m[32mC[0m[1;48;5;22;32mHEDRA[0m[32mN[0m[1;48;5;22;32mD:[0m[32m [0m[1;48;5;22;32m[[0m[32m0[0m[1;48;5;22;32m,[0m[32m2) =[0m[1;48;5;22;32m>[0m[32m [0m[1;48;5;22;32m1[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4552: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f6410) = ?
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #91: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(115)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4553 (run 1) and 4553 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31ma[0m[31ml[0m[1;48;5;52;31ml][0m[31m[det[0m[1;48;5;52;31mco[0m[31mr[0m[1;48;5;52;31me[0m[31m, dtid 11[0m[1;48;5;52;31m][0m[31m [0m[1;48;5;52;31mf[0m[31min[0m[1;48;5;52;31mish[0m[31m s[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall[0m[31m [0m[1;48;5;52;31m#92: cl[0m[31moc[0m[1;48;5;52;31mk_g[0m[31met[0m[1;48;5;52;31mt[0m[31mi[0m[1;48;5;52;31mm[0m[31me([0m[1;48;5;52;31mCLOCK_MONOTONIC[0m[31m, [0m[1;48;5;52;31m0x7ffff52f6410[0m[31m [0m[1;48;5;52;31m-> [0m[31m{[0m[1;48;5;52;31m [0m[31mt[0m[1;48;5;52;31mv_s[0m[31me[0m[1;48;5;52;31mc[0m[31m: [0m[1;48;5;52;31m1790016875[0m[31m, [0m[1;48;5;52;31mtv[0m[31m_[0m[1;48;5;52;31mns[0m[31me[0m[1;48;5;52;31mc[0m[31m: 3[0m[1;48;5;52;31m23833330[0m[31m [0m[1;48;5;52;31m})[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31mOk(0)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhedu[0m[32ml[0m[1;48;5;22;32mer: [0m[32m[[0m[1;48;5;22;32msche[0m[32md[0m[1;48;5;22;32mul[0m[32me[0m[1;48;5;22;32mr] >>>>>>>\n\n NONCOMMIT [0m[32mt[0m[1;48;5;22;32mu[0m[32mr[0m[1;48;5;22;32mn 464[0m[32m, [0m[1;48;5;22;32mSKIP [0m[32md[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32mt[0m[32mid 11 [0m[1;48;5;22;32mpoll[0m[32min[0m[1;48;5;22;32mg[0m[32m [0m[1;48;5;22;32mre[0m[32ms[0m[1;48;5;22;32mour[0m[32mc[0m[1;48;5;22;32me[0m[32m [0m[1;48;5;22;32mRes[0m[32mo[0m[1;48;5;22;32mur[0m[32mce[0m[1;48;5;22;32ms { [0m[32mti[0m[1;48;5;22;32md: D[0m[32me[0m[1;48;5;22;32mtPid[0m[32m([0m[1;48;5;22;32m11)[0m[32m, [0m[1;48;5;22;32mresources:[0m[32m {[0m[1;48;5;22;32mIn[0m[32mte[0m[1;48;5;22;32mrnalIOPolling[0m[32m: [0m[1;48;5;22;32mW}[0m[32m, [0m[1;48;5;22;32mpoll[0m[32m_[0m[1;48;5;22;32matt[0m[32me[0m[1;48;5;22;32mmpt[0m[32m: [0m[1;48;5;22;32m9[0m[32m3[0m[1;48;5;22;32m,[0m[32m [0m[1;48;5;22;32mfyi:[0m[32m [0m[1;48;5;22;32m\"epoll_wait\"[0m[32m [0m[1;48;5;22;32m}[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31ma[0m[31ml[0m[1;48;5;52;31ml][0m[31m[det[0m[1;48;5;52;31mco[0m[31mr[0m[1;48;5;52;31me[0m[31m, dtid 11[0m[1;48;5;52;31m][0m[31m [0m[1;48;5;52;31mf[0m[31min[0m[1;48;5;52;31mish[0m[31m s[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall[0m[31m [0m[1;48;5;52;31m#92: cl[0m[31moc[0m[1;48;5;52;31mk_g[0m[31met[0m[1;48;5;52;31mt[0m[31mi[0m[1;48;5;52;31mm[0m[31me([0m[1;48;5;52;31mCLOCK_MONOTONIC[0m[31m, [0m[1;48;5;52;31m0x7ffff52f6410[0m[31m [0m[1;48;5;52;31m-> [0m[31m{[0m[1;48;5;52;31m [0m[31mt[0m[1;48;5;52;31mv_s[0m[31me[0m[1;48;5;52;31mc[0m[31m: [0m[1;48;5;52;31m1790016875[0m[31m, [0m[1;48;5;52;31mtv[0m[31m_[0m[1;48;5;52;31mns[0m[31me[0m[1;48;5;52;31mc[0m[31m: 3[0m[1;48;5;52;31m23833330[0m[31m [0m[1;48;5;52;31m})[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31mOk(0)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhedu[0m[32ml[0m[1;48;5;22;32mer: [0m[32m[[0m[1;48;5;22;32msche[0m[32md[0m[1;48;5;22;32mul[0m[32me[0m[1;48;5;22;32mr] >>>>>>>\n\n NONCOMMIT [0m[32mt[0m[1;48;5;22;32mu[0m[32mr[0m[1;48;5;22;32mn 464[0m[32m, [0m[1;48;5;22;32mSKIP [0m[32md[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32mt[0m[32mid 11 [0m[1;48;5;22;32mpoll[0m[32min[0m[1;48;5;22;32mg[0m[32m [0m[1;48;5;22;32mre[0m[32ms[0m[1;48;5;22;32mour[0m[32mc[0m[1;48;5;22;32me[0m[32m [0m[1;48;5;22;32mRes[0m[32mo[0m[1;48;5;22;32mur[0m[32mce[0m[1;48;5;22;32ms { [0m[32mti[0m[1;48;5;22;32md: D[0m[32me[0m[1;48;5;22;32mtPid[0m[32m([0m[1;48;5;22;32m11)[0m[32m, [0m[1;48;5;22;32mresources:[0m[32m {[0m[1;48;5;22;32mIn[0m[32mte[0m[1;48;5;22;32mrnalIOPolling[0m[32m: [0m[1;48;5;22;32mW}[0m[32m, [0m[1;48;5;22;32mpoll[0m[32m_[0m[1;48;5;22;32matt[0m[32me[0m[1;48;5;22;32mmpt[0m[32m: [0m[1;48;5;22;32m9[0m[32m3[0m[1;48;5;22;32m,[0m[32m [0m[1;48;5;22;32mfyi:[0m[32m [0m[1;48;5;22;32m\"epoll_wait\"[0m[32m [0m[1;48;5;22;32m}[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4553: INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #92: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f6410 -> { tv_sec: 1790016875, tv_nsec: 323833330 }) = Ok(0)
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #91: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(115)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4554 (run 1) and 4554 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me, dtid 11] inbo[0m[31mun[0m[1;48;5;52;31md[0m[31m [0m[1;48;5;52;31msyscall[0m[31m: [0m[1;48;5;52;31mgetrandom([0m[31m0[0m[1;48;5;52;31mx7ffff52f68c0[0m[31m,[0m[1;48;5;52;31m 10[0m[31m2[0m[1;48;5;52;31m4, 0[0m[31m) = [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m::r[0m[32mun[0m[1;48;5;22;32mqueue:[0m[32m [0m[1;48;5;22;32mDETLOG SCHEDRAND[0m[32m: [0m[1;48;5;22;32m[[0m[32m0,2) =[0m[1;48;5;22;32m>[0m[32m [0m[1;48;5;22;32m0[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me, dtid 11] inbo[0m[31mun[0m[1;48;5;52;31md[0m[31m [0m[1;48;5;52;31msyscall[0m[31m: [0m[1;48;5;52;31mgetrandom([0m[31m0[0m[1;48;5;52;31mx7ffff52f68c0[0m[31m,[0m[1;48;5;52;31m 10[0m[31m2[0m[1;48;5;52;31m4, 0[0m[31m) = [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m::r[0m[32mun[0m[1;48;5;22;32mqueue:[0m[32m [0m[1;48;5;22;32mDETLOG SCHEDRAND[0m[32m: [0m[1;48;5;22;32m[[0m[32m0,2) =[0m[1;48;5;22;32m>[0m[32m [0m[1;48;5;22;32m0[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4554: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: getrandom(0x7ffff52f68c0, 1024, 0) = ?
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #91: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(115)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #92: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f6410 -> { tv_sec: 1790016875, tv_nsec: 323833330 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4555 (run 1) and 4555 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::[0m[1;48;5;52;31mran[0m[31md[0m[1;48;5;52;31mom[0m[31m: [0m[1;48;5;52;31mDETLOG [0m[31m[d[0m[1;48;5;52;31mtid 11[0m[31m] [0m[1;48;5;52;31mUSER[0m[31m [0m[1;48;5;52;31mRA[0m[31mN[0m[1;48;5;52;31mD[0m[31m [0m[1;48;5;52;31m[ge[0m[31mtr[0m[1;48;5;52;31ma[0m[31mn[0m[1;48;5;52;31mdom][0m[31m [0m[1;48;5;52;31mFill[0m[31med g[0m[1;48;5;52;31mu[0m[31mes[0m[1;48;5;52;31mt[0m[31m [0m[1;48;5;52;31mm[0m[31me[0m[1;48;5;52;31mm[0m[31mor[0m[1;48;5;52;31my[0m[31m [0m[1;48;5;52;31mw[0m[31mit[0m[1;48;5;52;31mh[0m[31m [0m[1;48;5;52;31m1024 [0m[31mr[0m[1;48;5;52;31mand[0m[31mo[0m[1;48;5;52;31mm byt[0m[31mes[0m[1;48;5;52;31m,[0m[31m [0m[1;48;5;52;31mh[0m[31ma[0m[1;48;5;52;31msh [0m[31mo[0m[1;48;5;52;31mf[0m[31m [0m[1;48;5;52;31mby[0m[31mte[0m[1;48;5;52;31ms[0m[31m: 9[0m[1;48;5;52;31m324710212263596994[0m[31m"[0m
+[32m>"INFO detcore::[0m[1;48;5;22;32msche[0m[32md[0m[1;48;5;22;32muler[0m[32m: [[0m[1;48;5;22;32msche[0m[32md[0m[1;48;5;22;32muler[0m[32m] [0m[1;48;5;22;32m>>>>>>>\n\n[0m[32m N[0m[1;48;5;22;32mONCOMMIT[0m[32m t[0m[1;48;5;22;32mu[0m[32mrn [0m[1;48;5;22;32m465, SKIP d[0m[32me[0m[1;48;5;22;32mtti[0m[32md [0m[1;48;5;22;32m9 pollin[0m[32mg[0m[1;48;5;22;32m r[0m[32mes[0m[1;48;5;22;32mource[0m[32m [0m[1;48;5;22;32mR[0m[32me[0m[1;48;5;22;32ms[0m[32mo[0m[1;48;5;22;32mu[0m[32mr[0m[1;48;5;22;32mces[0m[32m [0m[1;48;5;22;32m{ t[0m[32mi[0m[1;48;5;22;32md: De[0m[32mt[0m[1;48;5;22;32mPid(9),[0m[32m r[0m[1;48;5;22;32mes[0m[32mo[0m[1;48;5;22;32murc[0m[32mes[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32m{Intern[0m[32ma[0m[1;48;5;22;32mlIOP[0m[32mo[0m[1;48;5;22;32mlling:[0m[32m [0m[1;48;5;22;32mW}, poll_a[0m[32mt[0m[1;48;5;22;32mt[0m[32me[0m[1;48;5;22;32mmpt[0m[32m: [0m[1;48;5;22;32m8[0m[32m9[0m[1;48;5;22;32m, fyi: \"epoll_wait\" }[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::[0m[1;48;5;52;31mran[0m[31md[0m[1;48;5;52;31mom[0m[31m: [0m[1;48;5;52;31mDETLOG [0m[31m[d[0m[1;48;5;52;31mtid 11[0m[31m] [0m[1;48;5;52;31mUSER[0m[31m [0m[1;48;5;52;31mRA[0m[31mN[0m[1;48;5;52;31mD[0m[31m [0m[1;48;5;52;31m[ge[0m[31mtr[0m[1;48;5;52;31ma[0m[31mn[0m[1;48;5;52;31mdom][0m[31m [0m[1;48;5;52;31mFill[0m[31med g[0m[1;48;5;52;31mu[0m[31mes[0m[1;48;5;52;31mt[0m[31m [0m[1;48;5;52;31mm[0m[31me[0m[1;48;5;52;31mm[0m[31mor[0m[1;48;5;52;31my[0m[31m [0m[1;48;5;52;31mw[0m[31mit[0m[1;48;5;52;31mh[0m[31m [0m[1;48;5;52;31m1024 [0m[31mr[0m[1;48;5;52;31mand[0m[31mo[0m[1;48;5;52;31mm byt[0m[31mes[0m[1;48;5;52;31m,[0m[31m [0m[1;48;5;52;31mh[0m[31ma[0m[1;48;5;52;31msh [0m[31mo[0m[1;48;5;52;31mf[0m[31m [0m[1;48;5;52;31mby[0m[31mte[0m[1;48;5;52;31ms[0m[31m: 9[0m[1;48;5;52;31m324710212263596994[0m[31m"[0m
+[32m>"INFO detcore::[0m[1;48;5;22;32msche[0m[32md[0m[1;48;5;22;32muler[0m[32m: [[0m[1;48;5;22;32msche[0m[32md[0m[1;48;5;22;32muler[0m[32m] [0m[1;48;5;22;32m>>>>>>>\n\n[0m[32m N[0m[1;48;5;22;32mONCOMMIT[0m[32m t[0m[1;48;5;22;32mu[0m[32mrn [0m[1;48;5;22;32m465, SKIP d[0m[32me[0m[1;48;5;22;32mtti[0m[32md [0m[1;48;5;22;32m9 pollin[0m[32mg[0m[1;48;5;22;32m r[0m[32mes[0m[1;48;5;22;32mource[0m[32m [0m[1;48;5;22;32mR[0m[32me[0m[1;48;5;22;32ms[0m[32mo[0m[1;48;5;22;32mu[0m[32mr[0m[1;48;5;22;32mces[0m[32m [0m[1;48;5;22;32m{ t[0m[32mi[0m[1;48;5;22;32md: De[0m[32mt[0m[1;48;5;22;32mPid(9),[0m[32m r[0m[1;48;5;22;32mes[0m[32mo[0m[1;48;5;22;32murc[0m[32mes[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32m{Intern[0m[32ma[0m[1;48;5;22;32mlIOP[0m[32mo[0m[1;48;5;22;32mlling:[0m[32m [0m[1;48;5;22;32mW}, poll_a[0m[32mt[0m[1;48;5;22;32mt[0m[32me[0m[1;48;5;22;32mmpt[0m[32m: [0m[1;48;5;22;32m8[0m[32m9[0m[1;48;5;22;32m, fyi: \"epoll_wait\" }[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4554: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: getrandom(0x7ffff52f68c0, 1024, 0) = ?
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #91: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(115)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #92: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f6410 -> { tv_sec: 1790016875, tv_nsec: 323833330 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4556 (run 1) and 4556 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG [0m[1;48;5;52;31m[syscall][detcore, dtid 11] finish syscall #93[0m[31m: [0m[1;48;5;52;31mgetrandom([0m[31m0[0m[1;48;5;52;31mx7ffff52f68c0[0m[31m,[0m[1;48;5;52;31m 10[0m[31m2[0m[1;48;5;52;31m4, 0[0m[31m) = [0m[1;48;5;52;31mOk(1[0m[31m0[0m[1;48;5;52;31m24)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:scheduler::runqueue:[0m[32m DETLOG [0m[1;48;5;22;32mSCHEDRAND[0m[32m: [0m[1;48;5;22;32m[[0m[32m0,2) =[0m[1;48;5;22;32m>[0m[32m 0"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG [0m[1;48;5;52;31m[syscall][detcore, dtid 11] finish syscall #93[0m[31m: [0m[1;48;5;52;31mgetrandom([0m[31m0[0m[1;48;5;52;31mx7ffff52f68c0[0m[31m,[0m[1;48;5;52;31m 10[0m[31m2[0m[1;48;5;52;31m4, 0[0m[31m) = [0m[1;48;5;52;31mOk(1[0m[31m0[0m[1;48;5;52;31m24)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:scheduler::runqueue:[0m[32m DETLOG [0m[1;48;5;22;32mSCHEDRAND[0m[32m: [0m[1;48;5;22;32m[[0m[32m0,2) =[0m[1;48;5;22;32m>[0m[32m 0"[0m
+Divergent syscall context:
+  run 1, log message 4556: INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #93: getrandom(0x7ffff52f68c0, 1024, 0) = Ok(1024)
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #91: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(115)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #92: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f6410 -> { tv_sec: 1790016875, tv_nsec: 323833330 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4557 (run 1) and 4557 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::[0m[1;48;5;52;31mio_b[0m[31mu[0m[1;48;5;52;31mff[0m[31mer[0m[1;48;5;52;31ms[0m[31m: [0m[1;48;5;52;31mDETL[0m[31mO[0m[1;48;5;52;31mG[0m[31m [0m[1;48;5;52;31m[iob[0m[31mu[0m[1;48;5;52;31mf][[0m[31mdtid 11[0m[1;48;5;52;31m][0m[31m getran[0m[1;48;5;52;31md[0m[31mo[0m[1;48;5;52;31mm[0m[31m i[0m[1;48;5;52;31mn[0m[31m [0m[1;48;5;52;31mf[0m[31md[0m[1;48;5;52;31m=-[0m[31m [0m[1;48;5;52;31m0x7ffff52f68c0+[0m[31m1[0m[1;48;5;52;31m024->58[0m[31m79[0m[1;48;5;52;31m75f8d81e[0m[31m0[0m[1;48;5;52;31mcc[0m[31m0[0m[1;48;5;52;31m8c[0m[31m1[0m[1;48;5;52;31m9de2e[0m[31m6[0m[1;48;5;52;31mdbd473[0m[31m8[0m[1;48;5;52;31mf[0m[31m73[0m[1;48;5;52;31m1b30df6b3[0m[31m2[0m[1;48;5;52;31m3[0m[31m4[0m[1;48;5;52;31m0[0m[31m7[0m[1;48;5;52;31m0d61d68d1a63f77 chunks=2[0m[31m5[0m[1;48;5;52;31m6:3954f91f,8[0m[31m7[0m[1;48;5;52;31mc2e8c8,9[0m[31m1[0m[1;48;5;52;31m99537e,[0m[31m0[0m[1;48;5;52;31m7e[0m[31m0[0m[1;48;5;52;31m3eab[0m[31m"[0m
+[32m>"INFO detcore::[0m[1;48;5;22;32msched[0m[32mu[0m[1;48;5;22;32ml[0m[32mer: [0m[1;48;5;22;32m[sched-step5] >>>>>>>\n\n C[0m[32mO[0m[1;48;5;22;32mMMIT[0m[32m [0m[1;48;5;22;32mt[0m[32mu[0m[1;48;5;22;32mrn 466, [0m[32md[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32mt[0m[32mid 11 [0m[1;48;5;22;32musin[0m[32mg[0m[1;48;5;22;32m r[0m[32me[0m[1;48;5;22;32msources {In[0m[32mt[0m[1;48;5;22;32me[0m[32mr[0m[1;48;5;22;32mn[0m[32ma[0m[1;48;5;22;32mlIOPolli[0m[32mn[0m[1;48;5;22;32mg: W}, [0m[32mo[0m[1;48;5;22;32mn[0m[32m [0m[1;48;5;22;32mprev[0m[32mi[0m[1;48;5;22;32mously[0m[32m [0m[1;48;5;22;32mcommitte[0m[32md 1[0m[1;48;5;22;32m_[0m[32m790[0m[1;48;5;22;32m_[0m[32m016[0m[1;48;5;22;32m_[0m[32m87[0m[1;48;5;22;32m5.[0m[32m324[0m[1;48;5;22;32m_[0m[32m757[0m[1;48;5;22;32m_[0m[32m100[0m[1;48;5;22;32ms[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::[0m[1;48;5;52;31mio_b[0m[31mu[0m[1;48;5;52;31mff[0m[31mer[0m[1;48;5;52;31ms[0m[31m: [0m[1;48;5;52;31mDETL[0m[31mO[0m[1;48;5;52;31mG[0m[31m [0m[1;48;5;52;31m[iob[0m[31mu[0m[1;48;5;52;31mf][[0m[31mdtid 11[0m[1;48;5;52;31m][0m[31m getran[0m[1;48;5;52;31md[0m[31mo[0m[1;48;5;52;31mm[0m[31m i[0m[1;48;5;52;31mn[0m[31m [0m[1;48;5;52;31mf[0m[31md[0m[1;48;5;52;31m=-[0m[31m [0m[1;48;5;52;31m0x7ffff52f68c0+[0m[31m1[0m[1;48;5;52;31m024->58[0m[31m79[0m[1;48;5;52;31m75f8d81e[0m[31m0[0m[1;48;5;52;31mcc[0m[31m0[0m[1;48;5;52;31m8c[0m[31m1[0m[1;48;5;52;31m9de2e[0m[31m6[0m[1;48;5;52;31mdbd473[0m[31m8[0m[1;48;5;52;31mf[0m[31m73[0m[1;48;5;52;31m1b30df6b3[0m[31m2[0m[1;48;5;52;31m3[0m[31m4[0m[1;48;5;52;31m0[0m[31m7[0m[1;48;5;52;31m0d61d68d1a63f77 chunks=2[0m[31m5[0m[1;48;5;52;31m6:3954f91f,8[0m[31m7[0m[1;48;5;52;31mc2e8c8,9[0m[31m1[0m[1;48;5;52;31m99537e,[0m[31m0[0m[1;48;5;52;31m7e[0m[31m0[0m[1;48;5;52;31m3eab[0m[31m"[0m
+[32m>"INFO detcore::[0m[1;48;5;22;32msched[0m[32mu[0m[1;48;5;22;32ml[0m[32mer: [0m[1;48;5;22;32m[sched-step5] >>>>>>>\n\n C[0m[32mO[0m[1;48;5;22;32mMMIT[0m[32m [0m[1;48;5;22;32mt[0m[32mu[0m[1;48;5;22;32mrn 466, [0m[32md[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32mt[0m[32mid 11 [0m[1;48;5;22;32musin[0m[32mg[0m[1;48;5;22;32m r[0m[32me[0m[1;48;5;22;32msources {In[0m[32mt[0m[1;48;5;22;32me[0m[32mr[0m[1;48;5;22;32mn[0m[32ma[0m[1;48;5;22;32mlIOPolli[0m[32mn[0m[1;48;5;22;32mg: W}, [0m[32mo[0m[1;48;5;22;32mn[0m[32m [0m[1;48;5;22;32mprev[0m[32mi[0m[1;48;5;22;32mously[0m[32m [0m[1;48;5;22;32mcommitte[0m[32md 1[0m[1;48;5;22;32m_[0m[32m790[0m[1;48;5;22;32m_[0m[32m016[0m[1;48;5;22;32m_[0m[32m87[0m[1;48;5;22;32m5.[0m[32m324[0m[1;48;5;22;32m_[0m[32m757[0m[1;48;5;22;32m_[0m[32m100[0m[1;48;5;22;32ms[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4556: INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #93: getrandom(0x7ffff52f68c0, 1024, 0) = Ok(1024)
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #91: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(115)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #92: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f6410 -> { tv_sec: 1790016875, tv_nsec: 323833330 }) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4558 (run 1) and 4558 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me, dtid 11] inbo[0m[31mun[0m[1;48;5;52;31md[0m[31m [0m[1;48;5;52;31msyscall[0m[31m: [0m[1;48;5;52;31mgetpid([0m[31m) = [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m::r[0m[32mun[0m[1;48;5;22;32mqueue:[0m[32m [0m[1;48;5;22;32mDETLOG SCHEDRAND[0m[32m: [0m[1;48;5;22;32m[0,2[0m[32m) =[0m[1;48;5;22;32m>[0m[32m [0m[1;48;5;22;32m1[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me, dtid 11] inbo[0m[31mun[0m[1;48;5;52;31md[0m[31m [0m[1;48;5;52;31msyscall[0m[31m: [0m[1;48;5;52;31mgetpid([0m[31m) = [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m::r[0m[32mun[0m[1;48;5;22;32mqueue:[0m[32m [0m[1;48;5;22;32mDETLOG SCHEDRAND[0m[32m: [0m[1;48;5;22;32m[0,2[0m[32m) =[0m[1;48;5;22;32m>[0m[32m [0m[1;48;5;22;32m1[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4558: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: getpid() = ?
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #91: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(115)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #92: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f6410 -> { tv_sec: 1790016875, tv_nsec: 323833330 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #93: getrandom(0x7ffff52f68c0, 1024, 0) = Ok(1024)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4559 (run 1) and 4559 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31ma[0m[31ml[0m[1;48;5;52;31ml][0m[31m[det[0m[1;48;5;52;31mco[0m[31mr[0m[1;48;5;52;31me[0m[31m, dtid [0m[1;48;5;52;31m11][0m[31m [0m[1;48;5;52;31mf[0m[31min[0m[1;48;5;52;31mish[0m[31m s[0m[1;48;5;52;31mys[0m[31mcall[0m[1;48;5;52;31m #94[0m[31m: [0m[1;48;5;52;31mget[0m[31mpid[0m[1;48;5;52;31m()[0m[31m [0m[1;48;5;52;31m= Ok([0m[31m3[0m[1;48;5;52;31m)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhedu[0m[32ml[0m[1;48;5;22;32mer: [0m[32m[[0m[1;48;5;22;32msche[0m[32md[0m[1;48;5;22;32m-st[0m[32me[0m[1;48;5;22;32mp5] >>>>>>>\n\n COMMIT [0m[32mt[0m[1;48;5;22;32mu[0m[32mr[0m[1;48;5;22;32mn 467[0m[32m, d[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32mt[0m[32mid [0m[1;48;5;22;32m9[0m[32m [0m[1;48;5;22;32mus[0m[32min[0m[1;48;5;22;32mg[0m[32m [0m[1;48;5;22;32mre[0m[32ms[0m[1;48;5;22;32mour[0m[32mc[0m[1;48;5;22;32mes {Intern[0m[32mal[0m[1;48;5;22;32mIOPo[0m[32ml[0m[1;48;5;22;32mling[0m[32m: [0m[1;48;5;22;32mW}, on [0m[32mp[0m[1;48;5;22;32mrev[0m[32mi[0m[1;48;5;22;32mously committe[0m[32md [0m[1;48;5;22;32m1_790_016_875.[0m[32m3[0m[1;48;5;22;32m25_257_100s[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31ma[0m[31ml[0m[1;48;5;52;31ml][0m[31m[det[0m[1;48;5;52;31mco[0m[31mr[0m[1;48;5;52;31me[0m[31m, dtid [0m[1;48;5;52;31m11][0m[31m [0m[1;48;5;52;31mf[0m[31min[0m[1;48;5;52;31mish[0m[31m s[0m[1;48;5;52;31mys[0m[31mcall[0m[1;48;5;52;31m #94[0m[31m: [0m[1;48;5;52;31mget[0m[31mpid[0m[1;48;5;52;31m()[0m[31m [0m[1;48;5;52;31m= Ok([0m[31m3[0m[1;48;5;52;31m)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhedu[0m[32ml[0m[1;48;5;22;32mer: [0m[32m[[0m[1;48;5;22;32msche[0m[32md[0m[1;48;5;22;32m-st[0m[32me[0m[1;48;5;22;32mp5] >>>>>>>\n\n COMMIT [0m[32mt[0m[1;48;5;22;32mu[0m[32mr[0m[1;48;5;22;32mn 467[0m[32m, d[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32mt[0m[32mid [0m[1;48;5;22;32m9[0m[32m [0m[1;48;5;22;32mus[0m[32min[0m[1;48;5;22;32mg[0m[32m [0m[1;48;5;22;32mre[0m[32ms[0m[1;48;5;22;32mour[0m[32mc[0m[1;48;5;22;32mes {Intern[0m[32mal[0m[1;48;5;22;32mIOPo[0m[32ml[0m[1;48;5;22;32mling[0m[32m: [0m[1;48;5;22;32mW}, on [0m[32mp[0m[1;48;5;22;32mrev[0m[32mi[0m[1;48;5;22;32mously committe[0m[32md [0m[1;48;5;22;32m1_790_016_875.[0m[32m3[0m[1;48;5;22;32m25_257_100s[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4559: INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #94: getpid() = Ok(3)
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #89: epoll_wait(11, 0x7ffff65e6000, 32, -1) = Ok(1)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #91: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(115)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #92: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f6410 -> { tv_sec: 1790016875, tv_nsec: 323833330 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #93: getrandom(0x7ffff52f68c0, 1024, 0) = Ok(1024)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+(INFO) Mismatch at log messages 4560 (run 1) and 4560 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][d[0m[31me[0m[1;48;5;52;31mtcore, [0m[31md[0m[1;48;5;52;31mtid 11] inbo[0m[31mu[0m[1;48;5;52;31mnd sysca[0m[31ml[0m[1;48;5;52;31ml: n[0m[31me[0m[1;48;5;52;31mwfstatat(-100, 0x7ffff4652a00 -> \"/[0m[31mrun[0m[1;48;5;52;31m/r[0m[31me[0m[1;48;5;52;31m_work[0m[31me[0m[1;48;5;52;31mr/net_isolation\",[0m[31m [0m[1;48;5;52;31m0x7ffff52f6510,[0m[31m A[0m[1;48;5;52;31mtFlags([0m[31m0[0m[1;48;5;52;31mx0[0m[31m)[0m[1;48;5;52;31m)[0m[31m = [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mh[0m[32meduler[0m[1;48;5;22;32m::r[0m[32mun[0m[1;48;5;22;32mqu[0m[32me[0m[1;48;5;22;32mu[0m[32me[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32mDETLOG[0m[32m [0m[1;48;5;22;32mSCHEDR[0m[32mA[0m[1;48;5;22;32mND: [[0m[32m0[0m[1;48;5;22;32m,2[0m[32m) =[0m[1;48;5;22;32m>[0m[32m [0m[1;48;5;22;32m0[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][d[0m[31me[0m[1;48;5;52;31mtcore, [0m[31md[0m[1;48;5;52;31mtid 11] inbo[0m[31mu[0m[1;48;5;52;31mnd sysca[0m[31ml[0m[1;48;5;52;31ml: n[0m[31me[0m[1;48;5;52;31mwfstatat(-100, 0x7ffff4652a00 -> \"/[0m[31mrun[0m[1;48;5;52;31m/r[0m[31me[0m[1;48;5;52;31m_work[0m[31me[0m[1;48;5;52;31mr/net_isolation\",[0m[31m [0m[1;48;5;52;31m0x7ffff52f6510,[0m[31m A[0m[1;48;5;52;31mtFlags([0m[31m0[0m[1;48;5;52;31mx0[0m[31m)[0m[1;48;5;52;31m)[0m[31m = [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mh[0m[32meduler[0m[1;48;5;22;32m::r[0m[32mun[0m[1;48;5;22;32mqu[0m[32me[0m[1;48;5;22;32mu[0m[32me[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32mDETLOG[0m[32m [0m[1;48;5;22;32mSCHEDR[0m[32mA[0m[1;48;5;22;32mND: [[0m[32m0[0m[1;48;5;22;32m,2[0m[32m) =[0m[1;48;5;22;32m>[0m[32m [0m[1;48;5;22;32m0[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 4560: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: newfstatat(-100, 0x7ffff4652a00 -> "/run/re_worker/net_isolation", 0x7ffff52f6510, AtFlags(0x0)) = ?
+  run 2, log message 3837: INFO detcore: DETLOG [syscall][detcore, dtid 11] inbound syscall: epoll_wait(11, 0x7ffff65e6000, 32, -1) = ?
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #90: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 322767460 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #91: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(115)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #92: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f6410 -> { tv_sec: 1790016875, tv_nsec: 323833330 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #93: getrandom(0x7ffff52f68c0, 1024, 0) = Ok(1024)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #94: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #84: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f74e0 -> { tv_sec: 1790016875, tv_nsec: 232637820 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #85: recvfrom(7, 0x7ffff6656000, 4064, 64, NULL, NULL) = Ok(58)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #86: setsockopt(7, 1, 203, 0x7ffff52f671e, 2) = Err(Errno(EINVAL))
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #87: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234741510 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 11] finish syscall #88: clock_gettime(CLOCK_MONOTONIC, 0x7ffff52f7620 -> { tv_sec: 1790016875, tv_nsec: 234751860 }) = Ok(0)
+
+More than 20 differences, eliding the rest...
+Run 1 contains 3373 extra messages not matched in run 2. Displaying up to 10:
+INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 19 in pid 3..
+INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 31 in pid 3..
+INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 9 in pid 3..
+INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: [0,1) => 0
+INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 8928, dettid 3 using resources {FutexWait: R}, on previously committed 1_790_016_878.563_418_905s
+INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3 in pid 3..
+INFO detcore::scheduler: scheduler (step2_process_blocked): zero threads left anywhere, fizzling.
+INFO detcore::scheduler: [scheduler] run queue empty, exiting sched_loop.
+INFO detcore::tool_global: detcore shut down, destroying global state
+INFO detcore::tool_global: 
+  ------------------------------ hermit run report ------------------------------
+Final thread-tree was: [3 5 7 9 (11 13 (15 27 29 31) 17 19 21 23 25 (33 37) 35 39 41 43 45 47 49 51 53)]
+There were 1 group leaders of 26 thread(s) total.
+Guest threads completed 58699 syscalls.
+Internally, the hermit scheduler ran 8929 turns, recorded 0 events (0 desynced)
+Final virtual global (cpu) time: 1_790_016_878.563_918_905s
+Elapsed virtual global (cpu) time: 3.563_918_905s
+Timeslice stats: min=18970ns max=200000000ns mean=32239319ns count=31
+  timeslice thread 3: min=119768595ns max=119768595ns mean=119768595ns count=1
+  timeslice thread 5: min=354490ns max=354490ns mean=354490ns count=1
+  timeslice thread 7: min=342670ns max=342670ns mean=342670ns count=1
+  timeslice thread 9: min=4274750ns max=200000000ns mean=97150708ns count=3
+  timeslice thread 11: min=9260820ns max=200000000ns mean=73571256ns count=3
+  timeslice thread 13: min=3992580ns max=3992580ns mean=3992580ns count=1
+  timeslice thread 15: min=53803640ns max=53803640ns mean=53803640ns count=1
+  timeslice thread 17: min=4566100ns max=4566100ns mean=4566100ns count=1
+  timeslice thread 19: min=754940ns max=754940ns mean=754940ns count=1
+  timeslice thread 21: min=5376710ns max=5376710ns mean=5376710ns count=1
+  timeslice thread 23: min=848110ns max=848110ns mean=848110ns count=1
+  timeslice thread 25: min=55573495ns max=55573495ns mean=55573495ns count=1
+  timeslice thread 27: min=651590ns max=651590ns mean=651590ns count=1
+  timeslice thread 29: min=533630ns max=533630ns mean=533630ns count=1
+  timeslice thread 31: min=18970ns max=18970ns mean=18970ns count=1
+  timeslice thread 33: min=2277300ns max=2277300ns mean=2277300ns count=1
+  timeslice thread 35: min=463310ns max=463310ns mean=463310ns count=1
+  timeslice thread 37: min=24973090ns max=200000000ns mean=112486545ns count=2
+  timeslice thread 39: min=153740ns max=153740ns mean=153740ns count=1
+  timeslice thread 41: min=1090090ns max=1090090ns mean=1090090ns count=1
+  timeslice thread 43: min=940970ns max=940970ns mean=940970ns count=1
+  timeslice thread 45: min=629150ns max=629150ns mean=629150ns count=1
+  timeslice thread 47: min=162500ns max=162500ns mean=162500ns count=1
+  timeslice thread 49: min=471060ns max=471060ns mean=471060ns count=1
+  timeslice thread 51: min=9186690ns max=9186690ns mean=9186690ns count=1
+  timeslice thread 53: min=319590ns max=319590ns mean=319590ns count=1
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372/run1_log_a9IIO
+::   run 2: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372/run2_log_Cuu6x
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Failure: nondeterministic.
