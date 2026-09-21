@@ -375,19 +375,19 @@ def verify_agentctl_goals(bindings: Bindings, agentctl_bin: Path) -> None:
                 and goal.get("goal") is None
                 and native is None
             )
-            active = (
-                native_status == "active"
+            bound_session = (
+                native_status in ("active", "paused")
                 and isinstance(goal.get("goal"), str)
                 and bool(goal.get("goal"))
                 and isinstance(native, dict)
                 and native.get("threadId") == binding.agentctl_session_id
-                and native.get("status") == "active"
+                and native.get("status") == native_status
                 and native.get("objective") == goal.get("goal")
             )
-            if goal.get("source") != "native" or not (absent or active):
+            if goal.get("source") != "native" or not (absent or bound_session):
                 raise SnapshotUnavailable(
                     f"agentctl coordinator {binding.agentctl_name!r} native "
-                    f"goal state is not one exact absent or active session: "
+                    "goal state is not one exact absent, active, or paused session: "
                     f"source={goal.get('source')!r}, "
                     f"status={native_status!r}"
                 )

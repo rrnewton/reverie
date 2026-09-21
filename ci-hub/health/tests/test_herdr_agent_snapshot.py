@@ -539,9 +539,19 @@ def coordinator_binding(tmp_path: Path) -> producer.Bindings:
                 "objective": "Coordinate Hermit",
             },
         },
+        {
+            "source": "native",
+            "native_status": "paused",
+            "goal": "Coordinate Hermit",
+            "native": {
+                "threadId": "coordinator-session",
+                "status": "paused",
+                "objective": "Coordinate Hermit",
+            },
+        },
     ],
 )
-def test_coordinator_accepts_only_an_exact_absent_or_active_native_session(
+def test_coordinator_accepts_only_an_exact_bound_native_session(
     tmp_path: Path, monkeypatch, goal: dict[str, object],
 ) -> None:
     monkeypatch.setattr(producer, "read_agentctl", lambda *_args: goal)
@@ -573,10 +583,34 @@ def test_coordinator_refuses_unverified_or_reassigned_native_session(
     tmp_path: Path, monkeypatch, goal: dict[str, object],
 ) -> None:
     monkeypatch.setattr(producer, "read_agentctl", lambda *_args: goal)
-    with pytest.raises(producer.SnapshotUnavailable, match="exact absent or active"):
+    with pytest.raises(
+        producer.SnapshotUnavailable,
+        match="exact absent, active, or paused",
+    ):
         producer.verify_agentctl_goals(
             coordinator_binding(tmp_path), Path("agentctl")
         )
+
+
+def test_worker_paused_goal_does_not_retain_claim_authority(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        producer,
+        "read_agentctl",
+        lambda *_args: {
+            "source": "native",
+            "native_status": "paused",
+            "goal": "Drive the KVM lane",
+            "native": {
+                "threadId": "native-session",
+                "status": "paused",
+                "objective": "Drive the KVM lane",
+            },
+        },
+    )
+    with pytest.raises(producer.SnapshotUnavailable, match="exact active objective"):
+        producer.verify_agentctl_goals(binding(tmp_path), Path("agentctl"))
 
 
 def test_generation_goal_and_taskgraph_owner_are_reproved_on_every_refresh(
