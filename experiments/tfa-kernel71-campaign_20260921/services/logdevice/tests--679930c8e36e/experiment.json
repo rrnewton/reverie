@@ -278,12 +278,463 @@
       "digest_algorithm": "sha256"
     }
   },
-  "plan_receipt": null,
-  "attempt_state": "PLANNED",
-  "cells": [],
-  "events": [],
-  "samples": [],
+  "plan_receipt": {
+    "commit": "46e66de70ffe838bfdac67414bd055343b9f6e6f",
+    "path": "services/logdevice/tests--679930c8e36e/experiment.json",
+    "blob": "8a8787080859346b1903310a5190851a4f463f3d"
+  },
+  "attempt_state": "MATERIAL",
+  "cells": [
+    {
+      "cell_id": "logdevice-kernel71-ptrace-strict-chaos-target-races",
+      "route_id": "logdevice-kernel71-existing-elf",
+      "route_sha256": "981a1d054002554296b885db34d74c710da1f299c0f88bf4aa0a4779edac3189",
+      "plan_sha256": "da92327dfdfdd27a0d8fad0f1f619731cc1ea86ed4baf7171a9f0cf29729b84b",
+      "frozen_at": "2026-09-21T14:48:55Z",
+      "cell_sha256": "133717843acb79bda284fbcc71e2e2cd703127d5d3ffab77dabe2f7f22ffcb8a",
+      "canonical_target": "fbcode//logdevice/admin/health_monitor:tests",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//logdevice/admin/health_monitor:tests - LogStoreHealthMonitorTest.DisabledRebuilding"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/opt"
+      ],
+      "target_source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "hermit_source_revision": "4630ee2a61f93221a43e2baec0a15f34102a2c61",
+      "hermit_binary_sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
+      "test_artifact_sha256": "ab45a7bcbfa86b5a22f563b3bcd6f80a90ce08b122357956418b030375e0157e",
+      "guest": {
+        "argv": [
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/240281cee994f93c/logdevice/admin/health_monitor/__tests__/tests",
+          "--gtest_filter=LogStoreHealthMonitorTest.DisabledRebuilding",
+          "--gtest_also_run_disabled_tests"
+        ],
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "mounts": [
+          "type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+        ],
+        "immutable_inputs": [
+          {
+            "artifact_id": "logdevice-kernel71-test-elf",
+            "kind": "OTHER",
+            "storage": "LOCAL_IGNORED",
+            "locator": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/240281cee994f93c/logdevice/admin/health_monitor/__tests__/tests",
+            "sha256": "ab45a7bcbfa86b5a22f563b3bcd6f80a90ce08b122357956418b030375e0157e",
+            "bytes": 2251301960,
+            "capture_limit_bytes": 2251301960,
+            "truncated": false,
+            "media_type": "application/x-executable"
+          }
+        ],
+        "working_directory": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-campaign_20260921"
+      },
+      "hermit": {
+        "backend": "ptrace",
+        "strict": true,
+        "chaos": true,
+        "relaxations": [],
+        "argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logdevice-verify-2445441-1790002126713644463",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/240281cee994f93c/logdevice/admin/health_monitor/__tests__/tests",
+          "--gtest_filter=LogStoreHealthMonitorTest.DisabledRebuilding",
+          "--gtest_also_run_disabled_tests"
+        ],
+        "scheduler_heuristic": "random",
+        "swept_coordinate": "--fuzz-seed",
+        "fixed_seed_roots": {
+          "--seed": 0,
+          "--rng-seed": 0,
+          "--sched-seed": 0,
+          "--fuzz-seed": null
+        }
+      },
+      "timing": {
+        "requested_max_timeslice": 200000000,
+        "effective_max_timeslice": 200000000
+      },
+      "pmu": {
+        "available": true,
+        "effective_timer": "RCB",
+        "fallback_recorded": false
+      },
+      "host": {
+        "hostname": "devbig030.atn3.facebook.com",
+        "kernel": "Linux 7.1.3-0_fbk0_0_g295ad0959f34",
+        "architecture": "x86_64",
+        "cpu": "AMD EPYC 9D85 158-Core Processor",
+        "capabilities": {
+          "pmu": true,
+          "mount_namespace": true,
+          "buck_out_bind": true,
+          "safehermit_disk_qgroup": true
+        }
+      },
+      "oracle_id": "logdevice-selected-gtest-v1",
+      "resource_bounds": {
+        "wall_seconds": 120,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "stderr_bytes": 67108864,
+        "retained_log_bytes": 67108864,
+        "disk_guard": "8G"
+      }
+    }
+  ],
+  "events": [
+    {
+      "event_id": "logdevice-fuzz-000-replica-1",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "da92327dfdfdd27a0d8fad0f1f619731cc1ea86ed4baf7171a9f0cf29729b84b",
+      "route_id": "logdevice-kernel71-existing-elf",
+      "route_sha256": "981a1d054002554296b885db34d74c710da1f299c0f88bf4aa0a4779edac3189",
+      "canonical_target": "fbcode//logdevice/admin/health_monitor:tests",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//logdevice/admin/health_monitor:tests - LogStoreHealthMonitorTest.DisabledRebuilding"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/opt"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "logdevice-kernel71-ptrace-strict-chaos-target-races",
+      "cell_sha256": "133717843acb79bda284fbcc71e2e2cd703127d5d3ffab77dabe2f7f22ffcb8a",
+      "measurement_role": "DISCOVERY",
+      "started_at": "2026-09-21T14:54:42Z",
+      "finished_at": "2026-09-21T14:55:20Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/logdevice/tests--679930c8e36e/evidence/seed-000-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logdevice-verify-2445441-1790002126713644463",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/240281cee994f93c/logdevice/admin/health_monitor/__tests__/tests",
+        "--gtest_filter=LogStoreHealthMonitorTest.DisabledRebuilding",
+        "--gtest_also_run_disabled_tests"
+      ],
+      "result": {
+        "exit_code": 125,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 0,
+        "target_oracle": "NOT_RUN",
+        "failure_class_id": null,
+        "harness_status": "ERROR",
+        "diagnostic": "status=CENSORED; selected=0; unit_result=exit-code; exit=125; BitwiseInfoV1=not-matched"
+      },
+      "invocation_id": "logdevice-fuzz-000-verify",
+      "replica_index": 1,
+      "seed": {
+        "flag": "--fuzz-seed",
+        "value": 0
+      },
+      "effective_config_sha256": "133717843acb79bda284fbcc71e2e2cd703127d5d3ffab77dabe2f7f22ffcb8a",
+      "artifacts": [
+        {
+          "artifact_id": "logdevice-fuzz-000-replica-1-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/logdevice/tests--679930c8e36e/evidence/seed-000-replica-1.stdout.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "logdevice-fuzz-000-replica-1-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/logdevice/tests--679930c8e36e/evidence/seed-000-replica-1.stderr.txt",
+          "sha256": "42544f1cb5082566017580999bb0be2e20421441f1fbccfa95f8dbe62e290e00",
+          "bytes": 966,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "logdevice-fuzz-000-replica-1-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/logdevice/tests--679930c8e36e/evidence/seed-000-replica-1.result.json",
+          "sha256": "82add90b3b2730e718c2dc849cd8d73c098eced4d699c7271c359c1003684f69",
+          "bytes": 1767,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "logdevice-fuzz-000-replica-1-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/logdevice/tests--679930c8e36e/evidence/seed-000-replica-1.safehermit.txt",
+          "sha256": "ef02ca1ab21f527fd11f1667680fe10fc97ecf6892879999af20d25fd2a606c3",
+          "bytes": 1798,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        }
+      ]
+    }
+  ],
+  "samples": [
+    {
+      "sample_id": "logdevice-fuzz-000-sample",
+      "cell_id": "logdevice-kernel71-ptrace-strict-chaos-target-races",
+      "seed": {
+        "flag": "--fuzz-seed",
+        "value": 0
+      },
+      "selection_index": 0,
+      "status": "CENSORED",
+      "target_outcome": null,
+      "failure_class_id": null,
+      "censor_reason": "The selected test did not produce a qualifying target verdict.",
+      "execution_event_ids": [
+        "logdevice-fuzz-000-replica-1"
+      ]
+    }
+  ],
   "matchers": [],
-  "outcome_history": [],
-  "current_outcome": null
+  "outcome_history": [
+    {
+      "classification_id": "logdevice-kernel71-pending",
+      "classified_at": "2026-09-21T14:55:21Z",
+      "supersedes": null,
+      "evidence_refs": [
+        "logdevice-fuzz-000-replica-1"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "logdevice-kernel71-existing-elf",
+          "cell_ids": [
+            "logdevice-kernel71-ptrace-strict-chaos-target-races"
+          ],
+          "evidence_event_ids": [
+            "logdevice-fuzz-000-replica-1"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/logdevice/tests--679930c8e36e/evidence/seed-000-replica-1.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logdevice-verify-2445441-1790002126713644463",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/240281cee994f93c/logdevice/admin/health_monitor/__tests__/tests",
+          "--gtest_filter=LogStoreHealthMonitorTest.DisabledRebuilding",
+          "--gtest_also_run_disabled_tests"
+        ]
+      ],
+      "inspected_artifacts": [
+        "logdevice-fuzz-000-replica-1-result"
+      ],
+      "missing_or_ambiguous_facts": [
+        "A complete distinct-seed PASS/target-owned-FAIL bracket is not yet present."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Seeds 1-11 remain in the predeclared population, but further execution is deferred after native profiling found 657 threads and seed 0 hit the 64 MiB stderr kill cap before the target oracle."
+      ]
+    }
+  ],
+  "current_outcome": {
+    "classification_id": "logdevice-kernel71-pending",
+    "classified_at": "2026-09-21T14:55:21Z",
+    "supersedes": null,
+    "evidence_refs": [
+      "logdevice-fuzz-000-replica-1"
+    ],
+    "kind": "NOT-DETERMINABLE",
+    "route_evidence": [
+      {
+        "route_id": "logdevice-kernel71-existing-elf",
+        "cell_ids": [
+          "logdevice-kernel71-ptrace-strict-chaos-target-races"
+        ],
+        "evidence_event_ids": [
+          "logdevice-fuzz-000-replica-1"
+        ]
+      }
+    ],
+    "inspected_commands": [
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/logdevice/tests--679930c8e36e/evidence/seed-000-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logdevice-verify-2445441-1790002126713644463",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/240281cee994f93c/logdevice/admin/health_monitor/__tests__/tests",
+        "--gtest_filter=LogStoreHealthMonitorTest.DisabledRebuilding",
+        "--gtest_also_run_disabled_tests"
+      ]
+    ],
+    "inspected_artifacts": [
+      "logdevice-fuzz-000-replica-1-result"
+    ],
+    "missing_or_ambiguous_facts": [
+      "A complete distinct-seed PASS/target-owned-FAIL bracket is not yet present."
+    ],
+    "measurement_budget_exhausted": false,
+    "pending_in_scope_measurements": [
+      "Seeds 1-11 remain in the predeclared population, but further execution is deferred after native profiling found 657 threads and seed 0 hit the 64 MiB stderr kill cap before the target oracle."
+    ]
+  }
 }

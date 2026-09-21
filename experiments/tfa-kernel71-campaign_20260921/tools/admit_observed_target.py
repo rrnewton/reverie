@@ -61,6 +61,21 @@ CONFIGS = {
         "seeds": list(range(15)),
         "terminal_exhausted": True,
     },
+    "logdevice": {
+        "record": "services/logdevice/tests--679930c8e36e/experiment.json",
+        "plan_commit": "46e66de70ffe838bfdac67414bd055343b9f6e6f",
+        "binary": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/240281cee994f93c/logdevice/admin/health_monitor/__tests__/tests",
+        "binary_sha256": "ab45a7bcbfa86b5a22f563b3bcd6f80a90ce08b122357956418b030375e0157e",
+        "binary_bytes": 2251301960,
+        "display": "LogStoreHealthMonitorTest.DisabledRebuilding",
+        "seeds": [0],
+        "terminal_exhausted": False,
+        "pending_measurement": (
+            "Seeds 1-11 remain in the predeclared population, but further execution "
+            "is deferred after native profiling found 657 threads and seed 0 hit the "
+            "64 MiB stderr kill cap before the target oracle."
+        ),
+    },
     "monitor": {
         "record": "services/proxygen/proxygen-transport-monitor-test--fcaf56433e7f/experiment.json",
         "plan_commit": "508c116d27b337db92e4b81a77876dc9c8b4f937",
