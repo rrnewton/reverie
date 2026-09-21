@@ -1,0 +1,19 @@
+:: Run1...
+:: Run2...
+:: Comparing captured verification logs...
+Logs contain 20080 | 20080 messages total
+Logs contain 20079 | 20079 detcore-specific messages
+Logs contain 20080 | 20080 INFO messages
+Logs contain 16256 | 16256 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (20080 | 20080 INFO messages compared).
+Logs contain 1 | 1 scheduler empty-run-queue kick messages
+Logs contain 42 | 42 scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 258, committed virtual time 1790014481028231927ns, run 2 first at turn 258, committed virtual time 1790014481028231927ns)
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-time-2936582-20260921-2670399-1790014467662735185/run1_log_ql7pa
+::   run 2: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-time-2936582-20260921-2670399-1790014467662735185/run2_log_WOvUu
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Success: deterministic. Determinism verified.
+E0921 18:14:41.078657     3 HTTP2Codec.cpp:1480] ignore unknown settingsId=4294967926 value=0
