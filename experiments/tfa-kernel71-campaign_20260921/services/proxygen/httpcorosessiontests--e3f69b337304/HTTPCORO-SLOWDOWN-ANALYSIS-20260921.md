@@ -1,7 +1,11 @@
 # HTTPCoro ResetRateLimit slowdown analysis
 
-This target is no longer being expanded in the kernel-7.1 TFA campaign. Seeds
-0 through 15 all produced a repeatable strict-ptrace `SIGABRT` at
+The original fuzz-seed cell is no longer being expanded.  Owner correction on
+2026-09-21 requires a prospective controlled-time continuation, now planned in
+`experiments/tfa-kernel71-time-input-campaign_20260921`; the single-thread
+diagnosis rules out a thread/HB explanation but does not make virtual-time
+inputs inert.  Seeds 0 through 15 in the original cell all produced a
+repeatable strict-ptrace `SIGABRT` at
 `HTTPDownstreamCoroSessionTests.cpp:1685`, but the mechanism is a
 single-thread time-budget assumption rather than a scheduler-sensitive race.
 The record remains nonterminal `NOT-DETERMINABLE`: it has no PASS arm, and the
