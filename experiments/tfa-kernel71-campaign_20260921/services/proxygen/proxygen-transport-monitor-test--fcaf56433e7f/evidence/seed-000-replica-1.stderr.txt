@@ -1,0 +1,19 @@
+:: Run1...
+:: Run2...
+:: Comparing captured verification logs...
+Logs contain 57149 | 57149 messages total
+Logs contain 57148 | 57148 detcore-specific messages
+Logs contain 57149 | 57149 INFO messages
+Logs contain 54442 | 54442 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (57149 | 57149 INFO messages compared).
+Logs contain 1 | 1 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-monitor-verify-4145718-1790000155029090422/run1_log_dChe5
+::   run 2: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-monitor-verify-4145718-1790000155029090422/run2_log_TpC4m
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Success: deterministic. Determinism verified.
+/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/3b44333ee2282447/proxygen/facebook/lib/transport/monitor/test/__proxygen_transport_monitor_test__/proxygen_transport_monitor_test: error while loading shared libraries: libdataswarm_if_dataswarm_thrift_dataset-rust.so: cannot open shared object file: No such file or directory
