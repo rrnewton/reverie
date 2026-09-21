@@ -532,6 +532,10 @@ fn execute_basic_syscall_inner(
         sync_file(state, args[0], false)
     } else if number == libc::SYS_fdatasync as u64 {
         sync_file(state, args[0], true)
+    } else if number == libc::SYS_syncfs as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(kvm-syncfs-auth): Review translated host syncfs semantics.
+        sync_filesystem(state, args[0], capture_output)
     } else if number == libc::SYS_readahead as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-227): Review translated host readahead semantics.
@@ -1858,7 +1862,8 @@ fn fdinfo_private_carrier_error(
             && is_fdinfo(args[4]))
         || (matches!(number, n if n == libc::SYS_ioctl as u64
             || n == libc::SYS_fstatfs as u64 || n == libc::SYS_fsync as u64
-            || n == libc::SYS_fdatasync as u64 || n == libc::SYS_readahead as u64
+            || n == libc::SYS_fdatasync as u64 || n == libc::SYS_syncfs as u64
+            || n == libc::SYS_readahead as u64
             || n == libc::SYS_sync_file_range as u64 || n == libc::SYS_fchmod as u64
             || n == libc::SYS_fchown as u64)
             && is_fdinfo(args[0]))
@@ -6945,6 +6950,92 @@ fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
     } else {
         io_error(std::io::Error::last_os_error())
     }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(kvm-syncfs-auth): Review translated host syncfs semantics.
+fn sync_filesystem(state: &LoadedStaticElf, raw_fd: u64, capture_output: bool) -> i64 {
+    sync_filesystem_with_host(state, raw_fd, capture_output, |host_fd| {
+        // SAFETY: host_fd names the guest's live translated descriptor. syncfs
+        // has no guest pointers, and the host kernel validates the descriptor.
+        let result = unsafe { libc::syncfs(host_fd) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    })
+}
+
+fn sync_filesystem_with_host(
+    state: &LoadedStaticElf,
+    raw_fd: u64,
+    capture_output: bool,
+    invoke_host: impl FnOnce(RawFd) -> std::io::Result<()>,
+) -> i64 {
+    sync_filesystem_with_operations(
+        state,
+        raw_fd,
+        capture_output,
+        |fd| host_fd(state, fd),
+        fd_status_flags,
+        invoke_host,
+    )
+}
+
+fn sync_filesystem_with_operations(
+    state: &LoadedStaticElf,
+    raw_fd: u64,
+    capture_output: bool,
+    resolve_host: impl FnOnce(libc::c_int) -> Option<RawFd>,
+    status_flags: impl FnOnce(RawFd) -> Result<libc::c_int, i64>,
+    invoke_host: impl FnOnce(RawFd) -> std::io::Result<()>,
+) -> i64 {
+    // Linux consumes an `int fd`: high register bits are ignored and bit 31 is
+    // the sign bit. Resolve the resulting guest slot before consulting any
+    // synthetic identity.
+    let fd = raw_fd as libc::c_int;
+
+    if capture_output
+        && matches!(fd, libc::STDOUT_FILENO | libc::STDERR_FILENO)
+        && is_open_standard(state, fd)
+    {
+        // Capture mode makes an otherwise-unmapped guest stdout/stderr a pipe
+        // even when the embedding process has no corresponding host fd. Such
+        // a logical standard descriptor cannot be O_PATH: a mapped file in the
+        // same slot makes is_open_standard false and takes the checks below.
+        return 0;
+    }
+
+    let Some(host_fd) = resolve_host(fd) else {
+        return negative_errno(libc::EBADF);
+    };
+
+    // FMODE_PATH is rejected by syncfs even when the descriptor resolves to a
+    // usable object. This check must precede the synthetic-proc lookup: an
+    // authenticated O_PATH carrier is still O_PATH from the guest's view.
+    let flags = match status_flags(host_fd) {
+        Ok(flags) => flags,
+        Err(error) => return error,
+    };
+    if flags & libc::O_PATH != 0 {
+        return negative_errno(libc::EBADF);
+    }
+
+    if state.proc_files.contains_key(&fd)
+        || state.loginuid_fds.contains(&fd)
+        || (capture_output && output_alias(state, fd).is_some())
+    {
+        // These are the backend-trusted proc description markers. Fixed proc
+        // opens are minted by this run's authority, SCM_RIGHTS receipts enter
+        // `proc_files` only after authentication, and loginuid is marked only
+        // by its exact open branch. Capture-mode output aliases are guest pipes.
+        // Dup/fork/exec preserve those identities. The physical carriers are
+        // storage or capture endpoints, not the guest-visible filesystems.
+        return 0;
+    }
+
+    invoke_host(host_fd).map_or_else(io_error, |()| 0)
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -34283,6 +34374,11 @@ mod tests {
                 negative_errno(libc::ENOSYS)
             );
             assert_eq!(
+                f.call(libc::SYS_syncfs, [fd as u64, 0, 0, 0, 0, 0]),
+                negative_errno(libc::ENOSYS),
+                "fdinfo syncfs must not reach its private backing carrier"
+            );
+            assert_eq!(
                 f.call(
                     libc::SYS_mmap,
                     [
@@ -38951,6 +39047,664 @@ mod tests {
                 ),
                 negative_errno(libc::EBADF)
             );
+        }
+    }
+
+    #[test]
+    fn syncfs_decodes_low_fd_word_and_preserves_host_results() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // Same bytes as /proc/uptime are not an identity oracle. Only the
+        // authenticated/trusted side tables may bypass the host syncfs call.
+        // SAFETY: the name is NUL-terminated and the flags are valid.
+        let raw_memfd =
+            unsafe { libc::memfd_create(c"syncfs-ordinary".as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(raw_memfd >= 0);
+        // SAFETY: memfd_create returned a new descriptor owned by this File.
+        let mut memfd_file = unsafe { std::fs::File::from_raw_fd(raw_memfd) };
+        memfd_file.write_all(b"0.00 0.00\n").unwrap();
+        let memfd = insert_file_with_flags(&mut state, memfd_file, false, None) as i32;
+        assert!(memfd >= 0);
+        assert!(!state.proc_files.contains_key(&memfd));
+        assert!(!state.loginuid_fds.contains(&memfd));
+        assert!(matches!(
+            state
+                .proc_carrier_authority
+                .candidate_kind(&state.files[&memfd]),
+            Ok(crate::proc_carrier::ProcCarrierCandidate::Ordinary)
+        ));
+
+        let mut pipe_fds = [-1; 2];
+        // SAFETY: pipe_fds has storage for the two returned descriptors.
+        assert_eq!(
+            unsafe { libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        // SAFETY: pipe2 returned two new owned descriptors.
+        let pipe_read_file = unsafe { std::fs::File::from_raw_fd(pipe_fds[0]) };
+        let _pipe_write_file = unsafe { std::fs::File::from_raw_fd(pipe_fds[1]) };
+        let pipe_read = insert_file_with_flags(&mut state, pipe_read_file, false, None) as i32;
+
+        let (socket_file, _socket_peer) = UnixStream::pair().unwrap();
+        // SAFETY: into_raw_fd transfers this endpoint's sole ownership.
+        let socket_file =
+            unsafe { std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(socket_file)) };
+        let socket = insert_file_with_flags(&mut state, socket_file, false, None) as i32;
+        assert!(pipe_read >= 0 && socket >= 0);
+
+        for (index, (label, fd, errno)) in [
+            ("same-content memfd", memfd, libc::EIO),
+            ("pipe", pipe_read, libc::ENOSPC),
+            ("socket", socket, libc::EDQUOT),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let raw_fd = if index == 0 {
+                (0xa5a5_5a5a_u64 << 32) | u64::from(fd as u32)
+            } else {
+                fd as u64
+            };
+            let expected_host = host_fd(&state, fd).unwrap();
+            let mut calls = 0;
+            assert_eq!(
+                sync_filesystem_with_host(&state, raw_fd, false, |actual_host| {
+                    calls += 1;
+                    assert_eq!(actual_host, expected_host);
+                    Err(std::io::Error::from_raw_os_error(errno))
+                }),
+                negative_errno(errno),
+                "{label} host errno"
+            );
+            assert_eq!(calls, 1, "{label} must issue exactly one host call");
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_syncfs,
+                [
+                    (0x5a5a_a5a5_u64 << 32) | u64::from(memfd as u32),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            0,
+            "direct dispatch must forward the ordinary memfd to host syncfs"
+        );
+        for (label, fd) in [("pipe", pipe_read), ("Unix socket", socket)] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_syncfs,
+                    [fd as u64, 0, 0, 0, 0, 0],
+                ),
+                0,
+                "direct syncfs dispatch must accept a {label}"
+            );
+        }
+
+        assert_eq!(close(&mut state, memfd as u64), 0);
+        let mut closed_host_calls = 0;
+        assert_eq!(
+            sync_filesystem_with_host(&state, memfd as u64, false, |_| {
+                closed_host_calls += 1;
+                Ok(())
+            }),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(closed_host_calls, 0, "closed fd must not reach host syncfs");
+
+        let path = CString::new(root.0.as_os_str().as_bytes()).unwrap();
+        // SAFETY: path is NUL-terminated and names the live ordinary directory.
+        let raw_path = unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+        assert!(raw_path >= 0);
+        // SAFETY: open returned a new descriptor owned by this File.
+        let path_file = unsafe { std::fs::File::from_raw_fd(raw_path) };
+        let path_fd = insert_file_with_flags(&mut state, path_file, false, None) as i32;
+        let mut path_host_calls = 0;
+        assert_eq!(
+            sync_filesystem_with_host(&state, path_fd as u64, false, |_| {
+                path_host_calls += 1;
+                Ok(())
+            }),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(path_host_calls, 0, "O_PATH must fail before host syncfs");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_syncfs,
+                [path_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+
+        let mut invalid_host_calls = 0;
+        for raw_fd in [
+            GUEST_NOFILE_LIMIT as u64,
+            i32::MAX as u64,
+            u64::from(i32::MIN as u32),
+            u32::MAX as u64,
+            u64::MAX,
+        ] {
+            assert_eq!(
+                sync_filesystem_with_host(&state, raw_fd, false, |_| {
+                    invalid_host_calls += 1;
+                    Ok(())
+                }),
+                negative_errno(libc::EBADF),
+                "invalid low descriptor word {raw_fd:#x}"
+            );
+        }
+        assert_eq!(invalid_host_calls, 0);
+    }
+
+    #[test]
+    fn syncfs_uses_trusted_proc_lifecycles_without_flushing_carriers() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let readable = open_readonly(&mut memory, &mut state, "/proc/uptime") as i32;
+        let path_only = open_with_flags(
+            &mut memory,
+            &mut state,
+            "/proc/uptime",
+            libc::O_PATH | libc::O_NOFOLLOW,
+        ) as i32;
+        let loginuid = open_readonly(&mut memory, &mut state, "/proc/self/loginuid") as i32;
+        assert!(readable >= 0 && path_only >= 0 && loginuid >= 0);
+        let readable_dup = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [readable as u64, 0, 0, 0, 0, 0],
+        ) as i32;
+        let path_dup = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [path_only as u64, 0, 0, 0, 0, 0],
+        ) as i32;
+        let loginuid_dup = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [loginuid as u64, 0, 0, 0, 0, 0],
+        ) as i32;
+        assert!(readable_dup >= 0 && path_dup >= 0 && loginuid_dup >= 0);
+
+        let mut host_calls = 0;
+        {
+            let mut check = |current: &LoadedStaticElf, stage: &str| {
+                for fd in [readable, readable_dup] {
+                    assert!(current.proc_files.contains_key(&fd), "{stage} fd={fd}");
+                    assert_eq!(
+                        sync_filesystem_with_host(current, fd as u64, false, |_| {
+                            host_calls += 1;
+                            Err(std::io::Error::from_raw_os_error(libc::EIO))
+                        }),
+                        0,
+                        "{stage} readable fd={fd}"
+                    );
+                }
+                for fd in [path_only, path_dup] {
+                    assert!(current.proc_files.contains_key(&fd), "{stage} fd={fd}");
+                    assert_eq!(
+                        sync_filesystem_with_host(current, fd as u64, false, |_| {
+                            host_calls += 1;
+                            Ok(())
+                        }),
+                        negative_errno(libc::EBADF),
+                        "{stage} O_PATH fd={fd}"
+                    );
+                }
+                for fd in [loginuid, loginuid_dup] {
+                    assert!(current.loginuid_fds.contains(&fd), "{stage} fd={fd}");
+                    assert_eq!(
+                        sync_filesystem_with_host(current, fd as u64, false, |_| {
+                            host_calls += 1;
+                            Err(std::io::Error::from_raw_os_error(libc::EIO))
+                        }),
+                        0,
+                        "{stage} loginuid fd={fd}"
+                    );
+                }
+            };
+
+            check(&state, "direct-and-dup");
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_syncfs,
+                    [readable as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_syncfs,
+                    [path_only as u64, 0, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::EBADF)
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_syncfs,
+                    [loginuid as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+
+            let child = state.try_clone_for_fork(2).unwrap();
+            check(&child, "fork");
+            let mut replacement = test_exec_replacement(&root.0, &child);
+            replacement.inherit_process_state(child);
+            check(&replacement, "exec");
+        }
+        assert_eq!(
+            host_calls, 0,
+            "synthetic proc syncfs must never reach its physical carrier"
+        );
+    }
+
+    #[test]
+    fn syncfs_models_captured_output_aliases_as_pipes_across_lifecycle() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut output = CapturedOutput::default();
+
+        let stdout_path = root.0.join("captured-stdout");
+        let stderr_path = root.0.join("captured-stderr");
+        std::fs::write(&stdout_path, b"stdout backing").unwrap();
+        std::fs::write(&stderr_path, b"stderr backing").unwrap();
+        let stdout_alias = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(stdout_path).unwrap(),
+            false,
+            Some(OutputAlias::Stdout),
+        ) as i32;
+        let stderr_alias = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(stderr_path).unwrap(),
+            false,
+            Some(OutputAlias::Stderr),
+        ) as i32;
+        let stdout_dup = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [stdout_alias as u64, 0, 0, 0, 0, 0],
+        ) as i32;
+        let stderr_dup = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [stderr_alias as u64, 0, 0, 0, 0, 0],
+        ) as i32;
+        let stdout_procfd = format!("/proc/self/fd/{stdout_alias}");
+        let stderr_procfd = format!("/proc/self/fd/{stderr_alias}");
+        let stdout_reopened =
+            open_with_flags(&mut memory, &mut state, &stdout_procfd, libc::O_RDONLY) as i32;
+        let stderr_reopened =
+            open_with_flags(&mut memory, &mut state, &stderr_procfd, libc::O_RDONLY) as i32;
+        let stdout_path_only =
+            open_with_flags(&mut memory, &mut state, &stdout_procfd, libc::O_PATH) as i32;
+        let usable = [
+            libc::STDOUT_FILENO,
+            libc::STDERR_FILENO,
+            stdout_alias,
+            stderr_alias,
+            stdout_dup,
+            stderr_dup,
+            stdout_reopened,
+            stderr_reopened,
+        ];
+        assert!(usable.into_iter().all(|fd| fd >= 0));
+        assert!(stdout_path_only >= 0);
+        for fd in [stdout_alias, stdout_dup, stdout_reopened, stdout_path_only] {
+            assert!(matches!(
+                output_alias(&state, fd),
+                Some(OutputAlias::Stdout)
+            ));
+        }
+        for fd in [stderr_alias, stderr_dup, stderr_reopened] {
+            assert!(matches!(
+                output_alias(&state, fd),
+                Some(OutputAlias::Stderr)
+            ));
+        }
+
+        let mut standard_resolutions = 0;
+        let mut standard_status_checks = 0;
+        let mut standard_host_calls = 0;
+        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            assert_eq!(
+                sync_filesystem_with_operations(
+                    &state,
+                    fd as u64,
+                    true,
+                    |_| {
+                        standard_resolutions += 1;
+                        None
+                    },
+                    |_| {
+                        standard_status_checks += 1;
+                        Err(negative_errno(libc::EBADF))
+                    },
+                    |_| {
+                        standard_host_calls += 1;
+                        Err(std::io::Error::from_raw_os_error(libc::EIO))
+                    },
+                ),
+                0,
+                "captured logical standard fd={fd} must not require a supervisor fd"
+            );
+        }
+        assert_eq!(standard_resolutions, 0);
+        assert_eq!(standard_status_checks, 0);
+        assert_eq!(standard_host_calls, 0);
+
+        let expected_alias_host = host_fd(&state, stdout_alias).unwrap();
+        let mut alias_resolutions = 0;
+        let mut alias_status_checks = 0;
+        let mut alias_host_calls = 0;
+        assert_eq!(
+            sync_filesystem_with_operations(
+                &state,
+                stdout_alias as u64,
+                true,
+                |fd| {
+                    alias_resolutions += 1;
+                    assert_eq!(fd, stdout_alias);
+                    Some(expected_alias_host)
+                },
+                |host| {
+                    alias_status_checks += 1;
+                    assert_eq!(host, expected_alias_host);
+                    Ok(libc::O_RDONLY)
+                },
+                |_| {
+                    alias_host_calls += 1;
+                    Err(std::io::Error::from_raw_os_error(libc::EIO))
+                },
+            ),
+            0,
+            "mapped captured aliases must validate their live non-O_PATH backing first"
+        );
+        assert_eq!(alias_resolutions, 1);
+        assert_eq!(alias_status_checks, 1);
+        assert_eq!(alias_host_calls, 0);
+
+        let mut noncapture_calls = 0;
+        assert_eq!(
+            sync_filesystem_with_host(&state, stdout_alias as u64, false, |_| {
+                noncapture_calls += 1;
+                Err(std::io::Error::from_raw_os_error(libc::EIO))
+            }),
+            negative_errno(libc::EIO),
+            "an output alias is ordinary backing storage outside capture mode"
+        );
+        assert_eq!(noncapture_calls, 1);
+
+        for fd in usable {
+            assert_eq!(
+                syscall_result_with_output(
+                    &mut memory,
+                    &mut state,
+                    &mut output,
+                    libc::SYS_syncfs,
+                    [fd as u64, 0, 0, 0, 0, 0],
+                ),
+                0,
+                "captured output fd={fd}"
+            );
+        }
+        assert_eq!(
+            syscall_result_with_output(
+                &mut memory,
+                &mut state,
+                &mut output,
+                libc::SYS_syncfs,
+                [stdout_path_only as u64, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF),
+            "O_PATH must precede the captured-output shortcut"
+        );
+
+        let mut host_calls = 0;
+        {
+            let mut check = |current: &LoadedStaticElf, stage: &str| {
+                for fd in usable {
+                    assert_eq!(
+                        sync_filesystem_with_host(current, fd as u64, true, |_| {
+                            host_calls += 1;
+                            Err(std::io::Error::from_raw_os_error(libc::ENOSPC))
+                        }),
+                        0,
+                        "{stage} captured output fd={fd}"
+                    );
+                }
+                assert_eq!(
+                    sync_filesystem_with_host(current, stdout_path_only as u64, true, |_| {
+                        host_calls += 1;
+                        Ok(())
+                    }),
+                    negative_errno(libc::EBADF),
+                    "{stage} captured output O_PATH"
+                );
+            };
+
+            check(&state, "direct-dup-and-procfd");
+            let child = state.try_clone_for_fork(2).unwrap();
+            check(&child, "fork");
+            let mut replacement = test_exec_replacement(&root.0, &child);
+            replacement.inherit_process_state(child);
+            check(&replacement, "exec");
+        }
+        assert_eq!(
+            host_calls, 0,
+            "captured output syncfs must not touch supervisor backing storage"
+        );
+    }
+
+    #[test]
+    fn syncfs_capture_shortcut_requires_open_implicit_output() {
+        for (fd, errno) in [
+            (libc::STDOUT_FILENO, libc::EIO),
+            (libc::STDERR_FILENO, libc::ENOSPC),
+        ] {
+            let root = TestDir::new();
+            let state = test_state(&root.0);
+            assert!(is_open_standard(&state, fd));
+
+            let expected_host = 1000 + fd;
+            let mut resolutions = 0;
+            let mut status_checks = 0;
+            let mut host_calls = 0;
+            assert_eq!(
+                sync_filesystem_with_operations(
+                    &state,
+                    fd as u64,
+                    false,
+                    |guest_fd| {
+                        resolutions += 1;
+                        assert_eq!(guest_fd, fd);
+                        Some(expected_host)
+                    },
+                    |host_fd| {
+                        status_checks += 1;
+                        assert_eq!(host_fd, expected_host);
+                        Ok(libc::O_WRONLY)
+                    },
+                    |host_fd| {
+                        host_calls += 1;
+                        assert_eq!(host_fd, expected_host);
+                        Err(std::io::Error::from_raw_os_error(errno))
+                    },
+                ),
+                negative_errno(errno),
+                "non-capture implicit standard fd={fd} must propagate the host errno"
+            );
+            assert_eq!(resolutions, 1, "non-capture standard fd={fd} resolution");
+            assert_eq!(status_checks, 1, "non-capture standard fd={fd} status");
+            assert_eq!(host_calls, 1, "non-capture standard fd={fd} host call");
+        }
+
+        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            assert_eq!(close(&mut state, fd as u64), 0);
+            assert!(!is_open_standard(&state, fd));
+
+            let mut resolutions = 0;
+            let mut status_checks = 0;
+            let mut host_calls = 0;
+            assert_eq!(
+                sync_filesystem_with_operations(
+                    &state,
+                    fd as u64,
+                    true,
+                    |guest_fd| {
+                        resolutions += 1;
+                        assert_eq!(guest_fd, fd);
+                        None
+                    },
+                    |_| {
+                        status_checks += 1;
+                        Ok(libc::O_WRONLY)
+                    },
+                    |_| {
+                        host_calls += 1;
+                        Ok(())
+                    },
+                ),
+                negative_errno(libc::EBADF),
+                "closed captured standard fd={fd} must fail after resolution"
+            );
+            assert_eq!(resolutions, 1, "closed standard fd={fd} resolution");
+            assert_eq!(status_checks, 0, "closed standard fd={fd} status");
+            assert_eq!(host_calls, 0, "closed standard fd={fd} host call");
+        }
+
+        for (fd, errno) in [
+            (libc::STDOUT_FILENO, libc::EDQUOT),
+            (libc::STDERR_FILENO, libc::EFBIG),
+        ] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let replacement_path = root.0.join(format!("ordinary-standard-{fd}"));
+            std::fs::write(&replacement_path, b"ordinary replacement").unwrap();
+            let source = insert_file_with_flags(
+                &mut state,
+                std::fs::File::open(replacement_path).unwrap(),
+                false,
+                None,
+            ) as libc::c_int;
+            assert!(source >= 0);
+            assert_eq!(
+                duplicate_fd(&mut state, source as u64, Some(fd as u64), 0, false),
+                i64::from(fd)
+            );
+            assert!(!is_open_standard(&state, fd));
+            assert!(state.files.contains_key(&fd));
+            assert!(output_alias(&state, fd).is_none());
+
+            let expected_host = host_fd(&state, fd).unwrap();
+            let mut resolutions = 0;
+            let mut status_checks = 0;
+            let mut host_calls = 0;
+            assert_eq!(
+                sync_filesystem_with_operations(
+                    &state,
+                    fd as u64,
+                    true,
+                    |guest_fd| {
+                        resolutions += 1;
+                        assert_eq!(guest_fd, fd);
+                        Some(expected_host)
+                    },
+                    |host_fd| {
+                        status_checks += 1;
+                        assert_eq!(host_fd, expected_host);
+                        Ok(libc::O_RDONLY)
+                    },
+                    |host_fd| {
+                        host_calls += 1;
+                        assert_eq!(host_fd, expected_host);
+                        Err(std::io::Error::from_raw_os_error(errno))
+                    },
+                ),
+                negative_errno(errno),
+                "ordinary replacement in captured standard fd={fd} must reach host"
+            );
+            assert_eq!(resolutions, 1, "ordinary standard fd={fd} resolution");
+            assert_eq!(status_checks, 1, "ordinary standard fd={fd} status");
+            assert_eq!(host_calls, 1, "ordinary standard fd={fd} host call");
+        }
+
+        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let path = CString::new(root.0.as_os_str().as_bytes()).unwrap();
+            // SAFETY: path is NUL-terminated and names the live test directory.
+            let raw_path = unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+            assert!(raw_path >= 0);
+            // SAFETY: open returned a new descriptor owned by this File.
+            let path_file = unsafe { std::fs::File::from_raw_fd(raw_path) };
+            let source = insert_file_with_flags(&mut state, path_file, false, None) as libc::c_int;
+            assert!(source >= 0);
+            assert_eq!(
+                duplicate_fd(&mut state, source as u64, Some(fd as u64), 0, false),
+                i64::from(fd)
+            );
+            assert!(!is_open_standard(&state, fd));
+            assert!(state.files.contains_key(&fd));
+            assert!(output_alias(&state, fd).is_none());
+
+            let expected_host = host_fd(&state, fd).unwrap();
+            let mut resolutions = 0;
+            let mut status_checks = 0;
+            let mut host_calls = 0;
+            assert_eq!(
+                sync_filesystem_with_operations(
+                    &state,
+                    fd as u64,
+                    true,
+                    |guest_fd| {
+                        resolutions += 1;
+                        assert_eq!(guest_fd, fd);
+                        Some(expected_host)
+                    },
+                    |host_fd| {
+                        status_checks += 1;
+                        assert_eq!(host_fd, expected_host);
+                        Ok(libc::O_PATH)
+                    },
+                    |_| {
+                        host_calls += 1;
+                        Err(std::io::Error::from_raw_os_error(libc::EIO))
+                    },
+                ),
+                negative_errno(libc::EBADF),
+                "O_PATH replacement in captured standard fd={fd} must fail before host"
+            );
+            assert_eq!(resolutions, 1, "O_PATH standard fd={fd} resolution");
+            assert_eq!(status_checks, 1, "O_PATH standard fd={fd} status");
+            assert_eq!(host_calls, 0, "O_PATH standard fd={fd} host call");
         }
     }
 
