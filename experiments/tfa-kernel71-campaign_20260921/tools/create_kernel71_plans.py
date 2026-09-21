@@ -62,6 +62,19 @@ CONFIGS = [
         "attempt_cap": 100,
         "verify_dir": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-verify-4145838-1790000155205015507",
     },
+    {
+        "name": "timerfd",
+        "target": "fbcode//folly/io/async/test:timerfd_timeout_manager_test",
+        "binary": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0a1a6e1cc8764b0f/folly/io/async/test/__timerfd_timeout_manager_test__/timerfd_timeout_manager_test",
+        "binary_sha256": "f1e2b15c30e0b32e05378b5be9f2d59032bb00c1108f1bd2005aa9cb68692be7",
+        "binary_bytes": 8743112,
+        "gtest_filter": "TimerFDTimeoutManagerTest.ReschedTest",
+        "gtest_display": "TimerFDTimeoutManagerTest.ReschedTest",
+        "run_disabled": True,
+        "required_n": 9,
+        "attempt_cap": 13,
+        "verify_dir": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-timerfd-verify-4146036-1790000155380805628",
+    },
 ]
 
 
@@ -321,6 +334,9 @@ def main() -> None:
     for cfg in CONFIGS:
         record = make_plan(entries[cfg["target"]], cfg)
         path = ROOT / record["identity"]["target_directory"] / "experiment.json"
+        if path.exists():
+            print(f"skip existing {path.relative_to(ROOT)}")
+            continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n")
         print(path.relative_to(ROOT))
