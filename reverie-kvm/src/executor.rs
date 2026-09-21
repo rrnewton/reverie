@@ -534,7 +534,7 @@ fn execute_basic_syscall_inner(
         sync_file(state, args[0], true)
     } else if number == libc::SYS_syncfs as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(kvm-syncfs-auth): Review translated host syncfs semantics.
+        // TODO-HUMAN-REVIEW(PR-611): Review translated host syncfs semantics.
         sync_filesystem(state, args[0], capture_output)
     } else if number == libc::SYS_readahead as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -6953,7 +6953,7 @@ fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(kvm-syncfs-auth): Review translated host syncfs semantics.
+// TODO-HUMAN-REVIEW(PR-611): Review translated host syncfs semantics.
 fn sync_filesystem(state: &LoadedStaticElf, raw_fd: u64, capture_output: bool) -> i64 {
     sync_filesystem_with_host(state, raw_fd, capture_output, |host_fd| {
         // SAFETY: host_fd names the guest's live translated descriptor. syncfs
