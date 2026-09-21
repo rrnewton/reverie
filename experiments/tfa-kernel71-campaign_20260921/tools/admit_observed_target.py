@@ -51,6 +51,16 @@ CONFIGS = {
             "slowdown/event-loop-budget mechanism rather than scheduler sensitivity."
         ),
     },
+    "tls": {
+        "record": "services/proxygen/tls-terminator-test--60719afd988e/experiment.json",
+        "plan_commit": "fee8d8629972a8f69b15527901770d961bece0c3",
+        "binary": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test",
+        "binary_sha256": "e7a5278312bb9daa6d38a9a03cc2001cd31f8c64a92791d92d5aa47c20f66566",
+        "binary_bytes": 991876712,
+        "display": "TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+        "seeds": list(range(15)),
+        "terminal_exhausted": True,
+    },
     "monitor": {
         "record": "services/proxygen/proxygen-transport-monitor-test--fcaf56433e7f/experiment.json",
         "plan_commit": "508c116d27b337db92e4b81a77876dc9c8b4f937",
@@ -174,7 +184,9 @@ def main() -> None:
         last_finish = max(last_finish, dt.datetime.fromisoformat(finished.replace("Z", "+00:00")))
         event_ids = []
         signal_name = signal_module.Signals(int(fields["process_signal"])).name if "process_signal" in fields else None
-        for replica in (1, 2):
+        verified = ":: Success: deterministic. Determinism verified." in stderr_text
+        replicas = (1, 2) if verified else (1,)
+        for replica in replicas:
             event_id = f"{args.target}-fuzz-{seed:03d}-replica-{replica}"; event_ids.append(event_id)
             paths = {}
             for kind, source_path in source.items():
@@ -214,13 +226,14 @@ def main() -> None:
             "censor_reason": None if status == "VALID" else "The selected test did not produce a qualifying target verdict.",
             "execution_event_ids": event_ids,
         })
-        matcher = {
-            "matcher_id": matcher_id, "kind": "BUILTIN_VERIFY", "execution_event_ids": event_ids, "complete": True,
-            "same_target_outcome": True, "same_failure_class": True, "canonical_info_artifact": {},
-            "details": {"verified": True, "bitwise_parity": True, "comparison": "BitwiseInfoV1", "relaxations": []},
-        }
-        info_path = evidence / f"{prefix}.canonical-info.json"; write_json(info_path, matcher_payload(matcher))
-        matcher["canonical_info_artifact"] = artifact(info_path, f"{matcher_id}-canonical-info", "CANONICAL_INFO", "application/json"); matchers.append(matcher)
+        if verified:
+            matcher = {
+                "matcher_id": matcher_id, "kind": "BUILTIN_VERIFY", "execution_event_ids": event_ids, "complete": True,
+                "same_target_outcome": True, "same_failure_class": True, "canonical_info_artifact": {},
+                "details": {"verified": True, "bitwise_parity": True, "comparison": "BitwiseInfoV1", "relaxations": []},
+            }
+            info_path = evidence / f"{prefix}.canonical-info.json"; write_json(info_path, matcher_payload(matcher))
+            matcher["canonical_info_artifact"] = artifact(info_path, f"{matcher_id}-canonical-info", "CANONICAL_INFO", "application/json"); matchers.append(matcher)
         if status == "VALID" and target_outcome == "PASS" and pass_witness is None: pass_witness = {"sample_id": sample_id, "matcher_id": matcher_id}
         if status == "VALID" and target_outcome == "FAIL" and fail_witness is None: fail_witness = {"sample_id": sample_id, "matcher_id": matcher_id}
     classified_at = (last_finish + dt.timedelta(seconds=1)).isoformat().replace("+00:00", "Z")

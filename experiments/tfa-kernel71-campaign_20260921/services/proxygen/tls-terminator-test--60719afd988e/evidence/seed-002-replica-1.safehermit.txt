@@ -1,0 +1,24 @@
+safehermit: run_id=20260921T145103Z-2628897
+safehermit: binary=/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a
+safehermit: binary_source=argv:positional-path
+safehermit: binary_sha256=5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a
+safehermit: log_dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-safehermit-20260921T145103Z-2628897-2629330-1790002264167046552
+safehermit: log_file=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-safehermit-20260921T145103Z-2628897-2629330-1790002264167046552/hermit.log
+safehermit: unit=safehermit-20260921T145103Z-2628897
+safehermit: bound.wall=APPLIED:120s
+safehermit: bound.cgroup=APPLIED:MemoryMax=16G MemorySwapMax=0
+safehermit: bound.disk=APPLIED:8G for log_dir only; guest paths and explicit log files elsewhere are outside this bound
+safehermit: bound.bytes=APPLIED:67108864 (LETHAL: the run is cgroup-killed at the cap)
+safehermit: bound.logfilter=NOT_APPLIED:by owner ruling -- the emitter is left loud so a stuck run stays visible; the low byte cap is the mechanism that fires
+safehermit: env.forwarded=APPLIED:158 variables forwarded; 5 SKIPPED (name not a plain shell identifier, e.g. an exported function)
+safehermit: note.run_record=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/registry/20260921T145103Z-2628897.json (best-effort; nothing depends on it)
+safehermit: elapsed_secs=3
+safehermit: bytes_written=26159
+safehermit: truncated=false
+safehermit: runner_exit_code=1
+safehermit: unit_result=exit-code
+safehermit: exec_main_pid=2629541
+safehermit: exec_main_code=1
+safehermit: exec_main_status=1
+safehermit: exec_main_start_monotonic_usec=15962156004
+safehermit: exit_code=1
