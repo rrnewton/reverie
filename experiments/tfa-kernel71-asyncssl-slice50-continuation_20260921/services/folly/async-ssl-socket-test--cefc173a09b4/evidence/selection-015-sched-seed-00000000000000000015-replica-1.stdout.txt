@@ -1,0 +1,12 @@
+Note: Google Test filter = AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from AsyncSSLSocketByteEventTest
+[ RUN      ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect
+fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp:3592: Failure
+Expected equality of these values:
+  connCb_.state
+    Which is: 4-byte object <02-00 00-00>
+  ConnCallback::State::SUCCESS
+    Which is: 4-byte object <01-00 00-00>
+
