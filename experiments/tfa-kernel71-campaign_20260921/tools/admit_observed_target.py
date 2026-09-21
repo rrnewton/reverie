@@ -43,8 +43,13 @@ CONFIGS = {
         "binary_sha256": "00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc",
         "binary_bytes": 48908168,
         "display": "HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2",
-        "seeds": list(range(6)),
+        "seeds": list(range(16)),
         "terminal_exhausted": False,
+        "pending_measurement": (
+            "Seeds 16-99 remain in the predeclared population, but further HTTPCoro "
+            "execution is deferred after causal analysis identified a single-thread "
+            "slowdown/event-loop-budget mechanism rather than scheduler sensitivity."
+        ),
     },
     "monitor": {
         "record": "services/proxygen/proxygen-transport-monitor-test--fcaf56433e7f/experiment.json",
@@ -89,13 +94,31 @@ def classify(cfg: dict, stdout: str, stderr: str, fields: dict[str, str]) -> tup
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("target", choices=sorted(CONFIGS))
+    parser.add_argument(
+        "--repair-existing-prefix",
+        action="store_true",
+        help="extend the audited HTTPCoro material prefix from seeds 0-5 to 0-15",
+    )
     args = parser.parse_args()
     cfg = CONFIGS[args.target]
     record_rel = Path(cfg["record"])
     record_path = ROOT / record_rel
     record = json.loads(record_path.read_text())
-    if record["attempt_state"] != "PLANNED":
-        raise SystemExit(f"refusing to replace material record {record_rel}")
+    repairing = record["attempt_state"] == "MATERIAL"
+    if repairing:
+        existing_seeds = [sample["seed"]["value"] for sample in record["samples"]]
+        expected_existing_seeds = list(range(6))
+        if not args.repair_existing_prefix or args.target != "httpcoro":
+            raise SystemExit(f"refusing to replace material record {record_rel}")
+        if existing_seeds != expected_existing_seeds:
+            raise SystemExit(
+                "repair guard failed: expected the admitted HTTPCoro prefix 0-5, "
+                f"found {existing_seeds!r}"
+            )
+        if record["plan_receipt"]["commit"] != cfg["plan_commit"]:
+            raise SystemExit("repair guard failed: plan receipt commit changed")
+    elif record["attempt_state"] != "PLANNED":
+        raise SystemExit(f"unsupported attempt state {record['attempt_state']!r}")
     plan = record["plan"]
     route = plan["authorized_routes"][0]
     evidence = record_path.parent / "evidence"
@@ -208,20 +231,29 @@ def main() -> None:
     else:
         event_ids = [event["event_id"] for event in events]
         exhausted = cfg["terminal_exhausted"]
+        classification_id = f"{args.target}-kernel71-{'exhausted' if exhausted else 'pending'}"
+        if repairing:
+            classification_id += f"-repair-seed-{cfg['seeds'][-1]:03d}"
         outcome = {
-            "classification_id": f"{args.target}-kernel71-{'exhausted' if exhausted else 'pending'}", "classified_at": classified_at,
-            "supersedes": None, "evidence_refs": event_ids, "kind": "NOT-DETERMINABLE",
+            "classification_id": classification_id, "classified_at": classified_at,
+            "supersedes": record["current_outcome"]["classification_id"] if repairing else None,
+            "evidence_refs": event_ids, "kind": "NOT-DETERMINABLE",
             "route_evidence": [{"route_id": route["route_id"], "cell_ids": [cell["cell_id"]], "evidence_event_ids": event_ids}],
             "inspected_commands": [event["argv"] for event in events],
             "inspected_artifacts": [next(a["artifact_id"] for a in event["artifacts"] if a["kind"] == "RESULT") for event in events],
             "missing_or_ambiguous_facts": ["A complete distinct-seed PASS/target-owned-FAIL bracket is not yet present."],
             "measurement_budget_exhausted": exhausted,
-            "pending_in_scope_measurements": [] if exhausted else ["Continue the committed predeclared fuzz-seed prefix without changing the cell."],
+            "pending_in_scope_measurements": [] if exhausted else [cfg.get(
+                "pending_measurement",
+                "Continue the committed predeclared fuzz-seed prefix without changing the cell.",
+            )],
         }
     prefix = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--show-prefix"], check=True, capture_output=True, text=True).stdout.strip()
     blob = subprocess.run(["git", "-C", str(ROOT), "rev-parse", f"{cfg['plan_commit']}:{prefix}{record_rel.as_posix()}"], check=True, capture_output=True, text=True).stdout.strip()
+    outcome_history = copy.deepcopy(record["outcome_history"]) if repairing else []
+    outcome_history.append(outcome)
     record.update(plan_receipt={"commit": cfg["plan_commit"], "path": record_rel.as_posix(), "blob": blob}, attempt_state="MATERIAL",
-                  cells=[cell], events=events, samples=samples, matchers=matchers, outcome_history=[outcome], current_outcome=copy.deepcopy(outcome))
+                  cells=[cell], events=events, samples=samples, matchers=matchers, outcome_history=outcome_history, current_outcome=copy.deepcopy(outcome))
     record_path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n")
 
 
