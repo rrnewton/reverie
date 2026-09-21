@@ -1,0 +1,334 @@
+{
+  "schema_version": 2,
+  "record_type": "TFA_TARGET_EXPERIMENT",
+  "contract": {
+    "commit": "9d7f603c43618715b9245c74acb3e164c17d2ae8",
+    "path": "ai_docs/tfa-acceptance-bracket-2026-09-17.md",
+    "blob": "4a53f0c25623ad6371ee86b4556adada1218745d"
+  },
+  "identity": {
+    "service": "folly",
+    "canonical_target": "fbcode//folly/io/async/test:async_ssl_socket_test",
+    "target_key_sha256": "cefc173a09b4f40477210ee411107887fe0a53291386278e689ca8885ecdba77",
+    "target_directory": "services/folly/async-ssl-socket-test--cefc173a09b4",
+    "testinfra_id": "562950211052906",
+    "test_name": "AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+    "source_label_qualifier": null,
+    "test_selector": {
+      "kind": "EXACT_FILTER",
+      "flag": "--exact",
+      "value": "fbcode//folly/io/async/test:async_ssl_socket_test - AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect"
+    },
+    "build_mode_selector": [
+      "@fbcode//mode/libcxx"
+    ],
+    "invoked_target": "fbcode//folly/io/async/test:async_ssl_socket_test",
+    "standalone_argv": [
+      "buck",
+      "test",
+      "@fbcode//mode/libcxx",
+      "fbcode//folly/io/async/test:async_ssl_socket_test",
+      "--",
+      "--exact",
+      "fbcode//folly/io/async/test:async_ssl_socket_test - AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+      "--run-disabled"
+    ],
+    "experiment_id": "folly/async-ssl-socket-test--cefc173a09b4",
+    "alias_resolution": {
+      "input_target": "fbcode//folly/io/async/test:async_ssl_socket_test",
+      "resolved_target": "fbcode//folly/io/async/test:async_ssl_socket_test",
+      "method": "pinned-cohort-target-and-existing-buck-output",
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "evidence": "The fixed cohort resolves this canonical target. Existing executable /home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test is 17651096 bytes with SHA-256 47b6c727a7d1e568433883fb6e4693b08348e93ab8b8e41a3c3b8638217acc46."
+    }
+  },
+  "candidate_ranking": {
+    "pfs": {
+      "value": 0.3687,
+      "displayed_percent": "36.87%",
+      "partition": "2026-09-17",
+      "metric": "probability_of_flaky_state",
+      "role": "ranking_only",
+      "may_parameterize_seed_budget": false
+    },
+    "native_failure_rate": {
+      "failures": 37,
+      "executed": 96,
+      "rate": 0.3854166666666667,
+      "rate_fraction": "37/96",
+      "displayed_percent": "38.54%",
+      "window": "trailing one week; latest up to 100 final outcomes",
+      "limit": 100,
+      "final_only": true,
+      "purposes": [
+        "CONTINUOUS",
+        "STRESS_RUN",
+        "STRESS_RUN_NEW_TEST"
+      ],
+      "pass_statuses": [
+        "PASSED"
+      ],
+      "failure_statuses": [
+        "FAILED",
+        "FATAL",
+        "TIMEOUT"
+      ],
+      "excluded_statuses": [
+        "OMITTED",
+        "SKIPPED",
+        "INFRA_FAILURE"
+      ],
+      "source": "meta testinfra.result history",
+      "role": "planning_prior_only"
+    }
+  },
+  "plan": {
+    "plan_id": "asyncssl-kernel71-ptrace-strict-target-races-now-v1",
+    "plan_sha256": "1787aa49e5dc0bbc43445b0ffd2a0bc7ca87a3eba55ed6de2f2fd5a78c03ce08",
+    "sealed_at": "2026-09-21T19:32:11Z",
+    "sealed_by": "codex-tfa-kernel71-campaign",
+    "campaign_owner_identity": "rrnewton",
+    "authorized_routes": [
+      {
+        "route_id": "asyncssl-kernel71-target-races-existing-elf-v1",
+        "route_sha256": "0fc25e90eab803540ccd8dede0430432805a9fa5028132aae8c3e640aa259fba",
+        "fallback_of": null,
+        "authorized_cell_ids": [
+          "asyncssl-kernel71-ptrace-strict-chaos-target-races-now-v1"
+        ],
+        "canonical_target": "fbcode//folly/io/async/test:async_ssl_socket_test",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//folly/io/async/test:async_ssl_socket_test - AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/libcxx"
+        ],
+        "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "build_argv": [
+          "buck",
+          "test",
+          "@fbcode//mode/libcxx",
+          "fbcode//folly/io/async/test:async_ssl_socket_test",
+          "--",
+          "--exact",
+          "fbcode//folly/io/async/test:async_ssl_socket_test - AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+          "--run-disabled"
+        ],
+        "launch_argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T19:32:11Z",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-asyncssl-target-races-2936582-20260-821242-1790019131136919477",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+          "--gtest_filter=AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+          "--gtest_also_run_disabled_tests"
+        ],
+        "repeat_matcher": {
+          "kind": "BUILTIN_VERIFY",
+          "comparison": "BitwiseInfoV1"
+        },
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "notes": "PRE-RUN SEAL: one authorized cell asyncssl-kernel71-ptrace-strict-chaos-target-races-now-v1; Hermit revision 4630ee2a61f93221a43e2baec0a15f34102a2c61, binary SHA-256 5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; test ELF SHA-256 47b6c727a7d1e568433883fb6e4693b08348e93ab8b8e41a3c3b8638217acc46; host devbig030.atn3.facebook.com, kernel Linux 7.1.3-0_fbk0_0_g295ad0959f34, x86_64 AMD EPYC 9D85 158-Core Processor; PMU type 4/RCB available; explicit epoch 2026-09-21T19:32:11Z; normal clock progression; --chaos-target-races enabled; only --fuzz-seed varies over the explicit 0..35 prefix; target-timeslice unset; max-timeslice 200000000 virtual ns; seed/rng/sched roots 0; BitwiseInfoV1 with no relaxations; verifier qgroup /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-asyncssl-target-races-2936582-20260-821242-1790019131136919477; host-only SAFEHERMIT_LOG_ROOT=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit."
+      }
+    ],
+    "target_oracle": {
+      "oracle_id": "asyncssl-selected-gtest-v2",
+      "defined_before_runs": true,
+      "unmodified": true,
+      "selected_test_executed_predicate": "stdout contains exactly one [ RUN      ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect; the exact gtest filter selects only this case, and any abnormal target verdict must occur in that selected-test output context. The disabled-test flag is explicit because the test fixture is disabled by default.",
+      "pass_predicate": "stdout contains exactly one [       OK ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect, reports [  PASSED  ] 1 test., both exact source-pinned failure blocks are absent, and the guest exits 0 without a signal or sanitizer failure.",
+      "fail_classes": [
+        {
+          "failure_class_id": "gtest-byte-events-three-missing-ack",
+          "target_owned": true,
+          "predicate": "After exactly one [ RUN      ] AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect and before any selected [ OK ] line, stdout contains exactly one source-pinned fbcode/folly/io/async/test/AsyncSSLSocketTest.cpp:3797: Failure block stating observer->byteEvents expected size >= 4 but actual size 3, followed by exactly one source-pinned line-3812 equality block stating offsetExpected is 501 but the ACK max-offset value is the all-zero 16-byte object. The selected test then has its timed [  FAILED  ] line and one-failed-test summary, and the guest exits with code 1. Either block alone, a different block value or source line, signal-only, sanitizer-only, Hermit, wrapper, loader, dependency, infrastructure, OOM, truncation, and outer-timeout failures are excluded."
+        }
+      ],
+      "timeout_policy": {
+        "target_timeout_can_fail": false,
+        "target_timeout_predicate": null,
+        "target_timeout_failure_class_id": null,
+        "outer_timeout_is_censored": true
+      }
+    },
+    "measurement_design": {
+      "purpose": "EXISTENCE_DISCOVERY",
+      "swept_coordinate": {
+        "flag": "--fuzz-seed",
+        "domain": "unsigned 64-bit integers; explicit prefix 0 through 35",
+        "scheduler_modes": [
+          "--chaos-target-races"
+        ]
+      },
+      "fixed_seed_roots": {
+        "--seed": 0,
+        "--rng-seed": 0,
+        "--sched-seed": 0,
+        "--fuzz-seed": null
+      },
+      "seed_population": {
+        "kind": "EXPLICIT_VALUES",
+        "values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35
+        ]
+      },
+      "selection_order": {
+        "kind": "EXPLICIT",
+        "seed_values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35
+        ]
+      },
+      "without_replacement": true,
+      "design_basis": {
+        "kind": "RATE_BOUND",
+        "expected_hermit_fail_probability": 0.1,
+        "provenance_kind": "MINIMUM_DETECTABLE_RATE",
+        "provenance": "Prospective minimum detectable Hermit target-FAIL probability 0.10 selected before material execution. A bounded native exact-case diagnostic observed one ordinary paired target assertion FAIL (17 ms selected-test time; 1.29 s wall) and one traced PASS (20 ms selected-test time; 0.21 s wall). The traced selected-test phase used two TIDs, one clone3, 34 futex calls, three eventfd2 calls, epoll, and no timer or sleep syscall. These diagnostics are planning context only, not formal evidence or a native-to-Hermit rate claim.",
+        "equivalence_to_hermit": false,
+        "max_miss_probability": 0.05
+      },
+      "miss_probability_override": null,
+      "required_valid_seed_tuples": 29,
+      "max_attempted_seed_tuples": 36,
+      "stop_rule": "BOTH_ARMS_THEN_REPEAT",
+      "repeat_min_executions_per_arm": 2,
+      "repeat_attempt_cap": 2,
+      "independence_assumption": "Distinct predeclared fuzz seeds are treated as independent only for the prospective minimum-detectable-rate calculation; no native-to-Hermit rate equivalence is asserted."
+    },
+    "resource_bounds": {
+      "wall_seconds": 120,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "stdout_bytes": 67108864,
+      "stderr_bytes": 67108864,
+      "retained_log_bytes": 67108864,
+      "disk_guard": "8G"
+    },
+    "artifact_policy": {
+      "scratch_root": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/asyncssl-target-races",
+      "terminal_evidence_must_be_durable": true,
+      "digest_algorithm": "sha256"
+    }
+  },
+  "plan_receipt": null,
+  "attempt_state": "PLANNED",
+  "cells": [],
+  "events": [],
+  "samples": [],
+  "matchers": [],
+  "outcome_history": [],
+  "current_outcome": null
+}
