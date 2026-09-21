@@ -1016,7 +1016,7 @@ def resolve_identity(
     signals, primary, primary_source, inherited_env = _identity_signals(contexts, ancestry_error)
     process_model_signal, model, model_source = model_signal(contexts)
     signals.append(process_model_signal)
-    if model == MODEL_UNRESOLVED:
+    if model_source is None:
         # The cmdline source is structurally unavailable for one whole client
         # family; see session_model_signal. Consulted only as a fallback, so an
         # explicit launch model always wins and this can never contradict one.
@@ -1024,11 +1024,11 @@ def resolve_identity(
             contexts, transcript_root
         )
         signals.append(transcript_signal)
-        if transcript_model != MODEL_UNRESOLVED:
+        if transcript_source is not None:
             model, model_source = transcript_model, transcript_source
     process_family_signal, client_family = client_family_signal(contexts)
     signals.append(process_family_signal)
-    if model == MODEL_UNRESOLVED and client_family is not None:
+    if model_source is None and client_family is not None:
         # ⚠️ THE WEAKEST RUNG, AND DELIBERATELY LAST. An ancestor's process name
         # establishes the FAMILY and nothing more: not the model, not the
         # version. It is consulted only after the explicit launch flag and the

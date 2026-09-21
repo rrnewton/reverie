@@ -773,6 +773,7 @@ valid_role_tags=(
     '[hermit2, codex-2, devbig014, role=impl] [coordinator, gpt-5.6-sol]'
     '[hermit2, codex-2, gpt-5.6-sol, devbig014, role=impl]'
     '[hermit2, codex-2, gpt-5.6-sol, devbig014, role=debugger]'
+    '[hermit2, codex-2, unknown-model, devbig014, role=relay]'
     '[hermit2, codex-2, unresolved, devbig014, role=relay]'
     '[hermit2, orc-coord-014, claude-opus-5, devbig014, role=coordinator]'
 )

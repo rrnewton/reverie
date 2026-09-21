@@ -18,10 +18,11 @@ name never authorizes or refuses the GitHub operation.
 The resulting disclosure prefix is mechanical, not authentication, and is
 always separated from the body by a newline::
 
-    [team-slug, agent-name, resolved-model, machine-shortname, role=enum]
+    [team-slug, agent-name-or-unknown-agentname, model-or-unknown-model,
+     machine-shortname, role=enum]
 
 The model comes only from the process resolver.  There is no ``--model`` input;
-an unavailable or ambiguous model is rendered literally as ``unresolved``.
+an unavailable or ambiguous model is rendered literally as ``unknown-model``.
 Roles are the closed owner-approved enum ``impl``, ``debugger``, ``reviewer``,
 ``relay``, ``coordinator``, and ``human``.
 

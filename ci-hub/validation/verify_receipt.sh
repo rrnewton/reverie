@@ -664,7 +664,8 @@ mapfile -t candidates < <(jq -r --arg owner "$owner" --arg role_alternation "$ro
     # Historical ci-hub comments used a service actor or the former four-field
     # disclosure. Keep those exact artifacts readable. New comments use the
     # five-field prefix as the complete first line; the body starts on line two.
-    # The model is a nonempty resolved token or literal `unresolved`, and role is
+    # The model is a nonempty resolved token, self-describing `unknown-model`,
+    # or the historical literal `unresolved`, and role is
     # the closed enum DERIVED from ROLES above and passed in as $role_alternation,
     # so adding a role there needs no edit here.
     def four_field_prefix: "^\\[[^,\\]]+, [^,\\]]+, [^,\\]]+, role=[^\\]]+\\]";

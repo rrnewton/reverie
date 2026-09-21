@@ -189,8 +189,8 @@ class PolicyTextTests(unittest.TestCase):
         occupies its own first line, so exercise it.
         """
         self.assertIn(
-            "[team-slug, agent-name, resolved-model, machine-shortname,"
-            " role=enum]",
+            "[team-slug, agent-name-or-unknown-agentname, model-or-unknown-model,"
+            "\n     machine-shortname, role=enum]",
             self.text,
         )
         disclosure = disclosure_tag().Disclosure(

@@ -795,7 +795,7 @@ class ModelFamilyIsDerivedNotTyped(unittest.TestCase):
     # model must be an ABSENCE of a claim rather than a violation.  Refusing
     # them would stop routine work to enforce a label.
     def test_a_model_naming_no_family_is_accepted(self) -> None:
-        for model in ("automation", "unresolved", "primary-checkout"):
+        for model in ("automation", "unknown-model", "unresolved", "primary-checkout"):
             for family in ("claude", "codex"):
                 with self.subTest(model=model, family=family):
                     result = self.check(model, "--expected-family", family)

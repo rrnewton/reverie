@@ -252,6 +252,7 @@ class FleetGhTest(unittest.TestCase):
         state: str = "AGREEMENT",
         agent: str | None = TEST_AGENT,
         model: str = "unresolved",
+        model_source: str | None = None,
         client_family: str | None = "codex",
         signal_state: str = "unavailable",
         signal_agent: str | None = None,
@@ -265,6 +266,7 @@ class FleetGhTest(unittest.TestCase):
             f"candidates={signal_candidates!r}; detail='fixture'\n"
             "class Resolution:\n"
             f"    state={state!r}; agent={agent!r}; model={model!r}; "
+            f"model_source={model_source!r}; primary_source=None; "
             f"client_family={client_family!r}; "
             "basis=('fixture',); signals=(Signal(),)\n"
             "    exit_code={'AGREEMENT':0,'DISAGREEMENT':1}.get(state,2)\n"
@@ -334,7 +336,7 @@ class FleetGhTest(unittest.TestCase):
         machine = socket.gethostname().split(".", 1)[0]
         self.assertEqual(
             body,
-            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=reviewer]\n"
+            f"[hermit2, {TEST_AGENT}, unknown-model, {machine}, role=reviewer]\n"
             f"Unverified --who metadata: {TEST_AGENT}\n"
             "evidence",
         )
@@ -522,7 +524,7 @@ class FleetGhTest(unittest.TestCase):
         machine = socket.gethostname().split(".", 1)[0]
         self.assertEqual(
             body,
-            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, "
+            f"[hermit2, {TEST_AGENT}, unknown-model, {machine}, "
             "role=coordinator]\n"
             f"Unverified --who metadata: {TEST_AGENT}\n"
             "closing disposition",
@@ -579,7 +581,7 @@ class FleetGhTest(unittest.TestCase):
                 body = self.captured()[self.captured().index("--body") + 1]
                 self.assertEqual(
                     body,
-                    f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\n"
+                    f"[hermit2, {TEST_AGENT}, unknown-model, {machine}, role=impl]\n"
                     f"Unverified --who metadata: {TEST_AGENT}\n"
                     "prose",
                     "A CREATED ARTIFACT WENT OUT UNATTRIBUTED",
@@ -630,7 +632,7 @@ class FleetGhTest(unittest.TestCase):
         machine = socket.gethostname().split(".", 1)[0]
         self.assertEqual(
             body,
-            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\n"
+            f"[hermit2, {TEST_AGENT}, unknown-model, {machine}, role=impl]\n"
             f"Unverified --who metadata: {TEST_AGENT}\n"
             "filed from a file",
         )
@@ -704,7 +706,7 @@ class FleetGhTest(unittest.TestCase):
         machine = socket.gethostname().split(".", 1)[0]
         self.assertEqual(
             body,
-            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\n"
+            f"[hermit2, {TEST_AGENT}, unknown-model, {machine}, role=impl]\n"
             f"Unverified --who metadata: {TEST_AGENT}\n"
             "replacement prose",
         )
@@ -725,7 +727,7 @@ class FleetGhTest(unittest.TestCase):
         captured = self.captured()
         machine = socket.gethostname().split(".", 1)[0]
         self.assertIn(
-            f"body=[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\n"
+            f"body=[hermit2, {TEST_AGENT}, unknown-model, {machine}, role=impl]\n"
             f"Unverified --who metadata: {TEST_AGENT}\n"
             "via api",
             captured,
@@ -782,14 +784,14 @@ class FleetGhTest(unittest.TestCase):
         missing = self.run_printer("--tag")
         self.assertEqual(0, missing.returncode, missing.stderr)
         self.assertIn("role=impl]", missing.stdout)
-        self.assertIn("fields: team, agent, model, machine, role", missing.stderr)
+        self.assertIn("fields: team, agent_name, model, machine, role", missing.stderr)
 
         machine = socket.gethostname().split(".", 1)[0]
         self.install_identity_stub(state="UNRESOLVED", agent=None)
         unresolved = self.run_printer("--tag", "--role", "impl")
         self.assertEqual(0, unresolved.returncode, unresolved.stderr)
         self.assertEqual(
-            f"[hermit2, degraded-unresolved, unresolved, {machine}, role=impl]",
+            f"[hermit2, unknown-agentname, unknown-model, {machine}, role=impl]",
             unresolved.stdout,
         )
         self.assertIn("DEGRADED", unresolved.stderr)
@@ -805,7 +807,7 @@ class FleetGhTest(unittest.TestCase):
         disagreement = self.run_printer("--tag", "--role", "impl")
         self.assertEqual(0, disagreement.returncode, disagreement.stderr)
         self.assertEqual(
-            f"[hermit2, degraded-best-visible-agent, unresolved, {machine}, role=impl]",
+            f"[hermit2, degraded-best-visible-agent, unknown-model, {machine}, role=impl]",
             disagreement.stdout,
         )
         self.assertIn("DEGRADED", disagreement.stderr)
@@ -819,7 +821,7 @@ class FleetGhTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         body = self.captured()[self.captured().index("--body") + 1]
-        self.assertIn("degraded-unresolved", body)
+        self.assertIn("unknown-agentname", body)
         self.assertIn(f"Unverified --who metadata: {TEST_AGENT}", body)
 
     def test_caller_supplied_model_is_refused(self) -> None:
@@ -879,7 +881,7 @@ class FleetGhTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         body = self.captured()[self.captured().index("--body") + 1]
-        self.assertIn("degraded-unresolved", body)
+        self.assertIn("unknown-agentname", body)
         self.assertIn(f"Unverified --who metadata: {TEST_AGENT}", body)
 
     def test_role_can_disclose_a_relay(self) -> None:
@@ -922,7 +924,7 @@ class FleetGhTest(unittest.TestCase):
             self.captured()[-2:],
             [
                 "--body",
-                f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=reviewer]\n"
+                f"[hermit2, {TEST_AGENT}, unknown-model, {machine}, role=reviewer]\n"
                 f"Unverified --who metadata: {TEST_AGENT}\n",
             ],
         )
@@ -935,7 +937,7 @@ class FleetGhTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         machine = socket.gethostname().split(".", 1)[0]
         self.assertIn(
-            f"body=[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\n"
+            f"body=[hermit2, {TEST_AGENT}, unknown-model, {machine}, role=impl]\n"
             f"Unverified --who metadata: {TEST_AGENT}\n"
             "evidence",
             self.captured(),
@@ -976,23 +978,26 @@ class FleetGhTest(unittest.TestCase):
         ))
         self.assertIn(f"Unverified --who metadata: {TEST_AGENT}", posted)
 
-    def test_matching_existing_disclosure_is_not_duplicated(self) -> None:
+    def test_new_and_historical_existing_disclosures_are_not_duplicated(self) -> None:
         machine = socket.gethostname().split(".", 1)[0]
-        body = (
-            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\n"
-            "already attributed"
-        )
-        result = self.run_shim(
-            *self.identity(), "pr", "comment", "42", "--body", body
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        posted = self.captured()[self.captured().index("--body") + 1]
-        first, rest = body.split("\n", 1)
-        self.assertEqual(
-            posted,
-            first + f"\nUnverified --who metadata: {TEST_AGENT}\n" + rest,
-        )
-        self.assertEqual(posted.count("[hermit2,"), 1)
+        for model in ("unknown-model", "unresolved"):
+            with self.subTest(model=model):
+                self.capture.unlink(missing_ok=True)
+                body = (
+                    f"[hermit2, {TEST_AGENT}, {model}, {machine}, role=impl]\n"
+                    "already attributed"
+                )
+                result = self.run_shim(
+                    *self.identity(), "pr", "comment", "42", "--body", body
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                posted = self.captured()[self.captured().index("--body") + 1]
+                first, rest = body.split("\n", 1)
+                self.assertEqual(
+                    posted,
+                    first + f"\nUnverified --who metadata: {TEST_AGENT}\n" + rest,
+                )
+                self.assertEqual(posted.count("[hermit2,"), 1)
 
     def test_legacy_four_field_prefix_is_refused_not_nested(self) -> None:
         result = self.run_shim(
@@ -1085,8 +1090,13 @@ class FleetGhTest(unittest.TestCase):
         mutant_dir.mkdir()
         mutant = mutant_dir / "disclosure_tag.py"
         source = SOURCE_DISCLOSURE.read_text()
-        needle = "model = resolution.model"
-        replacement = 'model = "unresolved"  # MUTANT: resolved model discarded'
+        needle = (
+            "model = model_for_disclosure(\n"
+            "        resolution.model,\n"
+            "        getattr(resolution, \"model_source\", None),\n"
+            "    )"
+        )
+        replacement = 'model = UNKNOWN_MODEL  # MUTANT: resolved model discarded'
         self.assertIn(needle, source, "mutation could not locate resolved-model binding")
         mutant.write_text(source.replace(needle, replacement, 1))
         mutant.chmod(0o755)

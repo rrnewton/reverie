@@ -602,6 +602,16 @@ class ResolutionTests(IdentityFixture):
         signal = next(s for s in result.signals if s.source == "process-model")
         self.assertEqual("resolved", signal.state)
 
+    def test_explicit_model_named_like_legacy_sentinel_remains_verbatim(self) -> None:
+        self.standard_processes(
+            caller_cmdline=("codex", "--model", "unresolved")
+        )
+        result = self.resolve()
+        self.assertEqual("unresolved", result.model)
+        self.assertEqual("process-cmdline", result.model_source)
+        signal = next(s for s in result.signals if s.source == "process-model")
+        self.assertEqual("resolved", signal.state)
+
     # ------------------------------------------------------------------
     # The transcript fallback. See session_model_signal for why it exists: the
     # cmdline source is structurally unavailable for one whole client family
@@ -627,6 +637,15 @@ class ResolutionTests(IdentityFixture):
         # The cmdline source must still report honestly that it found nothing.
         cmdline_signal = next(s for s in result.signals if s.source == "process-model")
         self.assertEqual("unavailable", cmdline_signal.state)
+
+    def test_transcript_model_named_like_legacy_sentinel_remains_verbatim(self) -> None:
+        root = self._transcript("abc12345-0006", ["unresolved"])
+        self.standard_processes(
+            caller_cmdline=("claude", "--session-id", "abc12345-0006")
+        )
+        result = self.resolve(transcript_root=root)
+        self.assertEqual("unresolved", result.model)
+        self.assertEqual("session-transcript", result.model_source)
 
     def test_an_explicit_launch_model_still_wins_over_the_transcript(self) -> None:
         """The fallback is additive and can never contradict an explicit flag."""
@@ -891,7 +910,7 @@ class CliTests(IdentityFixture):
             result.stdout,
         )
         self.assertEqual(
-            "who-am-i: fields: team, agent, model, machine, role\n",
+            "who-am-i: fields: team, agent_name, model, machine, role\n",
             result.stderr,
         )
 
@@ -901,14 +920,24 @@ class CliTests(IdentityFixture):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("role=reviewer]", result.stdout)
 
+    def test_explicit_model_named_like_legacy_sentinel_is_not_unknown(self) -> None:
+        self.standard_processes(
+            caller_cmdline=("codex", "--model", "unresolved"),
+            parent_cmdline=("codex", "--model", "unresolved"),
+        )
+        result = self.run_default("--task", "task-a")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("[hermit2, agent-a, unresolved, ", result.stdout)
+        self.assertNotIn("unknown-model", result.stdout)
+
     def test_default_degrades_disagreement_without_failing(self) -> None:
         self.standard_processes()
         self.write_state(owners=("agent-b",), sidecar_agent="agent-b")
         result = self.run_default()
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("[hermit2, degraded-agent-a, unresolved, ", result.stdout)
+        self.assertIn("[hermit2, degraded-agent-a, unknown-model, ", result.stdout)
         self.assertTrue(result.stdout.endswith(", role=impl]"))
-        self.assertIn("fields: team, agent, model, machine, role", result.stderr)
+        self.assertIn("fields: team, agent_name, model, machine, role", result.stderr)
         self.assertIn("DEGRADED", result.stderr)
         self.assertIn("NEXT: run with --diagnostics", result.stderr)
         self.assertNotIn("signal source=", result.stdout)
@@ -926,7 +955,7 @@ class CliTests(IdentityFixture):
         )
         result = self.run_default()
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("[hermit2, degraded-unresolved, unresolved, ", result.stdout)
+        self.assertIn("[hermit2, unknown-agentname, unknown-model, ", result.stdout)
         self.assertTrue(result.stdout.endswith(", role=impl]"))
         self.assertIn("DEGRADED", result.stderr)
         self.assertIn("NEXT: run with --diagnostics", result.stderr)
@@ -944,14 +973,14 @@ class CliTests(IdentityFixture):
         )
         result = self.run_default()
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("[hermit2, human, unresolved, ", result.stdout)
+        self.assertIn("[hermit2, human, unknown-model, ", result.stdout)
         self.assertTrue(result.stdout.endswith(", role=human]"))
-        self.assertIn("fields: team, agent, model, machine, role", result.stderr)
+        self.assertIn("fields: team, agent_name, model, machine, role", result.stderr)
         self.assertNotIn("DEGRADED", result.stderr)
 
         explicit = self.run_default("--role", "reviewer")
         self.assertEqual(0, explicit.returncode, explicit.stderr)
-        self.assertIn("[hermit2, human, unresolved, ", explicit.stdout)
+        self.assertIn("[hermit2, human, unknown-model, ", explicit.stdout)
         self.assertTrue(explicit.stdout.endswith(", role=reviewer]"))
 
     def test_interpreter_between_command_and_shell_is_still_human(self) -> None:
@@ -966,7 +995,7 @@ class CliTests(IdentityFixture):
         )
         result = self.run_default()
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("[hermit2, human, unresolved, ", result.stdout)
+        self.assertIn("[hermit2, human, unknown-model, ", result.stdout)
         self.assertTrue(result.stdout.endswith(", role=human]"))
 
     def test_agent_client_ancestry_is_not_misreported_as_human(self) -> None:
@@ -982,7 +1011,7 @@ class CliTests(IdentityFixture):
         )
         result = self.run_default()
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("[hermit2, degraded-unresolved, codex-family-by-ancestry, ", result.stdout)
+        self.assertIn("[hermit2, unknown-agentname, codex-family-by-ancestry, ", result.stdout)
         self.assertTrue(result.stdout.endswith(", role=impl]"))
         self.assertIn("DEGRADED", result.stderr)
 
@@ -990,7 +1019,7 @@ class CliTests(IdentityFixture):
         self.standard_processes()
         result = self.run_default("--diagnostics")
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("[hermit2, agent-a, unresolved, ", result.stdout)
+        self.assertIn("[hermit2, agent-a, unknown-model, ", result.stdout)
         self.assertTrue(result.stdout.endswith(", role=impl]"))
         self.assertIn("state=AGREEMENT", result.stderr)
         self.assertIn("signal source=caller-environ", result.stderr)
@@ -1032,7 +1061,7 @@ class CliTests(IdentityFixture):
         missing_role = self.run_tag()
         self.assertEqual(0, missing_role.returncode, missing_role.stderr)
         self.assertIn("role=impl]", missing_role.stdout)
-        self.assertIn("fields: team, agent, model, machine, role", missing_role.stderr)
+        self.assertIn("fields: team, agent_name, model, machine, role", missing_role.stderr)
 
         self.write_state(owners=("agent-b",), sidecar_agent="agent-b")
         disagreement = self.run_tag("--role", "impl")

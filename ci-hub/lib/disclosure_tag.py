@@ -13,6 +13,9 @@ DEFAULT_TEAM = "hermit2"
 ROLES = frozenset({"impl", "debugger", "reviewer", "relay", "coordinator", "human"})
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 MODEL_TOKEN_RE = re.compile(r"^[^,\[\]\r\n]+$")
+UNKNOWN_AGENT_NAME = "unknown-agentname"
+UNKNOWN_MODEL = "unknown-model"
+_RESOLVER_UNKNOWN_MODEL = "unresolved"
 
 
 class DisclosureError(ValueError):
@@ -57,7 +60,15 @@ def _best_degraded_agent(resolution: Any) -> str:
     for candidate in candidates:
         if candidate is not None and TOKEN_RE.fullmatch(candidate) is not None:
             return f"degraded-{candidate}"
-    return "degraded-unresolved"
+    return UNKNOWN_AGENT_NAME
+
+
+def model_for_disclosure(model: str, model_source: str | None) -> str:
+    """Name an absent model without making the positional field ambiguous."""
+
+    if model == _RESOLVER_UNKNOWN_MODEL and model_source is None:
+        return UNKNOWN_MODEL
+    return model
 
 
 def for_human(
@@ -79,7 +90,7 @@ def for_human(
         raise DisclosureError(
             f"derived machine shortname is not a safe token: {machine!r}"
         )
-    return Disclosure(team, "human", "unresolved", machine, role)
+    return Disclosure(team, "human", UNKNOWN_MODEL, machine, role)
 
 
 def from_resolution(
@@ -123,7 +134,10 @@ def from_resolution(
         raise DisclosureError(
             f"derived machine shortname is not a safe token: {machine!r}"
         )
-    model = resolution.model
+    model = model_for_disclosure(
+        resolution.model,
+        getattr(resolution, "model_source", None),
+    )
     if model != model.strip() or MODEL_TOKEN_RE.fullmatch(model) is None:
         raise DisclosureError(
             f"process resolver returned an unsafe model token: {model!r}"

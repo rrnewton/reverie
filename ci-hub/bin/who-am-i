@@ -5,8 +5,10 @@ A resolved agent defaults to ``role=impl``; for example, bare
 ``./ci-hub/bin/who-am-i`` may print
 ``[hermit2, codex-2, gpt-5.6-sol, devbig014, role=impl]``.  Use ``--role`` for
 another artifact role.  An interactive shell with no agent identity prints
-``agent=human`` and defaults to ``role=human``.  Uncertain agent identities
-remain visibly ``degraded-`` instead of being presented as resolved.
+``agent_name=human`` and defaults to ``role=human``.  The five positional
+fields are team, agent name, model, machine, and role.  An absent agent name is
+printed as ``unknown-agentname`` and an absent model as ``unknown-model``;
+neither is presented as resolved.
 """
 
 from __future__ import annotations
@@ -77,12 +79,27 @@ def _interactive_human(pid: int, proc_root: Path) -> bool:
 
 def _print_diagnostics(result: agent_identity.Resolution) -> None:
     print(f"state={result.state}", file=sys.stderr)
-    print(f"agent={result.agent or ''}", file=sys.stderr)
-    print(f"model={result.model}", file=sys.stderr)
-    print(f"model_source={result.model_source or ''}", file=sys.stderr)
-    print(f"client_family={result.client_family or ''}", file=sys.stderr)
-    print(f"primary_source={result.primary_source or ''}", file=sys.stderr)
-    print("basis=" + ",".join(result.basis), file=sys.stderr)
+    print(
+        f"agent_name={result.agent or disclosure_tag.UNKNOWN_AGENT_NAME}",
+        file=sys.stderr,
+    )
+    print(
+        f"model={disclosure_tag.model_for_disclosure(result.model, result.model_source)}",
+        file=sys.stderr,
+    )
+    print(
+        f"model_source={result.model_source or 'unknown-model-source'}",
+        file=sys.stderr,
+    )
+    print(
+        f"client_family={result.client_family or 'unknown-client-family'}",
+        file=sys.stderr,
+    )
+    print(
+        f"primary_source={result.primary_source or 'unknown-primary-source'}",
+        file=sys.stderr,
+    )
+    print("basis=" + (",".join(result.basis) or "unknown-basis"), file=sys.stderr)
     for signal in result.signals:
         candidates = ",".join(signal.candidates)
         print(
@@ -177,7 +194,7 @@ def main() -> int:
             print(f"who-am-i: REFUSE: {error}", file=sys.stderr)
             return result.exit_code if result.state != "AGREEMENT" else 2
         print(
-            "who-am-i: fields: team, agent, model, machine, role",
+            "who-am-i: fields: team, agent_name, model, machine, role",
             file=sys.stderr,
         )
         if degraded and not human:
