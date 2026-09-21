@@ -279,12 +279,804 @@
       "digest_algorithm": "sha256"
     }
   },
-  "plan_receipt": null,
-  "attempt_state": "PLANNED",
-  "cells": [],
-  "events": [],
-  "samples": [],
-  "matchers": [],
-  "outcome_history": [],
-  "current_outcome": null
+  "plan_receipt": {
+    "commit": "910f2ccb4e4341cd9eac8707e93ab4194e49fd7f",
+    "path": "services/proxygen/httpcorosessiontests--e3f69b337304/experiment.json",
+    "blob": "20f2d07ab2453b24d753c46401a02da02dc87465",
+    "helper_blobs": [
+      {
+        "path": "experiments/tfa-kernel71-httpcoro-midpoint-continuation_20260921/tools/admit_httpcoro_midpoint_seed.py",
+        "blob": "3e701d9132d40af6d209347a8bb057c20bfb7626"
+      },
+      {
+        "path": "experiments/tfa-kernel71-httpcoro-midpoint-continuation_20260921/tools/create_httpcoro_midpoint_plan.py",
+        "blob": "eb902c98eaaddb01c7f70df4bc42c5605de9f26f"
+      },
+      {
+        "path": "experiments/tfa-kernel71-httpcoro-midpoint-continuation_20260921/tools/run_httpcoro_midpoint_seed.py",
+        "blob": "9bce5cc1b29a5fb47f7c79991a676e0e6ff49ede"
+      }
+    ]
+  },
+  "attempt_state": "MATERIAL",
+  "cells": [
+    {
+      "cell_id": "httpcoro-kernel71-ptrace-strict-midpoint-slowdown-v1",
+      "route_id": "httpcoro-kernel71-midpoint-existing-elf-v1",
+      "route_sha256": "d0daf25b0dffedba3aac75ce8c321dee093f630c5964b23846a85a721806cbae",
+      "plan_sha256": "0c62e2a530ab21f1bd8b28c2745c0c45299ace9ec8eb473e0aa87454c4fbbdf8",
+      "frozen_at": "2026-09-21T21:01:52Z",
+      "cell_sha256": "c2628d6421a726f0f9dd497cfbed4bc952234c35df621c16e030c2d1ae93988e",
+      "canonical_target": "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests - HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-asan"
+      ],
+      "target_source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "hermit_source_revision": "4630ee2a61f93221a43e2baec0a15f34102a2c61",
+      "hermit_binary_sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
+      "test_artifact_sha256": "00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc",
+      "guest": {
+        "argv": [
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+          "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+        ],
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "mounts": [
+          "type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+        ],
+        "immutable_inputs": [
+          {
+            "artifact_id": "httpcoro-midpoint-kernel71-test-elf",
+            "kind": "OTHER",
+            "storage": "LOCAL_IGNORED",
+            "locator": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+            "sha256": "00066235bcc942498d22862701809d0b04e4ec8d99a587ff220f320681083efc",
+            "bytes": 48908168,
+            "capture_limit_bytes": 48908168,
+            "truncated": false,
+            "media_type": "application/x-executable"
+          }
+        ],
+        "working_directory": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-httpcoro-midpoint-continuation_20260921"
+      },
+      "hermit": {
+        "backend": "ptrace",
+        "strict": true,
+        "chaos": true,
+        "relaxations": [],
+        "argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T21:01:52Z",
+          "--clock-multiplier=0.5",
+          "--chaos-per-thread-slowdown",
+          "--chaos-slowdown-max-factor=10.0",
+          "--chaos-epoch-length-ns=0",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "{SWEEP}",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921-1463207-1790025873794204990",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+          "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+        ],
+        "scheduler_heuristic": "random",
+        "swept_coordinate": "--sched-seed",
+        "fixed_seed_roots": {
+          "--seed": 0,
+          "--rng-seed": 0,
+          "--sched-seed": null,
+          "--fuzz-seed": 0
+        }
+      },
+      "timing": {
+        "requested_max_timeslice": 200000000,
+        "effective_max_timeslice": 200000000
+      },
+      "pmu": {
+        "available": true,
+        "effective_timer": "RCB",
+        "fallback_recorded": false
+      },
+      "host": {
+        "hostname": "devbig030.atn3.facebook.com",
+        "kernel": "Linux 7.1.3-0_fbk0_0_g295ad0959f34",
+        "architecture": "x86_64",
+        "cpu": "AMD EPYC 9D85 158-Core Processor",
+        "capabilities": {
+          "pmu": true,
+          "mount_namespace": true,
+          "buck_out_bind": true,
+          "safehermit_disk_qgroup": true,
+          "verifier_log_qgroup": true
+        }
+      },
+      "oracle_id": "httpcoro-reset-rate-limit-exact-v2",
+      "resource_bounds": {
+        "wall_seconds": 120,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "stdout_bytes": 67108864,
+        "stderr_bytes": 67108864,
+        "retained_log_bytes": 67108864,
+        "disk_guard": "8G"
+      }
+    }
+  ],
+  "events": [
+    {
+      "event_id": "httpcoro-midpoint-sched-00000000000000000000-replica-1",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "0c62e2a530ab21f1bd8b28c2745c0c45299ace9ec8eb473e0aa87454c4fbbdf8",
+      "route_id": "httpcoro-kernel71-midpoint-existing-elf-v1",
+      "route_sha256": "d0daf25b0dffedba3aac75ce8c321dee093f630c5964b23846a85a721806cbae",
+      "canonical_target": "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests - HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-asan"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "httpcoro-kernel71-ptrace-strict-midpoint-slowdown-v1",
+      "cell_sha256": "c2628d6421a726f0f9dd497cfbed4bc952234c35df621c16e030c2d1ae93988e",
+      "measurement_role": "DISCOVERY",
+      "started_at": "2026-09-21T21:37:05Z",
+      "finished_at": "2026-09-21T21:38:55Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T21:01:52Z",
+        "--clock-multiplier=0.5",
+        "--chaos-per-thread-slowdown",
+        "--chaos-slowdown-max-factor=10.0",
+        "--chaos-epoch-length-ns=0",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921-1463207-1790025873794204990",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+        "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+      ],
+      "result": {
+        "exit_code": 134,
+        "signal": "SIGABRT",
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 1,
+        "target_oracle": "FAIL",
+        "failure_class_id": "reset-rate-limit-line1685-body-event-fatal",
+        "harness_status": "COMPLETE",
+        "diagnostic": "status=VALID; selected=1; unit_result=core-dump; exit=134; BitwiseInfoV1=matched; stdout_cap=not-fired; safehermit_bounds=authenticated; verifier_and_wrapper_qgroups=authenticated"
+      },
+      "invocation_id": "httpcoro-midpoint-sched-00000000000000000000-verify",
+      "replica_index": 1,
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 0
+      },
+      "effective_config_sha256": "c2628d6421a726f0f9dd497cfbed4bc952234c35df621c16e030c2d1ae93988e",
+      "artifacts": [
+        {
+          "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-replica-1-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-1.stdout.txt",
+          "sha256": "64701a7c4b67e570f3333c5c0da2fbdcd7a53921ed1c5c69e47750f1f5f78058",
+          "bytes": 343,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-replica-1-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-1.stderr.txt",
+          "sha256": "d2d9d0c2a1bd9132b6b8084e931de8afdcff06bc1a61a81bbc61bcb430e8b4cb",
+          "bytes": 17546,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-replica-1-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-1.result.json",
+          "sha256": "e4fadc3b8d88a19a32c101d09b4476d63041f411a5c039dd534ae99c876158f9",
+          "bytes": 2180,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-replica-1-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-1.safehermit.txt",
+          "sha256": "c23939edbbd8d79c72a8a367ffca6264671d9d346b790f29e2b1abd593ffbd89",
+          "bytes": 1826,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-replica-1-bounds",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-1.bounds.json",
+          "sha256": "981b1070d99d8789a19f881d1b60342d2b76b1cd5770d44b1225cd5611868eb9",
+          "bytes": 2991,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-replica-1-invocation",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-1.invocation.json",
+          "sha256": "74bba51e109ee62123f304621df61ed56c9bb30f1fdc98cdd8834419e835ae1b",
+          "bytes": 7204,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        }
+      ]
+    },
+    {
+      "event_id": "httpcoro-midpoint-sched-00000000000000000000-replica-2",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "0c62e2a530ab21f1bd8b28c2745c0c45299ace9ec8eb473e0aa87454c4fbbdf8",
+      "route_id": "httpcoro-kernel71-midpoint-existing-elf-v1",
+      "route_sha256": "d0daf25b0dffedba3aac75ce8c321dee093f630c5964b23846a85a721806cbae",
+      "canonical_target": "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//proxygen/lib/http/coro/test:HTTPCoroSessionTests - HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-asan"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "httpcoro-kernel71-ptrace-strict-midpoint-slowdown-v1",
+      "cell_sha256": "c2628d6421a726f0f9dd497cfbed4bc952234c35df621c16e030c2d1ae93988e",
+      "measurement_role": "CONFIRMATION",
+      "started_at": "2026-09-21T21:37:05Z",
+      "finished_at": "2026-09-21T21:38:55Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-2.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T21:01:52Z",
+        "--clock-multiplier=0.5",
+        "--chaos-per-thread-slowdown",
+        "--chaos-slowdown-max-factor=10.0",
+        "--chaos-epoch-length-ns=0",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921-1463207-1790025873794204990",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+        "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+      ],
+      "result": {
+        "exit_code": 134,
+        "signal": "SIGABRT",
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 1,
+        "target_oracle": "FAIL",
+        "failure_class_id": "reset-rate-limit-line1685-body-event-fatal",
+        "harness_status": "COMPLETE",
+        "diagnostic": "status=VALID; selected=1; unit_result=core-dump; exit=134; BitwiseInfoV1=matched; stdout_cap=not-fired; safehermit_bounds=authenticated; verifier_and_wrapper_qgroups=authenticated"
+      },
+      "invocation_id": "httpcoro-midpoint-sched-00000000000000000000-verify",
+      "replica_index": 2,
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 0
+      },
+      "effective_config_sha256": "c2628d6421a726f0f9dd497cfbed4bc952234c35df621c16e030c2d1ae93988e",
+      "artifacts": [
+        {
+          "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-replica-2-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-2.stdout.txt",
+          "sha256": "64701a7c4b67e570f3333c5c0da2fbdcd7a53921ed1c5c69e47750f1f5f78058",
+          "bytes": 343,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-replica-2-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-2.stderr.txt",
+          "sha256": "d2d9d0c2a1bd9132b6b8084e931de8afdcff06bc1a61a81bbc61bcb430e8b4cb",
+          "bytes": 17546,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-replica-2-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-2.result.json",
+          "sha256": "722f7fc6e9b774f8e606d583a7478070f7de71821b858eff7e3b34e6f037fb15",
+          "bytes": 2183,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-replica-2-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-2.safehermit.txt",
+          "sha256": "c23939edbbd8d79c72a8a367ffca6264671d9d346b790f29e2b1abd593ffbd89",
+          "bytes": 1826,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-replica-2-bounds",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-2.bounds.json",
+          "sha256": "1f2f474610084fdb2216947b50ecf6d1a77f38c98e7bb87e12db591f2b45e7f6",
+          "bytes": 3152,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-replica-2-invocation",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-2.invocation.json",
+          "sha256": "74bba51e109ee62123f304621df61ed56c9bb30f1fdc98cdd8834419e835ae1b",
+          "bytes": 7204,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        }
+      ]
+    }
+  ],
+  "samples": [
+    {
+      "sample_id": "httpcoro-midpoint-sched-00000000000000000000-sample",
+      "cell_id": "httpcoro-kernel71-ptrace-strict-midpoint-slowdown-v1",
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 0
+      },
+      "selection_index": 0,
+      "status": "VALID",
+      "target_outcome": "FAIL",
+      "failure_class_id": "reset-rate-limit-line1685-body-event-fatal",
+      "censor_reason": null,
+      "execution_event_ids": [
+        "httpcoro-midpoint-sched-00000000000000000000-replica-1",
+        "httpcoro-midpoint-sched-00000000000000000000-replica-2"
+      ]
+    }
+  ],
+  "matchers": [
+    {
+      "matcher_id": "httpcoro-midpoint-sched-00000000000000000000-matcher",
+      "kind": "BUILTIN_VERIFY",
+      "execution_event_ids": [
+        "httpcoro-midpoint-sched-00000000000000000000-replica-1",
+        "httpcoro-midpoint-sched-00000000000000000000-replica-2"
+      ],
+      "complete": true,
+      "same_target_outcome": true,
+      "same_failure_class": true,
+      "canonical_info_artifact": {
+        "artifact_id": "httpcoro-midpoint-sched-00000000000000000000-matcher-canonical-info",
+        "kind": "CANONICAL_INFO",
+        "storage": "TRACKED",
+        "locator": "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000.canonical-info.json",
+        "sha256": "cdc356cb1210ed03918ecd0c4710790202ec212bf5f6b4572d2187043b60321d",
+        "bytes": 416,
+        "capture_limit_bytes": 1048576,
+        "truncated": false,
+        "media_type": "application/json"
+      },
+      "details": {
+        "verified": true,
+        "bitwise_parity": true,
+        "comparison": "BitwiseInfoV1",
+        "relaxations": []
+      }
+    }
+  ],
+  "outcome_history": [
+    {
+      "classification_id": "httpcoro-midpoint-pending-after-00000000000000000000",
+      "classified_at": "2026-09-21T21:38:56Z",
+      "supersedes": null,
+      "evidence_refs": [
+        "httpcoro-midpoint-sched-00000000000000000000-replica-1",
+        "httpcoro-midpoint-sched-00000000000000000000-replica-2"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "httpcoro-kernel71-midpoint-existing-elf-v1",
+          "cell_ids": [
+            "httpcoro-kernel71-ptrace-strict-midpoint-slowdown-v1"
+          ],
+          "evidence_event_ids": [
+            "httpcoro-midpoint-sched-00000000000000000000-replica-1",
+            "httpcoro-midpoint-sched-00000000000000000000-replica-2"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-1.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T21:01:52Z",
+          "--clock-multiplier=0.5",
+          "--chaos-per-thread-slowdown",
+          "--chaos-slowdown-max-factor=10.0",
+          "--chaos-epoch-length-ns=0",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921-1463207-1790025873794204990",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+          "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+        ],
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-2.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T21:01:52Z",
+          "--clock-multiplier=0.5",
+          "--chaos-per-thread-slowdown",
+          "--chaos-slowdown-max-factor=10.0",
+          "--chaos-epoch-length-ns=0",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921-1463207-1790025873794204990",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+          "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+        ]
+      ],
+      "inspected_artifacts": [
+        "httpcoro-midpoint-sched-00000000000000000000-replica-1-result",
+        "httpcoro-midpoint-sched-00000000000000000000-replica-2-result"
+      ],
+      "missing_or_ambiguous_facts": [
+        "A complete distinct-sched-seed PASS/target-owned-FAIL bracket is not yet present."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Execute selection index 1 at predeclared --sched-seed=1."
+      ]
+    }
+  ],
+  "current_outcome": {
+    "classification_id": "httpcoro-midpoint-pending-after-00000000000000000000",
+    "classified_at": "2026-09-21T21:38:56Z",
+    "supersedes": null,
+    "evidence_refs": [
+      "httpcoro-midpoint-sched-00000000000000000000-replica-1",
+      "httpcoro-midpoint-sched-00000000000000000000-replica-2"
+    ],
+    "kind": "NOT-DETERMINABLE",
+    "route_evidence": [
+      {
+        "route_id": "httpcoro-kernel71-midpoint-existing-elf-v1",
+        "cell_ids": [
+          "httpcoro-kernel71-ptrace-strict-midpoint-slowdown-v1"
+        ],
+        "evidence_event_ids": [
+          "httpcoro-midpoint-sched-00000000000000000000-replica-1",
+          "httpcoro-midpoint-sched-00000000000000000000-replica-2"
+        ]
+      }
+    ],
+    "inspected_commands": [
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T21:01:52Z",
+        "--clock-multiplier=0.5",
+        "--chaos-per-thread-slowdown",
+        "--chaos-slowdown-max-factor=10.0",
+        "--chaos-epoch-length-ns=0",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921-1463207-1790025873794204990",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+        "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+      ],
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/proxygen/httpcorosessiontests--e3f69b337304/evidence/selection-000-sched-seed-00000000000000000000-replica-2.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T21:01:52Z",
+        "--clock-multiplier=0.5",
+        "--chaos-per-thread-slowdown",
+        "--chaos-slowdown-max-factor=10.0",
+        "--chaos-epoch-length-ns=0",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-midpoint-2936582-20260921-1463207-1790025873794204990",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/31e8493249d09edd/proxygen/lib/http/coro/test/__HTTPCoroSessionTests__/HTTPCoroSessionTests",
+        "--gtest_filter=HTTPDownstreamSessionTest/H2DownstreamSessionTest.ResetRateLimit/h2"
+      ]
+    ],
+    "inspected_artifacts": [
+      "httpcoro-midpoint-sched-00000000000000000000-replica-1-result",
+      "httpcoro-midpoint-sched-00000000000000000000-replica-2-result"
+    ],
+    "missing_or_ambiguous_facts": [
+      "A complete distinct-sched-seed PASS/target-owned-FAIL bracket is not yet present."
+    ],
+    "measurement_budget_exhausted": false,
+    "pending_in_scope_measurements": [
+      "Execute selection index 1 at predeclared --sched-seed=1."
+    ]
+  }
 }
