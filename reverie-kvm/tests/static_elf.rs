@@ -5747,11 +5747,13 @@ fn real_kvm_authenticated_proc_carrier_survives_sender_close_thread_fork_exec_an
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -5806,6 +5808,11 @@ static int validate_carriers(int readable, int path_only) {
   int path_flags = fcntl(path_only, F_GETFL);
   if (readable_flags < 0 || (readable_flags & O_ACCMODE) != O_RDONLY) return 30;
   if (path_flags < 0 || !(path_flags & O_PATH) || !(path_flags & O_NOFOLLOW)) return 31;
+  unsigned long noisy_readable =
+      (0xa5a55a5aUL << 32) | (uint32_t)readable;
+  if (syscall(SYS_syncfs, noisy_readable) != 0) return 46;
+  errno = 0;
+  if (syscall(SYS_syncfs, path_only) != -1 || errno != EBADF) return 47;
 
   struct stat first, second;
   if (fstat(readable, &first) || fstat(path_only, &second)) return 32;
@@ -5831,7 +5838,8 @@ static int validate_carriers(int readable, int path_only) {
   char observed[sizeof(expected)] = {0};
   if (read(readable, observed, 4) != 4) return 39;
   int alias = dup(readable);
-  if (alias < 0 || read(alias, observed + 4, sizeof(expected) - 1 - 4) !=
+  if (alias < 0 || syscall(SYS_syncfs, alias) != 0 ||
+      read(alias, observed + 4, sizeof(expected) - 1 - 4) !=
                        (ssize_t)(sizeof(expected) - 1 - 4) ||
       memcmp(observed, expected, sizeof(expected) - 1)) return 40;
   close(alias);
@@ -5840,6 +5848,7 @@ static int validate_carriers(int readable, int path_only) {
     return 41;
   int reminted = open(procfd, O_RDONLY);
   if (reminted < 0) return 42;
+  if (syscall(SYS_syncfs, reminted) != 0) return 48;
   memset(observed, 0, sizeof(observed));
   if (read(reminted, observed, sizeof(expected) - 1) != (ssize_t)(sizeof(expected) - 1) ||
       memcmp(observed, expected, sizeof(expected) - 1) ||
@@ -5858,9 +5867,24 @@ int main(int argc, char **argv) {
   if (argc == 4 && !strcmp(argv[1], "after-exec")) {
     int result = validate_carriers(atoi(argv[2]), atoi(argv[3]));
     if (result) return result;
-    puts("authenticated proc carrier ok");
+    puts("authenticated proc carrier syncfs ok");
     return 0;
   }
+
+  int ordinary = syscall(SYS_memfd_create, "syncfs-ordinary", 0);
+  if (ordinary < 0 || syscall(SYS_syncfs, ordinary) != 0) return 5;
+  char ordinary_procfd[64];
+  if (snprintf(ordinary_procfd, sizeof(ordinary_procfd),
+               "/proc/self/fd/%d", ordinary) >= sizeof(ordinary_procfd)) return 6;
+  int ordinary_path = open(ordinary_procfd, O_PATH);
+  if (ordinary_path < 0) return 7;
+  errno = 0;
+  if (syscall(SYS_syncfs, ordinary_path) != -1 || errno != EBADF) return 8;
+  if (close(ordinary_path) || close(ordinary)) return 9;
+  errno = 0;
+  if (syscall(SYS_syncfs, ordinary) != -1 || errno != EBADF) return 18;
+  errno = 0;
+  if (syscall(SYS_syncfs, -1) != -1 || errno != EBADF) return 19;
 
   if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets)) return 10;
   donated[0] = open("/proc/uptime", O_RDONLY);
@@ -5895,7 +5919,7 @@ int main(int argc, char **argv) {
     let executable = executable.to_str().unwrap();
     let (stdout, stderr) =
         run_host_program_with_tool_captured(executable, &[executable], &directory.0);
-    assert_eq!(stdout, b"authenticated proc carrier ok\n");
+    assert_eq!(stdout, b"authenticated proc carrier syncfs ok\n");
     assert!(
         stderr.is_empty(),
         "stderr={}",
