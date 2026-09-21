@@ -827,6 +827,9 @@ pub(crate) struct LoadedStaticElf {
     // AUTONOMOUS-BOT-IMPLEMENTED: Keep deterministic random descriptors on the Tool path.
     // TODO-HUMAN-REVIEW(PR-235): Review random-device descriptor lifecycle parity.
     pub random_device_fds: std::collections::BTreeSet<i32>,
+    /// Backend-trusted descriptions created only by the exact loginuid open
+    /// branch. The carrier name is intentionally not an identity oracle.
+    pub loginuid_fds: std::collections::BTreeSet<i32>,
     pub stdout_alias_fds: std::collections::BTreeSet<i32>,
     pub stderr_alias_fds: std::collections::BTreeSet<i32>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Model guest close-on-exec state independently.
@@ -851,6 +854,9 @@ pub(crate) struct LoadedStaticElf {
     /// must be opened through a followed supervisor proc-fd link, so retain
     /// this guest-visible status bit independently of the host OFD.
     pub synthetic_proc_nofollow_fds: std::collections::BTreeSet<i32>,
+    /// Per-top-level-load authentication authority for transferable synthetic
+    /// proc carriers. Fork, exec, and shebang recursion retain this exact Arc.
+    pub proc_carrier_authority: Arc<crate::proc_carrier::ProcCarrierAuthority>,
     /// Host-kernel ordering for O_CREAT|O_DIRECTORY on an existing regular
     /// procfs entry, established before this image can execute.
     pub regular_create_directory_policy: RegularCreateDirectoryPolicy,
@@ -876,6 +882,10 @@ impl LoadedStaticElf {
             retired.extend(self.take_stdin());
         }
         self.fd_entry_ids.insert(fd, std::sync::Arc::new(()));
+        // Every caller that creates or replaces a descriptor passes through
+        // here. Clear stale virtual O_NOFOLLOW state before a synthetic-proc
+        // caller deliberately reapplies it for the new description.
+        self.synthetic_proc_nofollow_fds.remove(&fd);
         retired
     }
 
@@ -992,6 +1002,7 @@ impl LoadedStaticElf {
             file_retirement: FileRetirement::default(),
             fd_entry_ids: self.fd_entry_ids.clone(),
             random_device_fds: self.random_device_fds.clone(),
+            loginuid_fds: self.loginuid_fds.clone(),
             stdout_alias_fds: self.stdout_alias_fds.clone(),
             stderr_alias_fds: self.stderr_alias_fds.clone(),
             cloexec_fds: self.cloexec_fds.clone(),
@@ -1000,6 +1011,7 @@ impl LoadedStaticElf {
             consumed_child_wait: None,
             proc_files: self.proc_files.clone(),
             synthetic_proc_nofollow_fds: self.synthetic_proc_nofollow_fds.clone(),
+            proc_carrier_authority: self.proc_carrier_authority.clone(),
             regular_create_directory_policy: self.regular_create_directory_policy,
             proc_mounts: self.proc_mounts.clone(),
             fdinfo_files: self.fdinfo_files.clone(),
@@ -1021,6 +1033,13 @@ impl LoadedStaticElf {
     }
 
     pub(crate) fn inherit_process_state_locked(&mut self, previous: Self) -> Vec<std::fs::File> {
+        assert!(
+            Arc::ptr_eq(
+                &self.proc_carrier_authority,
+                &previous.proc_carrier_authority
+            ),
+            "guest exec replaced its synthetic-proc carrier authority"
+        );
         let thp_disabled =
             std::sync::Arc::new(AtomicU8::new(previous.thp_disabled.load(Ordering::SeqCst)));
         let regular_create_directory_policy = previous.regular_create_directory_policy;
@@ -1050,6 +1069,11 @@ impl LoadedStaticElf {
             .collect();
         let random_device_fds = previous
             .random_device_fds
+            .into_iter()
+            .filter(|fd| files.contains_key(fd))
+            .collect();
+        let loginuid_fds = previous
+            .loginuid_fds
             .into_iter()
             .filter(|fd| files.contains_key(fd))
             .collect();
@@ -1171,6 +1195,7 @@ impl LoadedStaticElf {
         self.file_retirement = previous.file_retirement;
         self.fd_entry_ids = fd_entry_ids;
         self.random_device_fds = random_device_fds;
+        self.loginuid_fds = loginuid_fds;
         self.stdout_alias_fds = stdout_alias_fds;
         self.stderr_alias_fds = stderr_alias_fds;
         self.cloexec_fds = std::collections::BTreeSet::new();
@@ -1197,12 +1222,35 @@ pub(crate) fn load_static_elf(
     envp: &[&str],
     cwd: &Path,
 ) -> Result<LoadedStaticElf> {
+    let proc_carrier_authority = crate::proc_carrier::ProcCarrierAuthority::new()?;
+    load_static_elf_with_authority(memory, image, argv, envp, cwd, proc_carrier_authority)
+}
+
+pub(crate) fn load_static_elf_with_authority(
+    memory: &mut GuestMemory,
+    image: &[u8],
+    argv: &[&str],
+    envp: &[&str],
+    cwd: &Path,
+    proc_carrier_authority: Arc<crate::proc_carrier::ProcCarrierAuthority>,
+) -> Result<LoadedStaticElf> {
     initialize_regular_create_directory_policy()?;
     // TODO-HUMAN-REVIEW(PR-132): Review ELF user-map construction.
     let owner = memory.clone();
     let _transaction = owner.allocation_guard();
     begin_image(memory)?;
-    let result = load_executable(memory, image, argv, envp, cwd, 0, None);
+    let result = load_executable(
+        memory,
+        image,
+        argv,
+        envp,
+        cwd,
+        ExecutableLoadState {
+            script_depth: 0,
+            executable_file: None,
+            proc_carrier_authority,
+        },
+    );
     if result.is_err() {
         memory.clear_user_access();
     }
@@ -1216,13 +1264,36 @@ pub(crate) fn load_static_elf_file(
     envp: &[&str],
     cwd: &Path,
 ) -> Result<LoadedStaticElf> {
+    let proc_carrier_authority = crate::proc_carrier::ProcCarrierAuthority::new()?;
+    load_static_elf_file_with_authority(memory, file, argv, envp, cwd, proc_carrier_authority)
+}
+
+pub(crate) fn load_static_elf_file_with_authority(
+    memory: &mut GuestMemory,
+    file: File,
+    argv: &[&str],
+    envp: &[&str],
+    cwd: &Path,
+    proc_carrier_authority: Arc<crate::proc_carrier::ProcCarrierAuthority>,
+) -> Result<LoadedStaticElf> {
     initialize_regular_create_directory_policy()?;
     let image = read_file_image(&file)?;
     let invoked_path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
     let owner = memory.clone();
     let _transaction = owner.allocation_guard();
     begin_image(memory)?;
-    let result = load_executable(memory, &image, argv, envp, cwd, 0, Some(Arc::new(file)));
+    let result = load_executable(
+        memory,
+        &image,
+        argv,
+        envp,
+        cwd,
+        ExecutableLoadState {
+            script_depth: 0,
+            executable_file: Some(Arc::new(file)),
+            proc_carrier_authority,
+        },
+    );
     let mut loaded = match result {
         Ok(loaded) => loaded,
         Err(error) => {
@@ -1292,6 +1363,12 @@ fn read_file_image(file: &File) -> std::io::Result<Vec<u8>> {
     Ok(image)
 }
 
+struct ExecutableLoadState {
+    script_depth: usize,
+    executable_file: Option<Arc<File>>,
+    proc_carrier_authority: Arc<crate::proc_carrier::ProcCarrierAuthority>,
+}
+
 // TODO-HUMAN-REVIEW(PR-92): Review recursive script interpreter loading.
 fn load_executable(
     memory: &mut GuestMemory,
@@ -1299,9 +1376,13 @@ fn load_executable(
     argv: &[&str],
     envp: &[&str],
     cwd: &Path,
-    script_depth: usize,
-    executable_file: Option<Arc<File>>,
+    load_state: ExecutableLoadState,
 ) -> Result<LoadedStaticElf> {
+    let ExecutableLoadState {
+        script_depth,
+        executable_file,
+        proc_carrier_authority,
+    } = load_state;
     let argv0 = *argv
         .first()
         .ok_or_else(|| Error::UnsupportedElf("argv must contain at least argv[0]".to_string()))?;
@@ -1352,8 +1433,11 @@ fn load_executable(
             &interpreter_argv,
             envp,
             cwd,
-            script_depth + 1,
-            interpreter_file,
+            ExecutableLoadState {
+                script_depth: script_depth + 1,
+                executable_file: interpreter_file,
+                proc_carrier_authority,
+            },
         );
     }
 
@@ -1550,6 +1634,7 @@ fn load_executable(
         file_retirement: FileRetirement::default(),
         fd_entry_ids: std::collections::BTreeMap::new(),
         random_device_fds: std::collections::BTreeSet::new(),
+        loginuid_fds: std::collections::BTreeSet::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
         stderr_alias_fds: std::collections::BTreeSet::new(),
         cloexec_fds: std::collections::BTreeSet::new(),
@@ -1558,6 +1643,7 @@ fn load_executable(
         consumed_child_wait: None,
         proc_files: std::collections::BTreeMap::new(),
         synthetic_proc_nofollow_fds: std::collections::BTreeSet::new(),
+        proc_carrier_authority,
         regular_create_directory_policy: initialize_regular_create_directory_policy()?,
         proc_mounts: std::sync::Arc::new(crate::proc_mounts::ProcMountSnapshot::capture()?),
         fdinfo_files: std::collections::BTreeMap::new(),
@@ -2166,6 +2252,83 @@ mod tests {
         assert_ne!(first_execfn, second_execfn);
         assert_eq!(clock_tick_entries(&first.auxv), vec![(17, 100)]);
         assert_eq!(clock_tick_entries(&second.auxv), vec![(17, 100)]);
+    }
+
+    #[test]
+    fn proc_carrier_authority_is_fresh_per_root_and_shared_by_fork_exec_and_shebang() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let cwd = std::env::current_dir().unwrap();
+        let image = test_static_elf(&[0x90, 0x0f, 0x0b]);
+        let authority = crate::proc_carrier::ProcCarrierAuthority::new_for_tests().unwrap();
+
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let loaded = load_static_elf_with_authority(
+            &mut memory,
+            &image,
+            &["root"],
+            &[],
+            &cwd,
+            authority.clone(),
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&loaded.proc_carrier_authority, &authority));
+        let forked = loaded.try_clone_for_fork(2).unwrap();
+        assert!(Arc::ptr_eq(
+            &forked.proc_carrier_authority,
+            &loaded.proc_carrier_authority
+        ));
+
+        let mut replacement_memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let mut replacement = load_static_elf_with_authority(
+            &mut replacement_memory,
+            &image,
+            &["replacement"],
+            &[],
+            &cwd,
+            authority.clone(),
+        )
+        .unwrap();
+        replacement.inherit_process_state(loaded);
+        assert!(Arc::ptr_eq(&replacement.proc_carrier_authority, &authority));
+
+        let directory = std::env::temp_dir().join(format!(
+            "reverie-kvm-proc-carrier-shebang-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let interpreter = directory.join("interpreter");
+        std::fs::write(&interpreter, &image).unwrap();
+        std::fs::set_permissions(&interpreter, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = directory.join("script");
+        let script_image = format!("#!{}\n", interpreter.display()).into_bytes();
+        std::fs::write(&script, &script_image).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut script_memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let shebang = load_static_elf_with_authority(
+            &mut script_memory,
+            &script_image,
+            &[script.to_str().unwrap()],
+            &[],
+            &directory,
+            authority.clone(),
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&shebang.proc_carrier_authority, &authority));
+        std::fs::remove_dir_all(&directory).unwrap();
+
+        let mut independent_memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let independent =
+            load_static_elf(&mut independent_memory, &image, &["other"], &[], &cwd).unwrap();
+        assert!(!Arc::ptr_eq(
+            &independent.proc_carrier_authority,
+            &authority
+        ));
+        assert_ne!(
+            independent.proc_carrier_authority.public_id(),
+            authority.public_id()
+        );
     }
 
     #[test]

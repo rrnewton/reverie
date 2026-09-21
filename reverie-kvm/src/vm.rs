@@ -74,6 +74,7 @@ use crate::elf::TaskLifecycleTable;
 use crate::elf::initial_thread_name;
 use crate::elf::load_static_elf;
 use crate::elf::load_static_elf_file;
+use crate::elf::load_static_elf_with_authority;
 use crate::executor::CapturedOutput;
 #[cfg(test)]
 use crate::executor::ChildCompletion;
@@ -1912,7 +1913,14 @@ impl KvmBackend {
 
         let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
-        let mut loaded = load_static_elf(&mut self.memory, image, &argv, &envp, executor.cwd())?;
+        let mut loaded = load_static_elf_with_authority(
+            &mut self.memory,
+            image,
+            &argv,
+            &envp,
+            executor.cwd(),
+            executor.proc_carrier_authority(),
+        )?;
         let (executable_path, executable_file) = executable;
         loaded.executable_path = executable_file
             .as_ref()

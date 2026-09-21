@@ -294,10 +294,12 @@ rust_library(
     deps = [
         "fbsource//third-party/rust:futures",
         "fbsource//third-party/rust:goblin",
+        "fbsource//third-party/rust:hmac",
         "fbsource//third-party/rust:kvm-bindings",
         "fbsource//third-party/rust:kvm-ioctls",
         "fbsource//third-party/rust:libc",
         "fbsource//third-party/rust:perf-event-open-sys",
+        "fbsource//third-party/rust:sha2",
         "fbsource//third-party/rust:thiserror",
         ":reverie",
     ],

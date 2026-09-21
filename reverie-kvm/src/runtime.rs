@@ -2305,6 +2305,19 @@ fn tool_stack_bottom(tool_stack_top: u64) -> u64 {
 }
 
 fn expose_tool_scratch(memory: &GuestMemory, tool_stack_top: u64) -> Result<()> {
+    expose_tool_scratch_with_hook(memory, tool_stack_top, || {})
+}
+
+fn expose_tool_scratch_with_hook(
+    memory: &GuestMemory,
+    tool_stack_top: u64,
+    after_allocation_lock: impl FnOnce(),
+) -> Result<()> {
+    let owner = memory.clone();
+    // Serialize with recvmsg/recvmmsg's retained output admission: a CLONE_VM
+    // sibling must not expose this private range between preflight and copyout.
+    let _allocation = owner.allocation_guard();
+    after_allocation_lock();
     let reservation = memory.reserve_region(
         tool_stack_bottom(tool_stack_top),
         TOOL_STACK_SIZE,
@@ -2316,6 +2329,19 @@ fn expose_tool_scratch(memory: &GuestMemory, tool_stack_top: u64) -> Result<()> 
 }
 
 fn hide_tool_scratch(memory: &GuestMemory, tool_stack_top: u64) -> Result<()> {
+    hide_tool_scratch_with_hook(memory, tool_stack_top, || {})
+}
+
+fn hide_tool_scratch_with_hook(
+    memory: &GuestMemory,
+    tool_stack_top: u64,
+    after_allocation_lock: impl FnOnce(),
+) -> Result<()> {
+    let owner = memory.clone();
+    // Keep permission removal in the same allocation transaction domain as
+    // mmap/mprotect/munmap and receive copyout admission.
+    let _allocation = owner.allocation_guard();
+    after_allocation_lock();
     memory.unmap_user_range(tool_stack_bottom(tool_stack_top), TOOL_STACK_SIZE)
 }
 
@@ -6896,6 +6922,50 @@ mod tests {
         assert!(checked_out.load(Ordering::SeqCst));
         drop(guard);
         assert!(!checked_out.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn scratch_visibility_changes_serialize_with_allocation_transactions() {
+        fn assert_guarded_transition(memory: &GuestMemory, expose: bool) {
+            let worker_memory = memory.clone();
+            let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let after_lock = || {
+                    locked_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                };
+                if expose {
+                    expose_tool_scratch_with_hook(&worker_memory, TOOL_STACK_TOP, after_lock)
+                } else {
+                    hide_tool_scratch_with_hook(&worker_memory, TOOL_STACK_TOP, after_lock)
+                }
+            });
+            locked_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("scratch transition did not acquire allocation guard");
+            assert!(
+                matches!(
+                    memory.try_allocation_guard(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ),
+                "scratch transition did not retain the allocation guard",
+            );
+            assert_eq!(
+                memory.user_range_is_mapped(tool_stack_bottom(TOOL_STACK_TOP), TOOL_STACK_SIZE,),
+                !expose,
+            );
+            release_tx.send(()).unwrap();
+            worker.join().unwrap().unwrap();
+            assert_eq!(
+                memory.user_range_is_mapped(tool_stack_bottom(TOOL_STACK_TOP), TOOL_STACK_SIZE,),
+                expose,
+            );
+        }
+
+        let memory = GuestMemory::new(0, TOOL_STACK_TOP as usize).unwrap();
+        assert_guarded_transition(&memory, true);
+        assert_guarded_transition(&memory, false);
     }
 
     #[test]
