@@ -1,0 +1,19 @@
+:: Run1...
+:: Run2...
+:: Comparing captured verification logs...
+Logs contain 56903 | 56903 messages total
+Logs contain 56902 | 56902 detcore-specific messages
+Logs contain 56903 | 56903 INFO messages
+Logs contain 54193 | 54193 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (56903 | 56903 INFO messages compared).
+Logs contain 1 | 1 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-mcrefill-verify-3174621-1790002707339803842/run1_log_Xc7VF
+::   run 2: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-mcrefill-verify-3174621-1790002707339803842/run2_log_SDb4x
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Success: deterministic. Determinism verified.
+/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test: error while loading shared libraries: libaxon_common_if_control_plane_service-cpp2-clients.so: cannot open shared object file: No such file or directory

@@ -76,6 +76,51 @@ CONFIGS = {
             "64 MiB stderr kill cap before the target oracle."
         ),
     },
+    "cachelib": {
+        "record": "services/cachelib/event-tracker-test--4b6700e9a3a0/experiment.json",
+        "plan_commit": "97a24de87530df0a21743e4159263a314a3bf735",
+        "binary": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0bb5f293dc275764/cachelib/common/tests/__event-tracker-test__/event-tracker-test",
+        "binary_sha256": "0f5a542c22025ad80dfdb992e4a2befc3cfa367d827c434237baa7554e268066",
+        "binary_bytes": 10134232,
+        "display": "EventTrackerTest.NvmCacheWithEventTracker",
+        "seeds": [0],
+        "terminal_exhausted": False,
+        "pending_measurement": (
+            "Seeds 1-93 remain in the predeclared population, but further execution "
+            "is deferred after the selected native test exceeded 13 seconds and "
+            "formal seed 0 reached the 120-second outer timeout."
+        ),
+    },
+    "logstore": {
+        "record": "services/logdevice/log-store-test--589f359badef/experiment.json",
+        "plan_commit": "a37349f778ca3bf63044a8142e301465705e6b97",
+        "binary": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test",
+        "binary_sha256": "73282dba27129be8c390b39cb0ca07affc66287a1d6db1f5f38562e89ef80b6b",
+        "binary_bytes": 23180776,
+        "display": "LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries",
+        "seeds": [0],
+        "terminal_exhausted": False,
+        "pending_measurement": (
+            "Seeds 1-34 remain in the predeclared population, but further execution "
+            "is deferred because the exact native case emitted no marker within 13 "
+            "seconds and formal seed 0 failed in the loader before the target oracle."
+        ),
+    },
+    "mcrefill": {
+        "record": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/experiment.json",
+        "plan_commit": "a93e41964f084e0e96dd1198cb04de5bbaae4566",
+        "binary": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test",
+        "binary_sha256": "3eaa55b7765bee4a5dbf578a535e24438d757d76b0d3e0d8f0da5185ff29b369",
+        "binary_bytes": 12366336,
+        "display": "McRefillWrapperBucketized/0.refillOnMiss",
+        "seeds": [0],
+        "terminal_exhausted": False,
+        "pending_measurement": (
+            "Seeds 1-16 remain in the predeclared population, but further execution "
+            "is deferred because the exact native case emitted no marker within 25 "
+            "seconds and formal seed 0 failed in the loader before the target oracle."
+        ),
+    },
     "monitor": {
         "record": "services/proxygen/proxygen-transport-monitor-test--fcaf56433e7f/experiment.json",
         "plan_commit": "508c116d27b337db92e4b81a77876dc9c8b4f937",

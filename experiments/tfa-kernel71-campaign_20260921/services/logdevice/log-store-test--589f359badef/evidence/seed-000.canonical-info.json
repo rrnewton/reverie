@@ -1,0 +1,1 @@
+{"complete":true,"details":{"bitwise_parity":true,"comparison":"BitwiseInfoV1","relaxations":[],"verified":true},"execution_event_ids":["logstore-fuzz-000-replica-1","logstore-fuzz-000-replica-2"],"kind":"BUILTIN_VERIFY","matcher_id":"logstore-fuzz-000-matcher","same_failure_class":true,"same_target_outcome":true,"schema_version":1}

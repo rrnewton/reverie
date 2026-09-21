@@ -1,0 +1,19 @@
+:: Run1...
+:: Run2...
+:: Comparing captured verification logs...
+Logs contain 61698 | 61698 messages total
+Logs contain 61697 | 61697 detcore-specific messages
+Logs contain 61698 | 61698 INFO messages
+Logs contain 58666 | 58666 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (61698 | 61698 INFO messages compared).
+Logs contain 1 | 1 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987/run1_log_A6gHB
+::   run 2: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987/run2_log_N1HWb
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Success: deterministic. Determinism verified.
+/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test: error while loading shared libraries: libconfigerator_structs_warm_storage_thrift_ws_request_tag-cpp2-types.so: cannot open shared object file: No such file or directory
