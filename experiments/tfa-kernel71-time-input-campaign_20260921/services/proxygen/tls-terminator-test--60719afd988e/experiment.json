@@ -1,0 +1,300 @@
+{
+  "schema_version": 2,
+  "record_type": "TFA_TARGET_EXPERIMENT",
+  "contract": {
+    "commit": "9d7f603c43618715b9245c74acb3e164c17d2ae8",
+    "path": "ai_docs/tfa-acceptance-bracket-2026-09-17.md",
+    "blob": "4a53f0c25623ad6371ee86b4556adada1218745d"
+  },
+  "identity": {
+    "service": "proxygen",
+    "canonical_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+    "target_key_sha256": "60719afd988eee8c2db83c049a52f1d217db38984e103b124eea11f2cbce04f2",
+    "target_directory": "services/proxygen/tls-terminator-test--60719afd988e",
+    "testinfra_id": "281475238796418",
+    "test_name": "TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+    "source_label_qualifier": null,
+    "test_selector": {
+      "kind": "EXACT_FILTER",
+      "flag": "--exact",
+      "value": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test - TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect"
+    },
+    "build_mode_selector": [
+      "@fbcode//mode/opt"
+    ],
+    "invoked_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+    "standalone_argv": [
+      "buck",
+      "test",
+      "@fbcode//mode/opt",
+      "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+      "--",
+      "--exact",
+      "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test - TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+      "--run-disabled"
+    ],
+    "experiment_id": "proxygen/tls-terminator-test--60719afd988e",
+    "alias_resolution": {
+      "input_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+      "resolved_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+      "method": "pinned-cohort-target-and-existing-buck-output",
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "evidence": "The fixed cohort resolves this canonical target. Existing executable /home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test is 991876712 bytes with SHA-256 e7a5278312bb9daa6d38a9a03cc2001cd31f8c64a92791d92d5aa47c20f66566."
+    }
+  },
+  "candidate_ranking": {
+    "pfs": {
+      "value": 0.2344,
+      "displayed_percent": "23.44%",
+      "partition": "2026-09-17",
+      "metric": "probability_of_flaky_state",
+      "role": "ranking_only",
+      "may_parameterize_seed_budget": false
+    },
+    "native_failure_rate": {
+      "failures": 23,
+      "executed": 96,
+      "rate": 0.23958333333333334,
+      "rate_fraction": "23/96",
+      "displayed_percent": "23.96%",
+      "window": "trailing one week; latest up to 100 final outcomes",
+      "limit": 100,
+      "final_only": true,
+      "purposes": [
+        "CONTINUOUS",
+        "STRESS_RUN",
+        "STRESS_RUN_NEW_TEST"
+      ],
+      "pass_statuses": [
+        "PASSED"
+      ],
+      "failure_statuses": [
+        "FAILED",
+        "FATAL",
+        "TIMEOUT"
+      ],
+      "excluded_statuses": [
+        "OMITTED",
+        "SKIPPED",
+        "INFRA_FAILURE"
+      ],
+      "source": "meta testinfra.result history",
+      "role": "planning_prior_only"
+    }
+  },
+  "plan": {
+    "plan_id": "tls-kernel71-ptrace-strict-sched-now-v1",
+    "plan_sha256": "92b8e74e69199867373ec7152f6a84dd773e08d46e2bf8e3c6943488a7658205",
+    "sealed_at": "2026-09-21T18:54:35Z",
+    "sealed_by": "codex-tfa-kernel71-campaign",
+    "campaign_owner_identity": "rrnewton",
+    "authorized_routes": [
+      {
+        "route_id": "tls-kernel71-sched-now-existing-elf-v1",
+        "route_sha256": "b663dc76cf5354419aa558d9ffc0fea84d5918eb1acbbe612a8294a97ddcb267",
+        "fallback_of": null,
+        "authorized_cell_ids": [
+          "tls-kernel71-ptrace-strict-sched-now-v1"
+        ],
+        "canonical_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test - TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/opt"
+        ],
+        "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "build_argv": [
+          "buck",
+          "test",
+          "@fbcode//mode/opt",
+          "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+          "--",
+          "--exact",
+          "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test - TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+          "--run-disabled"
+        ],
+        "launch_argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T18:54:35Z",
+          "--clock-multiplier=1.0",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "{SWEEP}",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test",
+          "--gtest_filter=TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+          "--gtest_also_run_disabled_tests"
+        ],
+        "repeat_matcher": {
+          "kind": "BUILTIN_VERIFY",
+          "comparison": "BitwiseInfoV1"
+        },
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "notes": "PRE-RUN SEAL: one authorized cell tls-kernel71-ptrace-strict-sched-now-v1; Hermit revision 4630ee2a61f93221a43e2baec0a15f34102a2c61, binary SHA-256 5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; test ELF SHA-256 e7a5278312bb9daa6d38a9a03cc2001cd31f8c64a92791d92d5aa47c20f66566; host devbig030.atn3.facebook.com, kernel Linux 7.1.3-0_fbk0_0_g295ad0959f34, x86_64 AMD EPYC 9D85 158-Core Processor; PMU type 4/RCB available; explicit realistic epoch 2026-09-21T18:54:35Z; clock multiplier 1.0; no chaos-target-races, fuzz-futex, per-thread slowdown, or happens-before flags; target-timeslice unset; max-timeslice 200000000 virtual ns; only sched-seed varies over 0..15; seed/rng/fuzz roots 0; stdout is drained in constant memory, retained to 67108864 bytes, and the safehermit cgroup is SIGKILLed on first overflow; an overflow is always censored; BitwiseInfoV1 with no relaxations; verifier qgroup /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372; host-only SAFEHERMIT_LOG_ROOT=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit."
+      }
+    ],
+    "target_oracle": {
+      "oracle_id": "tls-selected-gtest-and-uncaught-exception-v2",
+      "defined_before_runs": true,
+      "unmodified": true,
+      "selected_test_executed_predicate": "stdout contains exactly one [ RUN      ] TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect; the exact gtest filter selects only this case, and any abnormal target verdict must additionally satisfy its class-specific selected assertion or TestBody-lambda source evidence.",
+      "pass_predicate": "stdout contains exactly one [       OK ] TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect, reports [  PASSED  ] 1 test., and the guest exits 0 without a signal.",
+      "fail_classes": [
+        {
+          "failure_class_id": "tls-selected-gtest-failure",
+          "target_owned": true,
+          "predicate": "After exactly one [ RUN      ] TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect, stdout contains exactly one matching [  FAILED  ] selected-test line and the one-failed-test summary; stdout or stderr contains a GoogleTest Failure block at TlsTerminatorTest.cpp line 153, 178, 179, 197, 226, 227, 228, 229, 232, 233, 234, 242, 245, 248, or 267; the guest exits 1 without a signal; exclude certificate verification/time, Hermit, wrapper, dependency, sanitizer, infrastructure, OOM, truncation, and outer-timeout failures."
+        },
+        {
+          "failure_class_id": "tls-selected-uncaught-async-socket-abort",
+          "target_owned": true,
+          "predicate": "After exactly one [ RUN      ] TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect and before any selected [ OK ] line, stderr contains the exact uncaught folly::AsyncSocketException termination marker and a selected TlsTerminatorTest_terminateTls_Test::TestBody lambda frame paired with TlsTerminatorTest.cpp:308 or :316; the guest terminates with the exact stderr Signal 6 (SIGABRT) marker and safehermit reports unit_result=core-dump, process_signal=6, exit_code=134. Explicitly exclude certificate verification, not-yet-valid, expired-certificate, Hermit, wrapper, dependency, sanitizer, infrastructure, OOM, truncation, and outer-timeout failures."
+        },
+        {
+          "failure_class_id": "tls-selected-uncaught-future-timeout-abort",
+          "target_owned": true,
+          "predicate": "After exactly one [ RUN      ] TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect and before any selected [ OK ] line, stderr contains the exact uncaught folly::FutureTimeout termination marker and a selected TlsTerminatorTest_terminateTls_Test::TestBody lambda frame paired with TlsTerminatorTest.cpp:308 or :316; the guest terminates with the exact stderr Signal 6 (SIGABRT) marker and safehermit reports unit_result=core-dump, process_signal=6, exit_code=134. Explicitly exclude certificate verification, not-yet-valid, expired-certificate, Hermit, wrapper, dependency, sanitizer, infrastructure, OOM, truncation, and outer-timeout failures."
+        }
+      ],
+      "timeout_policy": {
+        "target_timeout_can_fail": false,
+        "target_timeout_predicate": null,
+        "target_timeout_failure_class_id": null,
+        "outer_timeout_is_censored": true
+      }
+    },
+    "measurement_design": {
+      "purpose": "EXISTENCE_DISCOVERY",
+      "swept_coordinate": {
+        "flag": "--sched-seed",
+        "domain": "finite explicit scheduler seeds 0 through 15 inclusive",
+        "scheduler_modes": []
+      },
+      "fixed_seed_roots": {
+        "--seed": 0,
+        "--rng-seed": 0,
+        "--sched-seed": null,
+        "--fuzz-seed": 0
+      },
+      "seed_population": {
+        "kind": "EXPLICIT_VALUES",
+        "values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ]
+      },
+      "selection_order": {
+        "kind": "EXPLICIT",
+        "seed_values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ]
+      },
+      "without_replacement": true,
+      "design_basis": {
+        "kind": "FINITE_POPULATION",
+        "population_definition": "Sixteen ascending scheduler seeds fixed prospectively before any run; no observed TLS outcome influenced the population or order.",
+        "population_size": 16,
+        "selection_rule": "Attempt the explicit order without replacement; stop only after distinct seeds supply both repeated target arms, otherwise exhaust all sixteen."
+      },
+      "miss_probability_override": null,
+      "required_valid_seed_tuples": 16,
+      "max_attempted_seed_tuples": 16,
+      "stop_rule": "BOTH_ARMS_THEN_REPEAT",
+      "repeat_min_executions_per_arm": 2,
+      "repeat_attempt_cap": 2,
+      "independence_assumption": "No probabilistic independence claim is used; this is a finite, explicit, source-derived scheduler-seed population."
+    },
+    "resource_bounds": {
+      "wall_seconds": 120,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "stderr_bytes": 67108864,
+      "stdout_bytes": 67108864,
+      "retained_log_bytes": 67108864,
+      "disk_guard": "8G"
+    },
+    "artifact_policy": {
+      "scratch_root": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/tls-sched-now-input",
+      "terminal_evidence_must_be_durable": true,
+      "digest_algorithm": "sha256"
+    }
+  },
+  "plan_receipt": null,
+  "attempt_state": "PLANNED",
+  "cells": [],
+  "events": [],
+  "samples": [],
+  "matchers": [],
+  "outcome_history": [],
+  "current_outcome": null
+}

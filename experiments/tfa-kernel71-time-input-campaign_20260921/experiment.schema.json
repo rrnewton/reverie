@@ -204,6 +204,28 @@
             },
             "blob": {
               "$ref": "#/definitions/sha1"
+            },
+            "helper_blobs": {
+              "type": "array",
+              "minItems": 3,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "blob"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "blob": {
+                    "$ref": "#/definitions/sha1"
+                  }
+                }
+              }
             }
           }
         }
@@ -809,6 +831,10 @@
               "minimum": 0
             },
             "stderr_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "stdout_bytes": {
               "type": "integer",
               "minimum": 1
             },
