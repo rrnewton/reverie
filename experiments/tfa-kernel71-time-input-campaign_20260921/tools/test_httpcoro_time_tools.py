@@ -215,8 +215,19 @@ class BoundaryAuthenticationTest(unittest.TestCase):
         self.record = json.loads(RECORD.read_text())
 
     def test_sealed_prefix_starts_at_seven_and_cannot_skip(self) -> None:
-        self.assertEqual(next_seed(self.record), (0, 7))
-        material = copy.deepcopy(self.record)
+        pristine = copy.deepcopy(self.record)
+        pristine.update(
+            plan_receipt=None,
+            attempt_state="PLANNED",
+            cells=[],
+            events=[],
+            samples=[],
+            matchers=[],
+            outcome_history=[],
+            current_outcome=None,
+        )
+        self.assertEqual(next_seed(pristine), (0, 7))
+        material = copy.deepcopy(pristine)
         material.update(
             attempt_state="MATERIAL",
             samples=[
