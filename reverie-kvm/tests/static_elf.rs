@@ -2110,6 +2110,394 @@ int main(void) {
 "#;
 
 #[test]
+fn real_kvm_synthetic_proc_snapshot_is_immutable_and_opath_correct() {
+    assert!(kvm_available(
+        "real_kvm_synthetic_proc_snapshot_is_immutable_and_opath_correct"
+    ));
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "synthetic-proc-snapshot",
+        SYNTHETIC_PROC_SNAPSHOT_PROGRAM,
+    );
+    let native_open_errno = |path: &str, flags: libc::c_int| {
+        let path = std::ffi::CString::new(path).unwrap();
+        for _ in 0..16 {
+            // SAFETY: path is NUL-terminated and live for the call. Mode is
+            // supplied for every O_CREAT probe, and each success is closed.
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_openat,
+                    libc::AT_FDCWD,
+                    path.as_ptr(),
+                    flags | libc::O_CLOEXEC,
+                    0o600,
+                )
+            };
+            if result >= 0 {
+                // SAFETY: openat returned a new owned descriptor.
+                assert_eq!(unsafe { libc::close(result as libc::c_int) }, 0);
+                panic!("native policy probe unexpectedly opened {path:?}");
+            }
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap();
+            if errno != libc::EINTR {
+                return errno;
+            }
+        }
+        panic!("native policy probe exhausted EINTR retry bound for {path:?}");
+    };
+    let policy_error = native_open_errno(
+        "/proc/self/status",
+        libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
+    );
+    let create_directory = native_open_errno(
+        "/proc/uptime",
+        libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
+    );
+    assert_eq!(create_directory, policy_error);
+    let (expected_exclusive, expected_mounts_nofollow) = match policy_error {
+        libc::EINVAL => (libc::EINVAL, libc::EINVAL),
+        libc::ENOTDIR => (libc::EEXIST, libc::ELOOP),
+        errno => panic!("unsupported native create-directory policy errno {errno}"),
+    };
+    assert_eq!(
+        native_open_errno(
+            "/proc/self/status",
+            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
+        ),
+        expected_exclusive
+    );
+    assert_eq!(
+        native_open_errno(
+            "/proc/mounts",
+            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        ),
+        expected_mounts_nofollow
+    );
+    let create_directory = create_directory.to_string();
+    let expected_exclusive = expected_exclusive.to_string();
+    let expected_mounts_nofollow = expected_mounts_nofollow.to_string();
+    let (stdout, stderr) = run_host_program_captured(
+        executable.to_str().unwrap(),
+        &[
+            executable.to_str().unwrap(),
+            &create_directory,
+            &expected_exclusive,
+            &expected_mounts_nofollow,
+        ],
+        &directory.0,
+    );
+    assert_eq!(stdout, b"synthetic proc snapshot PASS\n");
+    assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+}
+
+const SYNTHETIC_PROC_SNAPSHOT_PROGRAM: &str = r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define CHECK(expression) do { \
+    if (!(expression)) { \
+        dprintf(STDERR_FILENO, "failure line=%d errno=%d\n", __LINE__, errno); \
+        return 93; \
+    } \
+} while (0)
+
+#define EXPECT_ERROR(expression, expected) do { \
+    errno = 0; \
+    long result = (long)(expression); \
+    CHECK(result == -1 && errno == (expected)); \
+} while (0)
+
+#define PRIVATE_TMPFILE (O_TMPFILE & ~O_DIRECTORY)
+
+static void *failed_mapping(int descriptor, int protection, int flags) {
+    errno = 0;
+    return mmap(NULL, 4096, protection, flags, descriptor, 0);
+}
+
+int main(int argc, char **argv) {
+    static const char expected[] = "0.00 0.00\n";
+    char actual[sizeof(expected)] = {0};
+    struct stat metadata;
+
+    CHECK(argc == 4);
+    int expected_create_directory = atoi(argv[1]);
+    int expected_create_directory_exclusive = atoi(argv[2]);
+    int expected_mounts_create_directory_nofollow = atoi(argv[3]);
+    CHECK(expected_create_directory > 0);
+    CHECK(expected_create_directory_exclusive > 0);
+    CHECK(expected_mounts_create_directory_nofollow > 0);
+
+    int descriptor = open("/proc/uptime", O_RDONLY | O_CLOEXEC);
+    CHECK(descriptor >= 0);
+    CHECK((fcntl(descriptor, F_GETFL) & O_ACCMODE) == O_RDONLY);
+    CHECK((fcntl(descriptor, F_GETFD) & FD_CLOEXEC) != 0);
+    CHECK(fstat(descriptor, &metadata) == 0);
+    CHECK(S_ISREG(metadata.st_mode));
+    CHECK((metadata.st_mode & 0777) == 0444);
+    CHECK(metadata.st_size == (off_t)(sizeof(expected) - 1));
+    CHECK(read(descriptor, actual, sizeof(actual)) == (ssize_t)(sizeof(expected) - 1));
+    CHECK(memcmp(actual, expected, sizeof(expected) - 1) == 0);
+
+    const char *bad_path = (const char *)(uintptr_t)-1;
+    EXPECT_ERROR(syscall(SYS_openat, AT_FDCWD, bad_path, O_RDONLY | O_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(syscall(SYS_openat, AT_FDCWD, bad_path, O_WRONLY | PRIVATE_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(syscall(SYS_openat, AT_FDCWD, bad_path, O_WRONLY | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(syscall(SYS_openat, AT_FDCWD, bad_path, O_RDWR | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(syscall(SYS_openat, AT_FDCWD, bad_path, O_ACCMODE | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(syscall(SYS_openat, AT_FDCWD, bad_path, O_WRONLY | O_TMPFILE, 0600), EFAULT);
+    EXPECT_ERROR(syscall(SYS_openat, AT_FDCWD, bad_path, O_ACCMODE | O_TMPFILE, 0600), EFAULT);
+    EXPECT_ERROR(syscall(SYS_openat, AT_FDCWD, bad_path, O_PATH | O_TMPFILE, 0600), EFAULT);
+    EXPECT_ERROR(syscall(SYS_openat, AT_FDCWD, bad_path, O_RDONLY | O_DIRECTORY, 0600), EFAULT);
+    EXPECT_ERROR(open("", O_RDONLY | O_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open("", O_WRONLY | PRIVATE_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open("", O_WRONLY | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open("", O_RDWR | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open("", O_ACCMODE | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open("", O_WRONLY | O_TMPFILE, 0600), ENOENT);
+    EXPECT_ERROR(open("", O_ACCMODE | O_TMPFILE, 0600), ENOENT);
+    EXPECT_ERROR(open("", O_PATH | O_TMPFILE, 0600), ENOENT);
+    EXPECT_ERROR(open("", O_RDONLY | O_DIRECTORY, 0600), ENOENT);
+    EXPECT_ERROR(openat(123456, "missing-open-precedence", O_RDONLY | O_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(openat(123456, "missing-open-precedence", O_WRONLY | PRIVATE_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(openat(123456, "missing-open-precedence", O_WRONLY | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(openat(123456, "missing-open-precedence", O_WRONLY | O_TMPFILE, 0600), EBADF);
+    EXPECT_ERROR(openat(123456, "missing-open-precedence", O_ACCMODE | O_TMPFILE, 0600), EBADF);
+    EXPECT_ERROR(openat(123456, "missing-open-precedence", O_PATH | O_TMPFILE, 0600), EBADF);
+    EXPECT_ERROR(openat(123456, "missing-open-precedence", O_RDONLY | O_DIRECTORY, 0600), EBADF);
+    EXPECT_ERROR(open("missing-open-precedence", O_RDONLY | O_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open("missing-open-precedence", O_WRONLY | PRIVATE_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open("missing-open-precedence", O_WRONLY | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open("missing-open-precedence", O_WRONLY | O_TMPFILE, 0600), ENOENT);
+    EXPECT_ERROR(open("missing-open-precedence", O_ACCMODE | O_TMPFILE, 0600), ENOENT);
+    EXPECT_ERROR(open("missing-open-precedence", O_PATH | O_TMPFILE, 0600), ENOENT);
+    EXPECT_ERROR(open("missing-open-precedence", O_RDONLY | O_DIRECTORY, 0600), ENOENT);
+    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_RDONLY | O_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_WRONLY | PRIVATE_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_WRONLY | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_WRONLY | O_TMPFILE, 0600), ENOENT);
+    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_ACCMODE | O_TMPFILE, 0600), ENOENT);
+    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_PATH | O_TMPFILE, 0600), ENOENT);
+    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_RDONLY | O_DIRECTORY, 0600), ENOENT);
+    EXPECT_ERROR(open("/proc/self/fd/999999", O_RDONLY | O_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/self/fd/999999", O_WRONLY | PRIVATE_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/self/fd/999999", O_WRONLY | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/self/fd/999999", O_WRONLY | O_TMPFILE, 0600), ENOENT);
+    EXPECT_ERROR(open("/proc/self/fd/999999", O_ACCMODE | O_TMPFILE, 0600), ENOENT);
+    EXPECT_ERROR(open("/proc/self/fd/999999", O_PATH | O_TMPFILE, 0600), ENOENT);
+    EXPECT_ERROR(open("/proc/self/fd/999999", O_RDONLY | O_DIRECTORY, 0600), ENOENT);
+
+    int early_create_directory = expected_create_directory == EINVAL;
+    EXPECT_ERROR(syscall(SYS_openat, AT_FDCWD, bad_path,
+                         O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
+                 early_create_directory ? EINVAL : EFAULT);
+    EXPECT_ERROR(open("", O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
+                 early_create_directory ? EINVAL : ENOENT);
+    EXPECT_ERROR(openat(123456, "missing-open-precedence",
+                        O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
+                 early_create_directory ? EINVAL : EBADF);
+    EXPECT_ERROR(open("missing-open-precedence",
+                      O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
+                 early_create_directory ? EINVAL : ENOENT);
+    EXPECT_ERROR(open("/proc/self/fdinfo/999999",
+                      O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
+                 early_create_directory ? EINVAL : ENOENT);
+    EXPECT_ERROR(open("/proc/self/fd/999999",
+                      O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
+                 early_create_directory ? EINVAL : ENOENT);
+
+    EXPECT_ERROR(write(descriptor, "x", 1), EBADF);
+    EXPECT_ERROR(syscall(SYS_pwrite64, descriptor, "x", 1, 0), ESPIPE);
+    int cmdline = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC);
+    CHECK(cmdline >= 0);
+    EXPECT_ERROR(syscall(SYS_pwrite64, cmdline, "x", 1, 0), EBADF);
+    EXPECT_ERROR(syscall(SYS_pwrite64, cmdline, "x", 0, (off_t)-1), EINVAL);
+    CHECK(close(cmdline) == 0);
+    EXPECT_ERROR(ftruncate(descriptor, 0), EINVAL);
+    EXPECT_ERROR(syscall(SYS_fallocate, descriptor, 0, 0, 1), EBADF);
+    EXPECT_ERROR(fchmod(descriptor, 0666), EPERM);
+    CHECK(fstat(descriptor, &metadata) == 0);
+    CHECK((metadata.st_mode & 0777) == 0444);
+
+    void *mapping = failed_mapping(
+        descriptor,
+        PROT_READ | PROT_WRITE,
+        MAP_SHARED
+    );
+    CHECK(mapping == MAP_FAILED && errno == EACCES);
+
+    char procfd[64];
+    CHECK(snprintf(procfd, sizeof(procfd), "/proc/self/fd/%d", descriptor) > 0);
+    char unsupported_fdinfo[64];
+    CHECK(snprintf(unsupported_fdinfo, sizeof(unsupported_fdinfo),
+                   "/proc/self/fdinfo/%d", descriptor) > 0);
+    CHECK(stat(unsupported_fdinfo, &metadata) == 0);
+    CHECK(S_ISREG(metadata.st_mode));
+    EXPECT_ERROR(open(unsupported_fdinfo, O_RDONLY), ENOSYS);
+    EXPECT_ERROR(open(unsupported_fdinfo, O_RDONLY | O_DIRECTORY), ENOTDIR);
+    EXPECT_ERROR(open(unsupported_fdinfo, O_WRONLY | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open(unsupported_fdinfo, O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
+                 expected_create_directory);
+    EXPECT_ERROR(open(unsupported_fdinfo,
+                      O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY, 0600),
+                 expected_create_directory_exclusive);
+    EXPECT_ERROR(open(procfd, O_WRONLY), EACCES);
+    EXPECT_ERROR(open(procfd, O_RDWR), EACCES);
+    EXPECT_ERROR(open(procfd, O_RDONLY | O_TRUNC), EACCES);
+    EXPECT_ERROR(open(procfd, O_RDONLY | O_DIRECT), EINVAL);
+    EXPECT_ERROR(open(procfd, O_RDONLY | O_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open(procfd, O_WRONLY | PRIVATE_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open(procfd, O_WRONLY | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open(procfd, O_RDWR | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open(procfd, O_ACCMODE | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open(procfd, O_WRONLY | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open(procfd, O_RDWR | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open(procfd, O_ACCMODE | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open(procfd, O_PATH | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open(procfd, O_RDONLY | O_DIRECTORY), ENOTDIR);
+    EXPECT_ERROR(open(procfd, O_PATH | O_DIRECTORY), ENOTDIR);
+    EXPECT_ERROR(open(procfd, O_PATH | O_NOFOLLOW), ELOOP);
+    EXPECT_ERROR(open(procfd, O_RDONLY | O_DIRECTORY | O_NOFOLLOW), ENOTDIR);
+    EXPECT_ERROR(open(procfd, O_PATH | O_DIRECTORY | O_NOFOLLOW), ENOTDIR);
+    EXPECT_ERROR(open(procfd, O_WRONLY | O_NOFOLLOW), ELOOP);
+    EXPECT_ERROR(open(procfd, O_RDONLY | O_TRUNC | O_NOFOLLOW), ELOOP);
+    EXPECT_ERROR(open(procfd, O_RDONLY | O_DIRECT | O_NOFOLLOW), ELOOP);
+    EXPECT_ERROR(open(procfd, O_WRONLY | O_CREAT | O_EXCL, 0600), EEXIST);
+    EXPECT_ERROR(open(procfd, O_RDONLY | O_CREAT | O_EXCL | O_TRUNC, 0600), EEXIST);
+    EXPECT_ERROR(open(procfd, O_WRONLY | O_CREAT | O_EXCL | O_DIRECT | O_NOFOLLOW, 0600), EEXIST);
+    EXPECT_ERROR(open(procfd, O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
+                 expected_create_directory);
+    EXPECT_ERROR(open(procfd, O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY, 0600),
+                 expected_create_directory_exclusive);
+    int procfd_path = open(procfd, O_PATH | O_WRONLY | O_CREAT | O_EXCL | O_TRUNC | O_DIRECT, 0600);
+    CHECK(procfd_path >= 0 && (fcntl(procfd_path, F_GETFL) & O_PATH) != 0);
+    CHECK(close(procfd_path) == 0);
+    EXPECT_ERROR(open(procfd, O_PATH | O_CREAT | O_EXCL | O_NOFOLLOW, 0600), ELOOP);
+    int reopened = open(procfd, O_RDONLY | O_NONBLOCK | O_APPEND | O_SYNC);
+    CHECK(reopened >= 0);
+    CHECK((fcntl(reopened, F_GETFL) & (O_NONBLOCK | O_APPEND | O_SYNC)) ==
+          (O_NONBLOCK | O_APPEND | O_SYNC));
+    CHECK(close(reopened) == 0);
+
+    int ordinary = open("fdinfo-target", O_CREAT | O_RDWR | O_TRUNC, 0600);
+    CHECK(ordinary >= 0);
+    char fdinfo[64];
+    CHECK(snprintf(fdinfo, sizeof(fdinfo), "/proc/self/fdinfo/%d", ordinary) > 0);
+    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_TMPFILE | O_NOFOLLOW, 0600), EINVAL);
+    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_TMPFILE | O_TRUNC, 0600), EINVAL);
+    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_TMPFILE | O_DIRECT, 0600), EINVAL);
+    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_TMPFILE | O_EXCL, 0600), EINVAL);
+    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_TMPFILE | O_NOFOLLOW | O_TRUNC | O_DIRECT | O_EXCL, 0600), EINVAL);
+    EXPECT_ERROR(open(fdinfo, O_WRONLY | PRIVATE_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open(fdinfo, O_WRONLY | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open(fdinfo, O_RDWR | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open(fdinfo, O_ACCMODE | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open(fdinfo, O_WRONLY | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open(fdinfo, O_RDWR | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open(fdinfo, O_ACCMODE | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open(fdinfo, O_PATH | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open(fdinfo, O_PATH | O_TMPFILE | O_NOFOLLOW | O_TRUNC | O_DIRECT | O_EXCL, 0600), ENOTDIR);
+    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_DIRECTORY), ENOTDIR);
+    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
+                 expected_create_directory);
+    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY, 0600),
+                 expected_create_directory_exclusive);
+    CHECK(close(ordinary) == 0);
+    CHECK(unlink("fdinfo-target") == 0);
+
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_DIRECTORY), ENOTDIR);
+    EXPECT_ERROR(open("/proc/uptime", O_PATH | O_DIRECTORY), ENOTDIR);
+    EXPECT_ERROR(open("/proc/uptime", O_WRONLY), EACCES);
+    EXPECT_ERROR(open("/proc/uptime", O_RDWR), EACCES);
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_TRUNC), EACCES);
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_DIRECT), EINVAL);
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_CREAT | O_EXCL, 0600), EEXIST);
+    EXPECT_ERROR(open("/proc/uptime", O_WRONLY | O_CREAT | O_EXCL, 0600), EEXIST);
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_CREAT | O_EXCL | O_TRUNC, 0600), EEXIST);
+    EXPECT_ERROR(open("/proc/uptime", O_WRONLY | O_CREAT | O_EXCL | O_DIRECT | O_NOFOLLOW, 0600), EEXIST);
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
+                 expected_create_directory);
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY, 0600),
+                 expected_create_directory_exclusive);
+    EXPECT_ERROR(open("/proc/mounts", O_RDONLY | O_CREAT | O_DIRECTORY | O_NOFOLLOW, 0600),
+                 expected_mounts_create_directory_nofollow);
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_TMPFILE | O_NOFOLLOW, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_TMPFILE | O_TRUNC, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_TMPFILE | O_DIRECT, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_TMPFILE | O_EXCL, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_TMPFILE | O_NOFOLLOW | O_TRUNC | O_DIRECT | O_EXCL, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/uptime", O_WRONLY | PRIVATE_TMPFILE, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/uptime", O_WRONLY | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/uptime", O_RDWR | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/uptime", O_ACCMODE | O_TMPFILE | O_CREAT, 0600), EINVAL);
+    EXPECT_ERROR(open("/proc/uptime", O_WRONLY | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open("/proc/uptime", O_RDWR | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open("/proc/uptime", O_ACCMODE | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open("/proc/uptime", O_PATH | O_TMPFILE, 0600), ENOTDIR);
+    EXPECT_ERROR(open("/proc/uptime", O_PATH | O_TMPFILE | O_NOFOLLOW | O_TRUNC | O_DIRECT | O_EXCL, 0600), ENOTDIR);
+    int ignored_create = open("/proc/uptime", O_PATH | O_CREAT | O_EXCL, 0600);
+    CHECK(ignored_create >= 0 && (fcntl(ignored_create, F_GETFL) & O_PATH) != 0);
+    CHECK(close(ignored_create) == 0);
+    int regular_nofollow = open("/proc/uptime", O_RDONLY | O_NOFOLLOW);
+    CHECK(regular_nofollow >= 0);
+    CHECK((fcntl(regular_nofollow, F_GETFL) & O_NOFOLLOW) != 0);
+    CHECK(close(regular_nofollow) == 0);
+
+    EXPECT_ERROR(open("/proc/mounts", O_RDONLY | O_NOFOLLOW), ELOOP);
+    EXPECT_ERROR(open("/proc/mounts", O_WRONLY | O_NOFOLLOW), ELOOP);
+    EXPECT_ERROR(open("/proc/mounts", O_RDONLY | O_TRUNC | O_NOFOLLOW), ELOOP);
+    EXPECT_ERROR(open("/proc/mounts", O_RDONLY | O_DIRECT | O_NOFOLLOW), ELOOP);
+    EXPECT_ERROR(open("/proc/mounts", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600), EEXIST);
+    EXPECT_ERROR(open("/proc/mounts", O_RDONLY | O_DIRECTORY | O_NOFOLLOW), ENOTDIR);
+    EXPECT_ERROR(open("/proc/mounts", O_PATH | O_DIRECTORY | O_NOFOLLOW), ENOTDIR);
+    int status = open("/proc/uptime", O_RDONLY | O_NONBLOCK | O_APPEND | O_SYNC);
+    CHECK(status >= 0);
+    CHECK((fcntl(status, F_GETFL) & (O_NONBLOCK | O_APPEND | O_SYNC)) ==
+          (O_NONBLOCK | O_APPEND | O_SYNC));
+    CHECK(close(status) == 0);
+
+    int path = open(
+        "/proc/uptime",
+        O_PATH | O_CLOEXEC | O_TRUNC | O_DIRECT | O_APPEND | O_SYNC | O_NONBLOCK
+    );
+    CHECK(path >= 0);
+    CHECK((fcntl(path, F_GETFL) & O_PATH) != 0);
+    CHECK((fcntl(path, F_GETFL) & (O_TRUNC | O_DIRECT | O_APPEND | O_SYNC | O_NONBLOCK)) == 0);
+    CHECK((fcntl(path, F_GETFD) & FD_CLOEXEC) != 0);
+    EXPECT_ERROR(read(path, actual, 1), EBADF);
+    EXPECT_ERROR(syscall(SYS_pwrite64, path, "x", 1, 0), EBADF);
+    EXPECT_ERROR(syscall(SYS_pwrite64, path, "x", 0, (off_t)-1), EINVAL);
+    EXPECT_ERROR(ftruncate(path, 0), EBADF);
+    EXPECT_ERROR(ftruncate(path, -1), EINVAL);
+    EXPECT_ERROR(fchmod(path, 0666), EBADF);
+    mapping = failed_mapping(path, PROT_READ, MAP_PRIVATE);
+    CHECK(mapping == MAP_FAILED && errno == EBADF);
+
+    int nofollow = open("/proc/uptime", O_PATH | O_NOFOLLOW);
+    CHECK(nofollow >= 0);
+    CHECK((fcntl(nofollow, F_GETFL) & (O_PATH | O_NOFOLLOW)) == (O_PATH | O_NOFOLLOW));
+    CHECK(fstat(nofollow, &metadata) == 0 && S_ISREG(metadata.st_mode));
+
+    CHECK(close(nofollow) == 0);
+    CHECK(close(path) == 0);
+    CHECK(close(descriptor) == 0);
+    CHECK(write(STDOUT_FILENO, "synthetic proc snapshot PASS\n", 29) == 29);
+    return 0;
+}
+"#;
+
+#[test]
 fn proc_root_original_mutation_vectors_match_native() {
     assert!(kvm_available(
         "proc_root_original_mutation_vectors_match_native"

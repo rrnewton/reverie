@@ -6,16 +6,20 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::ffi::CStr;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
+use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
@@ -61,6 +65,115 @@ pub(crate) const GUEST_CAPABILITY_MASK: u64 = (1_u64 << 41) - 1;
 /// relocated interpreter base. Only applies when the main image would overrun
 /// the historical fixed [`INTERPRETER_LOAD_BIAS`]; small PIEs are unaffected.
 const INTERPRETER_MIN_BRK_HEADROOM: u64 = 4 * 1024 * 1024;
+const PROC_SUPER_MAGIC: libc::c_long = 0x9fa0;
+const POLICY_OPEN_EINTR_ATTEMPTS: usize = 16;
+
+/// Host behavior around Linux commit 43b450632676fb60e9faeddff285d9fac94a4f58,
+/// which moved invalid O_CREAT|O_DIRECTORY admission ahead of path lookup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RegularCreateDirectoryPolicy {
+    EarlyEinval,
+    LegacyLookup,
+}
+
+static REGULAR_CREATE_DIRECTORY_POLICY: OnceLock<
+    std::result::Result<RegularCreateDirectoryPolicy, String>,
+> = OnceLock::new();
+
+fn raw_openat_with_bounded_eintr(
+    path: &CStr,
+    flags: libc::c_int,
+) -> std::result::Result<RawFd, libc::c_int> {
+    for _ in 0..POLICY_OPEN_EINTR_ATTEMPTS {
+        // SAFETY: path is NUL-terminated and live for the call. A zero mode is
+        // valid, and the verified existing path cannot be created by the probe.
+        let result =
+            unsafe { libc::syscall(libc::SYS_openat, libc::AT_FDCWD, path.as_ptr(), flags, 0) };
+        if result >= 0 {
+            return Ok(result as RawFd);
+        }
+        let errno = std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::EIO);
+        if errno != libc::EINTR {
+            return Err(errno);
+        }
+    }
+    Err(libc::EINTR)
+}
+
+fn probe_regular_create_directory_policy()
+-> std::result::Result<RegularCreateDirectoryPolicy, String> {
+    let path = c"/proc/self/status";
+    let verification_fd = raw_openat_with_bounded_eintr(path, libc::O_PATH | libc::O_CLOEXEC)
+        .map_err(|errno| format!("cannot verify /proc/self/status: errno {errno}"))?;
+    // SAFETY: the raw open returned a new owned descriptor.
+    let verification = unsafe { File::from_raw_fd(verification_fd) };
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: metadata is writable and verification remains live.
+    if unsafe { libc::fstat(verification.as_raw_fd(), metadata.as_mut_ptr()) } != 0 {
+        return Err(format!(
+            "cannot stat /proc/self/status: errno {}",
+            std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO)
+        ));
+    }
+    // SAFETY: fstat initialized metadata on success.
+    let metadata = unsafe { metadata.assume_init() };
+    if metadata.st_mode & libc::S_IFMT != libc::S_IFREG {
+        return Err(format!(
+            "/proc/self/status is not regular: mode {:#o}",
+            metadata.st_mode
+        ));
+    }
+    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+    // SAFETY: filesystem is writable and verification remains live.
+    if unsafe { libc::fstatfs(verification.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
+        return Err(format!(
+            "cannot statfs /proc/self/status: errno {}",
+            std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO)
+        ));
+    }
+    // SAFETY: fstatfs initialized filesystem on success.
+    let filesystem = unsafe { filesystem.assume_init() };
+    if filesystem.f_type as libc::c_long != PROC_SUPER_MAGIC {
+        return Err(format!(
+            "/proc/self/status is not on procfs: f_type {:#x}",
+            filesystem.f_type
+        ));
+    }
+    drop(verification);
+
+    let flags = libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_CLOEXEC;
+    match raw_openat_with_bounded_eintr(path, flags) {
+        Err(libc::EINVAL) => Ok(RegularCreateDirectoryPolicy::EarlyEinval),
+        Err(libc::ENOTDIR) => Ok(RegularCreateDirectoryPolicy::LegacyLookup),
+        Err(errno) => Err(format!(
+            "unsupported O_CREAT|O_DIRECTORY result for /proc/self/status: errno {errno}"
+        )),
+        Ok(fd) => {
+            // SAFETY: the policy probe unexpectedly returned a new descriptor;
+            // close it before failing initialization.
+            let close_result = unsafe { libc::close(fd) };
+            Err(format!(
+                "O_CREAT|O_DIRECTORY unexpectedly opened /proc/self/status (close={close_result})"
+            ))
+        }
+    }
+}
+
+pub(crate) fn initialize_regular_create_directory_policy() -> Result<RegularCreateDirectoryPolicy> {
+    match REGULAR_CREATE_DIRECTORY_POLICY.get_or_init(probe_regular_create_directory_policy) {
+        Ok(policy) => Ok(*policy),
+        Err(error) => Err(Error::HostIo(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!("cannot establish O_CREAT|O_DIRECTORY host policy: {error}"),
+        ))),
+    }
+}
 
 const AT_NULL: u64 = 0;
 const AT_PHDR: u64 = 3;
@@ -734,6 +847,13 @@ pub(crate) struct LoadedStaticElf {
     // this side table only marks which fds must report stable, synthesized
     // metadata instead of the memfd's per-run inode.
     pub proc_files: std::collections::BTreeMap<i32, u64>,
+    /// Synthetic proc descriptions opened with O_NOFOLLOW. The private carrier
+    /// must be opened through a followed supervisor proc-fd link, so retain
+    /// this guest-visible status bit independently of the host OFD.
+    pub synthetic_proc_nofollow_fds: std::collections::BTreeSet<i32>,
+    /// Host-kernel ordering for O_CREAT|O_DIRECTORY on an existing regular
+    /// procfs entry, established before this image can execute.
+    pub regular_create_directory_policy: RegularCreateDirectoryPolicy,
     pub proc_mounts: std::sync::Arc<crate::proc_mounts::ProcMountSnapshot>,
     pub fdinfo_files:
         std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::FdinfoDescription>>,
@@ -879,6 +999,8 @@ impl LoadedStaticElf {
             children: std::collections::BTreeMap::new(),
             consumed_child_wait: None,
             proc_files: self.proc_files.clone(),
+            synthetic_proc_nofollow_fds: self.synthetic_proc_nofollow_fds.clone(),
+            regular_create_directory_policy: self.regular_create_directory_policy,
             proc_mounts: self.proc_mounts.clone(),
             fdinfo_files: self.fdinfo_files.clone(),
             fdinfo_table: self.fdinfo_table.clone(),
@@ -901,6 +1023,7 @@ impl LoadedStaticElf {
     pub(crate) fn inherit_process_state_locked(&mut self, previous: Self) -> Vec<std::fs::File> {
         let thp_disabled =
             std::sync::Arc::new(AtomicU8::new(previous.thp_disabled.load(Ordering::SeqCst)));
+        let regular_create_directory_policy = previous.regular_create_directory_policy;
         let cloexec_fds = previous.cloexec_fds;
         let mut retired = Vec::new();
         previous
@@ -944,6 +1067,11 @@ impl LoadedStaticElf {
             .proc_files
             .into_iter()
             .filter(|(fd, _)| files.contains_key(fd))
+            .collect();
+        let synthetic_proc_nofollow_fds = previous
+            .synthetic_proc_nofollow_fds
+            .into_iter()
+            .filter(|fd| files.contains_key(fd))
             .collect();
         let fdinfo_files = previous
             .fdinfo_files
@@ -1049,6 +1177,8 @@ impl LoadedStaticElf {
         self.closed_standard_fds = closed_standard_fds;
         self.children = previous.children;
         self.proc_files = proc_files;
+        self.synthetic_proc_nofollow_fds = synthetic_proc_nofollow_fds;
+        self.regular_create_directory_policy = regular_create_directory_policy;
         self.proc_mounts = previous.proc_mounts;
         self.fdinfo_files = fdinfo_files;
         self.fdinfo_table = previous.fdinfo_table;
@@ -1067,6 +1197,7 @@ pub(crate) fn load_static_elf(
     envp: &[&str],
     cwd: &Path,
 ) -> Result<LoadedStaticElf> {
+    initialize_regular_create_directory_policy()?;
     // TODO-HUMAN-REVIEW(PR-132): Review ELF user-map construction.
     let owner = memory.clone();
     let _transaction = owner.allocation_guard();
@@ -1085,6 +1216,7 @@ pub(crate) fn load_static_elf_file(
     envp: &[&str],
     cwd: &Path,
 ) -> Result<LoadedStaticElf> {
+    initialize_regular_create_directory_policy()?;
     let image = read_file_image(&file)?;
     let invoked_path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
     let owner = memory.clone();
@@ -1425,6 +1557,8 @@ fn load_executable(
         children: std::collections::BTreeMap::new(),
         consumed_child_wait: None,
         proc_files: std::collections::BTreeMap::new(),
+        synthetic_proc_nofollow_fds: std::collections::BTreeSet::new(),
+        regular_create_directory_policy: initialize_regular_create_directory_policy()?,
         proc_mounts: std::sync::Arc::new(crate::proc_mounts::ProcMountSnapshot::capture()?),
         fdinfo_files: std::collections::BTreeMap::new(),
         fdinfo_table: std::sync::Weak::new(),
