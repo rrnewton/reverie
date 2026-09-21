@@ -5553,6 +5553,59 @@ fn static_elf_executes_syscall_and_exits() {
 }
 
 #[test]
+fn static_elf_host_futex_wait_observes_finite_timeout() {
+    if !kvm_available("KVM host futex timeout test") {
+        return;
+    }
+
+    let mut code = Vec::new();
+    code.extend_from_slice(&[0x48, 0xbf]); // movabs rdi, word
+    let word_operand = code.len();
+    code.extend_from_slice(&0_u64.to_le_bytes());
+    code.push(0xbe); // mov esi, FUTEX_WAIT | FUTEX_PRIVATE_FLAG
+    code.extend_from_slice(&(libc::FUTEX_WAIT | libc::FUTEX_PRIVATE_FLAG).to_le_bytes());
+    code.extend_from_slice(&[0x31, 0xd2]); // xor edx, edx: expected word value
+    code.extend_from_slice(&[0x49, 0xba]); // movabs r10, timeout
+    let timeout_operand = code.len();
+    code.extend_from_slice(&0_u64.to_le_bytes());
+    code.extend_from_slice(&[0x45, 0x31, 0xc0]); // xor r8d, r8d
+    code.extend_from_slice(&[0x45, 0x31, 0xc9]); // xor r9d, r9d
+    code.push(0xb8); // mov eax, SYS_futex
+    code.extend_from_slice(&(libc::SYS_futex as u32).to_le_bytes());
+    code.extend_from_slice(&[0x0f, 0x05]); // syscall
+    code.extend_from_slice(&[0x31, 0xff]); // xor edi, edi: success exit status
+    code.extend_from_slice(&[0x48, 0x3d]); // cmp rax, -ETIMEDOUT
+    code.extend_from_slice(&(-libc::ETIMEDOUT).to_le_bytes());
+    code.extend_from_slice(&[0x40, 0x0f, 0x95, 0xc7]); // setne dil: failure status 1
+    code.push(0xb8); // mov eax, SYS_exit_group
+    code.extend_from_slice(&(libc::SYS_exit_group as u32).to_le_bytes());
+    code.extend_from_slice(&[0x0f, 0x05, 0x0f, 0x0b]); // syscall; ud2
+
+    while !code.len().is_multiple_of(8) {
+        code.push(0);
+    }
+    let word_address = LOAD_ADDRESS + code.len() as u64;
+    code.extend_from_slice(&0_u32.to_le_bytes());
+    while !code.len().is_multiple_of(8) {
+        code.push(0);
+    }
+    let timeout_address = LOAD_ADDRESS + code.len() as u64;
+    code.extend_from_slice(&0_i64.to_le_bytes());
+    code.extend_from_slice(&10_000_000_i64.to_le_bytes());
+    code[word_operand..word_operand + 8].copy_from_slice(&word_address.to_le_bytes());
+    code[timeout_operand..timeout_operand + 8].copy_from_slice(&timeout_address.to_le_bytes());
+
+    // Direct KvmBackend execution owns the futex syscall in ElfExecutor. The
+    // zero word matches the expected value, there is no waker, and the guest
+    // reports success only after the copied 10 ms timeout returns ETIMEDOUT.
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(&static_elf(&code), "/bin/futex-timeout")
+        .unwrap();
+    assert_eq!(backend.run_static_elf().unwrap(), 0);
+}
+
+#[test]
 fn static_elf_tool_capture_preserves_configured_stdin() {
     if !kvm_available("KVM captured stdin test") {
         return;
