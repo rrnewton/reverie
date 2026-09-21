@@ -22,7 +22,7 @@ The current gate requires all of:
 | LogStore Health | one `SIGSEGV` at 4.56 s; traced run PASS at 2.673 s | 657 TIDs, 656 clones, 16,739 futexes, 493 eventfds, 475 epoll instances | Reject: ptrace fanout; formal seed 0 stopped before the oracle in a two-thread scheduler deadlock followed by an internal container failure |
 | Shadow thread affinity | PASS, 8.641 s test / 11.22 s wall | 338 TIDs; bounded strace timed out at 30 s after 337 clones and 24,797 futexes | Reject: native wall and ptrace fanout |
 | Thrift coroutine | PASS, 1.619 s test / 2.61 s wall | 331 TIDs, 330 clones, 5,210 futexes, 321 eventfds | Reject: ptrace fanout |
-| Thrift instrumentation | PASS, 909 ms test / 1.51 s wall | 331 TIDs, 330 clones, 4,296 futexes, 321 eventfds | Reject: ptrace fanout |
+| Thrift instrumentation | Unrestricted PASS, 909 ms test / 1.51 s wall; CPU-0 recapture: strace PASS in 0.70 s, then three PASS at 0.55–0.59 s and exact line-836 size-2 FAIL/SIGABRT at 1.57 s | Unrestricted 331 TIDs; CPU-0 recapture 16 TIDs, 15 clones, 307 futexes, 6 eventfds, 4 epoll instances | Promote: genuinely multithreaded callback/baton snapshot race with bounded fanout in the qualifying topology |
 | McRefill | no GoogleTest marker by 25 s | no qualifying profile | Reject: native runtime; formal seed 0 also failed in the loader |
 | Cachelib EventTracker | entered selected case, no completion by 13 s | no qualifying profile | Reject: native runtime; formal seed 0 reached 120-second outer timeout |
 | LogStore conditional-write retry | no GoogleTest marker by 13 s | no qualifying profile | Reject: native runtime; formal seed 0 also failed in the loader |
@@ -44,7 +44,7 @@ requires the cohort's AArch64 MTR route; DRocksDB previously filled a 1 GiB
 retained log while deadlocked; and the remaining Thrift resource-pool case uses
 the same high-fanout server scaffold.
 
-No new formal cell is sealed from this screen. Continuing requires a new
-candidate that meets the gate or an explicit change to the current
-runtime/thread-footprint priority; diagnostic screens cannot be retrofitted as
-formal evidence.
+The CPU-0 Thrift instrumentation profile meets the gate and is recorded in the
+target-owned native-profile note. Its separate schema-v2 record seals a new
+formal cell prospectively. None of these diagnostic executions is retrofitted
+as formal evidence.
