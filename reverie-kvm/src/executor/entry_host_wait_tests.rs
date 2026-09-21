@@ -176,6 +176,121 @@ fn queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes() 
 }
 
 #[test]
+fn futex_allow_lists_every_supported_command_and_clock_combination() {
+    const WORD: u64 = 0x1_0000;
+    let memory = GuestMemory::new(WORD, PAGE_SIZE as usize).unwrap();
+    memory.enable_user_access();
+
+    let allowed = [
+        ("FUTEX_WAIT", libc::FUTEX_WAIT),
+        ("FUTEX_WAKE", libc::FUTEX_WAKE),
+        ("FUTEX_REQUEUE", libc::FUTEX_REQUEUE),
+        ("FUTEX_CMP_REQUEUE", libc::FUTEX_CMP_REQUEUE),
+        ("FUTEX_WAKE_OP", libc::FUTEX_WAKE_OP),
+        ("FUTEX_LOCK_PI", libc::FUTEX_LOCK_PI),
+        ("FUTEX_UNLOCK_PI", libc::FUTEX_UNLOCK_PI),
+        ("FUTEX_TRYLOCK_PI", libc::FUTEX_TRYLOCK_PI),
+        ("FUTEX_WAIT_BITSET", libc::FUTEX_WAIT_BITSET),
+        ("FUTEX_WAKE_BITSET", libc::FUTEX_WAKE_BITSET),
+        ("FUTEX_WAIT_REQUEUE_PI", libc::FUTEX_WAIT_REQUEUE_PI),
+        ("FUTEX_CMP_REQUEUE_PI", libc::FUTEX_CMP_REQUEUE_PI),
+        ("FUTEX_LOCK_PI2", libc::FUTEX_LOCK_PI2),
+        (
+            "FUTEX_WAIT_BITSET|FUTEX_CLOCK_REALTIME",
+            libc::FUTEX_WAIT_BITSET | libc::FUTEX_CLOCK_REALTIME,
+        ),
+        (
+            "FUTEX_WAIT_REQUEUE_PI|FUTEX_CLOCK_REALTIME",
+            libc::FUTEX_WAIT_REQUEUE_PI | libc::FUTEX_CLOCK_REALTIME,
+        ),
+        (
+            "FUTEX_LOCK_PI2|FUTEX_CLOCK_REALTIME",
+            libc::FUTEX_LOCK_PI2 | libc::FUTEX_CLOCK_REALTIME,
+        ),
+    ];
+
+    // Every admitted operation must pass both local deny-by-default gates.
+    // The aligned but unmapped primary word then supplies one common, bounded
+    // oracle: EFAULT proves the adapter did not reject the operation as ENOSYS.
+    for (name, operation) in allowed {
+        assert_eq!(
+            futex(&memory, &[WORD, operation as u64, 0, 0, 0, 0]),
+            negative_errno(libc::EFAULT),
+            "{name} did not pass the futex allow lists"
+        );
+    }
+}
+
+#[test]
+fn matching_futex_wait_observes_copied_finite_timeout() {
+    const WORD: u64 = 0x1_0000;
+    const SECOND: u64 = WORD + 4;
+    const TIMEOUT: u64 = WORD + 16;
+    let memory = GuestMemory::new(WORD, PAGE_SIZE as usize).unwrap();
+    memory.map_user_range(WORD, PAGE_SIZE, false).unwrap();
+    memory.write_raw(WORD, &0_u32.to_ne_bytes()).unwrap();
+    let timeout = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 10_000_000,
+    };
+    // SAFETY: the bytes cover the initialized native timespec copied by the
+    // futex adapter, within this live guest allocation.
+    let timeout_bytes = unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(&timeout).cast::<u8>(),
+            std::mem::size_of::<libc::timespec>(),
+        )
+    };
+    memory.write_raw(TIMEOUT, timeout_bytes).unwrap();
+    memory.enable_user_access();
+
+    let original_address = memory.host_address() as usize;
+    let waiting_memory = memory.clone();
+    let (finished, completion) = mpsc::channel();
+    let mut waiter = FutexWaiter {
+        handle: Some(std::thread::spawn(move || {
+            let result = futex(
+                &waiting_memory,
+                &[WORD, libc::FUTEX_WAIT as u64, 0, TIMEOUT, 0, 0],
+            );
+            let _ = finished.send(result);
+            result
+        })),
+        original_address,
+        requeued_address: original_address + (SECOND - WORD) as usize,
+    };
+
+    // Passing NULL instead of the copied timespec would wait indefinitely. A
+    // bounded receive detects that mutation; repeated rescue wakes then close
+    // the worker before reporting the failure. The outer test command remains
+    // the hard bound for a worker that never reaches the kernel queue.
+    let result = match completion.recv_timeout(Duration::from_secs(2)) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => loop {
+            // SAFETY: memory and its aligned futex word remain live until the
+            // worker is joined below.
+            unsafe {
+                libc::syscall(libc::SYS_futex, original_address, libc::FUTEX_WAKE, 1);
+            }
+            match completion.recv_timeout(Duration::from_millis(1)) {
+                Ok(rescued) => {
+                    assert_eq!(waiter.join(), rescued);
+                    panic!(
+                        "matching FUTEX_WAIT did not complete within its finite timeout; \
+                         rescue returned {rescued}"
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(error) => panic!("matching FUTEX_WAIT worker disconnected: {error}"),
+            }
+        },
+        Err(error) => panic!("matching FUTEX_WAIT worker disconnected: {error}"),
+    };
+    assert_eq!(result, negative_errno(libc::ETIMEDOUT));
+    assert_eq!(waiter.join(), result);
+}
+
+#[test]
 fn futex_timeout_import_and_non_pi_word_alignment_follow_linux_fault_order() {
     const BASE: u64 = 0x1_0000;
     const WORD: u64 = BASE;
@@ -288,9 +403,9 @@ fn futex_timeout_import_and_non_pi_word_alignment_follow_linux_fault_order() {
     };
     memory.write_raw(TIMEOUT, valid_bytes).unwrap();
 
-    // WAIT_REQUEUE_PI resolves its PI destination before the primary wait
-    // word. The PI commands intentionally retain their existing adapter
-    // translation order rather than applying the non-PI alignment precheck.
+    // This input is EFAULT under either possible PI-word lookup order, so it
+    // asserts only that WAIT_REQUEUE_PI retains the adapter's existing
+    // translation behavior. PI lookup-order fidelity remains unverified.
     assert_eq!(
         futex(
             &memory,

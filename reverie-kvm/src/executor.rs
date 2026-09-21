@@ -1012,32 +1012,19 @@ fn execute_basic_syscall_inner(
 
 // TODO-HUMAN-REVIEW(PR-172): Review host-backed futex address and timeout translation.
 fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
-    const FUTEX_PRIVATE_FLAG: libc::c_int = 128;
-    const FUTEX_CLOCK_REALTIME: libc::c_int = 256;
-    const FUTEX_CMD_MASK: libc::c_int = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
-    const FUTEX_WAIT: libc::c_int = 0;
-    const FUTEX_WAKE: libc::c_int = 1;
-    const FUTEX_REQUEUE: libc::c_int = 3;
-    const FUTEX_CMP_REQUEUE: libc::c_int = 4;
-    const FUTEX_WAKE_OP: libc::c_int = 5;
-    const FUTEX_LOCK_PI: libc::c_int = 6;
-    const FUTEX_UNLOCK_PI: libc::c_int = 7;
-    const FUTEX_TRYLOCK_PI: libc::c_int = 8;
-    const FUTEX_WAIT_BITSET: libc::c_int = 9;
-    const FUTEX_WAKE_BITSET: libc::c_int = 10;
-    const FUTEX_WAIT_REQUEUE_PI: libc::c_int = 11;
-    const FUTEX_CMP_REQUEUE_PI: libc::c_int = 12;
-    const FUTEX_LOCK_PI2: libc::c_int = 13;
-
     let operation = args[1] as libc::c_int;
-    let command = operation & FUTEX_CMD_MASK;
+    let command = operation & libc::FUTEX_CMD_MASK;
     // sys_futex imports and validates timeout-bearing commands before
     // do_futex observes either futex word. Own that copied value instead of
     // retaining a guest mapping for the duration of a blocking host wait.
     let timeout = if args[3] != 0
         && matches!(
             command,
-            FUTEX_WAIT | FUTEX_LOCK_PI | FUTEX_WAIT_BITSET | FUTEX_WAIT_REQUEUE_PI | FUTEX_LOCK_PI2
+            libc::FUTEX_WAIT
+                | libc::FUTEX_LOCK_PI
+                | libc::FUTEX_WAIT_BITSET
+                | libc::FUTEX_WAIT_REQUEUE_PI
+                | libc::FUTEX_LOCK_PI2
         ) {
         let timeout = match read_guest_struct::<libc::timespec>(memory, args[3]) {
             Ok(timeout) => timeout,
@@ -1053,29 +1040,29 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
 
     // do_futex rejects unsupported commands and clock-flag combinations
     // before get_futex_key inspects either word.
-    if operation & FUTEX_CLOCK_REALTIME != 0
+    if operation & libc::FUTEX_CLOCK_REALTIME != 0
         && !matches!(
             command,
-            FUTEX_WAIT_BITSET | FUTEX_WAIT_REQUEUE_PI | FUTEX_LOCK_PI2
+            libc::FUTEX_WAIT_BITSET | libc::FUTEX_WAIT_REQUEUE_PI | libc::FUTEX_LOCK_PI2
         )
     {
         return negative_errno(libc::ENOSYS);
     }
     if !matches!(
         command,
-        FUTEX_WAIT
-            | FUTEX_WAKE
-            | FUTEX_REQUEUE
-            | FUTEX_CMP_REQUEUE
-            | FUTEX_WAKE_OP
-            | FUTEX_LOCK_PI
-            | FUTEX_UNLOCK_PI
-            | FUTEX_TRYLOCK_PI
-            | FUTEX_WAIT_BITSET
-            | FUTEX_WAKE_BITSET
-            | FUTEX_WAIT_REQUEUE_PI
-            | FUTEX_CMP_REQUEUE_PI
-            | FUTEX_LOCK_PI2
+        libc::FUTEX_WAIT
+            | libc::FUTEX_WAKE
+            | libc::FUTEX_REQUEUE
+            | libc::FUTEX_CMP_REQUEUE
+            | libc::FUTEX_WAKE_OP
+            | libc::FUTEX_LOCK_PI
+            | libc::FUTEX_UNLOCK_PI
+            | libc::FUTEX_TRYLOCK_PI
+            | libc::FUTEX_WAIT_BITSET
+            | libc::FUTEX_WAKE_BITSET
+            | libc::FUTEX_WAIT_REQUEUE_PI
+            | libc::FUTEX_CMP_REQUEUE_PI
+            | libc::FUTEX_LOCK_PI2
     ) {
         return negative_errno(libc::ENOSYS);
     }
@@ -1087,13 +1074,13 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     // adapter ordering. Host placement must not decide the covered cases.
     if matches!(
         command,
-        FUTEX_WAIT
-            | FUTEX_WAKE
-            | FUTEX_REQUEUE
-            | FUTEX_CMP_REQUEUE
-            | FUTEX_WAKE_OP
-            | FUTEX_WAIT_BITSET
-            | FUTEX_WAKE_BITSET
+        libc::FUTEX_WAIT
+            | libc::FUTEX_WAKE
+            | libc::FUTEX_REQUEUE
+            | libc::FUTEX_CMP_REQUEUE
+            | libc::FUTEX_WAKE_OP
+            | libc::FUTEX_WAIT_BITSET
+            | libc::FUTEX_WAKE_BITSET
     ) && !args[0].is_multiple_of(std::mem::size_of::<u32>() as u64)
     {
         return negative_errno(libc::EINVAL);
@@ -1108,14 +1095,16 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
         .map_or(args[3] as usize, |value| std::ptr::from_ref(value) as usize);
     let uaddr2 = if matches!(
         command,
-        FUTEX_REQUEUE
-            | FUTEX_CMP_REQUEUE
-            | FUTEX_WAKE_OP
-            | FUTEX_WAIT_REQUEUE_PI
-            | FUTEX_CMP_REQUEUE_PI
+        libc::FUTEX_REQUEUE
+            | libc::FUTEX_CMP_REQUEUE
+            | libc::FUTEX_WAKE_OP
+            | libc::FUTEX_WAIT_REQUEUE_PI
+            | libc::FUTEX_CMP_REQUEUE_PI
     ) {
-        if matches!(command, FUTEX_REQUEUE | FUTEX_CMP_REQUEUE | FUTEX_WAKE_OP)
-            && !args[4].is_multiple_of(std::mem::size_of::<u32>() as u64)
+        if matches!(
+            command,
+            libc::FUTEX_REQUEUE | libc::FUTEX_CMP_REQUEUE | libc::FUTEX_WAKE_OP
+        ) && !args[4].is_multiple_of(std::mem::size_of::<u32>() as u64)
         {
             return negative_errno(libc::EINVAL);
         }
@@ -1131,9 +1120,11 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
         0
     };
 
-    // SAFETY: translated pointers remain within the shared guest mapping for
-    // the duration of the syscall. The host kernel performs the atomic futex
-    // operation against the same bytes mapped by every guest-thread VM.
+    // SAFETY: uaddr and an optional uaddr2 remain retained in the shared guest
+    // mapping for the whole syscall. For timeout-bearing commands, fourth
+    // points to the host-owned `timeout` storage kept alive below; otherwise it
+    // is the scalar fourth argument. The kernel does not retain these pointers
+    // after the synchronous syscall returns.
     let result = unsafe {
         libc::syscall(
             libc::SYS_futex,
@@ -1150,7 +1141,7 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     } else {
         result as i64
     };
-    drop((uaddr, second_operand));
+    drop((uaddr, second_operand, timeout));
     result
 }
 
