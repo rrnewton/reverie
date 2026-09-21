@@ -775,6 +775,167 @@
           "media_type": "application/json"
         }
       ]
+    },
+    {
+      "event_id": "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "4a557c6cd58026be1da4c7c9eca359a7c33939a796c9938c23b597a8a46e78fd",
+      "route_id": "asyncssl-kernel71-sched-slowdown-existing-elf-v1",
+      "route_sha256": "45e880701ebe9bafb66df272a31f491fc803855c0ca6b3da9c75e66884ddf4ac",
+      "canonical_target": "fbcode//folly/io/async/test:async_ssl_socket_test",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//folly/io/async/test:async_ssl_socket_test - AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/libcxx"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "asyncssl-kernel71-ptrace-strict-chaos-sched-slowdown-now-v1",
+      "cell_sha256": "491ab3ee5ea31f8ab22e96c3cddeaa7185e8e2262b9edf46ac0be7c669921aed",
+      "measurement_role": "DISCOVERY",
+      "started_at": "2026-09-21T21:23:42Z",
+      "finished_at": "2026-09-21T21:23:45Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-001-sched-seed-00000000000000000001-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-per-thread-slowdown",
+        "--chaos-slowdown-max-factor=10.0",
+        "--chaos-epoch-length-ns=0",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T20:57:56Z",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "1",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--target-timeslice",
+        "1000000",
+        "--max-timeslice",
+        "200000000",
+        "--clock-multiplier=1.0",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-sched-611100-1790025639833750331",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+        "--gtest_filter=AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+        "--gtest_also_run_disabled_tests"
+      ],
+      "result": {
+        "exit_code": 1,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": false,
+        "selected_test_executed_count": 0,
+        "target_oracle": "NOT_RUN",
+        "failure_class_id": null,
+        "harness_status": "ERROR",
+        "diagnostic": "status=CENSORED; selected=0; unit_result=exit-code; exit=1; BitwiseInfoV1=not-matched; stdout_cap=not-fired; safehermit_bounds=authenticated; verifier_and_wrapper_qgroups=authenticated"
+      },
+      "invocation_id": "asyncssl-sched-slowdown-sched-00000000000000000001-verify",
+      "replica_index": 1,
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 1
+      },
+      "effective_config_sha256": "491ab3ee5ea31f8ab22e96c3cddeaa7185e8e2262b9edf46ac0be7c669921aed",
+      "artifacts": [
+        {
+          "artifact_id": "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stdout.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stderr.txt",
+          "sha256": "85f0cb84c8772108a99dafbe9b2d6744c3c2a2187e5e55542b9239154e24e6d7",
+          "bytes": 77150,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-001-sched-seed-00000000000000000001-replica-1.result.json",
+          "sha256": "2f659b6fd3fd5e16cb625ad3a0b371809dac595e0139a866c6a8409230040a5b",
+          "bytes": 2185,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-001-sched-seed-00000000000000000001-replica-1.safehermit.txt",
+          "sha256": "99d8184b8ab2d4421037231582dbd20700c6b7384a180595f8c58865936344dc",
+          "bytes": 1793,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1-bounds",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-001-sched-seed-00000000000000000001-replica-1.bounds.json",
+          "sha256": "0866bb01a9d63021e97262453afa4f8df6be7e9c57834d75605442525350c91a",
+          "bytes": 2978,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1-invocation",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-001-sched-seed-00000000000000000001-replica-1.invocation.json",
+          "sha256": "f7511cefe03d814e72a99e7602a9d98a1d54c044b1dcbead54cddc34e78b0e0f",
+          "bytes": 7150,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        }
+      ]
     }
   ],
   "samples": [
@@ -793,6 +954,22 @@
       "execution_event_ids": [
         "asyncssl-sched-slowdown-sched-00000000000000000000-replica-1",
         "asyncssl-sched-slowdown-sched-00000000000000000000-replica-2"
+      ]
+    },
+    {
+      "sample_id": "asyncssl-sched-slowdown-sched-00000000000000000001-sample",
+      "cell_id": "asyncssl-kernel71-ptrace-strict-chaos-sched-slowdown-now-v1",
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 1
+      },
+      "selection_index": 1,
+      "status": "CENSORED",
+      "target_outcome": null,
+      "failure_class_id": null,
+      "censor_reason": "The invocation did not satisfy the exact predeclared PASS or paired line-3797 size-three plus line-3812 missing-ACK target-owned FAIL predicate.",
+      "execution_event_ids": [
+        "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1"
       ]
     }
   ],
@@ -965,15 +1142,210 @@
       "pending_in_scope_measurements": [
         "Execute selection index 1 at predeclared --sched-seed=1."
       ]
+    },
+    {
+      "classification_id": "asyncssl-sched-slowdown-pending-after-00000000000000000001",
+      "classified_at": "2026-09-21T21:23:46Z",
+      "supersedes": "asyncssl-sched-slowdown-pending-after-00000000000000000000",
+      "evidence_refs": [
+        "asyncssl-sched-slowdown-sched-00000000000000000000-replica-1",
+        "asyncssl-sched-slowdown-sched-00000000000000000000-replica-2",
+        "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "asyncssl-kernel71-sched-slowdown-existing-elf-v1",
+          "cell_ids": [
+            "asyncssl-kernel71-ptrace-strict-chaos-sched-slowdown-now-v1"
+          ],
+          "evidence_event_ids": [
+            "asyncssl-sched-slowdown-sched-00000000000000000000-replica-1",
+            "asyncssl-sched-slowdown-sched-00000000000000000000-replica-2",
+            "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-000-sched-seed-00000000000000000000-replica-1.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-per-thread-slowdown",
+          "--chaos-slowdown-max-factor=10.0",
+          "--chaos-epoch-length-ns=0",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T20:57:56Z",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--target-timeslice",
+          "1000000",
+          "--max-timeslice",
+          "200000000",
+          "--clock-multiplier=1.0",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-sched-611100-1790025639833750331",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+          "--gtest_filter=AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+          "--gtest_also_run_disabled_tests"
+        ],
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-000-sched-seed-00000000000000000000-replica-2.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-per-thread-slowdown",
+          "--chaos-slowdown-max-factor=10.0",
+          "--chaos-epoch-length-ns=0",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T20:57:56Z",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--target-timeslice",
+          "1000000",
+          "--max-timeslice",
+          "200000000",
+          "--clock-multiplier=1.0",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-sched-611100-1790025639833750331",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+          "--gtest_filter=AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+          "--gtest_also_run_disabled_tests"
+        ],
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-001-sched-seed-00000000000000000001-replica-1.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-per-thread-slowdown",
+          "--chaos-slowdown-max-factor=10.0",
+          "--chaos-epoch-length-ns=0",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T20:57:56Z",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "1",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--target-timeslice",
+          "1000000",
+          "--max-timeslice",
+          "200000000",
+          "--clock-multiplier=1.0",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-sched-611100-1790025639833750331",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+          "--gtest_filter=AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+          "--gtest_also_run_disabled_tests"
+        ]
+      ],
+      "inspected_artifacts": [
+        "asyncssl-sched-slowdown-sched-00000000000000000000-replica-1-result",
+        "asyncssl-sched-slowdown-sched-00000000000000000000-replica-2-result",
+        "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1-result"
+      ],
+      "missing_or_ambiguous_facts": [
+        "A complete distinct-sched-seed PASS/target-owned-FAIL bracket is not yet present."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Execute selection index 2 at predeclared --sched-seed=2."
+      ]
     }
   ],
   "current_outcome": {
-    "classification_id": "asyncssl-sched-slowdown-pending-after-00000000000000000000",
-    "classified_at": "2026-09-21T21:22:48Z",
-    "supersedes": null,
+    "classification_id": "asyncssl-sched-slowdown-pending-after-00000000000000000001",
+    "classified_at": "2026-09-21T21:23:46Z",
+    "supersedes": "asyncssl-sched-slowdown-pending-after-00000000000000000000",
     "evidence_refs": [
       "asyncssl-sched-slowdown-sched-00000000000000000000-replica-1",
-      "asyncssl-sched-slowdown-sched-00000000000000000000-replica-2"
+      "asyncssl-sched-slowdown-sched-00000000000000000000-replica-2",
+      "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1"
     ],
     "kind": "NOT-DETERMINABLE",
     "route_evidence": [
@@ -984,7 +1356,8 @@
         ],
         "evidence_event_ids": [
           "asyncssl-sched-slowdown-sched-00000000000000000000-replica-1",
-          "asyncssl-sched-slowdown-sched-00000000000000000000-replica-2"
+          "asyncssl-sched-slowdown-sched-00000000000000000000-replica-2",
+          "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1"
         ]
       }
     ],
@@ -1092,18 +1465,71 @@
         "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
         "--gtest_filter=AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
         "--gtest_also_run_disabled_tests"
+      ],
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-001-sched-seed-00000000000000000001-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-per-thread-slowdown",
+        "--chaos-slowdown-max-factor=10.0",
+        "--chaos-epoch-length-ns=0",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T20:57:56Z",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "1",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--target-timeslice",
+        "1000000",
+        "--max-timeslice",
+        "200000000",
+        "--clock-multiplier=1.0",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-sched-611100-1790025639833750331",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+        "--gtest_filter=AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+        "--gtest_also_run_disabled_tests"
       ]
     ],
     "inspected_artifacts": [
       "asyncssl-sched-slowdown-sched-00000000000000000000-replica-1-result",
-      "asyncssl-sched-slowdown-sched-00000000000000000000-replica-2-result"
+      "asyncssl-sched-slowdown-sched-00000000000000000000-replica-2-result",
+      "asyncssl-sched-slowdown-sched-00000000000000000001-replica-1-result"
     ],
     "missing_or_ambiguous_facts": [
       "A complete distinct-sched-seed PASS/target-owned-FAIL bracket is not yet present."
     ],
     "measurement_budget_exhausted": false,
     "pending_in_scope_measurements": [
-      "Execute selection index 1 at predeclared --sched-seed=1."
+      "Execute selection index 2 at predeclared --sched-seed=2."
     ]
   }
 }
