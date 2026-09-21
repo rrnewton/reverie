@@ -2157,7 +2157,7 @@ fn real_kvm_synthetic_proc_snapshot_is_immutable_and_opath_correct() {
     assert_eq!(create_directory, policy_error);
     let (expected_exclusive, expected_mounts_nofollow) = match policy_error {
         libc::EINVAL => (libc::EINVAL, libc::EINVAL),
-        libc::ENOTDIR => (libc::EEXIST, libc::ELOOP),
+        libc::ENOTDIR => (libc::EEXIST, libc::ENOTDIR),
         errno => panic!("unsupported native create-directory policy errno {errno}"),
     };
     assert_eq!(
@@ -2324,6 +2324,7 @@ int main(int argc, char **argv) {
     CHECK(close(cmdline) == 0);
     EXPECT_ERROR(ftruncate(descriptor, 0), EINVAL);
     EXPECT_ERROR(syscall(SYS_fallocate, descriptor, 0, 0, 1), EBADF);
+    CHECK(getuid() == 0 && geteuid() == 0);
     EXPECT_ERROR(fchmod(descriptor, 0666), EPERM);
     CHECK(fstat(descriptor, &metadata) == 0);
     CHECK((metadata.st_mode & 0777) == 0444);
@@ -2412,6 +2413,54 @@ int main(int argc, char **argv) {
                  expected_create_directory);
     EXPECT_ERROR(open(fdinfo, O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY, 0600),
                  expected_create_directory_exclusive);
+    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_CREAT | O_DIRECTORY | O_NOFOLLOW, 0600),
+                 expected_create_directory);
+    EXPECT_ERROR(open(fdinfo,
+                      O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY | O_NOFOLLOW,
+                      0600),
+                 expected_create_directory_exclusive);
+    int readable_fdinfo = open(fdinfo, O_RDONLY | O_CLOEXEC);
+    CHECK(readable_fdinfo >= 0);
+    EXPECT_ERROR(syscall(SYS_pwrite64, readable_fdinfo, "x", 1, 0), ESPIPE);
+    EXPECT_ERROR(syscall(SYS_pwrite64, readable_fdinfo, "x", 0, 0), ESPIPE);
+    EXPECT_ERROR(syscall(SYS_pwrite64, readable_fdinfo, "x", 1, (off_t)-1), EINVAL);
+    EXPECT_ERROR(syscall(SYS_pwrite64, readable_fdinfo, "x", 0, (off_t)-1), EINVAL);
+    EXPECT_ERROR(syscall(SYS_pwrite64, readable_fdinfo,
+                         (const char *)(uintptr_t)-1, 1, 0),
+                 ESPIPE);
+    CHECK(close(readable_fdinfo) == 0);
+
+    if (expected_create_directory == ENOTDIR) {
+        static const char *const missing_fdinfo_paths[] = {
+            "/proc/self/fdinfo/999999",
+            "/proc/self/fdinfo/not-a-fd",
+            "/proc/self/fdinfo/03",
+        };
+        static const int create_directory_flags[] = {
+            O_RDONLY | O_CREAT | O_DIRECTORY,
+            O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY,
+            O_RDONLY | O_CREAT | O_DIRECTORY | O_NOFOLLOW,
+            O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY | O_NOFOLLOW,
+        };
+        for (size_t path_index = 0;
+             path_index < sizeof(missing_fdinfo_paths) / sizeof(missing_fdinfo_paths[0]);
+             ++path_index) {
+            for (size_t flag_index = 0;
+                 flag_index < sizeof(create_directory_flags) / sizeof(create_directory_flags[0]);
+                 ++flag_index) {
+                EXPECT_ERROR(open(missing_fdinfo_paths[path_index],
+                                  create_directory_flags[flag_index], 0600),
+                             ENOENT);
+            }
+        }
+        for (size_t flag_index = 0;
+             flag_index < sizeof(create_directory_flags) / sizeof(create_directory_flags[0]);
+             ++flag_index) {
+            EXPECT_ERROR(open("/proc/self/fdinfo/",
+                              create_directory_flags[flag_index], 0600),
+                         EISDIR);
+        }
+    }
     CHECK(close(ordinary) == 0);
     CHECK(unlink("fdinfo-target") == 0);
 
@@ -2431,6 +2480,10 @@ int main(int argc, char **argv) {
                  expected_create_directory_exclusive);
     EXPECT_ERROR(open("/proc/mounts", O_RDONLY | O_CREAT | O_DIRECTORY | O_NOFOLLOW, 0600),
                  expected_mounts_create_directory_nofollow);
+    EXPECT_ERROR(open("/proc/mounts",
+                      O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY | O_NOFOLLOW,
+                      0600),
+                 expected_create_directory_exclusive);
     EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_TMPFILE, 0600), EINVAL);
     EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_TMPFILE | O_NOFOLLOW, 0600), EINVAL);
     EXPECT_ERROR(open("/proc/uptime", O_RDONLY | O_TMPFILE | O_TRUNC, 0600), EINVAL);

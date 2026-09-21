@@ -211,7 +211,6 @@ fn invalid_legacy_tmpfile_flags(flags: u64) -> bool {
 
 fn synthetic_proc_create_directory_errno(
     policy: RegularCreateDirectoryPolicy,
-    path: &[u8],
     flags: u64,
 ) -> libc::c_int {
     match policy {
@@ -219,11 +218,10 @@ fn synthetic_proc_create_directory_errno(
         RegularCreateDirectoryPolicy::LegacyLookup if flags & libc::O_EXCL as u64 != 0 => {
             libc::EEXIST
         }
-        RegularCreateDirectoryPolicy::LegacyLookup
-            if path == b"/proc/mounts" && flags & libc::O_NOFOLLOW as u64 != 0 =>
-        {
-            libc::ELOOP
-        }
+        // Linux v6.3 fs/namei.c:3543 applies LOOKUP_DIRECTORY to the resolved
+        // final dentry before may_open; this makes a nofollow /proc/mounts
+        // symlink ENOTDIR here. Without O_DIRECTORY, may_open still yields
+        // ELOOP, and O_EXCL above still yields EEXIST.
         RegularCreateDirectoryPolicy::LegacyLookup => libc::ENOTDIR,
     }
 }
@@ -1941,7 +1939,15 @@ fn replace_fdinfo_flags(bytes: &[u8], flags: libc::c_int) -> Result<Vec<u8>, i64
 
 /// Recognize only current-process spellings. The selected task is retained;
 /// /proc/self is the leader even when a live worker opens the file.
-fn fdinfo_path_target(state: &LoadedStaticElf, path: &[u8]) -> Option<Result<(i32, i32), i64>> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FdinfoPathTarget {
+    Target { tid: i32, fd: i32 },
+    MissingFinal { tid: i32 },
+    EmptyFinal { tid: i32 },
+    InvalidTask,
+}
+
+fn fdinfo_path_target(state: &LoadedStaticElf, path: &[u8]) -> Option<FdinfoPathTarget> {
     let rest = path.strip_prefix(b"/proc/")?;
     let slash = rest.iter().position(|byte| *byte == b'/')?;
     let suffix = rest[slash + 1..].strip_prefix(b"fdinfo/")?;
@@ -1960,33 +1966,43 @@ fn fdinfo_path_target(state: &LoadedStaticElf, path: &[u8]) -> Option<Result<(i3
             {
                 tid
             }
-            _ => return Some(Err(negative_errno(libc::ENOENT))),
+            _ => return Some(FdinfoPathTarget::InvalidTask),
         }
     };
+    if suffix.is_empty() {
+        return Some(FdinfoPathTarget::EmptyFinal { tid: target });
+    }
     let fd = match std::str::from_utf8(suffix)
         .ok()
         .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|s| s.parse::<i32>().ok())
     {
         Some(fd) if fd < GUEST_NOFILE_LIMIT && fd.to_string().as_bytes() == suffix => fd,
-        _ => return Some(Err(negative_errno(libc::ENOENT))),
+        // Linux v6.3 fs/proc/fd.c returns ENOENT directly when its fd lookup
+        // cannot resolve the final component. That precedes lookup_open's
+        // create-error fallback even with O_CREAT|O_DIRECTORY|O_EXCL.
+        _ => return Some(FdinfoPathTarget::MissingFinal { tid: target }),
     };
-    Some(Ok((target, fd)))
+    Some(FdinfoPathTarget::Target { tid: target, fd })
 }
 
 /// Establish pathname existence only: the task incarnation and guest fd must
 /// both be live. Content eligibility is deliberately a later open-only check,
 /// so metadata and path/type errors do not depend on the private carrier kind.
 fn fdinfo_target_generation(state: &LoadedStaticElf, tid: i32, fd: i32) -> Result<u64, i64> {
-    let generation = state
+    let generation = fdinfo_task_generation(state, tid)?;
+    host_fd(state, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
+    Ok(generation)
+}
+
+fn fdinfo_task_generation(state: &LoadedStaticElf, tid: i32) -> Result<u64, i64> {
+    state
         .task_lifecycle
         .lock()
         .expect("KVM lifecycle lock poisoned")
         .get(tid)
         .map(|task| task.generation)
-        .ok_or_else(|| negative_errno(libc::ENOENT))?;
-    host_fd(state, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
-    Ok(generation)
+        .ok_or_else(|| negative_errno(libc::ENOENT))
 }
 
 fn ensure_fdinfo_content_supported(
@@ -2025,7 +2041,6 @@ fn open_fdinfo(
     {
         return negative_errno(synthetic_proc_create_directory_errno(
             state.regular_create_directory_policy,
-            b"/proc/self/fdinfo",
             flags,
         ));
     }
@@ -7041,8 +7056,29 @@ fn open_file(
     let close_on_exec = flags & libc::O_CLOEXEC as u64 != 0;
     if let Some(target) = fdinfo_path_target(state, path) {
         return match target {
-            Ok(target) => open_fdinfo(state, target, flags, capture_output),
-            Err(error) => error,
+            FdinfoPathTarget::Target { tid, fd } => {
+                open_fdinfo(state, (tid, fd), flags, capture_output)
+            }
+            FdinfoPathTarget::EmptyFinal { tid } => {
+                if let Err(error) = fdinfo_task_generation(state, tid) {
+                    return error;
+                }
+                if !path_only
+                    && state.regular_create_directory_policy
+                        == RegularCreateDirectoryPolicy::LegacyLookup
+                    && flags & (libc::O_CREAT | libc::O_DIRECTORY) as u64
+                        == (libc::O_CREAT | libc::O_DIRECTORY) as u64
+                {
+                    // Linux v6.3 fs/namei.c:3460-3469 preserves the trailing
+                    // slash and rejects O_CREAT on the fdinfo directory itself.
+                    negative_errno(libc::EISDIR)
+                } else {
+                    negative_errno(libc::ENOENT)
+                }
+            }
+            FdinfoPathTarget::MissingFinal { tid } => fdinfo_task_generation(state, tid)
+                .map_or_else(|error| error, |_| negative_errno(libc::ENOENT)),
+            FdinfoPathTarget::InvalidTask => negative_errno(libc::ENOENT),
         };
     }
     if is_synthetic_proc_directory(state, path) {
@@ -7057,7 +7093,6 @@ fn open_file(
         {
             return negative_errno(synthetic_proc_create_directory_errno(
                 state.regular_create_directory_policy,
-                path,
                 flags,
             ));
         }
@@ -11546,8 +11581,10 @@ fn fstatat_impl(
     }
     if let Some(target) = fdinfo_path_target(state, &path) {
         let (tid, fd) = match target {
-            Ok(target) => target,
-            Err(error) => return error,
+            FdinfoPathTarget::Target { tid, fd } => (tid, fd),
+            FdinfoPathTarget::MissingFinal { .. }
+            | FdinfoPathTarget::EmptyFinal { .. }
+            | FdinfoPathTarget::InvalidTask => return negative_errno(libc::ENOENT),
         };
         if let Err(error) = fdinfo_target_generation(state, tid, fd) {
             return error;
@@ -11697,8 +11734,10 @@ fn statx(
             return negative_errno(libc::EINVAL);
         }
         let (tid, fd) = match target {
-            Ok(target) => target,
-            Err(error) => return error,
+            FdinfoPathTarget::Target { tid, fd } => (tid, fd),
+            FdinfoPathTarget::MissingFinal { .. }
+            | FdinfoPathTarget::EmptyFinal { .. }
+            | FdinfoPathTarget::InvalidTask => return negative_errno(libc::ENOENT),
         };
         if let Err(error) = fdinfo_target_generation(state, tid, fd) {
             return error;
@@ -12293,7 +12332,10 @@ fn fchmod(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     }
     if state.proc_files.contains_key(&guest_fd) {
         // A classified procfs object must retain the mode that protects its
-        // private carrier. Native fchmod on procfs reports EPERM.
+        // private carrier, independent of the supervisor's DAC credentials.
+        // The guest models uid 0, for which native procfs mutation results can
+        // differ from a non-root supervisor; this fail-closed guard is the
+        // deliberate immutable-snapshot policy rather than a credential oracle.
         return negative_errno(libc::EPERM);
     }
     let mode = args[1] as libc::mode_t & 0o7777;
@@ -13152,6 +13194,8 @@ fn open_synthetic_proc(
         state.proc_files.insert(guest_fd, inode);
         if guest_status_flags & libc::O_NOFOLLOW != 0 {
             state.synthetic_proc_nofollow_fds.insert(guest_fd);
+        } else {
+            state.synthetic_proc_nofollow_fds.remove(&guest_fd);
         }
     }
     guest_fd
@@ -17996,6 +18040,9 @@ mod tests {
 
     #[test]
     fn synthetic_proc_seal_policy_accepts_only_supported_kernel_shapes() {
+        // Reserve a currently unused bit to prove that an unexpected future
+        // implicit seal is rejected rather than silently broadening policy.
+        const HYPOTHETICAL_FUTURE_IMPLICIT_SEAL: libc::c_int = 0x40;
         let required =
             libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
         assert!(supported_synthetic_proc_seals(required));
@@ -18003,7 +18050,10 @@ mod tests {
         assert!(!supported_synthetic_proc_seals(
             required & !libc::F_SEAL_WRITE
         ));
-        assert!(!supported_synthetic_proc_seals(required | 0x40));
+        assert!(
+            !supported_synthetic_proc_seals(required | HYPOTHETICAL_FUTURE_IMPLICIT_SEAL),
+            "an unexpected future implicit seal must fail closed"
+        );
     }
 
     #[test]
@@ -18666,7 +18716,12 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_proc_direct_combined_open_matrix_matches_native() {
+    fn synthetic_proc_direct_combined_open_matrix_preserves_policy_and_native_ordering() {
+        // Native EACCES rows are credential-sensitive. The KVM guest separately
+        // models uid 0 and keeps its carriers immutable regardless of the
+        // supervisor identity; compare those native rows only under non-root.
+        // SAFETY: geteuid has no arguments or memory-safety preconditions.
+        let supervisor_is_nonroot = unsafe { libc::geteuid() } != 0;
         const CASES: &[(&str, libc::c_int, Option<libc::c_int>, Option<libc::c_int>)] = &[
             (
                 "read-nofollow",
@@ -18880,11 +18935,13 @@ mod tests {
                 } else {
                     regular_error
                 };
-                let native_error = native_open_error(path, flags);
-                assert_eq!(
-                    native_error, expected,
-                    "native open matrix path={path} case={label}"
-                );
+                if expected != Some(libc::EACCES) || supervisor_is_nonroot {
+                    let native_error = native_open_error(path, flags);
+                    assert_eq!(
+                        native_error, expected,
+                        "native open matrix path={path} case={label}"
+                    );
+                }
                 let guest = open_with_flags(&mut memory, &mut state, path, flags);
                 match expected {
                     Some(error) => assert_eq!(
@@ -18901,7 +18958,6 @@ mod tests {
             for &(label, flags) in CREATE_DIRECTORY_CASES {
                 let expected = synthetic_proc_create_directory_errno(
                     state.regular_create_directory_policy,
-                    path.as_bytes(),
                     flags as u64,
                 );
                 assert_eq!(
@@ -18934,7 +18990,6 @@ mod tests {
                 assert_eq!(
                     synthetic_proc_create_directory_errno(
                         RegularCreateDirectoryPolicy::EarlyEinval,
-                        path,
                         flags,
                     ),
                     libc::EINVAL,
@@ -18947,7 +19002,6 @@ mod tests {
         assert_eq!(
             synthetic_proc_create_directory_errno(
                 RegularCreateDirectoryPolicy::LegacyLookup,
-                b"/proc/uptime",
                 plain,
             ),
             libc::ENOTDIR
@@ -18955,7 +19009,6 @@ mod tests {
         assert_eq!(
             synthetic_proc_create_directory_errno(
                 RegularCreateDirectoryPolicy::LegacyLookup,
-                b"/proc/uptime",
                 nofollow,
             ),
             libc::ENOTDIR
@@ -18963,7 +19016,6 @@ mod tests {
         assert_eq!(
             synthetic_proc_create_directory_errno(
                 RegularCreateDirectoryPolicy::LegacyLookup,
-                b"/proc/mounts",
                 plain,
             ),
             libc::ENOTDIR
@@ -18971,7 +19023,6 @@ mod tests {
         assert_eq!(
             synthetic_proc_create_directory_errno(
                 RegularCreateDirectoryPolicy::LegacyLookup,
-                b"/proc/uptime",
                 exclusive,
             ),
             libc::EEXIST
@@ -18979,15 +19030,13 @@ mod tests {
         assert_eq!(
             synthetic_proc_create_directory_errno(
                 RegularCreateDirectoryPolicy::LegacyLookup,
-                b"/proc/mounts",
                 nofollow,
             ),
-            libc::ELOOP
+            libc::ENOTDIR
         );
         assert_eq!(
             synthetic_proc_create_directory_errno(
                 RegularCreateDirectoryPolicy::LegacyLookup,
-                b"/proc/mounts",
                 exclusive | libc::O_NOFOLLOW as u64,
             ),
             libc::EEXIST
@@ -19034,7 +19083,13 @@ mod tests {
                 RegularCreateDirectoryPolicy::LegacyLookup,
                 "/proc/mounts",
                 nofollow,
-                libc::ELOOP,
+                libc::ENOTDIR,
+            ),
+            (
+                RegularCreateDirectoryPolicy::LegacyLookup,
+                "/proc/mounts",
+                exclusive | libc::O_NOFOLLOW,
+                libc::EEXIST,
             ),
         ] {
             let root = TestDir::new();
@@ -19047,6 +19102,21 @@ mod tests {
                 "policy={policy:?} path={path} flags={flags:#x}"
             );
         }
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.regular_create_directory_policy = RegularCreateDirectoryPolicy::LegacyLookup;
+        let mut memory = GuestMemory::new(0, state.mmap_limit as usize).unwrap();
+        assert_eq!(
+            open_with_flags(
+                &mut memory,
+                &mut state,
+                "/proc/mounts",
+                libc::O_RDONLY | libc::O_NOFOLLOW,
+            ),
+            negative_errno(libc::ELOOP),
+            "without O_DIRECTORY, /proc/mounts still reaches may_open's ELOOP"
+        );
     }
 
     #[test]
@@ -19280,6 +19350,33 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_proc_open_clears_stale_nofollow_metadata_on_fd_reuse() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, state.mmap_limit as usize).unwrap();
+        let next_fd = 3;
+        assert!(!state.files.contains_key(&next_fd));
+        state.synthetic_proc_nofollow_fds.insert(next_fd);
+
+        let fd = open_with_flags(&mut memory, &mut state, "/proc/uptime", libc::O_RDONLY);
+        assert_eq!(fd, i64::from(next_fd));
+        assert!(state.proc_files.contains_key(&next_fd));
+        assert!(
+            !state.synthetic_proc_nofollow_fds.contains(&next_fd),
+            "a non-O_NOFOLLOW allocation must clear stale metadata for its reused fd"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+            ) & i64::from(libc::O_NOFOLLOW),
+            0
+        );
+    }
+
+    #[test]
     fn synthetic_proc_dup_and_reopen_preserve_description_semantics_and_seals() {
         const PATH: u64 = 0x100;
         const BUFFER: u64 = 0x200;
@@ -19496,6 +19593,20 @@ mod tests {
 
         let native_source = std::fs::File::open("/proc/uptime").unwrap();
         let native_procfd = format!("/proc/self/fd/{}", native_source.as_raw_fd());
+        // SAFETY: geteuid has no arguments or memory-safety preconditions.
+        if unsafe { libc::geteuid() } != 0 {
+            // SAFETY: native_source is live. This is an explicitly
+            // credential-qualified native oracle; the guest assertion below
+            // remains unconditional under its fixed uid-0 identity.
+            assert_eq!(
+                unsafe { libc::fchmod(native_source.as_raw_fd(), 0o600) },
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EPERM)
+            );
+        }
         for (label, flags, expected) in [
             (
                 "read-directory-nofollow",
@@ -19632,6 +19743,25 @@ mod tests {
                 "classified regular proc carrier accepted access mode {access}"
             );
         }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmod,
+                [3, 0o600, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EPERM),
+            "classified carrier protection must not depend on its permissive host mode"
+        );
+        assert_eq!(
+            std::fs::metadata(&carrier_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o666,
+            "refused guest fchmod unexpectedly changed the permissive host control"
+        );
         assert_eq!(
             open_with_flags(
                 &mut memory,
@@ -20416,7 +20546,7 @@ mod tests {
     }
 
     #[test]
-    fn virtual_identity_and_random_files_are_read_only() {
+    fn virtual_identity_and_random_direct_opens_are_read_only() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
@@ -20484,6 +20614,54 @@ mod tests {
                 ),
                 negative_errno(libc::EBADF)
             );
+        }
+    }
+
+    #[test]
+    fn generic_virtual_file_procfd_reopen_is_a_writable_unsealed_residual() {
+        const BUFFER: u64 = 0x200;
+        for path in [
+            "/proc/self/loginuid",
+            "/dev/urandom",
+            "/sys/devices/system/cpu/cpufreq/boost",
+        ] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            memory.write(BUFFER, b"z").unwrap();
+            let direct = open_readonly(&mut memory, &mut state, path);
+            assert!(direct >= 0, "direct open failed for {path}: {direct}");
+            assert!(
+                !state.proc_files.contains_key(&(direct as libc::c_int)),
+                "generic virtual carrier was accidentally classified as sealed proc: {path}"
+            );
+            let host = host_fd(&state, direct as libc::c_int).unwrap();
+            // memfd_create without MFD_ALLOW_SEALING starts with only
+            // F_SEAL_SEAL, so these generic carriers lack all mutation seals.
+            // SAFETY: host is a live generic virtual-file carrier.
+            assert_eq!(
+                unsafe { libc::fcntl(host, libc::F_GET_SEALS) },
+                libc::F_SEAL_SEAL
+            );
+
+            let procfd = format!("/proc/self/fd/{direct}");
+            let writable = open_with_flags(&mut memory, &mut state, &procfd, libc::O_RDWR);
+            assert!(
+                writable >= 0,
+                "generic virtual proc-fd writable-reopen residual changed for {path}: {writable}"
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_write,
+                    [writable as u64, BUFFER, 1, 0, 0, 0],
+                ),
+                1,
+                "generic virtual proc-fd carrier ceased to be writable for {path}"
+            );
+            assert_eq!(close(&mut state, writable as u64), 0);
+            assert_eq!(close(&mut state, direct as u64), 0);
         }
     }
 
@@ -21258,7 +21436,6 @@ mod tests {
                 later,
             }
         }
-
         fn prefix(&self) -> [u8; 4] {
             let mut result = [0; 4];
             // SAFETY: crossing's first four bytes remain in the live first page.
@@ -29332,6 +29509,17 @@ mod tests {
                 ),
                 "fdinfo statx shape differs for {label}"
             );
+            let timestamp_mask = libc::STATX_ATIME | libc::STATX_MTIME | libc::STATX_CTIME;
+            assert_eq!(
+                native_statx.stx_mask & libc::STATX_BASIC_STATS,
+                libc::STATX_BASIC_STATS,
+                "native fdinfo must report the complete requested basic-stat mask for {label}"
+            );
+            assert_eq!(
+                guest_statx.stx_mask & libc::STATX_BASIC_STATS,
+                libc::STATX_BASIC_STATS & !timestamp_mask,
+                "the pre-existing synthetic statx mask truncation must remain explicit for {label}"
+            );
             assert!(
                 fixture.executor.state.fdinfo_files.is_empty(),
                 "metadata lookup allocated fdinfo sequence state for {label}"
@@ -29377,6 +29565,114 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_proc_fdinfo_carrier_seals_and_pwrite_match_native() {
+        const BUFFER: u64 = 0x300;
+        let mut fixture = FdinfoFixture::new(false);
+        let target = fixture.open("a", libc::O_RDONLY);
+        assert!(target >= 0);
+        let info = fixture.info(target);
+        let alias = fixture.call(libc::SYS_dup, [info as u64, 0, 0, 0, 0, 0]);
+        assert!(alias >= 0);
+
+        // Keep this expected mask independent of the production constant so a
+        // producer/validator mutation cannot weaken both sides together.
+        let required =
+            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+        for fd in [info, alias] {
+            let host = fixture.executor.state.files[&(fd as libc::c_int)].as_raw_fd();
+            // SAFETY: host is a live fdinfo carrier and these fcntl commands
+            // take no third argument.
+            assert_eq!(
+                unsafe { libc::fcntl(host, libc::F_GETFL) } & libc::O_ACCMODE,
+                libc::O_RDONLY,
+                "fdinfo carrier or alias is not read-only"
+            );
+            // SAFETY: host remains live and F_GET_SEALS takes no third argument.
+            let seals = unsafe { libc::fcntl(host, libc::F_GET_SEALS) };
+            assert!(
+                seals == required || seals == (required | LINUX_F_SEAL_EXEC),
+                "unexpected fdinfo carrier seal policy: {seals:#x}"
+            );
+        }
+
+        let target_host = fixture.executor.state.files[&(target as libc::c_int)].as_raw_fd();
+        let native_path = CString::new(format!("/proc/self/fdinfo/{target_host}")).unwrap();
+        // SAFETY: native_path is NUL-terminated; successful open returns an
+        // owned descriptor that is closed below.
+        let native = unsafe { libc::open(native_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        assert!(native >= 0, "{}", std::io::Error::last_os_error());
+        fixture.memory.write(BUFFER, b"x").unwrap();
+        let bad_address = fixture.executor.state.mmap_limit + PAGE_SIZE;
+        for (label, guest_fd, native_fd, address, count, offset, expected) in [
+            ("one-byte", info, native, BUFFER, 1, 0, libc::ESPIPE),
+            ("zero-byte", info, native, BUFFER, 0, 0, libc::ESPIPE),
+            ("negative", info, native, BUFFER, 1, -1, libc::EINVAL),
+            (
+                "zero-negative",
+                info,
+                native,
+                bad_address,
+                0,
+                -1,
+                libc::EINVAL,
+            ),
+            ("bad-pointer", info, native, bad_address, 1, 0, libc::ESPIPE),
+            (
+                "invalid-fd",
+                GUEST_NOFILE_LIMIT as i64,
+                -1,
+                BUFFER,
+                1,
+                0,
+                libc::EBADF,
+            ),
+            (
+                "invalid-fd-negative",
+                GUEST_NOFILE_LIMIT as i64,
+                -1,
+                BUFFER,
+                1,
+                -1,
+                libc::EINVAL,
+            ),
+        ] {
+            let native_pointer = if address == bad_address {
+                usize::MAX as *const libc::c_void
+            } else {
+                b"x".as_ptr().cast::<libc::c_void>()
+            };
+            // Linux v6.3 and v7.1 fdinfo use single_open/seq_file, which clear
+            // FMODE_PWRITE. The global negative-offset check precedes fd and
+            // buffer validation; otherwise missing FMODE_PWRITE yields ESPIPE.
+            let native_result = unsafe {
+                libc::syscall(
+                    libc::SYS_pwrite64,
+                    native_fd as libc::c_int,
+                    native_pointer,
+                    count as libc::size_t,
+                    offset as libc::off_t,
+                )
+            };
+            assert_eq!(native_result, -1, "native fdinfo pwrite {label}");
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(expected),
+                "native fdinfo pwrite {label}"
+            );
+            assert_eq!(
+                fixture.call(
+                    libc::SYS_pwrite64,
+                    [guest_fd as u64, address, count as u64, offset as u64, 0, 0,],
+                ),
+                negative_errno(expected),
+                "guest fdinfo pwrite {label}"
+            );
+        }
+        // SAFETY: native was returned by open and is closed exactly once.
+        assert_eq!(unsafe { libc::close(native) }, 0);
+    }
+
+    #[test]
     fn synthetic_proc_fdinfo_missing_closed_and_malformed_targets_remain_enoent() {
         let mut fixture = FdinfoFixture::new(false);
         fixture.executor.state.regular_create_directory_policy =
@@ -29392,7 +29688,6 @@ mod tests {
             "/proc/self/fdinfo/999".to_owned(),
             "/proc/self/fdinfo/not-a-fd".to_owned(),
             "/proc/self/fdinfo/03".to_owned(),
-            "/proc/self/fdinfo/".to_owned(),
         ] {
             for flags in [
                 libc::O_RDONLY,
@@ -29400,6 +29695,12 @@ mod tests {
                 libc::O_WRONLY | libc::O_TMPFILE,
                 libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
                 libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
+                libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+                libc::O_RDONLY
+                    | libc::O_CREAT
+                    | libc::O_EXCL
+                    | libc::O_DIRECTORY
+                    | libc::O_NOFOLLOW,
             ] {
                 assert_fdinfo_rejection_does_not_allocate(
                     &mut fixture,
@@ -29409,6 +29710,36 @@ mod tests {
                     "missing/closed/malformed",
                 );
             }
+        }
+        for flags in [
+            libc::O_RDONLY,
+            libc::O_RDONLY | libc::O_DIRECTORY,
+            libc::O_WRONLY | libc::O_TMPFILE,
+        ] {
+            assert_fdinfo_rejection_does_not_allocate(
+                &mut fixture,
+                "/proc/self/fdinfo/",
+                flags,
+                libc::ENOENT,
+                "pre-existing fdinfo directory-path residual",
+            );
+        }
+        // A trailing slash leaves the fdinfo directory itself as the final
+        // component. Linux v6.3 fs/namei.c:3460-3469 rejects its create path
+        // with EISDIR before lookup, O_EXCL, or O_NOFOLLOW can matter.
+        for flags in [
+            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
+            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
+            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        ] {
+            assert_fdinfo_rejection_does_not_allocate(
+                &mut fixture,
+                "/proc/self/fdinfo/",
+                flags,
+                libc::EISDIR,
+                "fdinfo trailing slash",
+            );
         }
     }
 
@@ -29558,25 +29889,52 @@ mod tests {
         let target = fixture.open("a", libc::O_RDONLY);
         assert!(target >= 0);
         let valid = format!("/proc/self/fdinfo/{target}");
-        assert_eq!(
-            fixture.open(&valid, libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,),
-            negative_errno(libc::ENOTDIR)
-        );
-        assert_eq!(
-            fixture.open(
-                &valid,
-                libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
+        for (flags, expected) in [
+            (
+                libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
+                libc::ENOTDIR,
             ),
-            negative_errno(libc::EEXIST)
-        );
+            (
+                libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+                libc::ENOTDIR,
+            ),
+            (
+                libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
+                libc::EEXIST,
+            ),
+            (
+                libc::O_RDONLY
+                    | libc::O_CREAT
+                    | libc::O_EXCL
+                    | libc::O_DIRECTORY
+                    | libc::O_NOFOLLOW,
+                libc::EEXIST,
+            ),
+        ] {
+            assert_eq!(
+                fixture.open(&valid, flags),
+                negative_errno(expected),
+                "present legacy fdinfo flags={flags:#x}"
+            );
+        }
+        // Linux v6.3 fs/proc/fd.c:221-240 returns ENOENT directly for a
+        // negative fdinfo final component, before namei's create-error
+        // fallback. O_EXCL and O_NOFOLLOW therefore do not change this result.
         for path in [
             "/proc/self/fdinfo/999",
             "/proc/self/fdinfo/not-a-fd",
             "/proc/self/fdinfo/03",
+            "/proc/999/fdinfo/3",
         ] {
             for flags in [
                 libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
                 libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
+                libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+                libc::O_RDONLY
+                    | libc::O_CREAT
+                    | libc::O_EXCL
+                    | libc::O_DIRECTORY
+                    | libc::O_NOFOLLOW,
             ] {
                 assert_eq!(
                     fixture.open(path, flags),
@@ -29585,6 +29943,23 @@ mod tests {
                 );
             }
         }
+        for flags in [
+            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
+            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
+            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        ] {
+            assert_eq!(
+                fixture.open("/proc/self/fdinfo/", flags),
+                negative_errno(libc::EISDIR),
+                "legacy fdinfo trailing slash flags={flags:#x}"
+            );
+        }
+        assert_eq!(
+            fixture.open("ordinary-missing", libc::O_RDONLY),
+            negative_errno(libc::ENOENT),
+            "fdinfo policy injection must not alter an ordinary missing lookup"
+        );
     }
 
     fn inherited_pipe_stdin_fixture(capture: bool) -> (FdinfoFixture, std::fs::File) {
@@ -31208,8 +31583,27 @@ mod tests {
             .unwrap()
             .remove(f.executor.state.tid, f.executor.task_generation);
         f.executor.release_files_on_exit();
+        worker.state.regular_create_directory_policy = RegularCreateDirectoryPolicy::LegacyLookup;
         let leader_path = format!("/proc/1/fdinfo/{target}\0");
         f.memory.write(0x100, leader_path.as_bytes()).unwrap();
+        for flags in [
+            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
+            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
+            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        ] {
+            assert_eq!(
+                worker.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_openat as u64,
+                        [libc::AT_FDCWD as u64, 0x100, flags as u64, 0, 0, 0],
+                    ),
+                    &f.memory,
+                ),
+                negative_errno(libc::ENOENT),
+                "dead fdinfo task parent must precede Legacy create errors for flags={flags:#x}"
+            );
+        }
         for (number, args) in [
             (
                 libc::SYS_openat,
