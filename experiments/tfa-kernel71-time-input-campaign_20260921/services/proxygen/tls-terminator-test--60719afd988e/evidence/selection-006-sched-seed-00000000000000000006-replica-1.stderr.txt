@@ -1,0 +1,535 @@
+:: Run1...
+:: Run2...
+:: Comparing captured verification logs...
+Logs contain 134857 | 134857 messages total
+Logs contain 134831 | 134831 detcore-specific messages
+Logs contain 134832 | 134832 INFO messages
+Logs contain 124139 | 124139 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 134803 (run 1) and 134803 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m1[0m[31m3 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m3[0m[32m3 in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m1[0m[31m3 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m3[0m[32m3 in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134807 (run 1) and 134807 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3[0m[1;48;5;52;31m3[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3[0m[1;48;5;22;32m9[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3[0m[1;48;5;52;31m3[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3[0m[1;48;5;22;32m9[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134809 (run 1) and 134809 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m37[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m49[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m37[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m49[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134811 (run 1) and 134811 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m11[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m45[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m11[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m45[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134813 (run 1) and 134813 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m2[0m[31m3 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3[0m[1;48;5;22;32m1[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m2[0m[31m3 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3[0m[1;48;5;22;32m1[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134815 (run 1) and 134815 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m5[0m[31m1 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m2[0m[32m1 in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m5[0m[31m1 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m2[0m[32m1 in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134819 (run 1) and 134819 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m5[0m[31m3 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3[0m[1;48;5;22;32m7[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m5[0m[31m3 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3[0m[1;48;5;22;32m7[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134821 (run 1) and 134821 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m49[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m51[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m49[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m51[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134825 (run 1) and 134825 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 4[0m[1;48;5;52;31m1[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 4[0m[1;48;5;22;32m3[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 4[0m[1;48;5;52;31m1[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 4[0m[1;48;5;22;32m3[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134827 (run 1) and 134827 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;52;31m5[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;22;32m9[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;52;31m5[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;22;32m9[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134829 (run 1) and 134829 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m1[0m[31m9 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m2[0m[32m9 in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m1[0m[31m9 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m2[0m[32m9 in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134831 (run 1) and 134831 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m4[0m[31m3 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m5[0m[32m3 in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m4[0m[31m3 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m5[0m[32m3 in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134833 (run 1) and 134833 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 4[0m[1;48;5;52;31m7[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 4[0m[1;48;5;22;32m1[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 4[0m[1;48;5;52;31m7[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 4[0m[1;48;5;22;32m1[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134835 (run 1) and 134835 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m39[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m5[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m39[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m5[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134837 (run 1) and 134837 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m2[0m[31m1 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;22;32m3[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m2[0m[31m1 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;22;32m3[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134839 (run 1) and 134839 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m5[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m27[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m5[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m27[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134841 (run 1) and 134841 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m27[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m15[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m27[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m15[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134843 (run 1) and 134843 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m9[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m11[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m9[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m11[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134845 (run 1) and 134845 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3[0m[1;48;5;52;31m1[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m2[0m[32m3 in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3[0m[1;48;5;52;31m1[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m2[0m[32m3 in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 134847 (run 1) and 134847 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m2[0m[31m9 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 9 in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m2[0m[31m9 in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 9 in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 134789: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #935: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #930: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #931: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #932: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #933: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #934: getpid() = Ok(3)
+
+More than 20 differences, eliding the rest...
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372/run1_log_kMlWl
+::   run 2: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372/run2_log_C90Sb
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Failure: nondeterministic.
+E0921 18:54:35.528772    15 SmcTiers.cpp:264] Failed to get SMC tiers for localhost. Client: falcon_client_config_provider. Timeout: none. Exception: 'apache::thrift::transport::TTransportException: Dropping unsent request. Connection closed after: apache::thrift::transport::TTransportException: AsyncSocketException: connect failed, type = Socket not open, errno = 111 (Connection refused): Connection refused'
+I0921 18:54:35.543682    15 SmcTiers.cpp:214] Reading tiers from /etc/smc.tiers
+E0921 18:54:36.183257    11 SmcTiers.cpp:264] Failed to get SMC tiers for localhost. Client: cfgr-logger. Timeout: 1000ms. Exception: 'apache::thrift::transport::TTransportException: Dropping unsent request. Connection closed after: apache::thrift::transport::TTransportException: AsyncSocketException: connect failed, type = Socket not open, errno = 111 (Connection refused): Connection refused'
+I0921 18:54:36.190999    11 SmcTiers.cpp:214] Reading tiers from /etc/smc.tiers
+E0921 18:54:36.248864    11 FalconConnectionUtils.cpp:120] Exception while fetching entity: luna/sampling/justknobs/adaptive_sample_rates/empty-service-id on host devbig030.atn3.facebook.com (no retry)
+/********************** IMPORTANT INFORMATION: **********************/
+/* 1. Falcon can not respond to a request if a system is overloaded. */
+/* 2. Please check the host status, including CPU, memory, and I/O. You can run the following command to check its status: */
+/*    ( below replay -s devbig030.atn3.facebook.com -t 1790016871 ) */
+/* 3. You can also check the host status in the following link: https://fburl.com/unidash/ard0dqxy. */
+/* 4. Set a timeout to allow retries for reliable entity fetching. */
+ Exception: std::runtime_error: A distribution error occurred, Blob entity cpentity_s3|xpress_config_content|prod:d/configerator/configs/luna/sampling/justknobs/adaptive_sample_rates|empty-service-id may or may not exist, took 39ms
+I0921 18:54:37.579704    11 HealthTracker.cpp:46] configerator proxy2+fuse unhealthy; this may lead to timeouts or fallbacks to system configs
+I0921 18:54:37.605130    31 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+E0921 18:54:38.223090     9 ExceptionTracer.cpp:261] terminate() called, exception stack follows
+E0921 18:54:38.227419     9 ExceptionTracer.cpp:263] Exception type: (unknown type) (9 frames)
+    @ 000000000dfcd2b8 folly::(anonymous namespace)::Initializer::Initializer()::{lambda(std::__exception_ptr::exception_ptr)#1}::__invoke(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionStackTraceLib.cpp:175
+    @ 00000000043ccada std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracerLib.cpp:86
+    @ 00000000040d143f folly::exception_wrapper::throw_exception() const
+                       fbsource/folly/ExceptionWrapper-inl.h:197
+    @ 00000000040d130e folly::coro::detail::BlockingWaitTask<void>::getVia(folly::DrivableExecutor*, folly::AsyncStackFrame&) &&
+                       fbsource/folly/Try-inl.h:241
+    @ 00000000040d117e folly::coro::detail::decay_rvalue_reference<folly::coro::await_result<decltype (folly::coro::folly_cpo__::co_viaIfAsync((static_cast<folly::ExecutorKeepAlive<folly::Executor> (*)() noexcept>(decltype(nullptr)))(), (static_cast<folly::coro::Task<void> (*)() noexcept>(decltype(nullptr)))())), void>::type>::type folly::coro::blocking_wait_fn::operator()<folly::coro::Task<void> >(folly::coro::Task<void>&&, folly::DrivableExecutor*) const
+                       fbsource/folly/coro/BlockingWait.h:400
+    @ 00000000040d0fd7 std::thread::_State_impl<std::thread::_Invoker<std::tuple<proxygen::TlsTerminatorTest_terminateTls_Test::TestBody()::$_0> > >::_M_run()
+                       ./fbcode/proxygen/facebook/fwdproxy/tlsterm/test/TlsTerminatorTest.cpp:308
+    @ 00000000000e8bc4 execute_native_thread_routine
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82
+    @ 000000000009abc8 start_thread
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_create.c:434
+    @ 000000000012cecb __clone3
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+E0921 18:54:38.396106     9 ExceptionTracer.cpp:265] exception stack complete
+terminate called after throwing an instance of 'folly::FutureTimeout'
+  what():  Timed out
+*** Aborted at 1790016878 (Unix time, try 'date -d @1790016878') ***
+*** Signal 6 (SIGABRT) (0x3) received by PID 3 (pthread TID 0x7ffff5afe640) (linux TID 9) (maybe from PID 3, UID 0) (code: sent by tkill or tgkill), stack trace: ***
+    @ 000000000417ff6f folly::symbolizer::(anonymous namespace)::signalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:598
+    @ 000000000004455f (unknown)
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/libc_sigaction.c:8
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c
+    @ 000000000009ca13 pthread_kill
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_kill.c:46
+    @ 00000000000444ac raise
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/posix/raise.c:26
+    @ 000000000002c432 abort
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/stdlib/abort.c:79
+    @ 00000000000ad594 __gnu_cxx::__verbose_terminate_handler()
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/vterminate.cc:95
+    @ 0000000005191419 folly::exception_tracer::(anonymous namespace)::terminateHandler()
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracer.cpp:270
+    @ 00000000000ab0f9 __cxxabiv1::__terminate(void (*)())
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_terminate.cc:48
+    @ 00000000000ab164 std::terminate()
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_terminate.cc:58
+    @ 00000000000ab0ef std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_ptr.cc:217
+    @ 00000000043ccb55 std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracerLib.cpp:244
+    @ 00000000040d143f folly::exception_wrapper::throw_exception() const
+                       fbsource/folly/ExceptionWrapper-inl.h:197
+    @ 00000000040d130e folly::coro::detail::BlockingWaitTask<void>::getVia(folly::DrivableExecutor*, folly::AsyncStackFrame&) &&
+                       fbsource/folly/Try-inl.h:241
+    @ 00000000040d117e folly::coro::detail::decay_rvalue_reference<folly::coro::await_result<decltype (folly::coro::folly_cpo__::co_viaIfAsync((static_cast<folly::ExecutorKeepAlive<folly::Executor> (*)() noexcept>(decltype(nullptr)))(), (static_cast<folly::coro::Task<void> (*)() noexcept>(decltype(nullptr)))())), void>::type>::type folly::coro::blocking_wait_fn::operator()<folly::coro::Task<void> >(folly::coro::Task<void>&&, folly::DrivableExecutor*) const
+                       fbsource/folly/coro/BlockingWait.h:400
+    @ 00000000040d0fd7 std::thread::_State_impl<std::thread::_Invoker<std::tuple<proxygen::TlsTerminatorTest_terminateTls_Test::TestBody()::$_0> > >::_M_run()
+                       ./fbcode/proxygen/facebook/fwdproxy/tlsterm/test/TlsTerminatorTest.cpp:308
+    @ 00000000000e8bc4 execute_native_thread_routine
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82
+    @ 000000000009abc8 start_thread
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_create.c:434
+    @ 000000000012cecb __clone3
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
