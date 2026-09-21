@@ -743,6 +743,13 @@ impl GuestMemory {
             .expect("KVM allocation transaction lock poisoned")
     }
 
+    #[cfg(test)]
+    pub(crate) fn try_allocation_guard(
+        &self,
+    ) -> std::sync::TryLockResult<std::sync::MutexGuard<'_, ()>> {
+        self.mapping.allocation.try_lock()
+    }
+
     /// Prepare one page replacement without changing the live HVA or KVM
     /// translation. KVM's synchronous-MMU capability is checked before the
     /// allocation transaction is retained; publication performs no allocation
