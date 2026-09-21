@@ -14,7 +14,7 @@ SOURCE_REVISION = "7f239d5b37dfbecf32fed144468da461f998add5"
 HERMIT_REVISION = "4630ee2a61f93221a43e2baec0a15f34102a2c61"
 HERMIT_BINARY = "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a"
 HERMIT_SHA256 = "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a"
-SEALED_AT = "2026-09-21T14:48:55Z"
+SEALED_AT = "2026-09-21T14:56:22Z"
 HOST_KERNEL = "Linux 7.1.3-0_fbk0_0_g295ad0959f34"
 HOSTNAME = "devbig030.atn3.facebook.com"
 CPU = "AMD EPYC 9D85 158-Core Processor"
@@ -113,6 +113,19 @@ CONFIGS = [
         "required_n": 8,
         "attempt_cap": 12,
         "verify_dir": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logdevice-verify-2445441-1790002126713644463",
+    },
+    {
+        "name": "logstore",
+        "target": "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+        "binary": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test",
+        "binary_sha256": "73282dba27129be8c390b39cb0ca07affc66287a1d6db1f5f38562e89ef80b6b",
+        "binary_bytes": 23180776,
+        "gtest_filter": "LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries",
+        "gtest_display": "LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries",
+        "run_disabled": False,
+        "required_n": 31,
+        "attempt_cap": 35,
+        "verify_dir": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987",
     },
 ]
 
