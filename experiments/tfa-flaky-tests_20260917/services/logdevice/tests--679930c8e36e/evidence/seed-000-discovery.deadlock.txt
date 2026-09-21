@@ -1,0 +1,9 @@
+Candidate: fbcode//logdevice/admin/health_monitor:tests
+Selected test: LogStoreHealthMonitorTest.DisabledRebuilding
+Scheduler seed: 0
+Native: PASS in 0.84 seconds wall (620 ms test body).
+Hermit: exit 125 in 76.733320185 seconds outer wall; safehermit elapsed_secs=75.
+Bounds: wall 900s, memory 16G/swap 0, disk 8G, stderr 67108864 bytes all APPLIED; truncated=false.
+Failure: Hermit detected a deadlock at scheduler turn 219044 with one thread (dtid 3) in FutexWait, zero runnable threads, no timed waiters, no external IO blockers, and no deferred or ready SIGCHLD. It then reported HERMIT_INTERNAL_FAILURE class=container-child-exit status=Exited(1).
+Oracle: no selected-test execution marker was retained, so this is not target PASS or FAIL.
+Retained full INFO log (LOCAL_IGNORED): /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-logdevice-health-verify-1390430-1789909287202573885/run1_log_zuRVS, 397076682 bytes, SHA-256 98ebdde8a3f0469efa3a5944b8d4bcd2aa1f53895e77f1bf42b078458d4bf26b.

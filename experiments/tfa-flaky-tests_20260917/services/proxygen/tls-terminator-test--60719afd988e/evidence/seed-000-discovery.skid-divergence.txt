@@ -1,0 +1,31 @@
+Candidate: fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test
+Selected test: TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect
+Scheduler seed: 0
+
+Native control
+- started and finished: 2026-09-20T12:55:00Z
+- wall: 0.32 seconds
+- exit: 0
+- oracle: one selected test ran and passed (253 ms test body)
+
+Hermit strict ptrace chaos readiness run
+- started: 2026-09-20T12:56:10Z
+- finished: 2026-09-20T12:56:14Z
+- outer measured wall: 3.659705347 seconds
+- safehermit elapsed_secs: 3
+- exit: 122
+- safehermit bounds: wall APPLIED 900s; cgroup APPLIED MemoryMax=16G MemorySwapMax=0; disk APPLIED 8G; stderr bytes APPLIED 67108864; truncated=false
+- selected-test oracle: NOT_RUN; no retained GoogleTest execution marker proves the selected test ran
+
+Strict verifier and policy refusal
+- Run 1 emitted HERMIT_SKID_OVERSHOOT with rcb_actual=4233655, rcb_target=4233312, skid_margin=1000, overshoot=343.
+- BitwiseInfoV1 compared 6301 INFO messages in each replica and found differences beginning at the same turn-76 read of /var/facebook/x509_identities/server.pem: committed virtual time ended in 198174115 ns versus 198170685 ns.
+- Later virtual-time/scheduler records diverged and the replicas removed different deterministic thread IDs after SIGABRT.
+- Hermit reported HERMIT_POLICY_REFUSAL class=policy-refusal cause=skid-overshoot count=2 and refused the result because precise PMU timer delivery passed its target.
+
+Retained verifier logs (LOCAL_IGNORED, bounded live qgroup during diagnosis)
+- /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-proxygen-tls-terminator-verify-878473-1789908809866238061/run1_log_Egylk: 1487018 bytes, SHA-256 3ab761a74b563b3075dbe975e3c33599d0bd6a418b5c452481e7555dc20ed14a
+- /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-proxygen-tls-terminator-verify-878473-1789908809866238061/run2_log_ED63C: 1486661 bytes, SHA-256 fc5ea30f3a7244927fcca6bbd394c2ddb78ef762dfb8178f78192a03d43d3237
+
+Classification
+This is a censored Hermit PMU-policy-refusal and strict-verifier-divergence result, not a target-owned FAIL arm and not a resource-bound termination. No bound fired and no output was truncated. The readiness policy stops this target after seed 0 and proceeds to another short candidate.

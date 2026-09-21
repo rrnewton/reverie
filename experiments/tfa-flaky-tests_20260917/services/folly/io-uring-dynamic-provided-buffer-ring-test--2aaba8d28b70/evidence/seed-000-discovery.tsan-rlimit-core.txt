@@ -1,0 +1,9 @@
+Candidate: fbcode//folly/io/async/test:io_uring_dynamic_provided_buffer_ring_test
+Selected test: IoUringDynamicProvidedBufferRingTest.BufferCountCheck; scheduler seed 0.
+Native: PASS in 0.17 seconds wall with 45604 KiB peak RSS.
+Hermit: exit 132 / SIGILL in 3.61 seconds outer wall; safehermit elapsed_secs=3.
+All sealed bounds were APPLIED and truncated=false.
+BitwiseInfoV1 compared 3993 INFO records per replica and found no substantive differences.
+The target oracle did not run: ThreadSanitizer aborted on failed setrlimit(RLIMIT_CORE), followed by an allocator CHECK failure.
+The retained Detcore INFO trace shows prlimit64(pid=0, resource=4) first returning the virtual unlimited/unlimited limit, then returning EPERM for the mutation. Hermit's handle_prlimit64 implementation rejects every mutation except RLIMIT_STACK and RLIMIT_NOFILE, including this idempotent RLIMIT_CORE mutation that Linux permits. This is a Hermit Linux-compatibility defect, not target FAIL.
+Retained bounded-run logs (LOCAL_IGNORED): run1_log_qhnMu, 1070757 bytes, SHA-256 86d40c8a44c2f791976b82534529b9ab9ba2ffeb64b81ff14b738ab0dae75f26; run2_log_GW6U9, 1070757 bytes, SHA-256 96c8a84f63a8070ea126405f2914ce2cf0d89a927c48f30fb064e062b0067260; both under /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244.

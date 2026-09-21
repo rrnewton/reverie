@@ -1,0 +1,937 @@
+{
+  "schema_version": 2,
+  "record_type": "TFA_TARGET_EXPERIMENT",
+  "contract": {
+    "commit": "9d7f603c43618715b9245c74acb3e164c17d2ae8",
+    "path": "ai_docs/tfa-acceptance-bracket-2026-09-17.md",
+    "blob": "4a53f0c25623ad6371ee86b4556adada1218745d"
+  },
+  "identity": {
+    "service": "cachelib",
+    "canonical_target": "fbcode//cachelib/common/tests:event-tracker-test",
+    "target_key_sha256": "4b6700e9a3a0850f45178e2c684e6347cc9402500a1c265e8835f9b6c8551d1b",
+    "target_directory": "services/cachelib/event-tracker-test--4b6700e9a3a0",
+    "testinfra_id": "562950242844554",
+    "test_name": "EventTrackerTest.NvmCacheWithEventTracker",
+    "source_label_qualifier": null,
+    "test_selector": {
+      "kind": "EXACT_FILTER",
+      "flag": "--exact",
+      "value": "fbcode//cachelib/common/tests:event-tracker-test - EventTrackerTest.NvmCacheWithEventTracker"
+    },
+    "build_mode_selector": [
+      "@fbcode//mode/dev"
+    ],
+    "invoked_target": "fbcode//cachelib/common/tests:event-tracker-test",
+    "standalone_argv": [
+      "buck",
+      "test",
+      "@fbcode//mode/dev",
+      "fbcode//cachelib/common/tests:event-tracker-test",
+      "--",
+      "--exact",
+      "fbcode//cachelib/common/tests:event-tracker-test - EventTrackerTest.NvmCacheWithEventTracker"
+    ],
+    "experiment_id": "cachelib/event-tracker-test--4b6700e9a3a0",
+    "alias_resolution": {
+      "input_target": "fbcode//cachelib/common/tests:event-tracker-test",
+      "resolved_target": "fbcode//cachelib/common/tests:event-tracker-test",
+      "method": "buck2-targets-show-output-from-pinned-source",
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "evidence": "buck2 targets --show-output @fbcode//mode/dev resolved the already-built target to buck-out/v2/art/fbcode/0bb5f293dc275764/cachelib/common/tests/__event-tracker-test__/event-tracker-test; pre-run verification found an executable x86-64 ELF of 10134232 bytes with SHA-256 0f5a542c22025ad80dfdb992e4a2befc3cfa367d827c434237baa7554e268066."
+    }
+  },
+  "candidate_ranking": {
+    "pfs": {
+      "value": 0.2299,
+      "displayed_percent": "22.99%",
+      "partition": "2026-09-17",
+      "metric": "probability_of_flaky_state",
+      "role": "ranking_only",
+      "may_parameterize_seed_budget": false
+    },
+    "native_failure_rate": {
+      "failures": 1,
+      "executed": 29,
+      "rate": 0.034482758620689655,
+      "rate_fraction": "1/29",
+      "displayed_percent": "3.45%",
+      "window": "trailing one week; latest up to 100 final outcomes",
+      "limit": 100,
+      "final_only": true,
+      "purposes": [
+        "CONTINUOUS",
+        "STRESS_RUN",
+        "STRESS_RUN_NEW_TEST"
+      ],
+      "pass_statuses": [
+        "PASSED"
+      ],
+      "failure_statuses": [
+        "FAILED",
+        "FATAL",
+        "TIMEOUT"
+      ],
+      "excluded_statuses": [
+        "OMITTED",
+        "SKIPPED",
+        "INFRA_FAILURE"
+      ],
+      "source": "meta testinfra.result history",
+      "role": "planning_prior_only"
+    }
+  },
+  "plan": {
+    "plan_id": "cachelib-event-tracker-dev-direct-elf-ptrace-strict-chaos-v1",
+    "plan_sha256": "215ddfb3191764358a77022517d13ef515055f9f0b36590c6d7f18c4a01ec5ad",
+    "sealed_at": "2026-09-20T12:40:22Z",
+    "sealed_by": "codex-tfa",
+    "campaign_owner_identity": "rrnewton",
+    "authorized_routes": [
+      {
+        "route_id": "cachelib-event-tracker-dev-direct-elf-buck-out-bind",
+        "route_sha256": "f6135e4d3a14f22ec908d0bb8fdffeb928af228427a6baca3915f26a229f9030",
+        "fallback_of": null,
+        "authorized_cell_ids": [
+          "cachelib-event-tracker-dev-direct-elf-ptrace-strict-chaos"
+        ],
+        "canonical_target": "fbcode//cachelib/common/tests:event-tracker-test",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//cachelib/common/tests:event-tracker-test - EventTrackerTest.NvmCacheWithEventTracker"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/dev"
+        ],
+        "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "build_argv": [
+          "buck",
+          "test",
+          "@fbcode//mode/dev",
+          "fbcode//cachelib/common/tests:event-tracker-test",
+          "--",
+          "--exact",
+          "fbcode//cachelib/common/tests:event-tracker-test - EventTrackerTest.NvmCacheWithEventTracker"
+        ],
+        "launch_argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "900",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0bb5f293dc275764/cachelib/common/tests/__event-tracker-test__/event-tracker-test",
+          "--gtest_filter=EventTrackerTest.NvmCacheWithEventTracker"
+        ],
+        "repeat_matcher": {
+          "kind": "BUILTIN_VERIFY",
+          "comparison": "BitwiseInfoV1"
+        },
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "notes": "Use the exact already-built dev-mode ELF; no build or fallback route is authorized. The direct GoogleTest selector is --gtest_filter=EventTrackerTest.NvmCacheWithEventTracker. The same-path Buck output mount exposes the nested EdenFS redirection in the guest. SAFEHERMIT_LOG_ROOT is the quota-enabled loopback mnt/safehermit; --keep-logs directs both verifier logs into the separately precreated live 8G qgroup at /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244."
+      }
+    ],
+    "target_oracle": {
+      "oracle_id": "cachelib-event-tracker-gtest-exact-v1",
+      "defined_before_runs": true,
+      "unmodified": true,
+      "selected_test_executed_predicate": "GoogleTest output contains [ RUN      ] EventTrackerTest.NvmCacheWithEventTracker and its summary reports exactly one test from EventTrackerTest.",
+      "pass_predicate": "The selected test line is [       OK ] EventTrackerTest.NvmCacheWithEventTracker, the GoogleTest summary reports 1 test passed, and the guest exits 0 without a signal.",
+      "fail_classes": [
+        {
+          "failure_class_id": "gtest-selected-test-failure",
+          "target_owned": true,
+          "predicate": "The selected test line is [  FAILED  ] EventTrackerTest.NvmCacheWithEventTracker and the GoogleTest summary reports 1 failed test with a nonzero guest exit, excluding Hermit, wrapper, dependency, infrastructure, or outer-timeout failures."
+        }
+      ],
+      "timeout_policy": {
+        "target_timeout_can_fail": false,
+        "target_timeout_predicate": null,
+        "target_timeout_failure_class_id": null,
+        "outer_timeout_is_censored": true
+      }
+    },
+    "measurement_design": {
+      "purpose": "EXISTENCE_DISCOVERY",
+      "swept_coordinate": {
+        "flag": "--sched-seed",
+        "domain": "unsigned 64-bit integers; explicit prefix 0 through 93",
+        "scheduler_modes": []
+      },
+      "fixed_seed_roots": {
+        "--seed": 0,
+        "--rng-seed": 0,
+        "--sched-seed": null,
+        "--fuzz-seed": 0
+      },
+      "seed_population": {
+        "kind": "EXPLICIT_VALUES",
+        "values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93
+        ]
+      },
+      "selection_order": {
+        "kind": "EXPLICIT",
+        "seed_values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93
+        ]
+      },
+      "without_replacement": true,
+      "design_basis": {
+        "kind": "RATE_BOUND",
+        "expected_hermit_fail_probability": 0.034482758620689655,
+        "provenance_kind": "NATIVE_EMPIRICAL_RATE",
+        "provenance": "The fixed cohort records 1 failure among 29 final native TestInfra outcomes. This is used only as a non-equivalent planning prior for the Hermit seed search.",
+        "equivalence_to_hermit": false,
+        "max_miss_probability": 0.05
+      },
+      "miss_probability_override": null,
+      "required_valid_seed_tuples": 86,
+      "max_attempted_seed_tuples": 94,
+      "stop_rule": "BOTH_ARMS_THEN_REPEAT",
+      "repeat_min_executions_per_arm": 2,
+      "repeat_attempt_cap": 2,
+      "independence_assumption": "Distinct scheduler seeds are treated as independent discovery draws only for the predeclared planning calculation; the native rate is not asserted to equal the Hermit seed-outcome rate."
+    },
+    "resource_bounds": {
+      "wall_seconds": 900,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "stderr_bytes": 67108864,
+      "retained_log_bytes": 67108864,
+      "disk_guard": "8G"
+    },
+    "artifact_policy": {
+      "scratch_root": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit",
+      "terminal_evidence_must_be_durable": true,
+      "digest_algorithm": "sha256"
+    }
+  },
+  "plan_receipt": {
+    "commit": "5b4fceedb811d9e263adb649fcee1b3f51d4f524",
+    "path": "services/cachelib/event-tracker-test--4b6700e9a3a0/experiment.json",
+    "blob": "fa6be5aedcd37321473dcb4adf41a92572de7808"
+  },
+  "attempt_state": "MATERIAL",
+  "cells": [
+    {
+      "cell_id": "cachelib-event-tracker-dev-direct-elf-ptrace-strict-chaos",
+      "route_id": "cachelib-event-tracker-dev-direct-elf-buck-out-bind",
+      "route_sha256": "f6135e4d3a14f22ec908d0bb8fdffeb928af228427a6baca3915f26a229f9030",
+      "plan_sha256": "215ddfb3191764358a77022517d13ef515055f9f0b36590c6d7f18c4a01ec5ad",
+      "frozen_at": "2026-09-20T13:48:51Z",
+      "cell_sha256": "04bba3eb77f7b858c2d727154e36ff4c34641f54dc31289c9c3c1afab34b9a49",
+      "canonical_target": "fbcode//cachelib/common/tests:event-tracker-test",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//cachelib/common/tests:event-tracker-test - EventTrackerTest.NvmCacheWithEventTracker"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "target_source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "hermit_source_revision": "79da523137dbac400faca6130593361b58a01468",
+      "hermit_binary_sha256": "000eeb5e59345b6c9c14bf194d6d5b392294a52d25d40209e553376f3a84764a",
+      "test_artifact_sha256": "0f5a542c22025ad80dfdb992e4a2befc3cfa367d827c434237baa7554e268066",
+      "guest": {
+        "argv": [
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0bb5f293dc275764/cachelib/common/tests/__event-tracker-test__/event-tracker-test",
+          "--gtest_filter=EventTrackerTest.NvmCacheWithEventTracker"
+        ],
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "mounts": [
+          "type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+        ],
+        "immutable_inputs": [
+          {
+            "artifact_id": "cachelib-event-tracker-dev-test-elf",
+            "kind": "OTHER",
+            "storage": "LOCAL_IGNORED",
+            "locator": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0bb5f293dc275764/cachelib/common/tests/__event-tracker-test__/event-tracker-test",
+            "sha256": "0f5a542c22025ad80dfdb992e4a2befc3cfa367d827c434237baa7554e268066",
+            "bytes": 10134232,
+            "capture_limit_bytes": 10134232,
+            "truncated": false,
+            "media_type": "application/x-executable"
+          }
+        ],
+        "working_directory": "/home/newton/work/dev-hermit/worktrees/slots/hermit-904-tfa-layout/experiments/tfa-flaky-tests_20260917"
+      },
+      "hermit": {
+        "backend": "ptrace",
+        "strict": true,
+        "chaos": true,
+        "relaxations": [],
+        "argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "900",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0bb5f293dc275764/cachelib/common/tests/__event-tracker-test__/event-tracker-test",
+          "--gtest_filter=EventTrackerTest.NvmCacheWithEventTracker"
+        ],
+        "scheduler_heuristic": "random",
+        "swept_coordinate": "--sched-seed",
+        "fixed_seed_roots": {
+          "--seed": 0,
+          "--rng-seed": 0,
+          "--sched-seed": null,
+          "--fuzz-seed": 0
+        }
+      },
+      "timing": {
+        "requested_max_timeslice": 200000000,
+        "effective_max_timeslice": 200000000
+      },
+      "pmu": {
+        "available": true,
+        "effective_timer": "RCB",
+        "fallback_recorded": false
+      },
+      "host": {
+        "hostname": "devbig030.atn3.facebook.com",
+        "kernel": "Linux 6.13.2-0_fbk17_hardened_0_g2ae417e0caa0",
+        "architecture": "x86_64",
+        "cpu": "AMD EPYC 9D85 158-Core Processor",
+        "capabilities": {
+          "pmu": true,
+          "mount_namespace": true,
+          "buck_out_bind": true,
+          "safehermit_disk_qgroup": true
+        }
+      },
+      "oracle_id": "cachelib-event-tracker-gtest-exact-v1",
+      "resource_bounds": {
+        "wall_seconds": 900,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "stderr_bytes": 67108864,
+        "retained_log_bytes": 67108864,
+        "disk_guard": "8G"
+      }
+    }
+  ],
+  "events": [
+    {
+      "event_id": "event-seed-000-discovery",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "215ddfb3191764358a77022517d13ef515055f9f0b36590c6d7f18c4a01ec5ad",
+      "route_id": "cachelib-event-tracker-dev-direct-elf-buck-out-bind",
+      "route_sha256": "f6135e4d3a14f22ec908d0bb8fdffeb928af228427a6baca3915f26a229f9030",
+      "canonical_target": "fbcode//cachelib/common/tests:event-tracker-test",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//cachelib/common/tests:event-tracker-test - EventTrackerTest.NvmCacheWithEventTracker"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "cachelib-event-tracker-dev-direct-elf-ptrace-strict-chaos",
+      "cell_sha256": "04bba3eb77f7b858c2d727154e36ff4c34641f54dc31289c9c3c1afab34b9a49",
+      "measurement_role": "DISCOVERY",
+      "started_at": "2026-09-20T13:48:52Z",
+      "finished_at": "2026-09-20T13:48:54Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/cachelib/event-tracker-test--4b6700e9a3a0/evidence/seed-000-discovery.safehermit.txt",
+        "--sh-deadline",
+        "900",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0bb5f293dc275764/cachelib/common/tests/__event-tracker-test__/event-tracker-test",
+        "--gtest_filter=EventTrackerTest.NvmCacheWithEventTracker"
+      ],
+      "result": {
+        "exit_code": 1,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 0,
+        "target_oracle": "NOT_RUN",
+        "failure_class_id": null,
+        "harness_status": "ERROR",
+        "diagnostic": "Both strict-verify replicas started the guest and matched under BitwiseInfoV1, but AddressSanitizer aborted on a failed setrlimit(RLIMIT_CORE) before EventTrackerTest.NvmCacheWithEventTracker emitted an execution marker; Hermit exited 1."
+      },
+      "invocation_id": "verify-seed-000-20260920T134852Z-724033",
+      "replica_index": 1,
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 0
+      },
+      "effective_config_sha256": "04bba3eb77f7b858c2d727154e36ff4c34641f54dc31289c9c3c1afab34b9a49",
+      "artifacts": [
+        {
+          "artifact_id": "cachelib-event-tracker-seed-000-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/cachelib/event-tracker-test--4b6700e9a3a0/evidence/seed-000-discovery.stdout.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "cachelib-event-tracker-seed-000-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/cachelib/event-tracker-test--4b6700e9a3a0/evidence/seed-000-discovery.stderr.txt",
+          "sha256": "fd66b868cc23634c4a7844e323099244cf2c961668f70f95cf5e66d32a31c37d",
+          "bytes": 1361,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "cachelib-event-tracker-seed-000-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/cachelib/event-tracker-test--4b6700e9a3a0/evidence/seed-000-discovery.result.json",
+          "sha256": "537bd24ce9b1fba31c76dc04e225b8bc6c2d69c8bf00c58bf29f80414ddf6533",
+          "bytes": 2263,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "cachelib-event-tracker-seed-000-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/cachelib/event-tracker-test--4b6700e9a3a0/evidence/seed-000-discovery.safehermit.txt",
+          "sha256": "73d0ceb441a13e31af0a2bffb38dcc797ebfbb1e3653b8d8aea407c1e3d0baa3",
+          "bytes": 1789,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "cachelib-event-tracker-seed-000-asan-rlimit-core",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/cachelib/event-tracker-test--4b6700e9a3a0/evidence/seed-000-discovery.asan-rlimit-core.txt",
+          "sha256": "993f2400e5ffd92ad8d051b25ea8703636f43a79b955ef884b445ab39c08a584",
+          "bytes": 1295,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "cachelib-event-tracker-seed-000-run1-full-info",
+          "kind": "CANONICAL_INFO",
+          "storage": "LOCAL_IGNORED",
+          "locator": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244/run1_log_OQX1b",
+          "sha256": "50836b240472091fc3babf89f955578e11bf2f04127567c9128955166416b676",
+          "bytes": 1657638,
+          "capture_limit_bytes": 8000000000,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "cachelib-event-tracker-seed-000-run2-full-info",
+          "kind": "CANONICAL_INFO",
+          "storage": "LOCAL_IGNORED",
+          "locator": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244/run2_log_rVSoz",
+          "sha256": "c453d4417d69103a1e235ff8d1a0a0c24f73772d256ba764be018d755efca10e",
+          "bytes": 1657638,
+          "capture_limit_bytes": 8000000000,
+          "truncated": false,
+          "media_type": "text/plain"
+        }
+      ]
+    }
+  ],
+  "samples": [
+    {
+      "sample_id": "sample-seed-000",
+      "cell_id": "cachelib-event-tracker-dev-direct-elf-ptrace-strict-chaos",
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 0
+      },
+      "selection_index": 0,
+      "status": "CENSORED",
+      "target_outcome": null,
+      "failure_class_id": null,
+      "censor_reason": "Both strict-verify replicas matched, but the guest AddressSanitizer runtime aborted on prlimit64(RLIMIT_CORE) before the selected test emitted an execution marker.",
+      "execution_event_ids": [
+        "event-seed-000-discovery"
+      ]
+    }
+  ],
+  "matchers": [],
+  "outcome_history": [
+    {
+      "classification_id": "classification-not-determinable-20260920T135400Z",
+      "classified_at": "2026-09-20T13:54:00Z",
+      "supersedes": null,
+      "evidence_refs": [
+        "event-seed-000-discovery",
+        "sample-seed-000",
+        "cachelib-event-tracker-seed-000-asan-rlimit-core",
+        "cachelib-event-tracker-seed-000-safehermit"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "cachelib-event-tracker-dev-direct-elf-buck-out-bind",
+          "cell_ids": [
+            "cachelib-event-tracker-dev-direct-elf-ptrace-strict-chaos"
+          ],
+          "evidence_event_ids": [
+            "event-seed-000-discovery"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/cachelib/event-tracker-test--4b6700e9a3a0/evidence/seed-000-discovery.safehermit.txt",
+          "--sh-deadline",
+          "900",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0bb5f293dc275764/cachelib/common/tests/__event-tracker-test__/event-tracker-test",
+          "--gtest_filter=EventTrackerTest.NvmCacheWithEventTracker"
+        ]
+      ],
+      "inspected_artifacts": [
+        "cachelib-event-tracker-seed-000-stderr",
+        "cachelib-event-tracker-seed-000-result",
+        "cachelib-event-tracker-seed-000-safehermit",
+        "cachelib-event-tracker-seed-000-asan-rlimit-core",
+        "cachelib-event-tracker-seed-000-run1-full-info",
+        "cachelib-event-tracker-seed-000-run2-full-info"
+      ],
+      "missing_or_ambiguous_facts": [
+        "Seed 0 produced no target oracle because AddressSanitizer aborted before the selected GoogleTest emitted an execution marker.",
+        "The two Hermit replicas agree under strict BitwiseInfoV1, but agreement on a pre-oracle compatibility abort is not a PASS or target-owned FAIL arm.",
+        "No valid scheduler-seed tuple has established either target arm."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Select a different short predeclared candidate; this target sweep is stopped after its failed readiness checkpoint."
+      ]
+    }
+  ],
+  "current_outcome": {
+    "classification_id": "classification-not-determinable-20260920T135400Z",
+    "classified_at": "2026-09-20T13:54:00Z",
+    "supersedes": null,
+    "evidence_refs": [
+      "event-seed-000-discovery",
+      "sample-seed-000",
+      "cachelib-event-tracker-seed-000-asan-rlimit-core",
+      "cachelib-event-tracker-seed-000-safehermit"
+    ],
+    "kind": "NOT-DETERMINABLE",
+    "route_evidence": [
+      {
+        "route_id": "cachelib-event-tracker-dev-direct-elf-buck-out-bind",
+        "cell_ids": [
+          "cachelib-event-tracker-dev-direct-elf-ptrace-strict-chaos"
+        ],
+        "evidence_event_ids": [
+          "event-seed-000-discovery"
+        ]
+      }
+    ],
+    "inspected_commands": [
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/cachelib/event-tracker-test--4b6700e9a3a0/evidence/seed-000-discovery.safehermit.txt",
+        "--sh-deadline",
+        "900",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-hermit-binary-readiness/79da523137dbac400faca6130593361b58a01468/hermit",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0bb5f293dc275764/cachelib/common/tests/__event-tracker-test__/event-tracker-test",
+        "--gtest_filter=EventTrackerTest.NvmCacheWithEventTracker"
+      ]
+    ],
+    "inspected_artifacts": [
+      "cachelib-event-tracker-seed-000-stderr",
+      "cachelib-event-tracker-seed-000-result",
+      "cachelib-event-tracker-seed-000-safehermit",
+      "cachelib-event-tracker-seed-000-asan-rlimit-core",
+      "cachelib-event-tracker-seed-000-run1-full-info",
+      "cachelib-event-tracker-seed-000-run2-full-info"
+    ],
+    "missing_or_ambiguous_facts": [
+      "Seed 0 produced no target oracle because AddressSanitizer aborted before the selected GoogleTest emitted an execution marker.",
+      "The two Hermit replicas agree under strict BitwiseInfoV1, but agreement on a pre-oracle compatibility abort is not a PASS or target-owned FAIL arm.",
+      "No valid scheduler-seed tuple has established either target arm."
+    ],
+    "measurement_budget_exhausted": false,
+    "pending_in_scope_measurements": [
+      "Select a different short predeclared candidate; this target sweep is stopped after its failed readiness checkpoint."
+    ]
+  }
+}

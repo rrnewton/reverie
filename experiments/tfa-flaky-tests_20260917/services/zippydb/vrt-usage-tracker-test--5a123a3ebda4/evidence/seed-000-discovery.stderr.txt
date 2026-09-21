@@ -1,0 +1,610 @@
+:: Run1...
+:: Run2...
+Mismatch in stdout between run 1 and run 2:
+  CreateIOUring failed: Function not implemented (errno=38), thread=140737348501312
+  Note: Google Test filter = VRTUsageTrackerTest.BumpWithIOTagTest
+  [==========] Running 1 test from 1 test suite.
+  [----------] Global test environment set-up.
+  [----------] 1 test from VRTUsageTrackerTest
+  [ RUN      ] VRTUsageTrackerTest.BumpWithIOTagTest
+- fbcode/zippydb/common/tests/VRTUsageTrackerTest.cpp:113: Failure
+- Expected equality of these values:
+-   counter.get(60)
+-     Which is: 0
+-   testVal
+-     Which is: 5
+- 
+  
+Mismatch in stderr between run 1 and run 2:
+  E0101 00:00:00.920078     3 SmcTiers.cpp:264] Failed to get SMC tiers for localhost. Client: cfgr-logger. Timeout: 1000ms. Exception: 'apache::thrift::transport::TTransportException: Dropping unsent request. Connection closed after: apache::thrift::transport::TTransportException: AsyncSocketException: connect failed, type = Socket not open, errno = 111 (Connection refused): Connection refused'
+  I0101 00:00:00.932929     3 SmcTiers.cpp:214] Reading tiers from /etc/smc.tiers
+  E0101 00:00:00.966365    19 SmcTiers.cpp:264] Failed to get SMC tiers for localhost. Client: falcon_client_config_provider. Timeout: none. Exception: 'apache::thrift::transport::TTransportException: Dropping unsent request. Connection closed after: apache::thrift::transport::TTransportException: AsyncSocketException: connect failed, type = Socket not open, errno = 111 (Connection refused): Connection refused'
+  I0101 00:00:00.974241    19 SmcTiers.cpp:214] Reading tiers from /etc/smc.tiers
+  E0101 00:00:00.996881     3 FalconConnectionUtils.cpp:120] Exception while fetching entity: ratelim/categories/category_config on host devbig030.atn3.facebook.com (no retry)
+  /********************** IMPORTANT INFORMATION: **********************/
+  /* 1. Falcon can not respond to a request if a system is overloaded. */
+  /* 2. Please check the host status, including CPU, memory, and I/O. You can run the following command to check its status: */
+  /*    ( below replay -s devbig030.atn3.facebook.com -t 1767225595 ) */
+  /* 3. You can also check the host status in the following link: https://fburl.com/unidash/ard0dqxy. */
+  /* 4. Set a timeout to allow retries for reliable entity fetching. */
+   Exception: std::runtime_error: A distribution error occurred, Blob entity cpentity_s3|xpress_config_content|prod:d/configerator/configs/ratelim/categories|category_config may or may not exist, took 44ms
+  I0101 00:00:02.373656    25 HealthTracker.cpp:46] configerator proxy2+fuse unhealthy; this may lead to timeouts or fallbacks to system configs
+  I0101 00:00:02.375728    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- I0101 00:00:04.385565    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- I0101 00:00:06.397691    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- I0101 00:00:08.412238    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- I0101 00:00:10.424404    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- E0101 00:00:11.052280     3 FalconConnectionUtils.cpp:120] Exception while fetching entity: ratelim/categories/category_config on host devbig030.atn3.facebook.com (no retry)
+- /********************** IMPORTANT INFORMATION: **********************/
+- /* 1. Falcon can not respond to a request if a system is overloaded. */
+- /* 2. Please check the host status, including CPU, memory, and I/O. You can run the following command to check its status: */
+- /*    ( below replay -s devbig030.atn3.facebook.com -t 1767225606 ) */
+- /* 3. You can also check the host status in the following link: https://fburl.com/unidash/ard0dqxy. */
+- /* 4. Set a timeout to allow retries for reliable entity fetching. */
+-  Exception: std::runtime_error: A distribution error occurred, Blob entity cpentity_s3|xpress_config_content|prod:d/configerator/configs/ratelim/categories|category_config may or may not exist, took 4ms
+- I0101 00:00:12.399847     3 HealthTracker.cpp:46] configerator proxy2+fuse unhealthy; this may lead to timeouts or fallbacks to system configs
+- I0101 00:00:12.444564    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- W0101 00:00:13.520649     5 RouterZeroClient.cpp:79] Skipping Router Zero connection setup in unit test. ODS3 data will not be sent to Router Zero.
+- I0101 00:00:14.460004    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- W0101 00:00:16.033152     3 RetryingProxyConnection.cpp:176] Failed to read the config within the user-defined timeout of 15000ms: ratelim/categories/category_config
+- E0101 00:00:16.038178     3 CategoryProperties.cpp:189] Category configuration failed to load
+- E0101 00:00:16.038766     3 Client.cpp:74] Usage of SCS is prohibited for new category "zdb". Please use FCI instead: https://fburl.com/wiki/ey9zd3oi
+- E0101 00:00:16.058516    49 SmcTiers.cpp:264] Failed to get SMC tiers for localhost. Client: cfgr-logger. Timeout: 1000ms. Exception: 'apache::thrift::transport::TTransportException: Dropping unsent request. Connection closed after: apache::thrift::transport::TTransportException: AsyncSocketException: connect failed, type = Socket not open, errno = 111 (Connection refused): Connection refused'
+- I0101 00:00:16.066440    49 SmcTiers.cpp:214] Reading tiers from /etc/smc.tiers
+- W0101 00:00:16.319247    61 RetryingSender.cpp:996] Failed to make rpc. Sender name: pr-default._._._, first category configerator_config_access_logs. Reason: apache::thrift::transport::TTransportException: AsyncSocketException: connect failed, type = Socket not open, errno = 111 (Connection refused): Connection refused.
+- I0101 00:00:16.477785    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- I0101 00:00:18.496785    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- I0101 00:00:20.523756    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- W0101 00:00:22.216197    61 RetryingSender.cpp:996] Failed to make rpc. Sender name: pr-default._._._, first category configerator_config_access_logs. Reason: apache::thrift::transport::TTransportException: AsyncSocketException: connect failed, type = Socket not open, errno = 111 (Connection refused): Connection refused.
+- I0101 00:00:22.416538    29 HealthTracker.cpp:46] configerator proxy2+fuse unhealthy; this may lead to timeouts or fallbacks to system configs
+- I0101 00:00:22.550540    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- I0101 00:00:24.577822    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- E0101 00:00:26.043568     3 Client.cpp:74] Usage of SCS is prohibited for new category "zdb". Please use FCI instead: https://fburl.com/wiki/ey9zd3oi
+- E0101 00:00:26.063371     3 FalconConnectionUtils.cpp:120] Exception while fetching entity: luna/sampling/justknobs/adaptive_sample_rates/empty-service-id on host devbig030.atn3.facebook.com (no retry)
+- /********************** IMPORTANT INFORMATION: **********************/
+- /* 1. Falcon can not respond to a request if a system is overloaded. */
+- /* 2. Please check the host status, including CPU, memory, and I/O. You can run the following command to check its status: */
+- /*    ( below replay -s devbig030.atn3.facebook.com -t 1767225621 ) */
+- /* 3. You can also check the host status in the following link: https://fburl.com/unidash/ard0dqxy. */
+- /* 4. Set a timeout to allow retries for reliable entity fetching. */
+-  Exception: std::runtime_error: A distribution error occurred, Blob entity cpentity_s3|xpress_config_content|prod:d/configerator/configs/luna/sampling/justknobs/adaptive_sample_rates|empty-service-id may or may not exist, took 15ms
+- I0101 00:00:26.600843    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- I0101 00:00:28.628039    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- W0101 00:00:28.894958    61 RetryingSender.cpp:996] Failed to make rpc. Sender name: pr-default._._._, first category configerator_config_access_logs. Reason: apache::thrift::transport::TTransportException: AsyncSocketException: connect failed, type = Socket not open, errno = 111 (Connection refused): Connection refused.
+- I0101 00:00:30.651829    25 FallbackConnection.cpp:215] The configerator-fuse server is unhealthy now! Try to probe...
+- W0101 00:00:31.075655     3 RetryingProxyConnection.cpp:176] Failed to read the config within the user-defined timeout of 5000ms: luna/sampling/justknobs/adaptive_sample_rates/empty-service-id
+  
+:: Comparing captured verification logs...
+Logs contain 853289 | 121168 messages total
+Logs contain 853248 | 121143 detcore-specific messages
+Logs contain 853248 | 121143 INFO messages
+Logs contain 737302 | 110441 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 28651 (run 1) and 28651 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::io_buffers: DETLOG [iobuf][dtid 29] read in fd=26 0x7fffd3ae2200+246->[0m[1;48;5;52;31m4f[0m[31ma983[0m[1;48;5;52;31mfc6[0m[31m09[0m[1;48;5;52;31m934b[0m[31md[0m[1;48;5;52;31me[0m[31m09[0m[1;48;5;52;31m219[0m[31m78[0m[1;48;5;52;31m70af44[0m[31md[0m[1;48;5;52;31macc88f6f[0m[31md[0m[1;48;5;52;31m1[0m[31mc[0m[1;48;5;52;31m77721[0m[31m5[0m[1;48;5;52;31mf[0m[31m1[0m[1;48;5;52;31ma[0m[31mb8[0m[1;48;5;52;31md1[0m[31m7[0m[1;48;5;52;31m3[0m[31mb[0m[1;48;5;52;31m58[0m[31m07e[0m[1;48;5;52;31m9[0m[31m"[0m
+[32m>"INFO detcore::io_buffers: DETLOG [iobuf][dtid 29] read in fd=26 0x7fffd3ae2200+246->a[0m[1;48;5;22;32m343d7[0m[32m9[0m[1;48;5;22;32m41c[0m[32m8309[0m[1;48;5;22;32m55[0m[32md[0m[1;48;5;22;32mfa[0m[32m0[0m[1;48;5;22;32m3[0m[32m9[0m[1;48;5;22;32mf[0m[32m7[0m[1;48;5;22;32m3e[0m[32m8d[0m[1;48;5;22;32me[0m[32mdc[0m[1;48;5;22;32mddb[0m[32m5[0m[1;48;5;22;32m6[0m[32m1[0m[1;48;5;22;32m1[0m[32mb8[0m[1;48;5;22;32m59469[0m[32m7b07[0m[1;48;5;22;32mabc7a[0m[32me[0m[1;48;5;22;32m137251fcc[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::io_buffers: DETLOG [iobuf][dtid 29] read in fd=26 0x7fffd3ae2200+246->[0m[1;48;5;52;31m4f[0m[31ma983[0m[1;48;5;52;31mfc6[0m[31m09[0m[1;48;5;52;31m934b[0m[31md[0m[1;48;5;52;31me[0m[31m09[0m[1;48;5;52;31m219[0m[31m78[0m[1;48;5;52;31m70af44[0m[31md[0m[1;48;5;52;31macc88f6f[0m[31md[0m[1;48;5;52;31m1[0m[31mc[0m[1;48;5;52;31m77721[0m[31m5[0m[1;48;5;52;31mf[0m[31m1[0m[1;48;5;52;31ma[0m[31mb8[0m[1;48;5;52;31md1[0m[31m7[0m[1;48;5;52;31m3[0m[31mb[0m[1;48;5;52;31m58[0m[31m07e[0m[1;48;5;52;31m9[0m[31m"[0m
+[32m>"INFO detcore::io_buffers: DETLOG [iobuf][dtid 29] read in fd=26 0x7fffd3ae2200+246->a[0m[1;48;5;22;32m343d7[0m[32m9[0m[1;48;5;22;32m41c[0m[32m8309[0m[1;48;5;22;32m55[0m[32md[0m[1;48;5;22;32mfa[0m[32m0[0m[1;48;5;22;32m3[0m[32m9[0m[1;48;5;22;32mf[0m[32m7[0m[1;48;5;22;32m3e[0m[32m8d[0m[1;48;5;22;32me[0m[32mdc[0m[1;48;5;22;32mddb[0m[32m5[0m[1;48;5;22;32m6[0m[32m1[0m[1;48;5;22;32m1[0m[32mb8[0m[1;48;5;22;32m59469[0m[32m7b07[0m[1;48;5;22;32mabc7a[0m[32me[0m[1;48;5;22;32m137251fcc[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 28650: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #5993: read(26, 0x7fffd3ae2200, 247) = Ok(246)
+  run 2, log message 28650: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #5993: read(26, 0x7fffd3ae2200, 247) = Ok(246)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 41] finish syscall #10: clock_gettime(CLOCK_MONOTONIC, 0x7fffcdaef2f0 -> { tv_sec: 1767225600, tv_nsec: 670117385 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 41] finish syscall #11: prctl(15, 140736644182384, 15, 8243112832210006629, 140736725683416) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 41] finish syscall #12: clock_gettime(CLOCK_MONOTONIC, 0x7fffcdaef430 -> { tv_sec: 1767225600, tv_nsec: 670163545 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #5991: openat(-100, 0x7fffd288c6a0 -> "/var/facebook/configerator-client-system-configs/falcon/core_entities/0/23435333333313533373", OFlag(O_CLOEXEC)) = Ok(26)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #5992: newfstatat(26, 0x7ffff75dc4d5 -> "", 0x7fffd0af4b20 -> {st_mode=SFlag(S_IFREG) | 0644, st_size=246, ...}, AtFlags(AT_EMPTY_PATH)) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 41] finish syscall #10: clock_gettime(CLOCK_MONOTONIC, 0x7fffcdaef2f0 -> { tv_sec: 1767225600, tv_nsec: 670117385 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 41] finish syscall #11: prctl(15, 140736644182384, 15, 8243112832210006629, 140736725683416) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 41] finish syscall #12: clock_gettime(CLOCK_MONOTONIC, 0x7fffcdaef430 -> { tv_sec: 1767225600, tv_nsec: 670163545 }) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #5991: openat(-100, 0x7fffd288c6a0 -> "/var/facebook/configerator-client-system-configs/falcon/core_entities/0/23435333333313533373", OFlag(O_CLOEXEC)) = Ok(26)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #5992: newfstatat(26, 0x7ffff75dc4d5 -> "", 0x7fffd0af4b20 -> {st_mode=SFlag(S_IFREG) | 0644, st_size=246, ...}, AtFlags(AT_EMPTY_PATH)) = Ok(0)
+
+(INFO) Mismatch at log messages 121111 (run 1) and 121111 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = [0m[1;48;5;52;31mOk[0m[31m([0m[1;48;5;52;31m0[0m[31m)"[0m
+[32m>"INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = [0m[1;48;5;22;32mErr[0m[32m([0m[1;48;5;22;32mErrno(ERESTARTSYS)[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = [0m[1;48;5;52;31mOk[0m[31m([0m[1;48;5;52;31m0[0m[31m)"[0m
+[32m>"INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = [0m[1;48;5;22;32mErr[0m[32m([0m[1;48;5;22;32mErrno(ERESTARTSYS)[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121112 (run 1) and 121113 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdtid 29] inb[0m[31mo[0m[1;48;5;52;31mund sys[0m[31mcall: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31ms[0m[31mk[0m[1;48;5;52;31m(2,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31mNULL,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32ml[0m[32mo[0m[1;48;5;22;32mgi[0m[32mcall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll [0m[32mk[0m[1;48;5;22;32mnowledge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m35[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid[0m[32m [0m[1;48;5;22;32m3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdtid 29] inb[0m[31mo[0m[1;48;5;52;31mund sys[0m[31mcall: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31ms[0m[31mk[0m[1;48;5;52;31m(2,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31mNULL,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32ml[0m[32mo[0m[1;48;5;22;32mgi[0m[32mcall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll [0m[32mk[0m[1;48;5;22;32mnowledge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m35[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid[0m[32m [0m[1;48;5;22;32m3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121112: INFO detcore: DETLOG [syscall][detcore, dtid 29] inbound syscall: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = ?
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121113 (run 1) and 121115 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdt[0m[31mi[0m[1;48;5;52;31md 29] finish sys[0m[31mcall[0m[1;48;5;52;31m #32964[0m[31m: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31ms[0m[31mk[0m[1;48;5;52;31m(2,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31mNULL,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31mOk(0)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32mlog[0m[32micall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll [0m[32mk[0m[1;48;5;22;32mnowledge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m37[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid[0m[32m [0m[1;48;5;22;32m3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdt[0m[31mi[0m[1;48;5;52;31md 29] finish sys[0m[31mcall[0m[1;48;5;52;31m #32964[0m[31m: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31ms[0m[31mk[0m[1;48;5;52;31m(2,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31mNULL,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31mOk(0)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32mlog[0m[32micall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll [0m[32mk[0m[1;48;5;22;32mnowledge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m37[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid[0m[32m [0m[1;48;5;22;32m3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121113: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121114 (run 1) and 121117 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdtid 29] inb[0m[31mo[0m[1;48;5;52;31mund sys[0m[31mcall: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31msk(2,[0m[31m [0m[1;48;5;52;31m0x7fff[0m[31md[0m[1;48;5;52;31m0af4a58,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32ml[0m[32mo[0m[1;48;5;22;32mgi[0m[32mcall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll[0m[32m [0m[1;48;5;22;32mknowle[0m[32md[0m[1;48;5;22;32mge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m43[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid 3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdtid 29] inb[0m[31mo[0m[1;48;5;52;31mund sys[0m[31mcall: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31msk(2,[0m[31m [0m[1;48;5;52;31m0x7fff[0m[31md[0m[1;48;5;52;31m0af4a58,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32ml[0m[32mo[0m[1;48;5;22;32mgi[0m[32mcall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll[0m[32m [0m[1;48;5;22;32mknowle[0m[32md[0m[1;48;5;22;32mge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m43[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid 3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121114: INFO detcore: DETLOG [syscall][detcore, dtid 29] inbound syscall: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = ?
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121115 (run 1) and 121119 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdt[0m[31mi[0m[1;48;5;52;31md 29] finish sys[0m[31mcall[0m[1;48;5;52;31m #32965[0m[31m: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31msk(2,[0m[31m [0m[1;48;5;52;31m0x7fff[0m[31md[0m[1;48;5;52;31m0af4a58,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31mOk(0)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32mlog[0m[32micall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll[0m[32m [0m[1;48;5;22;32mknowle[0m[32md[0m[1;48;5;22;32mge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m9[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid 3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdt[0m[31mi[0m[1;48;5;52;31md 29] finish sys[0m[31mcall[0m[1;48;5;52;31m #32965[0m[31m: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31msk(2,[0m[31m [0m[1;48;5;52;31m0x7fff[0m[31md[0m[1;48;5;52;31m0af4a58,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31mOk(0)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32mlog[0m[32micall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll[0m[32m [0m[1;48;5;22;32mknowle[0m[32md[0m[1;48;5;22;32mge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m9[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid 3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121115: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121116 (run 1) and 121121 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdtid 29] inb[0m[31mo[0m[1;48;5;52;31mund sys[0m[31mcall: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31ms[0m[31mk[0m[1;48;5;52;31m(2,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31mNULL,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32ml[0m[32mo[0m[1;48;5;22;32mgi[0m[32mcall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll [0m[32mk[0m[1;48;5;22;32mnowledge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m7[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid[0m[32m [0m[1;48;5;22;32m3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdtid 29] inb[0m[31mo[0m[1;48;5;52;31mund sys[0m[31mcall: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31ms[0m[31mk[0m[1;48;5;52;31m(2,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31mNULL,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32ml[0m[32mo[0m[1;48;5;22;32mgi[0m[32mcall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll [0m[32mk[0m[1;48;5;22;32mnowledge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m7[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid[0m[32m [0m[1;48;5;22;32m3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121116: INFO detcore: DETLOG [syscall][detcore, dtid 29] inbound syscall: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = ?
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121117 (run 1) and 121123 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdt[0m[31mi[0m[1;48;5;52;31md 29] finish sys[0m[31mcall[0m[1;48;5;52;31m #32966[0m[31m: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31ms[0m[31mk[0m[1;48;5;52;31m(2,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31mNULL,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31mOk(0)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32mlog[0m[32micall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll [0m[32mk[0m[1;48;5;22;32mnowledge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m13[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid[0m[32m [0m[1;48;5;22;32m3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdt[0m[31mi[0m[1;48;5;52;31md 29] finish sys[0m[31mcall[0m[1;48;5;52;31m #32966[0m[31m: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31ms[0m[31mk[0m[1;48;5;52;31m(2,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31mNULL,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31mOk(0)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32mlog[0m[32micall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll [0m[32mk[0m[1;48;5;22;32mnowledge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m13[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid[0m[32m [0m[1;48;5;22;32m3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121117: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121118 (run 1) and 121125 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdtid 29] inb[0m[31mo[0m[1;48;5;52;31mund sys[0m[31mcall: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31msk(2,[0m[31m [0m[1;48;5;52;31m0x7fff[0m[31md[0m[1;48;5;52;31m0af4a58,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32ml[0m[32mo[0m[1;48;5;22;32mgi[0m[32mcall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll[0m[32m [0m[1;48;5;22;32mknowle[0m[32md[0m[1;48;5;22;32mge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m27[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid 3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdtid 29] inb[0m[31mo[0m[1;48;5;52;31mund sys[0m[31mcall: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31msk(2,[0m[31m [0m[1;48;5;52;31m0x7fff[0m[31md[0m[1;48;5;52;31m0af4a58,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31m?[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32ml[0m[32mo[0m[1;48;5;22;32mgi[0m[32mcall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll[0m[32m [0m[1;48;5;22;32mknowle[0m[32md[0m[1;48;5;22;32mge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m27[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid 3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121118: INFO detcore: DETLOG [syscall][detcore, dtid 29] inbound syscall: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = ?
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121119 (run 1) and 121127 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdt[0m[31mi[0m[1;48;5;52;31md 29] finish sys[0m[31mcall[0m[1;48;5;52;31m #32967[0m[31m: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31msk(2,[0m[31m [0m[1;48;5;52;31m0x7fff[0m[31md[0m[1;48;5;52;31m0af4a58,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31mOk(0)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32mlog[0m[32micall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll[0m[32m [0m[1;48;5;22;32mknowle[0m[32md[0m[1;48;5;22;32mge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m31[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid 3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m DETLOG [[0m[31ms[0m[1;48;5;52;31mys[0m[31mc[0m[1;48;5;52;31mall][[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdt[0m[31mi[0m[1;48;5;52;31md 29] finish sys[0m[31mcall[0m[1;48;5;52;31m #32967[0m[31m: r[0m[1;48;5;52;31mt_sigp[0m[31mr[0m[1;48;5;52;31moc[0m[31mma[0m[1;48;5;52;31msk(2,[0m[31m [0m[1;48;5;52;31m0x7fff[0m[31md[0m[1;48;5;52;31m0af4a58,[0m[31m [0m[1;48;5;52;31m0x7[0m[31mf[0m[1;48;5;52;31mff[0m[31md[0m[1;48;5;52;31m0af4a[0m[31md[0m[1;48;5;52;31m8,[0m[31m [0m[1;48;5;52;31m8)[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31mOk(0)[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:[0m[32msc[0m[1;48;5;22;32mhe[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32mlog[0m[32micall[0m[1;48;5;22;32my_kill[0m[32m: [0m[1;48;5;22;32mSchedule[0m[32mr[0m[1;48;5;22;32m [0m[32mr[0m[1;48;5;22;32me[0m[32mm[0m[1;48;5;22;32moving [0m[32ma[0m[1;48;5;22;32mll[0m[32m [0m[1;48;5;22;32mknowle[0m[32md[0m[1;48;5;22;32mge[0m[32m [0m[1;48;5;22;32mo[0m[32mf[0m[1;48;5;22;32m [[0m[32md[0m[1;48;5;22;32met]ti[0m[32md [0m[1;48;5;22;32m31[0m[32m [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid 3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121119: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32967: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121120 (run 1) and 121129 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m [[0m[31mde[0m[1;48;5;52;31mtc[0m[31more[0m[1;48;5;52;31m,[0m[31m dtid 29[0m[1;48;5;52;31m][0m[31m in[0m[1;48;5;52;31mbound[0m[31m [0m[1;48;5;52;31mtimer [0m[31mp[0m[1;48;5;52;31mreempt[0m[31mi[0m[1;48;5;52;31mon[0m[31m [0m[1;48;5;52;31mevent[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:sche[0m[32md[0m[1;48;5;22;32mul[0m[32me[0m[1;48;5;22;32mr: l[0m[32mo[0m[1;48;5;22;32mgically_kill: Schedule[0m[32mr[0m[1;48;5;22;32m r[0m[32me[0m[1;48;5;22;32mmoving[0m[32m [0m[1;48;5;22;32mall knowle[0m[32md[0m[1;48;5;22;32mge of [de[0m[32mt[0m[1;48;5;22;32m]t[0m[32mid 29 in pi[0m[1;48;5;22;32md[0m[32m [0m[1;48;5;22;32m3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m [[0m[31mde[0m[1;48;5;52;31mtc[0m[31more[0m[1;48;5;52;31m,[0m[31m dtid 29[0m[1;48;5;52;31m][0m[31m in[0m[1;48;5;52;31mbound[0m[31m [0m[1;48;5;52;31mtimer [0m[31mp[0m[1;48;5;52;31mreempt[0m[31mi[0m[1;48;5;52;31mon[0m[31m [0m[1;48;5;52;31mevent[0m[31m"[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:sche[0m[32md[0m[1;48;5;22;32mul[0m[32me[0m[1;48;5;22;32mr: l[0m[32mo[0m[1;48;5;22;32mgically_kill: Schedule[0m[32mr[0m[1;48;5;22;32m r[0m[32me[0m[1;48;5;22;32mmoving[0m[32m [0m[1;48;5;22;32mall knowle[0m[32md[0m[1;48;5;22;32mge of [de[0m[32mt[0m[1;48;5;22;32m]t[0m[32mid 29 in pi[0m[1;48;5;22;32md[0m[32m [0m[1;48;5;22;32m3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121119: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32967: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121121 (run 1) and 121131 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m [[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdt[0m[31mi[0m[1;48;5;52;31md[0m[31m [0m[1;48;5;52;31m29] [0m[31me[0m[1;48;5;52;31mn[0m[31mding [0m[1;48;5;52;31mtimeslice T1. 32967 sysc[0m[31mall[0m[1;48;5;52;31ms[0m[31m [0m[1;48;5;52;31ma[0m[31mnd [0m[1;48;5;52;31m0[0m[31m [0m[1;48;5;52;31ms[0m[31mi[0m[1;48;5;52;31mgnals[0m[31m [0m[1;48;5;52;31mth[0m[31mi[0m[1;48;5;52;31ms[0m[31m [0m[1;48;5;52;31mt[0m[31mi[0m[1;48;5;52;31mmeslice[0m[31m."[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:sche[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32mlog[0m[32mi[0m[1;48;5;22;32mcally_kill:[0m[32m [0m[1;48;5;22;32mSch[0m[32med[0m[1;48;5;22;32muler remov[0m[32ming all [0m[1;48;5;22;32mk[0m[32mn[0m[1;48;5;22;32mowle[0m[32md[0m[1;48;5;22;32mge[0m[32m [0m[1;48;5;22;32mof[0m[32m [0m[1;48;5;22;32m[det]t[0m[32mi[0m[1;48;5;22;32md[0m[32m [0m[1;48;5;22;32m15 [0m[32mi[0m[1;48;5;22;32mn[0m[32m [0m[1;48;5;22;32mp[0m[32mi[0m[1;48;5;22;32md 3.[0m[32m."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore:[0m[1;48;5;52;31m [[0m[31mde[0m[1;48;5;52;31mtco[0m[31mr[0m[1;48;5;52;31me,[0m[31m [0m[1;48;5;52;31mdt[0m[31mi[0m[1;48;5;52;31md[0m[31m [0m[1;48;5;52;31m29] [0m[31me[0m[1;48;5;52;31mn[0m[31mding [0m[1;48;5;52;31mtimeslice T1. 32967 sysc[0m[31mall[0m[1;48;5;52;31ms[0m[31m [0m[1;48;5;52;31ma[0m[31mnd [0m[1;48;5;52;31m0[0m[31m [0m[1;48;5;52;31ms[0m[31mi[0m[1;48;5;52;31mgnals[0m[31m [0m[1;48;5;52;31mth[0m[31mi[0m[1;48;5;52;31ms[0m[31m [0m[1;48;5;52;31mt[0m[31mi[0m[1;48;5;52;31mmeslice[0m[31m."[0m
+[32m>"INFO detcore:[0m[1;48;5;22;32m:sche[0m[32md[0m[1;48;5;22;32mul[0m[32mer[0m[1;48;5;22;32m:[0m[32m [0m[1;48;5;22;32mlog[0m[32mi[0m[1;48;5;22;32mcally_kill:[0m[32m [0m[1;48;5;22;32mSch[0m[32med[0m[1;48;5;22;32muler remov[0m[32ming all [0m[1;48;5;22;32mk[0m[32mn[0m[1;48;5;22;32mowle[0m[32md[0m[1;48;5;22;32mge[0m[32m [0m[1;48;5;22;32mof[0m[32m [0m[1;48;5;22;32m[det]t[0m[32mi[0m[1;48;5;22;32md[0m[32m [0m[1;48;5;22;32m15 [0m[32mi[0m[1;48;5;22;32mn[0m[32m [0m[1;48;5;22;32mp[0m[32mi[0m[1;48;5;22;32md 3.[0m[32m."[0m
+Divergent syscall context:
+  run 1, log message 121119: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32967: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121122 (run 1) and 121133 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::[0m[1;48;5;52;31mtoo[0m[31ml[0m[1;48;5;52;31m_[0m[31mlocal: [0m[1;48;5;52;31mDETLOG[0m[31m [dtid [0m[1;48;5;52;31m29][0m[31m [0m[1;48;5;52;31mCHAOSRAND => [0m[31mn[0m[1;48;5;52;31mext_rcbs[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31m2[0m[31m3[0m[1;48;5;52;31m436456[0m[31m"[0m
+[32m>"INFO detcore::[0m[1;48;5;22;32mschedu[0m[32ml[0m[1;48;5;22;32mer: [0m[32mlo[0m[1;48;5;22;32mgi[0m[32mcal[0m[1;48;5;22;32mly_kill[0m[32m: [0m[1;48;5;22;32mScheduler[0m[32m [0m[1;48;5;22;32mremoving all knowledge of [0m[32m[d[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32m]t[0m[32mid [0m[1;48;5;22;32m17[0m[32m [0m[1;48;5;22;32mi[0m[32mn [0m[1;48;5;22;32mpid[0m[32m 3[0m[1;48;5;22;32m..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::[0m[1;48;5;52;31mtoo[0m[31ml[0m[1;48;5;52;31m_[0m[31mlocal: [0m[1;48;5;52;31mDETLOG[0m[31m [dtid [0m[1;48;5;52;31m29][0m[31m [0m[1;48;5;52;31mCHAOSRAND => [0m[31mn[0m[1;48;5;52;31mext_rcbs[0m[31m [0m[1;48;5;52;31m=[0m[31m [0m[1;48;5;52;31m2[0m[31m3[0m[1;48;5;52;31m436456[0m[31m"[0m
+[32m>"INFO detcore::[0m[1;48;5;22;32mschedu[0m[32ml[0m[1;48;5;22;32mer: [0m[32mlo[0m[1;48;5;22;32mgi[0m[32mcal[0m[1;48;5;22;32mly_kill[0m[32m: [0m[1;48;5;22;32mScheduler[0m[32m [0m[1;48;5;22;32mremoving all knowledge of [0m[32m[d[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32m]t[0m[32mid [0m[1;48;5;22;32m17[0m[32m [0m[1;48;5;22;32mi[0m[32mn [0m[1;48;5;22;32mpid[0m[32m 3[0m[1;48;5;22;32m..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121119: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32967: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121123 (run 1) and 121135 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::[0m[1;48;5;52;31mtoo[0m[31ml[0m[1;48;5;52;31m_[0m[31mlocal: [0m[1;48;5;52;31mDETLOG[0m[31m [dtid [0m[1;48;5;52;31m2[0m[31m9[0m[1;48;5;52;31m][0m[31m [0m[1;48;5;52;31mCHAOSRAND([0m[31mp[0m[1;48;5;52;31mr[0m[31mi[0m[1;48;5;52;31mority):[0m[31m [0m[1;48;5;52;31mu64 => 14[0m[31m3[0m[1;48;5;52;31m69379310456594478[0m[31m"[0m
+[32m>"INFO detcore::[0m[1;48;5;22;32mschedu[0m[32ml[0m[1;48;5;22;32mer: [0m[32mlo[0m[1;48;5;22;32mgi[0m[32mcal[0m[1;48;5;22;32mly_kill[0m[32m: [0m[1;48;5;22;32mScheduler[0m[32m [0m[1;48;5;22;32mremoving all knowledge of [0m[32m[d[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32m]t[0m[32mid [0m[1;48;5;22;32m3[0m[32m9 [0m[1;48;5;22;32min [0m[32mpi[0m[1;48;5;22;32md[0m[32m 3[0m[1;48;5;22;32m..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::[0m[1;48;5;52;31mtoo[0m[31ml[0m[1;48;5;52;31m_[0m[31mlocal: [0m[1;48;5;52;31mDETLOG[0m[31m [dtid [0m[1;48;5;52;31m2[0m[31m9[0m[1;48;5;52;31m][0m[31m [0m[1;48;5;52;31mCHAOSRAND([0m[31mp[0m[1;48;5;52;31mr[0m[31mi[0m[1;48;5;52;31mority):[0m[31m [0m[1;48;5;52;31mu64 => 14[0m[31m3[0m[1;48;5;52;31m69379310456594478[0m[31m"[0m
+[32m>"INFO detcore::[0m[1;48;5;22;32mschedu[0m[32ml[0m[1;48;5;22;32mer: [0m[32mlo[0m[1;48;5;22;32mgi[0m[32mcal[0m[1;48;5;22;32mly_kill[0m[32m: [0m[1;48;5;22;32mScheduler[0m[32m [0m[1;48;5;22;32mremoving all knowledge of [0m[32m[d[0m[1;48;5;22;32me[0m[32mt[0m[1;48;5;22;32m]t[0m[32mid [0m[1;48;5;22;32m3[0m[32m9 [0m[1;48;5;22;32min [0m[32mpi[0m[1;48;5;22;32md[0m[32m 3[0m[1;48;5;22;32m..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121119: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32967: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121124 (run 1) and 121137 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler::[0m[1;48;5;52;31mrunqu[0m[31meue[0m[1;48;5;52;31m:[0m[31m [0m[1;48;5;52;31mDETLOG[0m[31m [0m[1;48;5;52;31mSCHEDRAND:[0m[31m [[0m[1;48;5;52;31m0,5)[0m[31m [0m[1;48;5;52;31m=>[0m[31m [0m[1;48;5;52;31m2[0m[31m"[0m
+[32m>"INFO detcore::scheduler:[0m[1;48;5;22;32m logically_kill[0m[32m:[0m[1;48;5;22;32m Sch[0m[32me[0m[1;48;5;22;32md[0m[32mu[0m[1;48;5;22;32ml[0m[32me[0m[1;48;5;22;32mr[0m[32m [0m[1;48;5;22;32mremoving[0m[32m [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mknowledge of [0m[32m[[0m[1;48;5;22;32mdet]tid[0m[32m [0m[1;48;5;22;32m41[0m[32m [0m[1;48;5;22;32min pid 3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler::[0m[1;48;5;52;31mrunqu[0m[31meue[0m[1;48;5;52;31m:[0m[31m [0m[1;48;5;52;31mDETLOG[0m[31m [0m[1;48;5;52;31mSCHEDRAND:[0m[31m [[0m[1;48;5;52;31m0,5)[0m[31m [0m[1;48;5;52;31m=>[0m[31m [0m[1;48;5;52;31m2[0m[31m"[0m
+[32m>"INFO detcore::scheduler:[0m[1;48;5;22;32m logically_kill[0m[32m:[0m[1;48;5;22;32m Sch[0m[32me[0m[1;48;5;22;32md[0m[32mu[0m[1;48;5;22;32ml[0m[32me[0m[1;48;5;22;32mr[0m[32m [0m[1;48;5;22;32mremoving[0m[32m [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mknowledge of [0m[32m[[0m[1;48;5;22;32mdet]tid[0m[32m [0m[1;48;5;22;32m41[0m[32m [0m[1;48;5;22;32min pid 3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121119: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32967: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121125 (run 1) and 121139 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [0m[1;48;5;52;31m[s[0m[31mched[0m[1;48;5;52;31m-st[0m[31me[0m[1;48;5;52;31mp5][0m[31m [0m[1;48;5;52;31m>>>>>>>\[0m[31mn[0m[1;48;5;52;31m\n[0m[31m [0m[1;48;5;52;31mCOMMIT[0m[31m [0m[1;48;5;52;31mtur[0m[31mn [0m[1;48;5;52;31m7905,[0m[31m dettid [0m[1;48;5;52;31m39[0m[31m [0m[1;48;5;52;31mus[0m[31min[0m[1;48;5;52;31mg[0m[31m [0m[1;48;5;52;31mresources {InternalIOPolling: W}, on [0m[31mp[0m[1;48;5;52;31mrev[0m[31mi[0m[1;48;5;52;31mously committe[0m[31md [0m[1;48;5;52;31m1_767_225_602[0m[31m.[0m[1;48;5;52;31m944_497_515s[0m[31m"[0m
+[32m>"INFO detcore::scheduler: [0m[1;48;5;22;32mlogi[0m[32mc[0m[1;48;5;22;32mally_kill: Sc[0m[32mhed[0m[1;48;5;22;32mul[0m[32me[0m[1;48;5;22;32mr[0m[32m [0m[1;48;5;22;32mremovi[0m[32mn[0m[1;48;5;22;32mg[0m[32m [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mk[0m[32mn[0m[1;48;5;22;32mowledge[0m[32m [0m[1;48;5;22;32mof[0m[32m [0m[1;48;5;22;32m[[0m[32mdet[0m[1;48;5;22;32m][0m[32mtid [0m[1;48;5;22;32m11[0m[32m in pid [0m[1;48;5;22;32m3[0m[32m.[0m[1;48;5;22;32m.[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [0m[1;48;5;52;31m[s[0m[31mched[0m[1;48;5;52;31m-st[0m[31me[0m[1;48;5;52;31mp5][0m[31m [0m[1;48;5;52;31m>>>>>>>\[0m[31mn[0m[1;48;5;52;31m\n[0m[31m [0m[1;48;5;52;31mCOMMIT[0m[31m [0m[1;48;5;52;31mtur[0m[31mn [0m[1;48;5;52;31m7905,[0m[31m dettid [0m[1;48;5;52;31m39[0m[31m [0m[1;48;5;52;31mus[0m[31min[0m[1;48;5;52;31mg[0m[31m [0m[1;48;5;52;31mresources {InternalIOPolling: W}, on [0m[31mp[0m[1;48;5;52;31mrev[0m[31mi[0m[1;48;5;52;31mously committe[0m[31md [0m[1;48;5;52;31m1_767_225_602[0m[31m.[0m[1;48;5;52;31m944_497_515s[0m[31m"[0m
+[32m>"INFO detcore::scheduler: [0m[1;48;5;22;32mlogi[0m[32mc[0m[1;48;5;22;32mally_kill: Sc[0m[32mhed[0m[1;48;5;22;32mul[0m[32me[0m[1;48;5;22;32mr[0m[32m [0m[1;48;5;22;32mremovi[0m[32mn[0m[1;48;5;22;32mg[0m[32m [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mk[0m[32mn[0m[1;48;5;22;32mowledge[0m[32m [0m[1;48;5;22;32mof[0m[32m [0m[1;48;5;22;32m[[0m[32mdet[0m[1;48;5;22;32m][0m[32mtid [0m[1;48;5;22;32m11[0m[32m in pid [0m[1;48;5;22;32m3[0m[32m.[0m[1;48;5;22;32m.[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121119: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32967: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121126 (run 1) and 121141 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler::[0m[1;48;5;52;31mrunqu[0m[31meue[0m[1;48;5;52;31m:[0m[31m [0m[1;48;5;52;31mDETLOG[0m[31m [0m[1;48;5;52;31mSCHEDRAND:[0m[31m [[0m[1;48;5;52;31m0,[0m[31m5[0m[1;48;5;52;31m)[0m[31m [0m[1;48;5;52;31m=>[0m[31m [0m[1;48;5;52;31m2[0m[31m"[0m
+[32m>"INFO detcore::scheduler:[0m[1;48;5;22;32m logically_kill[0m[32m:[0m[1;48;5;22;32m Sch[0m[32me[0m[1;48;5;22;32md[0m[32mu[0m[1;48;5;22;32ml[0m[32me[0m[1;48;5;22;32mr[0m[32m [0m[1;48;5;22;32mremoving[0m[32m [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mknowledge of [0m[32m[[0m[1;48;5;22;32mdet]tid [0m[32m5 [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid 3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler::[0m[1;48;5;52;31mrunqu[0m[31meue[0m[1;48;5;52;31m:[0m[31m [0m[1;48;5;52;31mDETLOG[0m[31m [0m[1;48;5;52;31mSCHEDRAND:[0m[31m [[0m[1;48;5;52;31m0,[0m[31m5[0m[1;48;5;52;31m)[0m[31m [0m[1;48;5;52;31m=>[0m[31m [0m[1;48;5;52;31m2[0m[31m"[0m
+[32m>"INFO detcore::scheduler:[0m[1;48;5;22;32m logically_kill[0m[32m:[0m[1;48;5;22;32m Sch[0m[32me[0m[1;48;5;22;32md[0m[32mu[0m[1;48;5;22;32ml[0m[32me[0m[1;48;5;22;32mr[0m[32m [0m[1;48;5;22;32mremoving[0m[32m [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mknowledge of [0m[32m[[0m[1;48;5;22;32mdet]tid [0m[32m5 [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid 3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121119: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32967: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121127 (run 1) and 121143 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [0m[1;48;5;52;31m[s[0m[31mcheduler[0m[1;48;5;52;31m][0m[31m [0m[1;48;5;52;31m>>>>>>>\n\n NONCOMMIT tu[0m[31mr[0m[1;48;5;52;31mn 7906, SKIP d[0m[31me[0m[1;48;5;52;31mttid 41 p[0m[31mo[0m[1;48;5;52;31mll[0m[31ming [0m[1;48;5;52;31mresource[0m[31m [0m[1;48;5;52;31mRes[0m[31mo[0m[1;48;5;52;31murc[0m[31me[0m[1;48;5;52;31ms { ti[0m[31md[0m[1;48;5;52;31m: D[0m[31me[0m[1;48;5;52;31mtPid(41),[0m[31m [0m[1;48;5;52;31mres[0m[31mo[0m[1;48;5;52;31murces:[0m[31m [0m[1;48;5;52;31m{Int[0m[31me[0m[1;48;5;52;31mrnalIOPolling: W}, poll_a[0m[31mtt[0m[1;48;5;52;31mempt:[0m[31m 7[0m[1;48;5;52;31m11,[0m[31m [0m[1;48;5;52;31mfy[0m[31mi[0m[1;48;5;52;31m:[0m[31m [0m[1;48;5;52;31m\"e[0m[31mp[0m[1;48;5;52;31moll_wa[0m[31mi[0m[1;48;5;52;31mt\"[0m[31m [0m[1;48;5;52;31m}[0m[31m"[0m
+[32m>"INFO detcore::scheduler: [0m[1;48;5;22;32mlogi[0m[32mc[0m[1;48;5;22;32mally_kill: Sc[0m[32mheduler re[0m[1;48;5;22;32mm[0m[32mo[0m[1;48;5;22;32mv[0m[32ming [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mkn[0m[32mo[0m[1;48;5;22;32mwl[0m[32med[0m[1;48;5;22;32mg[0m[32me o[0m[1;48;5;22;32mf[0m[32m [0m[1;48;5;22;32m[d[0m[32met[0m[1;48;5;22;32m][0m[32mt[0m[1;48;5;22;32mid[0m[32m [0m[1;48;5;22;32m4[0m[32m7 i[0m[1;48;5;22;32mn[0m[32m pi[0m[1;48;5;22;32md[0m[32m [0m[1;48;5;22;32m3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [0m[1;48;5;52;31m[s[0m[31mcheduler[0m[1;48;5;52;31m][0m[31m [0m[1;48;5;52;31m>>>>>>>\n\n NONCOMMIT tu[0m[31mr[0m[1;48;5;52;31mn 7906, SKIP d[0m[31me[0m[1;48;5;52;31mttid 41 p[0m[31mo[0m[1;48;5;52;31mll[0m[31ming [0m[1;48;5;52;31mresource[0m[31m [0m[1;48;5;52;31mRes[0m[31mo[0m[1;48;5;52;31murc[0m[31me[0m[1;48;5;52;31ms { ti[0m[31md[0m[1;48;5;52;31m: D[0m[31me[0m[1;48;5;52;31mtPid(41),[0m[31m [0m[1;48;5;52;31mres[0m[31mo[0m[1;48;5;52;31murces:[0m[31m [0m[1;48;5;52;31m{Int[0m[31me[0m[1;48;5;52;31mrnalIOPolling: W}, poll_a[0m[31mtt[0m[1;48;5;52;31mempt:[0m[31m 7[0m[1;48;5;52;31m11,[0m[31m [0m[1;48;5;52;31mfy[0m[31mi[0m[1;48;5;52;31m:[0m[31m [0m[1;48;5;52;31m\"e[0m[31mp[0m[1;48;5;52;31moll_wa[0m[31mi[0m[1;48;5;52;31mt\"[0m[31m [0m[1;48;5;52;31m}[0m[31m"[0m
+[32m>"INFO detcore::scheduler: [0m[1;48;5;22;32mlogi[0m[32mc[0m[1;48;5;22;32mally_kill: Sc[0m[32mheduler re[0m[1;48;5;22;32mm[0m[32mo[0m[1;48;5;22;32mv[0m[32ming [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mkn[0m[32mo[0m[1;48;5;22;32mwl[0m[32med[0m[1;48;5;22;32mg[0m[32me o[0m[1;48;5;22;32mf[0m[32m [0m[1;48;5;22;32m[d[0m[32met[0m[1;48;5;22;32m][0m[32mt[0m[1;48;5;22;32mid[0m[32m [0m[1;48;5;22;32m4[0m[32m7 i[0m[1;48;5;22;32mn[0m[32m pi[0m[1;48;5;22;32md[0m[32m [0m[1;48;5;22;32m3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121119: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32967: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121128 (run 1) and 121145 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler::[0m[1;48;5;52;31mrunqu[0m[31meue[0m[1;48;5;52;31m:[0m[31m [0m[1;48;5;52;31mDETLOG[0m[31m [0m[1;48;5;52;31mSCHEDRAND:[0m[31m [[0m[1;48;5;52;31m0,[0m[31m5[0m[1;48;5;52;31m)[0m[31m [0m[1;48;5;52;31m=>[0m[31m [0m[1;48;5;52;31m4[0m[31m"[0m
+[32m>"INFO detcore::scheduler:[0m[1;48;5;22;32m logically_kill[0m[32m:[0m[1;48;5;22;32m Sch[0m[32me[0m[1;48;5;22;32md[0m[32mu[0m[1;48;5;22;32ml[0m[32me[0m[1;48;5;22;32mr[0m[32m [0m[1;48;5;22;32mremoving[0m[32m [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mknowledge of [0m[32m[[0m[1;48;5;22;32mdet]tid 4[0m[32m5 [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid 3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler::[0m[1;48;5;52;31mrunqu[0m[31meue[0m[1;48;5;52;31m:[0m[31m [0m[1;48;5;52;31mDETLOG[0m[31m [0m[1;48;5;52;31mSCHEDRAND:[0m[31m [[0m[1;48;5;52;31m0,[0m[31m5[0m[1;48;5;52;31m)[0m[31m [0m[1;48;5;52;31m=>[0m[31m [0m[1;48;5;52;31m4[0m[31m"[0m
+[32m>"INFO detcore::scheduler:[0m[1;48;5;22;32m logically_kill[0m[32m:[0m[1;48;5;22;32m Sch[0m[32me[0m[1;48;5;22;32md[0m[32mu[0m[1;48;5;22;32ml[0m[32me[0m[1;48;5;22;32mr[0m[32m [0m[1;48;5;22;32mremoving[0m[32m [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mknowledge of [0m[32m[[0m[1;48;5;22;32mdet]tid 4[0m[32m5 [0m[1;48;5;22;32min[0m[32m [0m[1;48;5;22;32mpid 3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121119: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32967: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+(INFO) Mismatch at log messages 121129 (run 1) and 121147 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [0m[1;48;5;52;31m[s[0m[31mched[0m[1;48;5;52;31m-st[0m[31me[0m[1;48;5;52;31mp5][0m[31m [0m[1;48;5;52;31m>>>>>>>\[0m[31mn[0m[1;48;5;52;31m\n[0m[31m [0m[1;48;5;52;31mCOMMIT[0m[31m [0m[1;48;5;52;31mtur[0m[31mn [0m[1;48;5;52;31m7907,[0m[31m dettid [0m[1;48;5;52;31m4[0m[31m1 [0m[1;48;5;52;31mus[0m[31min[0m[1;48;5;52;31mg[0m[31m [0m[1;48;5;52;31mresources {InternalIOPolling: W}, on [0m[31mp[0m[1;48;5;52;31mrev[0m[31mi[0m[1;48;5;52;31mously committe[0m[31md [0m[1;48;5;52;31m1_767_225_602[0m[31m.[0m[1;48;5;52;31m944_997_515s[0m[31m"[0m
+[32m>"INFO detcore::scheduler: [0m[1;48;5;22;32mlogi[0m[32mc[0m[1;48;5;22;32mally_kill: Sc[0m[32mhed[0m[1;48;5;22;32mul[0m[32me[0m[1;48;5;22;32mr[0m[32m [0m[1;48;5;22;32mremovi[0m[32mn[0m[1;48;5;22;32mg[0m[32m [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mk[0m[32mn[0m[1;48;5;22;32mowledge[0m[32m [0m[1;48;5;22;32mof[0m[32m [0m[1;48;5;22;32m[[0m[32mdet[0m[1;48;5;22;32m][0m[32mtid 1[0m[1;48;5;22;32m9[0m[32m in pid [0m[1;48;5;22;32m3[0m[32m.[0m[1;48;5;22;32m.[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [0m[1;48;5;52;31m[s[0m[31mched[0m[1;48;5;52;31m-st[0m[31me[0m[1;48;5;52;31mp5][0m[31m [0m[1;48;5;52;31m>>>>>>>\[0m[31mn[0m[1;48;5;52;31m\n[0m[31m [0m[1;48;5;52;31mCOMMIT[0m[31m [0m[1;48;5;52;31mtur[0m[31mn [0m[1;48;5;52;31m7907,[0m[31m dettid [0m[1;48;5;52;31m4[0m[31m1 [0m[1;48;5;52;31mus[0m[31min[0m[1;48;5;52;31mg[0m[31m [0m[1;48;5;52;31mresources {InternalIOPolling: W}, on [0m[31mp[0m[1;48;5;52;31mrev[0m[31mi[0m[1;48;5;52;31mously committe[0m[31md [0m[1;48;5;52;31m1_767_225_602[0m[31m.[0m[1;48;5;52;31m944_997_515s[0m[31m"[0m
+[32m>"INFO detcore::scheduler: [0m[1;48;5;22;32mlogi[0m[32mc[0m[1;48;5;22;32mally_kill: Sc[0m[32mhed[0m[1;48;5;22;32mul[0m[32me[0m[1;48;5;22;32mr[0m[32m [0m[1;48;5;22;32mremovi[0m[32mn[0m[1;48;5;22;32mg[0m[32m [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mk[0m[32mn[0m[1;48;5;22;32mowledge[0m[32m [0m[1;48;5;22;32mof[0m[32m [0m[1;48;5;22;32m[[0m[32mdet[0m[1;48;5;22;32m][0m[32mtid 1[0m[1;48;5;22;32m9[0m[32m in pid [0m[1;48;5;22;32m3[0m[32m.[0m[1;48;5;22;32m.[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 121119: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32967: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+  run 2, log message 121111: INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Err(Errno(ERESTARTSYS))
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32963: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32964: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32965: rt_sigprocmask(2, 0x7fffd0af4a58, 0x7fffd0af4ad8, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32966: rt_sigprocmask(2, 0x7fffd0af4ad8, NULL, 8) = Ok(0)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32958: rt_sigprocmask(2, 0x7fffd0af4a78, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32959: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32960: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32961: rt_sigprocmask(2, 0x7fffd0af49d8, 0x7fffd0af4a58, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 29] finish syscall #32962: rt_sigprocmask(2, 0x7fffd0af4a58, NULL, 8) = Ok(0)
+
+More than 20 differences, eliding the rest...
+Run 1 contains 732105 extra messages not matched in run 2. Displaying up to 10:
+INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 53 in pid 3..
+INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 73 in pid 3..
+INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 33 in pid 3..
+INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 67 in pid 3..
+INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 63 in pid 3..
+INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3 in pid 3..
+INFO detcore::scheduler: scheduler (step2_process_blocked): zero threads left anywhere, fizzling.
+INFO detcore::scheduler: [scheduler] run queue empty, exiting sched_loop.
+INFO detcore::tool_global: detcore shut down, destroying global state
+INFO detcore::tool_global: 
+  ------------------------------ hermit run report ------------------------------
+Final thread-tree was: [3 5
+ 7
+ 9
+ 11
+ 13
+ 15
+ 17
+ 19
+ 21
+ 23
+ (25 (29 31))
+ 27
+ 33
+ 35
+ 37
+ 39
+ 41
+ 43
+ 45
+ 47
+ (49 51 53 55 57 (59 (61 79) (63 75) 65 (67 71) (69 73 77)))]
+There were 1 group leaders of 39 thread(s) total.
+Guest threads completed 307893 syscalls.
+Internally, the hermit scheduler ran 114189 turns, recorded 0 events, replayed 0 events (0 desynced)
+Final virtual global (cpu) time: 1_767_225_632.261_379_120s
+Elapsed virtual global (cpu) time: 32.261_379_120s
+Timeslice stats: min=39060ns max=200000000ns mean=41944236ns count=47
+  timeslice thread 3: min=90594880ns max=200000000ns mean=156581797ns count=4
+  timeslice thread 5: min=1524760ns max=1524760ns mean=1524760ns count=1
+  timeslice thread 7: min=60233030ns max=60233030ns mean=60233030ns count=1
+  timeslice thread 9: min=5008880ns max=5008880ns mean=5008880ns count=1
+  timeslice thread 11: min=34614460ns max=34614460ns mean=34614460ns count=1
+  timeslice thread 13: min=814110ns max=814110ns mean=814110ns count=1
+  timeslice thread 15: min=6426330ns max=6426330ns mean=6426330ns count=1
+  timeslice thread 17: min=55983865ns max=55983865ns mean=55983865ns count=1
+  timeslice thread 19: min=5251120ns max=5251120ns mean=5251120ns count=1
+  timeslice thread 21: min=8462760ns max=8462760ns mean=8462760ns count=1
+  timeslice thread 23: min=4614830ns max=4614830ns mean=4614830ns count=1
+  timeslice thread 25: min=7505820ns max=7505820ns mean=7505820ns count=1
+  timeslice thread 27: min=501250ns max=501250ns mean=501250ns count=1
+  timeslice thread 29: min=109982770ns max=200000000ns mean=172219445ns count=6
+  timeslice thread 31: min=43708640ns max=43708640ns mean=43708640ns count=1
+  timeslice thread 33: min=508440ns max=508440ns mean=508440ns count=1
+  timeslice thread 35: min=1025590ns max=1025590ns mean=1025590ns count=1
+  timeslice thread 37: min=828310ns max=828310ns mean=828310ns count=1
+  timeslice thread 39: min=651370ns max=651370ns mean=651370ns count=1
+  timeslice thread 41: min=183790ns max=183790ns mean=183790ns count=1
+  timeslice thread 43: min=1528940ns max=1528940ns mean=1528940ns count=1
+  timeslice thread 45: min=8472890ns max=8472890ns mean=8472890ns count=1
+  timeslice thread 47: min=310380ns max=310380ns mean=310380ns count=1
+  timeslice thread 49: min=17937350ns max=17937350ns mean=17937350ns count=1
+  timeslice thread 51: min=39060ns max=39060ns mean=39060ns count=1
+  timeslice thread 53: min=2156890ns max=2156890ns mean=2156890ns count=1
+  timeslice thread 55: min=1546310ns max=1546310ns mean=1546310ns count=1
+  timeslice thread 57: min=5315730ns max=5315730ns mean=5315730ns count=1
+  timeslice thread 59: min=11579300ns max=11579300ns mean=11579300ns count=1
+  timeslice thread 61: min=14756700ns max=14756700ns mean=14756700ns count=1
+  timeslice thread 63: min=737300ns max=737300ns mean=737300ns count=1
+  timeslice thread 65: min=628100ns max=628100ns mean=628100ns count=1
+  timeslice thread 67: min=750280ns max=750280ns mean=750280ns count=1
+  timeslice thread 69: min=1281150ns max=1281150ns mean=1281150ns count=1
+  timeslice thread 71: min=961070ns max=961070ns mean=961070ns count=1
+  timeslice thread 73: min=234050ns max=234050ns mean=234050ns count=1
+  timeslice thread 75: min=1280610ns max=1280610ns mean=1280610ns count=1
+  timeslice thread 77: min=96650ns max=96650ns mean=96650ns count=1
+  timeslice thread 79: min=4275140ns max=4275140ns mean=4275140ns count=1
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /home/newton/.local/state/hermit/verify-failures/comparison-p5aM5Kc2dDCc/run1_log_SlWfw
+::   run 2: /home/newton/.local/state/hermit/verify-failures/comparison-p5aM5Kc2dDCc/run2_log_Dzuif
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Failure: nondeterministic.

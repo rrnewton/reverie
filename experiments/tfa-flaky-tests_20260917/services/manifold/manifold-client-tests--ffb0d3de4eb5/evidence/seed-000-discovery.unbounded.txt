@@ -1,0 +1,5 @@
+This directory was NOT bounded.
+directory=/home/newton/work/dev-hermit/worktrees/slots/hermit-904-tfa-layout/experiments/tfa-flaky-tests_20260917/ignored/codex-tfa-manifold/safehermit-logs/brs-safehermit-20260920T052545Z-1108162-1108205-1789881945591680548
+device_inode=3145931:256
+reason: qgroup limit not in force (readback='unreadable', wanted=8000000000; ERROR: unable to limit requested quota group: quota not enabled)
+Nothing limited how many bytes were written here. Totals below are not a guarantee.
