@@ -34,13 +34,14 @@ The current gate requires all of:
 | Manifold payload-timeout client | entered selected case, no completion by 13 s | no qualifying bounded completion | Reject: native runtime and time-budget focus |
 | Warm Storage write-time encoding | onebox setup/backoff exceeded 13 s | service-environment setup | Reject: native runtime/setup |
 | ZippyDB admin handler | no GoogleTest marker by 13 s | no qualifying profile | Reject: native runtime |
+| Manifold Rust client | entered its exact one-test invocation, no completion by 13 s | libtest fixed to `--test-threads=1`; no qualifying bounded completion | Reject: native runtime and no demonstrated competing worker ordering |
+| Cachelib Cogwheel free-list stress | canonical test targets have no local executable output; only `.par` launcher output exists | launcher/stress harness required | Reject: violates local-test-binary rule |
 
 The remaining cohort entries are not stronger immediate choices: io_uring is
 explicitly excluded because Hermit intentionally returns `ENOSYS`; MySQL
-requires the cohort's AArch64 MTR route; the Manifold Rust case is explicitly
-single-threaded; DRocksDB previously filled a 1 GiB retained log while
-deadlocked; the Cogwheel candidates require launcher/stress harnesses; and the
-remaining Thrift resource-pool case uses the same high-fanout server scaffold.
+requires the cohort's AArch64 MTR route; DRocksDB previously filled a 1 GiB
+retained log while deadlocked; and the remaining Thrift resource-pool case uses
+the same high-fanout server scaffold.
 
 No new formal cell is sealed from this screen. Continuing requires a new
 candidate that meets the gate or an explicit change to the current
