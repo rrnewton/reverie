@@ -28342,6 +28342,191 @@ mod tests {
     }
 
     #[test]
+    fn recvmsg_and_recvmmsg_install_long_path_ordinary_rights() {
+        const PAIR_FDS: u64 = 0x100;
+        const MESSAGE: u64 = 0x180;
+        const IOV: u64 = 0x200;
+        const SOCKET_PAYLOAD: u64 = 0x280;
+        const CONTROL: u64 = 0x300;
+        const FILE_PAYLOAD: u64 = 0x400;
+        const CONTROL_LENGTH: usize = 64;
+        const LINK_TARGET_CAPACITY: usize = 267;
+        const CONTENT: &[u8] = b"long-path ordinary right\n";
+
+        for (label, receive_many) in [("recvmsg", false), ("recvmmsg", true)] {
+            let root = TestDir::new();
+            let first_component = "a".repeat(120);
+            let second_component = "b".repeat(120);
+            let directory = root.0.join(&first_component).join(&second_component);
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join(format!("ordinary-{label}"));
+            assert!(
+                path.components()
+                    .all(|component| component.as_os_str().as_bytes().len() < 255),
+                "the regression must exceed the total link buffer without exceeding NAME_MAX"
+            );
+            std::fs::write(&path, CONTENT).unwrap();
+            let donated = std::fs::File::open(&path).unwrap();
+            let proc_target =
+                std::fs::read_link(format!("/proc/self/fd/{}", donated.as_raw_fd())).unwrap();
+            assert_eq!(proc_target, path);
+            assert!(
+                proc_target.as_os_str().as_bytes().len() > LINK_TARGET_CAPACITY,
+                "{label}: proc-fd target must exceed the classifier's fixed observation buffer"
+            );
+
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_socketpair,
+                    [
+                        libc::AF_UNIX as u64,
+                        libc::SOCK_DGRAM as u64,
+                        0,
+                        PAIR_FDS,
+                        0,
+                        0,
+                    ],
+                ),
+                0
+            );
+            let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+
+            let mut host_payload = *b"x";
+            let mut host_iov = libc::iovec {
+                iov_base: std::ptr::from_mut(&mut host_payload).cast(),
+                iov_len: host_payload.len(),
+            };
+            let mut host_control = rights_control(&[donated.as_raw_fd()]);
+            let host_message = libc::msghdr {
+                msg_name: std::ptr::null_mut(),
+                msg_namelen: 0,
+                msg_iov: std::ptr::from_mut(&mut host_iov),
+                msg_iovlen: 1,
+                msg_control: host_control.as_mut_ptr().cast(),
+                msg_controllen: host_control.len(),
+                msg_flags: 0,
+            };
+            // SAFETY: every buffer and the donated descriptor outlive sendmsg.
+            assert_eq!(
+                unsafe {
+                    libc::sendmsg(
+                        host_fd(&state, socket_fds[0]).unwrap(),
+                        std::ptr::from_ref(&host_message),
+                        libc::MSG_NOSIGNAL,
+                    )
+                },
+                1
+            );
+            drop(donated);
+
+            let recv_iov = libc::iovec {
+                iov_base: SOCKET_PAYLOAD as usize as *mut libc::c_void,
+                iov_len: 1,
+            };
+            assert_eq!(write_struct(&mut memory, IOV, &recv_iov), 0);
+            memory.write(CONTROL, &[0; CONTROL_LENGTH]).unwrap();
+            let received_control_length = if receive_many {
+                let mut message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
+                message.msg_hdr.msg_iov = IOV as usize as *mut libc::iovec;
+                message.msg_hdr.msg_iovlen = 1;
+                message.msg_hdr.msg_control = CONTROL as usize as *mut libc::c_void;
+                message.msg_hdr.msg_controllen = CONTROL_LENGTH;
+                assert_eq!(write_struct(&mut memory, MESSAGE, &message), 0);
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_recvmmsg,
+                        [
+                            socket_fds[1] as u64,
+                            MESSAGE,
+                            1,
+                            libc::MSG_DONTWAIT as u64,
+                            0,
+                            0,
+                        ],
+                    ),
+                    1,
+                    "{label}: long ordinary right was not received"
+                );
+                let received: libc::mmsghdr = read_struct(&memory, MESSAGE);
+                assert_eq!(received.msg_len, 1);
+                assert_eq!(received.msg_hdr.msg_flags & libc::MSG_CTRUNC, 0);
+                received.msg_hdr.msg_controllen
+            } else {
+                let mut message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+                message.msg_iov = IOV as usize as *mut libc::iovec;
+                message.msg_iovlen = 1;
+                message.msg_control = CONTROL as usize as *mut libc::c_void;
+                message.msg_controllen = CONTROL_LENGTH;
+                assert_eq!(write_struct(&mut memory, MESSAGE, &message), 0);
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_recvmsg,
+                        [
+                            socket_fds[1] as u64,
+                            MESSAGE,
+                            libc::MSG_DONTWAIT as u64,
+                            0,
+                            0,
+                            0,
+                        ],
+                    ),
+                    1,
+                    "{label}: long ordinary right was not received"
+                );
+                let received: libc::msghdr = read_struct(&memory, MESSAGE);
+                assert_eq!(received.msg_flags & libc::MSG_CTRUNC, 0);
+                received.msg_controllen
+            };
+
+            assert_eq!(
+                read_guest_bytes::<1>(&memory, SOCKET_PAYLOAD).unwrap(),
+                *b"x"
+            );
+            let mut received_control = vec![0; received_control_length];
+            memory.read(CONTROL, &mut received_control).unwrap();
+            let received_fds = control_rights(&received_control);
+            assert_eq!(received_fds.len(), 1, "{label}");
+            let received_fd = received_fds[0];
+            assert_eq!(
+                state
+                    .proc_carrier_authority
+                    .candidate_kind(&state.files[&received_fd]),
+                Ok(crate::proc_carrier::ProcCarrierCandidate::Ordinary),
+                "{label}: long-path file was not classified ordinary"
+            );
+            assert!(!state.proc_files.contains_key(&received_fd));
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_read,
+                    [
+                        received_fd as u64,
+                        FILE_PAYLOAD,
+                        CONTENT.len() as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                CONTENT.len() as i64,
+                "{label}: installed long-path file was not readable"
+            );
+            let mut content = vec![0; CONTENT.len()];
+            memory.read(FILE_PAYLOAD, &mut content).unwrap();
+            assert_eq!(content, CONTENT, "{label}");
+        }
+    }
+
+    #[test]
     fn recvmmsg_later_readonly_header_preserves_prior_commit_and_later_datagram() {
         const PAIR_FDS: u64 = 0x100;
         const MESSAGE_SIZE: usize = std::mem::size_of::<libc::mmsghdr>();

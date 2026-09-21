@@ -579,15 +579,31 @@ pub(crate) fn reserved_guest_name(name: &[u8]) -> bool {
 }
 
 /// Detect a reserved candidate without trusting its name. Failure to inspect a
-/// complete descriptor link is returned to the caller and is never Ordinary.
+/// descriptor link is returned to the caller. A truncated link is Ordinary
+/// only when its observed prefix cannot belong to the reserved namespace.
 pub(crate) fn candidate_kind(file: &File) -> Result<ProcCarrierCandidate, libc::c_int> {
-    candidate_kind_from_link(descriptor_link_target(file).map_err(io_errno))
+    candidate_kind_from_link(descriptor_link_target_observation(file).map_err(io_errno))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DescriptorLinkTarget {
+    Complete(Vec<u8>),
+    Truncated(Vec<u8>),
 }
 
 fn candidate_kind_from_link(
-    target: Result<Vec<u8>, libc::c_int>,
+    target: Result<DescriptorLinkTarget, libc::c_int>,
 ) -> Result<ProcCarrierCandidate, libc::c_int> {
-    let target = target?;
+    let target = match target? {
+        DescriptorLinkTarget::Complete(target) => target,
+        DescriptorLinkTarget::Truncated(prefix) => {
+            return if link_prefix_could_be_reserved(&prefix) {
+                Err(libc::EOVERFLOW)
+            } else {
+                Ok(ProcCarrierCandidate::Ordinary)
+            };
+        }
+    };
     let Some(name) = target.strip_prefix(MEMFD_LINK_PREFIX) else {
         return Ok(ProcCarrierCandidate::Ordinary);
     };
@@ -596,6 +612,20 @@ fn candidate_kind_from_link(
     } else {
         ProcCarrierCandidate::Ordinary
     })
+}
+
+fn link_prefix_could_be_reserved(target: &[u8]) -> bool {
+    let memfd_prefix_length = target.len().min(MEMFD_LINK_PREFIX.len());
+    if target[..memfd_prefix_length] != MEMFD_LINK_PREFIX[..memfd_prefix_length] {
+        return false;
+    }
+    if target.len() <= MEMFD_LINK_PREFIX.len() {
+        return true;
+    }
+
+    let name = &target[MEMFD_LINK_PREFIX.len()..];
+    let reserved_prefix_length = name.len().min(RESERVED_NAME_PREFIX.len());
+    name[..reserved_prefix_length] == RESERVED_NAME_PREFIX[..reserved_prefix_length]
 }
 
 /// Open a readable view without changing the source OFD or consuming its
@@ -726,6 +756,13 @@ fn decode_nibble(value: u8) -> Option<u8> {
 }
 
 fn descriptor_link_target(file: &File) -> io::Result<Vec<u8>> {
+    match descriptor_link_target_observation(file)? {
+        DescriptorLinkTarget::Complete(target) => Ok(target),
+        DescriptorLinkTarget::Truncated(_) => Err(io::Error::from_raw_os_error(libc::EOVERFLOW)),
+    }
+}
+
+fn descriptor_link_target_observation(file: &File) -> io::Result<DescriptorLinkTarget> {
     let path = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
         .expect("decimal descriptor path has no NUL");
     let mut bytes = [0_u8; LINK_TARGET_CAPACITY];
@@ -740,14 +777,15 @@ fn descriptor_link_target(file: &File) -> io::Result<Vec<u8>> {
     if length < 0 {
         return Err(io::Error::last_os_error());
     }
-    complete_link_target(&bytes, length as usize)
+    Ok(observe_link_target(&bytes, length as usize))
 }
 
-fn complete_link_target(bytes: &[u8], length: usize) -> io::Result<Vec<u8>> {
+fn observe_link_target(bytes: &[u8], length: usize) -> DescriptorLinkTarget {
     if length >= bytes.len() {
-        return Err(io::Error::from_raw_os_error(libc::EOVERFLOW));
+        DescriptorLinkTarget::Truncated(bytes.to_vec())
+    } else {
+        DescriptorLinkTarget::Complete(bytes[..length].to_vec())
     }
-    Ok(bytes[..length].to_vec())
 }
 
 fn random_authority_material() -> io::Result<([u8; 32], [u8; 16])> {
@@ -1966,13 +2004,15 @@ mod tests {
     #[test]
     fn candidate_classification_is_fail_closed_on_inspection_errors() {
         assert_eq!(
-            candidate_kind_from_link(Ok(b"/memfd:ordinary (deleted)".to_vec())),
+            candidate_kind_from_link(Ok(DescriptorLinkTarget::Complete(
+                b"/memfd:ordinary (deleted)".to_vec()
+            ))),
             Ok(ProcCarrierCandidate::Ordinary)
         );
         assert_eq!(
-            candidate_kind_from_link(Ok(
+            candidate_kind_from_link(Ok(DescriptorLinkTarget::Complete(
                 b"/memfd:reverie-kvm.proc-carrier.v1.malformed (deleted)".to_vec()
-            )),
+            ))),
             Ok(ProcCarrierCandidate::Reserved)
         );
         assert_eq!(candidate_kind_from_link(Err(libc::EIO)), Err(libc::EIO));
@@ -1981,18 +2021,39 @@ mod tests {
             Err(libc::EOVERFLOW)
         );
 
-        let link = [b'x'; LINK_TARGET_CAPACITY];
+        let clearly_ordinary = vec![b'x'; LINK_TARGET_CAPACITY];
         assert_eq!(
-            complete_link_target(&link, LINK_TARGET_CAPACITY - 1)
-                .unwrap()
-                .len(),
-            266
+            candidate_kind_from_link(Ok(DescriptorLinkTarget::Truncated(clearly_ordinary))),
+            Ok(ProcCarrierCandidate::Ordinary)
         );
         assert_eq!(
-            complete_link_target(&link, LINK_TARGET_CAPACITY)
-                .unwrap_err()
-                .raw_os_error(),
-            Some(libc::EOVERFLOW)
+            candidate_kind_from_link(Ok(DescriptorLinkTarget::Truncated(
+                b"/memfd:reverie-kvm.proc".to_vec()
+            ))),
+            Err(libc::EOVERFLOW)
+        );
+        let mut reserved = MEMFD_LINK_PREFIX.to_vec();
+        reserved.extend_from_slice(RESERVED_NAME_PREFIX);
+        reserved.resize(LINK_TARGET_CAPACITY, b'x');
+        assert_eq!(
+            candidate_kind_from_link(Ok(DescriptorLinkTarget::Truncated(reserved))),
+            Err(libc::EOVERFLOW)
+        );
+        assert_eq!(
+            candidate_kind_from_link(Ok(DescriptorLinkTarget::Truncated(
+                b"/memfd:ordinary-but-long".to_vec()
+            ))),
+            Ok(ProcCarrierCandidate::Ordinary)
+        );
+
+        let link = [b'x'; LINK_TARGET_CAPACITY];
+        assert_eq!(
+            observe_link_target(&link, LINK_TARGET_CAPACITY - 1),
+            DescriptorLinkTarget::Complete(vec![b'x'; LINK_TARGET_CAPACITY - 1])
+        );
+        assert_eq!(
+            observe_link_target(&link, LINK_TARGET_CAPACITY),
+            DescriptorLinkTarget::Truncated(vec![b'x'; LINK_TARGET_CAPACITY])
         );
         assert_eq!(LINK_TARGET_CAPACITY, 267);
     }
