@@ -609,6 +609,162 @@
           "media_type": "application/json"
         }
       ]
+    },
+    {
+      "event_id": "tls-sched-now-sched-00000000000000000001-replica-1",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "92b8e74e69199867373ec7152f6a84dd773e08d46e2bf8e3c6943488a7658205",
+      "route_id": "tls-kernel71-sched-now-existing-elf-v1",
+      "route_sha256": "b663dc76cf5354419aa558d9ffc0fea84d5918eb1acbbe612a8294a97ddcb267",
+      "canonical_target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test - TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/opt"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "tls-kernel71-ptrace-strict-sched-now-v1",
+      "cell_sha256": "680eef81216058ba8e66da49bb7f0e7c7147869993bbc03517fe5017db577590",
+      "measurement_role": "DISCOVERY",
+      "started_at": "2026-09-21T20:26:32Z",
+      "finished_at": "2026-09-21T20:27:06Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-001-sched-seed-00000000000000000001-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T18:54:35Z",
+        "--clock-multiplier=1.0",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "1",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test",
+        "--gtest_filter=TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+        "--gtest_also_run_disabled_tests"
+      ],
+      "result": {
+        "exit_code": 1,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": false,
+        "selected_test_executed_count": 0,
+        "target_oracle": "NOT_RUN",
+        "failure_class_id": null,
+        "harness_status": "ERROR",
+        "diagnostic": "status=CENSORED; selected=0; unit_result=exit-code; exit=1; BitwiseInfoV1=not-matched; stdout_cap=intact; safehermit_bounds=authenticated; verifier_and_wrapper_qgroups=authenticated"
+      },
+      "invocation_id": "tls-sched-now-sched-00000000000000000001-verify",
+      "replica_index": 1,
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 1
+      },
+      "effective_config_sha256": "680eef81216058ba8e66da49bb7f0e7c7147869993bbc03517fe5017db577590",
+      "artifacts": [
+        {
+          "artifact_id": "tls-sched-now-sched-00000000000000000001-replica-1-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stdout.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "tls-sched-now-sched-00000000000000000001-replica-1-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stderr.txt",
+          "sha256": "9495dda3ac9de8182943b61185928a8f6ee056ea1e4eece9e341e90edad9e94d",
+          "bytes": 103895,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "tls-sched-now-sched-00000000000000000001-replica-1-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-001-sched-seed-00000000000000000001-replica-1.result.json",
+          "sha256": "3ab31f48a9ede9b1c390f56968299a7f4e795225229b654e60a57416c9cb2142",
+          "bytes": 2063,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "tls-sched-now-sched-00000000000000000001-replica-1-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-001-sched-seed-00000000000000000001-replica-1.safehermit.txt",
+          "sha256": "66ba988ac998344a5de75d708421a88b05a75ffc93e1dd9e258aa21d2ed97420",
+          "bytes": 1787,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "tls-sched-now-sched-00000000000000000001-replica-1-bounds",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-001-sched-seed-00000000000000000001-replica-1.bounds.json",
+          "sha256": "180d178e12b82d8df7a22c8f24ab4a1d66ef60883a0e680fb9a5cba8bfd5c98a",
+          "bytes": 2938,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "tls-sched-now-sched-00000000000000000001-replica-1-invocation",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-001-sched-seed-00000000000000000001-replica-1.invocation.json",
+          "sha256": "96501f531f1c25f4dbff5bfdda4451e6e0e4bd8dafb85ef2391841c8c8d17277",
+          "bytes": 7072,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        }
+      ]
     }
   ],
   "samples": [
@@ -626,6 +782,22 @@
       "censor_reason": "The invocation did not satisfy the exact predeclared PASS, selected GoogleTest FAIL, uncaught AsyncSocketException abort, or uncaught FutureTimeout abort predicate. Certificate failures and stdout-cap events are always censored.",
       "execution_event_ids": [
         "tls-sched-now-sched-00000000000000000000-replica-1"
+      ]
+    },
+    {
+      "sample_id": "tls-sched-now-sched-00000000000000000001-sample",
+      "cell_id": "tls-kernel71-ptrace-strict-sched-now-v1",
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 1
+      },
+      "selection_index": 1,
+      "status": "CENSORED",
+      "target_outcome": null,
+      "failure_class_id": null,
+      "censor_reason": "The invocation did not satisfy the exact predeclared PASS, selected GoogleTest FAIL, uncaught AsyncSocketException abort, or uncaught FutureTimeout abort predicate. Certificate failures and stdout-cap events are always censored.",
+      "execution_event_ids": [
+        "tls-sched-now-sched-00000000000000000001-replica-1"
       ]
     }
   ],
@@ -709,14 +881,144 @@
       "pending_in_scope_measurements": [
         "Execute selection index 1 at predeclared --sched-seed=1."
       ]
+    },
+    {
+      "classification_id": "tls-sched-now-pending-after-00000000000000000001",
+      "classified_at": "2026-09-21T20:27:07Z",
+      "supersedes": "tls-sched-now-pending-after-00000000000000000000",
+      "evidence_refs": [
+        "tls-sched-now-sched-00000000000000000000-replica-1",
+        "tls-sched-now-sched-00000000000000000001-replica-1"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "tls-kernel71-sched-now-existing-elf-v1",
+          "cell_ids": [
+            "tls-kernel71-ptrace-strict-sched-now-v1"
+          ],
+          "evidence_event_ids": [
+            "tls-sched-now-sched-00000000000000000000-replica-1",
+            "tls-sched-now-sched-00000000000000000001-replica-1"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-000-sched-seed-00000000000000000000-replica-1.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T18:54:35Z",
+          "--clock-multiplier=1.0",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test",
+          "--gtest_filter=TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+          "--gtest_also_run_disabled_tests"
+        ],
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-001-sched-seed-00000000000000000001-replica-1.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T18:54:35Z",
+          "--clock-multiplier=1.0",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "1",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test",
+          "--gtest_filter=TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+          "--gtest_also_run_disabled_tests"
+        ]
+      ],
+      "inspected_artifacts": [
+        "tls-sched-now-sched-00000000000000000000-replica-1-result",
+        "tls-sched-now-sched-00000000000000000001-replica-1-result"
+      ],
+      "missing_or_ambiguous_facts": [
+        "A complete distinct-scheduler-seed PASS/target-owned-FAIL bracket is not yet present."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Execute selection index 2 at predeclared --sched-seed=2."
+      ]
     }
   ],
   "current_outcome": {
-    "classification_id": "tls-sched-now-pending-after-00000000000000000000",
-    "classified_at": "2026-09-21T20:24:52Z",
-    "supersedes": null,
+    "classification_id": "tls-sched-now-pending-after-00000000000000000001",
+    "classified_at": "2026-09-21T20:27:07Z",
+    "supersedes": "tls-sched-now-pending-after-00000000000000000000",
     "evidence_refs": [
-      "tls-sched-now-sched-00000000000000000000-replica-1"
+      "tls-sched-now-sched-00000000000000000000-replica-1",
+      "tls-sched-now-sched-00000000000000000001-replica-1"
     ],
     "kind": "NOT-DETERMINABLE",
     "route_evidence": [
@@ -726,7 +1028,8 @@
           "tls-kernel71-ptrace-strict-sched-now-v1"
         ],
         "evidence_event_ids": [
-          "tls-sched-now-sched-00000000000000000000-replica-1"
+          "tls-sched-now-sched-00000000000000000000-replica-1",
+          "tls-sched-now-sched-00000000000000000001-replica-1"
         ]
       }
     ],
@@ -777,17 +1080,65 @@
         "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test",
         "--gtest_filter=TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
         "--gtest_also_run_disabled_tests"
+      ],
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-001-sched-seed-00000000000000000001-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T18:54:35Z",
+        "--clock-multiplier=1.0",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "1",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test",
+        "--gtest_filter=TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+        "--gtest_also_run_disabled_tests"
       ]
     ],
     "inspected_artifacts": [
-      "tls-sched-now-sched-00000000000000000000-replica-1-result"
+      "tls-sched-now-sched-00000000000000000000-replica-1-result",
+      "tls-sched-now-sched-00000000000000000001-replica-1-result"
     ],
     "missing_or_ambiguous_facts": [
       "A complete distinct-scheduler-seed PASS/target-owned-FAIL bracket is not yet present."
     ],
     "measurement_budget_exhausted": false,
     "pending_in_scope_measurements": [
-      "Execute selection index 1 at predeclared --sched-seed=1."
+      "Execute selection index 2 at predeclared --sched-seed=2."
     ]
   }
 }
