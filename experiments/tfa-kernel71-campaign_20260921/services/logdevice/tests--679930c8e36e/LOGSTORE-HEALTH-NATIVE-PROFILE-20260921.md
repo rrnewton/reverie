@@ -17,5 +17,11 @@ The raw diagnostics are retained under
 `/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/screen-logstore-health`.
 This is a real multithreaded flake, but its thread fanout makes it unsuitable
 for the present ptrace campaign. Formal fuzz seed 0 already ran for 38 seconds
-and was killed at the 64 MiB stderr cap before the selected-test marker, so it
-is censored and no further seeds are authorized by current campaign direction.
+and stopped before the selected-test marker when deterministic threads 3 and 79
+were both waiting on futexes with no runnable thread. Hermit then reported an
+internal container-child failure. The safehermit report records 966 captured
+stderr bytes, `truncated=false`, and exit 125, so this was not a stderr-cap
+kill. The sample
+remains censored; its predeclared remaining seeds stay authorized but are
+deferred from the current scheduler-sensitive priority because of ptrace
+fanout.

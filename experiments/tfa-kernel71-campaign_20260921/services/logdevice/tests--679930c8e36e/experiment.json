@@ -657,12 +657,90 @@
       "pending_in_scope_measurements": [
         "Seeds 1-11 remain in the predeclared population, but further execution is deferred after native profiling found 657 threads and seed 0 hit the 64 MiB stderr kill cap before the target oracle."
       ]
+    },
+    {
+      "classification_id": "logdevice-kernel71-pending-integrity-correction",
+      "classified_at": "2026-09-21T16:47:59Z",
+      "supersedes": "logdevice-kernel71-pending",
+      "evidence_refs": [
+        "logdevice-fuzz-000-replica-1"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "logdevice-kernel71-existing-elf",
+          "cell_ids": [
+            "logdevice-kernel71-ptrace-strict-chaos-target-races"
+          ],
+          "evidence_event_ids": [
+            "logdevice-fuzz-000-replica-1"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/logdevice/tests--679930c8e36e/evidence/seed-000-replica-1.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logdevice-verify-2445441-1790002126713644463",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/240281cee994f93c/logdevice/admin/health_monitor/__tests__/tests",
+          "--gtest_filter=LogStoreHealthMonitorTest.DisabledRebuilding",
+          "--gtest_also_run_disabled_tests"
+        ]
+      ],
+      "inspected_artifacts": [
+        "logdevice-fuzz-000-replica-1-result"
+      ],
+      "missing_or_ambiguous_facts": [
+        "A complete distinct-seed PASS/target-owned-FAIL bracket is not yet present."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Seeds 1-11 remain in the predeclared population, but further execution is deferred after native profiling found 657 threads and seed 0 ended in a two-thread scheduler deadlock and internal container failure before the target oracle; safehermit retained 966 bytes without truncation."
+      ]
     }
   ],
   "current_outcome": {
-    "classification_id": "logdevice-kernel71-pending",
-    "classified_at": "2026-09-21T14:55:21Z",
-    "supersedes": null,
+    "classification_id": "logdevice-kernel71-pending-integrity-correction",
+    "classified_at": "2026-09-21T16:47:59Z",
+    "supersedes": "logdevice-kernel71-pending",
     "evidence_refs": [
       "logdevice-fuzz-000-replica-1"
     ],
@@ -734,7 +812,7 @@
     ],
     "measurement_budget_exhausted": false,
     "pending_in_scope_measurements": [
-      "Seeds 1-11 remain in the predeclared population, but further execution is deferred after native profiling found 657 threads and seed 0 hit the 64 MiB stderr kill cap before the target oracle."
+      "Seeds 1-11 remain in the predeclared population, but further execution is deferred after native profiling found 657 threads and seed 0 ended in a two-thread scheduler deadlock and internal container failure before the target oracle; safehermit retained 966 bytes without truncation."
     ]
   }
 }

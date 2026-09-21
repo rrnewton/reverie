@@ -19,7 +19,7 @@ The current gate requires all of:
 |---|---|---|---|
 | Proxygen TLS terminator | PASS, 182 ms test / 0.24 s wall | 28 TIDs, 27 clones, 1,157 futexes, 9 eventfds, 9 epoll instances | Qualifies, but its existing 15-seed formal cell is exhausted with 2 valid FAIL and 13 censored samples, no PASS |
 | Proxygen transport monitor | PASS, 36 ms test / 4.25 s wall; traced control with LeakSanitizer disabled PASS, 27 ms test / 7.58 s wall | 5 TIDs, 4 `clone3` calls, 23 futexes, no eventfd/epoll/timerfd; selected source is synchronous | Reject: no competing target-thread ordering; the existing formal route stops before the test when Hermit's post-open `inject_fstat` path converts the enclosing `openat` to `EFAULT` |
-| LogStore Health | one `SIGSEGV` at 4.56 s; traced run PASS at 2.673 s | 657 TIDs, 656 clones, 16,739 futexes, 493 eventfds, 475 epoll instances | Reject: ptrace fanout; formal seed 0 also hit the 64 MiB stderr cap before the oracle |
+| LogStore Health | one `SIGSEGV` at 4.56 s; traced run PASS at 2.673 s | 657 TIDs, 656 clones, 16,739 futexes, 493 eventfds, 475 epoll instances | Reject: ptrace fanout; formal seed 0 stopped before the oracle in a two-thread scheduler deadlock followed by an internal container failure |
 | Shadow thread affinity | PASS, 8.641 s test / 11.22 s wall | 338 TIDs; bounded strace timed out at 30 s after 337 clones and 24,797 futexes | Reject: native wall and ptrace fanout |
 | Thrift coroutine | PASS, 1.619 s test / 2.61 s wall | 331 TIDs, 330 clones, 5,210 futexes, 321 eventfds | Reject: ptrace fanout |
 | Thrift instrumentation | PASS, 909 ms test / 1.51 s wall | 331 TIDs, 330 clones, 4,296 futexes, 321 eventfds | Reject: ptrace fanout |

@@ -72,8 +72,9 @@ CONFIGS = {
         "terminal_exhausted": False,
         "pending_measurement": (
             "Seeds 1-11 remain in the predeclared population, but further execution "
-            "is deferred after native profiling found 657 threads and seed 0 hit the "
-            "64 MiB stderr kill cap before the target oracle."
+            "is deferred after native profiling found 657 threads and seed 0 ended "
+            "in a two-thread scheduler deadlock and internal container failure before "
+            "the target oracle; safehermit retained 966 bytes without truncation."
         ),
     },
     "cachelib": {
