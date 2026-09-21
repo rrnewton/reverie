@@ -768,6 +768,326 @@
           "media_type": "application/json"
         }
       ]
+    },
+    {
+      "event_id": "thrift-sched-seed-00000000000000000001-replica-1",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "96756c4cd0f98b506a4454d269009f3dae98c591e3025c1014563d04c8e01243",
+      "route_id": "thrift-instrumentation-kernel71-sched-slowdown-existing-elf-v1",
+      "route_sha256": "f05c35645f5ae04e0d4e136da577eccdd4e79d35abad676585641f9882ac85b5",
+      "canonical_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "thrift-instrumentation-kernel71-ptrace-strict-chaos-sched-slowdown-now-v1",
+      "cell_sha256": "e882c837b3fee09e5779325938b2c7090cb09bec01210e5b5e65e5f8be6a6b5e",
+      "measurement_role": "DISCOVERY",
+      "started_at": "2026-09-21T21:55:37Z",
+      "finished_at": "2026-09-21T21:55:51Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-per-thread-slowdown",
+        "--chaos-slowdown-max-factor=10.0",
+        "--chaos-epoch-length-ns=0",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T21:44:37Z",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "1",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--target-timeslice",
+        "1000000",
+        "--max-timeslice",
+        "200000000",
+        "--clock-multiplier=1.0",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-thrift-slowdown-2936582-1344290-1790027049611882514",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+        "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      ],
+      "result": {
+        "exit_code": 1,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 1,
+        "target_oracle": "FAIL",
+        "failure_class_id": "gtest-snapshot-size-2",
+        "harness_status": "COMPLETE",
+        "diagnostic": "status=VALID; selected=1; unit_result=exit-code; exit=1; BitwiseInfoV1=matched; stdout_cap=not-fired; safehermit_bounds=authenticated; verifier_and_wrapper_qgroups=authenticated"
+      },
+      "invocation_id": "thrift-sched-seed-00000000000000000001-verify",
+      "replica_index": 1,
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 1
+      },
+      "effective_config_sha256": "e882c837b3fee09e5779325938b2c7090cb09bec01210e5b5e65e5f8be6a6b5e",
+      "artifacts": [
+        {
+          "artifact_id": "thrift-sched-seed-00000000000000000001-replica-1-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stdout.txt",
+          "sha256": "c8a68dbd3d417f0259f338d71bac761d7fe54682fbb8103e0180b0b22fdb7d8d",
+          "bytes": 983,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-sched-seed-00000000000000000001-replica-1-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-1.stderr.txt",
+          "sha256": "85f03e9d5b46c519120cc647a866feeba19cf2d12af443e4bf1269766ca3e296",
+          "bytes": 1660,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-sched-seed-00000000000000000001-replica-1-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-1.result.json",
+          "sha256": "bc7df483b6f8957c33a0f919f71961514c3a837527351efcf11897fe887afc32",
+          "bytes": 2195,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "thrift-sched-seed-00000000000000000001-replica-1-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-1.safehermit.txt",
+          "sha256": "a6d6325c8767c9cfc8017e49cdf132c3a884c8f999050b678e8653f5842dad2e",
+          "bytes": 1793,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-sched-seed-00000000000000000001-replica-1-bounds",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-1.bounds.json",
+          "sha256": "58cc92b5b21e3afe52b6bf247024af50de76fb03bc60b7580d3c87809d07326f",
+          "bytes": 2974,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "thrift-sched-seed-00000000000000000001-replica-1-invocation",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-1.invocation.json",
+          "sha256": "45656010431d0f737d7cdddc0f1612eba9f5467025c8528803ca02fb62d14ab3",
+          "bytes": 7177,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        }
+      ]
+    },
+    {
+      "event_id": "thrift-sched-seed-00000000000000000001-replica-2",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "96756c4cd0f98b506a4454d269009f3dae98c591e3025c1014563d04c8e01243",
+      "route_id": "thrift-instrumentation-kernel71-sched-slowdown-existing-elf-v1",
+      "route_sha256": "f05c35645f5ae04e0d4e136da577eccdd4e79d35abad676585641f9882ac85b5",
+      "canonical_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "thrift-instrumentation-kernel71-ptrace-strict-chaos-sched-slowdown-now-v1",
+      "cell_sha256": "e882c837b3fee09e5779325938b2c7090cb09bec01210e5b5e65e5f8be6a6b5e",
+      "measurement_role": "CONFIRMATION",
+      "started_at": "2026-09-21T21:55:37Z",
+      "finished_at": "2026-09-21T21:55:51Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-2.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-per-thread-slowdown",
+        "--chaos-slowdown-max-factor=10.0",
+        "--chaos-epoch-length-ns=0",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T21:44:37Z",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "1",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--target-timeslice",
+        "1000000",
+        "--max-timeslice",
+        "200000000",
+        "--clock-multiplier=1.0",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-thrift-slowdown-2936582-1344290-1790027049611882514",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+        "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      ],
+      "result": {
+        "exit_code": 1,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 1,
+        "target_oracle": "FAIL",
+        "failure_class_id": "gtest-snapshot-size-2",
+        "harness_status": "COMPLETE",
+        "diagnostic": "status=VALID; selected=1; unit_result=exit-code; exit=1; BitwiseInfoV1=matched; stdout_cap=not-fired; safehermit_bounds=authenticated; verifier_and_wrapper_qgroups=authenticated"
+      },
+      "invocation_id": "thrift-sched-seed-00000000000000000001-verify",
+      "replica_index": 2,
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 1
+      },
+      "effective_config_sha256": "e882c837b3fee09e5779325938b2c7090cb09bec01210e5b5e65e5f8be6a6b5e",
+      "artifacts": [
+        {
+          "artifact_id": "thrift-sched-seed-00000000000000000001-replica-2-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-2.stdout.txt",
+          "sha256": "c8a68dbd3d417f0259f338d71bac761d7fe54682fbb8103e0180b0b22fdb7d8d",
+          "bytes": 983,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-sched-seed-00000000000000000001-replica-2-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-2.stderr.txt",
+          "sha256": "85f03e9d5b46c519120cc647a866feeba19cf2d12af443e4bf1269766ca3e296",
+          "bytes": 1660,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-sched-seed-00000000000000000001-replica-2-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-2.result.json",
+          "sha256": "4389f02ec6321cd59d1c2b6a5d7e7a9d4e83dee6e900a33317daf47918e4bbd0",
+          "bytes": 2198,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "thrift-sched-seed-00000000000000000001-replica-2-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-2.safehermit.txt",
+          "sha256": "a6d6325c8767c9cfc8017e49cdf132c3a884c8f999050b678e8653f5842dad2e",
+          "bytes": 1793,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-sched-seed-00000000000000000001-replica-2-bounds",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-2.bounds.json",
+          "sha256": "4d3b2c93d654e8a6c00cf99b4af732b2929ea1a75b19b7f11e025d4cd19ff074",
+          "bytes": 3135,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "thrift-sched-seed-00000000000000000001-replica-2-invocation",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001-replica-2.invocation.json",
+          "sha256": "45656010431d0f737d7cdddc0f1612eba9f5467025c8528803ca02fb62d14ab3",
+          "bytes": 7177,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        }
+      ]
     }
   ],
   "samples": [
@@ -786,6 +1106,23 @@
       "execution_event_ids": [
         "thrift-sched-seed-00000000000000000000-replica-1",
         "thrift-sched-seed-00000000000000000000-replica-2"
+      ]
+    },
+    {
+      "sample_id": "thrift-sched-seed-00000000000000000001-sample",
+      "cell_id": "thrift-instrumentation-kernel71-ptrace-strict-chaos-sched-slowdown-now-v1",
+      "seed": {
+        "flag": "--sched-seed",
+        "value": 1
+      },
+      "selection_index": 1,
+      "status": "VALID",
+      "target_outcome": "FAIL",
+      "failure_class_id": "gtest-snapshot-size-2",
+      "censor_reason": null,
+      "execution_event_ids": [
+        "thrift-sched-seed-00000000000000000001-replica-1",
+        "thrift-sched-seed-00000000000000000001-replica-2"
       ]
     }
   ],
@@ -806,6 +1143,34 @@
         "storage": "TRACKED",
         "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-sched-seed-00000000000000000000.canonical-info.json",
         "sha256": "594e769bfea91d2520605bc97c18ac64605a10c7622c12bdcf7f524cbee9d91e",
+        "bytes": 398,
+        "capture_limit_bytes": 1048576,
+        "truncated": false,
+        "media_type": "application/json"
+      },
+      "details": {
+        "verified": true,
+        "bitwise_parity": true,
+        "comparison": "BitwiseInfoV1",
+        "relaxations": []
+      }
+    },
+    {
+      "matcher_id": "thrift-sched-seed-00000000000000000001-matcher",
+      "kind": "BUILTIN_VERIFY",
+      "execution_event_ids": [
+        "thrift-sched-seed-00000000000000000001-replica-1",
+        "thrift-sched-seed-00000000000000000001-replica-2"
+      ],
+      "complete": true,
+      "same_target_outcome": true,
+      "same_failure_class": true,
+      "canonical_info_artifact": {
+        "artifact_id": "thrift-sched-seed-00000000000000000001-matcher-canonical-info",
+        "kind": "CANONICAL_INFO",
+        "storage": "TRACKED",
+        "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-001-sched-seed-00000000000000000001.canonical-info.json",
+        "sha256": "a250ba8c31f1eacd29a73c8d801de1cb2e43add30fa78101d97ad21d6c99b043",
         "bytes": 398,
         "capture_limit_bytes": 1048576,
         "truncated": false,
@@ -956,143 +1321,46 @@
       "pending_in_scope_measurements": [
         "Execute selection index 1 at predeclared --sched-seed=1."
       ]
+    },
+    {
+      "classification_id": "thrift-sched-working-after-00000000000000000001",
+      "classified_at": "2026-09-21T21:55:52Z",
+      "supersedes": "thrift-sched-pending-after-00000000000000000000",
+      "evidence_refs": [
+        "thrift-sched-seed-00000000000000000000-sample",
+        "thrift-sched-seed-00000000000000000000-matcher",
+        "thrift-sched-seed-00000000000000000001-sample",
+        "thrift-sched-seed-00000000000000000001-matcher"
+      ],
+      "kind": "WORKING",
+      "pass_witness": {
+        "sample_id": "thrift-sched-seed-00000000000000000000-sample",
+        "matcher_id": "thrift-sched-seed-00000000000000000000-matcher"
+      },
+      "fail_witness": {
+        "sample_id": "thrift-sched-seed-00000000000000000001-sample",
+        "matcher_id": "thrift-sched-seed-00000000000000000001-matcher"
+      }
     }
   ],
   "current_outcome": {
-    "classification_id": "thrift-sched-pending-after-00000000000000000000",
-    "classified_at": "2026-09-21T21:55:05Z",
-    "supersedes": null,
+    "classification_id": "thrift-sched-working-after-00000000000000000001",
+    "classified_at": "2026-09-21T21:55:52Z",
+    "supersedes": "thrift-sched-pending-after-00000000000000000000",
     "evidence_refs": [
-      "thrift-sched-seed-00000000000000000000-replica-1",
-      "thrift-sched-seed-00000000000000000000-replica-2"
+      "thrift-sched-seed-00000000000000000000-sample",
+      "thrift-sched-seed-00000000000000000000-matcher",
+      "thrift-sched-seed-00000000000000000001-sample",
+      "thrift-sched-seed-00000000000000000001-matcher"
     ],
-    "kind": "NOT-DETERMINABLE",
-    "route_evidence": [
-      {
-        "route_id": "thrift-instrumentation-kernel71-sched-slowdown-existing-elf-v1",
-        "cell_ids": [
-          "thrift-instrumentation-kernel71-ptrace-strict-chaos-sched-slowdown-now-v1"
-        ],
-        "evidence_event_ids": [
-          "thrift-sched-seed-00000000000000000000-replica-1",
-          "thrift-sched-seed-00000000000000000000-replica-2"
-        ]
-      }
-    ],
-    "inspected_commands": [
-      [
-        "bin/safehermit",
-        "--sh-report",
-        "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-sched-seed-00000000000000000000-replica-1.safehermit.txt",
-        "--sh-deadline",
-        "120",
-        "--sh-max-log-bytes",
-        "67108864",
-        "--sh-disk-limit",
-        "8G",
-        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
-        "run",
-        "--backend",
-        "ptrace",
-        "--strict",
-        "--chaos",
-        "--chaos-per-thread-slowdown",
-        "--chaos-slowdown-max-factor=10.0",
-        "--chaos-epoch-length-ns=0",
-        "--base-env=minimal",
-        "--env",
-        "LC_ALL=C",
-        "--env",
-        "TZ=UTC",
-        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
-        "--epoch=2026-09-21T21:44:37Z",
-        "--seed",
-        "0",
-        "--rng-seed",
-        "0",
-        "--sched-seed",
-        "0",
-        "--fuzz-seed",
-        "0",
-        "--sched-heuristic",
-        "random",
-        "--target-timeslice",
-        "1000000",
-        "--max-timeslice",
-        "200000000",
-        "--clock-multiplier=1.0",
-        "--verify",
-        "--verify-strict",
-        "--verify-allow",
-        "both",
-        "--keep-logs",
-        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-thrift-slowdown-2936582-1344290-1790027049611882514",
-        "--",
-        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
-        "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
-      ],
-      [
-        "bin/safehermit",
-        "--sh-report",
-        "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-sched-seed-00000000000000000000-replica-2.safehermit.txt",
-        "--sh-deadline",
-        "120",
-        "--sh-max-log-bytes",
-        "67108864",
-        "--sh-disk-limit",
-        "8G",
-        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
-        "run",
-        "--backend",
-        "ptrace",
-        "--strict",
-        "--chaos",
-        "--chaos-per-thread-slowdown",
-        "--chaos-slowdown-max-factor=10.0",
-        "--chaos-epoch-length-ns=0",
-        "--base-env=minimal",
-        "--env",
-        "LC_ALL=C",
-        "--env",
-        "TZ=UTC",
-        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
-        "--epoch=2026-09-21T21:44:37Z",
-        "--seed",
-        "0",
-        "--rng-seed",
-        "0",
-        "--sched-seed",
-        "0",
-        "--fuzz-seed",
-        "0",
-        "--sched-heuristic",
-        "random",
-        "--target-timeslice",
-        "1000000",
-        "--max-timeslice",
-        "200000000",
-        "--clock-multiplier=1.0",
-        "--verify",
-        "--verify-strict",
-        "--verify-allow",
-        "both",
-        "--keep-logs",
-        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-thrift-slowdown-2936582-1344290-1790027049611882514",
-        "--",
-        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
-        "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
-      ]
-    ],
-    "inspected_artifacts": [
-      "thrift-sched-seed-00000000000000000000-replica-1-result",
-      "thrift-sched-seed-00000000000000000000-replica-2-result"
-    ],
-    "missing_or_ambiguous_facts": [
-      "A complete distinct-sched-seed PASS/target-owned-FAIL bracket is not yet present."
-    ],
-    "measurement_budget_exhausted": false,
-    "pending_in_scope_measurements": [
-      "Execute selection index 1 at predeclared --sched-seed=1."
-    ]
+    "kind": "WORKING",
+    "pass_witness": {
+      "sample_id": "thrift-sched-seed-00000000000000000000-sample",
+      "matcher_id": "thrift-sched-seed-00000000000000000000-matcher"
+    },
+    "fail_witness": {
+      "sample_id": "thrift-sched-seed-00000000000000000001-sample",
+      "matcher_id": "thrift-sched-seed-00000000000000000001-matcher"
+    }
   }
 }
