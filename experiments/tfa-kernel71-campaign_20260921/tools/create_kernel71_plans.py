@@ -14,7 +14,7 @@ SOURCE_REVISION = "7f239d5b37dfbecf32fed144468da461f998add5"
 HERMIT_REVISION = "4630ee2a61f93221a43e2baec0a15f34102a2c61"
 HERMIT_BINARY = "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a"
 HERMIT_SHA256 = "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a"
-SEALED_AT = "2026-09-21T14:16:43Z"
+SEALED_AT = "2026-09-21T14:48:55Z"
 HOST_KERNEL = "Linux 7.1.3-0_fbk0_0_g295ad0959f34"
 HOSTNAME = "devbig030.atn3.facebook.com"
 CPU = "AMD EPYC 9D85 158-Core Processor"
@@ -74,6 +74,45 @@ CONFIGS = [
         "required_n": 9,
         "attempt_cap": 13,
         "verify_dir": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-timerfd-verify-4146036-1790000155380805628",
+    },
+    {
+        "name": "tls",
+        "target": "fbcode//proxygen/facebook/fwdproxy/tlsterm/test:tls_terminator_test",
+        "binary": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test",
+        "binary_sha256": "e7a5278312bb9daa6d38a9a03cc2001cd31f8c64a92791d92d5aa47c20f66566",
+        "binary_bytes": 991876712,
+        "gtest_filter": "TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+        "gtest_display": "TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+        "run_disabled": True,
+        "required_n": 11,
+        "attempt_cap": 15,
+        "verify_dir": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-verify-2445005-1790002126313307991",
+    },
+    {
+        "name": "cachelib",
+        "target": "fbcode//cachelib/common/tests:event-tracker-test",
+        "binary": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/0bb5f293dc275764/cachelib/common/tests/__event-tracker-test__/event-tracker-test",
+        "binary_sha256": "0f5a542c22025ad80dfdb992e4a2befc3cfa367d827c434237baa7554e268066",
+        "binary_bytes": 10134232,
+        "gtest_filter": "EventTrackerTest.NvmCacheWithEventTracker",
+        "gtest_display": "EventTrackerTest.NvmCacheWithEventTracker",
+        "run_disabled": False,
+        "required_n": 86,
+        "attempt_cap": 94,
+        "verify_dir": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-cachelib-verify-2445388-1790002126534780112",
+    },
+    {
+        "name": "logdevice",
+        "target": "fbcode//logdevice/admin/health_monitor:tests",
+        "binary": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/240281cee994f93c/logdevice/admin/health_monitor/__tests__/tests",
+        "binary_sha256": "ab45a7bcbfa86b5a22f563b3bcd6f80a90ce08b122357956418b030375e0157e",
+        "binary_bytes": 2251301960,
+        "gtest_filter": "LogStoreHealthMonitorTest.DisabledRebuilding",
+        "gtest_display": "LogStoreHealthMonitorTest.DisabledRebuilding",
+        "run_disabled": True,
+        "required_n": 8,
+        "attempt_cap": 12,
+        "verify_dir": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logdevice-verify-2445441-1790002126713644463",
     },
 ]
 
