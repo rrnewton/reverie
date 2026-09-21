@@ -16,7 +16,7 @@ At `2026-09-21T20:57:56Z`, the prospective boundary fixed:
 The retained verifier-log subvolume is:
 
 ```text
-/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-asyncssl-sched-slowdown-2936582-20260921
+/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-sched-611100-1790025639833750331
 ```
 
 Before any material run, this exact path must be provisioned as a fresh Btrfs
