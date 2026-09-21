@@ -1,7 +1,10 @@
 {
   "cache_globs": [
     "node_modules",
-    "target"
+    "target",
+    "ignored/**/target",
+    "ignored/**/target-debug",
+    "ignored/**/components-target"
   ],
   "default_landed_ref": "refs/remotes/origin/main",
   "default_remote": "origin",
