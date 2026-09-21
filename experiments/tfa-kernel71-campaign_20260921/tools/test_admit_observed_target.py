@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import signal
 import sys
 import tempfile
@@ -14,12 +15,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from admit_observed_target import (
     CONFIGS,
+    HERMIT_BINARY,
+    HERMIT_SHA256,
+    SAFEHERMIT_LOG_ROOT,
+    assert_formal_wrapper_boundary,
     assert_first_thrift_admission,
     assert_plan_receipt_preserved,
     assert_prior_prefix_unchanged,
+    build_cell,
     classify,
     copy_once_or_verify,
+    formal_wrapper_boundary_applied,
     measurement_budget_exhausted,
+    preserved_non_hermit_event_prefix,
     supersedes_id,
     thrift_prior_prefix,
     write_json_once_or_verify,
@@ -62,13 +70,57 @@ TSAN_ONLY = (
 
 
 def fields(exit_code: int, unit_result: str, process_signal: int | None = None) -> dict[str, str]:
-    result = {"exit_code": str(exit_code), "unit_result": unit_result}
+    result = {
+        "binary": HERMIT_BINARY,
+        "binary_sha256": HERMIT_SHA256,
+        "log_dir": f"{SAFEHERMIT_LOG_ROOT}/brs-safehermit-unit-test",
+        "bound.wall": "APPLIED:120s",
+        "bound.cgroup": "APPLIED:MemoryMax=16G MemorySwapMax=0",
+        "bound.disk": (
+            "APPLIED:8G for log_dir only; guest paths and explicit log files "
+            "elsewhere are outside this bound"
+        ),
+        "bound.bytes": (
+            "APPLIED:67108864 (LETHAL: the run is cgroup-killed at the cap)"
+        ),
+        "truncated": "false",
+        "exit_code": str(exit_code),
+        "unit_result": unit_result,
+    }
     if process_signal is not None:
         result["process_signal"] = str(process_signal)
     return result
 
 
 class ThriftInstrumentationClassifierTest(unittest.TestCase):
+    def test_exact_formal_wrapper_boundary_is_required(self) -> None:
+        applied = fields(0, "success")
+        self.assertTrue(formal_wrapper_boundary_applied(applied))
+        assert_formal_wrapper_boundary(applied)
+
+        mutations = {
+            "binary_sha256": "0" * 64,
+            "log_dir": "/home/newton/work/dev-hermit/ignored/safehermit/brs-unbounded",
+            "bound.wall": "NOT_APPLIED",
+            "bound.cgroup": "NOT_APPLIED",
+            "bound.disk": "NOT_APPLIED:space exists but is not capped",
+            "bound.bytes": "NOT_APPLIED",
+            "truncated": "true",
+        }
+        for key, value in mutations.items():
+            with self.subTest(key=key):
+                refused = fields(0, "success")
+                refused[key] = value
+                self.assertFalse(formal_wrapper_boundary_applied(refused))
+                with self.assertRaisesRegex(
+                    SystemExit, "formal wrapper boundary not applied exactly"
+                ):
+                    assert_formal_wrapper_boundary(refused)
+                self.assertEqual(
+                    classify(CFG, PASS, STRICT, refused),
+                    ("CENSORED", None, "ERROR", None, 1),
+                )
+
     def test_exact_pass(self) -> None:
         self.assertEqual(
             classify(CFG, PASS, STRICT, fields(0, "success")),
@@ -236,6 +288,33 @@ class PrefixIntegrityTest(unittest.TestCase):
         )
         self.assertEqual(supersedes_id(self.record, True), "pending-0")
 
+    def test_pre_cell_launch_is_preserved_before_rebuilt_seed_events(self) -> None:
+        launch = {"event_id": "rejected-boundary", "kind": "LAUNCH"}
+        hermit = {"event_id": "event-0", "kind": "HERMIT_EXECUTION"}
+        self.record["events"] = [launch, hermit]
+        self.assertEqual(
+            preserved_non_hermit_event_prefix(self.record, True), [launch]
+        )
+        rebuilt = [launch, hermit, {"event_id": "event-1", "kind": "HERMIT_EXECUTION"}]
+        assert_prior_prefix_unchanged(
+            self.record,
+            self.cell,
+            rebuilt,
+            [self.sample, {"sample_id": "sample-1"}],
+            [self.matcher, {"matcher_id": "matcher-1"}],
+        )
+
+    def test_interleaved_non_hermit_event_is_refused(self) -> None:
+        self.record["events"] = [
+            {"event_id": "event-0", "kind": "HERMIT_EXECUTION"},
+            {"event_id": "late-launch", "kind": "LAUNCH"},
+        ]
+        with self.assertRaisesRegex(SystemExit, "non-Hermit event appears after"):
+            preserved_non_hermit_event_prefix(self.record, True)
+
+    def test_pristine_record_has_no_preserved_material_event_prefix(self) -> None:
+        self.assertEqual(preserved_non_hermit_event_prefix(self.record, False), [])
+
     def test_prior_object_drift_is_refused(self) -> None:
         changed = copy.deepcopy(self.event)
         changed["event_id"] = "retrospectively-changed"
@@ -321,6 +400,18 @@ class PrefixIntegrityTest(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "prior JSON artifact changed"):
                 write_json_once_or_verify(result, {"value": 2}, True)
             self.assertEqual(result.read_text(), '{"value":1}\n')
+
+
+class FrozenCellTest(unittest.TestCase):
+    def test_thrift_cell_is_exactly_the_prospectively_instantiated_cell(self) -> None:
+        record_path = (
+            Path(__file__).resolve().parents[1]
+            / CONFIGS["thrift"]["record"]
+        )
+        record = json.loads(record_path.read_text())
+        self.assertEqual(
+            record["cells"], [build_cell(record, CONFIGS["thrift"], "thrift")]
+        )
 
 
 if __name__ == "__main__":

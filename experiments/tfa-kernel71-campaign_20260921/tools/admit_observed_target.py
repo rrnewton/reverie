@@ -151,6 +151,8 @@ CONFIGS = {
 
 HERMIT_REVISION = "4630ee2a61f93221a43e2baec0a15f34102a2c61"
 HERMIT_SHA256 = "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a"
+HERMIT_BINARY = "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a"
+SAFEHERMIT_LOG_ROOT = "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit"
 CAMPAIGN_CWD = "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-campaign_20260921"
 
 
@@ -224,6 +226,26 @@ def assert_prior_prefix_unchanged(
             raise SystemExit(f"prior {label} changed during prefix reconstruction")
 
 
+def preserved_non_hermit_event_prefix(record: dict, repairing: bool) -> list[dict]:
+    """Keep pre-cell launch diagnostics while rebuilding Hermit seed events."""
+    if not repairing:
+        return []
+    events = record["events"]
+    first_hermit = next(
+        (
+            index
+            for index, event in enumerate(events)
+            if event["kind"] == "HERMIT_EXECUTION"
+        ),
+        len(events),
+    )
+    if any(event["kind"] != "HERMIT_EXECUTION" for event in events[first_hermit:]):
+        raise SystemExit(
+            "repair guard failed: non-Hermit event appears after Hermit seed evidence"
+        )
+    return copy.deepcopy(events[:first_hermit])
+
+
 def measurement_budget_exhausted(design: dict, samples: list[dict]) -> bool:
     valid_count = sum(sample["status"] == "VALID" for sample in samples)
     return (
@@ -269,6 +291,34 @@ def strict_bitwise_matched(stderr: str) -> bool:
         ":: Success: deterministic. Determinism verified." in stderr
         and ":: comparison=BitwiseInfoV1 relaxations=none" in stderr
     )
+
+
+def formal_wrapper_boundary_applied(fields: dict[str, str]) -> bool:
+    expected = {
+        "binary": HERMIT_BINARY,
+        "binary_sha256": HERMIT_SHA256,
+        "bound.wall": "APPLIED:120s",
+        "bound.cgroup": "APPLIED:MemoryMax=16G MemorySwapMax=0",
+        "bound.disk": (
+            "APPLIED:8G for log_dir only; guest paths and explicit log files "
+            "elsewhere are outside this bound"
+        ),
+        "bound.bytes": (
+            "APPLIED:67108864 (LETHAL: the run is cgroup-killed at the cap)"
+        ),
+        "truncated": "false",
+    }
+    log_prefix = f"{SAFEHERMIT_LOG_ROOT}/brs-safehermit-"
+    return all(fields.get(key) == value for key, value in expected.items()) and fields.get(
+        "log_dir", ""
+    ).startswith(log_prefix)
+
+
+def assert_formal_wrapper_boundary(fields: dict[str, str]) -> None:
+    if not formal_wrapper_boundary_applied(fields):
+        raise SystemExit(
+            "formal wrapper boundary not applied exactly; refusing to create a seed sample"
+        )
 
 
 def classify_thrift_instrumentation(
@@ -326,6 +376,7 @@ def classify_thrift_instrumentation(
     common = bool(
         matched
         and infra_free
+        and formal_wrapper_boundary_applied(fields)
         and len(run_indices) == 1
         and selected_run_index is not None
         and len(one_test_indices) == 1
@@ -365,6 +416,85 @@ def classify(cfg: dict, stdout: str, stderr: str, fields: dict[str, str]) -> tup
     if matched and selected == 1 and exit_code != 0:
         return "VALID", "FAIL", "COMPLETE", "gtest-selected-test-failure", selected
     return "CENSORED", None, "ERROR", None, selected
+
+
+def build_cell(record: dict, cfg: dict, target: str) -> dict:
+    plan = record["plan"]
+    route = plan["authorized_routes"][0]
+    guest_argv = route["launch_argv"][route["launch_argv"].index("--") + 1 :]
+    cell = {
+        "cell_id": route["authorized_cell_ids"][0],
+        "route_id": route["route_id"],
+        "route_sha256": route["route_sha256"],
+        "plan_sha256": plan["plan_sha256"],
+        "frozen_at": plan["sealed_at"],
+        "cell_sha256": "",
+        "canonical_target": record["identity"]["canonical_target"],
+        "test_selector": copy.deepcopy(record["identity"]["test_selector"]),
+        "build_mode_selector": copy.deepcopy(record["identity"]["build_mode_selector"]),
+        "target_source_revision": route["source_revision"],
+        "hermit_source_revision": HERMIT_REVISION,
+        "hermit_binary_sha256": HERMIT_SHA256,
+        "test_artifact_sha256": cfg["binary_sha256"],
+        "guest": {
+            "argv": guest_argv,
+            "environment": copy.deepcopy(route["environment"]),
+            "mounts": [
+                "type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+            ],
+            "immutable_inputs": [
+                {
+                    "artifact_id": f"{target}-kernel71-test-elf",
+                    "kind": "OTHER",
+                    "storage": "LOCAL_IGNORED",
+                    "locator": cfg["binary"],
+                    "sha256": cfg["binary_sha256"],
+                    "bytes": cfg["binary_bytes"],
+                    "capture_limit_bytes": cfg["binary_bytes"],
+                    "truncated": False,
+                    "media_type": "application/x-executable",
+                }
+            ],
+            "working_directory": CAMPAIGN_CWD,
+        },
+        "hermit": {
+            "backend": "ptrace",
+            "strict": True,
+            "chaos": True,
+            "relaxations": [],
+            "argv": copy.deepcopy(route["launch_argv"]),
+            "scheduler_heuristic": "random",
+            "swept_coordinate": "--fuzz-seed",
+            "fixed_seed_roots": copy.deepcopy(
+                plan["measurement_design"]["fixed_seed_roots"]
+            ),
+        },
+        "timing": {
+            "requested_max_timeslice": 200000000,
+            "effective_max_timeslice": 200000000,
+        },
+        "pmu": {
+            "available": True,
+            "effective_timer": "RCB",
+            "fallback_recorded": False,
+        },
+        "host": {
+            "hostname": "devbig030.atn3.facebook.com",
+            "kernel": "Linux 7.1.3-0_fbk0_0_g295ad0959f34",
+            "architecture": "x86_64",
+            "cpu": "AMD EPYC 9D85 158-Core Processor",
+            "capabilities": {
+                "pmu": True,
+                "mount_namespace": True,
+                "buck_out_bind": True,
+                "safehermit_disk_qgroup": True,
+            },
+        },
+        "oracle_id": plan["target_oracle"]["oracle_id"],
+        "resource_bounds": copy.deepcopy(plan["resource_bounds"]),
+    }
+    cell["cell_sha256"] = canonical_digest(cell, "cell_sha256")
+    return cell
 
 
 def main() -> None:
@@ -428,42 +558,9 @@ def main() -> None:
     plan = record["plan"]
     route = plan["authorized_routes"][0]
     evidence = record_path.parent / "evidence"
-    guest_argv = route["launch_argv"][route["launch_argv"].index("--") + 1:]
-    cell = {
-        "cell_id": route["authorized_cell_ids"][0], "route_id": route["route_id"],
-        "route_sha256": route["route_sha256"], "plan_sha256": plan["plan_sha256"],
-        "frozen_at": plan["sealed_at"], "cell_sha256": "",
-        "canonical_target": record["identity"]["canonical_target"],
-        "test_selector": copy.deepcopy(record["identity"]["test_selector"]),
-        "build_mode_selector": copy.deepcopy(record["identity"]["build_mode_selector"]),
-        "target_source_revision": route["source_revision"], "hermit_source_revision": HERMIT_REVISION,
-        "hermit_binary_sha256": HERMIT_SHA256, "test_artifact_sha256": cfg["binary_sha256"],
-        "guest": {
-            "argv": guest_argv, "environment": copy.deepcopy(route["environment"]),
-            "mounts": ["type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"],
-            "immutable_inputs": [{
-                "artifact_id": f"{args.target}-kernel71-test-elf", "kind": "OTHER", "storage": "LOCAL_IGNORED",
-                "locator": cfg["binary"], "sha256": cfg["binary_sha256"], "bytes": cfg["binary_bytes"],
-                "capture_limit_bytes": cfg["binary_bytes"], "truncated": False, "media_type": "application/x-executable",
-            }],
-            "working_directory": CAMPAIGN_CWD,
-        },
-        "hermit": {
-            "backend": "ptrace", "strict": True, "chaos": True, "relaxations": [],
-            "argv": copy.deepcopy(route["launch_argv"]), "scheduler_heuristic": "random",
-            "swept_coordinate": "--fuzz-seed", "fixed_seed_roots": copy.deepcopy(plan["measurement_design"]["fixed_seed_roots"]),
-        },
-        "timing": {"requested_max_timeslice": 200000000, "effective_max_timeslice": 200000000},
-        "pmu": {"available": True, "effective_timer": "RCB", "fallback_recorded": False},
-        "host": {
-            "hostname": "devbig030.atn3.facebook.com", "kernel": "Linux 7.1.3-0_fbk0_0_g295ad0959f34",
-            "architecture": "x86_64", "cpu": "AMD EPYC 9D85 158-Core Processor",
-            "capabilities": {"pmu": True, "mount_namespace": True, "buck_out_bind": True, "safehermit_disk_qgroup": True},
-        },
-        "oracle_id": plan["target_oracle"]["oracle_id"], "resource_bounds": copy.deepcopy(plan["resource_bounds"]),
-    }
-    cell["cell_sha256"] = canonical_digest(cell, "cell_sha256")
-    events, samples, matchers = [], [], []
+    cell = build_cell(record, cfg, args.target)
+    events = preserved_non_hermit_event_prefix(record, repairing)
+    samples, matchers = [], []
     pass_witness = fail_witness = None
     last_finish = dt.datetime.fromisoformat(plan["sealed_at"].replace("Z", "+00:00"))
     for index, seed in enumerate(selected_seeds):
@@ -475,6 +572,8 @@ def main() -> None:
             "SAFEHERMIT_REPORT": evidence / f"{prefix}-replica-1.safehermit.txt",
         }
         fields = report_fields(source["SAFEHERMIT_REPORT"])
+        if args.target == "thrift":
+            assert_formal_wrapper_boundary(fields)
         stdout_text, stderr_text = source["STDOUT"].read_text(), source["STDERR"].read_text()
         status, target_outcome, harness_status, failure_class, selected_count = classify(cfg, stdout_text, stderr_text, fields)
         started, finished = report_times(source["SAFEHERMIT_REPORT"])
@@ -498,7 +597,7 @@ def main() -> None:
                 "timeout_origin": "OUTER" if fields["unit_result"] == "timeout" else "NONE", "guest_started": True,
                 "selected_test_executed_count": selected_count, "target_oracle": target_outcome or ("NOT_RUN" if selected_count == 0 else "AMBIGUOUS"),
                 "failure_class_id": failure_class, "harness_status": harness_status,
-                "diagnostic": f"status={status}; selected={selected_count}; unit_result={fields['unit_result']}; exit={fields['exit_code']}; BitwiseInfoV1={'matched' if verified else 'not-matched'}",
+                "diagnostic": f"status={status}; selected={selected_count}; unit_result={fields['unit_result']}; exit={fields['exit_code']}; BitwiseInfoV1={'matched' if verified else 'not-matched'}; formal_wrapper_boundary={'applied' if formal_wrapper_boundary_applied(fields) else 'not-applied'}",
             }
             event = {
                 "event_id": event_id, "kind": "HERMIT_EXECUTION", "plan_sha256": plan["plan_sha256"],
