@@ -320,12 +320,783 @@
       "digest_algorithm": "sha256"
     }
   },
-  "plan_receipt": null,
-  "attempt_state": "PLANNED",
-  "cells": [],
-  "events": [],
-  "samples": [],
-  "matchers": [],
-  "outcome_history": [],
-  "current_outcome": null
+  "plan_receipt": {
+    "commit": "e2247bbf631bd194f0312f44cbd36dace496a563",
+    "path": "services/thrift/instrumentationtest--3e07b8fc0ca0/experiment.json",
+    "blob": "2fb59acf7254731ae203e88d38617874f683550a",
+    "helper_blobs": [
+      {
+        "path": "experiments/tfa-kernel71-time-input-campaign_20260921/tools/admit_thrift_target_races_seed.py",
+        "blob": "00a29bf6b8d826fdd006930d3a004c662cbd1e2a"
+      },
+      {
+        "path": "experiments/tfa-kernel71-time-input-campaign_20260921/tools/create_thrift_target_races_plan.py",
+        "blob": "039f98d325ef21f470f21e47cb00a21b69285561"
+      },
+      {
+        "path": "experiments/tfa-kernel71-time-input-campaign_20260921/tools/run_thrift_target_races_seed.py",
+        "blob": "1287cabe623e2619229d2b11fda379ee874c1bb7"
+      }
+    ]
+  },
+  "attempt_state": "MATERIAL",
+  "cells": [
+    {
+      "cell_id": "thrift-instrumentation-kernel71-ptrace-strict-chaos-target-races-now-v1",
+      "route_id": "thrift-instrumentation-kernel71-target-races-existing-elf-v1",
+      "route_sha256": "2596007463bce1a0b23f4d918eb29d2447351fffe264d0a98ec66f4c6b084e4b",
+      "plan_sha256": "958870dc8ee15388e842bc5b870880275b5d0f4f720c6bfb05cf031114f6292c",
+      "frozen_at": "2026-09-21T19:01:04Z",
+      "cell_sha256": "5fa5012a10fdcfbb8ec5f8da74e961a27b924046d3e88939506e1d0d153ed6bf",
+      "canonical_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "target_source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "hermit_source_revision": "4630ee2a61f93221a43e2baec0a15f34102a2c61",
+      "hermit_binary_sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
+      "test_artifact_sha256": "2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc",
+      "guest": {
+        "argv": [
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+          "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        ],
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "mounts": [
+          "type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+        ],
+        "immutable_inputs": [
+          {
+            "artifact_id": "thrift-target-races-kernel71-test-elf",
+            "kind": "OTHER",
+            "storage": "LOCAL_IGNORED",
+            "locator": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+            "sha256": "2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc",
+            "bytes": 11514064,
+            "capture_limit_bytes": 11514064,
+            "truncated": false,
+            "media_type": "application/x-executable"
+          }
+        ],
+        "working_directory": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-time-input-campaign_20260921"
+      },
+      "hermit": {
+        "backend": "ptrace",
+        "strict": true,
+        "chaos": true,
+        "relaxations": [],
+        "argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T19:01:04Z",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-target-races-2936582-2026092-2509374-1790017256666514686",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+          "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        ],
+        "scheduler_heuristic": "random",
+        "swept_coordinate": "--fuzz-seed",
+        "fixed_seed_roots": {
+          "--seed": 0,
+          "--rng-seed": 0,
+          "--sched-seed": 0,
+          "--fuzz-seed": null
+        }
+      },
+      "timing": {
+        "requested_max_timeslice": 200000000,
+        "effective_max_timeslice": 200000000
+      },
+      "pmu": {
+        "available": true,
+        "effective_timer": "RCB",
+        "fallback_recorded": false
+      },
+      "host": {
+        "hostname": "devbig030.atn3.facebook.com",
+        "kernel": "Linux 7.1.3-0_fbk0_0_g295ad0959f34",
+        "architecture": "x86_64",
+        "cpu": "AMD EPYC 9D85 158-Core Processor",
+        "capabilities": {
+          "pmu": true,
+          "mount_namespace": true,
+          "buck_out_bind": true,
+          "safehermit_disk_qgroup": true,
+          "verifier_log_qgroup": true
+        }
+      },
+      "oracle_id": "thrift-instrumentation-selected-gtest-v2",
+      "resource_bounds": {
+        "wall_seconds": 120,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "stdout_bytes": 67108864,
+        "stderr_bytes": 67108864,
+        "retained_log_bytes": 67108864,
+        "disk_guard": "8G"
+      }
+    }
+  ],
+  "events": [
+    {
+      "event_id": "thrift-target-races-fuzz-00000000000000000000-replica-1",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "958870dc8ee15388e842bc5b870880275b5d0f4f720c6bfb05cf031114f6292c",
+      "route_id": "thrift-instrumentation-kernel71-target-races-existing-elf-v1",
+      "route_sha256": "2596007463bce1a0b23f4d918eb29d2447351fffe264d0a98ec66f4c6b084e4b",
+      "canonical_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "thrift-instrumentation-kernel71-ptrace-strict-chaos-target-races-now-v1",
+      "cell_sha256": "5fa5012a10fdcfbb8ec5f8da74e961a27b924046d3e88939506e1d0d153ed6bf",
+      "measurement_role": "DISCOVERY",
+      "started_at": "2026-09-21T19:26:50Z",
+      "finished_at": "2026-09-21T19:27:05Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T19:01:04Z",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-target-races-2936582-2026092-2509374-1790017256666514686",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+        "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      ],
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 1,
+        "target_oracle": "PASS",
+        "failure_class_id": null,
+        "harness_status": "COMPLETE",
+        "diagnostic": "status=VALID; selected=1; unit_result=success; exit=0; BitwiseInfoV1=matched; stdout_cap=not-fired; safehermit_bounds=authenticated; verifier_and_wrapper_qgroups=authenticated"
+      },
+      "invocation_id": "thrift-target-races-fuzz-00000000000000000000-verify",
+      "replica_index": 1,
+      "seed": {
+        "flag": "--fuzz-seed",
+        "value": 0
+      },
+      "effective_config_sha256": "5fa5012a10fdcfbb8ec5f8da74e961a27b924046d3e88939506e1d0d153ed6bf",
+      "artifacts": [
+        {
+          "artifact_id": "thrift-target-races-fuzz-00000000000000000000-replica-1-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-1.stdout.txt",
+          "sha256": "6191ec29096ff4a1db4e3bd3f102048f6da2dcc845e483b977dd1586c8dd48c1",
+          "bytes": 691,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-target-races-fuzz-00000000000000000000-replica-1-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-1.stderr.txt",
+          "sha256": "274ae0e3a393525789e459f12250cff0d3662b40b81e35c601e95055b55e2365",
+          "bytes": 1694,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-target-races-fuzz-00000000000000000000-replica-1-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-1.result.json",
+          "sha256": "cf42f89f554cc416b30d269e7a33adf4961e66c651fd771d39dffafb62cce49e",
+          "bytes": 2073,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "thrift-target-races-fuzz-00000000000000000000-replica-1-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-1.safehermit.txt",
+          "sha256": "e8b14f8f54b0b42076a2930bce231ac42376483426f6bfb1ff7749125874463e",
+          "bytes": 1642,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-target-races-fuzz-00000000000000000000-replica-1-bounds",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-1.bounds.json",
+          "sha256": "c54534fa630e41f1edbbb149e7836f97333c6782cd8900550787dfc0ecfbbbbc",
+          "bytes": 2879,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "thrift-target-races-fuzz-00000000000000000000-replica-1-invocation",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-1.invocation.json",
+          "sha256": "4dd25adaafa8db417cca3264233c13e9fa8dd26388f4d16757574071d0bf948e",
+          "bytes": 7024,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        }
+      ]
+    },
+    {
+      "event_id": "thrift-target-races-fuzz-00000000000000000000-replica-2",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "958870dc8ee15388e842bc5b870880275b5d0f4f720c6bfb05cf031114f6292c",
+      "route_id": "thrift-instrumentation-kernel71-target-races-existing-elf-v1",
+      "route_sha256": "2596007463bce1a0b23f4d918eb29d2447351fffe264d0a98ec66f4c6b084e4b",
+      "canonical_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "thrift-instrumentation-kernel71-ptrace-strict-chaos-target-races-now-v1",
+      "cell_sha256": "5fa5012a10fdcfbb8ec5f8da74e961a27b924046d3e88939506e1d0d153ed6bf",
+      "measurement_role": "CONFIRMATION",
+      "started_at": "2026-09-21T19:26:50Z",
+      "finished_at": "2026-09-21T19:27:05Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-2.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T19:01:04Z",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-target-races-2936582-2026092-2509374-1790017256666514686",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+        "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      ],
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 1,
+        "target_oracle": "PASS",
+        "failure_class_id": null,
+        "harness_status": "COMPLETE",
+        "diagnostic": "status=VALID; selected=1; unit_result=success; exit=0; BitwiseInfoV1=matched; stdout_cap=not-fired; safehermit_bounds=authenticated; verifier_and_wrapper_qgroups=authenticated"
+      },
+      "invocation_id": "thrift-target-races-fuzz-00000000000000000000-verify",
+      "replica_index": 2,
+      "seed": {
+        "flag": "--fuzz-seed",
+        "value": 0
+      },
+      "effective_config_sha256": "5fa5012a10fdcfbb8ec5f8da74e961a27b924046d3e88939506e1d0d153ed6bf",
+      "artifacts": [
+        {
+          "artifact_id": "thrift-target-races-fuzz-00000000000000000000-replica-2-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-2.stdout.txt",
+          "sha256": "6191ec29096ff4a1db4e3bd3f102048f6da2dcc845e483b977dd1586c8dd48c1",
+          "bytes": 691,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-target-races-fuzz-00000000000000000000-replica-2-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-2.stderr.txt",
+          "sha256": "274ae0e3a393525789e459f12250cff0d3662b40b81e35c601e95055b55e2365",
+          "bytes": 1694,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-target-races-fuzz-00000000000000000000-replica-2-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-2.result.json",
+          "sha256": "f1f9a0f39b2e85692b25b905b0496575d384fcd71eb9ab5f171e99395b77c933",
+          "bytes": 2076,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "thrift-target-races-fuzz-00000000000000000000-replica-2-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-2.safehermit.txt",
+          "sha256": "e8b14f8f54b0b42076a2930bce231ac42376483426f6bfb1ff7749125874463e",
+          "bytes": 1642,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-target-races-fuzz-00000000000000000000-replica-2-bounds",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-2.bounds.json",
+          "sha256": "da14070a239b981220aaa680e32d8242e55c72bc976a38fd07eebb028d353ea7",
+          "bytes": 3040,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "thrift-target-races-fuzz-00000000000000000000-replica-2-invocation",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-2.invocation.json",
+          "sha256": "4dd25adaafa8db417cca3264233c13e9fa8dd26388f4d16757574071d0bf948e",
+          "bytes": 7024,
+          "capture_limit_bytes": 1048576,
+          "truncated": false,
+          "media_type": "application/json"
+        }
+      ]
+    }
+  ],
+  "samples": [
+    {
+      "sample_id": "thrift-target-races-fuzz-00000000000000000000-sample",
+      "cell_id": "thrift-instrumentation-kernel71-ptrace-strict-chaos-target-races-now-v1",
+      "seed": {
+        "flag": "--fuzz-seed",
+        "value": 0
+      },
+      "selection_index": 0,
+      "status": "VALID",
+      "target_outcome": "PASS",
+      "failure_class_id": null,
+      "censor_reason": null,
+      "execution_event_ids": [
+        "thrift-target-races-fuzz-00000000000000000000-replica-1",
+        "thrift-target-races-fuzz-00000000000000000000-replica-2"
+      ]
+    }
+  ],
+  "matchers": [
+    {
+      "matcher_id": "thrift-target-races-fuzz-00000000000000000000-matcher",
+      "kind": "BUILTIN_VERIFY",
+      "execution_event_ids": [
+        "thrift-target-races-fuzz-00000000000000000000-replica-1",
+        "thrift-target-races-fuzz-00000000000000000000-replica-2"
+      ],
+      "complete": true,
+      "same_target_outcome": true,
+      "same_failure_class": true,
+      "canonical_info_artifact": {
+        "artifact_id": "thrift-target-races-fuzz-00000000000000000000-matcher-canonical-info",
+        "kind": "CANONICAL_INFO",
+        "storage": "TRACKED",
+        "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000.canonical-info.json",
+        "sha256": "aeaf48a6e0bd94d759fd8b155b0d3012faa77e3034266ad77a45e1f0493f584d",
+        "bytes": 419,
+        "capture_limit_bytes": 1048576,
+        "truncated": false,
+        "media_type": "application/json"
+      },
+      "details": {
+        "verified": true,
+        "bitwise_parity": true,
+        "comparison": "BitwiseInfoV1",
+        "relaxations": []
+      }
+    }
+  ],
+  "outcome_history": [
+    {
+      "classification_id": "thrift-target-races-pending-after-00000000000000000000",
+      "classified_at": "2026-09-21T19:27:06Z",
+      "supersedes": null,
+      "evidence_refs": [
+        "thrift-target-races-fuzz-00000000000000000000-replica-1",
+        "thrift-target-races-fuzz-00000000000000000000-replica-2"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "thrift-instrumentation-kernel71-target-races-existing-elf-v1",
+          "cell_ids": [
+            "thrift-instrumentation-kernel71-ptrace-strict-chaos-target-races-now-v1"
+          ],
+          "evidence_event_ids": [
+            "thrift-target-races-fuzz-00000000000000000000-replica-1",
+            "thrift-target-races-fuzz-00000000000000000000-replica-2"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-1.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T19:01:04Z",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-target-races-2936582-2026092-2509374-1790017256666514686",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+          "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        ],
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-2.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--epoch=2026-09-21T19:01:04Z",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-target-races-2936582-2026092-2509374-1790017256666514686",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+          "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        ]
+      ],
+      "inspected_artifacts": [
+        "thrift-target-races-fuzz-00000000000000000000-replica-1-result",
+        "thrift-target-races-fuzz-00000000000000000000-replica-2-result"
+      ],
+      "missing_or_ambiguous_facts": [
+        "A complete distinct-fuzz-seed PASS/target-owned-FAIL bracket is not yet present."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Execute selection index 1 at predeclared --fuzz-seed=1."
+      ]
+    }
+  ],
+  "current_outcome": {
+    "classification_id": "thrift-target-races-pending-after-00000000000000000000",
+    "classified_at": "2026-09-21T19:27:06Z",
+    "supersedes": null,
+    "evidence_refs": [
+      "thrift-target-races-fuzz-00000000000000000000-replica-1",
+      "thrift-target-races-fuzz-00000000000000000000-replica-2"
+    ],
+    "kind": "NOT-DETERMINABLE",
+    "route_evidence": [
+      {
+        "route_id": "thrift-instrumentation-kernel71-target-races-existing-elf-v1",
+        "cell_ids": [
+          "thrift-instrumentation-kernel71-ptrace-strict-chaos-target-races-now-v1"
+        ],
+        "evidence_event_ids": [
+          "thrift-target-races-fuzz-00000000000000000000-replica-1",
+          "thrift-target-races-fuzz-00000000000000000000-replica-2"
+        ]
+      }
+    ],
+    "inspected_commands": [
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T19:01:04Z",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-target-races-2936582-2026092-2509374-1790017256666514686",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+        "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      ],
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-000-fuzz-seed-00000000000000000000-replica-2.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--epoch=2026-09-21T19:01:04Z",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-target-races-2936582-2026092-2509374-1790017256666514686",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+        "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      ]
+    ],
+    "inspected_artifacts": [
+      "thrift-target-races-fuzz-00000000000000000000-replica-1-result",
+      "thrift-target-races-fuzz-00000000000000000000-replica-2-result"
+    ],
+    "missing_or_ambiguous_facts": [
+      "A complete distinct-fuzz-seed PASS/target-owned-FAIL bracket is not yet present."
+    ],
+    "measurement_budget_exhausted": false,
+    "pending_in_scope_measurements": [
+      "Execute selection index 1 at predeclared --fuzz-seed=1."
+    ]
+  }
 }
