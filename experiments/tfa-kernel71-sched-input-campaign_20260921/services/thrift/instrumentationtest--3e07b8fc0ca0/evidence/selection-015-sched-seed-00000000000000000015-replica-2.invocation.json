@@ -1,0 +1,163 @@
+{
+  "argv": [
+    "bin/safehermit",
+    "--sh-report",
+    "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-015-sched-seed-00000000000000000015-replica-1.safehermit.txt",
+    "--sh-deadline",
+    "120",
+    "--sh-max-log-bytes",
+    "67108864",
+    "--sh-disk-limit",
+    "8G",
+    "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+    "run",
+    "--backend",
+    "ptrace",
+    "--strict",
+    "--chaos",
+    "--base-env=minimal",
+    "--env",
+    "LC_ALL=C",
+    "--env",
+    "TZ=UTC",
+    "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+    "--epoch=2026-09-21T20:56:38Z",
+    "--seed",
+    "0",
+    "--rng-seed",
+    "0",
+    "--sched-seed",
+    "15",
+    "--fuzz-seed",
+    "0",
+    "--sched-heuristic",
+    "random",
+    "--max-timeslice",
+    "200000000",
+    "--verify",
+    "--verify-strict",
+    "--verify-allow",
+    "both",
+    "--keep-logs",
+    "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-sched-seeds-2936582-3648570-1790024199045715448",
+    "--",
+    "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+    "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-sched-input-campaign_20260921",
+  "execution_boundary": {
+    "head_commit": "2b67059168a98d59fd6f41277ba0bdd633dec01a",
+    "plan_receipt": {
+      "blob": "c7c5b899f48af5f19e26529558eff205dacf8082",
+      "commit": "fdeb41ab4d55efe15364fee354aab79a7609e7a3",
+      "helper_blobs": [
+        {
+          "blob": "85a485e9734261776bcd2bb1f93350a0b44a7073",
+          "path": "experiments/tfa-kernel71-sched-input-campaign_20260921/tools/admit_thrift_sched_seed.py"
+        },
+        {
+          "blob": "bf559fa28e96891bd81c60a80804e8d52cce1ea7",
+          "path": "experiments/tfa-kernel71-sched-input-campaign_20260921/tools/create_thrift_sched_plan.py"
+        },
+        {
+          "blob": "9613bb280046a6e83974e5dc3a1caff9f1a8a2dd",
+          "path": "experiments/tfa-kernel71-sched-input-campaign_20260921/tools/run_thrift_sched_seed.py"
+        }
+      ],
+      "path": "services/thrift/instrumentationtest--3e07b8fc0ca0/experiment.json"
+    },
+    "plan_sha256": "98834242b1f1ac2288acae078af8b2f350b934f9e99e6c8290475b3973bdd3af",
+    "record_blob": "43a1a878e5f285151b9a456101aafe74709af0ce",
+    "record_repository_path": "experiments/tfa-kernel71-sched-input-campaign_20260921/services/thrift/instrumentationtest--3e07b8fc0ca0/experiment.json",
+    "route_id": "thrift-instrumentation-kernel71-sched-existing-elf-v1",
+    "route_sha256": "f09289de8a751970b4521d8d7e51c35210c1b1e93392c4e0533fea313a1d7f5a"
+  },
+  "finished_at": "2026-09-21T21:09:35Z",
+  "host_environment": {
+    "HERMIT_BIN": null,
+    "RUST_LOG": null,
+    "SAFEHERMIT_LOG_ROOT": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit"
+  },
+  "paths": {
+    "safehermit_qgroup_after": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/thrift-sched/selection-015-sched-seed-00000000000000000015/safehermit-qgroup-after.txt",
+    "safehermit_report": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-sched-input-campaign_20260921/services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/selection-015-sched-seed-00000000000000000015-replica-1.safehermit.txt",
+    "stderr": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/thrift-sched/selection-015-sched-seed-00000000000000000015/stderr.txt",
+    "stdout": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/thrift-sched/selection-015-sched-seed-00000000000000000015/stdout.txt",
+    "verifier_qgroup_after": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/thrift-sched/selection-015-sched-seed-00000000000000000015/verifier-qgroup-after.txt",
+    "verifier_qgroup_before": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/thrift-sched/selection-015-sched-seed-00000000000000000015/verifier-qgroup-before.txt"
+  },
+  "postcheck_errors": [],
+  "preflight": {
+    "binaries": [
+      {
+        "bytes": 415330552,
+        "label": "Hermit",
+        "path": "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a"
+      },
+      {
+        "bytes": 11514064,
+        "label": "test",
+        "path": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+        "sha256": "2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc"
+      }
+    ],
+    "host": {
+      "cpu": "AMD EPYC 9D85 158-Core Processor",
+      "hostname": "devbig030.atn3.facebook.com",
+      "kernel_release": "7.1.3-0_fbk0_0_g295ad0959f34",
+      "machine": "x86_64",
+      "perf_event_paranoid": "1",
+      "pmu_type": "4",
+      "system": "Linux"
+    },
+    "mount": "/dev/loop1 btrfs",
+    "qgroup": {
+      "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-sched-seeds-2936582-3648570-1790024199045715448",
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "referenced=193642496 exclusive=193642496 limit=8000000000\n"
+    }
+  },
+  "process_returncode": 0,
+  "safehermit_qgroup_after": {
+    "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-safehermit-20260921T210916Z-2281307-2282844-1790024956803905618",
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "referenced=0 exclusive=0 limit=8000000000\n"
+  },
+  "schema_version": 1,
+  "seed": {
+    "flag": "--sched-seed",
+    "value": 15
+  },
+  "selection_index": 15,
+  "started_at": "2026-09-21T21:09:16Z",
+  "state": "COMPLETE",
+  "stdout_cap": {
+    "chunk_bytes": 65536,
+    "kill": {
+      "command": null,
+      "error": null,
+      "returncode": null,
+      "unit": null
+    },
+    "limit_bytes": 67108864,
+    "method": "constant-memory-drain-and-systemd-cgroup-kill",
+    "observed_bytes": 691,
+    "truncated": false,
+    "written_bytes": 691
+  },
+  "stdout_cap_policy": {
+    "chunk_bytes": 65536,
+    "limit_bytes": 67108864,
+    "method": "constant-memory-drain-and-systemd-cgroup-kill",
+    "overflow_action": "systemctl --user kill --signal=SIGKILL UNIT"
+  },
+  "verifier_qgroup_after": {
+    "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-sched-seeds-2936582-3648570-1790024199045715448",
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "referenced=193642496 exclusive=193642496 limit=8000000000\n"
+  }
+}
