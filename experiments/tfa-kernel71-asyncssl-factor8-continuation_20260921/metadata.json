@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "task": "tfa-experiments-layout",
+  "date": "2026-09-17",
+  "kind": "experiment-schema",
+  "question": "Can Hermit reproduce both outcomes of distinct flaky-test targets under strict seeded scheduling?",
+  "agent": "hermit-904",
+  "campaign_owner_identity": "rrnewton",
+  "status": "SCHEMA_ONLY_NO_EXPERIMENTS_RUN",
+  "acceptance_contract": {
+    "commit": "9d7f603c43618715b9245c74acb3e164c17d2ae8",
+    "path": "ai_docs/tfa-acceptance-bracket-2026-09-17.md",
+    "blob": "4a53f0c25623ad6371ee86b4556adada1218745d"
+  },
+  "candidate_cohort": {
+    "commit": "ee6562142e3796bb56a1dd0e28b77c1c16a78cc2",
+    "path": "ai_docs/tfa-candidate-sourcing-2026-09-17.md",
+    "blob": "ff01b534352e15a5685b8a41032973d46c089274",
+    "targets_sha256": "49e1952b2bd857229646842f6a6da845e5b7ecea14e14cd9c077190a699750c0"
+  }
+}
