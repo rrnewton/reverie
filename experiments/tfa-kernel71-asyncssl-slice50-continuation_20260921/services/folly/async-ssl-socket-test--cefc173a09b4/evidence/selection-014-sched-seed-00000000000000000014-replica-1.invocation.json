@@ -1,0 +1,170 @@
+{
+  "argv": [
+    "bin/safehermit",
+    "--sh-report",
+    "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-014-sched-seed-00000000000000000014-replica-1.safehermit.txt",
+    "--sh-deadline",
+    "120",
+    "--sh-max-log-bytes",
+    "67108864",
+    "--sh-disk-limit",
+    "8G",
+    "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+    "run",
+    "--backend",
+    "ptrace",
+    "--strict",
+    "--chaos",
+    "--chaos-per-thread-slowdown",
+    "--chaos-slowdown-max-factor=10.0",
+    "--chaos-epoch-length-ns=0",
+    "--base-env=minimal",
+    "--env",
+    "LC_ALL=C",
+    "--env",
+    "TZ=UTC",
+    "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+    "--epoch=2026-09-21T22:29:36Z",
+    "--seed",
+    "0",
+    "--rng-seed",
+    "0",
+    "--sched-seed",
+    "14",
+    "--fuzz-seed",
+    "0",
+    "--sched-heuristic",
+    "random",
+    "--target-timeslice",
+    "50000000",
+    "--max-timeslice",
+    "200000000",
+    "--clock-multiplier=1.0",
+    "--verify",
+    "--verify-strict",
+    "--verify-allow",
+    "both",
+    "--keep-logs",
+    "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-slice50-2936582-3221751-1790029768678752817",
+    "--",
+    "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+    "--gtest_filter=AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+    "--gtest_also_run_disabled_tests"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-asyncssl-slice50-continuation_20260921",
+  "execution_boundary": {
+    "head_commit": "0f57be7b55c0fd1d3e6512f5d58a2d77c2fea58f",
+    "plan_receipt": {
+      "blob": "5929585f0470e317b65b89e0f1ce34e2398c5d17",
+      "commit": "c508664414223cbf474a58798a6187a04ead4a8e",
+      "helper_blobs": [
+        {
+          "blob": "729dc1ae4603a10a210a8bfe2f43991a14119e79",
+          "path": "experiments/tfa-kernel71-asyncssl-slice50-continuation_20260921/tools/admit_asyncssl_sched_slowdown_seed.py"
+        },
+        {
+          "blob": "71d9d6e389b7df4ec09a985e4f431dfafad93671",
+          "path": "experiments/tfa-kernel71-asyncssl-slice50-continuation_20260921/tools/create_asyncssl_sched_slowdown_plan.py"
+        },
+        {
+          "blob": "835049a87b2626b50ede209079ac05ff10183c4b",
+          "path": "experiments/tfa-kernel71-asyncssl-slice50-continuation_20260921/tools/run_asyncssl_sched_slowdown_seed.py"
+        }
+      ],
+      "path": "services/folly/async-ssl-socket-test--cefc173a09b4/experiment.json"
+    },
+    "plan_sha256": "4f39b08990cbb35e1a8527385adad983bd8b486bb6d99181d058ba4bd808de5b",
+    "record_blob": "0fb960b5e17953ae74e4ac070e1b08248b336984",
+    "record_repository_path": "experiments/tfa-kernel71-asyncssl-slice50-continuation_20260921/services/folly/async-ssl-socket-test--cefc173a09b4/experiment.json",
+    "route_id": "asyncssl-kernel71-sched-slowdown-factor10-slice50m-existing-elf-v1",
+    "route_sha256": "80370721847f8a65b9fe703a0188caebaaea776b7d00cee07ebbadefe41cccd9"
+  },
+  "finished_at": "2026-09-21T22:43:15Z",
+  "host_environment": {
+    "HERMIT_BIN": null,
+    "RUST_LOG": null,
+    "SAFEHERMIT_LOG_ROOT": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit"
+  },
+  "paths": {
+    "safehermit_qgroup_after": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/asyncssl-sched-slowdown-factor10-slice50m/selection-014-sched-seed-00000000000000000014/safehermit-qgroup-after.txt",
+    "safehermit_report": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-asyncssl-slice50-continuation_20260921/services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-014-sched-seed-00000000000000000014-replica-1.safehermit.txt",
+    "stderr": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/asyncssl-sched-slowdown-factor10-slice50m/selection-014-sched-seed-00000000000000000014/stderr.txt",
+    "stdout": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/asyncssl-sched-slowdown-factor10-slice50m/selection-014-sched-seed-00000000000000000014/stdout.txt",
+    "verifier_qgroup_after": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/asyncssl-sched-slowdown-factor10-slice50m/selection-014-sched-seed-00000000000000000014/verifier-qgroup-after.txt",
+    "verifier_qgroup_before": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/asyncssl-sched-slowdown-factor10-slice50m/selection-014-sched-seed-00000000000000000014/verifier-qgroup-before.txt"
+  },
+  "postcheck_errors": [],
+  "preflight": {
+    "binaries": [
+      {
+        "bytes": 415330552,
+        "label": "Hermit",
+        "path": "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a"
+      },
+      {
+        "bytes": 17651096,
+        "label": "test",
+        "path": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+        "sha256": "47b6c727a7d1e568433883fb6e4693b08348e93ab8b8e41a3c3b8638217acc46"
+      }
+    ],
+    "host": {
+      "cpu": "AMD EPYC 9D85 158-Core Processor",
+      "hostname": "devbig030.atn3.facebook.com",
+      "kernel_release": "7.1.3-0_fbk0_0_g295ad0959f34",
+      "machine": "x86_64",
+      "perf_event_paranoid": "1",
+      "pmu_type": "4",
+      "system": "Linux"
+    },
+    "mount": "/dev/loop1 btrfs",
+    "qgroup": {
+      "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-slice50-2936582-3221751-1790029768678752817",
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "referenced=58003456 exclusive=58003456 limit=8000000000\n"
+    }
+  },
+  "process_returncode": 0,
+  "safehermit_qgroup_after": {
+    "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-safehermit-20260921T224311Z-2775336-2776412-1790030591776569226",
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "referenced=0 exclusive=0 limit=8000000000\n"
+  },
+  "schema_version": 1,
+  "seed": {
+    "flag": "--sched-seed",
+    "value": 14
+  },
+  "selection_index": 14,
+  "started_at": "2026-09-21T22:43:11Z",
+  "state": "COMPLETE",
+  "stdout_cap": {
+    "chunk_bytes": 65536,
+    "kill": {
+      "command": null,
+      "error": null,
+      "returncode": null,
+      "unit": null
+    },
+    "limit_bytes": 67108864,
+    "method": "constant-memory-drain-and-systemd-cgroup-kill",
+    "observed_bytes": 573,
+    "truncated": false,
+    "written_bytes": 573
+  },
+  "stdout_cap_policy": {
+    "chunk_bytes": 65536,
+    "limit_bytes": 67108864,
+    "method": "constant-memory-drain-and-systemd-cgroup-kill",
+    "overflow_action": "systemctl --user kill --signal=SIGKILL UNIT"
+  },
+  "verifier_qgroup_after": {
+    "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-slice50-2936582-3221751-1790029768678752817",
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "referenced=58003456 exclusive=58003456 limit=8000000000\n"
+  }
+}
