@@ -1,6 +1,6 @@
 # TLS terminator oracle-integrity repair
 
-The original schema-v2 record classified scheduler seeds 11 and 12 as the
+The original schema-v2 record classified fuzz seeds 11 and 12 as the
 predeclared `gtest-selected-test-failure` class.  That interpretation was not
 supported by the retained bytes: all four strict replicas stop stdout after the
 exact selected `[ RUN ]` line, with neither the required selected `[ FAILED ]`
