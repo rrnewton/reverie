@@ -23,7 +23,7 @@ use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::FileExt;
 use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use hmac::Hmac;
 use hmac::Mac;
@@ -257,7 +257,7 @@ pub(crate) struct AuthenticatedProcCarrier {
     pub(crate) content: Arc<[u8]>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ProbeProfile {
     mode: MountIdMode,
     filesystem_type: i64,
@@ -570,8 +570,26 @@ impl ProcCarrierAuthority {
 }
 
 fn qualified_profile() -> Result<ProbeProfile, ProbeFailure> {
-    static PROFILE: OnceLock<Result<ProbeProfile, ProbeFailure>> = OnceLock::new();
-    PROFILE.get_or_init(probe_profile).clone()
+    static PROFILE: Mutex<Option<ProbeProfile>> = Mutex::new(None);
+    qualified_profile_with(&PROFILE, probe_profile)
+}
+
+fn qualified_profile_with(
+    cache: &Mutex<Option<ProbeProfile>>,
+    probe: impl FnOnce() -> Result<ProbeProfile, ProbeFailure>,
+) -> Result<ProbeProfile, ProbeFailure> {
+    let mut cached = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(profile) = cached.as_ref() {
+        return Ok(profile.clone());
+    }
+
+    // The private probe is non-reentrant. Keep the lock while it runs so
+    // concurrent authorities cannot observe or create competing profiles.
+    let profile = probe()?;
+    *cached = Some(profile.clone());
+    Ok(profile)
 }
 
 pub(crate) fn reserved_guest_name(name: &[u8]) -> bool {
@@ -1627,6 +1645,11 @@ mod tests {
     use std::io::Read;
     use std::io::Seek;
     use std::io::SeekFrom;
+    use std::sync::Barrier;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::thread;
+    use std::time::Duration;
 
     use super::*;
 
@@ -1694,6 +1717,118 @@ mod tests {
             seals: REQUIRED_SEALS,
             tag: 123,
         }
+    }
+
+    fn test_probe_profile(discriminator: u32) -> ProbeProfile {
+        ProbeProfile {
+            mode: MountIdMode::FullUnique,
+            filesystem_type: TMPFS_MAGIC,
+            device_major: discriminator,
+            device_minor: discriminator + 1,
+            legacy_mount_id: discriminator as libc::c_int,
+            statx_mount_id: u64::from(discriminator),
+            statx_unique_mount_id: Some(u64::from(discriminator)),
+            unique_handle_mount_id: Some(u64::from(discriminator)),
+            seals: REQUIRED_SEALS,
+        }
+    }
+
+    #[test]
+    fn profile_cache_retries_after_failure() {
+        let cache = Mutex::new(None);
+        let attempts = AtomicUsize::new(0);
+        let failure = qualified_profile_with(&cache, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err(ProbeFailure::message("transient probe", "retry me"))
+        })
+        .unwrap_err();
+        assert_eq!(failure.phase, "transient probe");
+        assert_eq!(failure.reason, "retry me");
+        assert!(cache.lock().unwrap().is_none());
+
+        let expected = test_probe_profile(7);
+        let observed = qualified_profile_with(&cache, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Ok(expected.clone())
+        })
+        .unwrap();
+        assert_eq!(observed, expected);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn profile_cache_caches_success() {
+        let cache = Mutex::new(None);
+        let attempts = AtomicUsize::new(0);
+        let expected = test_probe_profile(11);
+        let first = qualified_profile_with(&cache, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Ok(expected.clone())
+        })
+        .unwrap();
+        let second = qualified_profile_with(&cache, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Ok(test_probe_profile(12))
+        })
+        .unwrap();
+        assert_eq!(first, expected);
+        assert_eq!(second, expected);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn profile_cache_recovers_from_probe_panic_poison() {
+        let cache = Arc::new(Mutex::new(None));
+        let panicking_cache = Arc::clone(&cache);
+        assert!(
+            thread::spawn(move || {
+                let _ =
+                    qualified_profile_with(&panicking_cache, || panic!("deliberate probe panic"));
+            })
+            .join()
+            .is_err()
+        );
+        assert!(cache.is_poisoned());
+
+        let expected = test_probe_profile(13);
+        let recovered = qualified_profile_with(&cache, || Ok(expected.clone())).unwrap();
+        let cached = qualified_profile_with(&cache, || -> Result<_, ProbeFailure> {
+            panic!("cached success must suppress later probes")
+        })
+        .unwrap();
+        assert_eq!(recovered, expected);
+        assert_eq!(cached, expected);
+    }
+
+    #[test]
+    fn profile_cache_serializes_concurrent_probe() {
+        const THREADS: usize = 8;
+        let cache = Arc::new(Mutex::new(None));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(THREADS + 1));
+        let expected = test_probe_profile(17);
+        let threads = (0..THREADS)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                let attempts = Arc::clone(&attempts);
+                let start = Arc::clone(&start);
+                let expected = expected.clone();
+                thread::spawn(move || {
+                    start.wait();
+                    qualified_profile_with(&cache, || {
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        thread::sleep(Duration::from_millis(10));
+                        Ok(expected)
+                    })
+                    .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        start.wait();
+        for thread in threads {
+            assert_eq!(thread.join().unwrap(), expected);
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[test]
