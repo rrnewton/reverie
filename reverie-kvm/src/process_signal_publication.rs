@@ -1299,6 +1299,7 @@ mod tests {
 
     use super::super::ElfExecutor;
     use super::super::native_loaded_state;
+    use super::super::native_loaded_state_with_authority;
     use super::*;
     use crate::GuestMemory;
     use crate::SyscallRequest;
@@ -1525,7 +1526,11 @@ mod tests {
             !ready(&parent, alias),
             "another process cannot publish to this carrier"
         );
-        parent.replace_after_exec(native_loaded_state(std::path::Path::new("/tmp")));
+        let proc_carrier_authority = parent.proc_carrier_authority();
+        parent.replace_after_exec(native_loaded_state_with_authority(
+            std::path::Path::new("/tmp"),
+            proc_carrier_authority,
+        ));
         assert_eq!(identity(&parent), parent_id);
         assert_eq!(
             parent
@@ -1887,7 +1892,11 @@ mod tests {
         };
         control.reserve_delivery(permit).unwrap();
         assert_eq!(executor.delivery_permit(), Some(permit));
-        executor.replace_after_exec(native_loaded_state(std::path::Path::new("/tmp")));
+        let proc_carrier_authority = executor.proc_carrier_authority();
+        executor.replace_after_exec(native_loaded_state_with_authority(
+            std::path::Path::new("/tmp"),
+            proc_carrier_authority,
+        ));
         assert_eq!(executor.delivery_permit(), None);
         assert_eq!(executor.owned_delivery_permit(), Some(permit));
         assert!(matches!(
@@ -2125,7 +2134,11 @@ mod tests {
         let id = identity(&executor);
         let first = receipt(control.publish_alarm(id, alarm(id)));
         let old = executor.state.process_signals.clone();
-        executor.replace_after_exec(native_loaded_state(std::path::Path::new("/tmp")));
+        let proc_carrier_authority = executor.proc_carrier_authority();
+        executor.replace_after_exec(native_loaded_state_with_authority(
+            std::path::Path::new("/tmp"),
+            proc_carrier_authority,
+        ));
         // Exec preserves pending SIGALRM but resets the image binding.
         let second = receipt(control.publish_alarm(id, alarm(id)));
         assert_ne!(first.image, second.image);

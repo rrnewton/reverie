@@ -695,7 +695,8 @@ fn process_alarm_signal_fork_and_exec_keep_process_pending_lifetime() {
     );
     assert_eq!(process_alarm_snapshot(&executor), before);
     let old_generation = executor.task_generation;
-    executor.replace_after_exec(test_state(&root.0));
+    let replacement = test_exec_replacement(&root.0, &executor.state);
+    executor.replace_after_exec(replacement);
     assert_eq!(
         executor.task_generation, old_generation,
         "exec preserves the task lifetime"

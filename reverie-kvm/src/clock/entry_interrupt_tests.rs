@@ -177,6 +177,38 @@ fn reaches_getpid(vcpu: &mut CountedVcpu) {
 
 #[test]
 fn running_reserved_kick_retains_exact_finite_program_branch_total() {
+    const TEST: &str = "clock::entry_interrupt_tests::running_reserved_kick_retains_exact_finite_program_branch_total";
+    const CHILD_ENV: &str = "REVERIE_COUNTED_ENTRY_KICK_CHILD";
+    const CHILD_VALUE: &str = "reverie-counted-entry-kick-child-v1";
+    const COMPLETED: &str = "REVERIE_COUNTED_ENTRY_KICK_COMPLETE_V1";
+    if let Some(value) = std::env::var_os(CHILD_ENV) {
+        assert_eq!(value, std::ffi::OsStr::new(CHILD_VALUE));
+    } else {
+        let output = std::process::Command::new("timeout")
+            .args(["--kill-after=2s", "10s"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+            .env(CHILD_ENV, CHILD_VALUE)
+            .output()
+            .expect("failed to run isolated counted-entry-kick regression");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "isolated counted-entry-kick regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            stdout,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            stdout.matches(COMPLETED).count(),
+            1,
+            "isolated counted-entry-kick regression did not execute exactly once:\n{stdout}"
+        );
+        return;
+    }
+    // Construct and run both KVM instances only after exec. An incidental
+    // signal delivered to the parallel libtest process must not be confused
+    // with the reserved entry-control kick this test deliberately generates.
     const BRANCHES: u32 = 1 << 28;
     let program = finite_program(BRANCHES);
     let saved_affinity = affinity().unwrap();
@@ -255,4 +287,5 @@ fn running_reserved_kick_retains_exact_finite_program_branch_total() {
         baseline.vcpu.get_regs().unwrap().rip
     );
     assert_eq!(probe.tracked_runs.load(Ordering::SeqCst), 2);
+    println!("{}", COMPLETED);
 }

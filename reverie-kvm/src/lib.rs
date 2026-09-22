@@ -34,6 +34,7 @@ mod executor;
 mod failure;
 mod fdinfo;
 mod memory;
+mod proc_carrier;
 mod proc_mounts;
 mod runtime;
 mod signal;

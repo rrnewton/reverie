@@ -202,6 +202,16 @@ pub enum Error {
     #[error("host filesystem operation failed: {0}")]
     HostIo(#[from] std::io::Error),
 
+    /// The host cannot provide the identity primitives required for authenticated
+    /// synthetic-proc carriers. There is deliberately no weaker fallback.
+    #[error("authenticated proc-carrier support is unavailable during {phase}: {reason}")]
+    ProcCarrierUnsupported {
+        /// Capability-probe phase that failed.
+        phase: &'static str,
+        /// Stable diagnostic for the failed or inconsistent host operation.
+        reason: String,
+    },
+
     /// A post-exec tool hook rejected the new guest image.
     #[error("Reverie post-exec hook failed: {0}")]
     PostExec(reverie::syscalls::Errno),
