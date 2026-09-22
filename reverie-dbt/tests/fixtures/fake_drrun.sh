@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -eu
 
 if [ "${REVERIE_DBT_TEST_DRRUN_STDERR+x}" = x ]; then
