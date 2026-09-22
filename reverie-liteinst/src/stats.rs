@@ -246,6 +246,7 @@ impl GuestStatsCollector {
             LiteinstDispatchPath::FallbackRefusal => &self.fallback_refusal,
             LiteinstDispatchPath::FirstSiteSeccomp
             | LiteinstDispatchPath::PtraceInstallation
+            | LiteinstDispatchPath::DeoptimizedFallback
             | LiteinstDispatchPath::DirectHook => {
                 panic!("path is not counted by the in-guest dispatcher")
             }

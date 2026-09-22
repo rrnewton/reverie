@@ -362,7 +362,7 @@ pub struct Timer {
 }
 
 /// Data requires to request a timer event
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TimerEventRequest {
     /// Event should fire after precisely this many RCBs.
     Precise(u64),
@@ -383,6 +383,9 @@ pub enum HandleFailure {
     #[error("Unexpected event while single stepping")]
     Event(Wait),
 
+    #[error("Installed LiteInst hook won while completing a timer event")]
+    InterveningInstalledHook(Wait),
+
     /// The timer signal was for a timer event that was otherwise cancelled. The
     /// task is returned unchanged.
     #[error("Timer event was cancelled and should not fire")]
@@ -392,6 +395,86 @@ pub enum HandleFailure {
     /// this timer. The task is returned unchanged.
     #[error("Pending signal was not for this timer")]
     ImproperSignal(Stopped),
+}
+
+/// Failure to suspend or restore the deterministic timer around private
+/// controller execution.
+///
+/// Once a counter transition has begun, any error leaves the timer latched in
+/// a fail-closed private-execution state. The tracee must remain stopped and the
+/// caller must terminate that execution rather than resume it with counter
+/// ownership in doubt.
+#[derive(Error, Debug, Eq, PartialEq)]
+pub(crate) enum PrivateExecutionTimerError {
+    #[error("perf support is required to suspend the deterministic timer")]
+    Unavailable,
+
+    #[error("the deterministic timer is already in private-execution phase {phase}")]
+    Busy { phase: &'static str },
+
+    #[error("an artificial timer signal is pending")]
+    ArtificialSignalPending,
+
+    #[error("sampling counter {observed} has reached hardware notification threshold {threshold}")]
+    NotificationThresholdReached { observed: u64, threshold: u64 },
+
+    #[error("deterministic timer state is inconsistent: {0}")]
+    InconsistentState(&'static str),
+
+    #[error("private-execution suspension token does not match the active timer suspension")]
+    TokenMismatch,
+
+    #[error("private timer notification did not match its controller-owned source")]
+    NotificationIdentityMismatch,
+
+    #[error("{operation} failed while transitioning deterministic timer counters: {source}")]
+    CounterOperation {
+        operation: &'static str,
+        source: Errno,
+    },
+
+    #[error(
+        "{operation} failed while transitioning deterministic timer counters: {source}; \
+         fail-closed recovery also failed at {recovery_operation}: {recovery_source}"
+    )]
+    CounterOperationAndRecovery {
+        operation: &'static str,
+        source: Errno,
+        recovery_operation: &'static str,
+        recovery_source: Errno,
+    },
+}
+
+/// One-use authority to restore a [`Timer`] after private controller execution.
+///
+/// The token is deliberately neither `Clone` nor `Copy`. Dropping it leaves the
+/// timer suspended and all ordinary timer operations fail closed.
+#[must_use = "the deterministic timer remains suspended until this token is restored"]
+#[derive(Debug)]
+pub(crate) struct PrivateExecutionTimerSuspension {
+    snapshot: PrivateExecutionSnapshot,
+}
+
+/// The only physical notification that may be consumed while an installed
+/// LiteInst hook owns the stopped tracee.  `None` still requires one
+/// nonblocking `rt_sigtimedwait`: after the sampling source has been disabled,
+/// `EAGAIN` is the proof that no stale notification can escape the handoff.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PendingTimerNotification {
+    None,
+    Perf { fd: libc::c_int },
+    Artificial {
+        generation: u32,
+        tag: u64,
+        sender_pid: libc::pid_t,
+        sender_uid: libc::uid_t,
+    },
+}
+
+impl PrivateExecutionTimerSuspension {
+    pub(crate) fn frozen_clock(&self) -> u64 {
+        self.snapshot.frozen_clock
+    }
 }
 
 impl Timer {
@@ -458,6 +541,127 @@ impl Timer {
     /// near thread creation time.
     pub fn read_clock(&self) -> u64 {
         self.inner().read_clock()
+    }
+
+    pub(crate) fn diagnostic_clock(&self) -> Option<u64> {
+        self.inner_noinit().map(TimerImpl::diagnostic_clock)
+    }
+
+    /// Stop both deterministic counters while a stopped tracee executes
+    /// controller-owned code.
+    ///
+    /// The sampling counter is disabled before the non-resetting clock. No
+    /// counter is reset and no period is changed. The returned token is the
+    /// only authority accepted by [`Self::restore_after_private_execution`].
+    /// The caller must hold the tracee in an exact ptrace stop from before this
+    /// call until restoration succeeds.
+    pub(crate) fn begin_suspend_for_private_execution(
+        &mut self,
+    ) -> Result<PrivateExecutionTimerSuspension, PrivateExecutionTimerError> {
+        self.inner_mut_noinit()
+            .ok_or(PrivateExecutionTimerError::Unavailable)?
+            .begin_suspend_for_private_execution()
+    }
+
+    /// Complete the counter transition after the returned token has been
+    /// installed in durable task state.  No mutating perf operation occurs in
+    /// the begin half, so every partial transition has an external owner.
+    pub(crate) fn complete_suspend_for_private_execution(
+        &mut self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<(), PrivateExecutionTimerError> {
+        self.inner_mut_noinit()
+            .ok_or(PrivateExecutionTimerError::Unavailable)?
+            .complete_suspend_for_private_execution(suspension)
+    }
+
+    /// Begin the installed-hook variant of private execution. Unlike the
+    /// ordinary after-loader suspension, this records notification debt rather
+    /// than rejecting a host-timing-dependent pending signal. No counter or
+    /// logical event state is mutated until the returned token has been stored
+    /// in the task transaction.
+    pub(crate) fn begin_suspend_for_installed_event(
+        &mut self,
+        tool_observed: bool,
+    ) -> Result<PrivateExecutionTimerSuspension, PrivateExecutionTimerError> {
+        self.inner_mut_noinit()
+            .ok_or(PrivateExecutionTimerError::Unavailable)?
+            .begin_suspend_for_installed_event(tool_observed)
+    }
+
+    pub(crate) fn complete_suspend_for_installed_event(
+        &mut self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<(), PrivateExecutionTimerError> {
+        self.inner_mut_noinit()
+            .ok_or(PrivateExecutionTimerError::Unavailable)?
+            .complete_suspend_for_installed_event(suspension)
+    }
+
+    pub(crate) fn installed_notification(
+        &self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<PendingTimerNotification, PrivateExecutionTimerError> {
+        self.inner_noinit()
+            .ok_or(PrivateExecutionTimerError::Unavailable)?
+            .installed_notification(suspension)
+    }
+
+    pub(crate) fn finish_installed_notification_drain(
+        &mut self,
+        suspension: &PrivateExecutionTimerSuspension,
+        signal: Option<&libc::siginfo_t>,
+    ) -> Result<bool, PrivateExecutionTimerError> {
+        self.inner_mut_noinit()
+            .ok_or(PrivateExecutionTimerError::Unavailable)?
+            .finish_installed_notification_drain(suspension, signal)
+    }
+
+    pub(crate) fn installed_notification_matches(
+        &self,
+        suspension: &PrivateExecutionTimerSuspension,
+        signal: &libc::siginfo_t,
+    ) -> Result<bool, PrivateExecutionTimerError> {
+        self.inner_noinit()
+            .ok_or(PrivateExecutionTimerError::Unavailable)?
+            .installed_notification_matches(suspension, signal)
+    }
+
+    /// Commit the last request staged by the Tool relative to the frozen hook
+    /// clock, then restore the clock before enabling any sampling source.
+    pub(crate) fn commit_installed_event_handoff(
+        &mut self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<(), PrivateExecutionTimerError> {
+        self.inner_mut_noinit()
+            .ok_or(PrivateExecutionTimerError::Unavailable)?
+            .commit_installed_event_handoff(suspension)
+    }
+
+    /// Restore counters from an exact private-execution suspension snapshot.
+    ///
+    /// The non-resetting clock is enabled first. The sampling counter is then
+    /// enabled only when it was enabled at suspension. Any transition failure
+    /// leaves the timer latched fail closed; the tracee must remain stopped.
+    pub(crate) fn restore_after_private_execution(
+        &mut self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<(), PrivateExecutionTimerError> {
+        self.inner_mut_noinit()
+            .ok_or(PrivateExecutionTimerError::Unavailable)?
+            .restore_after_private_execution(suspension)
+    }
+
+    /// Retire an exact private-execution suspension after the tracee reached a
+    /// terminal generation. This consumes the token without touching either
+    /// perf fd and leaves every ordinary timer operation fail-closed.
+    pub(crate) fn retire_private_execution_on_terminal(
+        &mut self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<(), PrivateExecutionTimerError> {
+        self.inner_mut_noinit()
+            .ok_or(PrivateExecutionTimerError::Unavailable)?
+            .retire_private_execution_on_terminal(suspension)
     }
 
     /// Approximately convert a duration to the internal notion of timer ticks.
@@ -528,8 +732,10 @@ impl Timer {
     /// See [`Timer::schedule_cancellation`] for a comparison with this
     /// method.
     #[allow(dead_code)]
-    pub fn cancel(&self) -> Result<(), Errno> {
-        self.inner_noinit().map(|t| t.cancel()).unwrap_or(Ok(()))
+    pub fn cancel(&mut self) -> Result<(), Errno> {
+        self.inner_mut_noinit()
+            .map(|t| t.cancel())
+            .unwrap_or(Ok(()))
     }
 
     /// Perform finalization actions on requests for timer events before guest
@@ -538,8 +744,8 @@ impl Timer {
     ///
     /// Currently, this will, if necessary, `tgkill` a timer signal to the guest
     /// thread.
-    pub fn finalize_requests(&self) {
-        if let Some(t) = self.inner_noinit() {
+    pub fn finalize_requests(&mut self) {
+        if let Some(t) = self.inner_mut_noinit() {
             t.finalize_requests();
         }
     }
@@ -564,7 +770,7 @@ impl Timer {
         &mut self,
         task: Stopped,
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
-        observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+        observe: &mut (dyn FnMut(&Wait) -> Result<bool, TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
         match self.inner_mut_noinit() {
             Some(t) => t.handle_signal(task, step, observe).await,
@@ -585,6 +791,22 @@ struct TimerImpl {
     /// A separate counter used to generate signals for timer events
     timer: PerfCounter,
 
+    /// Last successfully established physical enable state of `clock`.
+    clock_enabled: CounterEnableState,
+
+    /// Last successfully established physical enable state of `timer`.
+    timer_enabled: CounterEnableState,
+
+    /// Hardware notification threshold programmed by the active request.
+    /// `None` means that the request uses an artificial signal or that no
+    /// hardware notification is armed.
+    timer_notification_threshold: Option<u64>,
+
+    /// Original fd flags retained while O_ASYNC stays fenced. The fence is
+    /// restored only immediately before a hardware sampling source is enabled;
+    /// artificial or absent requests need no async fd delivery.
+    deferred_sampling_fd_flags: Option<libc::c_int>,
+
     /// Information about the active timer event, including expected counter
     /// values.
     event: ActiveEvent,
@@ -594,6 +816,14 @@ struct TimerImpl {
 
     /// Whether or not the active timer event requires an artificial signal
     send_artificial_signal: bool,
+
+    /// Identity of the artificial notification owned by the active request.
+    /// `sent` becomes true only after `rt_tgsigqueueinfo` has returned
+    /// successfully, so a handoff never guesses whether a signal exists.
+    artificial_notification: Option<ArtificialNotification>,
+
+    /// Monotonic identity encoded into artificial signal payloads.
+    next_artificial_generation: u32,
 
     initial_command: InitialCommand,
 
@@ -609,6 +839,390 @@ struct TimerImpl {
 
     /// Tid of the monitored thread
     guest_tid: Tid,
+
+    /// A private-execution transition remains present until its exact token has
+    /// restored both counters. `Failed` is intentionally terminal for this
+    /// timer so callers cannot accidentally resume after a partial ioctl.
+    private_execution: Option<PrivateExecutionState>,
+
+    /// Installed-hook-only state layered on the ordinary counter suspension.
+    /// Its token id must equal `private_execution.snapshot().id` at every
+    /// transition.
+    installed_handoff: Option<InstalledTimerHandoff>,
+
+    /// Monotonic token identity local to this timer.
+    next_private_execution_id: u64,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum CounterEnableState {
+    Enabled,
+    Disabled,
+    Unknown,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct RetainedTimerState {
+    event: ActiveEvent,
+    timer_status: EventStatus,
+    send_artificial_signal: bool,
+    artificial_notification: Option<ArtificialNotification>,
+    timer_enabled: CounterEnableState,
+    clock_enabled: CounterEnableState,
+    timer_notification_threshold: Option<u64>,
+    guest_pid: Pid,
+    guest_tid: Tid,
+}
+
+impl RetainedTimerState {
+    fn changed_field(&self, current: &Self) -> Option<&'static str> {
+        if self.event != current.event {
+            Some("active event")
+        } else if self.timer_status != current.timer_status {
+            Some("event status")
+        } else if self.send_artificial_signal != current.send_artificial_signal {
+            Some("artificial-signal state")
+        } else if self.artificial_notification != current.artificial_notification {
+            Some("artificial-signal identity")
+        } else if self.timer_enabled != current.timer_enabled {
+            Some("sampling-counter enable state")
+        } else if self.clock_enabled != current.clock_enabled {
+            Some("clock-counter enable state")
+        } else if self.timer_notification_threshold != current.timer_notification_threshold {
+            Some("hardware notification threshold")
+        } else if self.guest_pid != current.guest_pid {
+            Some("guest pid")
+        } else if self.guest_tid != current.guest_tid {
+            Some("guest tid")
+        } else {
+            None
+        }
+    }
+}
+
+fn classify_pending_notification(
+    retained: RetainedTimerState,
+    frozen_timer: u64,
+    timer_fd: libc::c_int,
+) -> Result<PendingTimerNotification, PrivateExecutionTimerError> {
+    if let Some(artificial) = retained.artificial_notification {
+        return Ok(if artificial.sent {
+            PendingTimerNotification::Artificial {
+                generation: artificial.generation,
+                tag: artificial.tag,
+                sender_pid: artificial.sender_pid,
+                sender_uid: artificial.sender_uid,
+            }
+        } else {
+            PendingTimerNotification::None
+        });
+    }
+    match retained.timer_notification_threshold {
+        Some(threshold) if frozen_timer >= threshold => {
+            Ok(PendingTimerNotification::Perf { fd: timer_fd })
+        }
+        Some(_) => Ok(PendingTimerNotification::None),
+        None if retained.timer_enabled == CounterEnableState::Enabled => {
+            Err(PrivateExecutionTimerError::InconsistentState(
+                "enabled sampling counter had no notification threshold",
+            ))
+        }
+        None => Ok(PendingTimerNotification::None),
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct ArtificialNotification {
+    generation: u32,
+    tag: u64,
+    sender_pid: libc::pid_t,
+    sender_uid: libc::uid_t,
+    sent: bool,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum InstalledTimerHandoffPhase {
+    Preparing,
+    AwaitingDrain,
+    AwaitingDrainEmptyProof,
+    Callback,
+    Restoring,
+    Failed,
+    Terminal,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum InstalledDrainObservation {
+    Empty,
+    MatchingSignal,
+    WrongSignal,
+}
+
+fn installed_drain_transition(
+    phase: InstalledTimerHandoffPhase,
+    notification: PendingTimerNotification,
+    observation: InstalledDrainObservation,
+) -> Option<(InstalledTimerHandoffPhase, bool)> {
+    match (phase, notification, observation) {
+        (
+            InstalledTimerHandoffPhase::AwaitingDrain,
+            PendingTimerNotification::None | PendingTimerNotification::Perf { .. },
+            InstalledDrainObservation::Empty,
+        ) => Some((InstalledTimerHandoffPhase::Callback, true)),
+        (
+            InstalledTimerHandoffPhase::AwaitingDrain,
+            PendingTimerNotification::Perf { .. }
+            | PendingTimerNotification::Artificial { .. },
+            InstalledDrainObservation::MatchingSignal,
+        ) => Some((InstalledTimerHandoffPhase::AwaitingDrainEmptyProof, false)),
+        (
+            InstalledTimerHandoffPhase::AwaitingDrainEmptyProof,
+            _,
+            InstalledDrainObservation::Empty,
+        ) => Some((InstalledTimerHandoffPhase::Callback, true)),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct InstalledTimerHandoff {
+    token_id: u64,
+    tool_observed: bool,
+    notification: PendingTimerNotification,
+    phase: InstalledTimerHandoffPhase,
+    staged_request: Option<TimerEventRequest>,
+    observe_count: u8,
+    sampling_fd_flags: Option<libc::c_int>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct ProgrammedNotification {
+    enable_sampling: bool,
+    expected_timer: u64,
+    threshold: Option<u64>,
+    artificial: Option<ArtificialNotification>,
+}
+
+fn fold_installed_hook_observation(
+    status: &mut EventStatus,
+    handoff: &mut InstalledTimerHandoff,
+) -> Result<(), PrivateExecutionTimerError> {
+    if !handoff.tool_observed {
+        return Ok(());
+    }
+    if handoff.observe_count != 0 {
+        return Err(PrivateExecutionTimerError::InconsistentState(
+            "installed hook event was observed more than once",
+        ));
+    }
+    status.tick();
+    *status = EventStatus::Cancelled;
+    handoff.observe_count = 1;
+    Ok(())
+}
+
+fn stage_installed_request(
+    handoff: &mut InstalledTimerHandoff,
+    request: TimerEventRequest,
+) -> Result<(), Errno> {
+    if handoff.phase != InstalledTimerHandoffPhase::Callback {
+        return Err(Errno::EBUSY);
+    }
+    handoff.staged_request = Some(request);
+    Ok(())
+}
+
+fn installed_terminal_retained_state_is_valid(
+    snapshot: PrivateExecutionSnapshot,
+    handoff: InstalledTimerHandoff,
+    current: RetainedTimerState,
+) -> bool {
+    if current.guest_pid != snapshot.retained.guest_pid
+        || current.guest_tid != snapshot.retained.guest_tid
+        || (current.send_artificial_signal != current.artificial_notification.is_some())
+        || (current.artificial_notification.is_some()
+            && current.timer_notification_threshold.is_some())
+    {
+        return false;
+    }
+    let same_software_as_snapshot = {
+        let mut expected = snapshot.retained;
+        expected.timer_enabled = current.timer_enabled;
+        expected.clock_enabled = current.clock_enabled;
+        expected.changed_field(&current).is_none()
+    };
+    match handoff.phase {
+        InstalledTimerHandoffPhase::Preparing => same_software_as_snapshot,
+        InstalledTimerHandoffPhase::AwaitingDrain
+        | InstalledTimerHandoffPhase::AwaitingDrainEmptyProof
+        | InstalledTimerHandoffPhase::Callback => {
+            if current.timer_enabled != CounterEnableState::Disabled
+                || current.clock_enabled != CounterEnableState::Disabled
+            {
+                return false;
+            }
+            if !handoff.tool_observed {
+                same_software_as_snapshot
+            } else {
+                current.event == snapshot.retained.event
+                    && current.timer_status == EventStatus::Cancelled
+                    && !current.send_artificial_signal
+                    && current.artificial_notification.is_none()
+                    && current.timer_notification_threshold.is_none()
+                    && handoff.observe_count == 1
+            }
+        }
+        InstalledTimerHandoffPhase::Restoring | InstalledTimerHandoffPhase::Failed => {
+            if same_software_as_snapshot {
+                return true;
+            }
+            if !handoff.tool_observed {
+                if current.event != snapshot.retained.event
+                    || current.timer_status != snapshot.retained.timer_status
+                {
+                    return false;
+                }
+                let desired_notification = if snapshot.retained.send_artificial_signal {
+                    0
+                } else if snapshot.retained.timer_enabled == CounterEnableState::Enabled {
+                    let Some(threshold) = snapshot.retained.timer_notification_threshold else {
+                        return false;
+                    };
+                    threshold.saturating_sub(snapshot.frozen_timer)
+                } else {
+                    return !current.send_artificial_signal
+                        && current.artificial_notification.is_none()
+                        && current.timer_notification_threshold.is_none();
+                };
+                return if desired_notification <= SINGLESTEP_TIMEOUT_RCBS {
+                    current.send_artificial_signal
+                        && current.artificial_notification.is_some()
+                        && current.timer_notification_threshold.is_none()
+                } else {
+                    !current.send_artificial_signal
+                        && current.artificial_notification.is_none()
+                        && current.timer_notification_threshold == Some(desired_notification)
+                };
+            }
+            let cancelled_before_publication = current.event == snapshot.retained.event
+                && current.timer_status == EventStatus::Cancelled
+                && !current.send_artificial_signal
+                && current.artificial_notification.is_none()
+                && current.timer_notification_threshold.is_none();
+            if cancelled_before_publication {
+                return true;
+            }
+            match handoff.staged_request {
+                None => {
+                    current.event == snapshot.retained.event
+                        && current.timer_status == EventStatus::Cancelled
+                        && !current.send_artificial_signal
+                        && current.artificial_notification.is_none()
+                        && current.timer_notification_threshold.is_none()
+                }
+                Some(request) => {
+                    let (delivery, notification) = TimerImpl::request_intervals(request);
+                    snapshot
+                        .frozen_clock
+                        .checked_add(delivery)
+                        .is_some_and(|target| current.event == TimerImpl::event_at(request, target))
+                        && current.timer_status == EventStatus::Scheduled
+                        && if notification <= SINGLESTEP_TIMEOUT_RCBS {
+                            current.send_artificial_signal
+                                && current.artificial_notification.is_some()
+                                && current.timer_notification_threshold.is_none()
+                        } else {
+                            !current.send_artificial_signal
+                                && current.artificial_notification.is_none()
+                                && current.timer_notification_threshold == Some(notification)
+                        }
+                }
+            }
+        }
+        InstalledTimerHandoffPhase::Terminal => false,
+    }
+}
+
+fn installed_precommit_counters_match(
+    snapshot: PrivateExecutionSnapshot,
+    clock: u64,
+    timer: u64,
+) -> bool {
+    clock == snapshot.frozen_clock && timer == snapshot.frozen_timer
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct PrivateExecutionSnapshot {
+    id: u64,
+    retained: RetainedTimerState,
+    frozen_clock: u64,
+    frozen_timer: u64,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum PrivateExecutionState {
+    Suspending(PrivateExecutionSnapshot),
+    Suspended(PrivateExecutionSnapshot),
+    Restoring(PrivateExecutionSnapshot),
+    Failed(PrivateExecutionSnapshot),
+    Terminal(PrivateExecutionSnapshot),
+}
+
+impl PrivateExecutionState {
+    fn phase(self) -> &'static str {
+        let (phase, snapshot) = match self {
+            Self::Suspending(snapshot) => ("suspending", snapshot),
+            Self::Suspended(snapshot) => ("suspended", snapshot),
+            Self::Restoring(snapshot) => ("restoring", snapshot),
+            Self::Failed(snapshot) => ("failed", snapshot),
+            Self::Terminal(snapshot) => ("terminal", snapshot),
+        };
+        let _ = snapshot;
+        phase
+    }
+
+    fn snapshot(self) -> PrivateExecutionSnapshot {
+        match self {
+            Self::Suspending(snapshot)
+            | Self::Suspended(snapshot)
+            | Self::Restoring(snapshot)
+            | Self::Failed(snapshot)
+            | Self::Terminal(snapshot) => snapshot,
+        }
+    }
+}
+
+fn terminal_private_execution_snapshot(
+    state: Option<PrivateExecutionState>,
+    suspension: &PrivateExecutionTimerSuspension,
+    current: RetainedTimerState,
+) -> Result<PrivateExecutionSnapshot, PrivateExecutionTimerError> {
+    let snapshot = match state {
+        Some(
+            PrivateExecutionState::Suspending(snapshot)
+            | PrivateExecutionState::Suspended(snapshot)
+            | PrivateExecutionState::Restoring(snapshot)
+            | PrivateExecutionState::Failed(snapshot),
+        ) => snapshot,
+        Some(PrivateExecutionState::Terminal(_)) => {
+            return Err(PrivateExecutionTimerError::Busy { phase: "terminal" });
+        }
+        None => {
+            return Err(PrivateExecutionTimerError::InconsistentState(
+                "no private-execution suspension was active",
+            ));
+        }
+    };
+    if suspension.snapshot != snapshot {
+        return Err(PrivateExecutionTimerError::TokenMismatch);
+    }
+    let mut expected = snapshot.retained;
+    expected.timer_enabled = current.timer_enabled;
+    expected.clock_enabled = current.clock_enabled;
+    if let Some(field) = expected.changed_field(&current) {
+        return Err(PrivateExecutionTimerError::InconsistentState(field));
+    }
+    Ok(snapshot)
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -761,6 +1375,18 @@ impl ClockCounter {
     }
 }
 
+fn installed_hook_precedes_full_timer_target(
+    counter: &ClockCounter,
+    target_rcb: u64,
+    target_instr: u64,
+) -> bool {
+    counter
+        .is_behind(target_rcb, target_instr)
+        .expect(
+            "counter should increase monotonically and stay at target_rcb until equal. This is most likely a BUG with counter tracking",
+        )
+}
+
 impl TimerImpl {
     pub fn new(guest_pid: Pid, guest_tid: Tid, initial_command: bool) -> Result<Self, Errno> {
         let evt = get_pmu_config().rcb_event();
@@ -798,12 +1424,18 @@ impl TimerImpl {
         Ok(Self {
             timer,
             clock,
+            clock_enabled: CounterEnableState::Enabled,
+            timer_enabled: CounterEnableState::Disabled,
+            timer_notification_threshold: None,
+            deferred_sampling_fd_flags: None,
             event: ActiveEvent::Precise {
                 clock_target: 0,
                 offset: 0,
             },
             timer_status: EventStatus::Cancelled,
             send_artificial_signal: false,
+            artificial_notification: None,
+            next_artificial_generation: 1,
             initial_command: if initial_command {
                 InitialCommand::WaitingForExec
             } else {
@@ -814,19 +1446,1071 @@ impl TimerImpl {
             fail_next_notification: None,
             guest_pid,
             guest_tid,
+            private_execution: None,
+            installed_handoff: None,
+            next_private_execution_id: 1,
         })
     }
 
-    pub fn request_event(&mut self, evt: TimerEventRequest) -> Result<(), Errno> {
-        let (delivery, notification) = match evt {
-            TimerEventRequest::Precise(ticks) | TimerEventRequest::PreciseInstruction(ticks, _) => {
-                (ticks, ticks.saturating_sub(get_pmu_config().skid_margin()))
+    fn retained_state(&self) -> RetainedTimerState {
+        RetainedTimerState {
+            event: self.event,
+            timer_status: self.timer_status,
+            send_artificial_signal: self.send_artificial_signal,
+            artificial_notification: self.artificial_notification,
+            timer_enabled: self.timer_enabled,
+            clock_enabled: self.clock_enabled,
+            timer_notification_threshold: self.timer_notification_threshold,
+            guest_pid: self.guest_pid,
+            guest_tid: self.guest_tid,
+        }
+    }
+
+    fn private_execution_phase(&self) -> Option<&'static str> {
+        self.private_execution.map(PrivateExecutionState::phase)
+    }
+
+    fn ensure_timer_operation_allowed(&self) -> Result<(), Errno> {
+        if self.private_execution.is_some() {
+            Err(Errno::EBUSY)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn assert_timer_operation_allowed(&self, operation: &'static str) {
+        if let Some(phase) = self.private_execution_phase() {
+            panic!(
+                "Timer::{operation} is forbidden while private execution is {phase}; \
+                 the tracee must remain stopped"
+            );
+        }
+    }
+
+    fn disable_sampling_counter(&mut self) -> Result<(), Errno> {
+        match self.timer.disable() {
+            Ok(()) => {
+                self.timer_enabled = CounterEnableState::Disabled;
+                Ok(())
             }
-            TimerEventRequest::Imprecise(ticks) => (ticks, ticks),
+            Err(error) => {
+                self.timer_enabled = CounterEnableState::Unknown;
+                Err(error)
+            }
+        }
+    }
+
+    fn enable_sampling_counter(&mut self) -> Result<(), Errno> {
+        match self.timer.enable() {
+            Ok(()) => {
+                self.timer_enabled = CounterEnableState::Enabled;
+                Ok(())
+            }
+            Err(error) => {
+                self.timer_enabled = CounterEnableState::Unknown;
+                Err(error)
+            }
+        }
+    }
+
+    fn disable_clock_counter(&mut self) -> Result<(), Errno> {
+        match self.clock.disable() {
+            Ok(()) => {
+                self.clock_enabled = CounterEnableState::Disabled;
+                Ok(())
+            }
+            Err(error) => {
+                self.clock_enabled = CounterEnableState::Unknown;
+                Err(error)
+            }
+        }
+    }
+
+    fn enable_clock_counter(&mut self) -> Result<(), Errno> {
+        match self.clock.enable() {
+            Ok(()) => {
+                self.clock_enabled = CounterEnableState::Enabled;
+                Ok(())
+            }
+            Err(error) => {
+                self.clock_enabled = CounterEnableState::Unknown;
+                Err(error)
+            }
+        }
+    }
+
+    fn latch_private_execution_failure(
+        &mut self,
+        snapshot: PrivateExecutionSnapshot,
+        operation: &'static str,
+        source: Errno,
+    ) -> PrivateExecutionTimerError {
+        self.private_execution = Some(PrivateExecutionState::Failed(snapshot));
+        if let Some(handoff) = self.installed_handoff.as_mut() {
+            handoff.phase = InstalledTimerHandoffPhase::Failed;
+        }
+        PrivateExecutionTimerError::CounterOperation { operation, source }
+    }
+
+    fn latch_private_execution_inconsistency(
+        &mut self,
+        snapshot: PrivateExecutionSnapshot,
+        detail: &'static str,
+    ) -> PrivateExecutionTimerError {
+        self.private_execution = Some(PrivateExecutionState::Failed(snapshot));
+        if let Some(handoff) = self.installed_handoff.as_mut() {
+            handoff.phase = InstalledTimerHandoffPhase::Failed;
+        }
+        PrivateExecutionTimerError::InconsistentState(detail)
+    }
+
+    fn fail_private_execution_and_disable_both(
+        &mut self,
+        snapshot: PrivateExecutionSnapshot,
+        operation: &'static str,
+        source: Errno,
+    ) -> PrivateExecutionTimerError {
+        self.private_execution = Some(PrivateExecutionState::Failed(snapshot));
+        if let Some(handoff) = self.installed_handoff.as_mut() {
+            handoff.phase = InstalledTimerHandoffPhase::Failed;
+        }
+        match self.disable_both_after_private_failure() {
+            Ok(()) => PrivateExecutionTimerError::CounterOperation { operation, source },
+            Err((recovery_operation, recovery_source)) => {
+                PrivateExecutionTimerError::CounterOperationAndRecovery {
+                    operation,
+                    source,
+                    recovery_operation,
+                    recovery_source,
+                }
+            }
+        }
+    }
+
+    /// Best-effort transition back to the only state safe for failed private
+    /// execution: both counters disabled. Sampling must be disabled first so a
+    /// notification cannot race a later clock disable.
+    fn disable_both_after_private_failure(&mut self) -> Result<(), (&'static str, Errno)> {
+        if let Err(error) = self.disable_sampling_counter() {
+            self.timer_enabled = CounterEnableState::Unknown;
+            return Err(("disable sampling counter during failure recovery", error));
+        }
+        if let Err(error) = self.disable_clock_counter() {
+            self.clock_enabled = CounterEnableState::Unknown;
+            return Err(("disable clock counter during failure recovery", error));
+        }
+        Ok(())
+    }
+
+    pub fn begin_suspend_for_private_execution(
+        &mut self,
+    ) -> Result<PrivateExecutionTimerSuspension, PrivateExecutionTimerError> {
+        let (suspension, notification) = self.capture_private_execution(false)?;
+        debug_assert_eq!(notification, PendingTimerNotification::None);
+        Ok(suspension)
+    }
+
+    fn capture_private_execution(
+        &mut self,
+        allow_notification_debt: bool,
+    ) -> Result<
+        (PrivateExecutionTimerSuspension, PendingTimerNotification),
+        PrivateExecutionTimerError,
+    > {
+        if let Some(state) = self.private_execution {
+            return Err(PrivateExecutionTimerError::Busy {
+                phase: state.phase(),
+            });
+        }
+        if self.installed_handoff.is_some() {
+            return Err(PrivateExecutionTimerError::InconsistentState(
+                "installed handoff existed without private execution",
+            ));
+        }
+
+        let retained = self.retained_state();
+        if retained.send_artificial_signal && retained.artificial_notification.is_none() {
+            return Err(PrivateExecutionTimerError::InconsistentState(
+                "artificial request had no notification identity",
+            ));
+        }
+        if !retained.send_artificial_signal && retained.artificial_notification.is_some() {
+            return Err(PrivateExecutionTimerError::InconsistentState(
+                "artificial notification identity had no active request",
+            ));
+        }
+        if retained.send_artificial_signal && !allow_notification_debt {
+            return Err(PrivateExecutionTimerError::ArtificialSignalPending);
+        }
+        if retained.clock_enabled != CounterEnableState::Enabled {
+            return Err(PrivateExecutionTimerError::InconsistentState(
+                "non-resetting clock was not known enabled",
+            ));
+        }
+        if retained.timer_enabled == CounterEnableState::Unknown {
+            return Err(PrivateExecutionTimerError::InconsistentState(
+                "sampling-counter enable state was unknown",
+            ));
+        }
+        if retained.timer_enabled == CounterEnableState::Enabled
+            && self.deferred_sampling_fd_flags.is_some()
+        {
+            return Err(PrivateExecutionTimerError::InconsistentState(
+                "enabled sampling counter retained an async-source fence",
+            ));
+        }
+
+        // Both reads occur while the tracee is stopped. They are repeated after
+        // disabling the counters to prove that suspension did not alter either
+        // count.
+        let frozen_timer = self.timer.ctr_value().map_err(|source| {
+            PrivateExecutionTimerError::CounterOperation {
+                operation: "read sampling counter before suspension",
+                source,
+            }
+        })?;
+        let notification = classify_pending_notification(
+            retained,
+            frozen_timer,
+            self.timer.raw_fd(),
+        )?;
+        if let Some(threshold) = retained.timer_notification_threshold {
+            if frozen_timer >= threshold && !allow_notification_debt {
+                return Err(PrivateExecutionTimerError::NotificationThresholdReached {
+                    observed: frozen_timer,
+                    threshold,
+                });
+            }
+        }
+        let frozen_clock = self.clock.ctr_value_fast().map_err(|source| {
+            PrivateExecutionTimerError::CounterOperation {
+                operation: "read clock before suspension",
+                source,
+            }
+        })?;
+
+        let id = self.next_private_execution_id;
+        self.next_private_execution_id =
+            id.checked_add(1)
+                .ok_or(PrivateExecutionTimerError::InconsistentState(
+                    "private-execution token identity overflowed",
+                ))?;
+        let snapshot = PrivateExecutionSnapshot {
+            id,
+            retained,
+            frozen_clock,
+            frozen_timer,
         };
+        self.private_execution = Some(PrivateExecutionState::Suspending(snapshot));
+
+        Ok((PrivateExecutionTimerSuspension { snapshot }, notification))
+    }
+
+    pub fn begin_suspend_for_installed_event(
+        &mut self,
+        tool_observed: bool,
+    ) -> Result<PrivateExecutionTimerSuspension, PrivateExecutionTimerError> {
+        let (suspension, notification) = self.capture_private_execution(true)?;
+        self.installed_handoff = Some(InstalledTimerHandoff {
+            token_id: suspension.snapshot.id,
+            tool_observed,
+            notification,
+            phase: InstalledTimerHandoffPhase::Preparing,
+            staged_request: None,
+            observe_count: 0,
+            sampling_fd_flags: None,
+        });
+        Ok(suspension)
+    }
+
+    pub fn complete_suspend_for_private_execution(
+        &mut self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<(), PrivateExecutionTimerError> {
+        let snapshot = match self.private_execution {
+            Some(PrivateExecutionState::Suspending(snapshot)) => snapshot,
+            Some(state) => {
+                return Err(PrivateExecutionTimerError::Busy {
+                    phase: state.phase(),
+                });
+            }
+            None => {
+                return Err(PrivateExecutionTimerError::InconsistentState(
+                    "no private-execution suspension was being prepared",
+                ));
+            }
+        };
+        if suspension.snapshot != snapshot {
+            return Err(PrivateExecutionTimerError::TokenMismatch);
+        }
+
+        if let Err(source) = self.disable_sampling_counter() {
+            return Err(self.fail_private_execution_and_disable_both(
+                snapshot,
+                "disable sampling counter for private execution",
+                source,
+            ));
+        }
+        if let Err(source) = self.disable_clock_counter() {
+            return Err(self.fail_private_execution_and_disable_both(
+                snapshot,
+                "disable clock counter for private execution",
+                source,
+            ));
+        }
+
+        let stopped_clock = match self.clock.ctr_value_fast() {
+            Ok(value) => value,
+            Err(source) => {
+                return Err(self.latch_private_execution_failure(
+                    snapshot,
+                    "read clock after suspension",
+                    source,
+                ));
+            }
+        };
+        if stopped_clock != snapshot.frozen_clock {
+            return Err(self.latch_private_execution_failure(
+                snapshot,
+                "verify frozen clock after suspension",
+                Errno::EIO,
+            ));
+        }
+        let stopped_timer = match self.timer.ctr_value() {
+            Ok(value) => value,
+            Err(source) => {
+                return Err(self.latch_private_execution_failure(
+                    snapshot,
+                    "read sampling counter after suspension",
+                    source,
+                ));
+            }
+        };
+        if stopped_timer != snapshot.frozen_timer {
+            return Err(self.latch_private_execution_failure(
+                snapshot,
+                "verify frozen sampling counter after suspension",
+                Errno::EIO,
+            ));
+        }
+
+        self.private_execution = Some(PrivateExecutionState::Suspended(snapshot));
+        Ok(())
+    }
+
+    pub fn complete_suspend_for_installed_event(
+        &mut self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<(), PrivateExecutionTimerError> {
+        let handoff = self.installed_handoff.ok_or(
+            PrivateExecutionTimerError::InconsistentState(
+                "installed suspension had no typed handoff",
+            ),
+        )?;
+        if handoff.token_id != suspension.snapshot.id {
+            return Err(PrivateExecutionTimerError::TokenMismatch);
+        }
+        if handoff.phase != InstalledTimerHandoffPhase::Preparing {
+            return Err(PrivateExecutionTimerError::Busy {
+                phase: "installed handoff was not preparing",
+            });
+        }
+
+        self.complete_suspend_for_private_execution(suspension)?;
+
+        let current_flags = Errno::result(unsafe {
+            libc::fcntl(self.timer.raw_fd(), libc::F_GETFL)
+        })
+        .map_err(|source| {
+            self.latch_private_execution_failure(
+                suspension.snapshot,
+                "read sampling notification fd flags for source fence",
+                source,
+            )
+        })?;
+        let old_flags = if let Some(retained) = self.deferred_sampling_fd_flags {
+            if current_flags & libc::O_ASYNC != 0 || retained & libc::O_ASYNC == 0 {
+                return Err(self.latch_private_execution_inconsistency(
+                    suspension.snapshot,
+                    "deferred sampling notification fence was inconsistent",
+                ));
+            }
+            retained
+        } else {
+            if current_flags & libc::O_ASYNC == 0 {
+                return Err(self.latch_private_execution_inconsistency(
+                    suspension.snapshot,
+                    "sampling notification source was not async",
+                ));
+            }
+            Errno::result(unsafe {
+                libc::fcntl(
+                    self.timer.raw_fd(),
+                    libc::F_SETFL,
+                    current_flags & !libc::O_ASYNC,
+                )
+            })
+            .map_err(|source| {
+                self.latch_private_execution_failure(
+                    suspension.snapshot,
+                    "fence sampling async notification source",
+                    source,
+                )
+            })?;
+            self.deferred_sampling_fd_flags = Some(current_flags);
+            current_flags
+        };
+        let fenced_flags = Errno::result(unsafe {
+            libc::fcntl(self.timer.raw_fd(), libc::F_GETFL)
+        })
+        .map_err(|source| {
+            self.latch_private_execution_failure(
+                suspension.snapshot,
+                "verify sampling async notification source fence",
+                source,
+            )
+        })?;
+        if fenced_flags & libc::O_ASYNC != 0 {
+            return Err(self.latch_private_execution_inconsistency(
+                suspension.snapshot,
+                "sampling async notification source fence did not hold",
+            ));
+        }
+
+        let handoff = self.installed_handoff.as_mut().ok_or(
+            PrivateExecutionTimerError::InconsistentState(
+                "installed handoff disappeared during suspension",
+            ),
+        )?;
+        handoff.sampling_fd_flags = Some(old_flags);
+        if handoff.tool_observed {
+            // This physical entry trap represents exactly one Tool-visible
+            // event. The old notification is drained privately, so fold its
+            // cancellation into the same transition rather than waiting for a
+            // second physical signal-delivery stop that will never be exposed.
+            fold_installed_hook_observation(&mut self.timer_status, handoff)?;
+            self.send_artificial_signal = false;
+            self.artificial_notification = None;
+            self.timer_notification_threshold = None;
+        }
+        handoff.phase = InstalledTimerHandoffPhase::AwaitingDrain;
+        Ok(())
+    }
+
+    fn installed_handoff_for_token(
+        &self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<InstalledTimerHandoff, PrivateExecutionTimerError> {
+        let handoff = self.installed_handoff.ok_or(
+            PrivateExecutionTimerError::InconsistentState(
+                "private execution had no installed handoff",
+            ),
+        )?;
+        if handoff.token_id != suspension.snapshot.id {
+            return Err(PrivateExecutionTimerError::TokenMismatch);
+        }
+        if self
+            .private_execution
+            .map(PrivateExecutionState::snapshot)
+            .map(|snapshot| snapshot.id)
+            != Some(suspension.snapshot.id)
+        {
+            return Err(PrivateExecutionTimerError::TokenMismatch);
+        }
+        Ok(handoff)
+    }
+
+    pub fn installed_notification(
+        &self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<PendingTimerNotification, PrivateExecutionTimerError> {
+        let handoff = self.installed_handoff_for_token(suspension)?;
+        if handoff.phase != InstalledTimerHandoffPhase::AwaitingDrain {
+            return Err(PrivateExecutionTimerError::Busy {
+                phase: "installed handoff was not awaiting notification drain",
+            });
+        }
+        Ok(handoff.notification)
+    }
+
+    fn notification_matches(
+        expected: PendingTimerNotification,
+        signal: &libc::siginfo_t,
+    ) -> bool {
+        if signal.si_signo != MARKER_SIGNAL as i32 {
+            return false;
+        }
+        match expected {
+            PendingTimerNotification::None => false,
+            PendingTimerNotification::Perf { fd } => {
+                Self::is_timer_generated_signal(signal) && get_si_fd(signal) == fd
+            }
+            PendingTimerNotification::Artificial {
+                generation,
+                tag,
+                sender_pid,
+                sender_uid,
+            } => unsafe {
+                signal.si_code == libc::SI_QUEUE
+                    && u32::from_ne_bytes(signal.si_errno.to_ne_bytes()) == generation
+                    && signal.si_pid() == sender_pid
+                    && signal.si_uid() == sender_uid
+                    && signal.si_value().sival_ptr as usize as u64 == tag
+            },
+        }
+    }
+
+    pub fn installed_notification_matches(
+        &self,
+        suspension: &PrivateExecutionTimerSuspension,
+        signal: &libc::siginfo_t,
+    ) -> Result<bool, PrivateExecutionTimerError> {
+        let handoff = self.installed_handoff_for_token(suspension)?;
+        if !matches!(
+            handoff.phase,
+            InstalledTimerHandoffPhase::AwaitingDrain
+                | InstalledTimerHandoffPhase::AwaitingDrainEmptyProof
+        ) {
+            return Err(PrivateExecutionTimerError::Busy {
+                phase: "installed handoff was not draining",
+            });
+        }
+        Ok(Self::notification_matches(handoff.notification, signal))
+    }
+
+    pub fn finish_installed_notification_drain(
+        &mut self,
+        suspension: &PrivateExecutionTimerSuspension,
+        signal: Option<&libc::siginfo_t>,
+    ) -> Result<bool, PrivateExecutionTimerError> {
+        let handoff = self.installed_handoff_for_token(suspension)?;
+        if !matches!(
+            handoff.phase,
+            InstalledTimerHandoffPhase::AwaitingDrain
+                | InstalledTimerHandoffPhase::AwaitingDrainEmptyProof
+        ) {
+            return Err(PrivateExecutionTimerError::Busy {
+                phase: "installed handoff was not awaiting notification drain",
+            });
+        }
+        // A perf threshold can be observed before its asynchronous signal is
+        // queued. Once the counter source is synchronously disabled, either an
+        // exact dequeue followed by EAGAIN or immediate EAGAIN is complete.
+        // An artificial notification was synchronously queued by the
+        // controller and therefore must be dequeued before the empty proof.
+        let observation = match signal {
+            None => InstalledDrainObservation::Empty,
+            Some(signal) if Self::notification_matches(handoff.notification, signal) => {
+                InstalledDrainObservation::MatchingSignal
+            }
+            Some(_) => InstalledDrainObservation::WrongSignal,
+        };
+        let Some((next_phase, done)) = installed_drain_transition(
+            handoff.phase,
+            handoff.notification,
+            observation,
+        ) else {
+            if let Some(active) = self.installed_handoff.as_mut() {
+                active.phase = InstalledTimerHandoffPhase::Failed;
+            }
+            if let Some(snapshot) = self.private_execution.map(PrivateExecutionState::snapshot) {
+                self.private_execution = Some(PrivateExecutionState::Failed(snapshot));
+            }
+            return Err(PrivateExecutionTimerError::NotificationIdentityMismatch);
+        };
+        let active = self.installed_handoff.as_mut().ok_or(
+            PrivateExecutionTimerError::InconsistentState(
+                "installed handoff disappeared during notification drain",
+            ),
+        )?;
+        active.phase = next_phase;
+        Ok(done)
+    }
+
+    fn program_notification_while_suspended(
+        &mut self,
+        notification: u64,
+    ) -> Result<ProgrammedNotification, Errno> {
+        debug_assert_eq!(self.timer_enabled, CounterEnableState::Disabled);
+        if notification <= SINGLESTEP_TIMEOUT_RCBS {
+            let expected_timer = self.timer.ctr_value()?;
+            let artificial = self.next_artificial_notification()?;
+            Ok(ProgrammedNotification {
+                enable_sampling: false,
+                expected_timer,
+                threshold: None,
+                artificial: Some(artificial),
+            })
+        } else {
+            self.timer.reset()?;
+            self.timer.set_period(notification)?;
+            Ok(ProgrammedNotification {
+                enable_sampling: true,
+                expected_timer: 0,
+                threshold: Some(notification),
+                artificial: None,
+            })
+        }
+    }
+
+    pub fn commit_installed_event_handoff(
+        &mut self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<(), PrivateExecutionTimerError> {
+        let handoff = self.installed_handoff_for_token(suspension)?;
+        if handoff.phase != InstalledTimerHandoffPhase::Callback {
+            return Err(PrivateExecutionTimerError::Busy {
+                phase: "installed handoff had no completed drain",
+            });
+        }
+        let snapshot = match self.private_execution {
+            Some(PrivateExecutionState::Suspended(snapshot)) => snapshot,
+            Some(state) => {
+                return Err(PrivateExecutionTimerError::Busy {
+                    phase: state.phase(),
+                });
+            }
+            None => {
+                return Err(PrivateExecutionTimerError::InconsistentState(
+                    "installed handoff lost its counter suspension",
+                ));
+            }
+        };
+        if snapshot != suspension.snapshot
+            || handoff.observe_count != u8::from(handoff.tool_observed)
+            || (!handoff.tool_observed && handoff.staged_request.is_some())
+            || handoff.sampling_fd_flags.is_none()
+        {
+            return Err(PrivateExecutionTimerError::InconsistentState(
+                "installed handoff observation or staging state was inconsistent",
+            ));
+        }
+        let precommit_clock = self.clock.ctr_value_fast().map_err(|source| {
+            self.latch_private_execution_failure(
+                snapshot,
+                "read frozen clock before installed-hook commit",
+                source,
+            )
+        })?;
+        let precommit_timer = self.timer.ctr_value().map_err(|source| {
+            self.latch_private_execution_failure(
+                snapshot,
+                "read frozen sampling counter before installed-hook commit",
+                source,
+            )
+        })?;
+        if !installed_precommit_counters_match(snapshot, precommit_clock, precommit_timer) {
+            return Err(self.latch_private_execution_inconsistency(
+                snapshot,
+                "counter changed before installed-hook commit",
+            ));
+        }
+
+        self.private_execution = Some(PrivateExecutionState::Restoring(snapshot));
+        self.installed_handoff
+            .as_mut()
+            .expect("validated installed handoff remains owned")
+            .phase = InstalledTimerHandoffPhase::Restoring;
+
+        let (desired_event, desired_status, programmed) = if handoff.tool_observed {
+            if let Some(request) = handoff.staged_request {
+                let (delivery, notification) = Self::request_intervals(request);
+                let target = snapshot
+                    .frozen_clock
+                    .checked_add(delivery)
+                    .ok_or_else(|| {
+                        self.latch_private_execution_inconsistency(
+                            snapshot,
+                            "staged timer target overflowed",
+                        )
+                    })?;
+                let programmed = self
+                    .program_notification_while_suspended(notification)
+                    .map_err(|source| {
+                        self.latch_private_execution_failure(
+                            snapshot,
+                            "program staged installed-hook notification",
+                            source,
+                        )
+                    })?;
+                (Self::event_at(request, target), EventStatus::Scheduled, programmed)
+            } else {
+                (
+                    snapshot.retained.event,
+                    EventStatus::Cancelled,
+                    ProgrammedNotification {
+                        enable_sampling: false,
+                        expected_timer: snapshot.frozen_timer,
+                        threshold: None,
+                        artificial: None,
+                    },
+                )
+            }
+        } else {
+            // A backend-private hook is not a Tool event. Recreate the old
+            // physical source from its absolute logical request without
+            // observing or cancelling it.
+            if snapshot.retained.send_artificial_signal {
+                let programmed = self
+                    .program_notification_while_suspended(0)
+                    .map_err(|source| {
+                        self.latch_private_execution_failure(
+                            snapshot,
+                            "requeue retained artificial notification",
+                            source,
+                        )
+                    })?;
+                (
+                    snapshot.retained.event,
+                    snapshot.retained.timer_status,
+                    programmed,
+                )
+            } else if snapshot.retained.timer_enabled == CounterEnableState::Enabled {
+                let threshold = snapshot.retained.timer_notification_threshold.ok_or_else(|| {
+                    self.latch_private_execution_inconsistency(
+                        snapshot,
+                        "retained sampling source had no threshold",
+                    )
+                })?;
+                let remaining = threshold.saturating_sub(snapshot.frozen_timer);
+                let programmed = self
+                    .program_notification_while_suspended(remaining)
+                    .map_err(|source| {
+                        self.latch_private_execution_failure(
+                            snapshot,
+                            "reprogram retained installed-hook notification",
+                            source,
+                        )
+                    })?;
+                (
+                    snapshot.retained.event,
+                    snapshot.retained.timer_status,
+                    programmed,
+                )
+            } else {
+                (
+                    snapshot.retained.event,
+                    snapshot.retained.timer_status,
+                    ProgrammedNotification {
+                        enable_sampling: false,
+                        expected_timer: snapshot.frozen_timer,
+                        threshold: None,
+                        artificial: None,
+                    },
+                )
+            }
+        };
+
+        // Publish the complete software description only after every
+        // fallible programming operation has succeeded. A failure before this
+        // point retains the pre-commit cancelled/snapshot state; a failure
+        // after it owns one fully described new request.
+        self.event = desired_event;
+        self.timer_status = desired_status;
+        self.timer_notification_threshold = programmed.threshold;
+        self.artificial_notification = programmed.artificial;
+        self.send_artificial_signal = programmed.artificial.is_some();
+        let enable_sampling = programmed.enable_sampling;
+        let expected_timer = programmed.expected_timer;
+
+        // Clock ownership returns first. Only a fully programmed hardware
+        // request may enable sampling afterward; an absent or artificial
+        // request intentionally leaves the sampling counter disabled.
+        if let Err(source) = self.enable_clock_counter() {
+            return Err(self.fail_private_execution_and_disable_both(
+                snapshot,
+                "enable clock after installed-hook handoff",
+                source,
+            ));
+        }
+        let sampling_fd_flags = handoff
+            .sampling_fd_flags
+            .expect("validated handoff retained sampling fd flags");
+        if enable_sampling {
+            if self.deferred_sampling_fd_flags != Some(sampling_fd_flags) {
+                return Err(self.fail_private_execution_and_disable_both(
+                    snapshot,
+                    "sampling async notification fence ownership changed",
+                    Errno::EPROTO,
+                ));
+            }
+            if let Err(source) = Errno::result(unsafe {
+                libc::fcntl(
+                    self.timer.raw_fd(),
+                    libc::F_SETFL,
+                    sampling_fd_flags,
+                )
+            }) {
+                return Err(self.fail_private_execution_and_disable_both(
+                    snapshot,
+                    "restore sampling async notification source",
+                    source,
+                ));
+            }
+            let restored_flags = Errno::result(unsafe {
+                libc::fcntl(self.timer.raw_fd(), libc::F_GETFL)
+            })
+            .map_err(|source| {
+                self.fail_private_execution_and_disable_both(
+                    snapshot,
+                    "verify restored sampling async notification source",
+                    source,
+                )
+            })?;
+            if restored_flags != sampling_fd_flags {
+                return Err(self.fail_private_execution_and_disable_both(
+                    snapshot,
+                    "sampling async notification source flags changed",
+                    Errno::EIO,
+                ));
+            }
+            self.deferred_sampling_fd_flags = None;
+            if let Err(source) = self.enable_sampling_counter() {
+                return Err(self.fail_private_execution_and_disable_both(
+                    snapshot,
+                    "enable sampling after installed-hook handoff",
+                    source,
+                ));
+            }
+        }
+        let restored_clock = self.clock.ctr_value_fast().map_err(|source| {
+            self.fail_private_execution_and_disable_both(
+                snapshot,
+                "read clock after installed-hook handoff",
+                source,
+            )
+        })?;
+        let restored_timer = self.timer.ctr_value().map_err(|source| {
+            self.fail_private_execution_and_disable_both(
+                snapshot,
+                "read sampling counter after installed-hook handoff",
+                source,
+            )
+        })?;
+        if restored_clock != snapshot.frozen_clock || restored_timer != expected_timer {
+            return Err(self.fail_private_execution_and_disable_both(
+                snapshot,
+                "verify counters after installed-hook handoff",
+                Errno::EIO,
+            ));
+        }
+
+        self.private_execution = None;
+        self.installed_handoff = None;
+        Ok(())
+    }
+
+    pub fn restore_after_private_execution(
+        &mut self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<(), PrivateExecutionTimerError> {
+        if self.installed_handoff.is_some() {
+            return Err(PrivateExecutionTimerError::Busy {
+                phase: "installed handoff requires staged commit",
+            });
+        }
+        let snapshot = match self.private_execution {
+            Some(PrivateExecutionState::Suspended(snapshot)) => snapshot,
+            Some(state) => {
+                return Err(PrivateExecutionTimerError::Busy {
+                    phase: state.phase(),
+                });
+            }
+            None => {
+                return Err(PrivateExecutionTimerError::InconsistentState(
+                    "no private-execution suspension was active",
+                ));
+            }
+        };
+        if suspension.snapshot != snapshot {
+            return Err(PrivateExecutionTimerError::TokenMismatch);
+        }
+
+        let mut expected_suspended = snapshot.retained;
+        expected_suspended.timer_enabled = CounterEnableState::Disabled;
+        expected_suspended.clock_enabled = CounterEnableState::Disabled;
+        if let Some(field) = expected_suspended.changed_field(&self.retained_state()) {
+            return Err(self.latch_private_execution_inconsistency(snapshot, field));
+        }
+        let frozen_clock = match self.clock.ctr_value_fast() {
+            Ok(value) => value,
+            Err(source) => {
+                return Err(self.latch_private_execution_failure(
+                    snapshot,
+                    "read frozen clock before restore",
+                    source,
+                ));
+            }
+        };
+        if frozen_clock != snapshot.frozen_clock {
+            return Err(self.latch_private_execution_inconsistency(
+                snapshot,
+                "non-resetting clock changed during private execution",
+            ));
+        }
+        let frozen_timer = match self.timer.ctr_value() {
+            Ok(value) => value,
+            Err(source) => {
+                return Err(self.latch_private_execution_failure(
+                    snapshot,
+                    "read frozen sampling counter before restore",
+                    source,
+                ));
+            }
+        };
+        if frozen_timer != snapshot.frozen_timer {
+            return Err(self.latch_private_execution_inconsistency(
+                snapshot,
+                "sampling counter changed during private execution",
+            ));
+        }
+
+        self.private_execution = Some(PrivateExecutionState::Restoring(snapshot));
+        if let Err(source) = self.enable_clock_counter() {
+            return Err(self.fail_private_execution_and_disable_both(
+                snapshot,
+                "enable clock counter after private execution",
+                source,
+            ));
+        }
+
+        if snapshot.retained.timer_enabled == CounterEnableState::Enabled
+            && let Err(source) = self.enable_sampling_counter()
+        {
+            return Err(self.fail_private_execution_and_disable_both(
+                snapshot,
+                "enable sampling counter after private execution",
+                source,
+            ));
+        }
+
+        // Enabling counters while the tracee remains stopped must not alter
+        // either retained value. Verify that before making ordinary Timer APIs
+        // available again.
+        let restored_clock = match self.clock.ctr_value_fast() {
+            Ok(value) => value,
+            Err(source) => {
+                return Err(self.fail_private_execution_and_disable_both(
+                    snapshot,
+                    "read clock after restore",
+                    source,
+                ));
+            }
+        };
+        if restored_clock != snapshot.frozen_clock {
+            return Err(self.fail_private_execution_and_disable_both(
+                snapshot,
+                "verify clock after restore",
+                Errno::EIO,
+            ));
+        }
+        let restored_timer = match self.timer.ctr_value() {
+            Ok(value) => value,
+            Err(source) => {
+                return Err(self.fail_private_execution_and_disable_both(
+                    snapshot,
+                    "read sampling counter after restore",
+                    source,
+                ));
+            }
+        };
+        if restored_timer != snapshot.frozen_timer {
+            return Err(self.fail_private_execution_and_disable_both(
+                snapshot,
+                "verify sampling counter after restore",
+                Errno::EIO,
+            ));
+        }
+
+        if let Some(field) = snapshot.retained.changed_field(&self.retained_state()) {
+            return Err(self.fail_private_execution_and_disable_both(
+                snapshot,
+                field,
+                Errno::EPROTO,
+            ));
+        }
+
+        self.private_execution = None;
+        Ok(())
+    }
+
+    pub fn retire_private_execution_on_terminal(
+        &mut self,
+        suspension: &PrivateExecutionTimerSuspension,
+    ) -> Result<(), PrivateExecutionTimerError> {
+        let current = self.retained_state();
+        let snapshot = if let Some(handoff) = self.installed_handoff {
+            let state = self.private_execution.ok_or(
+                PrivateExecutionTimerError::InconsistentState(
+                    "installed handoff had no private execution at terminal proof",
+                ),
+            )?;
+            if state.phase() == "terminal" {
+                return Err(PrivateExecutionTimerError::Busy { phase: "terminal" });
+            }
+            let snapshot = state.snapshot();
+            if handoff.token_id != suspension.snapshot.id || snapshot != suspension.snapshot {
+                return Err(PrivateExecutionTimerError::TokenMismatch);
+            }
+            let source_fence_valid = match handoff.phase {
+                InstalledTimerHandoffPhase::Preparing => handoff.sampling_fd_flags.is_none(),
+                InstalledTimerHandoffPhase::AwaitingDrain
+                | InstalledTimerHandoffPhase::AwaitingDrainEmptyProof
+                | InstalledTimerHandoffPhase::Callback => handoff
+                    .sampling_fd_flags
+                    .is_some_and(|flags| self.deferred_sampling_fd_flags == Some(flags)),
+                InstalledTimerHandoffPhase::Restoring | InstalledTimerHandoffPhase::Failed => {
+                    handoff.sampling_fd_flags.is_none()
+                        || handoff.sampling_fd_flags.is_some_and(|flags| {
+                            matches!(self.deferred_sampling_fd_flags, Some(saved) if saved == flags)
+                                || self.deferred_sampling_fd_flags.is_none()
+                        })
+                }
+                InstalledTimerHandoffPhase::Terminal => false,
+            };
+            if !source_fence_valid {
+                return Err(PrivateExecutionTimerError::InconsistentState(
+                    "installed handoff async-source fence changed",
+                ));
+            }
+            if !installed_terminal_retained_state_is_valid(snapshot, handoff, current) {
+                return Err(PrivateExecutionTimerError::InconsistentState(
+                    "installed handoff retained software state changed",
+                ));
+            }
+            snapshot
+        } else {
+            terminal_private_execution_snapshot(self.private_execution, suspension, current)?
+        };
+
+        // The tracee generation is terminal: reading, enabling, disabling, or
+        // otherwise touching either perf fd is both unnecessary and unsafe.
+        // Retain the frozen software snapshot solely for diagnostics and keep
+        // the private-execution latch permanently closed.
+        self.timer_enabled = CounterEnableState::Disabled;
+        self.clock_enabled = CounterEnableState::Disabled;
+        self.private_execution = Some(PrivateExecutionState::Terminal(snapshot));
+        if let Some(handoff) = self.installed_handoff.as_mut() {
+            handoff.phase = InstalledTimerHandoffPhase::Terminal;
+        }
+        Ok(())
+    }
+
+    pub fn request_event(&mut self, evt: TimerEventRequest) -> Result<(), Errno> {
+        let (delivery, notification) = Self::request_intervals(evt);
         if delivery == 0 {
             return Err(Errno::EINVAL); // bail before setting timer
         }
+        if let Some(handoff) = self.installed_handoff.as_mut() {
+            if self.private_execution.is_none() {
+                return Err(Errno::EBUSY);
+            }
+            // The request remains relative to the frozen hook clock. Repeated
+            // Tool requests overwrite this one slot without touching either
+            // perf fd or generating an artificial signal.
+            return stage_installed_request(handoff, evt);
+        }
+        self.ensure_timer_operation_allowed()?;
         if self.initial_command != InitialCommand::Ordinary {
             self.event = Self::event_at(evt, self.read_clock() + delivery);
             self.held_initial_event = Some(self.event);
@@ -840,21 +2524,75 @@ impl TimerImpl {
         Ok(())
     }
 
+    fn request_intervals(evt: TimerEventRequest) -> (u64, u64) {
+        match evt {
+            TimerEventRequest::Precise(ticks) | TimerEventRequest::PreciseInstruction(ticks, _) => {
+                (ticks, ticks.saturating_sub(get_pmu_config().skid_margin()))
+            }
+            TimerEventRequest::Imprecise(ticks) => (ticks, ticks),
+        }
+    }
+
+    fn next_artificial_notification(&mut self) -> Result<ArtificialNotification, Errno> {
+        let generation = self.next_artificial_generation;
+        self.next_artificial_generation = generation.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        let mut tag = 0_u64;
+        let bytes = Errno::result(unsafe {
+            libc::syscall(
+                libc::SYS_getrandom,
+                &mut tag as *mut u64,
+                core::mem::size_of::<u64>(),
+                0,
+            )
+        })?;
+        if bytes != core::mem::size_of::<u64>() as i64 {
+            return Err(Errno::EIO);
+        }
+        Ok(ArtificialNotification {
+            generation,
+            tag,
+            sender_pid: unsafe { libc::getpid() },
+            sender_uid: unsafe { libc::getuid() },
+            sent: false,
+        })
+    }
+
     fn prepare_notification(&mut self, notification: u64) -> Result<(), Errno> {
         #[cfg(test)]
         if let Some(error) = self.fail_next_notification.take() {
             return Err(error);
         }
-        self.send_artificial_signal = if notification <= SINGLESTEP_TIMEOUT_RCBS {
+        let artificial = if notification <= SINGLESTEP_TIMEOUT_RCBS {
+            Some(self.next_artificial_notification()?)
+        } else {
+            None
+        };
+        self.send_artificial_signal = if let Some(artificial) = artificial {
             // If there's an existing event making use of the timer counter,
             // we need to "overwrite" it the same way setting an actual RCB
             // notification does.
-            self.timer.disable()?;
+            self.disable_sampling_counter()?;
+            self.timer_notification_threshold = None;
+            self.artificial_notification = Some(artificial);
             true
         } else {
             self.timer.reset()?;
             self.timer.set_period(notification)?;
-            self.timer.enable()?;
+            if let Some(flags) = self.deferred_sampling_fd_flags {
+                Errno::result(unsafe {
+                    libc::fcntl(self.timer.raw_fd(), libc::F_SETFL, flags)
+                })?;
+                let restored = Errno::result(unsafe {
+                    libc::fcntl(self.timer.raw_fd(), libc::F_GETFL)
+                })?;
+                if restored != flags {
+                    return Err(Errno::EIO);
+                }
+                self.deferred_sampling_fd_flags = None;
+            }
+            self.enable_sampling_counter()?;
+            self.timer_notification_threshold = Some(notification);
+            self.artificial_notification = None;
             false
         };
         Ok(())
@@ -878,6 +2616,7 @@ impl TimerImpl {
         let _ = self.held_initial_event.take();
         self.timer_status = EventStatus::Cancelled;
         self.send_artificial_signal = false;
+        self.artificial_notification = None;
     }
 
     fn begin_initial_exec(&mut self) {
@@ -897,19 +2636,21 @@ impl TimerImpl {
     }
 
     pub fn observe_event(&mut self) {
+        self.assert_timer_operation_allowed("observe_event");
         self.timer_status.tick()
     }
 
     pub fn schedule_cancellation(&mut self) {
+        self.assert_timer_operation_allowed("schedule_cancellation");
         self.timer_status = EventStatus::Cancelled;
     }
 
-    pub fn cancel(&self) -> Result<(), Errno> {
-        if self.initial_command == InitialCommand::Ordinary {
-            self.timer.disable()
-        } else {
-            Ok(())
+    pub fn cancel(&mut self) -> Result<(), Errno> {
+        if self.initial_command != InitialCommand::Ordinary {
+            return Ok(());
         }
+        self.ensure_timer_operation_allowed()?;
+        self.disable_sampling_counter()
     }
 
     fn is_timer_generated_signal(signal: &libc::siginfo_t) -> bool {
@@ -924,8 +2665,20 @@ impl TimerImpl {
     fn generated_signal(&self, signal: &libc::siginfo_t) -> bool {
         self.initial_command == InitialCommand::Ordinary
             && signal.si_signo == MARKER_SIGNAL as i32
-            // If we sent an artificial signal, it doesn't have any siginfo
-            && (self.send_artificial_signal
+            && (self
+                .artificial_notification
+                .filter(|notification| self.send_artificial_signal && notification.sent)
+                .is_some_and(|notification| {
+                    Self::notification_matches(
+                        PendingTimerNotification::Artificial {
+                            generation: notification.generation,
+                            tag: notification.tag,
+                            sender_pid: notification.sender_pid,
+                            sender_uid: notification.sender_uid,
+                        },
+                        signal,
+                    )
+                })
             // If not, the fd should match. This could possibly lead to a
             // collision, because an fd comparing-equal to this one in another
             // process could also send a signal. However, that it would also do so
@@ -935,28 +2688,61 @@ impl TimerImpl {
     }
 
     pub fn read_clock(&self) -> u64 {
+        if let (Some(handoff), Some(state)) = (self.installed_handoff, self.private_execution) {
+            if handoff.phase == InstalledTimerHandoffPhase::Callback
+                && handoff.token_id == state.snapshot().id
+            {
+                return state.snapshot().frozen_clock;
+            }
+        }
+        self.assert_timer_operation_allowed("read_clock");
         self.clock.ctr_value_fast().expect("Failed to read clock")
     }
 
-    pub fn finalize_requests(&self) {
+    fn diagnostic_clock(&self) -> u64 {
+        match self.private_execution {
+            Some(state) => state.snapshot().frozen_clock,
+            _ => self.clock.ctr_value_fast().expect("Failed to read clock"),
+        }
+    }
+
+    pub fn finalize_requests(&mut self) {
         if self.initial_command != InitialCommand::Ordinary {
             debug_assert!(!self.send_artificial_signal);
             return;
         }
+        if let Some(handoff) = self.installed_handoff {
+            assert_eq!(
+                handoff.phase,
+                InstalledTimerHandoffPhase::Callback,
+                "Timer::finalize_requests reached a partial installed handoff"
+            );
+            return;
+        }
+        self.assert_timer_operation_allowed("finalize_requests");
         if self.send_artificial_signal {
-            debug!("Sending artificial timer signal");
-
-            // Give the guest a kick via an "artificial signal".  This gives us something
-            // to handle in `handle_signal` and thus drives single-stepping.
+            let notification = self
+                .artificial_notification
+                .expect("artificial timer request must own a notification identity");
+            if notification.sent {
+                return;
+            }
+            debug!(generation = notification.generation, "Sending artificial timer signal");
+            let signal = queued_timer_siginfo(notification);
             Errno::result(unsafe {
                 libc::syscall(
-                    libc::SYS_tgkill,
+                    libc::SYS_rt_tgsigqueueinfo,
                     self.guest_pid.as_raw(),
                     self.guest_tid.as_raw(),
                     MARKER_SIGNAL as i32,
+                    &signal,
                 )
             })
-            .expect("Timer tgkill error indicates a bug");
+            .expect("Timer rt_tgsigqueueinfo error indicates a bug");
+            self.artificial_notification
+                .as_mut()
+                .expect("artificial identity remained owned across signal send")
+                .sent = true;
         }
     }
 
@@ -964,8 +2750,9 @@ impl TimerImpl {
         &mut self,
         task: Stopped,
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
-        observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+        observe: &mut (dyn FnMut(&Wait) -> Result<bool, TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
+        self.assert_timer_operation_allowed("handle_signal");
         let signal = task.getsiginfo()?;
         if !self.generated_signal(&signal) {
             warn!(
@@ -1013,6 +2800,7 @@ impl TimerImpl {
         // - spurious SIGSTKFLTs aren't let errantly let through
         // Cancellations should prevent spurious timer events in any case.
         self.send_artificial_signal = false;
+        self.artificial_notification = None;
 
         match self.event {
             ActiveEvent::Precise {
@@ -1040,7 +2828,7 @@ impl TimerImpl {
         target_rcb: u64,
         target_instr: u64,
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
-        observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+        observe: &mut (dyn FnMut(&Wait) -> Result<bool, TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
         // The perf interrupt can arrive *past* the target when descheduling or
         // migration delays signal handling long enough for the actual skid to
@@ -1073,10 +2861,12 @@ impl TimerImpl {
         );
         let mut task = task;
         loop {
-            if !current
-                .is_behind(target_rcb, target_instr)
-                .expect("counter should increase monotonically and stay at target_rcb until equal. This is most likely a BUG with counter tracking")
-            {
+            let hook_precedes_target = installed_hook_precedes_full_timer_target(
+                &current,
+                target_rcb,
+                target_instr,
+            );
+            if !hook_precedes_target {
                 break;
             }
             #[cfg(target_arch = "x86_64")]
@@ -1087,7 +2877,15 @@ impl TimerImpl {
                     .display_with_options(RegDisplayOptions { multiline: true })
             );
             let wait = step(task)?.next_state().await?;
-            observe(&wait)?;
+            if observe(&wait)? {
+                // The installed INT3 is controller-owned and must not count as
+                // a guest instruction. `current` is therefore the full
+                // (RCB,instruction-offset) position of the hook boundary; the
+                // loop predicate above proves that boundary precedes the timer
+                // target. Do not read the counter or single-step runtime code.
+                debug_assert!(hook_precedes_target);
+                return Err(HandleFailure::InterveningInstalledHook(wait));
+            }
             task = match wait {
                 // a successful single step results in SIGTRAP stop
                 Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => new_task,
@@ -1102,9 +2900,8 @@ impl TimerImpl {
     /// Since we step for 50, the timer will trigger multiple times unless we
     /// disable it before stepping. This would count as a state machine
     /// transition and errantly cancel the delivery of the timer event.
-    fn disable_timer_before_stepping(&self) {
-        self.timer
-            .disable()
+    fn disable_timer_before_stepping(&mut self) {
+        self.disable_sampling_counter()
             .expect("Must be able to disable timer before stepping");
     }
 }
@@ -1158,13 +2955,71 @@ fn get_si_fd(signal: &libc::siginfo_t) -> libc::c_int {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn queued_timer_siginfo(notification: ArtificialNotification) -> libc::siginfo_t {
+    #[repr(C)]
+    struct QueuedPrefix {
+        signo: libc::c_int,
+        errno: libc::c_int,
+        code: libc::c_int,
+        pad0: libc::c_int,
+        sender_pid: libc::pid_t,
+        sender_uid: libc::uid_t,
+        value: libc::sigval,
+    }
+
+    assert!(core::mem::size_of::<QueuedPrefix>() <= core::mem::size_of::<libc::siginfo_t>());
+    assert!(core::mem::align_of::<QueuedPrefix>() <= core::mem::align_of::<libc::siginfo_t>());
+    let mut signal = unsafe { core::mem::zeroed::<libc::siginfo_t>() };
+    let prefix = unsafe { &mut *(&mut signal as *mut libc::siginfo_t).cast::<QueuedPrefix>() };
+    prefix.signo = MARKER_SIGNAL as libc::c_int;
+    // SI_QUEUE leaves si_errno uninterpreted and Linux copies it unchanged.
+    // Use its exact 32-bit payload for the bounded logical generation while
+    // si_value independently carries the unguessable 64-bit capability.
+    prefix.errno = libc::c_int::from_ne_bytes(notification.generation.to_ne_bytes());
+    prefix.code = libc::SI_QUEUE;
+    prefix.pad0 = 0;
+    prefix.sender_pid = notification.sender_pid;
+    prefix.sender_uid = notification.sender_uid;
+    prefix.value = libc::sigval {
+        sival_ptr: notification.tag as usize as *mut libc::c_void,
+    };
+    signal
+}
+
 #[cfg(test)]
 mod tests {
+    use reverie::Errno;
+    use reverie::Pid;
     use test_case::test_case;
 
+    use super::ActiveEvent;
     use super::ClockCounter;
+    use super::CounterEnableState;
+    use super::EventStatus;
+    use super::ArtificialNotification;
+    use super::InstalledTimerHandoff;
+    use super::InstalledTimerHandoffPhase;
+    use super::InstalledDrainObservation;
+    use super::PendingTimerNotification;
     #[cfg(target_arch = "x86_64")]
     use super::PmuConfig;
+    use super::PrivateExecutionSnapshot;
+    use super::PrivateExecutionState;
+    use super::PrivateExecutionTimerError;
+    use super::PrivateExecutionTimerSuspension;
+    use super::RetainedTimerState;
+    use super::TimerEventRequest;
+    use super::TimerImpl;
+    use super::classify_pending_notification;
+    use super::fold_installed_hook_observation;
+    use super::installed_drain_transition;
+    use super::installed_precommit_counters_match;
+    use super::installed_hook_precedes_full_timer_target;
+    use super::installed_terminal_retained_state_is_valid;
+    use super::queued_timer_siginfo;
+    use super::stage_installed_request;
+    use super::terminal_private_execution_snapshot;
 
     #[test]
     fn initial_command_requests_retire_without_physical_notification() {
@@ -1388,6 +3243,490 @@ mod tests {
         );
         // A run with zero overshoots (the common case) is attributed zero.
         assert_eq!(reverie::take_skid_overshoot_count(), 0);
+    }
+
+    #[test]
+    fn private_execution_retains_every_timer_state_field_exactly() {
+        let retained = RetainedTimerState {
+            event: ActiveEvent::Precise {
+                clock_target: 41,
+                offset: 7,
+            },
+            timer_status: EventStatus::Armed,
+            send_artificial_signal: false,
+            artificial_notification: None,
+            timer_enabled: CounterEnableState::Enabled,
+            clock_enabled: CounterEnableState::Enabled,
+            timer_notification_threshold: Some(31),
+            guest_pid: Pid::from_raw(101),
+            guest_tid: Pid::from_raw(102),
+        };
+        assert_eq!(retained.changed_field(&retained), None);
+
+        let changed = [
+            (
+                RetainedTimerState {
+                    event: ActiveEvent::Imprecise { clock_min: 41 },
+                    ..retained
+                },
+                "active event",
+            ),
+            (
+                RetainedTimerState {
+                    timer_status: EventStatus::Cancelled,
+                    ..retained
+                },
+                "event status",
+            ),
+            (
+                RetainedTimerState {
+                    send_artificial_signal: true,
+                    ..retained
+                },
+                "artificial-signal state",
+            ),
+            (
+                RetainedTimerState {
+                    timer_enabled: CounterEnableState::Disabled,
+                    ..retained
+                },
+                "sampling-counter enable state",
+            ),
+            (
+                RetainedTimerState {
+                    clock_enabled: CounterEnableState::Unknown,
+                    ..retained
+                },
+                "clock-counter enable state",
+            ),
+            (
+                RetainedTimerState {
+                    timer_notification_threshold: Some(32),
+                    ..retained
+                },
+                "hardware notification threshold",
+            ),
+            (
+                RetainedTimerState {
+                    guest_pid: Pid::from_raw(103),
+                    ..retained
+                },
+                "guest pid",
+            ),
+            (
+                RetainedTimerState {
+                    guest_tid: Pid::from_raw(104),
+                    ..retained
+                },
+                "guest tid",
+            ),
+        ];
+
+        for (actual, expected_field) in changed {
+            assert_eq!(retained.changed_field(&actual), Some(expected_field));
+        }
+    }
+
+    fn private_execution_fixture() -> (PrivateExecutionSnapshot, RetainedTimerState) {
+        let retained = RetainedTimerState {
+            event: ActiveEvent::Precise {
+                clock_target: 400,
+                offset: 3,
+            },
+            timer_status: EventStatus::Armed,
+            send_artificial_signal: false,
+            artificial_notification: None,
+            timer_enabled: CounterEnableState::Enabled,
+            clock_enabled: CounterEnableState::Enabled,
+            timer_notification_threshold: Some(397),
+            guest_pid: Pid::from_raw(201),
+            guest_tid: Pid::from_raw(202),
+        };
+        (
+            PrivateExecutionSnapshot {
+                id: 17,
+                retained,
+                frozen_clock: 1_337,
+                frozen_timer: 211,
+            },
+            retained,
+        )
+    }
+
+    fn installed_handoff_fixture(tool_observed: bool) -> InstalledTimerHandoff {
+        InstalledTimerHandoff {
+            token_id: 17,
+            tool_observed,
+            notification: PendingTimerNotification::None,
+            phase: InstalledTimerHandoffPhase::Callback,
+            staged_request: None,
+            observe_count: 0,
+            sampling_fd_flags: Some(libc::O_ASYNC),
+        }
+    }
+
+    #[test]
+    fn installed_notification_threshold_brackets_are_typed_without_rejection() {
+        let (_, mut retained) = private_execution_fixture();
+        retained.timer_notification_threshold = Some(100);
+        retained.timer_enabled = CounterEnableState::Enabled;
+        assert_eq!(
+            classify_pending_notification(retained, 99, 71),
+            Ok(PendingTimerNotification::None),
+        );
+        for observed in [100, 101] {
+            assert_eq!(
+                classify_pending_notification(retained, observed, 71),
+                Ok(PendingTimerNotification::Perf { fd: 71 }),
+            );
+        }
+    }
+
+    #[test]
+    fn threshold_only_and_queued_perf_converge_on_empty_proof() {
+        let pending = PendingTimerNotification::Perf { fd: 71 };
+        assert_eq!(
+            installed_drain_transition(
+                InstalledTimerHandoffPhase::AwaitingDrain,
+                pending,
+                InstalledDrainObservation::Empty,
+            ),
+            Some((InstalledTimerHandoffPhase::Callback, true)),
+        );
+        let (phase, done) = installed_drain_transition(
+            InstalledTimerHandoffPhase::AwaitingDrain,
+            pending,
+            InstalledDrainObservation::MatchingSignal,
+        )
+        .unwrap();
+        assert_eq!(phase, InstalledTimerHandoffPhase::AwaitingDrainEmptyProof);
+        assert!(!done);
+        assert_eq!(
+            installed_drain_transition(phase, pending, InstalledDrainObservation::Empty),
+            Some((InstalledTimerHandoffPhase::Callback, true)),
+        );
+        assert_eq!(
+            installed_drain_transition(
+                phase,
+                pending,
+                InstalledDrainObservation::MatchingSignal,
+            ),
+            None,
+            "a second old notification must fail closed",
+        );
+    }
+
+    #[test]
+    fn installed_artificial_and_no_debt_are_distinct() {
+        let (_, mut retained) = private_execution_fixture();
+        retained.timer_enabled = CounterEnableState::Disabled;
+        retained.timer_notification_threshold = None;
+        retained.send_artificial_signal = true;
+        retained.artificial_notification = Some(ArtificialNotification {
+            generation: 9,
+            tag: 0xa55a_3399_7711_ccdd,
+            sender_pid: 31,
+            sender_uid: 41,
+            sent: true,
+        });
+        assert_eq!(
+            classify_pending_notification(retained, 0, 72),
+            Ok(PendingTimerNotification::Artificial {
+                generation: 9,
+                tag: 0xa55a_3399_7711_ccdd,
+                sender_pid: 31,
+                sender_uid: 41,
+            }),
+        );
+        retained.artificial_notification.as_mut().unwrap().sent = false;
+        assert_eq!(
+            classify_pending_notification(retained, 0, 72),
+            Ok(PendingTimerNotification::None),
+        );
+    }
+
+    #[test]
+    fn staged_request_overwrites_without_arming_or_advancing_phase() {
+        let mut handoff = installed_handoff_fixture(true);
+        let notification = handoff.notification;
+        let flags = handoff.sampling_fd_flags;
+        stage_installed_request(&mut handoff, TimerEventRequest::Precise(8)).unwrap();
+        stage_installed_request(
+            &mut handoff,
+            TimerEventRequest::PreciseInstruction(13, 5),
+        )
+        .unwrap();
+        assert_eq!(
+            handoff.staged_request,
+            Some(TimerEventRequest::PreciseInstruction(13, 5)),
+        );
+        assert_eq!(handoff.phase, InstalledTimerHandoffPhase::Callback);
+        assert_eq!(handoff.notification, notification);
+        assert_eq!(handoff.sampling_fd_flags, flags);
+    }
+
+    #[test]
+    fn installed_hook_observation_is_exactly_once() {
+        let mut handoff = installed_handoff_fixture(true);
+        let mut status = EventStatus::Scheduled;
+        fold_installed_hook_observation(&mut status, &mut handoff).unwrap();
+        assert_eq!(status, EventStatus::Cancelled);
+        assert_eq!(handoff.observe_count, 1);
+        assert_eq!(
+            fold_installed_hook_observation(&mut status, &mut handoff),
+            Err(PrivateExecutionTimerError::InconsistentState(
+                "installed hook event was observed more than once"
+            )),
+        );
+        assert_eq!(handoff.observe_count, 1);
+    }
+
+    #[test]
+    fn artificial_notification_refuses_wrong_generation_and_wrong_capability() {
+        let identity = ArtificialNotification {
+            generation: 19,
+            tag: 0x8bad_f00d_1122_3344,
+            sender_pid: 51,
+            sender_uid: 61,
+            sent: true,
+        };
+        let expected = PendingTimerNotification::Artificial {
+            generation: identity.generation,
+            tag: identity.tag,
+            sender_pid: identity.sender_pid,
+            sender_uid: identity.sender_uid,
+        };
+        let exact = queued_timer_siginfo(identity);
+        assert!(TimerImpl::notification_matches(expected, &exact));
+        let wrong_generation = queued_timer_siginfo(ArtificialNotification {
+            generation: identity.generation + 1,
+            ..identity
+        });
+        assert!(!TimerImpl::notification_matches(
+            expected,
+            &wrong_generation
+        ));
+        let wrong_tag = queued_timer_siginfo(ArtificialNotification {
+            tag: identity.tag ^ 1,
+            ..identity
+        });
+        assert!(!TimerImpl::notification_matches(expected, &wrong_tag));
+    }
+
+    #[test]
+    fn perf_notification_requires_poll_code_and_exact_fd() {
+        #[repr(C)]
+        struct PollInfo {
+            signo: libc::c_int,
+            errno: libc::c_int,
+            code: libc::c_int,
+            band: libc::c_long,
+            fd: libc::c_int,
+        }
+        fn signal(code: libc::c_int, fd: libc::c_int) -> libc::siginfo_t {
+            let mut info = unsafe { core::mem::zeroed::<libc::siginfo_t>() };
+            let poll = unsafe { &mut *(&mut info as *mut libc::siginfo_t).cast::<PollInfo>() };
+            poll.signo = super::MARKER_SIGNAL as libc::c_int;
+            poll.code = code;
+            poll.band = 0;
+            poll.fd = fd;
+            info
+        }
+        let expected = PendingTimerNotification::Perf { fd: 71 };
+        assert!(TimerImpl::notification_matches(
+            expected,
+            &signal(i32::from(libc::POLLIN), 71),
+        ));
+        assert!(!TimerImpl::notification_matches(
+            expected,
+            &signal(i32::from(libc::POLLIN), 72),
+        ));
+        assert!(!TimerImpl::notification_matches(
+            expected,
+            &signal(libc::SI_QUEUE, 71),
+        ));
+    }
+
+    #[test]
+    fn installed_partial_and_terminal_phases_refuse_staging() {
+        for phase in [
+            InstalledTimerHandoffPhase::Preparing,
+            InstalledTimerHandoffPhase::AwaitingDrain,
+            InstalledTimerHandoffPhase::AwaitingDrainEmptyProof,
+            InstalledTimerHandoffPhase::Restoring,
+            InstalledTimerHandoffPhase::Failed,
+            InstalledTimerHandoffPhase::Terminal,
+        ] {
+            let mut handoff = InstalledTimerHandoff {
+                phase,
+                ..installed_handoff_fixture(true)
+            };
+            assert_eq!(
+                stage_installed_request(&mut handoff, TimerEventRequest::Precise(1)),
+                Err(Errno::EBUSY),
+            );
+            assert_eq!(handoff.staged_request, None);
+        }
+    }
+
+    #[test]
+    fn installed_precommit_refuses_clock_or_sampling_drift() {
+        let (snapshot, _) = private_execution_fixture();
+        assert!(installed_precommit_counters_match(
+            snapshot,
+            snapshot.frozen_clock,
+            snapshot.frozen_timer,
+        ));
+        assert!(!installed_precommit_counters_match(
+            snapshot,
+            snapshot.frozen_clock + 1,
+            snapshot.frozen_timer,
+        ));
+        assert!(!installed_precommit_counters_match(
+            snapshot,
+            snapshot.frozen_clock,
+            snapshot.frozen_timer + 1,
+        ));
+    }
+
+    #[test]
+    fn installed_hook_uses_full_rcb_instruction_target_order() {
+        assert!(installed_hook_precedes_full_timer_target(
+            &ClockCounter::new(99, 400, 100),
+            100,
+            0,
+        ));
+        assert!(installed_hook_precedes_full_timer_target(
+            &ClockCounter::new(100, 6, 100),
+            100,
+            7,
+        ));
+        assert!(!installed_hook_precedes_full_timer_target(
+            &ClockCounter::new(100, 7, 100),
+            100,
+            7,
+        ));
+        assert!(!installed_hook_precedes_full_timer_target(
+            &ClockCounter::new(100, 8, 100),
+            100,
+            7,
+        ));
+    }
+
+    #[test]
+    fn installed_terminal_retirement_owns_prepublication_and_published_failures() {
+        let (snapshot, retained) = private_execution_fixture();
+        let request = TimerEventRequest::Imprecise(20);
+        let handoff = InstalledTimerHandoff {
+            phase: InstalledTimerHandoffPhase::Failed,
+            staged_request: Some(request),
+            observe_count: 1,
+            ..installed_handoff_fixture(true)
+        };
+        let cancelled = RetainedTimerState {
+            timer_status: EventStatus::Cancelled,
+            send_artificial_signal: false,
+            artificial_notification: None,
+            timer_notification_threshold: None,
+            timer_enabled: CounterEnableState::Disabled,
+            clock_enabled: CounterEnableState::Disabled,
+            ..retained
+        };
+        assert!(installed_terminal_retained_state_is_valid(
+            snapshot,
+            handoff,
+            cancelled,
+        ));
+
+        let published = RetainedTimerState {
+            event: ActiveEvent::Imprecise {
+                clock_min: snapshot.frozen_clock + 20,
+            },
+            timer_status: EventStatus::Scheduled,
+            timer_notification_threshold: Some(20),
+            ..cancelled
+        };
+        assert!(installed_terminal_retained_state_is_valid(
+            snapshot,
+            handoff,
+            published,
+        ));
+        assert!(!installed_terminal_retained_state_is_valid(
+            snapshot,
+            handoff,
+            RetainedTimerState {
+                event: ActiveEvent::Imprecise {
+                    clock_min: snapshot.frozen_clock + 21,
+                },
+                ..published
+            },
+        ));
+    }
+
+    #[test]
+    fn terminal_retirement_accepts_every_owned_transition_phase_without_perf_access() {
+        let (snapshot, retained) = private_execution_fixture();
+        let token = PrivateExecutionTimerSuspension { snapshot };
+        let phases = [
+            PrivateExecutionState::Suspending(snapshot),
+            PrivateExecutionState::Suspended(snapshot),
+            PrivateExecutionState::Restoring(snapshot),
+            PrivateExecutionState::Failed(snapshot),
+        ];
+        for phase in phases {
+            let mut current = retained;
+            // Hardware transition bookkeeping may be anywhere between enabled,
+            // disabled, or unknown at terminal proof. No fd operation is
+            // needed; all non-enable deterministic fields remain exact.
+            current.timer_enabled = CounterEnableState::Unknown;
+            current.clock_enabled = CounterEnableState::Disabled;
+            assert_eq!(
+                terminal_private_execution_snapshot(Some(phase), &token, current),
+                Ok(snapshot),
+                "terminal retirement rejected owned {} phase",
+                phase.phase(),
+            );
+            assert_eq!(phase.snapshot().frozen_clock, 1_337);
+        }
+    }
+
+    #[test]
+    fn terminal_retirement_rejects_wrong_token_repeat_and_retained_state_drift() {
+        let (snapshot, retained) = private_execution_fixture();
+        let token = PrivateExecutionTimerSuspension { snapshot };
+        let wrong = PrivateExecutionTimerSuspension {
+            snapshot: PrivateExecutionSnapshot { id: 18, ..snapshot },
+        };
+        assert_eq!(
+            terminal_private_execution_snapshot(
+                Some(PrivateExecutionState::Suspended(snapshot)),
+                &wrong,
+                retained,
+            ),
+            Err(PrivateExecutionTimerError::TokenMismatch),
+        );
+        assert_eq!(
+            terminal_private_execution_snapshot(
+                Some(PrivateExecutionState::Terminal(snapshot)),
+                &token,
+                retained,
+            ),
+            Err(PrivateExecutionTimerError::Busy { phase: "terminal" }),
+        );
+        let drifted = RetainedTimerState {
+            timer_notification_threshold: Some(398),
+            ..retained
+        };
+        assert_eq!(
+            terminal_private_execution_snapshot(
+                Some(PrivateExecutionState::Failed(snapshot)),
+                &token,
+                drifted,
+            ),
+            Err(PrivateExecutionTimerError::InconsistentState(
+                "hardware notification threshold"
+            )),
+        );
     }
 
     #[test_case(ClockCounter::new(0, 0, 10), 0, 1, Some(true))]
