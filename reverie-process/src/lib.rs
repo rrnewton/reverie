@@ -351,6 +351,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mount_proc_with_readonly_fallback() {
+        let proc = tempfile::tempdir().unwrap();
+        let proc_path = proc.path().to_str().unwrap();
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(
+                "cat \"$REVERIE_PROC_PATH/mounts\"; echo __STATUS__; \
+                 exec cat \"$REVERIE_PROC_PATH/self/status\"",
+            )
+            .env("REVERIE_PROC_PATH", proc_path)
+            .map_root()
+            .unshare(Namespace::PID)
+            .mount(
+                Mount::new(proc.path())
+                    .fstype("proc")
+                    .allow_readonly_fallback(),
+            )
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(output.status, ExitStatus::Exited(0));
+
+        let stdout = from_utf8(&output.stdout).unwrap();
+        let (mounts, status) = stdout.split_once("__STATUS__\n").unwrap();
+        let proc_options = mounts
+            .lines()
+            .find_map(|line| {
+                let mut fields = line.split_whitespace();
+                let _source = fields.next()?;
+                let target = fields.next()?;
+                let fstype = fields.next()?;
+                let options = fields.next()?;
+                (target == proc_path && fstype == "proc").then_some(options)
+            })
+            .unwrap();
+        assert!(
+            proc_options
+                .split(',')
+                .any(|option| option == "ro" || option == "rw")
+        );
+        println!("nested_proc_options={proc_options}");
+
+        let proc_status = parse_proc_status(status.as_bytes());
+        assert_eq!(proc_status["NSpid"], "1");
+        assert_eq!(proc_status["Pid"], "1");
+    }
+
+    #[tokio::test]
     async fn hostname() {
         let output = Command::new("cat")
             .arg("/proc/sys/kernel/hostname")

@@ -32,6 +32,7 @@ pub struct Mount {
     flags: MountFlags,
     data: Option<CString>,
     touch_target: bool,
+    allow_readonly_fallback: bool,
     /// A path, fstype or data string that could not be represented as a C
     /// string, recorded at BUILD time and reported at [`Mount::mount`] time.
     ///
@@ -90,6 +91,7 @@ impl Mount {
             flags: MountFlags::empty(),
             data: None,
             touch_target: false,
+            allow_readonly_fallback: false,
         }
     }
 
@@ -240,6 +242,15 @@ impl Mount {
         self
     }
 
+    /// Allows a writable proc mount that fails with `EPERM` to retry read-only.
+    ///
+    /// This explicitly permits the resulting mount to be less capable than
+    /// requested. It has no effect on non-proc or already-read-only mounts.
+    pub fn allow_readonly_fallback(mut self) -> Self {
+        self.allow_readonly_fallback = true;
+        self
+    }
+
     /// Makes a bind mount recursive.
     pub fn recursive(mut self) -> Self {
         self.flags |= MountFlags::MS_REC;
@@ -370,6 +381,35 @@ impl Mount {
         preserved
     }
 
+    fn mount_with_flags(&self, flags: MountFlags) -> Result<(), Errno> {
+        // SAFETY: Every non-null pointer comes from a live `CString` owned by
+        // `self`, and `target` is always present. `mount` only borrows these
+        // buffers for the duration of the syscall.
+        Errno::result(unsafe {
+            libc::mount(
+                self.source_ptr(),
+                self.target_ptr(),
+                self.fstype_ptr(),
+                flags.bits(),
+                self.data_ptr(),
+            )
+        })?;
+
+        Ok(())
+    }
+
+    fn readonly_proc_fallback(&self, error: Errno) -> Option<MountFlags> {
+        let is_proc = self
+            .fstype
+            .as_ref()
+            .is_some_and(|fstype| fstype.as_bytes() == b"proc");
+        (self.allow_readonly_fallback
+            && error == Errno::EPERM
+            && is_proc
+            && !self.flags.contains(MountFlags::MS_RDONLY))
+        .then_some(self.flags | MountFlags::MS_RDONLY)
+    }
+
     pub(super) fn mount(&mut self) -> Result<(), Errno> {
         // ⚠️ REFUSE, DO NOT PANIC. A path/fstype/data string that is not a valid
         // C string was recorded at build time (see `unrepresentable`). This is
@@ -403,15 +443,13 @@ impl Mount {
             }
         }
 
-        Errno::result(unsafe {
-            libc::mount(
-                self.source_ptr(),
-                self.target_ptr(),
-                self.fstype_ptr(),
-                self.flags.bits(),
-                self.data_ptr(),
-            )
-        })?;
+        match self.mount_with_flags(self.flags) {
+            Err(error) => match self.readonly_proc_fallback(error) {
+                Some(flags) => self.mount_with_flags(flags),
+                None => Err(error),
+            },
+            result => result,
+        }?;
 
         // Linux ignores MS_RDONLY on the initial bind mount. Apply per-mount flags with the
         // required bind remount so a read-only bind cannot mutate its source inode.
@@ -466,6 +504,7 @@ impl From<Bind> for Mount {
             flags: MountFlags::MS_BIND,
             data: None,
             touch_target: false,
+            allow_readonly_fallback: false,
             // A Bind built from a path that was not representable as a C string
             // holds an EMPTY CString (see `checked_cstring`). Empty source or
             // target is never a valid bind mount, so it carries the refusal
@@ -643,6 +682,39 @@ mod tests {
 
         let m = m.target("/baz");
         assert_eq!(m.get_target(), Path::new("/baz"));
+    }
+
+    #[test]
+    fn proc_mount_retries_readonly_only_after_permission_denial() {
+        let proc_mount = Mount::proc();
+        assert_eq!(proc_mount.readonly_proc_fallback(Errno::EPERM), None);
+        assert_eq!(
+            proc_mount
+                .clone()
+                .allow_readonly_fallback()
+                .readonly_proc_fallback(Errno::EPERM),
+            Some(MountFlags::MS_RDONLY)
+        );
+        assert_eq!(
+            proc_mount
+                .clone()
+                .allow_readonly_fallback()
+                .readonly_proc_fallback(Errno::ENOENT),
+            None
+        );
+        assert_eq!(
+            Mount::proc()
+                .readonly()
+                .allow_readonly_fallback()
+                .readonly_proc_fallback(Errno::EPERM),
+            None
+        );
+        assert_eq!(
+            Mount::tmpfs("/tmp")
+                .allow_readonly_fallback()
+                .readonly_proc_fallback(Errno::EPERM),
+            None
+        );
     }
 
     #[test]
