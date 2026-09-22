@@ -1196,11 +1196,14 @@ fn discover_arena_aliases(
 
 fn prepare_instrumentation() -> io::Result<()> {
     crate::straddler::initialize_from_environment()?;
+    // Concurrent in-process publication owns the SIGTRAP guard router. The
+    // explicit host path calls state preparation directly: its stopped tracee
+    // is quiescent and its existing SIGTRAP handler owns the Begin/Ready traps.
+    prepare_live_patching().map_err(|error| io::Error::other(error.to_string()))?;
     prepare_instrumentation_state()
 }
 
 fn prepare_instrumentation_state() -> io::Result<()> {
-    prepare_live_patching().map_err(|error| io::Error::other(error.to_string()))?;
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     let page_size = u64::try_from(page_size)
         .ok()
