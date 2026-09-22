@@ -25309,6 +25309,29 @@ mod tests {
 
     #[test]
     fn positioned_vectored_io_handles_pipes_partial_writes_and_sigpipe() {
+        const TEST: &str =
+            "executor::tests::positioned_vectored_io_handles_pipes_partial_writes_and_sigpipe";
+        const CHILD_ENV: &str = "REVERIE_POSITIONED_PIPE_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .output()
+                .expect("failed to run isolated positioned-pipe regression");
+            assert!(
+                output.status.success(),
+                "isolated positioned-pipe regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // Create the pipe after exec in this exact-test subprocess. A
+        // concurrently spawned library-test child can otherwise inherit even
+        // CLOEXEC endpoints until its own exec and keep the read end alive.
         const PIPE_FDS: u64 = 0x100;
         const WRITE: u64 = 0x1000;
         const WRITE_IOV: u64 = 0x4000;
@@ -32879,6 +32902,28 @@ mod tests {
 
     #[test]
     fn descriptor_retirement_accept_cleanup_releases_both_guards() {
+        const TEST: &str =
+            "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards";
+        const CHILD_ENV: &str = "REVERIE_ACCEPT_RETIREMENT_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .output()
+                .expect("failed to run isolated accept-retirement regression");
+            assert!(
+                output.status.success(),
+                "isolated accept-retirement regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // Create the listener and client only after exec so a concurrent test
+        // child cannot inherit the accepted endpoint and delay peer EOF.
         for fail_second_install in [false, true] {
             let mut f = FdinfoFixture::new(false);
             let socket_path = f.root.0.join("retire-accept.sock");
