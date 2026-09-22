@@ -28,6 +28,38 @@ SCORECARD_WRITEBACK_FILES = [
 ]
 
 
+def modern_publication() -> dict[str, object]:
+    """The six-path file map emitted by the real schema-10 mirror producer."""
+    objects = (
+        "499bd720281f2b762b008a777c7dadd606e740243b65d1ffae288d7939457767",
+        "60de04e985c3e7fa867636328b7b161e50c1d13024c1d1618beb2afc862018ab",
+        "e4009d6798df2dbb634570edf51bc9e7e35f1aa35502228396c4e91a68e115ba",
+    )
+    carrier = "5cede5de0ab9c46b6be9b4933831428502ffb77c40d6868736319ecde7f351ca"
+    repository = "https://github.com/rrnewton/hermit_test_ledger.git"
+    return {
+        "state": "published", "recorded_at": "2026-09-22T06:12:54Z",
+        "repository": repository, "source_repository": repository,
+        "commit": "e20023ee7f844ecc8f210a9d14c021ed91fadb2e",
+        "source_commit": "2cfc26554ee9bfbaf1a8ca5f66648de43d635639",
+        "series_commit": "2cfc26554ee9bfbaf1a8ca5f66648de43d635639",
+        "source_tree": "091cffbefeb6c29fe3607538339b43b0e78e51e8",
+        "rows": 88039, "raw_publication": {"published": 4},
+        "scorecard": {
+            "state": "published",
+            "hermit_commit": "8ab53653770396e9490d7f7ea098648acee9a71f",
+            "tool_hermit_commit": "8ab53653770396e9490d7f7ea098648acee9a71f",
+            "files": {
+                "scorecard/SCORECARD.md": "4fed3613279e61656b4a581afe5a6c71831dfdacb8590f9ea5109eb56ab31082",
+                "scorecard/cells.json": "04cb4255f6bf0d2fcc3f649523bf1d4053c6fb140d87a9d1725ac6d7a01325c0",
+                f"scorecard/finalized/runs/{carrier}.json":
+                    "70a94f0f2dc95ec03343d82d8d1a1108b6a7eef520a28f604870776b083beacf",
+                **{f"scorecard/finalized/objects/sha256/{digest}": digest for digest in objects},
+            },
+        },
+    }
+
+
 def validation_handle(**updates: object) -> dict[str, object]:
     value: dict[str, object] = {
         "schema_version": run_registry.SCHEMA_VERSION,
@@ -518,6 +550,57 @@ class RunRegistryContractTests(unittest.TestCase):
         accepted = run_registry.parse_current_record(validation_handle(ledger_mirror=partial))
         self.assertEqual("c" * 40, accepted.raw["ledger_mirror"]["series_commit"])
         self.assertEqual("derived-failed", accepted.raw["ledger_mirror"]["state"])
+
+    def test_modern_publication_preserves_the_complete_file_map(self) -> None:
+        publication = modern_publication()
+        accepted = run_registry.parse_current_record(validation_handle(ledger_mirror=publication))
+        self.assertEqual(publication, accepted.raw["ledger_mirror"])
+        files = publication["scorecard"]["files"]
+        objects = [path for path in files if "/objects/" in path]
+        # The registry checks report metadata. Equal bytes across the three
+        # operand roles can share an object; the proof reader checks references.
+        for removed in (objects[:1], objects[:2], list(set(files) - {
+                "scorecard/SCORECARD.md", "scorecard/cells.json"})):
+            with self.subTest(removed=removed):
+                subset = {path: digest for path, digest in files.items() if path not in removed}
+                candidate = {**publication, "scorecard": {**publication["scorecard"], "files": subset}}
+                accepted = run_registry.parse_current_record(validation_handle(ledger_mirror=candidate))
+                self.assertEqual(candidate, accepted.raw["ledger_mirror"])
+
+    def test_modern_publication_refuses_malformed_or_unrelated_proof_groups(self) -> None:
+        publication = modern_publication()
+        files = publication["scorecard"]["files"]
+        carrier = next(path for path in files if "/runs/" in path)
+        objects = [path for path in files if "/objects/" in path]
+        bad_files = {
+            "missing generated markdown": {k: v for k, v in files.items() if k != "scorecard/SCORECARD.md"},
+            "missing generated cells": {k: v for k, v in files.items() if k != "scorecard/cells.json"},
+            "objects without carrier": {k: v for k, v in files.items() if k != carrier},
+            "carrier without objects": {k: v for k, v in files.items() if k not in objects},
+            "second carrier": {**files, f"scorecard/finalized/runs/{'a' * 64}.json": "b" * 64},
+            "fourth object": {**files, f"scorecard/finalized/objects/sha256/{'a' * 64}": "a" * 64},
+            "object identity mismatch": {**files, objects[0]: "0" * 64},
+            "uppercase digest": {**files, "scorecard/cells.json": "A" * 64},
+            "non-string digest": {**files, carrier: 1},
+            "non-string path": {**files, 1: "a" * 64},
+        }
+        for path in (
+            "scorecard/unrelated.json", "scorecard/finalized/runs/short.json",
+            f"scorecard/finalized/runs/{'A' * 64}.json",
+            f"scorecard/finalized/runs/{'a' * 64}.json/extra",
+            f"scorecard/finalized/objects/sha256/{'a' * 64}.json",
+            f"scorecard/finalized/objects/sha256/../{'a' * 64}",
+            f"scorecard//finalized/objects/sha256/{'a' * 64}",
+            f"/scorecard/finalized/objects/sha256/{'a' * 64}",
+            f"scorecard\\finalized\\objects\\sha256\\{'a' * 64}",
+        ):
+            bad_files[path] = {**files, path: "a" * 64}
+        for reason, candidate_files in bad_files.items():
+            with self.subTest(reason=reason), self.assertRaisesRegex(
+                RuntimeError, "validation-run-handle-ledger_mirror.scorecard.files"
+            ):
+                candidate = {**publication, "scorecard": {**publication["scorecard"], "files": candidate_files}}
+                run_registry.parse_current_record(validation_handle(ledger_mirror=candidate))
 
     def test_refused_admission_requires_reason_and_exit_by_name(self) -> None:
         with self.assertRaisesRegex(

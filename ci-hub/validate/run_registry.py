@@ -6,6 +6,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -503,6 +504,37 @@ def _ledger_mirror(value: Any) -> None:
         raise _error("ledger_mirror.rows", "must be a nonnegative integer")
 
 
+def _scorecard_publication_files(files: Any) -> None:
+    """Validate publication metadata; the proof reader verifies operand bytes."""
+    field = "ledger_mirror.scorecard.files"
+    generated = {"scorecard/SCORECARD.md", "scorecard/cells.json"}
+    if not isinstance(files, dict) or not generated.issubset(files):
+        raise _error(field, "must bind both generated files")
+    for path, digest in files.items():
+        if (not isinstance(path, str) or not isinstance(digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+            raise _error(field, "must contain named complete SHA-256 identities")
+    proof_paths = set(files) - generated
+    if not proof_paths:
+        return
+    carriers = []
+    objects = []
+    for path in proof_paths:
+        if re.fullmatch(r"scorecard/finalized/runs/[0-9a-f]{64}\.json", path):
+            carriers.append(path)
+        elif re.fullmatch(r"scorecard/finalized/objects/sha256/[0-9a-f]{64}", path):
+            if files[path] != path.rsplit("/", 1)[1]:
+                raise _error(field, "proof object path must match its SHA-256 identity")
+            objects.append(path)
+        else:
+            raise _error(field, "contains an unsupported publication path")
+    # One finalized terminal carries plan/cells/tests. Equal operand bytes may
+    # share an object; full role/reference/content verification stays in the
+    # finalized-proof reader and unchanged native evidence verifier.
+    if len(carriers) != 1 or not 1 <= len(objects) <= 3:
+        raise _error(field, "must bind one finalized carrier and one to three proof objects")
+
+
 def _cell_ledger_publication(value: dict[str, Any]) -> None:
     """Extension of the historical mirror record, with explicit storage identity."""
     repository = "https://github.com/rrnewton/hermit_test_ledger.git"
@@ -539,11 +571,7 @@ def _cell_ledger_publication(value: dict[str, Any]) -> None:
         if (not isinstance(sha, str) or len(sha) != 40
                 or any(ch not in "0123456789abcdef" for ch in sha)):
             raise _error("ledger_mirror.scorecard.hermit_commit", "must name the exact producer commit")
-        if not isinstance(files, dict) or set(files) != {"scorecard/SCORECARD.md", "scorecard/cells.json"}:
-            raise _error("ledger_mirror.scorecard.files", "must bind both generated files")
-        for digest in files.values():
-            if not isinstance(digest, str) or len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
-                raise _error("ledger_mirror.scorecard.files", "must contain complete SHA-256 identities")
+        _scorecard_publication_files(files)
         if "tool_hermit_commit" in scorecard:
             tool = scorecard["tool_hermit_commit"]
             if not isinstance(tool, str) or len(tool) != 40 or any(ch not in "0123456789abcdef" for ch in tool):
