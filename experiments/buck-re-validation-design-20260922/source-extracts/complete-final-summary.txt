@@ -1,0 +1,9 @@
+TOTAL                                          4586.87  (sum of node wall)
+✅ validate PASS (exit 0) — profile full @ 991174b029b7710f49c1f637901752a5a6252557
+   every blocking gate passed (267 node(s) ran)
+   2755 test(s) executed, 2755 passed, 496 filtered (aggregated from typed step outcomes)
+   retries: 0 occurrence(s) recorded from scheduler and per-cell attempts
+   no retries, no flaky tests, and no failed test ids: every executed node passed first time
+   nodes: 267 executed, 0 failed, 0 skipped in 16m38s at -j 16
+   wall 16m38s | CPU 1h11m37s (user 58m35s, sys 13m02s) | CPU/wall 4.3x across 284 cores
+FINAL_VALIDATE_STATUS: PASSED

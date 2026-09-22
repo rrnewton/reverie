@@ -1,0 +1,34 @@
+profile	status	hermit_sha	metric	value	unit	source
+cold-local-20260921	SCOPE_DIFFERS	105ea982641f	cargo_release_wall	104.810	seconds	extract-measurements.sh over source-extracts/cold-build-commit.txt from Hermit commit 105ea982641f3a119fb82cb8af30417e9dbdc7f5
+cold-local-20260921	SCOPE_DIFFERS	105ea982641f	buck_hermit_target_wall	59.890	seconds	extract-measurements.sh over source-extracts/cold-build-commit.txt from Hermit commit 105ea982641f3a119fb82cb8af30417e9dbdc7f5
+complete-20260905	PASS	991174b029b7	makespan	998.000	seconds	source-extracts/complete-final-summary.txt; original hash in source-extracts/UPSTREAM_SHA256SUMS
+complete-20260905	PASS	991174b029b7	process_cpu	4297.000	cpu-seconds	source-extracts/complete-final-summary.txt; original hash in source-extracts/UPSTREAM_SHA256SUMS
+complete-20260905	PASS	991174b029b7	node_wall_sum	4586.870	seconds	source-extracts/complete-final-summary.txt; original hash in source-extracts/UPSTREAM_SHA256SUMS
+complete-20260905	PASS	991174b029b7	outer_node_cgroup_cpu_sum	4177.677642	cpu-seconds	extract-measurements.sh over source-extracts/complete-step-ends.jsonl: validate decimal-string cpu_usage_usec, convert with tonumber, exclude nested failed pre.submodules fixture
+complete-20260905	PASS	991174b029b7	build_group_cpu	2574.112556	cpu-seconds	extract-measurements.sh over source-extracts/complete-step-ends.jsonl; outer step prefix build
+complete-20260905	PASS	991174b029b7	build_group_wall	930.756	seconds	extract-measurements.sh over source-extracts/complete-step-ends.jsonl; outer step prefix build
+complete-20260905	PASS	991174b029b7	test_group_cpu	614.645006	cpu-seconds	extract-measurements.sh over source-extracts/complete-step-ends.jsonl; outer step prefix test
+complete-20260905	PASS	991174b029b7	test_group_wall	2225.122	seconds	extract-measurements.sh over source-extracts/complete-step-ends.jsonl; outer step prefix test
+complete-20260905	PASS	991174b029b7	check_group_cpu	180.056785	cpu-seconds	extract-measurements.sh over source-extracts/complete-step-ends.jsonl; outer step prefix check
+complete-20260905	PASS	991174b029b7	check_group_wall	234.115	seconds	extract-measurements.sh over source-extracts/complete-step-ends.jsonl; outer step prefix check
+complete-20260905	PASS	991174b029b7	doc_group_cpu	175.943394	cpu-seconds	extract-measurements.sh over source-extracts/complete-step-ends.jsonl; outer step prefix doc
+complete-20260905	PASS	991174b029b7	doc_group_wall	38.322	seconds	extract-measurements.sh over source-extracts/complete-step-ends.jsonl; outer step prefix doc
+complete-20260905	PASS	991174b029b7	all_e2e_cells	680	cells	extract-measurements.sh over all 15 rows in source-extracts/e2e-summaries.jsonl
+complete-20260905	PASS	991174b029b7	all_e2e_cell_cpu	380.955137	cpu-seconds	extract-measurements.sh over all 15 rows in source-extracts/e2e-summaries.jsonl
+complete-20260905	PASS	991174b029b7	portable_e2e_cells	677	cells	extract-measurements.sh over portable rows in source-extracts/e2e-summaries.jsonl
+complete-20260905	PASS	991174b029b7	portable_e2e_cell_cpu	379.885215	cpu-seconds	extract-measurements.sh over portable rows in source-extracts/e2e-summaries.jsonl
+complete-20260905	PASS	991174b029b7	privileged_e2e_cells	3	cells	extract-measurements.sh over privileged rows in source-extracts/e2e-summaries.jsonl
+complete-20260905	PASS	991174b029b7	privileged_e2e_cell_cpu	1.069922	cpu-seconds	extract-measurements.sh over privileged rows in source-extracts/e2e-summaries.jsonl
+complete-20260905	PASS	991174b029b7	portable_e2e_observed_window	177.164	seconds	extract-measurements.sh over source-extracts/complete-e2e-boundaries.jsonl; first start to last finish for 13 portable E2E nodes
+complete-20260905	PASS	991174b029b7	portable_e2e_c_programs_cells	404	cells	extract-measurements.sh over portable/manifest_c_programs row in source-extracts/e2e-summaries.jsonl
+complete-20260905	PASS	991174b029b7	portable_e2e_c_programs_cpu	197.378682	cpu-seconds	extract-measurements.sh over portable/manifest_c_programs row in source-extracts/e2e-summaries.jsonl
+complete-20260905	PASS	991174b029b7	portable_e2e_backend_parity_cells	179	cells	extract-measurements.sh over portable/manifest_backend_parity_c row in source-extracts/e2e-summaries.jsonl
+complete-20260905	PASS	991174b029b7	portable_e2e_backend_parity_cpu	42.843833	cpu-seconds	extract-measurements.sh over portable/manifest_backend_parity_c row in source-extracts/e2e-summaries.jsonl
+complete-20260905	PASS	991174b029b7	portable_e2e_applications_cells	4	cells	extract-measurements.sh over portable/manifest_applications row in source-extracts/e2e-summaries.jsonl
+complete-20260905	PASS	991174b029b7	portable_e2e_applications_cpu	40.868449	cpu-seconds	extract-measurements.sh over portable/manifest_applications row in source-extracts/e2e-summaries.jsonl
+partial-20260922	FAILED_INCOMPLETE	e123b2e34df8	makespan	968.874	seconds	extract-measurements.sh over latest run_id 18d7b229555277cb0016e097 in source-extracts/partial-profile.csv
+partial-20260922	FAILED_INCOMPLETE	e123b2e34df8	node_wall_sum	1801.555	seconds	extract-measurements.sh over latest run_id 18d7b229555277cb0016e097 in source-extracts/partial-profile.csv
+partial-20260922	FAILED_INCOMPLETE	e123b2e34df8	node_cgroup_cpu_sum	5710.721	cpu-seconds	extract-measurements.sh over latest run_id 18d7b229555277cb0016e097 in source-extracts/partial-profile.csv
+partial-20260922	FAILED_INCOMPLETE	e123b2e34df8	observed_critical_chain	968.841	seconds	extract-measurements.sh over dependency chain rows in source-extracts/partial-profile.csv
+partial-20260922	FAILED_INCOMPLETE	e123b2e34df8	four_core_build_nodes_cpu	4957.061	cpu-seconds	extract-measurements.sh over workspace/runtime_release and rust_scripts rows in source-extracts/partial-profile.csv
+partial-20260922	FAILED_INCOMPLETE	e123b2e34df8	artifact_dependency_upper_bound	307.669	seconds	extract-measurements.sh computes workspace finish minus runtime_release finish in source-extracts/partial-profile.csv

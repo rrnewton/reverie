@@ -1,0 +1,23 @@
+Add nightly OSS Buck2 build (#3143)
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig030, role=impl]
+
+Plain Language Summary and Project Impact
+
+Exercise the documented public Buck2 build path every night and on manual
+dispatch without changing pull-request, main-push, or landing-evidence gates.
+The workflow regenerates the shared Rust graph, requires all four Reverie
+targets, records the intentionally non-gating full third-party diagnostic, and
+uses //hermit-cli:hermit as the final green gate. Every cache is isolated to the
+ephemeral runner and the diagnostic artifact expires after seven days.
+
+Validation
+
+- actionlint 1.7.12: pass
+- git diff --check: pass
+- ./bootstrap/regenerate-rust-deps: pass
+- four documented Reverie targets: pass
+- full third-party diagnostic with --keep-going: exit 3, retained as evidence
+- ./bootstrap/buck2 build //hermit-cli:hermit after the diagnostic: pass
+- cold cargo build --release: 1:44.81 wall on devbig030
+- cold Buck2 Hermit target: 0:59.89 wall on devbig030; workload scope differs

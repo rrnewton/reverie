@@ -1,0 +1,15 @@
+{"source":"portable/manifest_applications/summary.json","summary":{"cell_cpu_usage_usec":40868449,"cells":4,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":4,"schema":1}}
+{"source":"portable/manifest_backend_parity_c/summary.json","summary":{"cell_cpu_usage_usec":42843833,"cells":179,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":179,"schema":1}}
+{"source":"portable/manifest_bin_c/summary.json","summary":{"cell_cpu_usage_usec":2686187,"cells":3,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":3,"schema":1}}
+{"source":"portable/manifest_c_programs/summary.json","summary":{"cell_cpu_usage_usec":197378682,"cells":404,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":404,"schema":1}}
+{"source":"portable/manifest_chaos_c/summary.json","summary":{"cell_cpu_usage_usec":4397407,"cells":2,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":2,"schema":1}}
+{"source":"portable/manifest_data_handling/summary.json","summary":{"cell_cpu_usage_usec":29618832,"cells":6,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":6,"schema":1}}
+{"source":"portable/manifest_debugger_c/summary.json","summary":{"cell_cpu_usage_usec":2592876,"cells":3,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":3,"schema":1}}
+{"source":"portable/manifest_determinism_stress/summary.json","summary":{"cell_cpu_usage_usec":10788410,"cells":6,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":6,"schema":1}}
+{"source":"portable/manifest_determinism_stress_c/summary.json","summary":{"cell_cpu_usage_usec":11214019,"cells":12,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":12,"schema":1}}
+{"source":"portable/manifest_language_runtimes/summary.json","summary":{"cell_cpu_usage_usec":15817536,"cells":20,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":20,"schema":1}}
+{"source":"portable/manifest_shared_futex_c/summary.json","summary":{"cell_cpu_usage_usec":null,"cells":0,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":0,"schema":1}}
+{"source":"portable/manifest_system_utils/summary.json","summary":{"cell_cpu_usage_usec":21678984,"cells":38,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":38,"schema":1}}
+{"source":"portable/manifest_util_c/summary.json","summary":{"cell_cpu_usage_usec":null,"cells":0,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":0,"schema":1}}
+{"source":"privileged/manifest_applications/summary.json","summary":{"cell_cpu_usage_usec":843528,"cells":1,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":1,"schema":1}}
+{"source":"privileged/manifest_backend_parity_c/summary.json","summary":{"cell_cpu_usage_usec":226394,"cells":2,"errors":0,"failed":0,"host_inapplicable":0,"host_inapplicable_cells":[],"passed":2,"schema":1}}
