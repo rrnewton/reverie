@@ -26,6 +26,24 @@ static unsigned long expected_fs;
 static __thread unsigned tls_marker __attribute__((tls_model("initial-exec")));
 static unsigned char *expected_buffer;
 static bool is_static;
+static bool initialized;
+static unsigned finalizer_phase;
+__attribute__((destructor(201))) static void finalize_second(void) {
+  if (!initialized) return;
+  assert(calling_from_plugin());
+  assert(finalizer_phase++ == 0);
+}
+__attribute__((destructor(200))) static void finalize_first(void) {
+  if (!initialized) return;
+  assert(calling_from_plugin());
+  assert(finalizer_phase++ == 1);
+}
+void finalizer_last(void) {
+  if (!initialized) return;
+  assert(calling_from_plugin());
+  assert(finalizer_phase++ == 2);
+}
+
 static unsigned long fs(void) {
   unsigned long address = 0;
   assert(real_syscall(SYS_arch_prctl, ARCH_GET_FS, (long)&address, 0, 0, 0, 0) == 0);
@@ -166,5 +184,6 @@ void sbr_init(int *argc, char ***argv, sbr_icept_reg_fn reg,
     }
     expected_buffer=NULL;
   }
+  initialized = true;
   (*argc)-=2; (*argv)+=2;
 }

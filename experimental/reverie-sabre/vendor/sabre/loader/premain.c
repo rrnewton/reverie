@@ -41,6 +41,83 @@ static _dl_map_object_fn real_dl_map_object;
 typedef int (*clock_gettime_fn)(clockid_t, struct timespec *);
 static clock_gettime_fn real_clock_gettime;
 
+
+/* Plugin ELF finalizers are tool work just like sbr_init. The dynamic linker
+ * otherwise invokes them after main with the guest routing domain active.
+ * Keep the original callbacks and their ELF ordering; only their domain changes.
+ */
+typedef void (*plugin_fini_fn)(void);
+static struct ld_link_map *client_link_maps;
+static struct ld_link_map *guarded_plugin_map;
+static plugin_fini_fn *plugin_fini_array;
+static size_t plugin_fini_count;
+static plugin_fini_fn plugin_fini;
+static ElfW(Dyn) guarded_fini_entry = {.d_tag = DT_FINI};
+
+static void run_plugin_finalizers(void) {
+  bool was_plugin = calling_from_plugin();
+  enter_plugin();
+  for (size_t i = plugin_fini_count; i > 0; --i)
+    plugin_fini_array[i - 1]();
+  if (plugin_fini != NULL)
+    plugin_fini();
+  if (was_plugin)
+    enter_plugin();
+  else
+    exit_plugin();
+}
+
+static void guard_plugin_finalizers(struct ld_link_map *maps,
+                                    uintptr_t plugin_base) {
+  /* Match the actual mapped object, not a filename or a dependency prefix.
+   * dl_init can receive a map in the middle of its namespace's list.
+   */
+  while (maps != NULL && maps->l_prev != NULL)
+    maps = (struct ld_link_map *)maps->l_prev;
+  struct ld_link_map *plugin_map = NULL;
+  for (struct ld_link_map *map = maps; map != NULL;
+       map = (struct ld_link_map *)map->l_next) {
+    if (map->l_addr == plugin_base) {
+      if (plugin_map != NULL)
+        errx(EXIT_FAILURE, "ambiguous plugin finalizer map");
+      plugin_map = map;
+    }
+  }
+  if (plugin_map == NULL)
+    errx(EXIT_FAILURE, "missing plugin finalizer map");
+  if (guarded_plugin_map != NULL) {
+    if (guarded_plugin_map != plugin_map)
+      errx(EXIT_FAILURE, "plugin finalizer map changed");
+    return;
+  }
+  guarded_plugin_map = plugin_map;
+
+  ElfW(Dyn) *array = plugin_map->l_info[DT_FINI_ARRAY];
+  ElfW(Dyn) *fini = plugin_map->l_info[DT_FINI];
+  if (array != NULL) {
+    ElfW(Dyn) *size = plugin_map->l_info[DT_FINI_ARRAYSZ];
+    if (size == NULL || size->d_un.d_val % sizeof(plugin_fini_fn) != 0)
+      errx(EXIT_FAILURE, "invalid plugin finalizer array");
+    plugin_fini_count = size->d_un.d_val / sizeof(plugin_fini_fn);
+    plugin_fini_array =
+        (plugin_fini_fn *)(plugin_base + array->d_un.d_ptr);
+  }
+  if (fini != NULL)
+    plugin_fini = (plugin_fini_fn)(plugin_base + fini->d_un.d_ptr);
+  if (array == NULL && fini == NULL)
+    return;
+
+  /* glibc calls FINI_ARRAY in reverse order, then FINI. One replacement FINI
+   * invokes that exact sequence, so it also covers objects with only one kind.
+   * ElfW(Addr) arithmetic is unsigned, including a lower-address loader shim.
+   */
+  guarded_fini_entry.d_un.d_ptr =
+      (ElfW(Addr))run_plugin_finalizers - plugin_map->l_addr;
+  plugin_map->l_info[DT_FINI_ARRAY] = NULL;
+  plugin_map->l_info[DT_FINI_ARRAYSZ] = NULL;
+  plugin_map->l_info[DT_FINI] = &guarded_fini_entry;
+}
+
 /* A matching name may be an undefined reference or a data object. Neither
  * implements this optional ABI, and neither may become a callable address.
  */
@@ -113,6 +190,12 @@ static void init_sbr_plugin(bool switch_client_tls) {
 
   if (switch_client_tls)
     load_client_tls();
+
+  /* Static clients preload the plugin into the loader namespace; dynamic
+   * clients use the namespace supplied by their intercepted dl_init. */
+  guard_plugin_finalizers(switch_client_tls ? client_link_maps
+                                             : (struct ld_link_map *)_r_debug.r_map,
+                           lib_base);
 
   // TODO(andronat): We need to split plugins into loadtime and runtime. In case
   // of splitting, how do we transfer state between loadtime and runtime
@@ -191,6 +274,7 @@ void sbr_dl_init(struct ld_link_map *main_map, int ac, char **av, char **e) {
   // Make sure this function shouldn't use the %fs register. e.g. don't use
   // printf.
   assert(main_map != NULL);
+  client_link_maps = main_map;
 
   ElfW(Dyn) *preinit_array_p = main_map->l_info[DT_PREINIT_ARRAY];
   ElfW(Dyn) *preinit_array_size_p = main_map->l_info[DT_PREINIT_ARRAYSZ];
