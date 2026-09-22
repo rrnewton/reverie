@@ -104,6 +104,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
+use std::time::Duration;
 use thiserror::Error;
 
 const DEFAULT_MAIN_RUN_LIMIT: usize = 100;
@@ -114,6 +115,10 @@ const GATE_FLOOR_POLICY: &str = "registry-effective-floor";
 const CANONICAL_VALIDATE_REPO: &str = "rrnewton/hermit";
 const CANONICAL_REVERIE_REPO: &str = "rrnewton/reverie";
 const COMMIT_TIMELINE_REF: &str = "origin/main";
+/// A remote freshness probe is evidence, not forward progress. If the remote,
+/// proxy, credential helper, or hook cannot answer within this bound, callers
+/// must report freshness UNKNOWN rather than hold validation indefinitely.
+const HISTORY_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// Framework result sidecars share the run-handle directory but are a different
 /// record kind with their own schema. `ci-hub/validate/service_result.py` owns
 /// the name; keep the two spellings identical.
@@ -5837,6 +5842,14 @@ fn history_repo_path(root: &Path, path: &Path) -> PathBuf {
 }
 
 fn fetch_history_branch(repo: &Path, branch: &str) -> Result<(), CiHubError> {
+    fetch_history_branch_with_timeout(repo, branch, HISTORY_FETCH_TIMEOUT)
+}
+
+fn fetch_history_branch_with_timeout(
+    repo: &Path,
+    branch: &str,
+    timeout: Duration,
+) -> Result<(), CiHubError> {
     if branch.is_empty() || branch.starts_with('-') {
         return Err(CiHubError::HistoryQuery(format!(
             "invalid branch name '{branch}'"
@@ -5851,15 +5864,11 @@ fn fetch_history_branch(repo: &Path, branch: &str) -> Result<(), CiHubError> {
     } else {
         Command::new("git")
     };
-    let output = command
+    command
         .arg("-C")
         .arg(repo)
-        .args(["fetch", "--quiet", remote, &refspec])
-        .bounded_output()
-        .map_err(|source| CiHubError::Launch {
-            tool: "git fetch main for history query".into(),
-            source,
-        })?;
+        .args(["fetch", "--quiet", remote, &refspec]);
+    let output = run_history_fetch(&mut command, timeout)?;
     if !output.status.success() {
         return Err(CiHubError::HistoryQuery(format!(
             "git fetch {remote}/{branch} exited {}: {}",
@@ -5868,6 +5877,24 @@ fn fetch_history_branch(repo: &Path, branch: &str) -> Result<(), CiHubError> {
         )));
     }
     Ok(())
+}
+
+fn run_history_fetch(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::Output, CiHubError> {
+    command
+        .bounded_output_with_timeout(timeout)
+        .map_err(|source| CiHubError::Launch {
+            tool: "git fetch main for history query".into(),
+            source,
+        })?
+        .ok_or_else(|| {
+            CiHubError::HistoryQuery(format!(
+                "history-branch fetch timed out after {}s; remote freshness is unknown",
+                timeout.as_secs_f64()
+            ))
+        })
 }
 
 #[cfg(test)]
@@ -11934,6 +11961,57 @@ mod tests {
         assert_eq!(git(&["rev-parse", "HEAD"]), base);
         assert_ne!(git(&["rev-parse", "HEAD"]), main_tip);
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn history_fetch_timeout_reports_unknown_and_reaps_its_process_tree() {
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-history-fetch-timeout-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let child_pid = root.join("child.pid");
+        let grandchild_pid = root.join("grandchild.pid");
+        let script = format!(
+            "echo $$ > '{}'; sh -c 'echo $$ > \"$1\"; while :; do sleep 10; done' sh '{}' & while [ ! -s '{}' ]; do :; done; wait",
+            child_pid.display(),
+            grandchild_pid.display(),
+            grandchild_pid.display(),
+        );
+        let started = std::time::Instant::now();
+        let error = run_history_fetch(
+            Command::new("sh").args(["-c", &script]),
+            Duration::from_millis(200),
+        )
+        .expect_err("a hanging history fetch must become unknown");
+
+        assert!(
+            error.to_string().contains("remote freshness is unknown"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the 200ms history bound plus cleanup took {:?}",
+            started.elapsed()
+        );
+        for path in [&child_pid, &grandchild_pid] {
+            let pid: libc::pid_t = std::fs::read_to_string(path)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            // SAFETY: signal zero probes the exact positive PID written by the
+            // test fixture. The timeout must leave neither process behind.
+            let rc = unsafe { libc::kill(pid, 0) };
+            assert_eq!(rc, -1, "timed-out process {pid} survived");
+            assert_eq!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH),
+                "timed-out process {pid} was not fully reaped"
+            );
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

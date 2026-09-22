@@ -119,6 +119,9 @@ COMMIT_VALIDATION_HARD_GREEN = "HARD_GREEN"
 COMMIT_VALIDATION_NOT_HARD_GREEN = "NOT_HARD_GREEN"
 COMMIT_VALIDATION_UNKNOWN = "UNKNOWN"
 CHECKOUT_FRESHNESS_UNKNOWN = "UNKNOWN"
+PROCESS_LIVENESS_LIVE = "LIVE"
+PROCESS_LIVENESS_DEAD = "DEAD"
+PROCESS_LIVENESS_UNKNOWN = "UNKNOWN"
 CHECKOUT_FRESHNESS_BY_RELATION = {
     "current": "CURRENT",
     "stale": "BEHIND",
@@ -134,6 +137,10 @@ RELINK_DIRECT_SIGNATURES = (
     ("exec-format-error", re.compile(r"exec format error", re.IGNORECASE)),
     ("text-file-busy", re.compile(r"text file busy", re.IGNORECASE)),
 )
+
+
+class TypedAdmissionRefusal(Exception):
+    """Internal control flow after a producer proves payload non-admission."""
 
 
 def utc_now() -> str:
@@ -396,6 +403,52 @@ def validation_admission_result(record: Path) -> tuple[dict[str, Any] | None, st
         # Current records are checked by run_registry before reaching here.
         return None, "validation run handle admission_result is not an object"
     return dict(raw), None
+
+
+def validation_run_process_liveness(record: Path) -> str:
+    """Classify the current handle's exact process identity without guessing.
+
+    This is deliberately narrower than "the handle says running": a stale
+    state label cannot veto a prior canonical result forever. A malformed
+    record or unreadable process observation is UNKNOWN, distinct from a
+    missing/recycled process that is positively DEAD.
+    """
+    try:
+        value = run_registry.read_record(record)
+        handle = run_registry.parse_current_record(value)
+    except RuntimeError:
+        return PROCESS_LIVENESS_UNKNOWN
+    if handle.process_identity is None:
+        return PROCESS_LIVENESS_DEAD
+    identity = handle.process_identity
+    try:
+        current_boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return PROCESS_LIVENESS_UNKNOWN
+    if not current_boot:
+        return PROCESS_LIVENESS_UNKNOWN
+    if identity.boot_id != current_boot:
+        return PROCESS_LIVENESS_DEAD
+    try:
+        fields = (
+            Path(f"/proc/{identity.pid}/stat")
+            .read_text()
+            .rsplit(") ", 1)[-1]
+            .split()
+        )
+    except FileNotFoundError:
+        return PROCESS_LIVENESS_DEAD
+    except OSError:
+        return PROCESS_LIVENESS_UNKNOWN
+    try:
+        observed_ticks = int(fields[19])
+    except (IndexError, ValueError):
+        return PROCESS_LIVENESS_UNKNOWN
+    return (
+        PROCESS_LIVENESS_LIVE
+        if observed_ticks == identity.start_ticks
+        else PROCESS_LIVENESS_DEAD
+    )
 
 
 def record_admission(
@@ -1844,6 +1897,45 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
                 result["lock_block_evidence"] = lock_block
                 result["lock_holder"] = lock_holder_attribution(state_root, lock_block)
 
+        typed_refused = (
+            admission_result is not None
+            and admission_result.get("state") == "refused"
+        )
+        if typed_refused:
+            # This producer-owned result proves that no validation payload was
+            # admitted. validate-run has already performed its liveness-checked
+            # no-evidence cleanup before returning. Do not scan or publish the
+            # canonical ledger and do not ask validate-status to perform its
+            # remote absence probe: there cannot be an exact-attempt row, and a
+            # prior commit verdict is not this rejected attempt's verdict.
+            result["ledger_row_found"] = False
+            result["validate_log"] = str(validate_log)
+            result["admission_refusal"] = admission_refusal_evidence(launcher_log)
+            if lock_refused:
+                holder = result.get("lock_holder") or {}
+                holder_interpretation = holder.get("interpretation")
+                holder_context = (
+                    f": {holder_interpretation}" if holder_interpretation else ""
+                )
+                result.update(
+                    state="BLOCKED_ON_LOCK",
+                    reason=(
+                        "validate-lock refused admission before product work"
+                        f"{holder_context}; no exact-attempt ledger row"
+                    ),
+                )
+            else:
+                result.update(
+                    state="NO_RESULT",
+                    reason=(
+                        "the typed validation admission result refused product work, "
+                        "so this SHA is UNVALIDATED rather than failing and this "
+                        "attempt has no validation verdict: "
+                        f"{admission_result.get('reason')}"
+                    ),
+                )
+            raise TypedAdmissionRefusal
+
         row = latest_attempt_row(
             canonical_ledger_rows(state_root),
             checkout=checkout,
@@ -1954,6 +2046,17 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
                     f"wrapper exit={completed.returncode} is not the job verdict"
                 ),
             )
+        elif row is None and admission_result is None and (
+            process_liveness := validation_run_process_liveness(run_record)
+        ) != PROCESS_LIVENESS_DEAD:
+            result.update(
+                state="NO_RESULT",
+                reason=(
+                    "validation admission is UNKNOWN while its exact recorded process "
+                    f"liveness is {process_liveness}; a prior commit verdict cannot "
+                    "classify this attempt"
+                ),
+            )
         elif row is None and canonical_green:
             result.update(
                 state="PASS_ALREADY_VALIDATED",
@@ -1977,18 +2080,6 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
                     f"{CANONICAL_RED_VERDICT} for exact SHA {pre['head']}; no result "
                     "for this attempt is being promoted into that authority; "
                     + revision["verdict_qualifier"]
-                ),
-            )
-        elif (
-            row is None
-            and admission_result is not None
-            and admission_result.get("state") == "refused"
-        ):
-            result.update(
-                state="NO_RESULT",
-                reason=(
-                    "the typed validation admission result refused product work, so this "
-                    f"SHA is UNVALIDATED rather than failing: {admission_result.get('reason')}"
                 ),
             )
         elif row is None and admission_result is None:
@@ -2041,6 +2132,10 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
         else:
             result.update(state="NO_RESULT", reason=reason)
 
+    except TypedAdmissionRefusal:
+        # The result was classified from the producer-owned typed refusal above.
+        # Continue through the common tree observation and durable writer.
+        pass
     except Exception as error:  # fail closed; the result below is the alarm
         result.update(state="CANNOT_START", reason=f"watch internal error: {error}")
     finally:

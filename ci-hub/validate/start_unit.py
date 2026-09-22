@@ -7657,6 +7657,41 @@ def main(
             "to resume watching it, or read its log directly",
         )
 
+    try:
+        completed_handle = run_registry.parse_current_record(updated)
+    except RuntimeError:
+        # Malformed or missing admission evidence is handled by the existing
+        # canonical-evidence path below, which remains fail closed.
+        completed_handle = None
+    if (
+        completed_handle is not None
+        and completed_handle.admission_result is not None
+        and completed_handle.admission_result.state
+        is run_registry.AdmissionState.REFUSED
+    ):
+        # The producer has proved that validate-lock never admitted the product
+        # payload. There can be no result for this attempt, so querying or
+        # publishing the canonical ledger would only conflate a prior commit
+        # verdict with this rejected run. The cleanup helper still performs the
+        # normal receipt inventory plus wrkslots liveness checks before removal.
+        cleanup = cleanup_current_fresh_preserving_receipts()
+        report_inner_refusal_cleanup(cleanup)
+        remove_private_cargo_home(private_cargo_home, run=run)
+        remove_runtime_root(runtime_root, run=run)
+        refusal = completed_handle.admission_result.reason
+        if cleanup.error is not None:
+            return could_not_determine(
+                f"typed admission refused ({refusal.value if refusal else 'unknown'}), "
+                f"and no-evidence cleanup could not be established: {cleanup.error}",
+                f"inspect the retained checkout at {fresh_checkout} before retrying",
+            )
+        return could_not_determine(
+            f"typed admission refused ({refusal.value if refusal else 'unknown'}); "
+            "the validation payload never ran and no verdict exists",
+            "correct the admission condition and retry; do not treat this attempt "
+            "as either pass or failure",
+        )
+
     updated = finalize_reverie_counts(state_root, tool_root, record_path, record=updated)
     if args.frozen_validate:
         try:

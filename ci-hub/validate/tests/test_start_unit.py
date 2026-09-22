@@ -67,6 +67,7 @@ class FakeRun:
         self.dirty = ""
         self.fresh_dirty = ""
         self.admission_rc = 0
+        self.typed_admission_refusal: str | None = None
         self.herdr_status_rc = 0
         # Fresh-checkout controls: `fresh` is what `mktemp -d` hands back,
         # `fresh_complete` decides whether the tree carries what validate needs,
@@ -965,6 +966,16 @@ class FakeRun:
                     command,
                     rc=self.systemd_launch_rc,
                     stderr=self.systemd_launch_stderr,
+                )
+            if self.typed_admission_refusal is not None:
+                record = Path(command[command.index("--run-record") + 1])
+                run_registry.publish_admission_result(
+                    record,
+                    state=run_registry.AdmissionState.REFUSED,
+                    reason=run_registry.AdmissionRefusalReason(
+                        self.typed_admission_refusal
+                    ),
+                    exit_code=3,
                 )
             output = next(
                 value.removeprefix("StandardOutput=append:")
@@ -7845,6 +7856,43 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("validation admission refused", error)
         self.assertIn("stale base", error)
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+
+    def test_typed_stale_admission_has_no_receipt_row_or_publication(self) -> None:
+        self.fake.typed_admission_refusal = "stale-base"
+        self.fake.final_validate_status = None
+        self.fake.executed_nodes = None
+        self.fake.executed_tests = None
+        self.fake.write_service_result = False
+        self.fake.ledger_rows = []
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("typed admission refused", error)
+        record_path = self.root / "ignored/validate/runs/validate-test.json"
+        record = run_registry.read_record(record_path)
+        self.assertEqual("refused", record["admission_result"]["state"])
+        self.assertEqual("stale-base", record["admission_result"]["reason"])
+        self.assertFalse(start_unit.service_result.result_path(record_path).exists())
+        self.assertFalse((self.root / "ledger").exists())
+        self.assertFalse(
+            any(
+                command[0].endswith("ci-hub")
+                and command[1:3] == ["validate-status", "--sha"]
+                for command in self.fake.commands
+            )
+        )
+        self.assertFalse(
+            any(
+                command[0].endswith("validate_rows.py")
+                or command[0].endswith("series/mirror.py")
+                for command in self.fake.commands
+            )
+        )
+        self.assertTrue(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands),
+            "refused no-evidence checkout must still use liveness-checked cleanup",
+        )
 
     def test_visibility_failure_does_not_stop_accepted_validation_service(self) -> None:
         self.fake.herdr_status_rc = 1

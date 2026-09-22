@@ -36,8 +36,11 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 static SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -77,6 +80,15 @@ pub trait BoundedOutput {
     /// Drop-in for the `spawn()` / write stdin / `wait_with_output()` idiom.
     fn bounded_output_with_input(&mut self, input: &[u8]) -> io::Result<Output>;
 
+    /// Capture output while bounding the direct child and its process group.
+    ///
+    /// This is intentionally separate from [`Self::bounded_output`]. Most
+    /// commands have no defensible wall-clock deadline. Remote freshness probes
+    /// do: an unavailable remote must become UNKNOWN instead of holding every
+    /// caller indefinitely. `None` means that deadline was reached after the
+    /// complete process group was terminated and the direct child was reaped.
+    fn bounded_output_with_timeout(&mut self, timeout: Duration) -> io::Result<Option<Output>>;
+
     /// Stream stdout normally while retaining stderr in a regular file until
     /// the direct child exits. Unlike a pipe, the file cannot keep the caller
     /// waiting merely because a detached grandchild inherited its descriptor.
@@ -92,6 +104,10 @@ impl BoundedOutput for Command {
         capture(self, Some(input))
     }
 
+    fn bounded_output_with_timeout(&mut self, timeout: Duration) -> io::Result<Option<Output>> {
+        capture_with_timeout(self, timeout)
+    }
+
     fn bounded_status_with_stderr(&mut self) -> io::Result<(std::process::ExitStatus, Vec<u8>)> {
         let mut stderr_file = scratch_file("err")?;
         self.stderr(Stdio::from(stderr_file.try_clone()?));
@@ -101,6 +117,99 @@ impl BoundedOutput for Command {
         stderr_file.read_to_end(&mut stderr)?;
         Ok((status, stderr))
     }
+}
+
+fn capture_with_timeout(command: &mut Command, timeout: Duration) -> io::Result<Option<Output>> {
+    if timeout.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "bounded command timeout must be positive",
+        ));
+    }
+    let mut stdout_file = scratch_file("timed-out")?;
+    let mut stderr_file = scratch_file("timed-err")?;
+    command
+        .stdout(Stdio::from(stdout_file.try_clone()?))
+        .stderr(Stdio::from(stderr_file.try_clone()?))
+        .stdin(Stdio::null())
+        // The child is its own process-group leader. A timeout therefore owns
+        // a narrowly scoped kill target that includes ordinary descendants,
+        // without ever signalling the caller's group.
+        .process_group(0);
+    let mut child = command.spawn()?;
+    let pgid = child.id();
+    let deadline = Instant::now() + timeout;
+    let timed_out = loop {
+        if child.try_wait()?.is_some() {
+            break false;
+        }
+        if Instant::now() >= deadline {
+            terminate_process_group(pgid);
+            // Reap the direct child. Descendants are separately covered by the
+            // process-group signals and the absence check below.
+            let _ = child.wait()?;
+            wait_for_process_group_absence(pgid)?;
+            break true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    stdout_file.seek(SeekFrom::Start(0))?;
+    stderr_file.seek(SeekFrom::Start(0))?;
+    let mut stdout = Vec::new();
+    stdout_file.read_to_end(&mut stdout)?;
+    let mut stderr = Vec::new();
+    stderr_file.read_to_end(&mut stderr)?;
+    if timed_out {
+        return Ok(None);
+    }
+    let status = child.wait()?;
+    Ok(Some(Output {
+        status,
+        stdout,
+        stderr,
+    }))
+}
+
+fn terminate_process_group(pgid: u32) {
+    let Ok(pgid) = libc::pid_t::try_from(pgid) else {
+        return;
+    };
+    if pgid <= 1 {
+        return;
+    }
+    // SAFETY: the target is the negative ID of the process group created just
+    // above, never -1 or zero. SIGKILL makes the deadline independent of a
+    // credential helper or hook that ignores SIGTERM.
+    unsafe {
+        libc::kill(-pgid, libc::SIGKILL);
+    }
+}
+
+fn process_group_exists(pgid: u32) -> bool {
+    let Ok(pgid) = libc::pid_t::try_from(pgid) else {
+        return true;
+    };
+    if pgid <= 1 {
+        return true;
+    }
+    // SAFETY: signal zero only probes the narrowly scoped process group.
+    let rc = unsafe { libc::kill(-pgid, 0) };
+    rc == 0 || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+fn wait_for_process_group_absence(pgid: u32) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while process_group_exists(pgid) {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("timed-out process group {pgid} remained live after SIGKILL"),
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
 }
 
 fn capture(command: &mut Command, input: Option<&[u8]>) -> io::Result<Output> {
@@ -161,10 +270,13 @@ fn wait_for_child(child: &mut Child) -> io::Result<ExitStatus> {
 
 #[cfg(test)]
 mod tests {
-    use super::{wait_for_child, BoundedOutput};
+    use super::{wait_for_child, BoundedOutput, SCRATCH_SEQUENCE};
+    use std::io;
+    use std::path::Path;
     use std::process::{Command, Stdio};
+    use std::sync::atomic::Ordering;
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// A child that exits IMMEDIATELY while leaving one background grandchild
     /// holding the inherited stdout/stderr. This is the owner's hung box in
@@ -329,6 +441,79 @@ mod tests {
             .expect("a child reading stdin blocked; stdin is not null")
             .expect("ran");
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "[]");
+    }
+
+    fn pid_is_absent(pid: i32) -> bool {
+        // SAFETY: signal zero is a liveness probe for the exact positive PID
+        // written by the fixture itself.
+        (unsafe { libc::kill(pid, 0) == -1 })
+            && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+
+    fn read_pid(path: &Path) -> i32 {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    #[test]
+    fn timeout_kills_and_reaps_hanging_child_and_grandchild() {
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-bounded-timeout-{}-{}",
+            std::process::id(),
+            SCRATCH_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let child_pid = root.join("child.pid");
+        let grandchild_pid = root.join("grandchild.pid");
+        let script = format!(
+            "echo $$ > '{}'; sh -c 'echo $$ > \"$1\"; while :; do sleep 10; done' sh '{}' & while [ ! -s '{}' ]; do :; done; wait",
+            child_pid.display(),
+            grandchild_pid.display(),
+            grandchild_pid.display(),
+        );
+        let started = Instant::now();
+        let output = Command::new("sh")
+            .args(["-c", &script])
+            .bounded_output_with_timeout(Duration::from_millis(200))
+            .expect("the timeout must terminate the complete process group");
+
+        assert!(output.is_none(), "the hanging fixture must time out");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the 200ms bound plus process cleanup took {:?}",
+            started.elapsed()
+        );
+        let child = read_pid(&child_pid);
+        let grandchild = read_pid(&grandchild_pid);
+        assert!(pid_is_absent(child), "direct child {child} was not reaped");
+        assert!(
+            pid_is_absent(grandchild),
+            "grandchild {grandchild} survived the process-group timeout"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn timed_capture_preserves_completed_output_and_status() {
+        let output = Command::new("sh")
+            .args(["-c", "printf out; printf err >&2; exit 7"])
+            .bounded_output_with_timeout(Duration::from_secs(2))
+            .expect("completed command capture succeeds")
+            .expect("completed command is not a timeout");
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout, b"out");
+        assert_eq!(output.stderr, b"err");
+    }
+
+    #[test]
+    fn timed_capture_rejects_an_unbounded_zero_deadline() {
+        let error = Command::new("true")
+            .bounded_output_with_timeout(Duration::ZERO)
+            .expect_err("zero must not disable the deadline");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]

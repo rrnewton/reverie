@@ -148,6 +148,7 @@ def write_validation_record(
     checkout: Path,
     log: Path,
     admission_result: dict[str, object] | None,
+    process_identity: dict[str, object] | None = None,
 ) -> None:
     root = checkout.parent.parent
     record = {
@@ -176,6 +177,11 @@ def write_validation_record(
         **(
             {"admission_result": admission_result}
             if admission_result is not None
+            else {}
+        ),
+        **(
+            {"process_identity": process_identity}
+            if process_identity is not None
             else {}
         ),
     }
@@ -321,6 +327,236 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
             watch.COMMIT_VALIDATION_NOT_HARD_GREEN,
         )
 
+    def test_typed_stale_base_stops_before_ledger_or_canonical_query(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            state = root / "state"
+            head = command(repo, "git", "rev-parse", "HEAD").strip()
+
+            def launch(
+                _command,
+                *,
+                cwd,
+                launcher_log,
+                service_log,
+                run_record,
+                state_dir,
+                result,
+                target,
+            ):
+                Path(launcher_log).parent.mkdir(parents=True, exist_ok=True)
+                Path(launcher_log).write_text(
+                    "validate-run: REFUSED: validation admission refused target: stale-base\n",
+                    encoding="utf-8",
+                )
+                write_validation_record(
+                    Path(run_record),
+                    target=head,
+                    checkout=repo,
+                    log=Path(service_log),
+                    admission_result=refused_result("stale-base"),
+                )
+                return subprocess.CompletedProcess([], 2, "", "")
+
+            with mock.patch.object(
+                watch, "run_validate_observing_admission", side_effect=launch
+            ), mock.patch.object(
+                watch, "canonical_ledger_rows"
+            ) as ledger, mock.patch.object(
+                watch, "canonical_validate_status"
+            ) as canonical:
+                started = __import__("time").monotonic()
+                rc = watch.main(
+                    [
+                        "--checkout", str(repo),
+                        "--state-dir", str(state),
+                        "--no-fetch", "--no-notify",
+                    ]
+                )
+                elapsed = __import__("time").monotonic() - started
+
+            self.assertEqual(watch.NO_RESULT, rc)
+            self.assertLess(elapsed, 2.0)
+            ledger.assert_not_called()
+            canonical.assert_not_called()
+            result = json.loads(next((state / "results").glob("*.json")).read_text())
+            self.assertEqual("NO_RESULT", result["state"])
+            self.assertEqual(watch.COMMIT_VALIDATION_UNKNOWN, result["commit_validation_state"])
+            self.assertFalse(result["ledger_row_found"])
+            self.assertEqual("stale-base", result["admission_result"]["reason"])
+            self.assertEqual([], list(root.rglob("*.service-result.json")))
+
+    def test_missing_admission_on_live_exact_process_cannot_reuse_green(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            state = root / "state"
+            head = command(repo, "git", "rev-parse", "HEAD").strip()
+            stat = Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(") ", 1)[-1].split()
+            identity = {
+                "pid": os.getpid(),
+                "start_ticks": int(stat[19]),
+                "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+            }
+
+            def launch(_command, **kwargs):
+                write_validation_record(
+                    Path(kwargs["run_record"]),
+                    target=head,
+                    checkout=repo,
+                    log=Path(kwargs["service_log"]),
+                    admission_result=None,
+                    process_identity=identity,
+                )
+                return subprocess.CompletedProcess([], 2, "", "")
+
+            with mock.patch.object(
+                watch, "run_validate_observing_admission", side_effect=launch
+            ), mock.patch.object(
+                watch, "canonical_ledger_rows", return_value=[]
+            ), mock.patch.object(
+                watch, "canonical_validate_status", return_value=validated_status(head)
+            ):
+                rc = watch.main(
+                    [
+                        "--checkout", str(repo),
+                        "--state-dir", str(state),
+                        "--no-fetch", "--no-notify",
+                    ]
+                )
+
+            result = json.loads(next((state / "results").glob("*.json")).read_text())
+            self.assertEqual(watch.NO_RESULT, rc)
+            self.assertEqual("NO_RESULT", result["state"])
+            self.assertIn("process liveness is LIVE", result["reason"])
+
+    def test_malformed_admission_on_live_exact_process_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            state = root / "state"
+            head = command(repo, "git", "rev-parse", "HEAD").strip()
+            stat = Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(") ", 1)[-1].split()
+            identity = {
+                "pid": os.getpid(),
+                "start_ticks": int(stat[19]),
+                "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+            }
+
+            def launch(_command, **kwargs):
+                record = Path(kwargs["run_record"])
+                write_validation_record(
+                    record,
+                    target=head,
+                    checkout=repo,
+                    log=Path(kwargs["service_log"]),
+                    admission_result=None,
+                    process_identity=identity,
+                )
+                malformed = json.loads(record.read_text())
+                malformed["admission_result"] = {"state": "refused"}
+                record.write_text(json.dumps(malformed) + "\n", encoding="utf-8")
+                return subprocess.CompletedProcess([], 2, "", "")
+
+            with mock.patch.object(
+                watch, "run_validate_observing_admission", side_effect=launch
+            ), mock.patch.object(
+                watch, "canonical_ledger_rows", return_value=[]
+            ), mock.patch.object(
+                watch, "canonical_validate_status", return_value=validated_status(head)
+            ):
+                rc = watch.main(
+                    [
+                        "--checkout", str(repo),
+                        "--state-dir", str(state),
+                        "--no-fetch", "--no-notify",
+                    ]
+                )
+
+            result = json.loads(next((state / "results").glob("*.json")).read_text())
+            self.assertEqual(watch.NO_RESULT, rc)
+            self.assertEqual("NO_RESULT", result["state"])
+            self.assertEqual("UNKNOWN", result["lock_admission"]["state"])
+            self.assertIn("validation-run-handle", result["lock_admission"]["reason"])
+
+    def test_unreadable_boot_or_process_observation_is_unknown_not_dead(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            head = command(repo, "git", "rev-parse", "HEAD").strip()
+            record = root / "run.json"
+            boot_path = Path("/proc/sys/kernel/random/boot_id")
+            boot = boot_path.read_text().strip()
+            stat_path = Path(f"/proc/{os.getpid()}/stat")
+            fields = stat_path.read_text().rsplit(") ", 1)[-1].split()
+            write_validation_record(
+                record,
+                target=head,
+                checkout=repo,
+                log=root / "service.log",
+                admission_result=None,
+                process_identity={
+                    "pid": os.getpid(),
+                    "start_ticks": int(fields[19]),
+                    "boot_id": boot,
+                },
+            )
+            original_read_text = Path.read_text
+
+            for unreadable in (boot_path, stat_path):
+                with self.subTest(unreadable=unreadable):
+                    def deny_one(path, *args, **kwargs):
+                        if path == unreadable:
+                            raise PermissionError(f"fixture denies {unreadable}")
+                        return original_read_text(path, *args, **kwargs)
+
+                    with mock.patch.object(Path, "read_text", deny_one):
+                        observed = watch.validation_run_process_liveness(record)
+
+                    self.assertEqual(watch.PROCESS_LIVENESS_UNKNOWN, observed)
+
+            def empty_boot(path, *args, **kwargs):
+                if path == boot_path:
+                    return "\n"
+                return original_read_text(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "read_text", empty_boot):
+                observed = watch.validation_run_process_liveness(record)
+            self.assertEqual(watch.PROCESS_LIVENESS_UNKNOWN, observed)
+
+    def test_terminal_state_label_does_not_override_a_live_exact_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            head = command(repo, "git", "rev-parse", "HEAD").strip()
+            record = root / "run.json"
+            stat = Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(") ", 1)[-1].split()
+            write_validation_record(
+                record,
+                target=head,
+                checkout=repo,
+                log=root / "service.log",
+                admission_result=None,
+                process_identity={
+                    "pid": os.getpid(),
+                    "start_ticks": int(stat[19]),
+                    "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                },
+            )
+            watch.run_registry.update_record(
+                record,
+                state="unknown",
+                result="unknown",
+                detail="fixture terminal state",
+                exit_code=None,
+                finished_at="2026-08-28T07:00:02+00:00",
+            )
+
+            observed = watch.validation_run_process_liveness(record)
+
+            self.assertEqual(watch.PROCESS_LIVENESS_LIVE, observed)
+
     def test_other_exit_two_refusal_is_unvalidated_not_green_and_not_fail(self) -> None:
         """A head that cannot be validated at all is a THIRD, distinct outcome."""
         rc, result, _ = self._run(
@@ -342,7 +578,7 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
         self.assertNotIn("GREEN", result["reason"])
         self.assertEqual(
             result["commit_validation_state"],
-            watch.COMMIT_VALIDATION_NOT_HARD_GREEN,
+            watch.COMMIT_VALIDATION_UNKNOWN,
         )
 
     def test_post_receipt_nonzero_does_not_replace_canonical_green_verdict(self) -> None:
