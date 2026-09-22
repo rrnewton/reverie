@@ -22,10 +22,27 @@ SOURCE = Path(__file__).resolve().parent.parent
 REAL_GIT = shutil.which("git") or "/usr/bin/git"
 REAL_PYTHON = shutil.which("python3") or "/usr/bin/python3"
 TRAILER = "[coordinator, Test] [parent-writer-test, devbig999]"
+CANONICAL = "[parent-writer-test, unknown-agentname, Test, devbig999, role=coordinator]"
 
 
 def tagged(subject: str) -> str:
     return f"{subject}\n\n{TRAILER}"
+
+
+def canonical_tagged(subject: str) -> str:
+    return f"{subject}\n\n{CANONICAL}"
+
+
+def hybrid_tagged(subject: str) -> str:
+    return f"{subject}\n\n{CANONICAL}\n\n{TRAILER}"
+
+
+def hybrid_tagged_with_comment(subject: str) -> str:
+    return f"{hybrid_tagged(subject)}\n\n# retained editor comment"
+
+
+def canonical_tagged_with_bracketed_body(subject: str) -> str:
+    return f"{canonical_tagged(subject)}\n\n[ordinary body] [not a legacy disclosure]"
 
 
 def run(*args: str, cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -199,6 +216,87 @@ class ParentMainWriteTests(unittest.TestCase):
         self.assertIn(f"Parent-Main-Write-Reason: {reason}", message)
         self.assertIn(f"Parent-Main-Write-Base: {self.seed}", message)
         self.assertEqual(TRAILER, message.rstrip().splitlines()[-1])
+
+    def test_sensitive_commit_keeps_canonical_disclosure_first_in_body(self) -> None:
+        self.change(".githooks/probe", "#!/bin/sh\n")
+        reason = "repair canonical disclosure ordering"
+        allowed = self.writer(
+            "commit",
+            "-m",
+            canonical_tagged("hook repair"),
+            "--audit-reason",
+            reason,
+            "--",
+            ".githooks/probe",
+        )
+        self.assertEqual(allowed.returncode, 0, allowed.stdout + allowed.stderr)
+        message = git(self.repo, "log", "-1", "--format=%B").stdout
+        self.assertEqual(CANONICAL, message.splitlines()[2])
+        self.assertIn("Parent-Main-Write-Mode: audited", message)
+        self.assertIn(f"Parent-Main-Write-Reason: {reason}", message)
+        self.assertIn(f"Parent-Main-Write-Base: {self.seed}", message)
+
+    def test_sensitive_commit_keeps_hybrid_disclosures_in_both_positions(self) -> None:
+        self.change(".githooks/probe", "#!/bin/sh\n")
+        reason = "repair hybrid disclosure ordering"
+        allowed = self.writer(
+            "commit",
+            "-m",
+            hybrid_tagged("hook repair"),
+            "--audit-reason",
+            reason,
+            "--",
+            ".githooks/probe",
+        )
+        self.assertEqual(allowed.returncode, 0, allowed.stdout + allowed.stderr)
+        message = git(self.repo, "log", "-1", "--format=%B").stdout
+        self.assertEqual(CANONICAL, message.splitlines()[2])
+        self.assertEqual(TRAILER, message.rstrip().splitlines()[-1])
+        self.assertIn("Parent-Main-Write-Mode: audited", message)
+        self.assertIn(f"Parent-Main-Write-Reason: {reason}", message)
+        self.assertIn(f"Parent-Main-Write-Base: {self.seed}", message)
+
+    def test_sensitive_commit_keeps_hybrid_footer_after_trailing_comment(self) -> None:
+        self.change(".githooks/probe", "#!/bin/sh\n")
+        reason = "repair commented hybrid disclosure ordering"
+        allowed = self.writer(
+            "commit",
+            "-m",
+            hybrid_tagged_with_comment("hook repair"),
+            "--audit-reason",
+            reason,
+            "--",
+            ".githooks/probe",
+        )
+        self.assertEqual(allowed.returncode, 0, allowed.stdout + allowed.stderr)
+        message = git(self.repo, "log", "-1", "--format=%B").stdout
+        self.assertEqual(CANONICAL, message.splitlines()[2])
+        self.assertEqual(TRAILER, message.rstrip().splitlines()[-1])
+        self.assertIn("# retained editor comment", message)
+        self.assertIn("Parent-Main-Write-Mode: audited", message)
+        self.assertIn(f"Parent-Main-Write-Reason: {reason}", message)
+        self.assertIn(f"Parent-Main-Write-Base: {self.seed}", message)
+
+    def test_sensitive_commit_does_not_reclassify_bracketed_body_as_legacy(self) -> None:
+        self.change(".githooks/probe", "#!/bin/sh\n")
+        reason = "preserve ordinary bracketed body text"
+        allowed = self.writer(
+            "commit",
+            "-m",
+            canonical_tagged_with_bracketed_body("hook repair"),
+            "--audit-reason",
+            reason,
+            "--",
+            ".githooks/probe",
+        )
+        self.assertEqual(allowed.returncode, 0, allowed.stdout + allowed.stderr)
+        message = git(self.repo, "log", "-1", "--format=%B").stdout
+        self.assertEqual(CANONICAL, message.splitlines()[2])
+        self.assertIn("[ordinary body] [not a legacy disclosure]", message)
+        self.assertEqual(
+            f"Parent-Main-Write-Base: {self.seed}",
+            message.rstrip().splitlines()[-1],
+        )
 
     def test_writer_refuses_missing_machine_attribution(self) -> None:
         self.change()

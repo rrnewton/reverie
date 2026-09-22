@@ -1508,20 +1508,62 @@ case "$command" in
       die "local main is not the freshly fetched origin/main"
     commit_args=(commit --only)
     if [ "$HERMIT_PARENT_MAIN_MODE" = audited ]; then
-      # Audit receipts are trailers too, but the role/team line is required to
-      # remain the FINAL line. Split the already-validated attribution from the
-      # caller's message, insert receipts, then append attribution last.
+      # Canonical five-field disclosure belongs on the FIRST body line.  Legacy
+      # role/team disclosure belongs on the FINAL line.  Preserve whichever
+      # already-validated form the caller supplied while inserting receipts.
       trimmed=$message
       while [[ "$trimmed" == *$'\n' ]]; do trimmed=${trimmed%$'\n'}; done
-      attribution=${trimmed##*$'\n'}
-      body=${trimmed%"$attribution"}
-      body=${body%$'\n'}
-      [ -n "$body" ] || die "audited commit message needs a subject before attribution"
-      commit_args+=( -m "$body" \
-        -m "Parent-Main-Write-Mode: audited" \
-        -m "Parent-Main-Write-Reason: $audit_reason" \
-        -m "Parent-Main-Write-Base: $HERMIT_PARENT_MAIN_EXPECT" \
-        -m "$attribution" )
+      first_body=$(printf '%s\n' "$trimmed" | awk '
+        NR > 2 {
+          candidate = $0
+          sub(/^[[:space:]]+/, "", candidate)
+          if (candidate != "" && substr(candidate, 1, 1) != "#") {
+            print $0
+            exit
+          }
+        }
+      ')
+      logical_last_nr=$(printf '%s\n' "$trimmed" | awk '
+        {
+          candidate = $0
+          sub(/^[[:space:]]+/, "", candidate)
+          if (candidate != "" && substr(candidate, 1, 1) != "#") {
+            last = NR
+          }
+        }
+        END { if (last) print last }
+      ')
+      attribution=$(printf '%s\n' "$trimmed" | awk -v target="$logical_last_nr" '
+        NR == target { print; exit }
+      ')
+      legacy_attribution_re='^\[(impl agent|adversarial-reviewer agent|coordinator|Human), [^][]+\] \[[A-Za-z0-9][A-Za-z0-9._/@+-]*, devbig[0-9]+\]$'
+      if [[ $first_body == \[* && $first_body == *'role='* && $first_body == *\] ]]; then
+        if [[ $attribution =~ $legacy_attribution_re ]]; then
+          body=$(printf '%s\n' "$trimmed" | awk -v target="$logical_last_nr" '
+            NR != target { print }
+          ')
+          commit_args+=( -m "$body" \
+            -m "Parent-Main-Write-Mode: audited" \
+            -m "Parent-Main-Write-Reason: $audit_reason" \
+            -m "Parent-Main-Write-Base: $HERMIT_PARENT_MAIN_EXPECT" \
+            -m "$attribution" )
+        else
+          commit_args+=( -m "$trimmed" \
+            -m "Parent-Main-Write-Mode: audited" \
+            -m "Parent-Main-Write-Reason: $audit_reason" \
+            -m "Parent-Main-Write-Base: $HERMIT_PARENT_MAIN_EXPECT" )
+        fi
+      else
+        body=$(printf '%s\n' "$trimmed" | awk -v target="$logical_last_nr" '
+          NR != target { print }
+        ')
+        [ -n "$body" ] || die "audited commit message needs a subject before attribution"
+        commit_args+=( -m "$body" \
+          -m "Parent-Main-Write-Mode: audited" \
+          -m "Parent-Main-Write-Reason: $audit_reason" \
+          -m "Parent-Main-Write-Base: $HERMIT_PARENT_MAIN_EXPECT" \
+          -m "$attribution" )
+      fi
     else
       commit_args+=( -m "$message" )
     fi
