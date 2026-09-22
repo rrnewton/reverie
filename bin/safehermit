@@ -16,6 +16,9 @@
 #
 #     safehermit /tmp/hermit-ers-patched run -- ./prog     # arbitrary binary
 #     safehermit run -- ./prog                             # default hermit
+#     safehermit --sh-resource-report /tmp/seed-7.resources \
+#       --sh-memory-max-bytes 17179869184 --sh-tasks-max 256 \
+#       --sh-cpu-cores 1 --sh-cpu-timeout 900 --sh-deadline 2700 run -- ./prog
 #
 # The first argument is the hermit binary IF it contains a `/` and is executable,
 # or if --bin is given. Nothing else is treated as a binary, so a subcommand
@@ -32,16 +35,18 @@
 #
 # WHAT IT DOES NOT DO
 # ===================
-# It does not change hermit's behaviour, arguments, stdio or exit code. stdout and
-# stderr of the child are passed through untouched; everything this script says
-# goes to stderr prefixed `safehermit:` so it can never be confused with, or
-# parsed as, hermit output.
+# It does not change hermit's behaviour, arguments or stdio. The child exit code
+# is preserved unless an explicitly requested resource report cannot be completed,
+# which fails closed with 2. stdout and stderr of the child are passed through
+# untouched; everything this script says goes to stderr prefixed `safehermit:` so
+# it can never be confused with, or parsed as, hermit output.
 #
 # EXIT CODES
-#   the child's exit code, verbatim, whenever the child ran
-#   2   safehermit usage error (the child did not run)
+#   the child's exit code, verbatim, when accounting (if requested) completes
+#   2   safehermit usage error, or opted-in resource accounting refusal
 #   124 the deadline fired and the run was killed by its cgroup
 #   125 the log cap fired and the run was killed by its cgroup
+#   126 the opted-in aggregate CPU-time budget fired
 set -uo pipefail
 
 PROG=safehermit
@@ -91,8 +96,14 @@ disk_limit=$DEFAULT_DISK_LIMIT
 mem_max=$DEFAULT_MEM_MAX
 bin_override=""
 no_deadline=0
+deadline_explicit=0
 fresh=0
 report_file=""
+detached_report_file=""
+detached_memory_max_bytes=""
+detached_tasks_max=""
+detached_cpu_cores=""
+detached_cpu_timeout_secs=""
 
 # ---------------------------------------------------------------- our own flags
 # Parsed ONLY until the first argument we do not own, so hermit's own flags are
@@ -101,12 +112,22 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --sh-bin)       [ $# -ge 2 ] || die "--sh-bin needs a value"; bin_override="$2"; shift 2 ;;
         --sh-bin=*)     bin_override="${1#*=}"; shift ;;
-        --sh-deadline)  [ $# -ge 2 ] || die "--sh-deadline needs a value"; deadline="$2"; shift 2 ;;
-        --sh-deadline=*) deadline="${1#*=}"; shift ;;
+        --sh-deadline)  [ $# -ge 2 ] || die "--sh-deadline needs a value"; deadline="$2"; deadline_explicit=1; shift 2 ;;
+        --sh-deadline=*) deadline="${1#*=}"; deadline_explicit=1; shift ;;
         --sh-no-deadline) no_deadline=1; shift ;;
         --sh-fresh) fresh=1; shift ;;
         --sh-report)    [ $# -ge 2 ] || die "--sh-report needs a value"; report_file="$2"; shift 2 ;;
         --sh-report=*)  report_file="${1#*=}"; shift ;;
+        --sh-resource-report) [ $# -ge 2 ] || die "--sh-resource-report needs a value"; detached_report_file="$2"; shift 2 ;;
+        --sh-resource-report=*) detached_report_file="${1#*=}"; shift ;;
+        --sh-memory-max-bytes) [ $# -ge 2 ] || die "--sh-memory-max-bytes needs a value"; detached_memory_max_bytes="$2"; shift 2 ;;
+        --sh-memory-max-bytes=*) detached_memory_max_bytes="${1#*=}"; shift ;;
+        --sh-tasks-max) [ $# -ge 2 ] || die "--sh-tasks-max needs a value"; detached_tasks_max="$2"; shift 2 ;;
+        --sh-tasks-max=*) detached_tasks_max="${1#*=}"; shift ;;
+        --sh-cpu-cores) [ $# -ge 2 ] || die "--sh-cpu-cores needs a value"; detached_cpu_cores="$2"; shift 2 ;;
+        --sh-cpu-cores=*) detached_cpu_cores="${1#*=}"; shift ;;
+        --sh-cpu-timeout) [ $# -ge 2 ] || die "--sh-cpu-timeout needs a value"; detached_cpu_timeout_secs="$2"; shift 2 ;;
+        --sh-cpu-timeout=*) detached_cpu_timeout_secs="${1#*=}"; shift ;;
         --sh-max-log-bytes)   [ $# -ge 2 ] || die "needs a value"; max_log_bytes="$2"; shift 2 ;;
         --sh-max-log-bytes=*) max_log_bytes="${1#*=}"; shift ;;
         --sh-disk-limit)   [ $# -ge 2 ] || die "needs a value"; disk_limit="$2"; shift 2 ;;
@@ -118,6 +139,53 @@ while [ $# -gt 0 ]; do
         *) break ;;
     esac
 done
+
+detached_limit_count=0
+for detached_limit in "$detached_memory_max_bytes" "$detached_tasks_max" \
+    "$detached_cpu_cores" "$detached_cpu_timeout_secs"; do
+    [ -z "$detached_limit" ] || detached_limit_count=$((detached_limit_count + 1))
+done
+if [ -n "$detached_report_file" ]; then
+    [ "$detached_limit_count" -eq 4 ] \
+        || die "--sh-resource-report requires --sh-memory-max-bytes, --sh-tasks-max, --sh-cpu-cores, and --sh-cpu-timeout"
+    if [ "$deadline_explicit" -ne 1 ] || [ "$no_deadline" -ne 0 ]; then
+        die "--sh-resource-report requires an explicit --sh-deadline"
+    fi
+    detached_limits="$(python3 - "$detached_memory_max_bytes" "$detached_tasks_max" \
+        "$detached_cpu_cores" "$detached_cpu_timeout_secs" "$deadline" <<'PY'
+import sys
+
+names = ("memory bytes", "tasks", "CPU cores", "CPU timeout seconds", "wall deadline seconds")
+values = []
+for name, raw in zip(names, sys.argv[1:]):
+    if not raw.isascii() or not raw.isdecimal() or int(raw) <= 0:
+        raise SystemExit(f"{name} must be a positive unsigned integer in detached mode")
+    values.append(int(raw))
+memory, tasks, cores, cpu_seconds, wall_seconds = values
+if cores > 316:
+    raise SystemExit("CPU cores exceeds the 316-worker host safety ceiling")
+for name, value in (("CPU timeout", cpu_seconds), ("wall deadline", wall_seconds)):
+    if value > (2**63 - 1) // 1_000_000_000:
+        raise SystemExit(f"{name} cannot be represented in nanoseconds")
+print(memory, tasks, cores, cpu_seconds, wall_seconds)
+PY
+)" || die "invalid detached resource limit"
+    read -r detached_memory_max_bytes detached_tasks_max detached_cpu_cores \
+        detached_cpu_timeout_secs deadline <<<"$detached_limits"
+    mem_max="$detached_memory_max_bytes"
+elif [ "$detached_limit_count" -ne 0 ]; then
+    die "detached resource limit flags require --sh-resource-report"
+fi
+
+if [ -n "$report_file" ] && [ -n "$detached_report_file" ]; then
+    same_report_path="$(python3 - "$report_file" "$detached_report_file" <<'PY'
+import os
+import sys
+print("yes" if os.path.abspath(sys.argv[1]) == os.path.abspath(sys.argv[2]) else "no")
+PY
+)"
+    [ "$same_report_path" = no ] || die "--sh-report and --sh-resource-report must name different files"
+fi
 
 if [ -n "$report_file" ]; then
     # Fail loudly on an unwritable destination rather than losing the report: a
@@ -179,6 +247,234 @@ hermit_bin="$(cd "$(dirname "$hermit_bin")" && printf '%s/%s' "$(pwd)" "$(basena
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 binary_sha256="$(sha256sum "$hermit_bin" 2>/dev/null | cut -d' ' -f1)"
 [ -n "$binary_sha256" ] || binary_sha256="unavailable"
+invocation_sha256=""
+if [ -n "$detached_report_file" ]; then
+    invocation_sha256="$(python3 - "$hermit_bin" "$@" <<'PY'
+import hashlib
+import os
+import sys
+
+digest = hashlib.sha256()
+for argument in sys.argv[1:]:
+    digest.update(os.fsencode(argument))
+    digest.update(b"\0")
+print(digest.hexdigest())
+PY
+)"
+fi
+
+# ---------------------------------------------------------------- optional detached-unit accounting
+# Parallel experiment runners normally measure the worker cgroup. systemd-run
+# reparents this script's expensive child into a transient service, outside that
+# cgroup, so an explicitly opted-in caller may ask for a second resource report.
+#
+# The report is deliberately a separate file from --sh-report. It first appears
+# atomically with the owned unit name, before the unit is launched, so signal
+# teardown can find that exact cgroup. It is replaced atomically with the complete
+# counters while the unit is still retained and before reset-failed/stop below.
+# A pre-existing path is always a refusal: accepting one could make a stale unit
+# name authoritative for cancellation or mix a previous seed's counters into this
+# invocation.
+detached_report_identity=""
+detached_metrics_error=""
+detached_metrics_written=0
+detached_last_tasks_peak=""
+detached_cgroup_path=""
+detached_cpu_usage_usec=0
+detached_memory_oom_kills=0
+detached_tasks_limit_hits=0
+detached_cpu_time_limit_hit=0
+detached_wall_time_limit_hit=0
+detached_log_cap_hit=0
+detached_log_cap_killed=0
+detached_limit_cpu_cores_micros=""
+detached_limit_cpu_time_nsec=""
+detached_limit_wall_time_usec=""
+if [ -n "$detached_report_file" ]; then
+    detached_limit_cpu_cores_micros=$((detached_cpu_cores * 1000000))
+    detached_limit_cpu_time_nsec=$((detached_cpu_timeout_secs * 1000000000))
+    detached_limit_wall_time_usec=$((deadline * 1000000))
+fi
+
+prepare_detached_report() {
+    local prepared
+    local -a prepared_lines=()
+    prepared="$(python3 - "$detached_report_file" "$unit" "$run_id" \
+        "$invocation_sha256" "$binary_sha256" "$detached_memory_max_bytes" \
+        "$detached_tasks_max" "$detached_limit_cpu_cores_micros" \
+        "$detached_limit_cpu_time_nsec" "$detached_limit_wall_time_usec" "0" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+import tempfile
+
+(raw, unit, run_id, invocation, binary, memory_limit, tasks_limit,
+ cpu_cores_micros, cpu_time_limit, wall_time_limit, swap_limit) = sys.argv[1:]
+if not raw or any(ord(char) < 32 or ord(char) == 127 for char in raw):
+    raise SystemExit("resource report path is empty or contains a control character")
+path = pathlib.Path(raw)
+parent_text = os.path.abspath(os.fspath(path.parent))
+parent = pathlib.Path(parent_text)
+resolved_parent = parent.resolve(strict=True)
+if parent != resolved_parent:
+    raise SystemExit("resource report parent must not contain symlinks")
+if not resolved_parent.is_dir():
+    raise SystemExit("resource report parent is not a directory")
+parent_mode = resolved_parent.stat().st_mode
+if parent_mode & 0o022 and not parent_mode & stat.S_ISVTX:
+    raise SystemExit("resource report parent is writable by other users without sticky protection")
+name = path.name
+if name in {"", ".", ".."}:
+    raise SystemExit("resource report needs a file name")
+target = resolved_parent / name
+try:
+    os.lstat(target)
+except FileNotFoundError:
+    pass
+else:
+    raise SystemExit("resource report already exists")
+
+payload = (
+    f"safehermit: unit={unit}\n"
+    f"safehermit: run_id={run_id}\n"
+    f"safehermit: invocation_sha256={invocation}\n"
+    f"safehermit: binary_sha256={binary}\n"
+    f"safehermit: limit_memory_bytes={memory_limit}\n"
+    f"safehermit: limit_swap_bytes={swap_limit}\n"
+    f"safehermit: limit_tasks={tasks_limit}\n"
+    f"safehermit: limit_cpu_cores_micros={cpu_cores_micros}\n"
+    f"safehermit: limit_cpu_time_nsec={cpu_time_limit}\n"
+    f"safehermit: limit_wall_time_usec={wall_time_limit}\n"
+).encode("utf-8")
+fd, temporary = tempfile.mkstemp(prefix=".safehermit-resource.", suffix=".tmp", dir=resolved_parent)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "wb", closefd=True) as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    fd = -1
+    # link(2), unlike replace(2), refuses a name that appeared after our lstat.
+    os.link(temporary, target)
+    os.unlink(temporary)
+    directory_fd = os.open(resolved_parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+finally:
+    if fd >= 0:
+        os.close(fd)
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+
+identity = os.lstat(target)
+if not stat.S_ISREG(identity.st_mode) or identity.st_nlink != 1:
+    raise SystemExit("resource report is not a singly-linked regular file")
+print(target)
+print(f"{identity.st_dev}:{identity.st_ino}")
+PY
+)" || return 1
+    mapfile -t prepared_lines <<<"$prepared"
+    [ "${#prepared_lines[@]}" -eq 2 ] || return 1
+    detached_report_file="${prepared_lines[0]}"
+    detached_report_identity="${prepared_lines[1]}"
+}
+
+finish_detached_report() {
+    local memory_peak=$1 cpu_usage=$2 tasks_peak=$3
+    python3 - "$detached_report_file" "$detached_report_identity" "$unit" "$run_id" \
+        "$invocation_sha256" "$binary_sha256" "$memory_peak" "$cpu_usage" "$tasks_peak" \
+        "$detached_memory_max_bytes" "$detached_tasks_max" "$detached_limit_cpu_cores_micros" \
+        "$detached_limit_cpu_time_nsec" "$detached_limit_wall_time_usec" \
+        "$detached_cpu_time_limit_hit" "$detached_memory_oom_kills" \
+        "$detached_tasks_limit_hits" "$detached_wall_time_limit_hit" \
+        "$detached_log_cap_hit" "0" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+import tempfile
+
+(raw, expected_identity, unit, run_id, invocation, binary,
+ memory_peak, cpu_usage, tasks_peak, memory_limit, tasks_limit,
+ cpu_cores_micros, cpu_time_limit, wall_time_limit, cpu_limit_hit,
+ memory_oom_kills, tasks_limit_hits, wall_limit_hit, log_cap_hit,
+ swap_limit) = sys.argv[1:]
+for label, value in (
+    ("memory_peak_bytes", memory_peak),
+    ("cpu_usage_nsec", cpu_usage),
+    ("tasks_peak", tasks_peak),
+    ("limit_memory_bytes", memory_limit),
+    ("limit_swap_bytes", swap_limit),
+    ("limit_tasks", tasks_limit),
+    ("limit_cpu_cores_micros", cpu_cores_micros),
+    ("limit_cpu_time_nsec", cpu_time_limit),
+    ("limit_wall_time_usec", wall_time_limit),
+    ("cpu_time_limit_hit", cpu_limit_hit),
+    ("memory_oom_kills", memory_oom_kills),
+    ("tasks_limit_hits", tasks_limit_hits),
+    ("wall_time_limit_hit", wall_limit_hit),
+    ("log_cap_hit", log_cap_hit),
+):
+    if not value.isascii() or not value.isdecimal():
+        raise SystemExit(f"{label} is not an unsigned decimal")
+path = pathlib.Path(raw)
+current = os.lstat(path)
+identity = f"{current.st_dev}:{current.st_ino}"
+if identity != expected_identity or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
+    raise SystemExit("resource report changed after launch")
+payload = (
+    f"safehermit: unit={unit}\n"
+    f"safehermit: run_id={run_id}\n"
+    f"safehermit: invocation_sha256={invocation}\n"
+    f"safehermit: binary_sha256={binary}\n"
+    f"safehermit: memory_peak_bytes={memory_peak}\n"
+    f"safehermit: cpu_usage_nsec={cpu_usage}\n"
+    f"safehermit: tasks_peak={tasks_peak}\n"
+    f"safehermit: limit_memory_bytes={memory_limit}\n"
+    f"safehermit: limit_swap_bytes={swap_limit}\n"
+    f"safehermit: limit_tasks={tasks_limit}\n"
+    f"safehermit: limit_cpu_cores_micros={cpu_cores_micros}\n"
+    f"safehermit: limit_cpu_time_nsec={cpu_time_limit}\n"
+    f"safehermit: limit_wall_time_usec={wall_time_limit}\n"
+    f"safehermit: cpu_time_limit_hit={cpu_limit_hit}\n"
+    f"safehermit: memory_oom_kills={memory_oom_kills}\n"
+    f"safehermit: tasks_limit_hits={tasks_limit_hits}\n"
+    f"safehermit: wall_time_limit_hit={wall_limit_hit}\n"
+    f"safehermit: log_cap_hit={log_cap_hit}\n"
+).encode("utf-8")
+fd, temporary = tempfile.mkstemp(prefix=".safehermit-resource.", suffix=".tmp", dir=path.parent)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "wb", closefd=True) as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    fd = -1
+    # Recheck immediately before replacement. This is a stale/reuse guard, not
+    # authority over a hostile directory; callers retain authority over parent.
+    current = os.lstat(path)
+    if f"{current.st_dev}:{current.st_ino}" != expected_identity:
+        raise SystemExit("resource report changed before completion")
+    os.replace(temporary, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+finally:
+    if fd >= 0:
+        os.close(fd)
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+PY
+}
 
 # ---------------------------------------------------------------- (6) bounded space
 mkdir -p "$LOG_ROOT" "$REGISTRY" 2>/dev/null
@@ -279,6 +575,10 @@ if [ "$systemd_ok" = 1 ]; then
     # systemd-run otherwise expands $VAR/${VAR} and collapses $$ before exec.
     runner=(systemd-run --user "--unit=$unit" --quiet --expand-environment=no
             "--property=MemoryMax=$mem_max" "--property=MemorySwapMax=0")
+    if [ -n "$detached_report_file" ]; then
+        runner+=("--property=TasksMax=$detached_tasks_max"
+                 "--property=CPUQuota=$((detached_cpu_cores * 100))%")
+    fi
     [ "$no_deadline" = 1 ] || runner+=("--property=RuntimeMaxSec=$deadline")
     runner+=("--working-directory=$PWD" "${setenv_args[@]}" --pipe --wait --)
 else
@@ -287,6 +587,192 @@ else
     runner_state="NOT_APPLIED"
     wall_state="NOT_APPLIED:systemd --user unavailable; NO cgroup kill and NO wall bound -- \`timeout\` cannot kill a namespace PID 1, so none is attempted"
     unit="none"
+fi
+
+resolve_detached_cgroup() {
+    local properties_file="$log_dir/.resource-unit-location"
+    timeout 5 systemctl --user show "$unit.service" \
+        -p Id -p LoadState -p ControlGroup >"$properties_file" 2>/dev/null
+    local query_rc=$?
+    [ "$query_rc" -eq 0 ] || return 1
+    detached_cgroup_path="$(python3 - "$properties_file" "$unit.service" <<'PY'
+import pathlib
+import sys
+
+fields = {}
+for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    key, separator, value = line.partition("=")
+    if not separator or key not in {"Id", "LoadState", "ControlGroup"} or key in fields:
+        raise SystemExit(1)
+    fields[key] = value
+group = fields.get("ControlGroup", "")
+parts = pathlib.PurePosixPath(group).parts
+if (
+    fields.get("Id") != sys.argv[2]
+    or fields.get("LoadState") != "loaded"
+    or not group.startswith("/")
+    or ".." in parts
+):
+    raise SystemExit(1)
+print(group)
+PY
+)" || return 1
+    [ -n "$detached_cgroup_path" ] || return 1
+    printf '%s\n' "$detached_cgroup_path" >"$log_dir/.resource-cgroup-path.tmp" \
+        && mv -- "$log_dir/.resource-cgroup-path.tmp" "$log_dir/.resource-cgroup-path"
+}
+
+verify_detached_limits() {
+    [ -n "$detached_cgroup_path" ] || return 1
+    python3 - "/sys/fs/cgroup${detached_cgroup_path}" "$detached_memory_max_bytes" \
+        "$detached_tasks_max" "$detached_limit_cpu_cores_micros" 2>/dev/null <<'PY'
+import pathlib
+import sys
+
+group = pathlib.Path(sys.argv[1])
+memory, tasks, cores_micros = map(int, sys.argv[2:])
+if int((group / "memory.max").read_text(encoding="ascii").strip()) != memory:
+    raise SystemExit(1)
+if int((group / "memory.swap.max").read_text(encoding="ascii").strip()) != 0:
+    raise SystemExit(1)
+if int((group / "pids.max").read_text(encoding="ascii").strip()) != tasks:
+    raise SystemExit(1)
+quota_raw, period_raw = (group / "cpu.max").read_text(encoding="ascii").split()
+if quota_raw == "max":
+    raise SystemExit(1)
+quota, period = int(quota_raw), int(period_raw)
+if quota * 1_000_000 != cores_micros * period:
+    raise SystemExit(1)
+PY
+}
+
+sample_detached_cgroup() {
+    [ -n "$detached_cgroup_path" ] || return 1
+    local sample
+    sample="$(python3 - "/sys/fs/cgroup${detached_cgroup_path}" 2>/dev/null <<'PY'
+import pathlib
+import sys
+
+group = pathlib.Path(sys.argv[1])
+
+def keyed(path, wanted):
+    values = {}
+    for line in path.read_text(encoding="ascii").splitlines():
+        key, value = line.split()
+        values[key] = int(value)
+    return values[wanted]
+
+print(
+    keyed(group / "cpu.stat", "usage_usec"),
+    keyed(group / "memory.events", "oom_kill"),
+    keyed(group / "pids.events", "max"),
+    int((group / "pids.peak").read_text(encoding="ascii")),
+)
+PY
+)" || return 1
+    local usage oom_hits pids_hits tasks_peak
+    read -r usage oom_hits pids_hits tasks_peak <<<"$sample"
+    for observed in "$usage" "$oom_hits" "$pids_hits" "$tasks_peak"; do
+        [[ "$observed" =~ ^[0-9]+$ ]] || return 1
+    done
+    [ "$usage" -ge "$detached_cpu_usage_usec" ] || return 1
+    [ "$oom_hits" -ge "$detached_memory_oom_kills" ] || return 1
+    [ "$pids_hits" -ge "$detached_tasks_limit_hits" ] || return 1
+    detached_cpu_usage_usec="$usage"
+    detached_memory_oom_kills="$oom_hits"
+    detached_tasks_limit_hits="$pids_hits"
+    if [ -z "$detached_last_tasks_peak" ] || [ "$tasks_peak" -gt "$detached_last_tasks_peak" ]; then
+        detached_last_tasks_peak="$tasks_peak"
+    fi
+}
+
+kill_detached_unit() {
+    if [ -n "$detached_cgroup_path" ] \
+        && [ -w "/sys/fs/cgroup${detached_cgroup_path}/cgroup.kill" ]; then
+        printf '1\n' >"/sys/fs/cgroup${detached_cgroup_path}/cgroup.kill" 2>/dev/null \
+            && return 0
+    fi
+    local attempt
+    for attempt in $(seq 1 20); do
+        /usr/bin/systemctl --user kill --kill-whom=all --signal=KILL "$unit.service" \
+            >/dev/null 2>&1 && return 0
+        [ "$attempt" -eq 20 ] || sleep 0.02
+    done
+    return 1
+}
+
+signal_detached_fifo() {
+    # A cancellation may kill the service after the unit stub is published but
+    # before its gate reader opens. A plain shell redirection would then block
+    # forever in open(2), so every one-byte handoff has its own real-clock bound.
+    # shellcheck disable=SC2016
+    timeout 5 bash -c 'printf "\n" >"$1"' bash "$1"
+}
+
+collect_detached_metrics() {
+    local properties_file="$log_dir/.resource-unit-properties"
+    timeout 5 systemctl --user show "$unit.service" \
+        -p Id -p LoadState -p ActiveState -p SubState -p Result -p ControlGroup \
+        -p MemoryPeak -p CPUUsageNSec -p TasksPeak >"$properties_file" 2>/dev/null
+    local query_rc=$?
+    [ "$query_rc" -eq 0 ] || return 1
+    python3 - "$properties_file" "$unit.service" "$detached_last_tasks_peak" <<'PY'
+import pathlib
+import sys
+
+path, expected_unit, sampled_tasks = sys.argv[1:]
+known = {
+    "Id", "LoadState", "ActiveState", "SubState", "Result", "ControlGroup",
+    "MemoryPeak", "CPUUsageNSec", "TasksPeak",
+}
+fields = {}
+for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+    key, separator, value = line.partition("=")
+    if not separator or key not in known or key in fields:
+        raise SystemExit(1)
+    fields[key] = value
+if (
+    fields.get("Id") != expected_unit
+    or fields.get("LoadState") != "loaded"
+    or fields.get("ActiveState") not in {"active", "inactive", "failed"}
+    or not fields.get("SubState")
+):
+    raise SystemExit(1)
+
+def unsigned(name):
+    value = fields.get(name, "")
+    if not value.isascii() or not value.isdecimal():
+        raise SystemExit(1)
+    number = int(value)
+    if number >= 2**64 - 1:
+        raise SystemExit(1)
+    return number
+
+memory = unsigned("MemoryPeak")
+cpu = unsigned("CPUUsageNSec")
+tasks_raw = fields.get("TasksPeak", "")
+if tasks_raw.isascii() and tasks_raw.isdecimal():
+    tasks = int(tasks_raw)
+elif sampled_tasks.isascii() and sampled_tasks.isdecimal():
+    tasks = int(sampled_tasks)
+else:
+    raise SystemExit(1)
+print(
+    memory,
+    cpu,
+    tasks,
+    1 if fields.get("Result") == "oom-kill" else 0,
+    1 if fields.get("Result") == "timeout" else 0,
+)
+PY
+}
+
+if [ -n "$detached_report_file" ]; then
+    [ "$runner_state" = APPLIED ] \
+        || die "--sh-resource-report requires a working systemd --user transient service"
+    if ! prepare_detached_report; then
+        die "--sh-resource-report refused unsafe, pre-existing, or unwritable path: $detached_report_file"
+    fi
 fi
 
 # ---------------------------------------------------------------- (4) log filter
@@ -319,7 +805,14 @@ field log_dir       "$log_dir"
 field log_file      "$log_file"
 field unit          "$unit"
 field bound.wall      "$wall_state"
-field bound.cgroup    "$( [ "$runner_state" = APPLIED ] && echo "APPLIED:MemoryMax=$mem_max MemorySwapMax=0" || echo "NOT_APPLIED:systemd --user unavailable" )"
+if [ "$runner_state" = APPLIED ] && [ -n "$detached_report_file" ]; then
+    cgroup_bound_state="APPLIED:MemoryMax=$mem_max MemorySwapMax=0 TasksMax=$detached_tasks_max CPUQuota=$((detached_cpu_cores * 100))% CPUTimeMax=${detached_cpu_timeout_secs}s"
+elif [ "$runner_state" = APPLIED ]; then
+    cgroup_bound_state="APPLIED:MemoryMax=$mem_max MemorySwapMax=0"
+else
+    cgroup_bound_state="NOT_APPLIED:systemd --user unavailable"
+fi
+field bound.cgroup    "$cgroup_bound_state"
 field bound.disk      "$disk_state"
 if [ "$runner_state" = APPLIED ]; then
     byte_bound_state="APPLIED:$max_log_bytes (LETHAL: the run is cgroup-killed at the cap)"
@@ -330,6 +823,9 @@ field bound.bytes     "$byte_bound_state"
 field bound.logfilter "$logfilter_state"
 field env.forwarded   "$env_state"
 field note.run_record "$reg_state"
+if [ -n "$detached_report_file" ]; then
+    field resource_report "$detached_report_file"
+fi
 
 # ---------------------------------------------------------------- (3) byte cap
 # A capped log that reads as complete is worse than a missing one, so the capper
@@ -352,13 +848,17 @@ capper() {
     # its cgroup and keep the first bytes as evidence. Without systemd there is no
     # cgroup to kill, so it degrades to truncate-and-say-so rather than pretending.
     python3 -u -c '
-import sys, os, subprocess
+import sys, os, subprocess, time
 cap = int(sys.argv[1]); path = sys.argv[2]; unit = sys.argv[3]
 written = 0; truncated = False; killed = "n/a"
 out = open(path, "wb")
 src = sys.stdin.buffer; dst = sys.stdout.buffer
 while True:
-    chunk = src.read(65536)
+    # Resource-accounted runs give this capper a dedicated payload-only FIFO;
+    # systemd-run never owns its write end, so EOF is an exact child boundary.
+    # os.read also returns currently available bytes instead of waiting to fill
+    # a 64-KiB BufferedReader request.
+    chunk = os.read(src.fileno(), 65536)
     if not chunk: break
     dst.write(chunk); dst.flush()
     if not truncated:
@@ -369,11 +869,46 @@ while True:
             if room > 0: out.write(chunk[:room]); written += room
             out.write(b"\n[safehermit] LOG CAP OF %d BYTES REACHED. The bytes above are kept as evidence; everything after this point was discarded.\n" % cap)
             out.flush(); truncated = True
+            marker = path + ".cap-fired"
+            with open(marker + ".tmp", "w") as cap_marker:
+                cap_marker.write("1\n")
+            os.replace(marker + ".tmp", marker)
             if unit and unit != "none":
-                rc = subprocess.call(["systemctl", "--user", "kill", "--signal=SIGKILL", unit],
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                # Prefer the authenticated cgroup path published by detached
+                # preflight. Ordinary runs have no marker, so retain the bounded
+                # exact-unit fallback.
+                rc = 1
+                kill_error = b""
+                direct_error = b""
+                for _ in range(100):
+                    marker = os.path.join(os.path.dirname(path), ".resource-cgroup-path")
+                    try:
+                        group = open(marker, encoding="ascii").read().strip()
+                        if group.startswith("/") and ".." not in group.split("/"):
+                            with open("/sys/fs/cgroup" + group + "/cgroup.kill", "w") as kill:
+                                kill.write("1\n")
+                            rc = 0
+                    except (OSError, UnicodeError) as error:
+                        direct_error = repr(error).encode()[-512:]
+                    if rc == 0:
+                        break
+                    attempt = subprocess.run(
+                        ["/usr/bin/systemctl", "--user", "kill", "--kill-whom=all", "--signal=KILL", unit],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                    )
+                    rc = attempt.returncode
+                    kill_error = attempt.stderr[-512:]
+                    if rc == 0:
+                        break
+                    time.sleep(0.05)
                 killed = "cgroup-killed" if rc == 0 else "kill-failed-rc%d" % rc
                 out.write(b"[safehermit] the run was killed at the cap (%s).\n" % killed.encode())
+                if rc != 0 and kill_error:
+                    out.write(b"[safehermit] final systemctl kill error: %s\n" % kill_error.rstrip())
+                if rc != 0 and direct_error:
+                    out.write(b"[safehermit] final cgroup.kill error: %s\n" % direct_error)
             else:
                 killed = "no-cgroup-available"
                 out.write(b"[safehermit] NOT killed: no systemd cgroup was available, so the cap could only truncate.\n")
@@ -391,22 +926,207 @@ with open(path + ".meta", "w") as m:
 # requirement (3), was missing on every run. Caught by this script's own test. A
 # FIFO with an explicit `wait` makes the capper's completion a precondition of
 # reporting, and keeps `$?` the child's own status rather than the pipeline's.
-fifo="$log_dir/.stderr.fifo"
+if [ -n "$detached_report_file" ]; then
+    fifo="$log_dir/.resource-payload-stderr.fifo"
+else
+    fifo="$log_dir/.stderr.fifo"
+fi
 rm -f "$fifo"; mkfifo "$fifo" 2>/dev/null || die "cannot create fifo $fifo"
 capper "$max_log_bytes" "$log_file" "$unit" < "$fifo" >&2 &
 capper_pid=$!
+capper_waited=0
 
 started=$(date +%s)
 started_monotonic_usec="$(python3 -c 'import time; print(time.monotonic_ns() // 1000)' 2>/dev/null)"
-if [ "$runner_state" = APPLIED ]; then
+if [ "$runner_state" = APPLIED ] && [ -n "$detached_report_file" ]; then
+    # Keep one inert process in the service after the payload exits. Without it,
+    # a successful transient service can disappear between systemd-run returning
+    # and the first accounting query. The payload writes its status atomically,
+    # then blocks on this FIFO while we read the still-live unit's counters and
+    # publish the complete report. RuntimeMaxSec and the lethal log cap still
+    # kill the whole cgroup, including this holder.
+    payload_status_file="$log_dir/.resource-payload-status"
+    payload_release_fifo="$log_dir/.resource-payload-release"
+    payload_start_fifo="$log_dir/.resource-payload-start"
+    mkfifo "$payload_start_fifo" "$payload_release_fifo" 2>/dev/null \
+        || die "cannot create resource-accounting gate fifos"
+    resource_wrapper=(python3 -c '
+import os
+import pathlib
+import signal
+import subprocess
+import sys
+
+status_file = pathlib.Path(sys.argv[1])
+release_fifo = pathlib.Path(sys.argv[2])
+start_fifo = pathlib.Path(sys.argv[3])
+stderr_fifo = pathlib.Path(sys.argv[4])
+with stderr_fifo.open("wb", buffering=0) as payload_stderr:
+    # Open the payload-only writer before waiting at the launch gate. If
+    # preflight refuses the service, killing this wrapper then gives the capper
+    # an exact EOF even though the payload was never allowed to start.
+    with start_fifo.open("rb") as stream:
+        if not stream.read(1):
+            raise SystemExit(126)
+    completed = subprocess.run(sys.argv[5:], check=False, stderr=payload_stderr)
+caller_status = 128 - completed.returncode if completed.returncode < 0 else completed.returncode
+temporary = status_file.with_name(status_file.name + ".tmp")
+temporary.write_text(str(caller_status) + "\n", encoding="ascii")
+temporary.replace(status_file)
+with release_fifo.open("rb") as stream:
+    if not stream.read(1):
+        raise SystemExit(126)
+if completed.returncode < 0:
+    signum = -completed.returncode
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+    raise SystemExit(128 + signum)
+raise SystemExit(completed.returncode)
+' "$payload_status_file" "$payload_release_fifo" "$payload_start_fifo" "$fifo" "$hermit_bin" "$@")
+    "${runner[@]}" "${resource_wrapper[@]}" &
+    runner_pid=$!
+
+    # The report already contains the owned unit name. Resolve only that unit's
+    # cgroup, then retain its monotonic pids.peak while waiting. This also gives
+    # timeout/cap outcomes a task count even though their cgroup vanishes on kill.
+    for _ in $(seq 1 100); do
+        resolve_detached_cgroup && break
+        kill -0 "$runner_pid" 2>/dev/null || break
+        sleep 0.02
+    done
+    if [ -n "$detached_cgroup_path" ] && verify_detached_limits; then
+        if ! sample_detached_cgroup; then
+            detached_metrics_error="could not sample verified cgroup before payload launch"
+            kill_detached_unit || true
+        elif ! signal_detached_fifo "$payload_start_fifo"; then
+            detached_metrics_error="could not release verified payload gate"
+            kill_detached_unit || true
+        fi
+    else
+        detached_metrics_error="declared memory, task, or CPU-core limit was not applied exactly"
+        kill_detached_unit || true
+    fi
+    detached_empty_polls=0
+    detached_sample_failures=0
+    while [ ! -f "$payload_status_file" ]; do
+        if sample_detached_cgroup; then
+            detached_sample_failures=0
+        else
+            populated="$(sed -n 's/^populated //p' \
+                "/sys/fs/cgroup${detached_cgroup_path}/cgroup.events" 2>/dev/null)"
+            if [ "$populated" = 1 ] || kill -0 "$runner_pid" 2>/dev/null; then
+                detached_sample_failures=$((detached_sample_failures + 1))
+                if [ "$detached_sample_failures" -ge 3 ]; then
+                    detached_metrics_error="live cgroup resource counters became unreadable"
+                    kill_detached_unit || true
+                    break
+                fi
+            fi
+        fi
+        if [ -f "$log_file.cap-fired" ]; then
+            detached_log_cap_hit=1
+            kill_detached_unit && detached_log_cap_killed=1
+            break
+        fi
+        if [ "$detached_cpu_usage_usec" -gt $((detached_cpu_timeout_secs * 1000000)) ]; then
+            detached_cpu_time_limit_hit=1
+            kill_detached_unit || true
+            break
+        fi
+        if ! kill -0 "$runner_pid" 2>/dev/null; then
+            populated="$(sed -n 's/^populated //p' \
+                "/sys/fs/cgroup${detached_cgroup_path}/cgroup.events" 2>/dev/null)"
+            if [ "$populated" = 1 ]; then
+                detached_empty_polls=0
+            else
+                detached_empty_polls=$((detached_empty_polls + 1))
+                [ "$detached_empty_polls" -lt 20 ] || break
+            fi
+        fi
+        sleep 0.05
+    done
+    sample_detached_cgroup || true
+    [ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
+
+    if [ -f "$payload_status_file" ]; then
+        payload_rc="$(sed -n '1p' "$payload_status_file")"
+        if ! [[ "$payload_rc" =~ ^[0-9]+$ ]] || [ "$payload_rc" -gt 255 ]; then
+            detached_metrics_error="payload status is missing or malformed"
+        fi
+        wait "$capper_pid" 2>/dev/null
+        capper_waited=1
+        [ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
+        if [ -z "$detached_metrics_error" ]; then
+            detached_metrics="$(collect_detached_metrics)"
+            metrics_rc=$?
+            if [ "$metrics_rc" -eq 0 ]; then
+                read -r detached_memory_peak detached_cpu_usage detached_tasks_peak \
+                    detached_result_oom detached_result_timeout <<<"$detached_metrics"
+                [ "$detached_result_oom" -le "$detached_memory_oom_kills" ] \
+                    || detached_memory_oom_kills="$detached_result_oom"
+                [ "$detached_result_timeout" -le "$detached_wall_time_limit_hit" ] \
+                    || detached_wall_time_limit_hit="$detached_result_timeout"
+                if finish_detached_report "$detached_memory_peak" "$detached_cpu_usage" "$detached_tasks_peak"; then
+                    detached_metrics_written=1
+                else
+                    detached_metrics_error="atomic resource report completion failed"
+                fi
+            else
+                detached_metrics_error="required systemd/cgroup resource property is missing or malformed"
+            fi
+        fi
+        # The complete report is durable before this release lets the service
+        # finish and before any unit reset/cleanup can occur.
+        if ! signal_detached_fifo "$payload_release_fifo"; then
+            kill_detached_unit || true
+        fi
+    fi
+    runner_rc=0
+    wait "$runner_pid" 2>/dev/null || runner_rc=$?
+
+    # A deadline, lethal log cap, or external cgroup kill bypasses the holder's
+    # status file. The failed unit remains queryable until reset-failed below;
+    # use the last exact pids.peak sample and publish before that cleanup.
+    if [ "$detached_metrics_written" -eq 0 ] && [ -z "$detached_metrics_error" ]; then
+        detached_metrics="$(collect_detached_metrics)"
+        metrics_rc=$?
+        if [ "$metrics_rc" -eq 0 ]; then
+            read -r detached_memory_peak detached_cpu_usage detached_tasks_peak \
+                detached_result_oom detached_result_timeout <<<"$detached_metrics"
+            [ "$detached_result_oom" -le "$detached_memory_oom_kills" ] \
+                || detached_memory_oom_kills="$detached_result_oom"
+            [ "$detached_result_timeout" -le "$detached_wall_time_limit_hit" ] \
+                || detached_wall_time_limit_hit="$detached_result_timeout"
+            if finish_detached_report "$detached_memory_peak" "$detached_cpu_usage" "$detached_tasks_peak"; then
+                detached_metrics_written=1
+            else
+                detached_metrics_error="atomic post-termination resource report completion failed"
+            fi
+        else
+            detached_metrics_error="required post-termination resource property is missing or malformed"
+        fi
+    fi
+    rc=$runner_rc
+elif [ "$runner_state" = APPLIED ]; then
     "${runner[@]}" "$hermit_bin" "$@" 2>"$fifo"
+    rc=$?
+    runner_rc=$rc
 else
     "$hermit_bin" "$@" 2>"$fifo"
+    rc=$?
+    runner_rc=$rc
 fi
-rc=$?
-runner_rc=$rc
-wait "$capper_pid" 2>/dev/null
+if [ "$capper_waited" -eq 0 ]; then
+    wait "$capper_pid" 2>/dev/null
+fi
+[ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
 rm -f "$fifo"
+if [ -n "${payload_release_fifo:-}" ]; then
+    rm -f "$payload_start_fifo" "$payload_release_fifo" "$payload_status_file" "$payload_status_file.tmp" \
+        "$log_dir/.resource-unit-location" "$log_dir/.resource-unit-properties" \
+        "$log_dir/.resource-cgroup-path" "$log_dir/.resource-cgroup-path.tmp"
+fi
+rm -f "$log_file.cap-fired" "$log_file.cap-fired.tmp"
 elapsed=$(( $(date +%s) - started ))
 
 # ---------------------------------------------------------------- report
@@ -420,10 +1140,22 @@ field elapsed_secs  "$elapsed"
 field bytes_written "$wrote"
 field truncated     "$trunc"
 field runner_exit_code "$runner_rc"
+if [ -n "$detached_report_file" ]; then
+    if [ "$detached_metrics_written" -eq 1 ]; then
+        field resource_report_state "COMPLETE"
+    else
+        field resource_report_state "INCOMPLETE:${detached_metrics_error:-payload ended before accounting could complete}"
+    fi
+fi
 if [ "$trunc" = true ]; then
+    if [ "$detached_log_cap_killed" -eq 1 ] && [ "${killed:-}" != cgroup-killed ]; then
+        killed="parent-cgroup-killed"
+    fi
     field killed_at_cap "${killed:-unknown}"
     # A distinct code, because "255" tells a caller nothing about WHY.
-    [ "${killed:-}" = "cgroup-killed" ] && rc=125
+    if [ "${killed:-}" = "cgroup-killed" ] || [ "$detached_log_cap_hit" -eq 1 ]; then
+        rc=125
+    fi
     say "LOG CAP: the run hit the ${max_log_bytes}-byte cap (${killed:-unknown}). The log is INCOMPLETE by design; the kept bytes are the evidence."
 fi
 # ---------------------------------------------------------------- deadline verdict
@@ -516,6 +1248,17 @@ elif [ -z "$unit_result" ] && [ "$no_deadline" != 1 ] && [ "$runner_state" = APP
      && { [ $rc -eq 143 ] || [ $rc -eq 137 ] || [ $rc -eq 1 ]; }; then
     say "DEADLINE(inferred): systemd's unit result was UNREADABLE, so this is a GUESS from exit $rc, not a fact."
     rc=124
+fi
+if [ "$detached_cpu_time_limit_hit" -eq 1 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 125 ]; then
+    say "CPU-TIMEOUT: the run exceeded ${detached_cpu_timeout_secs}s aggregate CPU and its owned cgroup was killed."
+    rc=126
+fi
+if [ -n "$detached_report_file" ] && [ "$detached_metrics_written" -ne 1 ]; then
+    say "RESOURCE REPORT REFUSAL: ${detached_metrics_error:-accounting did not complete}; the incomplete report is retained for owned-unit cleanup."
+    # Preserve the two stronger containment verdicts. Otherwise a caller that
+    # explicitly requested accounting must never receive the payload's apparent
+    # success/failure as if the measurement were complete.
+    [ "$rc" -eq 124 ] || [ "$rc" -eq 125 ] || rc=2
 fi
 
 field exit_code "$rc"

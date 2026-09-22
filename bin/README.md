@@ -94,6 +94,10 @@ breaks becomes another inert mechanism.
 ```bash
 bin/safehermit run -- ./prog                     # default hermit
 bin/safehermit /tmp/hermit-patched run -- ./prog # arbitrary binary, absolute path
+bin/safehermit --sh-resource-report /tmp/seed-7.resources \
+  --sh-memory-max-bytes 17179869184 --sh-tasks-max 256 \
+  --sh-cpu-cores 1 --sh-cpu-timeout 900 --sh-deadline 2700 \
+  /tmp/hermit-patched run -- ./prog
 bin/safehermit --sh-help                         # the full rationale
 ```
 
@@ -102,7 +106,25 @@ each and filled the filesystem. The incident binary was invoked by absolute
 path, which never consults `PATH`, so a shim named `hermit` would have missed
 precisely the case that caused the outage — hence the binary is an argument.
 
-Tests: `bin/safehermit-test.sh`.
+`--sh-resource-report PATH` opts into accounting for the transient user unit
+that sits outside a caller's worker cgroup. `PATH` must be new and have a real,
+non-symlink parent directory. Before launch it atomically identifies the owned
+`safehermit-*` unit so cancellation can reap only that unit; before unit cleanup
+it is atomically completed with `memory_peak_bytes`, `cpu_usage_nsec`, and
+`tasks_peak`. The report also binds those counters to `run_id`, the binary hash,
+and a hash of the exact argv. A missing or malformed resource property fails
+closed instead of manufacturing a zero measurement.
+
+Detached accounting also requires positive integer values for
+`--sh-memory-max-bytes`, `--sh-tasks-max`, `--sh-cpu-cores`,
+`--sh-cpu-timeout`, and `--sh-deadline`. The payload remains behind a start gate
+until the new unit's `memory.max`, `memory.swap.max=0`, `pids.max`, and `cpu.max`
+match those declarations exactly. The completed report repeats the applied
+limits and records CPU-time, wall-time, OOM-kill, PID-limit, and lethal log-cap
+breaches; the parallel runner must compare those values with its own worker
+specification.
+
+Tests: `bin/safehermit-test.sh` and `bin/safehermit-resource-test.py`.
 
 ## Disk-bound scope
 
