@@ -13772,6 +13772,162 @@ int main(void) {
     assert_eq!(tool_stderr, native.stderr);
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(kvm-proc-persona): Review typed synthetic proc providers.
+// This checks stable properties and normalized PTY transitions, not equality
+// of host-global PTY values or native procfs snapshot timing.
+#[test]
+fn deterministic_proc_persona_providers_run_on_kvm() {
+    if !kvm_available("KVM deterministic proc persona reads") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "proc-persona-properties",
+        r#"
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+static int read_file(const char *path, char *output, size_t capacity,
+                     size_t first) {
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return -1;
+  size_t used = 0;
+  if (first != 0) {
+    ssize_t count = read(fd, output, first);
+    if (count != (ssize_t)first) return -2;
+    used = first;
+  }
+  while (used < capacity) {
+    ssize_t count = read(fd, output + used, capacity - used);
+    if (count < 0) return -3;
+    if (count == 0) break;
+    used += (size_t)count;
+  }
+  close(fd);
+  return (int)used;
+}
+
+static int valid_uuid_v4(const char value[37]) {
+  static const int hyphens[] = {8, 13, 18, 23};
+  if (value[36] != '\n' || value[14] != '4' ||
+      !strchr("89ab", value[19])) return 0;
+  for (int index = 0; index < 36; ++index) {
+    int hyphen = 0;
+    for (unsigned j = 0; j < sizeof(hyphens) / sizeof(hyphens[0]); ++j)
+      hyphen |= index == hyphens[j];
+    if (hyphen ? value[index] != '-'
+               : !((value[index] >= '0' && value[index] <= '9') ||
+                   (value[index] >= 'a' && value[index] <= 'f'))) return 0;
+  }
+  return 1;
+}
+
+static int pty_count(void) {
+  char value[32] = {0};
+  int length = read_file("/proc/sys/kernel/pty/nr", value,
+                         sizeof(value) - 1, 0);
+  if (length <= 1 || value[length - 1] != '\n') return -1;
+  char *end = NULL;
+  long count = strtol(value, &end, 10);
+  return end == value + length - 1 && count >= 0 && count <= 1000000
+             ? (int)count
+             : -1;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 10;
+  char value[64] = {0};
+  if (read_file("/proc/sys/kernel/overflowuid", value, sizeof(value), 0) != 6 ||
+      memcmp(value, "65534\n", 6)) return 11;
+  memset(value, 0, sizeof(value));
+  if (read_file("/proc/sys/kernel/overflowgid", value, sizeof(value), 0) != 6 ||
+      memcmp(value, "65534\n", 6)) return 12;
+
+  char first[37] = {0}, second[37] = {0};
+  if (read_file("/proc/sys/kernel/random/uuid", first, sizeof(first), 5) != 37 ||
+      !valid_uuid_v4(first)) return 13;
+  if (read_file("/proc/sys/kernel/random/uuid", second, sizeof(second), 0) != 37 ||
+      !valid_uuid_v4(second) || !memcmp(first, second, sizeof(first))) return 14;
+
+  if (atoi(argv[1])) {
+    int baseline = pty_count();
+    if (baseline != 0) return 20;
+    int first_master = open("/dev/ptmx", O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (first_master < 0 || pty_count() != 1) return 21;
+    int alias = dup(first_master);
+    if (alias < 0 || pty_count() != 1) return 22;
+    int second_master = open("/dev/ptmx", O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (second_master < 0 || pty_count() != 2) return 23;
+    close(first_master);
+    if (pty_count() != 2) return 24;
+    close(alias);
+    if (pty_count() != 1) return 25;
+    close(second_master);
+    if (pty_count() != 0) return 26;
+  }
+
+  printf("uuid=%.*s", 37, first);
+  puts("deterministic proc persona reads ok");
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable)
+        .arg("0")
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert!(native.stderr.is_empty(), "native: {native:?}");
+    let validate_output = |output: &[u8]| {
+        const PREFIX: &[u8] = b"uuid=";
+        const MARKER: &[u8] = b"deterministic proc persona reads ok\n";
+        assert_eq!(output.len(), PREFIX.len() + 37 + MARKER.len());
+        assert_eq!(&output[..PREFIX.len()], PREFIX);
+        let uuid = &output[PREFIX.len()..PREFIX.len() + 37];
+        assert_eq!(uuid[36], b'\n');
+        assert_eq!(uuid[14], b'4');
+        assert!(matches!(uuid[19], b'8' | b'9' | b'a' | b'b'));
+        for (index, byte) in uuid[..36].iter().copied().enumerate() {
+            if [8, 13, 18, 23].contains(&index) {
+                assert_eq!(byte, b'-');
+            } else {
+                assert!(byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+            }
+        }
+        assert_eq!(&output[PREFIX.len() + 37..], MARKER);
+    };
+    validate_output(&native.stdout);
+
+    let executable = executable.to_str().unwrap();
+    let (direct_stdout, direct_stderr) =
+        run_host_program_captured(executable, &[executable, "1"], &directory.0);
+    let (direct_repeat_stdout, direct_repeat_stderr) =
+        run_host_program_captured(executable, &[executable, "1"], &directory.0);
+    validate_output(&direct_stdout);
+    assert!(direct_stderr.is_empty());
+    assert_eq!(direct_repeat_stdout, direct_stdout);
+    assert_eq!(direct_repeat_stderr, direct_stderr);
+
+    let (tool_stdout, tool_stderr) =
+        run_host_program_with_tool_captured(executable, &[executable, "1"], &directory.0);
+    let (tool_repeat_stdout, tool_repeat_stderr) =
+        run_host_program_with_tool_captured(executable, &[executable, "1"], &directory.0);
+    validate_output(&tool_stdout);
+    assert!(tool_stderr.is_empty());
+    assert_eq!(tool_stdout, direct_stdout);
+    assert_eq!(tool_stderr, direct_stderr);
+    assert_eq!(tool_repeat_stdout, tool_stdout);
+    assert_eq!(tool_repeat_stderr, tool_stderr);
+}
+
 #[test]
 fn vectored_fault_shape_matches_native_linux_on_kvm() {
     if !kvm_available("KVM vectored fault-shape test") {

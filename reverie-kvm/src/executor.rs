@@ -176,7 +176,8 @@ const FALLOCATE_VALID_MODES: &[libc::c_int] = &[
     libc::FALLOC_FL_UNSHARE_RANGE | libc::FALLOC_FL_KEEP_SIZE,
     FALLOC_FL_WRITE_ZEROES,
 ];
-const GUEST_SUPPLEMENTARY_GROUPS: &[libc::gid_t] = &[65_534];
+const GUEST_OVERFLOW_ID: u32 = 65_534;
+const GUEST_SUPPLEMENTARY_GROUPS: &[libc::gid_t] = &[GUEST_OVERFLOW_ID as libc::gid_t];
 const LEGACY_OPEN_FLAGS: u64 = (libc::O_ACCMODE
     | libc::O_APPEND
     | libc::O_ASYNC
@@ -7303,7 +7304,23 @@ fn open_file(
         }
         let normalized =
             normalize_proc_path(state, path).expect("a synthesized /proc path always normalizes");
-        return open_synthetic_proc(
+        // Authenticated proc carriers are immutable, so dynamic persona files
+        // take their snapshot at each successful readable open. This is an
+        // intentionally narrower contract than Linux/Detcore's first-read
+        // materialization: partial reads and dup aliases remain coherent, but
+        // a state change between open and first read is not observed here, and
+        // rewinding a UUID carrier retains its snapshot while native Linux
+        // generates a fresh UUID after the rewind.
+        let random_uuid = normalized == b"/proc/sys/kernel/random/uuid";
+        let next_random_uuid_sequence = if random_uuid && !path_only {
+            match state.proc_random_uuid_sequence.checked_add(1) {
+                Some(sequence) => Some(sequence),
+                None => return negative_errno(libc::EOVERFLOW),
+            }
+        } else {
+            None
+        };
+        let result = open_synthetic_proc(
             state,
             &normalized,
             &content,
@@ -7311,6 +7328,12 @@ fn open_file(
             path_only,
             flags as libc::c_int,
         );
+        if result >= 0
+            && let Some(sequence) = next_random_uuid_sequence
+        {
+            state.proc_random_uuid_sequence = sequence;
+        }
+        return result;
     }
     // A relative lookup beneath the synthetic directory must never fall
     // through to the harmless host directory that backs the descriptor.
@@ -7756,9 +7779,34 @@ fn open_guest_fd_path(
             return negative_errno(libc::EBADMSG);
         }
         let virtual_nofollow = flags & libc::O_NOFOLLOW as u64 != 0;
+        let random_uuid =
+            authenticated.canonical_path == b"/proc/sys/kernel/random/uuid" && !path_only;
+        let dynamic_pty = authenticated.canonical_path == b"/proc/sys/kernel/pty/nr" && !path_only;
+        let next_random_uuid_sequence = if random_uuid {
+            match state.proc_random_uuid_sequence.checked_add(1) {
+                Some(sequence) => Some(sequence),
+                None => return negative_errno(libc::EOVERFLOW),
+            }
+        } else {
+            None
+        };
+        let dynamic_content = if random_uuid {
+            Some(synthetic_random_uuid_content(
+                state.random_seed,
+                state.tid,
+                state.proc_random_uuid_sequence,
+            ))
+        } else if dynamic_pty {
+            Some(format!("{}\n", synthetic_pty_count(state)).into_bytes())
+        } else {
+            None
+        };
+        let content = dynamic_content
+            .as_deref()
+            .unwrap_or(authenticated.content.as_ref());
         let file = match state.proc_carrier_authority.mint(
             &authenticated.canonical_path,
-            authenticated.content.as_ref(),
+            content,
             virtual_nofollow,
             path_only,
             flags as libc::c_int,
@@ -7772,6 +7820,9 @@ fn open_guest_fd_path(
             state.proc_files.insert(new_fd, source_proc_inode);
             if virtual_nofollow {
                 state.synthetic_proc_nofollow_fds.insert(new_fd);
+            }
+            if let Some(sequence) = next_random_uuid_sequence {
+                state.proc_random_uuid_sequence = sequence;
             }
         }
         return new_fd;
@@ -13495,6 +13546,10 @@ const SYNTHETIC_REGULAR_PROC_PATHS: &[&[u8]] = &[
     b"/proc/self/status",
     b"/proc/self/cmdline",
     b"/proc/vmstat",
+    b"/proc/sys/kernel/overflowuid",
+    b"/proc/sys/kernel/overflowgid",
+    b"/proc/sys/kernel/random/uuid",
+    b"/proc/sys/kernel/pty/nr",
     b"/proc/sys/kernel/osrelease",
     b"/proc/self/maps",
 ];
@@ -13529,6 +13584,10 @@ fn is_synthetic_proc_directory_inode(inode: u64) -> bool {
 fn synthetic_proc_pwrite_errno(inode: u64) -> libc::c_int {
     if [
         b"/proc/self/cmdline".as_slice(),
+        b"/proc/sys/kernel/overflowuid".as_slice(),
+        b"/proc/sys/kernel/overflowgid".as_slice(),
+        b"/proc/sys/kernel/random/uuid".as_slice(),
+        b"/proc/sys/kernel/pty/nr".as_slice(),
         b"/proc/sys/kernel/osrelease".as_slice(),
     ]
     .iter()
@@ -13629,6 +13688,78 @@ fn normalize_proc_path(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8>> 
     Some(path.to_vec())
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(kvm-proc-persona): Review typed synthetic proc providers.
+/// Count guest-owned PTY master open descriptions without consulting the
+/// host-global `/proc/sys/kernel/pty/nr` value. Linux assigns one live PTY
+/// number per master description; aliases created by dup or SCM_RIGHTS report
+/// the same number and therefore count once.
+fn synthetic_pty_count(state: &LoadedStaticElf) -> usize {
+    state
+        .files
+        .values()
+        .chain(state.stdin.iter())
+        .filter_map(|file| {
+            let mut number: libc::c_uint = 0;
+            // SAFETY: file owns a live descriptor and number is writable.
+            if unsafe { libc::ioctl(file.as_raw_fd(), libc::TIOCGPTN, &mut number) } != 0 {
+                return None;
+            }
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+            // SAFETY: stat is writable and the successful ioctl proved that
+            // file still names a live PTY master.
+            if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+                return None;
+            }
+            // A PTY number is unique only within one devpts instance.
+            Some((unsafe { stat.assume_init() }.st_dev, number))
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+fn mix_proc_random_word(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+/// Format one deterministic RFC 4122 version-4 UUID snapshot. The virtual TID
+/// separates forked/thread streams while the per-executor sequence makes
+/// repeated readable opens distinct and repeatable for the same guest trace.
+fn synthetic_random_uuid_content(seed: u64, tid: i32, sequence: u64) -> Vec<u8> {
+    let stream = seed
+        ^ u64::from(tid as u32).wrapping_mul(0xd6e8_feb8_6659_fd93)
+        ^ sequence.wrapping_mul(0xa076_1d64_78bd_642f);
+    let mut random = [0_u8; 16];
+    random[..8].copy_from_slice(&mix_proc_random_word(stream).to_le_bytes());
+    random[8..]
+        .copy_from_slice(&mix_proc_random_word(stream ^ 0xe703_7ed1_a0b4_28db).to_le_bytes());
+    random[6] = (random[6] & 0x0f) | 0x40;
+    random[8] = (random[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}\n",
+        random[0],
+        random[1],
+        random[2],
+        random[3],
+        random[4],
+        random[5],
+        random[6],
+        random[7],
+        random[8],
+        random[9],
+        random[10],
+        random[11],
+        random[12],
+        random[13],
+        random[14],
+        random[15],
+    )
+    .into_bytes()
+}
+
 /// Synthesize deterministic content for a recognized /proc path, or `None` when
 /// the path is not part of the supported surface.
 fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8>> {
@@ -13719,6 +13850,15 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
         )
         .as_bytes()
         .to_vec(),
+        b"/proc/sys/kernel/overflowuid" | b"/proc/sys/kernel/overflowgid" => {
+            format!("{GUEST_OVERFLOW_ID}\n").into_bytes()
+        }
+        b"/proc/sys/kernel/random/uuid" => synthetic_random_uuid_content(
+            state.random_seed,
+            state.tid,
+            state.proc_random_uuid_sequence,
+        ),
+        b"/proc/sys/kernel/pty/nr" => format!("{}\n", synthetic_pty_count(state)).into_bytes(),
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-224): deterministic
         // /proc/sys/kernel/osrelease so `sysctl -n kernel.osrelease` resolves
@@ -17242,6 +17382,7 @@ pub(crate) fn native_loaded_state_with_authority(
         logical_clock_ns: 0,
         umask: 0o022,
         random_seed: 0,
+        proc_random_uuid_sequence: 0,
         thread_name: *b"test\0\0\0\0\0\0\0\0\0\0\0\0",
         thread_group_leader_name: Arc::new(Mutex::new(*b"test\0\0\0\0\0\0\0\0\0\0\0\0")),
         thp_disabled: Arc::new(std::sync::atomic::AtomicU8::new(0)),
@@ -18733,6 +18874,279 @@ mod tests {
                 .windows(b"MemAvailable:     976562 kB\n".len())
                 .any(|line| line == b"MemAvailable:     976562 kB\n")
         );
+    }
+
+    fn valid_lowercase_uuid_v4(content: &[u8]) -> bool {
+        const HYPHENS: &[usize] = &[8, 13, 18, 23];
+        content.len() == 37
+            && content[36] == b'\n'
+            && content[..36].iter().enumerate().all(|(index, byte)| {
+                if HYPHENS.contains(&index) {
+                    *byte == b'-'
+                } else {
+                    byte.is_ascii_digit() || (b'a'..=b'f').contains(byte)
+                }
+            })
+            && content[14] == b'4'
+            && matches!(content[19], b'8' | b'9' | b'a' | b'b')
+    }
+
+    #[test]
+    fn synthetic_proc_identity_and_random_providers_are_typed_and_repeatable() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.random_seed = 0x0123_4567_89ab_cdef;
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+
+        for path in [
+            b"/proc/sys/kernel/overflowuid".as_slice(),
+            b"/proc/sys/kernel/overflowgid".as_slice(),
+        ] {
+            assert_eq!(
+                synthetic_proc_content(&state, path).as_deref(),
+                Some(b"65534\n".as_slice())
+            );
+            assert_eq!(
+                synthetic_proc_path_for_inode(synthetic_proc_inode(path)),
+                Some(path)
+            );
+            let path = std::str::from_utf8(path).unwrap();
+            let fd = open_readonly(&mut memory, &mut state, path);
+            assert!(fd >= 0, "open {path} failed: {fd}");
+            assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"65534\n");
+            assert_eq!(close(&mut state, fd as u64), 0);
+        }
+
+        let invalid = open_with_flags(
+            &mut memory,
+            &mut state,
+            "/proc/sys/kernel/random/uuid",
+            libc::O_WRONLY,
+        );
+        assert_eq!(invalid, negative_errno(libc::EACCES));
+        assert_eq!(state.proc_random_uuid_sequence, 0);
+
+        let first_fd = open_readonly(&mut memory, &mut state, "/proc/sys/kernel/random/uuid");
+        assert!(first_fd >= 0);
+        assert_eq!(state.proc_random_uuid_sequence, 1);
+        let second_fd = open_readonly(&mut memory, &mut state, "/proc/sys/kernel/random/uuid");
+        assert!(second_fd >= 0);
+        assert_eq!(state.proc_random_uuid_sequence, 2);
+        let mut first = Vec::new();
+        for (address, length) in [(0x800, 5_u64), (0x900, 32_u64)] {
+            let count = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [first_fd as u64, address, length, 0, 0, 0],
+            );
+            assert!(count > 0);
+            let mut part = vec![0; count as usize];
+            memory.read(address, &mut part).unwrap();
+            first.extend_from_slice(&part);
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [first_fd as u64, 0xa00, 1, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(valid_lowercase_uuid_v4(&first));
+        assert_eq!(
+            first,
+            synthetic_random_uuid_content(state.random_seed, state.tid, 0)
+        );
+
+        let second = read_fd_to_end(&mut memory, &mut state, second_fd);
+        assert!(valid_lowercase_uuid_v4(&second));
+        assert_eq!(
+            second,
+            synthetic_random_uuid_content(state.random_seed, state.tid, 1)
+        );
+        assert_ne!(second, first);
+
+        let path_only = open_with_flags(
+            &mut memory,
+            &mut state,
+            "/proc/sys/kernel/random/uuid",
+            libc::O_PATH,
+        );
+        assert!(path_only >= 0);
+        assert_eq!(state.proc_random_uuid_sequence, 2);
+        let reopened_path = format!("/proc/self/fd/{path_only}");
+        let reopened = open_readonly(&mut memory, &mut state, &reopened_path);
+        assert!(reopened >= 0);
+        let reopened_content = read_fd_to_end(&mut memory, &mut state, reopened);
+        assert!(valid_lowercase_uuid_v4(&reopened_content));
+        assert_eq!(
+            reopened_content,
+            synthetic_random_uuid_content(state.random_seed, state.tid, 2)
+        );
+        assert_ne!(reopened_content, first);
+        assert_ne!(reopened_content, second);
+        assert_eq!(state.proc_random_uuid_sequence, 3);
+        let after_reopen = open_readonly(&mut memory, &mut state, "/proc/sys/kernel/random/uuid");
+        let after_reopen_content = read_fd_to_end(&mut memory, &mut state, after_reopen);
+        assert!(valid_lowercase_uuid_v4(&after_reopen_content));
+        assert_eq!(
+            after_reopen_content,
+            synthetic_random_uuid_content(state.random_seed, state.tid, 3)
+        );
+        assert_ne!(after_reopen_content, reopened_content);
+
+        let mut replay = test_state(&root.0);
+        replay.random_seed = state.random_seed;
+        let replay_fd = open_readonly(&mut memory, &mut replay, "/proc/sys/kernel/random/uuid");
+        assert_eq!(read_fd_to_end(&mut memory, &mut replay, replay_fd), first);
+        let mut changed_seed = test_state(&root.0);
+        changed_seed.random_seed = state.random_seed ^ 1;
+        let changed_seed_fd = open_readonly(
+            &mut memory,
+            &mut changed_seed,
+            "/proc/sys/kernel/random/uuid",
+        );
+        assert_ne!(
+            read_fd_to_end(&mut memory, &mut changed_seed, changed_seed_fd),
+            first,
+            "the configured random seed must select a different UUID stream"
+        );
+
+        let transferred_source =
+            open_readonly(&mut memory, &mut state, "/proc/sys/kernel/random/uuid");
+        assert!(transferred_source >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [transferred_source as u64, 0xb00, 5, 0, 0, 0],
+            ),
+            5
+        );
+        let mut transferred = vec![0; 5];
+        memory.read(0xb00, &mut transferred).unwrap();
+        let received_file = state.files[&(transferred_source as libc::c_int)]
+            .try_clone()
+            .unwrap();
+        let received = install_received_rights(
+            &mut state,
+            &mut [0; std::mem::size_of::<libc::c_int>()],
+            vec![PendingReceivedRight {
+                control_offset: 0,
+                file: received_file,
+            }],
+            false,
+        )
+        .unwrap();
+        assert_eq!(received.len(), 1);
+        transferred.extend_from_slice(&read_fd_to_end(
+            &mut memory,
+            &mut state,
+            i64::from(received[0]),
+        ));
+        assert!(valid_lowercase_uuid_v4(&transferred));
+        assert_eq!(
+            transferred,
+            synthetic_random_uuid_content(state.random_seed, state.tid, 4)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [transferred_source as u64, 0xb00, 1, 0, 0, 0],
+            ),
+            0,
+            "the received carrier must retain its source open-description cursor"
+        );
+
+        let sequence = state.proc_random_uuid_sequence;
+        let child = state.try_clone_for_fork(2).unwrap();
+        assert_eq!(child.proc_random_uuid_sequence, sequence);
+        assert_ne!(
+            synthetic_random_uuid_content(child.random_seed, child.tid, sequence),
+            synthetic_random_uuid_content(state.random_seed, state.tid, sequence),
+            "a forked virtual TID must use a distinct deterministic stream"
+        );
+        let mut replacement = test_exec_replacement(&root.0, &state);
+        replacement.inherit_process_state(state);
+        assert_eq!(replacement.proc_random_uuid_sequence, sequence);
+    }
+
+    #[test]
+    fn synthetic_pty_count_tracks_distinct_master_open_descriptions() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let count = |state: &LoadedStaticElf| {
+            synthetic_proc_content(state, b"/proc/sys/kernel/pty/nr").unwrap()
+        };
+        assert_eq!(count(&state), b"0\n");
+
+        let snapshot_zero = open_readonly(&mut memory, &mut state, "/proc/sys/kernel/pty/nr");
+        assert!(snapshot_zero >= 0);
+
+        let path_only = open_with_flags(
+            &mut memory,
+            &mut state,
+            "/proc/sys/kernel/pty/nr",
+            libc::O_PATH,
+        );
+        assert!(path_only >= 0);
+
+        let first = open_with_flags(
+            &mut memory,
+            &mut state,
+            "/dev/ptmx",
+            libc::O_RDWR | libc::O_NOCTTY,
+        );
+        assert!(first >= 0);
+        assert_eq!(count(&state), b"1\n");
+        assert_eq!(
+            read_fd_to_end(&mut memory, &mut state, snapshot_zero),
+            b"0\n",
+            "the authenticated carrier must retain its open-time snapshot"
+        );
+        let reopened_path = format!("/proc/self/fd/{path_only}");
+        let reopened = open_readonly(&mut memory, &mut state, &reopened_path);
+        assert!(reopened >= 0);
+        assert_eq!(read_fd_to_end(&mut memory, &mut state, reopened), b"1\n");
+
+        let alias = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [first as u64, 0, 0, 0, 0, 0],
+        );
+        assert!(alias >= 0);
+        assert_eq!(count(&state), b"1\n");
+
+        let second = open_with_flags(
+            &mut memory,
+            &mut state,
+            "/dev/ptmx",
+            libc::O_RDWR | libc::O_NOCTTY,
+        );
+        assert!(second >= 0);
+        assert_eq!(count(&state), b"2\n");
+
+        assert_eq!(close(&mut state, first as u64), 0);
+        assert_eq!(count(&state), b"2\n");
+        assert_eq!(close(&mut state, alias as u64), 0);
+        assert_eq!(count(&state), b"1\n");
+        assert_eq!(close(&mut state, second as u64), 0);
+        assert_eq!(count(&state), b"0\n");
+
+        assert_eq!(
+            synthetic_proc_path_for_inode(synthetic_proc_inode(b"/proc/sys/kernel/pty/nr")),
+            Some(b"/proc/sys/kernel/pty/nr".as_slice())
+        );
+        let fd = open_readonly(&mut memory, &mut state, "/proc/sys/kernel/pty/nr");
+        assert!(fd >= 0);
+        assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"0\n");
     }
 
     #[test]

@@ -765,6 +765,11 @@ pub(crate) struct LoadedStaticElf {
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-228): Review caller-provided deterministic random seed state.
     pub random_seed: u64,
+    /// Per-thread sequence used to mint distinct deterministic
+    /// `/proc/sys/kernel/random/uuid` snapshots. Fork inherits the cursor but
+    /// also changes `tid`; exec preserves it with the rest of the random
+    /// persona.
+    pub proc_random_uuid_sequence: u64,
     /// Linux task name (`comm`), including the terminating NUL byte.
     ///
     /// This is per-thread state: fork and clone inherit the caller's value,
@@ -961,6 +966,7 @@ impl LoadedStaticElf {
             logical_clock_ns: self.logical_clock_ns,
             umask: self.umask,
             random_seed: self.random_seed,
+            proc_random_uuid_sequence: self.proc_random_uuid_sequence,
             thread_name: self.thread_name,
             thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(self.thread_name)),
             thp_disabled: std::sync::Arc::new(AtomicU8::new(
@@ -1171,6 +1177,7 @@ impl LoadedStaticElf {
         self.signal_dequeue_failure = previous.signal_dequeue_failure;
         self.umask = previous.umask;
         self.random_seed = previous.random_seed;
+        self.proc_random_uuid_sequence = previous.proc_random_uuid_sequence;
         // `thread_name` intentionally remains the replacement image's name.
         self.thp_disabled = thp_disabled;
         self.keep_capabilities = false;
@@ -1607,6 +1614,7 @@ fn load_executable(
         logical_clock_ns: 0,
         umask: 0o022,
         random_seed: 0,
+        proc_random_uuid_sequence: 0,
         thread_name,
         thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(thread_name)),
         thp_disabled: std::sync::Arc::new(AtomicU8::new(0)),
