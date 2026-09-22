@@ -39,6 +39,39 @@ class HermitBoxRunTests(unittest.TestCase):
             process.kill()
         process.wait(timeout=2)
 
+    def clean_exact_unit(self, unit: str) -> None:
+        if not unit:
+            return
+        subprocess.run(
+            ["/usr/bin/systemctl", "--user", "kill", "--kill-whom=all", "--signal=KILL", unit],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=1,
+            check=False,
+        )
+        subprocess.run(
+            ["/usr/bin/systemctl", "--user", "stop", unit],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+        subprocess.run(
+            ["/usr/bin/systemctl", "--user", "reset-failed", unit],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=1,
+            check=False,
+        )
+        terminal = subprocess.run(
+            ["/usr/bin/systemctl", "--user", "show", unit, "-p", "LoadState"],
+            text=True,
+            capture_output=True,
+            timeout=1,
+            check=False,
+        )
+        self.assertEqual("LoadState=not-found\n", terminal.stdout, terminal.stderr)
+
     def setUp(self) -> None:
         if subprocess.run(
             ["systemctl", "--user", "show", "-p", "Version"],
@@ -150,6 +183,255 @@ class HermitBoxRunTests(unittest.TestCase):
         self.assert_fast_exit_series_is_measured(
             command=["/bin/sh", "-c", "exit 7"], exit_code=7
         )
+
+    def test_repeated_fast_no_receipt_runs_keep_scope_until_measured(self) -> None:
+        fake_bin = self.base / "delayed-control-group-bin"
+        fake_bin.mkdir()
+        marker = self.base / "delayed-control-group.marker"
+        systemctl = fake_bin / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [[ $* == *"show -p ControlGroup --value hermit-box-run-"* ]] \
+                    && [[ ! -e {str(marker)!r} ]]; then
+                    : > {str(marker)!r}
+                    sleep 0.5
+                fi
+                exec /usr/bin/systemctl "$@"
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        for attempt in range(10):
+            with self.subTest(attempt=attempt):
+                marker.unlink(missing_ok=True)
+                diag = self.base / f"fast-no-receipt-{attempt}.diag"
+                completed = subprocess.run(
+                    [
+                        str(self.box),
+                        "--passthrough",
+                        "--cpu-budget",
+                        "30",
+                        "--wall",
+                        "10",
+                        "--diag-log",
+                        str(diag),
+                        "--",
+                        "/bin/true",
+                    ],
+                    cwd=self.base,
+                    env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+                    text=True,
+                    capture_output=True,
+                    timeout=8,
+                    check=False,
+                )
+                diagnostic = diag.read_text()
+                self.assertTrue(
+                    marker.exists(), "delayed ControlGroup adapter did not run"
+                )
+                self.assertEqual(0, completed.returncode, completed.stderr + diagnostic)
+                self.assertRegex(diagnostic, r"(?m)^\[hermit-box-run\] cgroup=/")
+                measurements = re.findall(
+                    r"(?m)^\[hermit-box-run\] final usage_usec=([0-9]+) .*$",
+                    diagnostic,
+                )
+                self.assertEqual(1, len(measurements), diagnostic)
+                scope_match = re.search(r"scope=(hermit-box-run-[^ ]+\.scope)", diagnostic)
+                self.assertIsNotNone(scope_match)
+                terminal = subprocess.run(
+                    [
+                        "/usr/bin/systemctl",
+                        "--user",
+                        "show",
+                        scope_match.group(1),
+                        "-p",
+                        "LoadState",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=2,
+                    check=False,
+                )
+                self.assertEqual("LoadState=not-found\n", terminal.stdout)
+
+    def test_no_receipt_signal_preserves_exact_streams_and_status(self) -> None:
+        diag = self.base / "signal-streams.diag"
+        completed = subprocess.run(
+            [
+                str(self.box),
+                "--passthrough",
+                "--cpu-budget",
+                "30",
+                "--wall",
+                "10",
+                "--diag-log",
+                str(diag),
+                "--",
+                sys.executable,
+                "-c",
+                (
+                    "import os, signal, sys; "
+                    "sys.stdout.write('payload-out'); sys.stdout.flush(); "
+                    "sys.stderr.write('payload-err'); sys.stderr.flush(); "
+                    "os.kill(os.getpid(), signal.SIGTERM)"
+                ),
+            ],
+            cwd=self.base,
+            text=True,
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        self.assertEqual(143, completed.returncode, diag.read_text())
+        self.assertEqual("payload-out", completed.stdout)
+        self.assertEqual("payload-err", completed.stderr)
+
+    def test_default_diagnostic_log_is_removed(self) -> None:
+        completed = subprocess.run(
+            [
+                str(self.box),
+                "--passthrough",
+                "--cpu-budget",
+                "30",
+                "--wall",
+                "10",
+                "--",
+                "/bin/true",
+            ],
+            cwd=self.base,
+            env=os.environ | {"TMPDIR": str(self.base)},
+            text=True,
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual([], list(self.base.glob("hermit-box-run.*.diag.log")))
+
+    def test_normal_wall_expiry_has_typed_verdict(self) -> None:
+        actual = self.base / "wall-expiry.json"
+        diag = self.base / "wall-expiry.diag"
+        fake_bin = self.base / "delayed-wall-bin"
+        fake_bin.mkdir()
+        marker = self.base / "delayed-wall.marker"
+        systemctl = fake_bin / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [[ $* == *"show -p ControlGroup --value hermit-box-run-"* ]] \
+                    && [[ ! -e {str(marker)!r} ]]; then
+                    : > {str(marker)!r}
+                    sleep 1.8
+                fi
+                exec /usr/bin/systemctl "$@"
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        completed = subprocess.run(
+            [
+                str(self.box),
+                "--passthrough",
+                "--cpu-budget",
+                "30",
+                "--wall",
+                "1",
+                "--actual-json",
+                str(actual),
+                "--diag-log",
+                str(diag),
+                "--",
+                "/bin/sleep",
+                "30",
+            ],
+            cwd=self.base,
+            env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            text=True,
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        diagnostic = diag.read_text()
+        self.assertTrue(marker.exists(), "delayed wall adapter did not run")
+        self.assertEqual(137, completed.returncode, completed.stderr + diagnostic)
+        self.assertIn("WALL-TIMEOUT:", diagnostic)
+        boxed = json.loads(actual.read_text())
+        self.assertTrue(boxed["reaped"])
+        self.assertEqual("wall_backstop", boxed["termination"])
+        self.assertEqual(137, boxed["exit_code"])
+
+    def test_parent_sigkill_leaves_manager_bounded_scope(self) -> None:
+        diag = self.base / "parent-sigkill.diag"
+        process = subprocess.Popen(
+            [
+                str(self.box),
+                "--passthrough",
+                "--cpu-budget",
+                "30",
+                "--wall",
+                "1",
+                "--diag-log",
+                str(diag),
+                "--",
+                "/bin/sh",
+                "-c",
+                "exec sleep 30",
+            ],
+            cwd=self.base,
+            env=os.environ | {"TMPDIR": str(self.base)},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        unit = ""
+        try:
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline:
+                diagnostic = diag.read_text() if diag.exists() else ""
+                match = re.search(r"scope=(hermit-box-run-[^ ]+\.scope)", diagnostic)
+                if match and "cgroup=" in diagnostic:
+                    unit = match.group(1)
+                    break
+                self.assertIsNone(process.poll(), diagnostic)
+                time.sleep(0.02)
+            self.assertTrue(unit, "scope did not become active before SIGKILL")
+            process.kill()
+            process.communicate(timeout=4)
+            deadline = time.monotonic() + 4
+            load_state = ""
+            while time.monotonic() < deadline:
+                terminal = subprocess.run(
+                    [
+                        "/usr/bin/systemctl",
+                        "--user",
+                        "show",
+                        unit,
+                        "-p",
+                        "LoadState",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=1,
+                    check=False,
+                )
+                load_state = terminal.stdout
+                if load_state == "LoadState=not-found\n":
+                    break
+                time.sleep(0.02)
+            self.assertEqual("LoadState=not-found\n", load_state)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate(timeout=2)
+            self.clean_exact_unit(unit)
 
     def test_completed_cpu_reference_is_released(self) -> None:
         completed, actual, diag = self.run_actual_probe(
@@ -475,6 +757,41 @@ class HermitBoxRunTests(unittest.TestCase):
         self.assertIn("authoritative cgroup CPU unavailable", diagnostic)
         self.assertFalse(actual.exists())
 
+    def test_missing_final_numeric_cpu_usage_refuses_no_receipt_run(self) -> None:
+        fake_bin = self.base / "fake-no-receipt-awk"
+        fake_bin.mkdir()
+        awk = fake_bin / "awk"
+        awk.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        awk.chmod(0o755)
+        diag = self.base / "missing-no-receipt.diag"
+        completed = subprocess.run(
+            [
+                str(self.box),
+                "--passthrough",
+                "--cpu-budget",
+                "30",
+                "--wall",
+                "10",
+                "--diag-log",
+                str(diag),
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf accounted-output; sleep 0.2",
+            ],
+            cwd=self.base,
+            env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            text=True,
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        diagnostic = diag.read_text()
+        self.assertEqual(3, completed.returncode, completed.stderr + diagnostic)
+        self.assertEqual("accounted-output", completed.stdout)
+        self.assertIn("final usage_usec=unavailable", diagnostic)
+        self.assertIn("refusing boxed run", diagnostic)
+
     def test_orc_direct_term_during_lookup_reaps_double_fork_scope(self) -> None:
         marker = self.base / "lookup-started"
         escapee = self.base / "escapee.pid"
@@ -636,6 +953,130 @@ class HermitBoxRunTests(unittest.TestCase):
                     stderr=subprocess.DEVNULL,
                     check=False,
                 )
+
+    def test_term_before_scope_submission_cancels_payload(self) -> None:
+        fake_bin = self.base / "pre-submission-bin"
+        fake_bin.mkdir()
+        marker = self.base / "submission-delayed"
+        payload = self.base / "payload-ran"
+        diag = self.base / "pre-submission.diag"
+        systemd_run = fake_bin / "systemd-run"
+        systemd_run.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                : > {str(marker)!r}
+                sleep 2
+                exec /usr/bin/systemd-run "$@"
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemd_run.chmod(0o755)
+        process = subprocess.Popen(
+            [
+                str(self.box),
+                "--passthrough",
+                "--cpu-budget",
+                "30",
+                "--wall",
+                "10",
+                "--diag-log",
+                str(diag),
+                "--",
+                "/usr/bin/touch",
+                str(payload),
+            ],
+            cwd=self.base,
+            env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        unit = ""
+        try:
+            deadline = time.monotonic() + 2
+            while not marker.exists() and time.monotonic() < deadline:
+                self.assertIsNone(process.poll(), diag.read_text() if diag.exists() else "")
+                time.sleep(0.01)
+            self.assertTrue(marker.exists(), "systemd-run submission was not delayed")
+            started = time.monotonic()
+            process.send_signal(signal.SIGTERM)
+            stdout, stderr = process.communicate(timeout=4)
+            self.assertLess(time.monotonic() - started, 3)
+            self.assertEqual(143, process.returncode, stdout + stderr + diag.read_text())
+            self.assertFalse(payload.exists())
+            scope = re.search(r"scope=(hermit-box-run-[^ ]+\.scope)", diag.read_text())
+            self.assertIsNotNone(scope)
+            unit = scope.group(1)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate(timeout=2)
+            self.clean_exact_unit(unit)
+
+    def test_hanging_manager_adapter_is_bounded_and_refused(self) -> None:
+        fake_bin = self.base / "hanging-manager-bin"
+        fake_bin.mkdir()
+        systemd_run = fake_bin / "systemd-run"
+        systemd_run.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                while [[ $# -gt 0 && $1 != -- ]]; do shift; done
+                [[ ${1:-} == -- ]] || exit 64
+                shift
+                exec "$@"
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemd_run.chmod(0o755)
+        systemctl = fake_bin / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [[ $* == *"show -p Version"* ]]; then
+                  exec /usr/bin/systemctl "$@"
+                fi
+                if [[ $* == *"show -p ControlGroup --value"* ]]; then
+                  exit 0
+                fi
+                sleep 5
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        diag = self.base / "hanging-manager.diag"
+        started = time.monotonic()
+        completed = subprocess.run(
+            [
+                str(self.box),
+                "--passthrough",
+                "--cpu-budget",
+                "30",
+                "--wall",
+                "10",
+                "--diag-log",
+                str(diag),
+                "--",
+                "/bin/true",
+            ],
+            cwd=self.base,
+            env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            text=True,
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+        self.assertLess(time.monotonic() - started, 6)
+        self.assertEqual(3, completed.returncode, completed.stderr + diag.read_text())
+        self.assertIn("could not establish reaper cgroup", completed.stderr)
 
     def test_normal_main_exit_still_reaps_double_fork_escapee(self) -> None:
         escapee = self.base / "normal-escapee.pid"

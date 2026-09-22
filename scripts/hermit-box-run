@@ -261,10 +261,18 @@ PY
   local receipt_pid="" completed_cpu_observed=0 completed_cpu_nsec="" maximum_usage=0 accounting_failed=0
   local budget_usec=$(( cpu_budget * 1000000 ))
   local reaped=0 last_usage=0 termination="completed" status=0
+  local teardown_armed=1 pending_signal=0 scope_teardown_proven=0 teardown_exhausted=0
+  local manager_wall=1800 wall_deadline=0
+  if [ -n "$wall" ]; then
+    manager_wall=$(( wall + 2 ))
+    wall_deadline=$(( $(date +%s) + wall ))
+  fi
   unit="hermit-box-run-$$-$(date +%s%N).scope"
-  local -a sr=(systemd-run --user --scope --quiet --unit="$unit"
+  local -a sr=(systemd-run --user --scope --quiet --collect --unit="$unit"
                --description="hermit-box-run passthrough: $*"
-               -p "KillMode=control-group")
+               -p "KillMode=control-group"
+               -p "RuntimeMaxSec=$manager_wall"
+               -p "KillSignal=SIGKILL")
   [ -n "$allowed_cpus" ] && sr+=(-p "AllowedCPUs=$allowed_cpus")
   # Memory cap -> cgroup memory.max with swap disabled, so the kernel HARD-OOM-kills the
   # subtree at the cap instead of swapping past it (matches the outer safe-ci.slice policy).
@@ -333,22 +341,124 @@ PY
     return 1
   }
   _pt_kill_scope() {
-    local attempts=${1:-20} attempt
-    for attempt in $(seq 1 "$attempts"); do
-      if _pt_resolve_cgroup && [ -w "$cgpath/cgroup.kill" ]; then
-        echo 1 > "$cgpath/cgroup.kill" 2>/dev/null || true
-        return 0
+    local attempts=${1:-20} attempt kill_requested=0
+    local started deadline short_deadline now
+    _pt_monotonic_ms() {
+      /usr/bin/awk '{ printf "%d\n", $1 * 1000 }' /proc/uptime
+    }
+    started="$(_pt_monotonic_ms)"
+    deadline=$(( started + 800 ))
+    short_deadline=$(( started + 250 ))
+    _pt_scope_quiescent() {
+      local manager=${1:-systemctl} populated="" state="" load="" active="" key value
+      if [ -n "$cgpath" ] && [ -e "$cgpath" ]; then
+        populated="$(/usr/bin/awk '$1 == "populated" { print $2; exit }' \
+          "$cgpath/cgroup.events" 2>/dev/null)"
+        [ "$populated" = 0 ] || return 1
       fi
+      state="$(timeout 0.2 "$manager" --user show "$unit" \
+        -p LoadState -p ActiveState 2>/dev/null)" || return 1
+      while IFS='=' read -r key value; do
+        case "$key" in
+          LoadState) load=$value ;;
+          ActiveState) active=$value ;;
+        esac
+      done <<<"$state"
+      [ "$load" = not-found ] && return 0
+      [ "$load" = loaded ] || return 1
+      [ "$active" = inactive ] || [ "$active" = failed ]
+    }
+    _pt_wait_quiescent() {
+      local until=$1 manager=${2:-systemctl}
+      while :; do
+        _pt_scope_quiescent "$manager" && return 0
+        now="$(_pt_monotonic_ms)"
+        [ "$now" -lt "$until" ] || return 1
+        sleep 0.02
+      done
+    }
+    _pt_unit_absent() {
+      local manager=${1:-/usr/bin/systemctl} state=""
+      state="$(timeout 0.2 "$manager" --user show "$unit" \
+        -p LoadState --value 2>/dev/null)" || return 1
+      [ "$state" = not-found ]
+    }
+    _pt_wait_unit_absent() {
+      local until=$1 manager=${2:-/usr/bin/systemctl}
+      while :; do
+        _pt_unit_absent "$manager" && return 0
+        now="$(_pt_monotonic_ms)"
+        [ "$now" -lt "$until" ] || return 1
+        sleep 0.02
+      done
+    }
+    _pt_scope_quiescent && return 0
+    if _pt_resolve_cgroup && [ -w "$cgpath/cgroup.kill" ]; then
+      if echo 1 > "$cgpath/cgroup.kill" 2>/dev/null; then
+        _pt_wait_quiescent "$short_deadline" && return 0
+      fi
+    fi
+    for attempt in $(seq 1 "$attempts"); do
       # The unit name is authority even before ControlGroup becomes readable.
       # Retry briefly because systemd-run may have submitted creation just as
       # the outer process delivered TERM.
-      if systemctl --user kill --kill-whom=all --signal=KILL "$unit" \
+      if timeout 0.15 systemctl --user kill --kill-whom=all --signal=KILL "$unit" \
           >/dev/null 2>&1; then
-        return 0
+        kill_requested=1
+        break
       fi
+      now="$(_pt_monotonic_ms)"
+      [ "$now" -lt "$short_deadline" ] || break
       [ "$attempt" -ge "$attempts" ] || sleep 0.02
     done
-    systemctl --user --no-block stop "$unit" >/dev/null 2>&1 || true
+    if [ "$kill_requested" -eq 1 ]; then
+      _pt_wait_quiescent "$short_deadline" && return 0
+    fi
+    timeout 0.2 systemctl --user stop "$unit" >/dev/null 2>&1 || true
+    _pt_wait_quiescent "$deadline"
+  }
+  _pt_release_holder() {
+    [ -n "$payload_release_file" ] && [ -p "$payload_release_file" ] || return 0
+    timeout 1 bash -c 'printf "\n" >"$1"' bash "$payload_release_file"
+  }
+  _pt_kill_runner_group() {
+    [ -n "$runner_pid" ] || return 0
+    # systemd-run and any child it creates before the named scope exists run
+    # in this private session.  The group is the only complete authority in
+    # the registration-failure window where ControlGroup is still absent.
+    kill -KILL -- "-$runner_pid" 2>/dev/null || true
+    kill -KILL "$runner_pid" 2>/dev/null || true
+  }
+  _pt_kill_or_refuse() {
+    local attempts=${1:-20} fallback_deadline
+    [ "$scope_teardown_proven" -eq 0 ] || return 0
+    [ "$teardown_exhausted" -eq 0 ] || return 1
+    if _pt_kill_scope "$attempts"; then
+      scope_teardown_proven=1
+      return 0
+    fi
+    accounting_failed=1
+    status=3
+    diag "ERROR: could not prove owned scope teardown; releasing holder and refusing."
+    if [ -n "$cgpath" ] && [ -w "$cgpath/cgroup.freeze" ]; then
+      echo 0 >"$cgpath/cgroup.freeze" 2>/dev/null || true
+    fi
+    _pt_release_holder || true
+    _pt_kill_runner_group
+    # A PATH adapter or transient client failure must not strand a frozen
+    # escapee.  Retry through the canonical manager client and do not return
+    # until that exact unit is authoritatively absent/inactive.
+    fallback_deadline=$(( $(_pt_monotonic_ms) + 500 ))
+    timeout 0.2 /usr/bin/systemctl --user kill --kill-whom=all --signal=KILL \
+      "$unit" >/dev/null 2>&1 || true
+    timeout 0.2 /usr/bin/systemctl --user stop "$unit" >/dev/null 2>&1 || true
+    if _pt_wait_quiescent "$fallback_deadline" /usr/bin/systemctl; then
+      scope_teardown_proven=1
+      return 0
+    fi
+    teardown_exhausted=1
+    diag "ERROR: exact scope teardown remained unproved at cleanup deadline."
+    return 1
   }
   _pt_start_cpu_reference() {
     # Keep completed unit accounting readable after the held scope is reaped.
@@ -655,73 +765,135 @@ CPU_REFERENCE_PY
     for attempt in $(seq 1 100); do
       [ -f "$hold_dir/cpu.ready" ] && return 0
       kill -0 "$receipt_pid" 2>/dev/null || return 1
+      if [ "$wall_deadline" -gt 0 ] && \
+         [ "$(date +%s)" -ge "$(( wall_deadline + 2 ))" ]; then
+        kill -KILL "$receipt_pid" 2>/dev/null || true
+        wait "$receipt_pid" 2>/dev/null || true
+        receipt_pid=""
+        return 2
+      fi
       sleep 0.05
     done
     kill -KILL "$receipt_pid" 2>/dev/null || true
     wait "$receipt_pid" 2>/dev/null || true
     return 1
   }
+  _pt_reap_for_wall_timeout() {
+    diag "WALL-TIMEOUT: exceeded ${wall}s wall-clock — reaping via cgroup.kill"
+    termination="wall_backstop"
+    _pt_freeze_and_capture || true
+    _pt_kill_or_refuse || true
+    reaped=1
+  }
   _pt_teardown() {
     local status=$1
-    trap - TERM INT HUP
+    local teardown_verified=0
+    [ "$teardown_armed" -eq 1 ] || exit "$status"
+    teardown_armed=0
+    trap - EXIT TERM INT HUP
     # Stop the launcher immediately, then sweep any scope it already submitted.
     # Either variable may still be empty; cleanup is deliberately partial-init-safe.
-    if [ -n "$runner_pid" ]; then
-      kill -KILL "$runner_pid" 2>/dev/null || true
+    _pt_kill_runner_group
+    if _pt_kill_or_refuse; then
+      teardown_verified=1
     fi
-    _pt_kill_scope
+    _pt_release_holder || true
     if [ -n "$runner_pid" ]; then
       wait "$runner_pid" 2>/dev/null || true
+      runner_pid=""
     fi
     if [ -n "$receipt_pid" ]; then
       kill -KILL "$receipt_pid" 2>/dev/null || true
       wait "$receipt_pid" 2>/dev/null || true
+      receipt_pid=""
     fi
-    if [ -n "$hold_dir" ]; then
+    if [ "$teardown_verified" -eq 1 ]; then
+      local collection_deadline
+      collection_deadline=$(( $(_pt_monotonic_ms) + 800 ))
+      if ! _pt_wait_unit_absent "$collection_deadline" /usr/bin/systemctl; then
+        teardown_verified=0
+        status=3
+        diag "ERROR: exact transient unit was not collected at cleanup deadline."
+      fi
+    fi
+    if [ -n "$hold_dir" ] && [ "$teardown_verified" -eq 1 ]; then
       rm -f -- "$hold_dir"/cpu.{ready,ready.tmp,finish,finish.tmp,final,final.tmp,readback,readback.tmp,error,error.tmp}
       rm -f -- "$payload_status_file" "$payload_status_file.tmp" \
         "$payload_release_file" 2>/dev/null || true
       rmdir -- "$hold_dir" 2>/dev/null || true
+    fi
+    if [ "$teardown_verified" -eq 1 ] && [ -n "${HBR_AUTO_DIAG:-}" ]; then
+      rm -f -- "$HBR_AUTO_DIAG"
+      HBR_AUTO_DIAG=""
     fi
     exit "$status"
   }
   trap '_pt_teardown 143' TERM
   trap '_pt_teardown 130' INT
   trap '_pt_teardown 129' HUP
+  trap '_pt_teardown $?' EXIT
 
   local -a scope_command=("$@")
-  if [ -n "$actual_json" ]; then
-    hold_dir="$(mktemp -d -t hermit-box-run-hold.XXXXXX)" || {
-      echo "hermit-box-run: could not create cgroup receipt hold directory (exit 3)" >&8
-      exit 3
-    }
-    payload_status_file="$hold_dir/status"
-    payload_release_file="$hold_dir/release"
-    mkfifo -- "$payload_release_file" || {
-      echo "hermit-box-run: could not create cgroup receipt hold pipe (exit 3)" >&8
-      rmdir -- "$hold_dir" 2>/dev/null || true
-      exit 3
-    }
-    # Keep one inert process in the scope after the payload exits. Otherwise
-    # systemd can remove the transient cgroup between wait(2) and the final
-    # cpu.stat read, making a completed run lose its receipt. The parent freezes
-    # the held cgroup, records its CPU counter, and kills its own scope. The
-    # retained unit then supplies the completed total including that teardown.
-    scope_command=(bash -c '
-      status_file=$1
-      release_file=$2
-      shift 2
-      rc=0
-      "$@" || rc=$?
-      printf "%s\n" "$rc" >"$status_file.tmp"
-      mv -- "$status_file.tmp" "$status_file"
-      IFS= read -r _ <"$release_file"
-      exit "$rc"
-    ' bash "$payload_status_file" "$payload_release_file" "$@")
-  fi
+  hold_dir="$(mktemp -d -t hermit-box-run-hold.XXXXXX)" || {
+    echo "hermit-box-run: could not create cgroup hold directory (exit 3)" >&8
+    exit 3
+  }
+  payload_status_file="$hold_dir/status"
+  payload_release_file="$hold_dir/release"
+  mkfifo -- "$payload_release_file" || {
+    echo "hermit-box-run: could not create cgroup hold pipe (exit 3)" >&8
+    rmdir -- "$hold_dir" 2>/dev/null || true
+    exit 3
+  }
+  # Keep one inert process in every passthrough scope after the payload exits.
+  # Without the holder, a fast no-receipt command can disappear before the
+  # first ControlGroup query, which makes a real cgroup look unavailable and
+  # causes full-corpus validation to refuse nondeterministically. The parent
+  # freezes the held cgroup, records its final cpu.stat sample, and kills only
+  # its own scope. --actual-json additionally retains the completed systemd
+  # property through the reference client below.
+  scope_command=(python3 -c '
+import os
+import pathlib
+import signal
+import subprocess
+import sys
 
-  "${sr[@]}" -- "${scope_command[@]}" 1>&7 2>&8 7>&- 8>&- 9>&- &
+status_file = pathlib.Path(sys.argv[1])
+release_file = pathlib.Path(sys.argv[2])
+completed = subprocess.run(sys.argv[3:], check=False)
+caller_status = 128 - completed.returncode if completed.returncode < 0 else completed.returncode
+temporary = status_file.with_name(status_file.name + ".tmp")
+temporary.write_text(str(caller_status) + "\n", encoding="ascii")
+temporary.replace(status_file)
+with release_file.open("rb") as stream:
+    stream.read(1)
+if completed.returncode < 0:
+    signum = -completed.returncode
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+    raise SystemExit(128 + signum)
+raise SystemExit(completed.returncode)
+' "$payload_status_file" "$payload_release_file" "$@")
+
+  # Latch handled signals until the private session PID is recorded. Without
+  # this two-check handoff, a signal between fork and `$!` assignment has no
+  # process-group authority to clean up.
+  trap 'pending_signal=143' TERM
+  trap 'pending_signal=130' INT
+  trap 'pending_signal=129' HUP
+  /usr/bin/setsid --wait "${sr[@]}" -- "${scope_command[@]}" \
+    1>&7 2>&8 7>&- 8>&- 9>&- &
   runner_pid=$!
+  if [ "$pending_signal" -ne 0 ]; then
+    _pt_teardown "$pending_signal"
+  fi
+  trap '_pt_teardown 143' TERM
+  trap '_pt_teardown 130' INT
+  trap '_pt_teardown 129' HUP
+  if [ "$pending_signal" -ne 0 ]; then
+    _pt_teardown "$pending_signal"
+  fi
 
   # Resolve the scope's cgroup path (may take a beat to register).
   # `_` because the counter bounds the retry loop and is never read.
@@ -739,7 +911,12 @@ CPU_REFERENCE_PY
   # query while the transient unit may still be readable. Never infer cgroup
   # availability merely from the child's exit.
   if [ "$cgroup_resolved" -eq 0 ] && ! kill -0 "$runner_pid" 2>/dev/null; then
-    wait "$runner_pid" 2>/dev/null || status=$?
+    if wait "$runner_pid" 2>/dev/null; then
+      status=0
+    else
+      status=$?
+    fi
+    runner_pid=""
     runner_waited=1
     if _pt_resolve_cgroup && [ -r "$cgpath/cpu.stat" ]; then
       cgroup_resolved=1
@@ -751,10 +928,15 @@ CPU_REFERENCE_PY
     # direct child has already exited; with fail-closed boxing this invocation
     # is a refusal, never a successful run with invented zero usage.
     diag "ERROR: could not resolve scope cgroup for $unit; sweeping own unit and failing closed."
-    _pt_kill_scope
+    _pt_kill_or_refuse || true
     if [ "$runner_waited" -eq 0 ]; then
-      kill -KILL "$runner_pid" 2>/dev/null || true
-      wait "$runner_pid" 2>/dev/null || status=$?
+      _pt_kill_runner_group
+      if wait "$runner_pid" 2>/dev/null; then
+        status=0
+      else
+        status=$?
+      fi
+      runner_pid=""
       runner_waited=1
     fi
     if [ "$allow_cgroup_failure" -eq 0 ]; then
@@ -763,17 +945,31 @@ CPU_REFERENCE_PY
     fi
   else
     diag "cgroup=$cgpath"
-    if [ -n "$actual_json" ] && ! _pt_start_cpu_reference; then
-      accounting_failed=1
-      diag "ERROR: could not retain completed scope CPU accounting."
-      _pt_kill_scope
+    local setup_wall_expired=0 reference_status=0
+    if [ "$wall_deadline" -gt 0 ] && [ "$(date +%s)" -ge "$wall_deadline" ]; then
+      setup_wall_expired=1
+    fi
+    if [ -n "$actual_json" ]; then
+      if _pt_start_cpu_reference; then
+        reference_status=0
+      else
+        reference_status=$?
+      fi
+      if [ "$reference_status" -eq 2 ]; then
+        setup_wall_expired=1
+      elif [ "$reference_status" -ne 0 ]; then
+        accounting_failed=1
+        diag "ERROR: could not retain completed scope CPU accounting."
+        _pt_kill_or_refuse || true
+      fi
+    fi
+    if [ "$setup_wall_expired" -eq 1 ]; then
+      _pt_reap_for_wall_timeout
     fi
     # Wall deadline (real-clock backstop for a blocked/hung child that burns no CPU). The
     # memory cap needs no polling: the kernel OOM-kills the subtree at memory.max directly.
-    local wall_deadline=0
-    [ -n "$wall" ] && wall_deadline=$(( $(date +%s) + wall ))
     # Monitor loop: poll CPU-time usage + wall deadline; reap cgroup.kill-first on overrun.
-    while kill -0 "$runner_pid" 2>/dev/null; do
+    while [ "$setup_wall_expired" -eq 0 ] && kill -0 "$runner_pid" 2>/dev/null; do
       local usage_sample=""
       if [ -n "$payload_status_file" ] && [ -f "$payload_status_file" ]; then
         if IFS= read -r status <"$payload_status_file" && \
@@ -784,7 +980,7 @@ CPU_REFERENCE_PY
           diag "ERROR: payload exit status was absent or malformed."
         fi
         _pt_freeze_and_capture || true
-        _pt_kill_scope
+        _pt_kill_or_refuse || true
         break
       fi
       if usage_sample="$(_pt_read_usage)"; then
@@ -792,7 +988,7 @@ CPU_REFERENCE_PY
           accounting_failed=1
           final_usage_observed=0
           diag "ERROR: observed cgroup CPU counter decreased."
-          _pt_kill_scope
+          _pt_kill_or_refuse || true
           break
         fi
         last_usage="$usage_sample"
@@ -802,16 +998,12 @@ CPU_REFERENCE_PY
         diag "CPU-TIMEOUT: usage_usec=$last_usage exceeded budget=${budget_usec} (${cpu_budget}s) — reaping via cgroup.kill"
         termination="cpu_budget"
         _pt_freeze_and_capture || true
-        _pt_kill_scope
+        _pt_kill_or_refuse || true
         reaped=1
         break
       fi
       if [ "$wall_deadline" -gt 0 ] && [ "$(date +%s)" -ge "$wall_deadline" ]; then
-        diag "WALL-TIMEOUT: exceeded ${wall}s wall-clock — reaping via cgroup.kill"
-        termination="wall_backstop"
-        _pt_freeze_and_capture || true
-        _pt_kill_scope
-        reaped=1
+        _pt_reap_for_wall_timeout
         break
       fi
       sleep 0.25
@@ -820,8 +1012,19 @@ CPU_REFERENCE_PY
 
   if [ "$runner_waited" -eq 0 ]; then
     local runner_status=0
+    for _ in $(seq 1 250); do
+      kill -0 "$runner_pid" 2>/dev/null || break
+      sleep 0.02
+    done
+    if kill -0 "$runner_pid" 2>/dev/null; then
+      accounting_failed=1
+      status=3
+      diag "ERROR: systemd-run client did not exit after verified scope teardown."
+      _pt_kill_runner_group
+    fi
     wait "$runner_pid" 2>/dev/null || runner_status=$?
-    if [ "$payload_completed" -eq 0 ]; then
+    runner_pid=""
+    if [ "$payload_completed" -eq 0 ] && [ "$status" -ne 3 ]; then
       status=$runner_status
     fi
     runner_waited=1
@@ -853,15 +1056,37 @@ CPU_REFERENCE_PY
   # setsid/double-fork escapee it reparented can still linger in the scope cgroup — the exact
   # leak this wrapper prevents. Sweep the whole scope subtree unconditionally on exit so no
   # process survives us. (Only ever our OWN scope's cgroup.kill; never an external/broad kill.)
-  _pt_kill_scope 1
-  if [ -n "$hold_dir" ]; then
+  local final_teardown_verified=0
+  # A completed CPU receipt may have retained the inactive unit through
+  # RefUnit.  Its process-quiescence proof is not a collection proof after
+  # UnrefUnit, so force a fresh exact-unit query here.
+  scope_teardown_proven=0
+  if _pt_kill_or_refuse 1; then
+    local collection_deadline
+    collection_deadline=$(( $(_pt_monotonic_ms) + 800 ))
+    if _pt_wait_unit_absent "$collection_deadline" /usr/bin/systemctl; then
+      final_teardown_verified=1
+    else
+      accounting_failed=1
+      status=3
+      diag "ERROR: exact transient unit was not collected at cleanup deadline."
+    fi
+  fi
+  if [ -n "$hold_dir" ] && [ "$final_teardown_verified" -eq 1 ]; then
     rm -f -- "$hold_dir"/cpu.{ready,ready.tmp,finish,finish.tmp,final,final.tmp,readback,readback.tmp,error,error.tmp}
     rm -f -- "$payload_status_file" "$payload_status_file.tmp" \
       "$payload_release_file" 2>/dev/null || true
     rmdir -- "$hold_dir" 2>/dev/null || true
   fi
-  local actual_refused=0
-  if [ -n "$actual_json" ] && { [ "$cgroup_resolved" -eq 0 ] || [ "$final_usage_observed" -eq 0 ] || [ "$completed_cpu_observed" -eq 0 ] || [ "$accounting_failed" -eq 1 ]; }; then
+  local accounting_refused=0 actual_refused=0
+  if [ "$cgroup_resolved" -eq 0 ] || [ "$final_usage_observed" -eq 0 ] || \
+     [ "$accounting_failed" -eq 1 ]; then
+    accounting_refused=1
+    status=3
+    diag "ERROR: authoritative cgroup CPU unavailable; refusing boxed run."
+  fi
+  if [ -n "$actual_json" ] && { [ "$accounting_refused" -eq 1 ] || \
+     [ "$completed_cpu_observed" -eq 0 ]; }; then
     actual_refused=1
     status=3
     diag "ERROR: authoritative cgroup CPU unavailable; refusing --actual-json publication."
@@ -939,6 +1164,14 @@ PY
     { printf 'label,scope,cpu_budget_s,usage_usec,reaped,exit\n'
       printf '%s,%s,%s,%s,%s,%s\n' "$label" "$unit" "$cpu_budget" "${last_usage:-0}" "$reaped" "$status"
     } >> "$perf_dir/hermit-box-run-passthrough.csv" 2>/dev/null || true
+  fi
+  if [ "$final_teardown_verified" -eq 1 ]; then
+    teardown_armed=0
+    trap - EXIT TERM INT HUP
+  fi
+  if [ "$final_teardown_verified" -eq 1 ] && [ -n "${HBR_AUTO_DIAG:-}" ]; then
+    rm -f -- "$HBR_AUTO_DIAG"
+    HBR_AUTO_DIAG=""
   fi
   exit "$status"   # REAL child exit status (137 on a SIGKILL/cgroup.kill reap); never collapsed.
 }
