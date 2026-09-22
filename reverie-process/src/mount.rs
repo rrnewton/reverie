@@ -243,10 +243,11 @@ impl Mount {
     }
 
     // TODO-HUMAN-REVIEW(PR-615)
-    /// Allows a writable proc mount that fails with `EPERM` to retry read-only.
+    /// Allows a new writable proc mount that fails with `EPERM` to retry read-only.
     ///
     /// This explicitly permits the resulting mount to be less capable than
-    /// requested. It has no effect on non-proc or already-read-only mounts.
+    /// requested. It has no effect on non-proc or already-read-only mounts,
+    /// remounts, bind mounts, moves, or propagation changes.
     pub fn allow_readonly_fallback(mut self) -> Self {
         self.allow_readonly_fallback = true;
         self
@@ -404,9 +405,19 @@ impl Mount {
             .fstype
             .as_ref()
             .is_some_and(|fstype| fstype.as_bytes() == b"proc");
+        // These operations ignore the filesystem type, so `proc` does not
+        // identify the filesystem being changed. Only a new mount can retry.
+        let other_operations = MountFlags::MS_REMOUNT
+            | MountFlags::MS_BIND
+            | MountFlags::MS_MOVE
+            | MountFlags::MS_SHARED
+            | MountFlags::MS_PRIVATE
+            | MountFlags::MS_SLAVE
+            | MountFlags::MS_UNBINDABLE;
         (self.allow_readonly_fallback
             && error == Errno::EPERM
             && is_proc
+            && !self.flags.intersects(other_operations)
             && !self.flags.contains(MountFlags::MS_RDONLY))
         .then_some(self.flags | MountFlags::MS_RDONLY)
     }
@@ -716,6 +727,43 @@ mod tests {
                 .readonly_proc_fallback(Errno::EPERM),
             None
         );
+    }
+
+    #[test]
+    fn proc_mount_readonly_fallback_excludes_other_mount_operations() {
+        let mount = Mount::proc().allow_readonly_fallback();
+        let ordinary_flags = MountFlags::MS_NOSUID | MountFlags::MS_NODEV | MountFlags::MS_NOEXEC;
+        assert_eq!(
+            mount
+                .clone()
+                .flags(ordinary_flags)
+                .readonly_proc_fallback(Errno::EPERM),
+            Some(ordinary_flags | MountFlags::MS_RDONLY)
+        );
+        for flags in [
+            MountFlags::MS_REMOUNT,
+            MountFlags::MS_BIND,
+            MountFlags::MS_MOVE,
+            MountFlags::MS_SHARED,
+            MountFlags::MS_PRIVATE,
+            MountFlags::MS_SLAVE,
+            MountFlags::MS_UNBINDABLE,
+            MountFlags::MS_REMOUNT | MountFlags::MS_BIND,
+            MountFlags::MS_BIND | MountFlags::MS_REC,
+            MountFlags::MS_SHARED | MountFlags::MS_REC,
+            MountFlags::MS_PRIVATE | MountFlags::MS_REC,
+            MountFlags::MS_SLAVE | MountFlags::MS_REC,
+            MountFlags::MS_UNBINDABLE | MountFlags::MS_REC,
+        ] {
+            assert_eq!(
+                mount
+                    .clone()
+                    .flags(flags)
+                    .readonly_proc_fallback(Errno::EPERM),
+                None,
+                "must not retry a non-creation mount operation: {flags:?}"
+            );
+        }
     }
 
     #[test]
