@@ -81,7 +81,11 @@ fn late_detours_preserve_tls_original_calls_and_reject_aliases() {
             // as the plugin's recursion functions. Bind its own functions locally.
             .args([&search, &runpath, "-Wl,-z,now", "-llate_probe", "-o"])
             .arg(out.join("plugin.so"))
-            .args(["-UNDEBUG", "-Wl,-Bsymbolic-functions"]),
+            .args([
+                "-UNDEBUG",
+                "-Wl,-Bsymbolic-functions",
+                "-Wl,-fini,finalizer_last",
+            ]),
     );
     for (mode, code, text) in [
         ("dynamic", 0, "CLIENT_OK\n"),

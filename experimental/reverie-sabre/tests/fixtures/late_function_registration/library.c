@@ -1,4 +1,6 @@
 #define _GNU_SOURCE
+#include <assert.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <stddef.h>
 #include <sys/types.h>
@@ -19,4 +21,14 @@ __attribute__((noinline)) long late_raw_getpid(void) {
   return result;
 }
 
+bool late_guest_ran;
+
 extern __typeof(late_probe) late_probe_alias __attribute__((alias("late_probe")));
+
+/* These belong to the guest and its ordinary dependency, not the plugin. */
+extern bool calling_from_plugin(void) __attribute__((weak));
+__attribute__((destructor)) static void guest_finalizer(void) {
+  if (!late_guest_ran) return;
+  assert(calling_from_plugin != NULL);
+  assert(!calling_from_plugin());
+}
