@@ -27,6 +27,10 @@ QUERY_030 = (
     r"^\[(impl agent|adversarial-reviewer agent|coordinator|Human), [^][]+\] "
     r"\[[^][]+, devbig030\]$"
 )
+BOT_AUTHOR_ENV = {
+    "GIT_AUTHOR_NAME": "rrnewton-bots",
+    "GIT_AUTHOR_EMAIL": "330061689+rrnewton-bots@users.noreply.github.com",
+}
 
 
 def run(*args: str, cwd: Path | None = None, env: dict[str, str] | None = None):
@@ -49,7 +53,11 @@ class MessageValidationTests(unittest.TestCase):
             capture_output=True,
             check=False,
             cwd=ROOT,
-            env=dict(os.environ, HERMIT_COMMIT_MACHINE="devbig030"),
+            env={
+                **os.environ,
+                **BOT_AUTHOR_ENV,
+                "HERMIT_COMMIT_MACHINE": "devbig030",
+            },
         )
 
     def test_positive_exact_machine_is_accepted(self) -> None:
@@ -356,6 +364,40 @@ class HookAndInstallerTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             author = run("git", "show", "-s", "--format=%ae", cwd=repo)
             self.assertEqual("rrnewton@gmail.com", author.stdout.strip())
+
+    def test_real_commit_accepts_bot_account_noreply_email(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            email = "330061689+rrnewton-bots@users.noreply.github.com"
+            self.hooked_repo(repo, email, "rrnewton-bots")
+            result = self.real_commit(repo)
+            self.assertEqual(0, result.returncode, result.stderr)
+            author = run("git", "show", "-s", "--format=%an <%ae>", cwd=repo)
+            self.assertEqual(f"rrnewton-bots <{email}>", author.stdout.strip())
+
+    def test_real_commit_refuses_bot_email_with_human_visible_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            email = "330061689+rrnewton-bots@users.noreply.github.com"
+            self.hooked_repo(repo, email, "Ryan Newton")
+            result = self.real_commit(repo)
+            self.assertEqual(1, result.returncode)
+            self.assertIn(
+                "must use the exact visible name 'rrnewton-bots'", result.stderr
+            )
+            self.assertIn("got 'Ryan Newton'", result.stderr)
+
+    def test_real_commit_refuses_lookalike_bot_noreply_email(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.hooked_repo(
+                repo,
+                "330061688+rrnewton-bots@users.noreply.github.com",
+                "rrnewton-bots",
+            )
+            result = self.real_commit(repo)
+            self.assertEqual(1, result.returncode)
+            self.assertIn("is not owner-approved", result.stderr)
 
     def test_real_commit_accepts_reserved_fixture_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -752,7 +794,12 @@ class ModelFamilyIsDerivedNotTyped(unittest.TestCase):
             capture_output=True,
             check=False,
             cwd=ROOT,
-            env=dict(os.environ, HERMIT_COMMIT_MACHINE="devbig014", **(env or {})),
+            env={
+                **os.environ,
+                **BOT_AUTHOR_ENV,
+                "HERMIT_COMMIT_MACHINE": "devbig014",
+                **(env or {}),
+            },
         )
 
     # ⚠️ THE CELL THAT MUST NOT BE DELETED, AND THE ONE THAT WOULD HAVE CAUGHT

@@ -66,7 +66,12 @@ IDENT_RE = re.compile(
 # canonical five-field disclosure carries the same derived identity directly.
 AGENT_TRAILER_RE = re.compile(r"^Agent:[ \t]*(?P<agent>[A-Za-z0-9][A-Za-z0-9._/@+-]*)$")
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+-]*$")
-ALLOWED_OSS_AUTHOR_EMAILS = frozenset({"rrnewton@gmail.com"})
+BOT_OSS_AUTHOR_EMAIL = "330061689+rrnewton-bots@users.noreply.github.com"
+BOT_OSS_AUTHOR_NAME = "rrnewton-bots"
+HUMAN_OSS_AUTHOR_EMAIL = "rrnewton@gmail.com"
+ALLOWED_OSS_AUTHOR_EMAILS = frozenset(
+    {BOT_OSS_AUTHOR_EMAIL, HUMAN_OSS_AUTHOR_EMAIL}
+)
 RESERVED_FIXTURE_DOMAINS = frozenset(
     {"example.com", "example.net", "example.org", "example.invalid"}
 )
@@ -459,7 +464,14 @@ def validate_message(
 def validate_author_identity(name: str, email: str) -> None:
     """Refuse fabricated owner identities while permitting reserved fixtures."""
 
-    if email in ALLOWED_OSS_AUTHOR_EMAILS:
+    if email == BOT_OSS_AUTHOR_EMAIL:
+        if name != BOT_OSS_AUTHOR_NAME:
+            raise AttributionError(
+                f"bot author email <{email}> must use the exact visible name "
+                f"{BOT_OSS_AUTHOR_NAME!r}; got {name!r}"
+            )
+        return
+    if email == HUMAN_OSS_AUTHOR_EMAIL:
         return
     domain = email.rpartition("@")[2].casefold()
     if (
