@@ -1012,8 +1012,17 @@ raise SystemExit(completed.returncode)
         if sample_detached_cgroup; then
             detached_sample_failures=0
         else
+            detached_group_dir="/sys/fs/cgroup${detached_cgroup_path}"
+            # RuntimeMaxSec removes the service cgroup before the foreground
+            # systemd-run client necessarily exits. Once that exact verified
+            # cgroup is gone, no payload can still be running inside it; leave
+            # the loop and collect the retained unit properties. Treating the
+            # still-draining systemd-run client as payload liveness made a
+            # legitimate wall timeout sporadically look like lost accounting.
+            [ -d "$detached_group_dir" ] || break
             populated="$(sed -n 's/^populated //p' \
-                "/sys/fs/cgroup${detached_cgroup_path}/cgroup.events" 2>/dev/null)"
+                "$detached_group_dir/cgroup.events" 2>/dev/null)"
+            [ "$populated" != 0 ] || break
             if [ "$populated" = 1 ] || kill -0 "$runner_pid" 2>/dev/null; then
                 detached_sample_failures=$((detached_sample_failures + 1))
                 if [ "$detached_sample_failures" -ge 3 ]; then

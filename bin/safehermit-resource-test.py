@@ -39,6 +39,7 @@ def _fake_tools(directory: Path) -> Path:
         from pathlib import Path
         import subprocess
         import sys
+        import time
 
         args = sys.argv[1:]
         with Path(os.environ["FAKE_CALL_LOG"]).open("a", encoding="utf-8") as stream:
@@ -62,6 +63,7 @@ def _fake_tools(directory: Path) -> Path:
                 for arg in applied_args
             ]
         completed = subprocess.run(["/usr/bin/systemd-run", *applied_args], check=False)
+        time.sleep(float(os.environ.get("FAKE_POST_RUN_SLEEP", "0")))
         Path(os.environ["FAKE_RUNNER_RC"]).write_text(str(completed.returncode), encoding="ascii")
         raise SystemExit(completed.returncode)
         """,
@@ -171,6 +173,7 @@ def _run(
     cpu_timeout: int = 30,
     max_log_bytes: int | None = None,
     sample_failure: str = "",
+    post_run_sleep: float = 0,
 ) -> subprocess.CompletedProcess[str]:
     tools = _fake_tools(temporary)
     env = os.environ.copy()
@@ -187,6 +190,7 @@ def _run(
             "FAKE_APPLIED_MISMATCH": applied_mismatch,
             "FAKE_SAMPLE_FAILURE": sample_failure,
             "FAKE_SAMPLE_STATE": str(temporary / "sample-state"),
+            "FAKE_POST_RUN_SLEEP": str(post_run_sleep),
         }
     )
     argv = [
@@ -372,10 +376,13 @@ def test_live_cpu_counter_failure_kills_and_refuses_sample() -> None:
 
 def test_cpu_and_wall_limits_are_authoritative_reported_breaches() -> None:
     cases = (
-        ("cpu-hit", 10, 1, 126, "cpu_time_limit_hit", "1"),
-        ("wall-timeout", 1, 30, 124, "wall_time_limit_hit", "1"),
+        ("cpu-hit", 10, 1, 126, "cpu_time_limit_hit", "1", 0),
+        # Keep systemd-run alive after RuntimeMaxSec has removed the cgroup.
+        # This deterministically exercises the race that used to mistake the
+        # client process for a still-live payload and refuse the final report.
+        ("wall-timeout", 1, 30, 124, "wall_time_limit_hit", "1", 0.5),
     )
-    for mode, deadline, cpu_timeout, expected_rc, field, expected in cases:
+    for mode, deadline, cpu_timeout, expected_rc, field, expected, post_sleep in cases:
         with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
             temporary = Path(raw)
             report = temporary / "resource.txt"
@@ -385,6 +392,7 @@ def test_cpu_and_wall_limits_are_authoritative_reported_breaches() -> None:
                 metrics_mode=mode,
                 deadline=deadline,
                 cpu_timeout=cpu_timeout,
+                post_run_sleep=post_sleep,
                 command="while :; do :; done",
             )
             assert completed.returncode == expected_rc, (mode, completed)
