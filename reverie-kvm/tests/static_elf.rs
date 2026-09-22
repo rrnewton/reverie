@@ -8080,6 +8080,202 @@ int main(void) {
     assert!(kvm_stderr.is_empty());
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(kvm-thread-self-procfs): Review opener-bound thread proc identity.
+// This fixture proves normalized opener-identity output/exit/status repeat
+// parity only. It deliberately does not claim first-read timing, Threads count,
+// proc inode/link identity, scheduler-state, or post-exit read parity.
+#[test]
+fn kvm_thread_self_procfs_binds_opener_identity_across_handoff() {
+    if !kvm_available("KVM thread-self procfs opener identity handoff") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "thread-self-procfs-handoff",
+        r#"
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+static int ready_pipe[2];
+static int release_pipe[2];
+static _Atomic int worker_stat_fd = -1;
+static _Atomic int worker_status_fd = -1;
+static _Atomic pid_t worker_tid = -1;
+static _Atomic int worker_error;
+
+static int send_byte(int fd) {
+  char byte = 'x';
+  return write(fd, &byte, 1) == 1 ? 0 : -1;
+}
+
+static int receive_byte(int fd) {
+  char byte = 0;
+  return read(fd, &byte, 1) == 1 && byte == 'x' ? 0 : -1;
+}
+
+static int read_all(int fd, char *buffer, size_t capacity) {
+  size_t used = 0;
+  while (used + 1 < capacity) {
+    ssize_t count = read(fd, buffer + used, capacity - used - 1);
+    if (count < 0) return -1;
+    if (count == 0) break;
+    used += (size_t)count;
+  }
+  buffer[used] = 0;
+  return (int)used;
+}
+
+static int read_path(const char *path, char *buffer, size_t capacity) {
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return -1;
+  int count = read_all(fd, buffer, capacity);
+  close(fd);
+  return count;
+}
+
+static int parse_stat(const char *content, long *pid, char comm[32], long *ppid) {
+  char state = 0;
+  /* The reader can observe a blocked opener on native Linux. This cell checks
+     identity fields, not scheduler-state parity. */
+  return sscanf(content, "%ld (%31[^)]) %c %ld", pid, comm, &state, ppid) == 4;
+}
+
+static int status_number(const char *content, const char *field, long *value) {
+  size_t length = strlen(field);
+  const char *line = content;
+  while (line && *line) {
+    if (!strncmp(line, field, length))
+      return sscanf(line + length, "%ld", value) == 1;
+    line = strchr(line, '\n');
+    if (line) ++line;
+  }
+  return 0;
+}
+
+static int verify_status(const char *content, const char *name, long tgid,
+                         long pid, long ppid) {
+  char expected_name[64];
+  long actual_tgid = -1, actual_pid = -1, actual_ppid = -1;
+  snprintf(expected_name, sizeof(expected_name), "Name:\t%s\n", name);
+  return strstr(content, expected_name) &&
+         status_number(content, "Tgid:\t", &actual_tgid) &&
+         status_number(content, "Pid:\t", &actual_pid) &&
+         status_number(content, "PPid:\t", &actual_ppid) &&
+         actual_tgid == tgid && actual_pid == pid && actual_ppid == ppid;
+}
+
+static int verify_worker_sees_process_self(void) {
+  char stat_content[4096], status_content[4096], comm[32];
+  long stat_pid = -1, stat_ppid = -1;
+  long pid = (long)getpid(), ppid = (long)getppid();
+  if (read_path("/proc/self/stat", stat_content, sizeof(stat_content)) <= 0 ||
+      !parse_stat(stat_content, &stat_pid, comm, &stat_ppid) ||
+      stat_pid != pid || stat_ppid != ppid || strcmp(comm, "leader-thread"))
+    return 1;
+  if (read_path("/proc/self/status", status_content, sizeof(status_content)) <= 0 ||
+      !verify_status(status_content, "leader-thread", pid, pid, ppid))
+    return 2;
+  return 0;
+}
+
+static void *worker(void *unused) {
+  (void)unused;
+  int error = 0;
+  int stat_fd = -1, status_fd = -1;
+  const char worker_name[] = "worker-thread";
+  if (prctl(PR_SET_NAME, worker_name, 0, 0, 0) != 0) error = 1;
+  pid_t tid = (pid_t)syscall(SYS_gettid);
+  if (!error && tid == getpid()) error = 2;
+  if (!error) error = verify_worker_sees_process_self() * 10;
+  if (!error) {
+    stat_fd = open("/proc/thread-self/stat", O_RDONLY | O_CLOEXEC);
+    status_fd = open("/proc/thread-self/status", O_RDONLY | O_CLOEXEC);
+    if (stat_fd < 0 || status_fd < 0) error = 3;
+  }
+  atomic_store_explicit(&worker_stat_fd, stat_fd, memory_order_relaxed);
+  atomic_store_explicit(&worker_status_fd, status_fd, memory_order_relaxed);
+  atomic_store_explicit(&worker_tid, tid, memory_order_relaxed);
+  atomic_store_explicit(&worker_error, error, memory_order_release);
+  if (send_byte(ready_pipe[1]) != 0) error = 4;
+  if (receive_byte(release_pipe[0]) != 0 && !error) error = 5;
+  if (stat_fd >= 0) close(stat_fd);
+  if (status_fd >= 0) close(status_fd);
+  return (void *)(uintptr_t)error;
+}
+
+int main(void) {
+  const char leader_name[] = "leader-thread";
+  if (prctl(PR_SET_NAME, leader_name, 0, 0, 0) != 0) return 10;
+  if (pipe2(ready_pipe, O_CLOEXEC) != 0 || pipe2(release_pipe, O_CLOEXEC) != 0)
+    return 11;
+  pthread_t thread;
+  if (pthread_create(&thread, 0, worker, 0) != 0) return 12;
+  if (receive_byte(ready_pipe[0]) != 0) return 13;
+
+  int error = atomic_load_explicit(&worker_error, memory_order_acquire);
+  int stat_fd = atomic_load_explicit(&worker_stat_fd, memory_order_relaxed);
+  int status_fd = atomic_load_explicit(&worker_status_fd, memory_order_relaxed);
+  pid_t opener_tid = atomic_load_explicit(&worker_tid, memory_order_relaxed);
+  char stat_content[4096], status_content[4096], comm[32];
+  long stat_tid = -1, stat_ppid = -1;
+  long pid = (long)getpid(), ppid = (long)getppid();
+  if (!error &&
+      (read_all(stat_fd, stat_content, sizeof(stat_content)) <= 0 ||
+       !parse_stat(stat_content, &stat_tid, comm, &stat_ppid) ||
+       stat_tid != opener_tid || stat_ppid != ppid ||
+       strcmp(comm, "worker-thread")))
+    error = 30;
+  if (!error &&
+      (read_all(status_fd, status_content, sizeof(status_content)) <= 0 ||
+       !verify_status(status_content, "worker-thread", pid, opener_tid, ppid)))
+    error = 31;
+
+  if (send_byte(release_pipe[1]) != 0 && !error) error = 32;
+  void *result = 0;
+  if (pthread_join(thread, &result) != 0 && !error) error = 33;
+  if (!error && result != 0) error = 34;
+  if (error) return error;
+  puts("thread-self self_name=leader-thread self_pid=tgid "
+       "thread_name=worker-thread thread_pid=opener_tid opener_not_reader=1");
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable).output().unwrap();
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert_eq!(
+        native.stdout,
+        b"thread-self self_name=leader-thread self_pid=tgid thread_name=worker-thread \
+thread_pid=opener_tid opener_not_reader=1\n"
+    );
+    assert!(native.stderr.is_empty(), "native: {native:?}");
+
+    let executable = executable.to_str().unwrap();
+    let direct = run_host_program_captured(executable, &[executable], &directory.0);
+    let direct_repeat = run_host_program_captured(executable, &[executable], &directory.0);
+    assert_eq!(direct, (native.stdout.clone(), native.stderr.clone()));
+    assert_eq!(direct_repeat, direct);
+
+    let tool = run_host_program_with_tool_captured(executable, &[executable], &directory.0);
+    let tool_repeat = run_host_program_with_tool_captured(executable, &[executable], &directory.0);
+    assert_eq!(tool, (native.stdout, native.stderr));
+    assert_eq!(tool_repeat, tool);
+}
+
 #[test]
 fn kvm_direct_and_tool_match_prctl_identity_cell() {
     let directory = TestDirectory::new();
@@ -10285,6 +10481,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
     );
     for test in [
         "native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes",
+        "kvm_thread_self_procfs_binds_opener_identity_across_handoff",
         "kvm_direct_and_tool_match_prctl_identity_cell",
         "kvm_direct_and_tool_match_thp_disable_cell",
     ] {

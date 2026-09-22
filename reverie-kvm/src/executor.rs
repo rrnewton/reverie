@@ -13544,6 +13544,8 @@ const SYNTHETIC_REGULAR_PROC_PATHS: &[&[u8]] = &[
     b"/proc/locks",
     b"/proc/self/stat",
     b"/proc/self/status",
+    b"/proc/thread-self/stat",
+    b"/proc/thread-self/status",
     b"/proc/self/cmdline",
     b"/proc/vmstat",
     b"/proc/sys/kernel/overflowuid",
@@ -13819,6 +13821,8 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
         b"/proc/locks" => proc_locks_content(state),
         b"/proc/self/stat" => proc_self_stat_content(state),
         b"/proc/self/status" => proc_self_status_content(state),
+        b"/proc/thread-self/stat" => proc_thread_self_stat_content(state),
+        b"/proc/thread-self/status" => proc_thread_self_status_content(state),
         b"/proc/self/cmdline" => proc_self_cmdline_content(state),
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-224): deterministic /proc/vmstat surface so
@@ -13903,17 +13907,38 @@ fn proc_locks_content(state: &LoadedStaticElf) -> Vec<u8> {
     rows.concat().into_bytes()
 }
 
+fn task_comm(name: &[u8; TASK_COMM_LEN]) -> Vec<u8> {
+    let length = name
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(TASK_COMM_LEN);
+    name[..length].to_vec()
+}
+
 /// The thread-group leader's `comm`, without its terminating NUL byte.
 fn proc_comm(state: &LoadedStaticElf) -> Vec<u8> {
     let name = state
         .thread_group_leader_name
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let length = name
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(TASK_COMM_LEN);
-    name[..length].to_vec()
+    task_comm(&name)
+}
+
+/// The calling thread's `comm`, without its terminating NUL byte.
+fn proc_thread_comm(state: &LoadedStaticElf) -> Vec<u8> {
+    task_comm(&state.thread_name)
+}
+
+fn format_proc_status_comm(raw: &[u8]) -> Vec<u8> {
+    let mut formatted = Vec::with_capacity(raw.len());
+    for &byte in raw {
+        match byte {
+            b'\n' => formatted.extend_from_slice(b"\\n"),
+            b'\\' => formatted.extend_from_slice(b"\\\\"),
+            _ => formatted.push(byte),
+        }
+    }
+    formatted
 }
 
 /// Format the thread-group leader's name for `/proc/self/status`.
@@ -13923,15 +13948,12 @@ fn proc_comm(state: &LoadedStaticElf) -> Vec<u8> {
 /// bytes returned by [`proc_comm`].
 fn proc_status_comm(state: &LoadedStaticElf) -> Vec<u8> {
     let raw = proc_comm(state);
-    let mut formatted = Vec::with_capacity(raw.len());
-    for byte in raw {
-        match byte {
-            b'\n' => formatted.extend_from_slice(b"\\n"),
-            b'\\' => formatted.extend_from_slice(b"\\\\"),
-            _ => formatted.push(byte),
-        }
-    }
-    formatted
+    format_proc_status_comm(&raw)
+}
+
+fn proc_thread_status_comm(state: &LoadedStaticElf) -> Vec<u8> {
+    let raw = proc_thread_comm(state);
+    format_proc_status_comm(&raw)
 }
 
 fn proc_self_cmdline_content(state: &LoadedStaticElf) -> Vec<u8> {
@@ -13952,13 +13974,13 @@ fn proc_self_maps_content(state: &LoadedStaticElf) -> Vec<u8> {
     format!("{stack_start:012x}-{stack_end:012x} rw-p 00000000 00:00 0 [stack]\n").into_bytes()
 }
 
-fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
+fn proc_stat_content(pid: i32, ppid: i32, comm: &[u8]) -> Vec<u8> {
     // pid (comm) state ppid ... The fields after ppid are process-accounting
     // values reported as zero so no nondeterministic host state leaks. The real
     // file has 52 fields; pad with zeros so field-counting parsers are satisfied.
-    let mut line = format!("{} (", state.pid).into_bytes();
-    line.extend_from_slice(&proc_comm(state));
-    line.extend_from_slice(format!(") R {} 0 0 0 -1 0", state.ppid).as_bytes());
+    let mut line = format!("{pid} (").into_bytes();
+    line.extend_from_slice(comm);
+    line.extend_from_slice(format!(") R {ppid} 0 0 0 -1 0").as_bytes());
     for _ in 0..44 {
         line.extend_from_slice(b" 0");
     }
@@ -13966,15 +13988,29 @@ fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
     line
 }
 
-fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
+fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
+    proc_stat_content(state.pid, state.ppid, &proc_comm(state))
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(kvm-thread-self-procfs): Review opener-bound thread proc identity.
+// This models opener identity for output/exit/status repeat parity. It does not
+// claim native first-read timing, live Threads counts, proc inode/link identity,
+// or reads after the opening task exits: authenticated KVM carriers snapshot
+// their bytes at each successful readable open.
+fn proc_thread_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
+    proc_stat_content(state.tid, state.ppid, &proc_thread_comm(state))
+}
+
+fn proc_status_content(state: &LoadedStaticElf, name: &[u8], tgid: i32, pid: i32) -> Vec<u8> {
     let mut content = b"Name:\t".to_vec();
-    content.extend_from_slice(&proc_status_comm(state));
+    content.extend_from_slice(name);
     content.push(b'\n');
     content.extend_from_slice(
         format!(
             "Umask:\t{umask:04o}\n\
          State:\tR (running)\n\
-         Tgid:\t{pid}\n\
+         Tgid:\t{tgid}\n\
          Ngid:\t0\n\
          Pid:\t{pid}\n\
          PPid:\t{ppid}\n\
@@ -13984,12 +14020,21 @@ fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
          FDSize:\t64\n\
          Threads:\t1\n",
             umask = state.umask,
-            pid = state.pid,
+            tgid = tgid,
+            pid = pid,
             ppid = state.ppid,
         )
         .as_bytes(),
     );
     content
+}
+
+fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
+    proc_status_content(state, &proc_status_comm(state), state.pid, state.pid)
+}
+
+fn proc_thread_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
+    proc_status_content(state, &proc_thread_status_comm(state), state.pid, state.tid)
 }
 
 /// Back a synthesized /proc file with a memfd holding `content` and record it in
@@ -21556,6 +21601,149 @@ mod tests {
         // /proc/<pid> aliases /proc/self for this guest's own pid.
         let fd = open_readonly(&mut memory, &mut state, "/proc/1/cmdline");
         assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"test\0");
+    }
+
+    #[test]
+    fn synthetic_proc_thread_self_binds_worker_identity_across_handoff() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0); // leader pid/tid=1, ppid=0
+        set_signal_test_name(&mut state, b"leader-before");
+        let mut leader = ElfExecutor::new(state, false);
+        let mut worker = leader.thread_child(7).unwrap();
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+
+        write_c_string(&mut memory, 0x100, "worker-before");
+        assert_eq!(
+            super::prctl(
+                &mut memory,
+                &mut worker.state,
+                &[libc::PR_SET_NAME as u64, 0x100, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        assert_eq!(worker.state.pid, 1);
+        assert_eq!(worker.state.tid, 7);
+
+        // Process-level proc files remain leader-oriented even when a worker
+        // performs the open.
+        let self_stat_fd = open_readonly(&mut memory, &mut worker.state, "/proc/self/stat");
+        assert!(self_stat_fd >= 0);
+        let self_stat = read_fd_to_end(&mut memory, &mut worker.state, self_stat_fd);
+        assert!(
+            self_stat.starts_with(b"1 (leader-before) R 0 "),
+            "{self_stat:?}"
+        );
+        assert_eq!(close(&mut worker.state, self_stat_fd as u64), 0);
+
+        let self_status_fd = open_readonly(&mut memory, &mut worker.state, "/proc/self/status");
+        assert!(self_status_fd >= 0);
+        let self_status = String::from_utf8(read_fd_to_end(
+            &mut memory,
+            &mut worker.state,
+            self_status_fd,
+        ))
+        .unwrap();
+        assert!(
+            self_status.contains("Name:\tleader-before\n"),
+            "{self_status}"
+        );
+        assert!(self_status.contains("Tgid:\t1\n"), "{self_status}");
+        assert!(self_status.contains("Pid:\t1\n"), "{self_status}");
+        assert!(self_status.contains("PPid:\t0\n"), "{self_status}");
+        assert_eq!(close(&mut worker.state, self_status_fd as u64), 0);
+
+        // The thread-self carriers take their immutable snapshot from the
+        // opening worker. Leave both offsets untouched for the leader handoff.
+        let thread_stat_fd =
+            open_readonly(&mut memory, &mut worker.state, "/proc/thread-self/stat");
+        let thread_status_fd =
+            open_readonly(&mut memory, &mut worker.state, "/proc/thread-self/status");
+        assert!(thread_stat_fd >= 0);
+        assert!(thread_status_fd >= 0);
+        assert_eq!(
+            worker.state.proc_files.get(&(thread_stat_fd as i32)),
+            Some(&synthetic_proc_inode(b"/proc/thread-self/stat"))
+        );
+        assert_eq!(
+            worker.state.proc_files.get(&(thread_status_fd as i32)),
+            Some(&synthetic_proc_inode(b"/proc/thread-self/status"))
+        );
+
+        write_c_string(&mut memory, 0x200, "leader-after");
+        assert_eq!(
+            super::prctl(
+                &mut memory,
+                &mut leader.state,
+                &[libc::PR_SET_NAME as u64, 0x200, 0, 0, 0, 0],
+            ),
+            0,
+        );
+
+        // Model the executor's CLONE_FILES publication/install boundary: the
+        // leader receives the worker-opened descriptions, then reads them only
+        // after its own name changed. Keep the opener's name stable through the
+        // read because native procfs materializes bytes later than this carrier.
+        {
+            let mut shared = worker
+                .file_table
+                .lock()
+                .expect("KVM file-table lock poisoned");
+            shared.update_from_elf(&worker.state).unwrap();
+        }
+        {
+            let shared = leader
+                .file_table
+                .lock()
+                .expect("KVM file-table lock poisoned");
+            shared.install(&mut leader.state).unwrap();
+        }
+
+        let thread_stat = read_fd_to_end(&mut memory, &mut leader.state, thread_stat_fd);
+        assert!(
+            thread_stat.starts_with(b"7 (worker-before) R 0 "),
+            "{thread_stat:?}"
+        );
+        let thread_status = String::from_utf8(read_fd_to_end(
+            &mut memory,
+            &mut leader.state,
+            thread_status_fd,
+        ))
+        .unwrap();
+        assert!(
+            thread_status.contains("Name:\tworker-before\n"),
+            "{thread_status}"
+        );
+        assert!(thread_status.contains("Tgid:\t1\n"), "{thread_status}");
+        assert!(thread_status.contains("Pid:\t7\n"), "{thread_status}");
+        assert!(thread_status.contains("PPid:\t0\n"), "{thread_status}");
+
+        // A later open observes a later worker name. This does not assert what
+        // an earlier unread carrier observes across a name change: native and
+        // Detcore materialize at first read while KVM carriers snapshot at open.
+        write_c_string(&mut memory, 0x100, "worker-after");
+        assert_eq!(
+            super::prctl(
+                &mut memory,
+                &mut worker.state,
+                &[libc::PR_SET_NAME as u64, 0x100, 0, 0, 0, 0],
+            ),
+            0,
+        );
+        let fresh_status_fd =
+            open_readonly(&mut memory, &mut worker.state, "/proc/thread-self/status");
+        assert!(fresh_status_fd >= 0);
+        let fresh_status = String::from_utf8(read_fd_to_end(
+            &mut memory,
+            &mut worker.state,
+            fresh_status_fd,
+        ))
+        .unwrap();
+        assert!(
+            fresh_status.contains("Name:\tworker-after\n"),
+            "{fresh_status}"
+        );
+        assert!(fresh_status.contains("Tgid:\t1\n"), "{fresh_status}");
+        assert!(fresh_status.contains("Pid:\t7\n"), "{fresh_status}");
     }
 
     #[test]
