@@ -415,6 +415,10 @@ impl From<libc::user_regs_struct> for ExpediatedRegs {
 pub enum StopEvent {
     /// Stopped by signal.
     Signal(Signal),
+    /// An exact retained signal-delivery stop reported by a deferred boundary.
+    SignalDelivery(Signal),
+    /// Stopped at the return boundary of this exact syscall.
+    SyscallReturn(u64),
     /// Stopped by softwrae breakpoint.
     SwBreak,
     /// Stopped due to vforkdone event.
@@ -559,9 +563,20 @@ impl WriteResponse for StopReason {
                 writer.put_str(";");
             }
             StopReason::Stopped(stopped) => {
-                writer.put_str("T05");
                 match &stopped.event {
-                    StopEvent::Signal(_) => {}
+                    StopEvent::SignalDelivery(signal) => {
+                        writer.put_str("T");
+                        writer.put_hex_encoded(&[*signal as u8]);
+                    }
+                    _ => writer.put_str("T05"),
+                }
+                match &stopped.event {
+                    StopEvent::Signal(_) | StopEvent::SignalDelivery(_) => {}
+                    StopEvent::SyscallReturn(number) => {
+                        writer.put_str("syscall_return:");
+                        writer.put_num(*number);
+                        writer.put_str(";");
+                    }
                     StopEvent::SwBreak => {
                         writer.put_str("swbreak:;");
                     }
@@ -625,6 +640,44 @@ impl WriteResponse for StopReason {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    fn stopped_payload(event: StopEvent) -> Bytes {
+        let reason = StopReason::stopped(
+            Pid::from_raw(17),
+            Pid::from_raw(17),
+            event,
+            ExpediatedRegs(BTreeMap::new()),
+        );
+        let mut writer = ResponseWriter::new(BytesMut::new(), true);
+        reason.write_response(&mut writer);
+        let packet = writer.finish();
+        let checksum = packet
+            .iter()
+            .position(|byte| *byte == b'#')
+            .expect("framed GDB response has a checksum delimiter");
+        packet.slice(1..checksum)
+    }
+
+    #[test]
+    fn deferred_boundary_stop_events_have_exact_wire_status() {
+        assert_eq!(
+            &stopped_payload(StopEvent::Signal(Signal::SIGUSR1))[..],
+            b"T05thread:p11.11;",
+            "the legacy generic signal-stop behavior changed"
+        );
+        assert_eq!(
+            &stopped_payload(StopEvent::SignalDelivery(Signal::SIGTRAP))[..],
+            b"T05thread:p11.11;"
+        );
+        assert_eq!(
+            &stopped_payload(StopEvent::SignalDelivery(Signal::SIGUSR1))[..],
+            b"T0athread:p11.11;"
+        );
+        assert_eq!(
+            &stopped_payload(StopEvent::SyscallReturn(60))[..],
+            b"T05syscall_return:3c;thread:p11.11;"
+        );
+    }
 
     #[test]
     fn decode_vcont_test() {

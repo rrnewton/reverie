@@ -1,3 +1,4 @@
+use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
@@ -352,6 +353,89 @@ fn output_with_timeout(mut command: Command, timeout: Duration) -> Output {
         }
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+#[test]
+fn exact_runtime_restorers_cover_sigsegv_and_sigtrap_returns() {
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("coordinator.sock");
+    let mut coordinator = Command::new(binary)
+        .arg("coordinator")
+        .arg(&socket)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(socket.exists(), "coordinator socket was not created");
+
+    let instruction = output_with_timeout(
+        {
+            let mut command = Command::new(binary);
+            command.arg("instruction-guest").arg(&socket).env(
+                STRADDLER_STALENESS_TICKS_ENV,
+                TEST_STRADDLER_STALENESS_TICKS,
+            );
+            command
+        },
+        Duration::from_secs(10),
+    );
+    if instruction.status.code() == Some(INSTRUCTION_CONTROL_UNAVAILABLE_STATUS) {
+        assert!(instruction.stdout.is_empty(), "{instruction:?}");
+        assert_eq!(
+            instruction.stderr, b"instruction-control-unavailable\n",
+            "subscribed SIGSEGV refusal changed",
+        );
+    } else {
+        assert!(instruction.status.success(), "{instruction:?}");
+        assert_eq!(
+            instruction.stdout,
+            b"cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked instruction-handler-rpc=1 patched-native=1 first-use-native=1 nested-syscall-native=1 tool-callbacks=9\n",
+        );
+        assert!(instruction.stderr.is_empty(), "{instruction:?}");
+    }
+
+    let guard = output_with_timeout(
+        {
+            let mut command = Command::new(binary);
+            command.arg("filtered-guard-restorer").arg(&socket);
+            command
+        },
+        Duration::from_secs(10),
+    );
+    assert!(guard.status.success(), "{guard:?}");
+    assert_eq!(guard.stdout, b"filtered-guard-restorer=returned\n");
+    assert!(guard.stderr.is_empty(), "{guard:?}");
+
+    let guest_sigreturn = output_with_timeout(
+        {
+            let mut command = Command::new(binary);
+            command.arg("guest-rt-sigreturn").arg(&socket);
+            command
+        },
+        Duration::from_secs(10),
+    );
+    assert!(guest_sigreturn.status.success(), "{guest_sigreturn:?}");
+    assert_eq!(guest_sigreturn.stdout, b"guest-rt-sigreturn=refused\n");
+    assert!(guest_sigreturn.stderr.is_empty(), "{guest_sigreturn:?}");
+
+    let unknown = output_with_timeout(
+        {
+            let mut command = Command::new(binary);
+            command.arg("unknown-int3-default").arg(&socket);
+            command
+        },
+        Duration::from_secs(10),
+    );
+    let _ = coordinator.kill();
+    let _ = coordinator.wait();
+    assert_eq!(unknown.status.signal(), Some(libc::SIGTRAP), "{unknown:?}");
+    assert!(unknown.stdout.is_empty(), "{unknown:?}");
+    assert!(unknown.stderr.is_empty(), "{unknown:?}");
 }
 
 #[test]

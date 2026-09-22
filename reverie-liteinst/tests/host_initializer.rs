@@ -25,8 +25,8 @@ fn run(mode: &str, expected: &[u8]) {
     let launcher = PathBuf::from(env!("CARGO_BIN_EXE_reverie-liteinst-strace"));
     let target = launcher.parent().unwrap();
     let preload = [
-        target.join("libreverie_liteinst.so"),
         target.join("deps/libreverie_liteinst.so"),
+        target.join("libreverie_liteinst.so"),
     ]
     .into_iter()
     .find(|path| path.is_file())
@@ -68,6 +68,11 @@ fn explicit_host_prepares_real_sites_with_disabled_and_explicit_policy() {
     for mode in ["disabled", "configured"] {
         run(mode, b"explicit-host-initialized\n");
     }
+}
+
+#[test]
+fn explicit_host_and_quiescent_site_install_preserve_all_signal_dispositions() {
+    run("dispositions", b"explicit-host-initialized\n");
 }
 
 #[test]
