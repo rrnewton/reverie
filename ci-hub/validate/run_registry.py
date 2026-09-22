@@ -540,6 +540,16 @@ def _cell_ledger_publication(value: dict[str, Any]) -> None:
     repository = "https://github.com/rrnewton/hermit_test_ledger.git"
     if value.get("repository") != repository:
         raise _error("ledger_mirror.repository", "must name hermit_test_ledger")
+    if value.get("state") == "not-applicable":
+        required = {"state", "recorded_at", "repository", "detail"}
+        if set(value) != required:
+            raise _error(
+                "ledger_mirror",
+                "not-applicable must contain exactly " + ", ".join(sorted(required)),
+            )
+        _timestamp(value, "recorded_at", error_field="ledger_mirror.recorded_at")
+        _required_text(value, "detail")
+        return
     if value.get("state") == "failed":
         _ledger_mirror({key: item for key, item in value.items() if key != "repository"})
         return

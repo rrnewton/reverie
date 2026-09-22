@@ -5148,6 +5148,315 @@ class StartUnitTest(unittest.TestCase):
         record_path.write_text(json.dumps(record, sort_keys=True) + "\n")
         return fresh, record_path
 
+    def pre_dag_no_result_record(self, suffix: str) -> tuple[Path, Path, Path, Path]:
+        """Plant the current typed zero-work result that cannot produce a row."""
+
+        fresh, record_path = self.retire_record(suffix)
+        log = self.root / "ignored/validate" / f"{suffix}.log"
+        log.write_text("FINAL_VALIDATE_STATUS=COULD_NOT_RUN\nmissing pinned image\n")
+        detail = "missing pinned image"
+        record = json.loads(record_path.read_text())
+        record.update(
+            kind="validate",
+            state="completed",
+            result="no-result",
+            result_source="validation-service-result",
+            service_result_schema=start_unit.service_result.SCHEMA_VERSION,
+            final_validate_status="COULD_NOT_RUN",
+            detail=detail,
+            exit_code=start_unit.EXIT_COULD_NOT_DETERMINE,
+            executed_nodes=0,
+            executed_tests=0,
+            passed_tests=0,
+            selection_mode="full",
+            scorecard_writeback=None,
+            started_at="2026-09-22T12:00:00+00:00",
+            finished_at="2026-09-22T12:00:01+00:00",
+            materialized_target=True,
+            log=str(log),
+            agent="manifest-plan-race",
+            cargo_home=str(
+                self.root / "ignored/validate/cargo-homes" / f"cargo-{suffix}"
+            ),
+            parent_checkout_head=SHA,
+            producer=start_unit.run_registry.PRODUCER,
+            admission="ci-hub validate-lock",
+            pane_role="observer-only",
+            validate_lock_child_deadline_seconds=3600,
+            safe_ci_dag_runner_log_dir=str(
+                self.root / "ignored/validate/artifacts" / suffix / "logs"
+            ),
+            hermit_run_timeout_seconds=3300,
+        )
+        record_path.write_text(json.dumps(record, sort_keys=True) + "\n")
+        sidecar = start_unit.service_result.result_path(record_path)
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "schema_version": start_unit.service_result.SCHEMA_VERSION,
+                    "commit": SHA,
+                    "profile": "full",
+                    "selection_mode": "full",
+                    "final_validate_status": "COULD_NOT_RUN",
+                    "detail": [detail],
+                    "exit_code": start_unit.EXIT_COULD_NOT_DETERMINE,
+                    "executed_nodes": 0,
+                    "executed_tests": 0,
+                    "passed_tests": 0,
+                    "scorecard_writeback": None,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        start_unit.run_registry.parse_current_record(record)
+        return fresh, record_path, sidecar, log
+
+    def test_retire_unit_marks_zero_work_no_result_not_applicable(self) -> None:
+        fresh, record_path, sidecar, log = self.pre_dag_no_result_record(
+            "zero-work-no-result"
+        )
+        result_root = Path(
+            start_unit.run_registry.read_record(record_path)["e2e_result_root"]
+        )
+        sidecar_bytes = sidecar.read_bytes()
+        log_bytes = log.read_bytes()
+
+        rc, error = self.retire("zero-work-no-result")
+
+        self.assertEqual(0, rc, error)
+        self.assertIn("CELL LEDGER NOT APPLICABLE", error)
+        self.assertFalse(fresh.exists())
+        self.assertEqual([str(fresh)], self.fake.removed)
+        self.assertTrue(self.checkout.is_dir())
+        self.assertTrue(result_root.is_dir())
+        self.assertTrue(record_path.is_file())
+        self.assertEqual(sidecar_bytes, sidecar.read_bytes())
+        self.assertEqual(log_bytes, log.read_bytes())
+        durable = start_unit.run_registry.read_record(record_path)
+        self.assertEqual(
+            start_unit.LEDGER_MIRROR_NOT_APPLICABLE,
+            durable["ledger_mirror"]["state"],
+        )
+        self.assertFalse(start_unit.cell_ledger_published(durable))
+        self.assertTrue(
+            start_unit.cell_ledger_retirement_ready(self.root, record_path, durable)
+        )
+        self.assertIsNone(durable["scorecard_writeback"])
+        self.assertFalse(
+            any(
+                len(command) > 1 and command[1].endswith("ci-hub/series/mirror.py")
+                for command in self.fake.commands
+            )
+        )
+        self.assertFalse(
+            any(
+                len(command) > 1 and command[1] == "publish-commit-status"
+                for command in self.fake.commands
+            )
+        )
+
+    def test_zero_work_no_result_lock_contention_is_not_retirement_ready(
+        self,
+    ) -> None:
+        fresh, record_path, _sidecar, _log = self.pre_dag_no_result_record(
+            "zero-work-contended"
+        )
+        record = start_unit.run_registry.read_record(record_path)
+        update_record = start_unit.run_registry.update_record
+
+        def contended_update(
+            path: Path, *, blocking: bool = True, **fields: object
+        ) -> dict[str, object]:
+            if "ledger_mirror" in fields:
+                self.assertFalse(blocking)
+                raise start_unit.run_registry.RecordLocked(
+                    "fixture holds ledger_mirror bookkeeping lock"
+                )
+            return update_record(path, blocking=blocking, **fields)
+
+        with mock.patch.object(
+            start_unit.run_registry,
+            "update_record",
+            side_effect=contended_update,
+        ):
+            returned = start_unit.finalize_ledger_mirror(
+                self.root,
+                self.root,
+                record_path,
+                record=record,
+                run=self.fake,
+            )
+            returned_ready = start_unit.cell_ledger_retirement_ready(
+                self.root, record_path, returned
+            )
+            durable = start_unit.run_registry.read_record(record_path)
+            durable_ready = start_unit.cell_ledger_retirement_ready(
+                self.root, record_path, durable
+            )
+            rc, error = self.retire("zero-work-contended")
+
+        self.assertEqual(
+            start_unit.LEDGER_MIRROR_NOT_APPLICABLE,
+            returned["ledger_mirror"]["state"],
+        )
+        self.assertFalse(returned_ready)
+        self.assertFalse(durable_ready)
+        self.assertNotIn("ledger_mirror", durable)
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("RUN-RECORD NOT UPDATED", error)
+        self.assertIn("RETIRE-REFUSED", error)
+        self.assertTrue(fresh.is_dir())
+        self.assertFalse(
+            any("remove-validate-batch" in command for command in self.fake.commands)
+        )
+
+    def test_zero_work_no_result_already_absent_is_idempotent(self) -> None:
+        """A dead owner's unheld checkout is reclaimable before this repair runs."""
+
+        fresh, record_path, sidecar, log = self.pre_dag_no_result_record(
+            "zero-work-already-absent"
+        )
+        record = start_unit.finalize_ledger_mirror(
+            self.root,
+            self.root,
+            record_path,
+            record=start_unit.run_registry.read_record(record_path),
+            run=self.fake,
+        )
+        self.assertTrue(
+            start_unit.cell_ledger_retirement_ready(self.root, record_path, record)
+        )
+        sidecar_bytes = sidecar.read_bytes()
+        log_bytes = log.read_bytes()
+        shutil.rmtree(fresh)
+        self.fake.commands.clear()
+
+        rc, error = self.retire("zero-work-already-absent")
+
+        self.assertEqual(0, rc, error)
+        self.assertIn("RETIRE-ALREADY-ABSENT", error)
+        self.assertFalse(
+            any("remove-validate-batch" in command for command in self.fake.commands)
+        )
+        durable = start_unit.run_registry.read_record(record_path)
+        self.assertNotIn("checkout_removed_at", durable)
+        self.assertEqual(sidecar_bytes, sidecar.read_bytes())
+        self.assertEqual(log_bytes, log.read_bytes())
+
+    def test_zero_work_no_result_refuses_near_misses_and_forged_marker(self) -> None:
+        cases = [
+            *(
+                f"{field}-nonzero"
+                for field in ("executed_nodes", "executed_tests", "passed_tests")
+            ),
+            *(
+                f"{field}-missing"
+                for field in ("executed_nodes", "executed_tests", "passed_tests")
+            ),
+            "wrong-result",
+            "wrong-status",
+            "wrong-schema",
+            "wrong-writeback",
+            "wrong-sidecar-commit",
+            "sidecar-handle-mismatch",
+            "wrong-run-id",
+            "forged-marker",
+        ]
+        for index, case in enumerate(cases):
+            with self.subTest(case=case):
+                _fresh, record_path, sidecar, _log = self.pre_dag_no_result_record(
+                    f"near-miss-{index}"
+                )
+                record = start_unit.run_registry.read_record(record_path)
+                result = json.loads(sidecar.read_text())
+                if case.endswith("-nonzero"):
+                    record[case.removesuffix("-nonzero")] = 1
+                elif case.endswith("-missing"):
+                    record.pop(case.removesuffix("-missing"))
+                elif case == "wrong-result":
+                    record["result"] = "failure"
+                elif case == "wrong-status":
+                    record.update(
+                        result="failure",
+                        final_validate_status="FAILED",
+                        exit_code=1,
+                        detail=None,
+                    )
+                elif case == "wrong-schema":
+                    record["service_result_schema"] = (
+                        start_unit.service_result.TEST_COUNTS_SCHEMA_VERSION
+                    )
+                elif case == "wrong-writeback":
+                    failed = {"status": "failed", "error": "fixture writeback"}
+                    record["scorecard_writeback"] = failed
+                    result["scorecard_writeback"] = failed
+                elif case == "wrong-sidecar-commit":
+                    result["commit"] = "f" * 40
+                elif case == "sidecar-handle-mismatch":
+                    result["detail"] = ["different refusal"]
+                elif case == "wrong-run-id":
+                    record["unit"] = "validate-another-run.service"
+                elif case == "forged-marker":
+                    record["ledger_mirror"] = {
+                        "state": start_unit.LEDGER_MIRROR_NOT_APPLICABLE,
+                        "recorded_at": "2026-09-22T12:00:02+00:00",
+                        "repository": start_unit.CELL_LEDGER_REPOSITORY,
+                        "detail": start_unit.PRE_DAG_NO_RESULT_DETAIL,
+                    }
+                    sidecar.unlink()
+                if case != "forged-marker":
+                    sidecar.write_text(json.dumps(result, sort_keys=True) + "\n")
+
+                self.assertFalse(
+                    start_unit.pre_dag_no_result_is_authoritative(
+                        self.root, record_path, record
+                    )
+                )
+                self.assertFalse(
+                    start_unit.cell_ledger_retirement_ready(
+                        self.root, record_path, record
+                    )
+                )
+                self.fake.commands.clear()
+                self.fake.ledger_mirror_rc = 1
+                self.fake.ledger_mirror_stderr = "publication refused"
+
+                def bookkeep(
+                    _path: Path,
+                    *,
+                    base_record: dict[str, object] | None = None,
+                    **fields: object,
+                ) -> dict[str, object]:
+                    return {**(base_record or {}), **fields}
+
+                with mock.patch.object(
+                    start_unit, "bookkeep_record", side_effect=bookkeep
+                ):
+                    updated = start_unit.finalize_ledger_mirror(
+                        self.root,
+                        self.root,
+                        record_path,
+                        record=record,
+                        run=self.fake,
+                    )
+                self.assertEqual("failed", updated["ledger_mirror"]["state"])
+                self.assertTrue(
+                    any(
+                        len(command) > 1
+                        and command[1].endswith("ci-hub/series/mirror.py")
+                        for command in self.fake.commands
+                    )
+                )
+                self.assertFalse(
+                    any(
+                        "remove-validate-batch" in command
+                        for command in self.fake.commands
+                    )
+                )
+                self.fake.ledger_mirror_rc = 0
+                self.fake.ledger_mirror_stderr = ""
+
     def test_retire_unit_never_waits_for_the_unit_to_become_inactive(self) -> None:
         """THE PROPERTY THE ENTRY POINT EXISTS FOR, asserted directly.
 

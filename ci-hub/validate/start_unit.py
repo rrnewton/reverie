@@ -5595,21 +5595,34 @@ def publish_recorded_scorecard_handoff(
     ):
         return None
     if cell_ledger_attempted(record):
-        if not cell_ledger_published(record):
-            raise RuntimeError("cell ledger publication is incomplete; retain original results")
+        if not cell_ledger_retirement_ready(root, record_path, record):
+            raise RuntimeError(
+                "cell ledger publication is incomplete; retain original results"
+            )
         if not checkout.exists():
             return None
         identity = recorded_wrkslots_identity(record, checkout)
         if identity is None:
-            raise RuntimeError("published validation checkout has no exact wrkslots identity")
+            raise RuntimeError(
+                "retirement-ready validation checkout has no exact wrkslots identity"
+            )
         require_live_scorecard_checkout(
-            root, checkout, str(record.get("target")), identity,
-            run=run, tool_root=tool_root, registration_status=registration_status,
+            root,
+            checkout,
+            str(record.get("target")),
+            identity,
+            run=run,
+            tool_root=tool_root,
+            registration_status=registration_status,
         )
         authored = tree_disposition.authored_work(checkout, run=run)
         if authored is None or any(authored):
-            raise RuntimeError("published validation checkout has authored work or unknown state; retained")
-        # History is in the immutable ledger commit. There is no new local
+            raise RuntimeError(
+                "retirement-ready validation checkout has authored work or unknown "
+                "state; retained"
+            )
+        # History is in the immutable ledger commit, or the typed zero-work
+        # result proves that no ledger row applies. Neither has a new local
         # scorecard file set to copy; older records retain their original path.
         return None
     target = record.get("target")
@@ -5763,6 +5776,10 @@ def publish_recorded_scorecard_handoff(
 
 COMMIT_STATUS_PUBLICATION_SUCCEEDED = frozenset({"published", "unchanged"})
 LEDGER_MIRROR_SUCCEEDED = frozenset({"published", "unchanged"})
+LEDGER_MIRROR_NOT_APPLICABLE = "not-applicable"
+PRE_DAG_NO_RESULT_DETAIL = (
+    "authoritative schema-5 COULD_NOT_RUN executed zero nodes and tests"
+)
 CELL_LEDGER_REPOSITORY = "https://github.com/rrnewton/hermit_test_ledger.git"
 
 
@@ -5783,6 +5800,89 @@ def cell_ledger_published(record: Mapping[str, Any]) -> bool:
         and isinstance(publication.get("scorecard"), dict)
         and publication["scorecard"].get("state") == "published"
         and publication["scorecard"].get("hermit_commit") == record.get("target")
+    )
+
+
+def pre_dag_no_result_is_authoritative(
+    root: Path, record_path: Path, record: Mapping[str, Any]
+) -> bool:
+    """Require one current handle and its schema-5 sidecar to agree on zero work."""
+    try:
+        handle = run_registry.parse_current_record(record)
+    except (RuntimeError, TypeError, ValueError):
+        return False
+    if (
+        handle.kind is not run_registry.RunKind.VALIDATE
+        or handle.state is not run_registry.RunState.COMPLETED
+        or handle.repo != "rrnewton/hermit"
+        or record_path.resolve()
+        != run_registry.record_path(root.resolve(), handle.unit).resolve()
+        or handle.raw.get("result") != "no-result"
+        or handle.raw.get("service_result_schema") != service_result.SCHEMA_VERSION
+        or handle.raw.get("final_validate_status") != "COULD_NOT_RUN"
+        or type(handle.raw.get("exit_code")) is not int
+        or handle.raw.get("exit_code") != EXIT_COULD_NOT_DETERMINE
+        or any(
+            type(handle.raw.get(field)) is not int or handle.raw.get(field) != 0
+            for field in ("executed_nodes", "executed_tests", "passed_tests")
+        )
+        or "scorecard_writeback" not in handle.raw
+        or handle.raw.get("scorecard_writeback") is not None
+    ):
+        return False
+    try:
+        evidence = service_result.read_framework_result(
+            service_result.result_path(record_path),
+            expected_commit=handle.target,
+        )
+    except RuntimeError:
+        return False
+    classified = service_result.classify(evidence)
+    shared = (
+        "state",
+        "result",
+        "exit_code",
+        "executed_nodes",
+        "executed_tests",
+        "passed_tests",
+        "final_validate_status",
+        "result_source",
+        "service_result_schema",
+        "detail",
+        "selection_mode",
+        "scorecard_writeback",
+    )
+    return (
+        evidence.commit == handle.target
+        and evidence.service_result_schema == service_result.SCHEMA_VERSION
+        and all(field in handle.raw for field in shared)
+        and all(handle.raw[field] == classified.get(field) for field in shared)
+    )
+
+
+def cell_ledger_retirement_ready(
+    root: Path, record_path: Path, record: Mapping[str, Any]
+) -> bool:
+    """Accept publication, or a durable proof that no ledger row can exist."""
+    if cell_ledger_published(record):
+        return True
+    publication = record.get("ledger_mirror")
+    if not (
+        isinstance(publication, dict)
+        and publication.get("repository") == CELL_LEDGER_REPOSITORY
+        and publication.get("state") == LEDGER_MIRROR_NOT_APPLICABLE
+        and publication.get("detail") == PRE_DAG_NO_RESULT_DETAIL
+    ):
+        return False
+    try:
+        durable = run_registry.read_record(record_path)
+    except RuntimeError:
+        return False
+    durable_publication = durable.get("ledger_mirror")
+    return (
+        isinstance(durable_publication, dict)
+        and durable_publication == publication
+        and pre_dag_no_result_is_authoritative(root, record_path, durable)
     )
 
 
@@ -6040,7 +6140,7 @@ def finalize_ledger_mirror(
     deadline_ns = min(started_ns + 1800 * 1_000_000_000,
                       lifecycle_deadline_ns if lifecycle_deadline_ns is not None
                       else started_ns + 1800 * 1_000_000_000)
-    if cell_ledger_published(record):
+    if cell_ledger_retirement_ready(root, record_path, record):
         return dict(record)
     # Historical reattachment reads its existing handoff. It must not turn an
     # old/retired source checkout into a new publication observation.
@@ -6052,6 +6152,23 @@ def finalize_ledger_mirror(
         return dict(record)
 
     recorded_at = datetime.now(timezone.utc).isoformat()
+    if pre_dag_no_result_is_authoritative(root, record_path, record):
+        outcome = {
+            "state": LEDGER_MIRROR_NOT_APPLICABLE,
+            "recorded_at": recorded_at,
+            "repository": CELL_LEDGER_REPOSITORY,
+            "detail": PRE_DAG_NO_RESULT_DETAIL,
+        }
+        print(
+            "validate-run: CELL LEDGER NOT APPLICABLE: "
+            f"{PRE_DAG_NO_RESULT_DETAIL}; no row was published.",
+            file=sys.stderr,
+        )
+        return bookkeep_record(
+            record_path,
+            base_record=record,
+            ledger_mirror=outcome,
+        )
     checkout_value = record.get("checkout") or record.get("source_checkout")
     target = record.get("target")
     results = record.get("e2e_result_root")
@@ -6387,7 +6504,10 @@ def retire_unit_after_writeback(
             unit, run=run, started_ns=retirement_started_ns,
         )
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        print(f"validate-run: RETIRE-REFUSED {unit}: {error}; original results retained.", file=sys.stderr)
+        print(
+            f"validate-run: RETIRE-REFUSED {unit}: {error}; original results retained.",
+            file=sys.stderr,
+        )
         return EXIT_COULD_NOT_DETERMINE
     record = finalize_ledger_mirror(
         root,
@@ -6399,14 +6519,34 @@ def retire_unit_after_writeback(
     )
 
     checkout = Path(raw_checkout)
-    if not cell_ledger_published(record):
+    if not cell_ledger_retirement_ready(root, record_path, record):
         print(
             f"validate-run: RETIRE-REFUSED {unit}: direct cell-ledger publication "
             "is incomplete; original results and checkout are retained.",
             file=sys.stderr,
         )
         return EXIT_COULD_NOT_DETERMINE
-    handoff = f"{CELL_LEDGER_REPOSITORY}@{record['ledger_mirror']['commit']}"
+    handoff = (
+        f"{CELL_LEDGER_REPOSITORY}@{record['ledger_mirror']['commit']}"
+        if cell_ledger_published(record)
+        else "cell ledger not applicable for typed pre-DAG no-result"
+    )
+
+    identity = recorded_wrkslots_identity(record, checkout)
+    if identity is None:
+        print(
+            f"validate-run: RETIRE-REFUSED {unit}: no exact wrkslots identity, so "
+            "the checkout cannot be retired by identity.",
+            file=sys.stderr,
+        )
+        return EXIT_COULD_NOT_DETERMINE
+    if not checkout.exists():
+        print(
+            f"validate-run: RETIRE-ALREADY-ABSENT {unit}: {checkout}; "
+            f"retirement evidence {handoff} is durable and no path was removed.",
+            file=sys.stderr,
+        )
+        return 0
 
     # THE SAME AUTHORISATION THE SWEEP APPLIES, because this path removes too and
     # must not become the way around it. A checkout holding uncommitted paths is
@@ -6415,17 +6555,8 @@ def retire_unit_after_writeback(
     if measured is None or measured[0]:
         print(
             f"validate-run: RETIRE-REFUSED {unit}: the checkout holds authored work "
-            "or its state could not be read; the handoff is published and the "
+            "or its state could not be read; the retirement evidence is durable and the "
             "checkout is retained.",
-            file=sys.stderr,
-        )
-        return EXIT_COULD_NOT_DETERMINE
-
-    identity = recorded_wrkslots_identity(record, checkout)
-    if identity is None:
-        print(
-            f"validate-run: RETIRE-REFUSED {unit}: no exact wrkslots identity, so "
-            "the checkout cannot be retired by identity.",
             file=sys.stderr,
         )
         return EXIT_COULD_NOT_DETERMINE
@@ -6553,6 +6684,9 @@ def attach(
         record_path,
         record=updated,
         run=run,
+    )
+    ledger_retirement_ready = cell_ledger_retirement_ready(
+        root, record_path, updated
     )
     if not json_output:
         print(
@@ -6699,7 +6833,7 @@ def attach(
         tool_root=tool_root,
         retain_checkout_reason=(
             "cell history publication is incomplete; retain original results for retry"
-            if cell_ledger_attempted(updated) and not scorecard_updated else
+            if cell_ledger_attempted(updated) and not ledger_retirement_ready else
             "its scorecard output could not be handed off durably"
             if handoff_required and scorecard_handoff is None
             else None
@@ -7904,6 +8038,9 @@ def main(
         record=updated,
         run=run,
     )
+    ledger_retirement_ready = cell_ledger_retirement_ready(
+        state_root, record_path, updated
+    )
     if not args.json:
         print(
             f"RECEIPT-CANONICAL commit={args.target} cwd={checkout} "
@@ -7966,7 +8103,7 @@ def main(
         run=run,
     )
     if (handoff_required and scorecard_handoff is None) or (
-        cell_ledger_attempted(updated) and not scorecard_updated
+        cell_ledger_attempted(updated) and not ledger_retirement_ready
     ):
         print(
             f"validate-run: materialized target checkout RETAINED at {fresh_checkout}; "
@@ -7979,7 +8116,7 @@ def main(
     # The normal completion path, and the one that matters most: without this the
     # per-run cargo home leaks on EVERY successful validate.
     remove_private_cargo_home(private_cargo_home, run=run)
-    if not cell_ledger_attempted(updated) or scorecard_updated:
+    if not cell_ledger_attempted(updated) or ledger_retirement_ready:
         remove_runtime_root(runtime_root, run=run)
     emit_report(
         {**updated, "event": "finished", "unit": f"{unit}.service"},

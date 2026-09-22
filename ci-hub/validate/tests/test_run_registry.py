@@ -551,6 +551,30 @@ class RunRegistryContractTests(unittest.TestCase):
         self.assertEqual("c" * 40, accepted.raw["ledger_mirror"]["series_commit"])
         self.assertEqual("derived-failed", accepted.raw["ledger_mirror"]["state"])
 
+    def test_direct_publication_has_exact_not_applicable_shape(self) -> None:
+        repository = "https://github.com/rrnewton/hermit_test_ledger.git"
+        publication = {
+            "state": "not-applicable",
+            "recorded_at": "2026-09-22T12:00:00Z",
+            "repository": repository,
+            "detail": "authoritative schema-5 zero-work no-result",
+        }
+        accepted = run_registry.parse_current_record(
+            validation_handle(ledger_mirror=publication)
+        )
+        self.assertEqual(publication, accepted.raw["ledger_mirror"])
+
+        for candidate in (
+            {key: value for key, value in publication.items() if key != "detail"},
+            {**publication, "extra": "not allowed"},
+            {**publication, "repository": "https://example.invalid/ledger.git"},
+            {**publication, "detail": ""},
+        ):
+            with self.subTest(candidate=candidate), self.assertRaises(RuntimeError):
+                run_registry.parse_current_record(
+                    validation_handle(ledger_mirror=candidate)
+                )
+
     def test_modern_publication_preserves_the_complete_file_map(self) -> None:
         publication = modern_publication()
         accepted = run_registry.parse_current_record(validation_handle(ledger_mirror=publication))
