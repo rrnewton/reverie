@@ -1944,7 +1944,7 @@ mod tests {
             .diagnostic_file(&diagnostics)
             .unwrap()
             .terminate_process_group_on_exit(true);
-        let mut guest = Command::new("/bin/sh");
+        let mut guest = Command::new("/bin/bash");
         guest.args([
             "-c",
             "sleep 60 & printf descendant-started; printf cleanup-diagnostic >&198; exit 7",
