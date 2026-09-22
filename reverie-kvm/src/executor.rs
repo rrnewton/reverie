@@ -25312,20 +25312,30 @@ mod tests {
         const TEST: &str =
             "executor::tests::positioned_vectored_io_handles_pipes_partial_writes_and_sigpipe";
         const CHILD_ENV: &str = "REVERIE_POSITIONED_PIPE_CHILD";
-        if std::env::var_os(CHILD_ENV).is_none() {
+        const CHILD_VALUE: &str = "reverie-positioned-pipe-child-v1";
+        const COMPLETED: &str = "REVERIE_POSITIONED_PIPE_COMPLETE_V1";
+        if let Some(value) = std::env::var_os(CHILD_ENV) {
+            assert_eq!(value, std::ffi::OsStr::new(CHILD_VALUE));
+        } else {
             let output = std::process::Command::new("timeout")
                 .args(["--kill-after=2s", "10s"])
                 .arg(std::env::current_exe().unwrap())
-                .args(["--exact", TEST, "--nocapture"])
-                .env(CHILD_ENV, "1")
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, CHILD_VALUE)
                 .output()
                 .expect("failed to run isolated positioned-pipe regression");
+            let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
                 output.status.success(),
                 "isolated positioned-pipe regression failed with {}\nstdout:\n{}\nstderr:\n{}",
                 output.status,
-                String::from_utf8_lossy(&output.stdout),
+                stdout,
                 String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                stdout.matches(COMPLETED).count(),
+                1,
+                "isolated positioned-pipe regression did not execute exactly once:\n{stdout}"
             );
             return;
         }
@@ -25436,6 +25446,7 @@ mod tests {
             partial > 0 && partial < 8192,
             "unexpected short write: {partial}"
         );
+        println!("{}", COMPLETED);
     }
 
     #[test]
@@ -26023,6 +26034,37 @@ mod tests {
 
     #[test]
     fn pipe_syscalls_create_owned_guest_descriptors() {
+        const TEST: &str = "executor::tests::pipe_syscalls_create_owned_guest_descriptors";
+        const CHILD_ENV: &str = "REVERIE_PIPE_SYSCALLS_CHILD";
+        const CHILD_VALUE: &str = "reverie-pipe-syscalls-child-v1";
+        const COMPLETED: &str = "REVERIE_PIPE_SYSCALLS_COMPLETE_V1";
+        if let Some(value) = std::env::var_os(CHILD_ENV) {
+            assert_eq!(value, std::ffi::OsStr::new(CHILD_VALUE));
+        } else {
+            let output = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, CHILD_VALUE)
+                .output()
+                .expect("failed to run isolated pipe-syscalls regression");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "isolated pipe-syscalls regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                stdout,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                stdout.matches(COMPLETED).count(),
+                1,
+                "isolated pipe-syscalls regression did not execute exactly once:\n{stdout}"
+            );
+            return;
+        }
+        // Create both pipe generations after exec so a concurrent test child
+        // cannot inherit a reader and invalidate the exact EPIPE assertion.
         const PIPE_FDS: u64 = 0x100;
         const PAYLOAD: u64 = 0x200;
         const READ_BUFFER: u64 = 0x300;
@@ -26320,6 +26362,7 @@ mod tests {
                 .objects
                 .is_empty()
         );
+        println!("{}", COMPLETED);
     }
 
     /// A masked `ppoll` must return the ready count when a descriptor is already
@@ -29756,6 +29799,37 @@ mod tests {
 
     #[test]
     fn received_rights_prepare_failures_preserve_both_tables_and_identity_allocator() {
+        const TEST: &str = "executor::tests::received_rights_prepare_failures_preserve_both_tables_and_identity_allocator";
+        const CHILD_ENV: &str = "REVERIE_RECEIVED_PREPARE_CHILD";
+        const CHILD_VALUE: &str = "reverie-received-prepare-child-v1";
+        const COMPLETED: &str = "REVERIE_RECEIVED_PREPARE_COMPLETE_V1";
+        if let Some(value) = std::env::var_os(CHILD_ENV) {
+            assert_eq!(value, std::ffi::OsStr::new(CHILD_VALUE));
+        } else {
+            let output = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, CHILD_VALUE)
+                .output()
+                .expect("failed to run isolated received-prepare regression");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "isolated received-prepare regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                stdout,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                stdout.matches(COMPLETED).count(),
+                1,
+                "isolated received-prepare regression did not execute exactly once:\n{stdout}"
+            );
+            return;
+        }
+        // Create both peer-EOF fixtures only after exec so no sibling test
+        // child can inherit their owned endpoints before rollback closes them.
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let shared = FileTableState::try_from_elf(&state).unwrap();
@@ -29875,6 +29949,7 @@ mod tests {
             u64::MAX
         );
         assert_stream_peer_closed(&peer);
+        println!("{}", COMPLETED);
     }
 
     #[test]
@@ -32905,20 +32980,30 @@ mod tests {
         const TEST: &str =
             "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards";
         const CHILD_ENV: &str = "REVERIE_ACCEPT_RETIREMENT_CHILD";
-        if std::env::var_os(CHILD_ENV).is_none() {
+        const CHILD_VALUE: &str = "reverie-accept-retirement-child-v1";
+        const COMPLETED: &str = "REVERIE_ACCEPT_RETIREMENT_COMPLETE_V1";
+        if let Some(value) = std::env::var_os(CHILD_ENV) {
+            assert_eq!(value, std::ffi::OsStr::new(CHILD_VALUE));
+        } else {
             let output = std::process::Command::new("timeout")
                 .args(["--kill-after=2s", "10s"])
                 .arg(std::env::current_exe().unwrap())
-                .args(["--exact", TEST, "--nocapture"])
-                .env(CHILD_ENV, "1")
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, CHILD_VALUE)
                 .output()
                 .expect("failed to run isolated accept-retirement regression");
+            let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
                 output.status.success(),
                 "isolated accept-retirement regression failed with {}\nstdout:\n{}\nstderr:\n{}",
                 output.status,
-                String::from_utf8_lossy(&output.stdout),
+                stdout,
                 String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                stdout.matches(COMPLETED).count(),
+                1,
+                "isolated accept-retirement regression did not execute exactly once:\n{stdout}"
             );
             return;
         }
@@ -33094,6 +33179,7 @@ mod tests {
                 assert_eq!(f.call(libc::SYS_close, [result as u64, 0, 0, 0, 0, 0]), 0);
             }
         }
+        println!("{}", COMPLETED);
     }
 
     #[test]
