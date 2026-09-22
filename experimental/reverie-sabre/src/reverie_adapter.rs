@@ -9,7 +9,9 @@
 //! Adapter from SaBRe callbacks to Reverie's shared tool interface.
 
 use std::collections::BTreeSet;
-use std::collections::HashMap;
+use std::collections::HashMap as StdHashMap;
+type DetBuildHasher = std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+type HashMap<K, V> = StdHashMap<K, V, DetBuildHasher>;
 use std::future::Future;
 use std::io;
 use std::path::Path;
@@ -103,7 +105,7 @@ where
             tool,
             global_state,
             config,
-            thread_states: Mutex::new(HashMap::new()),
+            thread_states: Mutex::new(HashMap::default()),
             syscall_subscriptions,
         }
     }
@@ -435,7 +437,7 @@ where
         let thread_state = take_process_fork_handoff(&tool, tid)?
             .unwrap_or_else(|| tool.init_thread_state(tid, None));
         let syscall_subscriptions = T::subscriptions(&config).iter_syscalls().collect();
-        let mut thread_states = HashMap::new();
+        let mut thread_states = HashMap::default();
         thread_states.insert(
             tid.as_raw(),
             Arc::new(Mutex::new(RemoteThreadState {
@@ -1553,7 +1555,7 @@ mod tests {
 
     #[test]
     fn inherited_thread_state_is_visible_after_pending_clone_finishes() {
-        let states = Arc::new(Mutex::new(HashMap::new()));
+        let states = Arc::new(Mutex::new(HashMap::default()));
         let pending = Arc::new(AtomicUsize::new(1));
         let missed = Arc::new(Barrier::new(2));
         let published = Arc::new(Barrier::new(2));

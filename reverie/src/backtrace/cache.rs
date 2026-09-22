@@ -12,7 +12,9 @@ use std::sync::Mutex;
 use std::sync::MutexGuard;
 
 use linked_hash_map::Entry;
-use linked_hash_map::LinkedHashMap;
+use linked_hash_map::LinkedHashMap as StdLinkedHashMap;
+type DetBuildHasher = std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+type LinkedHashMap<K, V> = StdLinkedHashMap<K, V, DetBuildHasher>;
 
 use super::library::Library;
 use super::symbols::Symbols;
