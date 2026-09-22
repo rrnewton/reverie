@@ -426,7 +426,28 @@ pub(crate) fn execute_basic_syscall(
     state: &mut LoadedStaticElf,
     request: &SyscallRequest,
 ) -> SyscallAction {
+    if request.number() == libc::SYS_capset as u64 {
+        let task_generation = current_task_generation(state)
+            .expect("unit-test capset caller is absent from its lifecycle table");
+        let result = capset_with_lifecycle(memory, state, request.args(), task_generation)
+            .expect("unit-test capset caller has a stale lifecycle generation");
+        return SyscallAction::Continue {
+            result,
+            segment: None,
+        };
+    }
     execute_basic_syscall_with_output(memory, state, request, None, None)
+}
+
+#[cfg(test)]
+fn current_task_generation(state: &LoadedStaticElf) -> Option<u64> {
+    state
+        .task_lifecycle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(state.tid)
+        .filter(|task| task.tgid == state.pid)
+        .map(|task| task.generation)
 }
 
 fn execute_basic_syscall_with_output(
@@ -1237,13 +1258,16 @@ fn get_robust_list(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u6
         return negative_errno(libc::ESRCH);
     };
 
-    // Every task has the fixed virtual-root credentials. Match the remaining
-    // ptrace access predicates: same-thread-group reads are always allowed;
-    // cross-process reads require either a dumpable target or CAP_SYS_PTRACE.
-    if target.tgid != state.pid
-        && !target.dumpable
-        && state.capability_effective & (1_u64 << CAP_SYS_PTRACE) == 0
-    {
+    // Every task has fixed virtual-root UIDs/GIDs. Match the remaining commoncap
+    // ptrace-read REALCREDS predicates, including the target-permitted /
+    // caller-permitted subset rule. Procfs passes the caller's effective set
+    // to the same commoncap predicate for its FSCREDS mode.
+    if !commoncap_ptrace_read_authorized(
+        state.pid,
+        state.capability_effective,
+        state.capability_permitted,
+        target,
+    ) {
         return negative_errno(libc::EPERM);
     }
 
@@ -1256,6 +1280,17 @@ fn get_robust_list(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u6
         return negative_errno(libc::EFAULT);
     }
     0
+}
+
+fn commoncap_ptrace_read_authorized(
+    caller_tgid: i32,
+    caller_capability_effective: u64,
+    caller_capability_subset: u64,
+    target: crate::elf::TaskLifecycleState,
+) -> bool {
+    target.tgid == caller_tgid
+        || caller_capability_effective & (1_u64 << CAP_SYS_PTRACE) != 0
+        || (target.dumpable && target.capability_permitted & !caller_capability_subset == 0)
 }
 
 fn guest_host_address(
@@ -1723,6 +1758,7 @@ pub(crate) struct FileTableState {
     proc_files: std::collections::BTreeMap<i32, u64>,
     synthetic_proc_nofollow_fds: std::collections::BTreeSet<i32>,
     fdinfo_files: std::collections::BTreeMap<i32, Arc<FdinfoDescription>>,
+    proc_fd_directories: std::collections::BTreeMap<i32, Arc<ProcFdDirectoryDescription>>,
     signalfd_fds: std::collections::BTreeSet<i32>,
     fd_object_inodes: std::collections::BTreeMap<i32, Arc<GuestFileIdentity>>,
 }
@@ -1741,6 +1777,89 @@ pub(crate) struct FdinfoDescription {
     path: Vec<u8>,
     nofollow_status: bool,
     sequence: Mutex<crate::fdinfo::FdinfoSequence>,
+}
+
+/// One authenticated process- or thread-scoped proc-fd directory description.
+/// The weak table binding is deliberately the opener's table: an inherited
+/// process child must keep observing that table after its own table diverges.
+/// The process/task generation prevents numeric identity reuse from reviving
+/// descendant lookup after the bound incarnation ends.
+#[derive(Debug)]
+pub(crate) struct ProcFdDirectoryDescription {
+    kind: ProcFdDirectoryKind,
+    target_tid: i32,
+    target_generation: u64,
+    target_tgid: i32,
+    table: std::sync::Weak<Mutex<FileTableState>>,
+    lifecycle: Arc<Mutex<crate::elf::TaskLifecycleTable>>,
+    path: Vec<u8>,
+    visible_inode: u64,
+    status_flags: libc::c_int,
+}
+
+impl ProcFdDirectoryDescription {
+    fn target_binding_is_live(&self, lifecycle: &crate::elf::TaskLifecycleTable) -> bool {
+        match self.kind {
+            ProcFdDirectoryKind::ProcessSelf => {
+                lifecycle.contains_process(self.target_tgid, self.target_generation)
+            }
+            ProcFdDirectoryKind::ThreadSelf => lifecycle
+                .get(self.target_tid)
+                .is_some_and(|task| task.generation == self.target_generation),
+        }
+    }
+
+    fn target_lookup_is_live(&self, lifecycle: &crate::elf::TaskLifecycleTable) -> bool {
+        if !self.target_binding_is_live(lifecycle) {
+            return false;
+        }
+        match self.kind {
+            // Linux retains the `/proc/self/fd` directory while another thread
+            // keeps the process alive after leader pthread_exit, but fd child
+            // lookups are ENOENT once that process leader is gone.
+            ProcFdDirectoryKind::ProcessSelf => lifecycle
+                .get(self.target_tid)
+                .is_some_and(|task| task.generation == self.target_generation),
+            ProcFdDirectoryKind::ThreadSelf => true,
+        }
+    }
+
+    fn target_lookup_is_authorized(
+        &self,
+        lifecycle: &crate::elf::TaskLifecycleTable,
+        caller_tgid: i32,
+        caller_capability_effective: u64,
+    ) -> bool {
+        lifecycle.get(self.target_tid).is_some_and(|task| {
+            task.tgid == self.target_tgid
+                && match self.kind {
+                    ProcFdDirectoryKind::ProcessSelf => {
+                        task.process_generation == self.target_generation
+                    }
+                    ProcFdDirectoryKind::ThreadSelf => task.generation == self.target_generation,
+                }
+                && commoncap_ptrace_read_authorized(
+                    caller_tgid,
+                    caller_capability_effective,
+                    caller_capability_effective,
+                    task,
+                )
+        })
+    }
+
+    fn reopened(&self, status_flags: libc::c_int) -> Arc<Self> {
+        Arc::new(Self {
+            kind: self.kind,
+            target_tid: self.target_tid,
+            target_generation: self.target_generation,
+            target_tgid: self.target_tgid,
+            table: self.table.clone(),
+            lifecycle: self.lifecycle.clone(),
+            path: self.path.clone(),
+            visible_inode: self.visible_inode,
+            status_flags,
+        })
+    }
 }
 
 impl FdinfoDescription {
@@ -2188,6 +2307,7 @@ impl FileTableState {
             proc_files: state.proc_files.clone(),
             synthetic_proc_nofollow_fds: state.synthetic_proc_nofollow_fds.clone(),
             fdinfo_files: state.fdinfo_files.clone(),
+            proc_fd_directories: state.proc_fd_directories.clone(),
             signalfd_fds: state
                 .process_signals
                 .lock()
@@ -2268,6 +2388,9 @@ impl FileTableState {
             .synthetic_proc_nofollow_fds
             .clone_from(&self.synthetic_proc_nofollow_fds);
         state.fdinfo_files.clone_from(&self.fdinfo_files);
+        state
+            .proc_fd_directories
+            .clone_from(&self.proc_fd_directories);
         state.fd_object_inodes.clone_from(&self.fd_object_inodes);
         Ok(())
     }
@@ -2407,6 +2530,7 @@ impl ElfExecutor {
                 state.pid,
                 state.pgid,
                 state.dumpable,
+                state.capability_permitted,
                 &state.thread_signals,
             );
         let process_generation = state
@@ -2844,6 +2968,7 @@ impl ElfExecutor {
                 state.pid,
                 state.pgid,
                 state.dumpable,
+                state.capability_permitted,
                 &state.thread_signals,
             );
         let process_generation = state
@@ -2969,6 +3094,7 @@ impl ElfExecutor {
                 state.pid,
                 state.pgid,
                 state.dumpable,
+                state.capability_permitted,
                 &state.thread_signals,
             );
         let process_generation = state
@@ -5206,6 +5332,16 @@ impl ElfExecutor {
                 result,
                 segment: None,
             }
+        } else if request.number() == libc::SYS_capset as u64 {
+            SyscallAction::Continue {
+                result: capset_with_lifecycle(
+                    &memory,
+                    &mut self.state,
+                    request.args(),
+                    self.task_generation,
+                )?,
+                segment: None,
+            }
         } else {
             execute_basic_syscall_with_output(
                 &mut memory,
@@ -6869,7 +7005,10 @@ fn truncate(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
         Err(error) => return read_c_string_errno(error),
     };
     let held_file;
-    let target_fd = if let Some(guest_fd) = guest_fd_path(state, &path) {
+    let target_fd = if let Some(guest_fd) = match guest_fd_path(state, &path, libc::ENOENT) {
+        Ok(path) => path,
+        Err(error) => return error,
+    } {
         if state.proc_files.contains_key(&guest_fd) {
             return negative_errno(libc::EACCES);
         }
@@ -7266,7 +7405,18 @@ fn open_file(
             FdinfoPathTarget::InvalidTask => negative_errno(libc::ENOENT),
         };
     }
-    if is_synthetic_proc_directory(state, path) {
+    if let Some(target) = synthetic_proc_fd_directory_target(state, path) {
+        let terminal_slash = normalize_proc_fd_alias_spelling(path)
+            .is_some_and(|normalized| normalized.ends_with(b"/"));
+        return open_synthetic_proc_fd_directory(
+            state,
+            target,
+            flags,
+            close_on_exec,
+            terminal_slash,
+        );
+    }
+    if is_synthetic_proc_root_directory(state, path) {
         return open_synthetic_proc_directory(state, flags, close_on_exec);
     }
     // Serve the synthetic /proc surface before touching the host filesystem, so
@@ -7344,7 +7494,10 @@ fn open_file(
         return open_virtual_file(state, content, flags, close_on_exec);
     }
     let guest_cloexec = close_on_exec;
-    if let Some(guest_fd) = guest_fd_path(state, path) {
+    if let Some(guest_fd) = match guest_fd_path(state, path, libc::ENOENT) {
+        Ok(path) => path,
+        Err(error) => return error,
+    } {
         return open_guest_fd_path(state, guest_fd, flags, guest_cloexec);
     }
     if path == b"/dev/random" || path == b"/dev/urandom" {
@@ -7535,19 +7688,176 @@ fn synthetic_cpu_frequency_content(
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 // TODO-HUMAN-REVIEW(PR-114): Review /proc/thread-self/fd guest descriptor resolution.
 // TODO-HUMAN-REVIEW(PR-136): Review numeric guest-pid descriptor aliases.
-fn guest_fd_path(state: &LoadedStaticElf, path: &[u8]) -> Option<libc::c_int> {
-    let numeric_prefix = format!("/proc/{}/fd/", state.pid).into_bytes();
-    let suffix = path
-        .strip_prefix(b"/dev/fd/")
-        .or_else(|| path.strip_prefix(b"/proc/self/fd/"))
-        .or_else(|| path.strip_prefix(b"/proc/thread-self/fd/"))
-        .or_else(|| path.strip_prefix(numeric_prefix.as_slice()))?;
-    if suffix.is_empty() || !suffix.iter().all(u8::is_ascii_digit) {
+fn canonical_guest_fd_component(component: &[u8]) -> Option<libc::c_int> {
+    let fd = canonical_proc_id_component(component)?;
+    (fd < GUEST_NOFILE_LIMIT).then_some(fd)
+}
+
+fn canonical_proc_id_component(component: &[u8]) -> Option<i32> {
+    let id = parse_proc_id(component)?;
+    (id.to_string().as_bytes() == component).then_some(id)
+}
+
+fn normalize_proc_fd_alias_spelling(path: &[u8]) -> Option<Vec<u8>> {
+    if !path.starts_with(b"/") {
         return None;
     }
-    suffix.iter().try_fold(0_i32, |value, digit| {
-        value.checked_mul(10)?.checked_add(i32::from(*digit - b'0'))
+    let terminal_dot = path
+        .split(|byte| *byte == b'/')
+        .rev()
+        .find(|component| !component.is_empty())
+        .is_some_and(|component| component == b".");
+    let components = path
+        .split(|byte| *byte == b'/')
+        .filter(|component| !component.is_empty() && *component != b".")
+        .collect::<Vec<_>>();
+    let mut normalized = Vec::with_capacity(path.len());
+    normalized.push(b'/');
+    for (index, component) in components.iter().enumerate() {
+        if index != 0 {
+            normalized.push(b'/');
+        }
+        normalized.extend_from_slice(component);
+    }
+    if (path.ends_with(b"/") || terminal_dot) && !normalized.ends_with(b"/") {
+        normalized.push(b'/');
+    }
+    Some(normalized)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcFdPathSuffix {
+    Target(libc::c_int),
+    Descendant {
+        fd: libc::c_int,
+        trailing_slash_only: bool,
+    },
+}
+
+fn parse_proc_fd_path_suffix(mut suffix: &[u8]) -> Result<ProcFdPathSuffix, i64> {
+    // Procfs accepts redundant separators and current-directory components
+    // after the owned fd-directory prefix. Do not perform generic `..`
+    // normalization: only the explicit sibling alias is admitted by callers.
+    loop {
+        if let Some(rest) = suffix.strip_prefix(b"/") {
+            suffix = rest;
+        } else if let Some(rest) = suffix.strip_prefix(b"./") {
+            suffix = rest;
+        } else {
+            break;
+        }
+    }
+    let separator = suffix.iter().position(|byte| *byte == b'/');
+    let component = separator.map_or(suffix, |separator| &suffix[..separator]);
+    let fd = canonical_guest_fd_component(component).ok_or_else(|| negative_errno(libc::ENOENT))?;
+    Ok(if let Some(separator) = separator {
+        ProcFdPathSuffix::Descendant {
+            fd,
+            trailing_slash_only: suffix[separator + 1..].iter().all(|byte| *byte == b'/'),
+        }
+    } else {
+        ProcFdPathSuffix::Target(fd)
     })
+}
+
+fn proc_fd_relative_path_suffix(path: &[u8]) -> Result<ProcFdPathSuffix, i64> {
+    let mut suffix = path;
+    while let Some(rest) = suffix.strip_prefix(b"./") {
+        suffix = rest;
+    }
+    if let Some(rest) = suffix.strip_prefix(b"../fd/") {
+        suffix = rest;
+    }
+    parse_proc_fd_path_suffix(suffix)
+}
+
+fn guest_fd_descendant_error(
+    state: &LoadedStaticElf,
+    guest_fd: libc::c_int,
+    trailing_slash_errno: libc::c_int,
+    trailing_slash_only: bool,
+) -> i64 {
+    let Some(host_fd) = host_fd(state, guest_fd) else {
+        return negative_errno(libc::ENOENT);
+    };
+    if state
+        .proc_files
+        .get(&guest_fd)
+        .copied()
+        .is_some_and(is_synthetic_proc_directory_inode)
+    {
+        return negative_errno(if trailing_slash_only {
+            trailing_slash_errno
+        } else {
+            libc::ENOENT
+        });
+    }
+    match fd_mode(host_fd) {
+        Ok(mode) if mode & libc::S_IFMT != libc::S_IFDIR => negative_errno(libc::ENOTDIR),
+        Ok(_) => negative_errno(if trailing_slash_only {
+            trailing_slash_errno
+        } else {
+            libc::ENOENT
+        }),
+        Err(error) => error,
+    }
+}
+
+fn guest_fd_path(
+    state: &LoadedStaticElf,
+    path: &[u8],
+    trailing_slash_errno: libc::c_int,
+) -> Result<Option<libc::c_int>, i64> {
+    let normalized = normalize_proc_fd_alias_spelling(path);
+    let path = normalized.as_deref().unwrap_or(path);
+    let numeric_prefix = format!("/proc/{}/fd/", state.pid).into_bytes();
+    let process_target = ProcFdDirectoryTarget {
+        kind: ProcFdDirectoryKind::ProcessSelf,
+        tid: state.pid,
+    };
+    let (suffix, target) = if let Some(suffix) = path
+        .strip_prefix(b"/dev/fd/")
+        .or_else(|| path.strip_prefix(b"/proc/self/fd/"))
+        .or_else(|| path.strip_prefix(numeric_prefix.as_slice()))
+    {
+        (suffix, process_target)
+    } else if let Some((tid, Some(suffix))) = numeric_task_fd_path(state, path) {
+        (
+            suffix,
+            ProcFdDirectoryTarget {
+                kind: ProcFdDirectoryKind::ThreadSelf,
+                tid,
+            },
+        )
+    } else {
+        (
+            match path.strip_prefix(b"/proc/thread-self/fd/") {
+                Some(suffix) => suffix,
+                None => return Ok(None),
+            },
+            ProcFdDirectoryTarget {
+                kind: ProcFdDirectoryKind::ThreadSelf,
+                tid: state.tid,
+            },
+        )
+    };
+    let suffix = suffix.strip_prefix(b"../fd/").unwrap_or(suffix);
+    let suffix = parse_proc_fd_path_suffix(suffix)?;
+    if !proc_fd_directory_child_lookup_is_live(state, target) {
+        return Err(negative_errno(libc::ENOENT));
+    }
+    match suffix {
+        ProcFdPathSuffix::Target(fd) => Ok(Some(fd)),
+        ProcFdPathSuffix::Descendant {
+            fd,
+            trailing_slash_only,
+        } => Err(guest_fd_descendant_error(
+            state,
+            fd,
+            trailing_slash_errno,
+            trailing_slash_only,
+        )),
+    }
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review guest-fd metadata translation.
@@ -7563,9 +7873,18 @@ fn guest_fd_metadata(
     path: &[u8],
     no_follow: bool,
 ) -> Result<Option<GuestFdMetadata>, i64> {
-    let Some(guest_fd) = guest_fd_path(state, path) else {
+    let Some(guest_fd) = guest_fd_path(state, path, libc::ENOENT)? else {
         return Ok(None);
     };
+    if !no_follow && let Some(description) = state.proc_fd_directories.get(&guest_fd) {
+        let lifecycle = description
+            .lifecycle
+            .lock()
+            .expect("KVM lifecycle lock poisoned");
+        if !description.target_binding_is_live(&lifecycle) {
+            return Err(negative_errno(libc::ENOENT));
+        }
+    }
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return Err(negative_errno(libc::ENOENT));
     };
@@ -7591,8 +7910,19 @@ fn guest_fd_link_target(
     if let Some(description) = state.fdinfo_files.get(&guest_fd) {
         return Ok(description.path.clone());
     }
+    if let Some(description) = state.proc_fd_directories.get(&guest_fd) {
+        return Ok(description.path.clone());
+    }
     if signalfd_mask(state, guest_fd).is_some() {
         return Ok(b"anon_inode:[signalfd]".to_vec());
+    }
+    if state
+        .proc_files
+        .get(&guest_fd)
+        .copied()
+        .is_some_and(is_synthetic_proc_fd_directory_inode)
+    {
+        return Err(negative_errno(libc::EBADMSG));
     }
     if let Some(&inode) = state.proc_files.get(&guest_fd)
         && let Some(path) = synthetic_proc_path_for_inode(inode)
@@ -7620,6 +7950,192 @@ fn guest_fd_link_target(
         }
     }
     Ok(target.to_vec())
+}
+
+enum ProcFdLinkSnapshot {
+    Fixed(Vec<u8>),
+    Host(std::fs::File),
+}
+
+fn file_table_open_standard(table: &FileTableState, guest_fd: libc::c_int) -> bool {
+    (0..=2).contains(&guest_fd)
+        && (guest_fd != libc::STDIN_FILENO || table.stdin.is_some())
+        && !table.closed_standard_fds.contains(&guest_fd)
+        && !table.files.contains_key(&guest_fd)
+}
+
+fn file_table_host_fd(table: &FileTableState, guest_fd: libc::c_int) -> Option<RawFd> {
+    table
+        .files
+        .get(&guest_fd)
+        .map(AsRawFd::as_raw_fd)
+        .or_else(|| {
+            if !file_table_open_standard(table, guest_fd) {
+                None
+            } else if guest_fd == libc::STDIN_FILENO {
+                table.stdin.as_ref().map(AsRawFd::as_raw_fd)
+            } else {
+                Some(guest_fd)
+            }
+        })
+}
+
+fn proc_fd_link_snapshot(
+    table: &FileTableState,
+    target_tgid: i32,
+    guest_fd: libc::c_int,
+    capture: Option<CaptureMetadata>,
+) -> Result<ProcFdLinkSnapshot, i64> {
+    if let (Some(capture), Some(alias)) = (
+        capture,
+        output_alias_from_sets(
+            guest_fd,
+            &table.stdout_alias_fds,
+            &table.stderr_alias_fds,
+            file_table_open_standard(table, guest_fd),
+        ),
+    ) {
+        return Ok(ProcFdLinkSnapshot::Fixed(
+            format!("pipe:[{}]", capture.identity(alias).inode).into_bytes(),
+        ));
+    }
+    let host_fd =
+        file_table_host_fd(table, guest_fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
+    if let Some(description) = table.fdinfo_files.get(&guest_fd) {
+        return Ok(ProcFdLinkSnapshot::Fixed(description.path.clone()));
+    }
+    if let Some(description) = table.proc_fd_directories.get(&guest_fd) {
+        return Ok(ProcFdLinkSnapshot::Fixed(description.path.clone()));
+    }
+    if table.signalfd_fds.contains(&guest_fd) {
+        return Ok(ProcFdLinkSnapshot::Fixed(b"anon_inode:[signalfd]".to_vec()));
+    }
+    if table
+        .proc_files
+        .get(&guest_fd)
+        .copied()
+        .is_some_and(is_synthetic_proc_fd_directory_inode)
+    {
+        return Err(negative_errno(libc::EBADMSG));
+    }
+    if let Some(&inode) = table.proc_files.get(&guest_fd)
+        && let Some(path) = synthetic_proc_path_for_inode(inode)
+    {
+        if let Some(suffix) = path.strip_prefix(b"/proc/self/") {
+            let mut numeric = format!("/proc/{target_tgid}/").into_bytes();
+            numeric.extend_from_slice(suffix);
+            return Ok(ProcFdLinkSnapshot::Fixed(numeric));
+        }
+        return Ok(ProcFdLinkSnapshot::Fixed(path.to_vec()));
+    }
+    // Pin the selected open description before releasing the opener's table.
+    // SAFETY: host_fd is live while the table guard is held and fcntl returns
+    // a new owned descriptor on success.
+    let pinned = unsafe { libc::fcntl(host_fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if pinned < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    Ok(ProcFdLinkSnapshot::Host(
+        // SAFETY: successful F_DUPFD_CLOEXEC transfers ownership.
+        unsafe { std::fs::File::from_raw_fd(pinned) },
+    ))
+}
+
+fn proc_fd_directory_link_target(
+    description: &ProcFdDirectoryDescription,
+    guest_fd: libc::c_int,
+    capture: Option<CaptureMetadata>,
+    caller_tgid: i32,
+    caller_capability_effective: u64,
+) -> Result<Vec<u8>, i64> {
+    let table = description
+        .table
+        .upgrade()
+        .ok_or_else(|| negative_errno(libc::ENOENT))?;
+    let snapshot = {
+        // Lock order matches fdinfo observation: one file table, lifecycle.
+        let table = table.lock().expect("KVM file-table lock poisoned");
+        let lifecycle = description
+            .lifecycle
+            .lock()
+            .expect("KVM lifecycle lock poisoned");
+        if !description.target_lookup_is_live(&lifecycle) {
+            return Err(negative_errno(libc::ENOENT));
+        }
+        if file_table_host_fd(&table, guest_fd).is_none() {
+            return Err(negative_errno(libc::ENOENT));
+        }
+        if !description.target_lookup_is_authorized(
+            &lifecycle,
+            caller_tgid,
+            caller_capability_effective,
+        ) {
+            return Err(negative_errno(libc::EACCES));
+        }
+        proc_fd_link_snapshot(&table, description.target_tgid, guest_fd, capture)?
+    };
+    match snapshot {
+        ProcFdLinkSnapshot::Fixed(target) => Ok(target),
+        ProcFdLinkSnapshot::Host(file) => {
+            let target = canonical_fd_path(file.as_raw_fd())?;
+            // Keep anonymous-object link text byte-identical to the direct
+            // `/proc/self/fd/N` path, which likewise reports the host object's
+            // inode after guest metadata sanitization. The pinned duplicate
+            // names the same open file description after the table lock drops.
+            Ok(target.as_os_str().as_bytes().to_vec())
+        }
+    }
+}
+
+fn proc_fd_directory_descendant_error(
+    description: &ProcFdDirectoryDescription,
+    guest_fd: libc::c_int,
+    trailing_slash_only: bool,
+    caller_tgid: i32,
+    caller_capability_effective: u64,
+) -> i64 {
+    let Some(table) = description.table.upgrade() else {
+        return negative_errno(libc::ENOENT);
+    };
+    let table = table.lock().expect("KVM file-table lock poisoned");
+    let lifecycle = description
+        .lifecycle
+        .lock()
+        .expect("KVM lifecycle lock poisoned");
+    if !description.target_lookup_is_live(&lifecycle) {
+        return negative_errno(libc::ENOENT);
+    }
+    let Some(host_fd) = file_table_host_fd(&table, guest_fd) else {
+        return negative_errno(libc::ENOENT);
+    };
+    if !description.target_lookup_is_authorized(
+        &lifecycle,
+        caller_tgid,
+        caller_capability_effective,
+    ) {
+        return negative_errno(libc::EACCES);
+    }
+    if table
+        .proc_files
+        .get(&guest_fd)
+        .copied()
+        .is_some_and(is_synthetic_proc_directory_inode)
+    {
+        return negative_errno(if trailing_slash_only {
+            libc::EINVAL
+        } else {
+            libc::ENOENT
+        });
+    }
+    match fd_mode(host_fd) {
+        Ok(mode) if mode & libc::S_IFMT != libc::S_IFDIR => negative_errno(libc::ENOTDIR),
+        Ok(_) => negative_errno(if trailing_slash_only {
+            libc::EINVAL
+        } else {
+            libc::ENOENT
+        }),
+        Err(error) => error,
+    }
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -7658,6 +8174,63 @@ fn ensure_proc_carrier_readonly_or_path(file: &std::fs::File) -> Result<(), i64>
     }
 }
 
+fn reopen_synthetic_proc_fd_directory(
+    state: &mut LoadedStaticElf,
+    description: &Arc<ProcFdDirectoryDescription>,
+    flags: u64,
+    close_on_exec: bool,
+) -> i64 {
+    let non_path = flags & libc::O_PATH as u64 == 0;
+    let exclusive_create =
+        flags & (libc::O_CREAT | libc::O_EXCL) as u64 == (libc::O_CREAT | libc::O_EXCL) as u64;
+    if non_path
+        && !exclusive_create
+        && flags & (libc::O_DIRECTORY | libc::O_NOFOLLOW) as u64
+            == (libc::O_DIRECTORY | libc::O_NOFOLLOW) as u64
+    {
+        return negative_errno(libc::ENOTDIR);
+    }
+    if non_path && !exclusive_create && flags & libc::O_NOFOLLOW as u64 != 0 {
+        return negative_errno(libc::ELOOP);
+    }
+    if let Some(error) = proc_fd_directory_non_path_open_error(flags, false) {
+        return error;
+    }
+    if flags & libc::O_NOFOLLOW as u64 != 0 {
+        // This spelling asks for the proc-fd magic link itself, not its target.
+        // Never expose the supervisor procfs symlink used by the carrier.
+        return negative_errno(libc::ELOOP);
+    }
+    // open/openat already owns the caller's serialized FileTableState. Never
+    // take the bound target-table mutex here: a self anchor would recurse on
+    // the same mutex, while inherited cross-table anchors could invert locks.
+    // Linux also permits reopening an authenticated O_PATH directory handle
+    // after its bound thread/process and original table have exited. Preserve
+    // that stale weak binding; metadata and child lookup remain fail-closed.
+    let file = match state.proc_carrier_authority.mint(
+        description.kind.canonical_path(),
+        b"",
+        false,
+        true,
+        flags as libc::c_int,
+    ) {
+        Ok(file) => file,
+        Err(errno) => return negative_errno(errno),
+    };
+    let status_flags = flags as libc::c_int & (libc::O_PATH | libc::O_DIRECTORY);
+    let reopened = description.reopened(status_flags);
+    let guest_fd = insert_file_with_flags(state, file, close_on_exec, None);
+    if guest_fd >= 0 {
+        let guest_fd = guest_fd as libc::c_int;
+        state.proc_files.insert(
+            guest_fd,
+            synthetic_proc_inode(description.kind.canonical_path()),
+        );
+        state.proc_fd_directories.insert(guest_fd, reopened);
+    }
+    guest_fd
+}
+
 fn open_guest_fd_path(
     state: &mut LoadedStaticElf,
     guest_fd: libc::c_int,
@@ -7667,7 +8240,13 @@ fn open_guest_fd_path(
     let Some(source_host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::ENOENT);
     };
+    if let Some(description) = state.proc_fd_directories.get(&guest_fd).cloned() {
+        return reopen_synthetic_proc_fd_directory(state, &description, flags, close_on_exec);
+    }
     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
+    if source_proc_inode.is_some_and(is_synthetic_proc_fd_directory_inode) {
+        return negative_errno(libc::EBADMSG);
+    }
     let regular_proc =
         source_proc_inode.is_some_and(|inode| !is_synthetic_proc_directory_inode(inode));
     let path_only = flags & libc::O_PATH as u64 != 0;
@@ -8183,6 +8762,7 @@ struct DuplicateFdSource {
     proc_inode: Option<u64>,
     synthetic_proc_nofollow: bool,
     fdinfo: Option<Arc<FdinfoDescription>>,
+    proc_fd_directory: Option<Arc<ProcFdDirectoryDescription>>,
     object_inode: Arc<GuestFileIdentity>,
     is_random: bool,
     is_loginuid: bool,
@@ -8324,6 +8904,13 @@ fn duplicate_fd_at_or_above(
     }
     if let Some(description) = source.fdinfo {
         state.fdinfo_files.insert(fd, description);
+    } else {
+        state.fdinfo_files.remove(&fd);
+    }
+    if let Some(description) = source.proc_fd_directory {
+        state.proc_fd_directories.insert(fd, description);
+    } else {
+        state.proc_fd_directories.remove(&fd);
     }
     drop(_transaction);
     state.file_retirement.retire(retired);
@@ -8353,6 +8940,7 @@ fn duplicate_fd(
     let source_proc_inode = state.proc_files.get(&old_fd).copied();
     let source_synthetic_proc_nofollow = state.synthetic_proc_nofollow_fds.contains(&old_fd);
     let source_fdinfo = state.fdinfo_files.get(&old_fd).cloned();
+    let source_proc_fd_directory = state.proc_fd_directories.get(&old_fd).cloned();
     let source_is_random = state.random_device_fds.contains(&old_fd);
     let source_is_loginuid = state.loginuid_fds.contains(&old_fd);
     let source_signalfd_mask = signalfd_mask(state, old_fd);
@@ -8418,6 +9006,11 @@ fn duplicate_fd(
         } else {
             state.fdinfo_files.remove(&new_fd);
         }
+        if let Some(description) = source_proc_fd_directory {
+            state.proc_fd_directories.insert(new_fd, description);
+        } else {
+            state.proc_fd_directories.remove(&new_fd);
+        }
         set_output_alias(state, new_fd, source_alias);
         if let Some(inode) = source_proc_inode {
             state.proc_files.insert(new_fd, inode);
@@ -8447,6 +9040,9 @@ fn duplicate_fd(
             replace_signalfd_mask(state, new_fd as libc::c_int, source_signalfd_mask);
             if let Some(description) = source_fdinfo {
                 state.fdinfo_files.insert(new_fd as i32, description);
+            }
+            if let Some(description) = source_proc_fd_directory {
+                state.proc_fd_directories.insert(new_fd as i32, description);
             }
             if source_synthetic_proc_nofollow {
                 state
@@ -10760,7 +11356,9 @@ fn translate_outgoing_control(
     state: &LoadedStaticElf,
     capture_output: bool,
 ) -> Result<(), i64> {
-    for message in control_messages(control)? {
+    let messages = control_messages(control)?;
+    let mut translations = Vec::new();
+    for message in messages {
         // SCM_RIGHTS is the only ancillary input whose payload is meaningful in
         // the guest descriptor namespace. Other control inputs (credentials,
         // pidfds, interface selectors, and queue metadata) need their own
@@ -10778,6 +11376,7 @@ fn translate_outgoing_control(
             let guest_fd = read_control_fd(control, offset)?;
             let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
             if state.fdinfo_files.contains_key(&guest_fd)
+                || state.proc_fd_directories.contains_key(&guest_fd)
                 || signalfd_mask(state, guest_fd).is_some()
                 || state.random_device_fds.contains(&guest_fd)
                 || state.loginuid_fds.contains(&guest_fd)
@@ -10788,8 +11387,15 @@ fn translate_outgoing_control(
                 // delivered with a supervisor-only carrier identity.
                 return Err(negative_errno(libc::ENOSYS));
             }
-            write_control_fd(control, offset, host_fd)?;
+            translations.push((offset, host_fd));
         }
+    }
+    // Do not rewrite even an earlier ordinary right until every right has
+    // passed the virtual-description refusal checks. The caller's host
+    // sendmsg therefore sees either one fully translated message or no
+    // message at all.
+    for (offset, host_fd) in translations {
+        write_control_fd(control, offset, host_fd)?;
     }
     Ok(())
 }
@@ -11173,6 +11779,8 @@ fn commit_received_rights(
         }
         state.fdinfo_files.remove(&fd);
         shared.fdinfo_files.remove(&fd);
+        state.proc_fd_directories.remove(&fd);
+        shared.proc_fd_directories.remove(&fd);
         if (0..=2).contains(&fd) {
             // A guest description in a closed standard slot shadows the
             // supervisor's physical descriptor. Retain that fact so closing
@@ -12271,6 +12879,15 @@ fn guest_object_stat(
     if let (Some(capture), Some(alias)) = (capture, output_alias(state, fd)) {
         return Ok(synthetic_captured_output_stat(capture.identity(alias)));
     }
+    if let Some(description) = state.proc_fd_directories.get(&fd) {
+        let lifecycle = description
+            .lifecycle
+            .lock()
+            .expect("KVM lifecycle lock poisoned");
+        if !description.target_binding_is_live(&lifecycle) {
+            return Err(negative_errno(libc::ENOENT));
+        }
+    }
     let Some(host_fd) = host_fd(state, fd) else {
         return Err(negative_errno(libc::EBADF));
     };
@@ -12394,6 +13011,13 @@ fn fstatat_impl(
             &synthetic_proc_stat(synthetic_proc_inode(path.as_bytes()), 0),
         );
     }
+    if let Some(target) = synthetic_proc_fd_directory_target(state, &path) {
+        if let Err(error) = proc_fd_directory_target_identity(state, target) {
+            return error;
+        }
+        let stat = synthetic_proc_fd_directory_stat(state, target);
+        return write_struct(memory, output_address, &stat);
+    }
     // Path-addressed synthetic /proc file: synthesize deterministic metadata.
     // synthetic_proc_content returns None for an empty path, so no explicit
     // AT_EMPTY_PATH guard is needed here.
@@ -12417,6 +13041,17 @@ fn fstatat_impl(
     let descriptor = guest_path
         .map(|metadata| metadata.guest_fd)
         .or_else(|| (path.is_empty() && guest_dirfd != libc::AT_FDCWD).then_some(guest_dirfd));
+    if path.is_empty()
+        && let Some(description) = state.proc_fd_directories.get(&guest_dirfd)
+    {
+        let lifecycle = description
+            .lifecycle
+            .lock()
+            .expect("KVM lifecycle lock poisoned");
+        if !description.target_binding_is_live(&lifecycle) {
+            return negative_errno(libc::ENOENT);
+        }
+    }
     if let Some(fd) = descriptor
         && let Some(capture) = capture
         && let Some(alias) = output_alias(state, fd)
@@ -12482,8 +13117,8 @@ fn fstatat_impl(
             .is_empty()
             .then(|| state.proc_files.get(&guest_dirfd).copied())
             .flatten();
-        if let Some(inode) = empty_path_proc_inode {
-            sanitize_proc_stat(&mut stat, inode);
+        if empty_path_proc_inode.is_some() {
+            sanitize_guest_fd_stat(state, guest_dirfd, &mut stat);
         } else {
             sanitize_stat_timestamps(&mut stat);
         }
@@ -12547,6 +13182,18 @@ fn statx(
             &synthetic_proc_statx(synthetic_proc_inode(path.as_bytes()), 0),
         );
     }
+    if let Some(target) = synthetic_proc_fd_directory_target(state, &path) {
+        if args[3] as libc::c_uint & 0x8000_0000 != 0
+            || flags & libc::AT_STATX_SYNC_TYPE == libc::AT_STATX_SYNC_TYPE
+        {
+            return negative_errno(libc::EINVAL);
+        }
+        if let Err(error) = proc_fd_directory_target_identity(state, target) {
+            return error;
+        }
+        let stat = synthetic_proc_fd_directory_statx(state, target);
+        return write_struct(memory, args[4], &stat);
+    }
     // Path-addressed synthetic /proc file: synthesize deterministic metadata.
     if !path.is_empty() {
         if let Some(content) = synthetic_proc_content(state, &path) {
@@ -12558,6 +13205,16 @@ fn statx(
     } else if let Some(&inode) = state.proc_files.get(&(args[0] as libc::c_int)) {
         // AT_EMPTY_PATH statx of a synthetic /proc descriptor: report the memfd's
         // (deterministic) size with synthesized identity.
+        let description = state.proc_fd_directories.get(&(args[0] as libc::c_int));
+        if let Some(description) = description {
+            let lifecycle = description
+                .lifecycle
+                .lock()
+                .expect("KVM lifecycle lock poisoned");
+            if !description.target_binding_is_live(&lifecycle) {
+                return negative_errno(libc::ENOENT);
+            }
+        }
         let size = match host_fd(state, args[0] as libc::c_int) {
             Some(host_fd) => {
                 let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
@@ -12570,7 +13227,10 @@ fn statx(
             }
             None => return negative_errno(libc::EBADF),
         };
-        let stx = synthetic_proc_statx(inode, size);
+        let mut stx = synthetic_proc_statx(inode, size);
+        if let Some(description) = description {
+            specialize_proc_fd_directory_statx(description, &mut stx);
+        }
         return write_struct(memory, args[4], &stx);
     }
 
@@ -12830,6 +13490,29 @@ fn faccessat_impl(
     if path.is_empty() && flags & libc::AT_EMPTY_PATH == 0 {
         return negative_errno(libc::ENOENT);
     }
+    if let Some(target) = synthetic_proc_fd_directory_target(state, &path) {
+        if let Err(error) = proc_fd_directory_target_identity(state, target) {
+            return error;
+        }
+        // procfs applies its own permission hook to fd directories: native
+        // Linux accepts F_OK, R_OK, W_OK, and X_OK here even though stat(2)
+        // reports mode 0500. Do not infer access(2) from the synthesized mode.
+        return 0;
+    }
+    if path.is_empty()
+        && flags & libc::AT_EMPTY_PATH != 0
+        && let Some(description) = state.proc_fd_directories.get(&guest_dirfd)
+    {
+        let lifecycle = description
+            .lifecycle
+            .lock()
+            .expect("KVM lifecycle lock poisoned");
+        return if description.target_binding_is_live(&lifecycle) {
+            0
+        } else {
+            negative_errno(libc::ENOENT)
+        };
+    }
     // Synthetic /proc files exist and are world-readable but never writable or
     // executable, matching the read-only surface open_file serves.
     if synthetic_proc_content(state, &path).is_some() {
@@ -12848,6 +13531,14 @@ fn faccessat_impl(
         // Linux symlinks are always treated as mode 0777. F_OK and every valid
         // access bit therefore succeed when faccessat2 checks the magic link
         // itself rather than its target.
+        return 0;
+    }
+    if let Some(metadata) = guest_path
+        && state.proc_fd_directories.contains_key(&metadata.guest_fd)
+    {
+        // guest_fd_metadata already authenticated the followed directory
+        // description and validated its target lifecycle. Apply the same
+        // procfs permission hook as the exact and AT_EMPTY_PATH spellings.
         return 0;
     }
     let opened_file;
@@ -13530,6 +14221,31 @@ fn canonical_fd_path(fd: RawFd) -> Result<std::path::PathBuf, i64> {
 const SYNTHETIC_DEV_MAJOR: u32 = 0;
 const SYNTHETIC_PROC_DEV_MINOR: u32 = 0xff01;
 const SYNTHETIC_GUEST_FD_DEV_MINOR: u32 = 0xff02;
+const SYNTHETIC_PROC_ROOT_PATH: &[u8] = b"/proc";
+const SYNTHETIC_PROC_FD_DIRECTORY_PATH: &[u8] = b"/proc/self/fd";
+const SYNTHETIC_PROC_THREAD_FD_DIRECTORY_PATH: &[u8] = b"/proc/thread-self/fd";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcFdDirectoryKind {
+    ProcessSelf,
+    ThreadSelf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProcFdDirectoryTarget {
+    kind: ProcFdDirectoryKind,
+    tid: i32,
+}
+
+impl ProcFdDirectoryKind {
+    fn canonical_path(self) -> &'static [u8] {
+        match self {
+            Self::ProcessSelf => SYNTHETIC_PROC_FD_DIRECTORY_PATH,
+            Self::ThreadSelf => SYNTHETIC_PROC_THREAD_FD_DIRECTORY_PATH,
+        }
+    }
+}
+
 const SYNTHETIC_REGULAR_PROC_PATHS: &[&[u8]] = &[
     b"/proc/uptime",
     b"/proc/loadavg",
@@ -13574,13 +14290,33 @@ fn synthetic_proc_inode(path: &[u8]) -> u64 {
 
 // TODO-HUMAN-REVIEW(PR-136): Review synthetic procfd link reconstruction.
 fn synthetic_proc_path_for_inode(inode: u64) -> Option<&'static [u8]> {
-    std::iter::once(b"/proc".as_slice())
-        .chain(SYNTHETIC_REGULAR_PROC_PATHS.iter().copied())
-        .find(|path| synthetic_proc_inode(path) == inode)
+    [
+        SYNTHETIC_PROC_ROOT_PATH,
+        SYNTHETIC_PROC_FD_DIRECTORY_PATH,
+        SYNTHETIC_PROC_THREAD_FD_DIRECTORY_PATH,
+    ]
+    .into_iter()
+    .chain(SYNTHETIC_REGULAR_PROC_PATHS.iter().copied())
+    .find(|path| synthetic_proc_inode(path) == inode)
 }
 
 fn is_synthetic_proc_directory_inode(inode: u64) -> bool {
-    inode == synthetic_proc_inode(b"/proc")
+    [
+        SYNTHETIC_PROC_ROOT_PATH,
+        SYNTHETIC_PROC_FD_DIRECTORY_PATH,
+        SYNTHETIC_PROC_THREAD_FD_DIRECTORY_PATH,
+    ]
+    .into_iter()
+    .any(|path| inode == synthetic_proc_inode(path))
+}
+
+fn is_synthetic_proc_fd_directory_inode(inode: u64) -> bool {
+    [
+        SYNTHETIC_PROC_FD_DIRECTORY_PATH,
+        SYNTHETIC_PROC_THREAD_FD_DIRECTORY_PATH,
+    ]
+    .into_iter()
+    .any(|path| inode == synthetic_proc_inode(path))
 }
 
 fn synthetic_proc_pwrite_errno(inode: u64) -> libc::c_int {
@@ -13601,8 +14337,116 @@ fn synthetic_proc_pwrite_errno(inode: u64) -> libc::c_int {
     }
 }
 
-fn is_synthetic_proc_directory(state: &LoadedStaticElf, path: &[u8]) -> bool {
-    normalize_proc_path(state, path).is_some_and(|path| path == b"/proc")
+fn is_synthetic_proc_root_directory(state: &LoadedStaticElf, path: &[u8]) -> bool {
+    normalize_proc_path(state, path).is_some_and(|path| path.as_slice() == SYNTHETIC_PROC_ROOT_PATH)
+}
+
+/// Preserve the spelling that selects proc's task identity. `/proc/self/fd`
+/// and the current numeric TGID name the process, while thread-self and the
+/// exact same-process numeric task spelling name one thread. Generic proc-path
+/// normalization would incorrectly collapse those lifetime contracts.
+fn numeric_task_fd_path<'a>(
+    state: &LoadedStaticElf,
+    path: &'a [u8],
+) -> Option<(i32, Option<&'a [u8]>)> {
+    let prefix = format!("/proc/{}/task/", state.pid).into_bytes();
+    let rest = path.strip_prefix(prefix.as_slice())?;
+    let separator = rest.iter().position(|byte| *byte == b'/')?;
+    let tid = canonical_proc_id_component(&rest[..separator])?;
+    let after_fd = rest[separator..].strip_prefix(b"/fd")?;
+    if after_fd.is_empty() {
+        Some((tid, None))
+    } else {
+        Some((tid, Some(after_fd.strip_prefix(b"/")?)))
+    }
+}
+
+fn synthetic_proc_fd_directory_target(
+    state: &LoadedStaticElf,
+    path: &[u8],
+) -> Option<ProcFdDirectoryTarget> {
+    let normalized = normalize_proc_fd_alias_spelling(path);
+    let path = normalized.as_deref().unwrap_or(path);
+    let directory_path = path.strip_suffix(b"/").unwrap_or(path);
+    if directory_path == SYNTHETIC_PROC_FD_DIRECTORY_PATH
+        || directory_path == format!("/proc/{}/fd", state.pid).as_bytes()
+    {
+        Some(ProcFdDirectoryTarget {
+            kind: ProcFdDirectoryKind::ProcessSelf,
+            tid: state.pid,
+        })
+    } else if directory_path == SYNTHETIC_PROC_THREAD_FD_DIRECTORY_PATH {
+        Some(ProcFdDirectoryTarget {
+            kind: ProcFdDirectoryKind::ThreadSelf,
+            tid: state.tid,
+        })
+    } else if let Some((tid, None)) = numeric_task_fd_path(state, directory_path) {
+        Some(ProcFdDirectoryTarget {
+            kind: ProcFdDirectoryKind::ThreadSelf,
+            tid,
+        })
+    } else {
+        None
+    }
+}
+
+fn proc_fd_directory_reverse_path(
+    state: &LoadedStaticElf,
+    target: ProcFdDirectoryTarget,
+) -> Vec<u8> {
+    match target.kind {
+        ProcFdDirectoryKind::ProcessSelf => format!("/proc/{}/fd", state.pid),
+        ProcFdDirectoryKind::ThreadSelf => {
+            format!("/proc/{}/task/{}/fd", state.pid, target.tid)
+        }
+    }
+    .into_bytes()
+}
+
+fn proc_fd_directory_visible_inode(state: &LoadedStaticElf, target: ProcFdDirectoryTarget) -> u64 {
+    synthetic_proc_inode(&proc_fd_directory_reverse_path(state, target))
+}
+
+fn proc_fd_directory_target_identity(
+    state: &LoadedStaticElf,
+    target: ProcFdDirectoryTarget,
+) -> Result<(i32, u64), i64> {
+    let lifecycle = state
+        .task_lifecycle
+        .lock()
+        .expect("KVM lifecycle lock poisoned");
+    let current = lifecycle
+        .get(state.tid)
+        .filter(|task| task.tgid == state.pid)
+        .ok_or_else(|| negative_errno(libc::ENOENT))?;
+    match target.kind {
+        // `/proc/self` follows the process lifetime, even after the original
+        // leader task calls pthread_exit. The process generation prevents a
+        // later reuse of the numeric TGID from reviving an old anchor.
+        ProcFdDirectoryKind::ProcessSelf => Ok((state.pid, current.process_generation)),
+        ProcFdDirectoryKind::ThreadSelf => lifecycle
+            .get(target.tid)
+            .filter(|task| task.tgid == state.pid)
+            .map(|task| (target.tid, task.generation))
+            .ok_or_else(|| negative_errno(libc::ENOENT)),
+    }
+}
+
+fn proc_fd_directory_child_lookup_is_live(
+    state: &LoadedStaticElf,
+    target: ProcFdDirectoryTarget,
+) -> bool {
+    let Ok((target_tid, target_generation)) = proc_fd_directory_target_identity(state, target)
+    else {
+        return false;
+    };
+    let lifecycle = state
+        .task_lifecycle
+        .lock()
+        .expect("KVM lifecycle lock poisoned");
+    lifecycle
+        .get(target_tid)
+        .is_some_and(|task| task.generation == target_generation)
 }
 
 // TODO-HUMAN-REVIEW(PR-202): Review descriptor-relative synthetic procfs
@@ -13616,7 +14460,7 @@ fn synthetic_proc_relative_path(
         return None;
     }
     let inode = state.proc_files.get(&guest_dirfd).copied()?;
-    if !is_synthetic_proc_directory_inode(inode) {
+    if inode != synthetic_proc_inode(SYNTHETIC_PROC_ROOT_PATH) {
         return None;
     }
     let mut resolved = b"/proc/".to_vec();
@@ -14228,6 +15072,97 @@ fn received_proc_inode(file: &std::fs::File) -> Result<Option<u64>, i64> {
     result
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(kvm-proc-fd-link-aliases): Review description-bound proc-fd anchors.
+//
+// Only the O_PATH form is exposed. A real readable proc directory cannot be
+// represented by the immutable carrier without implementing synthetic
+// getdents state, while publishing the supervisor's procfs directory would
+// make an unhandled relative operation a descriptor-confusion escape. A
+// synthetic procfs `fstatfs` view remains separate broader procfs work.
+fn proc_fd_directory_non_path_open_error(flags: u64, terminal_slash: bool) -> Option<i64> {
+    if flags & libc::O_PATH as u64 != 0 {
+        return None;
+    }
+    if flags & libc::O_TMPFILE as u64 == libc::O_TMPFILE as u64 {
+        return Some(negative_errno(libc::EOPNOTSUPP));
+    }
+    if flags & (libc::O_CREAT | libc::O_EXCL) as u64 == (libc::O_CREAT | libc::O_EXCL) as u64 {
+        return Some(negative_errno(if terminal_slash {
+            libc::EISDIR
+        } else {
+            libc::EEXIST
+        }));
+    }
+    if flags & (libc::O_CREAT | libc::O_TRUNC) as u64 != 0
+        || flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64
+    {
+        return Some(negative_errno(libc::EISDIR));
+    }
+    if flags & libc::O_DIRECT as u64 != 0 {
+        return Some(negative_errno(libc::EINVAL));
+    }
+    // Readable proc directory descriptions require synthetic getdents state.
+    Some(negative_errno(libc::ENOSYS))
+}
+
+fn open_synthetic_proc_fd_directory(
+    state: &mut LoadedStaticElf,
+    target: ProcFdDirectoryTarget,
+    flags: u64,
+    close_on_exec: bool,
+    terminal_slash: bool,
+) -> i64 {
+    let (target_tid, target_generation) = match proc_fd_directory_target_identity(state, target) {
+        Ok(identity) => identity,
+        Err(error) => return error,
+    };
+    if let Some(error) = proc_fd_directory_non_path_open_error(flags, terminal_slash) {
+        return error;
+    }
+    let table = state.fdinfo_table.clone();
+    if table.upgrade().is_none() {
+        return negative_errno(libc::ENOSYS);
+    }
+    let kind = target.kind;
+    let virtual_nofollow = flags & libc::O_NOFOLLOW as u64 != 0;
+    let file = match state.proc_carrier_authority.mint(
+        kind.canonical_path(),
+        b"",
+        virtual_nofollow,
+        true,
+        flags as libc::c_int,
+    ) {
+        Ok(file) => file,
+        Err(errno) => return negative_errno(errno),
+    };
+    let path = proc_fd_directory_reverse_path(state, target);
+    let visible_inode = proc_fd_directory_visible_inode(state, target);
+    let description = Arc::new(ProcFdDirectoryDescription {
+        kind,
+        target_tid,
+        target_generation,
+        target_tgid: state.pid,
+        table,
+        lifecycle: state.task_lifecycle.clone(),
+        path,
+        visible_inode,
+        status_flags: flags as libc::c_int & (libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW),
+    });
+    let guest_fd = insert_file_with_flags(state, file, close_on_exec, None);
+    if guest_fd >= 0 {
+        let guest_fd = guest_fd as libc::c_int;
+        state
+            .proc_files
+            .insert(guest_fd, synthetic_proc_inode(kind.canonical_path()));
+        if virtual_nofollow {
+            state.synthetic_proc_nofollow_fds.insert(guest_fd);
+        }
+        state.proc_fd_directories.insert(guest_fd, description);
+    }
+    guest_fd
+}
+
 // TODO-HUMAN-REVIEW(PR-202): Review the empty synthetic /proc directory used
 // solely as an openat anchor for allowlisted deterministic children.
 fn open_synthetic_proc_directory(
@@ -14265,7 +15200,12 @@ fn sanitize_proc_stat(stat: &mut libc::stat, inode: u64) {
     stat.st_dev = synthetic_dev(SYNTHETIC_PROC_DEV_MINOR);
     stat.st_ino = inode;
     stat.st_mode = if is_directory {
-        libc::S_IFDIR | 0o555
+        libc::S_IFDIR
+            | if is_synthetic_proc_fd_directory_inode(inode) {
+                0o500
+            } else {
+                0o555
+            }
     } else {
         libc::S_IFREG | 0o444
     };
@@ -14315,7 +15255,12 @@ fn synthetic_proc_statx(inode: u64, size: u64) -> libc::statx {
     stx.stx_uid = 0;
     stx.stx_gid = 0;
     stx.stx_mode = if is_directory {
-        (libc::S_IFDIR | 0o555) as u16
+        (libc::S_IFDIR
+            | if is_synthetic_proc_fd_directory_inode(inode) {
+                0o500
+            } else {
+                0o555
+            }) as u16
     } else {
         (libc::S_IFREG | 0o444) as u16
     };
@@ -14325,6 +15270,42 @@ fn synthetic_proc_statx(inode: u64, size: u64) -> libc::statx {
     stx.stx_dev_major = SYNTHETIC_DEV_MAJOR;
     stx.stx_dev_minor = SYNTHETIC_PROC_DEV_MINOR;
     stx
+}
+
+fn synthetic_proc_fd_directory_stat(
+    state: &LoadedStaticElf,
+    target: ProcFdDirectoryTarget,
+) -> libc::stat {
+    let marker = synthetic_proc_inode(target.kind.canonical_path());
+    let mut stat = synthetic_proc_stat(marker, 0);
+    stat.st_ino = proc_fd_directory_visible_inode(state, target);
+    stat
+}
+
+fn synthetic_proc_fd_directory_statx(
+    state: &LoadedStaticElf,
+    target: ProcFdDirectoryTarget,
+) -> libc::statx {
+    let marker = synthetic_proc_inode(target.kind.canonical_path());
+    let mut stat = synthetic_proc_statx(marker, 0);
+    stat.stx_ino = proc_fd_directory_visible_inode(state, target);
+    stat
+}
+
+fn specialize_proc_fd_directory_stat(
+    description: &ProcFdDirectoryDescription,
+    stat: &mut libc::stat,
+) {
+    stat.st_ino = description.visible_inode;
+    stat.st_mode = libc::S_IFDIR | 0o500;
+}
+
+fn specialize_proc_fd_directory_statx(
+    description: &ProcFdDirectoryDescription,
+    stat: &mut libc::statx,
+) {
+    stat.stx_ino = description.visible_inode;
+    stat.stx_mode = (libc::S_IFDIR | 0o500) as u16;
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review deterministic guest-fd alias metadata.
@@ -14356,6 +15337,9 @@ fn synthetic_guest_fd_object_inode(state: &LoadedStaticElf, guest_fd: libc::c_in
 fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: &mut libc::stat) {
     if let Some(&inode) = state.proc_files.get(&guest_fd) {
         sanitize_proc_stat(stat, inode);
+        if let Some(description) = state.proc_fd_directories.get(&guest_fd) {
+            specialize_proc_fd_directory_stat(description, stat);
+        }
         return;
     }
     sanitize_stat_timestamps(stat);
@@ -14364,6 +15348,9 @@ fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: 
 fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: &mut libc::statx) {
     if let Some(&inode) = state.proc_files.get(&guest_fd) {
         *stat = synthetic_proc_statx(inode, stat.stx_size);
+        if let Some(description) = state.proc_fd_directories.get(&guest_fd) {
+            specialize_proc_fd_directory_statx(description, stat);
+        }
         return;
     }
     sanitize_statx_timestamps(stat);
@@ -14486,6 +15473,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
     let source_synthetic_proc_nofollow = state.synthetic_proc_nofollow_fds.contains(&guest_fd);
     let source_fdinfo = state.fdinfo_files.get(&guest_fd).cloned();
+    let source_proc_fd_directory = state.proc_fd_directories.get(&guest_fd).cloned();
     let source_is_random = state.random_device_fds.contains(&guest_fd);
     let source_is_loginuid = state.loginuid_fds.contains(&guest_fd);
     let source_signalfd_mask = signalfd_mask(state, guest_fd);
@@ -14504,6 +15492,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 proc_inode: source_proc_inode,
                 synthetic_proc_nofollow: source_synthetic_proc_nofollow,
                 fdinfo: source_fdinfo,
+                proc_fd_directory: source_proc_fd_directory,
                 object_inode: source_object_inode,
                 is_random: source_is_random,
                 is_loginuid: source_is_loginuid,
@@ -14520,6 +15509,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 proc_inode: source_proc_inode,
                 synthetic_proc_nofollow: source_synthetic_proc_nofollow,
                 fdinfo: source_fdinfo,
+                proc_fd_directory: source_proc_fd_directory,
                 object_inode: source_object_inode,
                 is_random: source_is_random,
                 is_loginuid: source_is_loginuid,
@@ -14541,7 +15531,10 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                         libc::O_NOFOLLOW
                     } else {
                         0
-                    },
+                    }
+                    | source_proc_fd_directory
+                        .as_ref()
+                        .map_or(0, |directory| directory.status_flags),
             ),
             Err(error) => error,
         },
@@ -14659,6 +15652,18 @@ fn host_dirfd_and_path(
             .map(|path| (state.cwd_fd.as_raw_fd(), path))
             .map_err(|_| negative_errno(libc::EINVAL));
     }
+    if !path.is_empty() && state.proc_fd_directories.contains_key(&guest_dirfd) {
+        return Err(negative_errno(libc::EACCES));
+    }
+    if !path.is_empty()
+        && state
+            .proc_files
+            .get(&guest_dirfd)
+            .copied()
+            .is_some_and(is_synthetic_proc_fd_directory_inode)
+    {
+        return Err(negative_errno(libc::EBADMSG));
+    }
     let Some(host_fd) = host_fd(state, guest_dirfd) else {
         return Err(negative_errno(libc::EBADF));
     };
@@ -14682,6 +15687,7 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         state.proc_files.remove(&fd);
         state.synthetic_proc_nofollow_fds.remove(&fd);
         state.fdinfo_files.remove(&fd);
+        state.proc_fd_directories.remove(&fd);
         state.fd_object_inodes.remove(&fd);
         cleanup_fd_object_inodes(state);
         set_output_alias(state, fd, None);
@@ -15035,33 +16041,89 @@ fn capget(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
 }
 
 // TODO-HUMAN-REVIEW(PR-181): Review deterministic capability mutation.
-fn capset(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+#[derive(Clone, Copy)]
+struct CapabilityUpdate {
+    effective: u64,
+    permitted: u64,
+    inheritable: u64,
+    ambient: u64,
+}
+
+fn prepare_capset(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+) -> Result<CapabilityUpdate, i64> {
     if args[0] == 0 || args[1] == 0 {
-        return negative_errno(libc::EFAULT);
+        return Err(negative_errno(libc::EFAULT));
     }
     let Ok((version, pid)) = read_capability_header(memory, args[0]) else {
-        return negative_errno(libc::EFAULT);
+        return Err(negative_errno(libc::EFAULT));
     };
     if version != LINUX_CAPABILITY_VERSION_3 {
-        return negative_errno(libc::EINVAL);
+        return Err(negative_errno(libc::EINVAL));
     }
     if !is_capability_self(pid, state) {
-        return negative_errno(libc::ESRCH);
+        return Err(negative_errno(libc::ESRCH));
     }
     let Ok((effective, permitted, inheritable)) = read_capability_data(memory, args[1]) else {
-        return negative_errno(libc::EFAULT);
+        return Err(negative_errno(libc::EFAULT));
     };
     if effective & !permitted != 0
         || permitted & !state.capability_permitted != 0
         || inheritable & !state.capability_bounding != 0
     {
-        return negative_errno(libc::EPERM);
+        return Err(negative_errno(libc::EPERM));
     }
-    state.capability_effective = effective & GUEST_CAPABILITY_MASK;
-    state.capability_permitted = permitted & GUEST_CAPABILITY_MASK;
-    state.capability_inheritable = inheritable & GUEST_CAPABILITY_MASK;
-    state.capability_ambient &= state.capability_permitted & state.capability_inheritable;
+    let effective = effective & GUEST_CAPABILITY_MASK;
+    let permitted = permitted & GUEST_CAPABILITY_MASK;
+    let inheritable = inheritable & GUEST_CAPABILITY_MASK;
+    Ok(CapabilityUpdate {
+        effective,
+        permitted,
+        inheritable,
+        ambient: state.capability_ambient & permitted & inheritable,
+    })
+}
+
+fn apply_capset(state: &mut LoadedStaticElf, update: CapabilityUpdate) {
+    state.capability_effective = update.effective;
+    state.capability_permitted = update.permitted;
+    state.capability_inheritable = update.inheritable;
+    state.capability_ambient = update.ambient;
+}
+
+fn capset(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let update = match prepare_capset(memory, state, args) {
+        Ok(update) => update,
+        Err(error) => return error,
+    };
+    apply_capset(state, update);
     0
+}
+
+fn capset_with_lifecycle(
+    memory: &GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    task_generation: u64,
+) -> crate::Result<i64> {
+    let update = match prepare_capset(memory, state, args) {
+        Ok(update) => update,
+        Err(error) => return Ok(error),
+    };
+    let lifecycle = state.task_lifecycle.clone();
+    let mut lifecycle = lifecycle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !lifecycle.set_capability_permitted(state.tid, task_generation, update.permitted) {
+        return Err(crate::Error::UnexpectedVcpuExit(format!(
+            "KVM capset task generation {}:{} is no longer live",
+            state.tid, task_generation,
+        )));
+    }
+    apply_capset(state, update);
+    Ok(0)
 }
 
 fn read_capability_header(memory: &GuestMemory, address: u64) -> Result<(u32, i32), ()> {
@@ -16179,7 +17241,63 @@ fn readlink_at_impl(
     }
     let capacity = requested_capacity.min(MAX_HOST_IO);
 
-    if let Some(guest_fd) = guest_fd_path(state, &path) {
+    if !path.starts_with(b"/") && guest_dirfd != libc::AT_FDCWD {
+        if let Some(description) = state.proc_fd_directories.get(&guest_dirfd) {
+            let guest_fd = match proc_fd_relative_path_suffix(&path) {
+                Ok(ProcFdPathSuffix::Target(fd)) => fd,
+                Ok(ProcFdPathSuffix::Descendant {
+                    fd,
+                    trailing_slash_only,
+                }) => {
+                    return proc_fd_directory_descendant_error(
+                        description,
+                        fd,
+                        trailing_slash_only,
+                        state.pid,
+                        state.capability_effective,
+                    );
+                }
+                Err(error) => return error,
+            };
+            let target = match proc_fd_directory_link_target(
+                description,
+                guest_fd,
+                capture,
+                state.pid,
+                state.capability_effective,
+            ) {
+                Ok(target) => target,
+                Err(error) => return error,
+            };
+            let count = capacity.min(target.len());
+            return match memory.user().write(output_address, &target[..count]) {
+                Ok(()) => count as i64,
+                Err(_) => negative_errno(libc::EFAULT),
+            };
+        }
+        if state
+            .proc_files
+            .get(&guest_dirfd)
+            .copied()
+            .is_some_and(is_synthetic_proc_fd_directory_inode)
+        {
+            // A proc-fd carrier without its live, authenticated binding is not
+            // a usable anchor. Never delegate it to the physical memfd.
+            return negative_errno(libc::EBADMSG);
+        }
+    }
+
+    if let Some(target) = synthetic_proc_fd_directory_target(state, &path) {
+        if let Err(error) = proc_fd_directory_target_identity(state, target) {
+            return error;
+        }
+        return negative_errno(libc::EINVAL);
+    }
+
+    if let Some(guest_fd) = match guest_fd_path(state, &path, libc::EINVAL) {
+        Ok(path) => path,
+        Err(error) => return error,
+    } {
         let target = match guest_fd_link_target(state, guest_fd, capture) {
             Ok(target) => target,
             Err(error) => return error,
@@ -17448,7 +18566,7 @@ pub(crate) fn native_loaded_state_with_authority(
         thread_signals: SharedThreadSignalState::default(),
         signal_dequeue_failure: None,
         task_lifecycle: Arc::new(std::sync::Mutex::new(
-            crate::elf::TaskLifecycleTable::with_root(1, 1, 1, true),
+            crate::elf::TaskLifecycleTable::with_root(1, 1, 1, true, GUEST_CAPABILITY_MASK),
         )),
         files: std::collections::BTreeMap::new(),
         file_retirement: crate::elf::FileRetirement::default(),
@@ -17467,6 +18585,7 @@ pub(crate) fn native_loaded_state_with_authority(
         regular_create_directory_policy: initialize_regular_create_directory_policy()
             .expect("test KVM state requires a supported host open policy"),
         fdinfo_files: std::collections::BTreeMap::new(),
+        proc_fd_directories: std::collections::BTreeMap::new(),
         fdinfo_table: std::sync::Weak::new(),
         proc_mounts: Arc::new(crate::proc_mounts::ProcMountSnapshot::capture().unwrap()),
         fd_object_inodes: std::collections::BTreeMap::new(),
@@ -32352,10 +33471,22 @@ mod tests {
             ),
             negative_errno(libc::ENOENT)
         );
-        assert_eq!(guest_fd_path(&state, b"/proc/self/fd/3"), Some(3));
-        assert_eq!(guest_fd_path(&state, b"/proc/thread-self/fd/3"), Some(3));
-        assert_eq!(guest_fd_path(&state, b"/proc/1/fd/3"), Some(3));
-        assert_eq!(guest_fd_path(&state, b"/dev/fd/not-a-fd"), None);
+        assert_eq!(
+            guest_fd_path(&state, b"/proc/self/fd/3", libc::ENOENT),
+            Ok(Some(3))
+        );
+        assert_eq!(
+            guest_fd_path(&state, b"/proc/thread-self/fd/3", libc::ENOENT),
+            Ok(Some(3))
+        );
+        assert_eq!(
+            guest_fd_path(&state, b"/proc/1/fd/3", libc::ENOENT),
+            Ok(Some(3))
+        );
+        assert_eq!(
+            guest_fd_path(&state, b"/dev/fd/not-a-fd", libc::ENOENT),
+            Err(negative_errno(libc::ENOENT))
+        );
     }
 
     #[test]
@@ -32752,6 +33883,1694 @@ mod tests {
             assert_eq!(target, expected.as_bytes());
         }
         assert_eq!(new_inodes[0], new_inodes[1]);
+    }
+
+    fn proc_fd_test_open(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        path: &str,
+        flags: libc::c_int,
+    ) -> i64 {
+        const PATH: u64 = 0x100;
+        write_c_string(memory, PATH, path);
+        executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_openat as u64,
+                [libc::AT_FDCWD as u64, PATH, flags as u64, 0, 0, 0],
+            ),
+            memory,
+        )
+    }
+
+    fn proc_fd_test_replace(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        path: &str,
+        target: libc::c_int,
+    ) {
+        let opened = proc_fd_test_open(executor, memory, path, libc::O_RDONLY);
+        assert!(opened >= 0 && opened != i64::from(target));
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_dup2 as u64,
+                    [opened as u64, target as u64, 0, 0, 0, 0],
+                ),
+                memory,
+            ),
+            i64::from(target),
+        );
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [opened as u64, 0, 0, 0, 0, 0]),
+                memory,
+            ),
+            0,
+        );
+    }
+
+    fn proc_fd_test_readlinkat(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        dirfd: libc::c_int,
+        path: &str,
+        output: u64,
+        capacity: usize,
+    ) -> (i64, Vec<u8>) {
+        const PATH: u64 = 0x100;
+        write_c_string(memory, PATH, path);
+        let result = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_readlinkat as u64,
+                [dirfd as u64, PATH, output, capacity as u64, 0, 0],
+            ),
+            memory,
+        );
+        if result < 0 {
+            (result, Vec::new())
+        } else {
+            let mut bytes = vec![0; result as usize];
+            memory.read(output, &mut bytes).unwrap();
+            (result, bytes)
+        }
+    }
+
+    fn proc_fd_test_capset(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        effective: u64,
+        permitted: u64,
+    ) {
+        const HEADER: u64 = 0x300;
+        const DATA: u64 = 0x400;
+        let mut header = [0; 8];
+        header[..4].copy_from_slice(&LINUX_CAPABILITY_VERSION_3.to_ne_bytes());
+        header[4..].copy_from_slice(&0_i32.to_ne_bytes());
+        memory.write(HEADER, &header).unwrap();
+        memory
+            .write(DATA, &capability_data_bytes(effective, permitted, 0))
+            .unwrap();
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_capset as u64, [HEADER, DATA, 0, 0, 0, 0]),
+                memory,
+            ),
+            0,
+        );
+        let lifecycle = executor
+            .state
+            .task_lifecycle
+            .lock()
+            .expect("KVM lifecycle lock poisoned");
+        let task = lifecycle.get(executor.state.tid).unwrap();
+        assert_eq!(task.generation, executor.task_generation);
+        assert_eq!(task.capability_permitted, permitted);
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(kvm-proc-fd-link-aliases): Review opener-table and lifecycle binding.
+    #[test]
+    fn proc_fd_directory_anchor_binds_leader_table_across_fork_and_exit() {
+        const TARGET_FD: libc::c_int = 80;
+        const WORKER_TID: libc::pid_t = GUEST_NOFILE_LIMIT + 123;
+        const OUTPUT: u64 = PAGE_SIZE;
+        const CAP_SYS_TIME: u64 = 25;
+
+        let root = TestDir::new();
+        let path_a = root.0.join("anchor-a");
+        let path_b = root.0.join("anchor-b");
+        std::fs::write(&path_a, b"a").unwrap();
+        std::fs::write(&path_b, b"b").unwrap();
+        let expected_a = path_a.as_os_str().as_bytes().to_vec();
+        let expected_b = path_b.as_os_str().as_bytes().to_vec();
+        let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+        let mut parent = ElfExecutor::new(test_state(&root.0), false);
+        proc_fd_test_replace(&mut parent, &mut memory, "anchor-a", TARGET_FD);
+        let inherited_anchor = proc_fd_test_open(
+            &mut parent,
+            &mut memory,
+            "/proc/self/fd",
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(inherited_anchor >= 0);
+
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        assert!(!Arc::ptr_eq(&parent.file_table, &child.file_table));
+        {
+            let lifecycle = parent.state.task_lifecycle.lock().unwrap();
+            assert_eq!(
+                lifecycle
+                    .get(parent.state.tid)
+                    .unwrap()
+                    .capability_permitted,
+                parent.state.capability_permitted,
+            );
+            assert_eq!(
+                lifecycle.get(child.state.tid).unwrap().capability_permitted,
+                child.state.capability_permitted,
+            );
+        }
+        proc_fd_test_replace(&mut child, &mut memory, "anchor-b", TARGET_FD);
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                inherited_anchor as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            ),
+            (expected_a.len() as i64, expected_a.clone()),
+            "the inherited anchor must keep resolving the parent's table",
+        );
+
+        // Proc-fd child lookup is a ptrace-mode read of the target process.
+        // A dumpable target still requires its permitted capabilities to be a
+        // subset of the caller's effective set unless CAP_SYS_PTRACE overrides
+        // commoncap. Dropping the same bits from the target turns denial into
+        // success and proves capset refreshed the exact lifecycle generation.
+        let reduced_capabilities =
+            GUEST_CAPABILITY_MASK & !(1_u64 << CAP_SYS_PTRACE) & !(1_u64 << CAP_SYS_TIME);
+        proc_fd_test_capset(
+            &mut child,
+            &mut memory,
+            reduced_capabilities,
+            GUEST_CAPABILITY_MASK,
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                inherited_anchor as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::EACCES),
+            "dumpability alone must not bypass the capability-subset check",
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                inherited_anchor as libc::c_int,
+                "80/child",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::EACCES),
+            "descendant type lookup must enforce the capability-subset check",
+        );
+        proc_fd_test_capset(
+            &mut parent,
+            &mut memory,
+            reduced_capabilities,
+            reduced_capabilities,
+        );
+        let reduced_fork = parent.fork_child(90, false, false).unwrap();
+        let reduced_thread = parent.thread_child(91).unwrap();
+        for registered in [&reduced_fork, &reduced_thread] {
+            let lifecycle = registered.state.task_lifecycle.lock().unwrap();
+            assert_eq!(registered.state.capability_permitted, reduced_capabilities);
+            assert_eq!(
+                lifecycle
+                    .get(registered.state.tid)
+                    .unwrap()
+                    .capability_permitted,
+                reduced_capabilities,
+                "fork/thread registration must publish inherited permitted capabilities",
+            );
+        }
+        drop(reduced_thread);
+        drop(reduced_fork);
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                inherited_anchor as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            ),
+            (expected_a.len() as i64, expected_a.clone()),
+            "a dumpable target capability subset must be readable",
+        );
+
+        // Existence is resolved first, but a nondumpable cross-process target
+        // requires CAP_SYS_PTRACE. Metadata and authenticated reopen of the
+        // directory description remain available independently.
+        assert_eq!(
+            parent.execute(
+                &SyscallRequest::new(
+                    libc::SYS_prctl as u64,
+                    [libc::PR_SET_DUMPABLE as u64, 0, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        child.state.capability_effective &= !(1_u64 << CAP_SYS_PTRACE);
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                inherited_anchor as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::EACCES),
+        );
+        for missing in ["79", "not-a-fd"] {
+            assert_eq!(
+                proc_fd_test_readlinkat(
+                    &mut child,
+                    &mut memory,
+                    inherited_anchor as libc::c_int,
+                    missing,
+                    OUTPUT,
+                    4096,
+                )
+                .0,
+                negative_errno(libc::ENOENT),
+            );
+        }
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                inherited_anchor as libc::c_int,
+                "80/child",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::EACCES),
+        );
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fstat as u64,
+                    [inherited_anchor as u64, 2 * PAGE_SIZE, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        let inherited_path = format!("/proc/self/fd/{inherited_anchor}");
+        let nondumpable_reopen = proc_fd_test_open(
+            &mut child,
+            &mut memory,
+            &inherited_path,
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(nondumpable_reopen >= 0);
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_close as u64,
+                    [nondumpable_reopen as u64, 0, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        child.state.capability_effective |= 1_u64 << CAP_SYS_PTRACE;
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                inherited_anchor as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            ),
+            (expected_a.len() as i64, expected_a.clone()),
+        );
+        child.state.capability_effective &= !(1_u64 << CAP_SYS_PTRACE);
+        assert_eq!(
+            parent.execute(
+                &SyscallRequest::new(
+                    libc::SYS_prctl as u64,
+                    [libc::PR_SET_DUMPABLE as u64, 1, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0,
+        );
+
+        let child_anchor = proc_fd_test_open(
+            &mut child,
+            &mut memory,
+            "/proc/self/fd",
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(child_anchor >= 0 && child_anchor != inherited_anchor);
+        assert_ne!(
+            parent.state.proc_fd_directories[&(inherited_anchor as libc::c_int)].visible_inode,
+            child.state.proc_fd_directories[&(child_anchor as libc::c_int)].visible_inode,
+            "process fd-directory inodes must be process-specific",
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                child_anchor as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            ),
+            (expected_b.len() as i64, expected_b.clone()),
+            "a child-opened anchor must resolve the child's divergent table",
+        );
+
+        let ordinary_directory = proc_fd_test_open(
+            &mut child,
+            &mut memory,
+            ".",
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(ordinary_directory >= 0);
+        for dirfd in [ordinary_directory as libc::c_int, libc::AT_FDCWD] {
+            assert_eq!(
+                proc_fd_test_readlinkat(&mut child, &mut memory, dirfd, "80", OUTPUT, 4096).0,
+                negative_errno(libc::ENOENT),
+                "a bare numeric path must require the bound synthetic anchor",
+            );
+        }
+
+        // A CLONE_FILES worker opening `/proc/self/fd` or the current numeric
+        // TGID binds the process generation. `/proc/thread-self/fd` instead
+        // binds that exact worker incarnation.
+        let mut worker = child.thread_child(WORKER_TID).unwrap();
+        let worker_pid = worker.state.pid;
+        let worker_tid = worker.state.tid;
+        assert_eq!(
+            worker
+                .state
+                .task_lifecycle
+                .lock()
+                .unwrap()
+                .get(worker_tid)
+                .unwrap()
+                .capability_permitted,
+            worker.state.capability_permitted,
+        );
+        let worker_anchor = proc_fd_test_open(
+            &mut worker,
+            &mut memory,
+            "/proc/self/fd",
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(worker_anchor >= 0);
+        let numeric_path = format!("/proc/{worker_pid}/fd");
+        let numeric_anchor = proc_fd_test_open(
+            &mut worker,
+            &mut memory,
+            &numeric_path,
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        let thread_anchor = proc_fd_test_open(
+            &mut worker,
+            &mut memory,
+            "/proc/thread-self/fd",
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        let numeric_thread_path = format!("/proc/{worker_pid}/task/{worker_tid}/fd");
+        let numeric_thread_anchor = proc_fd_test_open(
+            &mut worker,
+            &mut memory,
+            &numeric_thread_path,
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(numeric_anchor >= 0 && thread_anchor >= 0 && numeric_thread_anchor >= 0);
+        let worker_anchor = worker_anchor as libc::c_int;
+        let numeric_anchor = numeric_anchor as libc::c_int;
+        let thread_anchor = thread_anchor as libc::c_int;
+        let numeric_thread_anchor = numeric_thread_anchor as libc::c_int;
+        for anchor in [worker_anchor, numeric_anchor] {
+            let description = &worker.state.proc_fd_directories[&anchor];
+            assert_eq!(description.kind, ProcFdDirectoryKind::ProcessSelf);
+            assert_eq!(description.target_tid, worker_pid);
+            assert_eq!(description.target_generation, worker.process_generation);
+            assert_eq!(
+                description.path,
+                format!("/proc/{worker_pid}/fd").into_bytes()
+            );
+            assert_eq!(
+                description.visible_inode,
+                synthetic_proc_inode(format!("/proc/{worker_pid}/fd").as_bytes()),
+            );
+            assert_eq!(
+                worker.state.proc_files[&anchor],
+                synthetic_proc_inode(SYNTHETIC_PROC_FD_DIRECTORY_PATH),
+            );
+        }
+        for anchor in [thread_anchor, numeric_thread_anchor] {
+            let thread_description = &worker.state.proc_fd_directories[&anchor];
+            assert_eq!(thread_description.kind, ProcFdDirectoryKind::ThreadSelf);
+            assert_eq!(thread_description.target_tid, worker_tid);
+            assert_eq!(thread_description.target_generation, worker.task_generation);
+            assert_eq!(thread_description.path, numeric_thread_path.as_bytes());
+            assert_eq!(
+                thread_description.visible_inode,
+                synthetic_proc_inode(numeric_thread_path.as_bytes()),
+            );
+            assert_eq!(
+                worker.state.proc_files[&anchor],
+                synthetic_proc_inode(SYNTHETIC_PROC_THREAD_FD_DIRECTORY_PATH),
+            );
+        }
+        assert_ne!(
+            worker.state.proc_files[&worker_anchor],
+            worker.state.proc_files[&thread_anchor],
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(&mut worker, &mut memory, thread_anchor, "80", OUTPUT, 4096,),
+            (expected_b.len() as i64, expected_b.clone()),
+        );
+        for path in ["/proc/thread-self/fd", numeric_thread_path.as_str()] {
+            assert_eq!(
+                proc_fd_test_readlinkat(
+                    &mut worker,
+                    &mut memory,
+                    libc::AT_FDCWD,
+                    path,
+                    OUTPUT,
+                    4096,
+                )
+                .0,
+                negative_errno(libc::EINVAL),
+                "readlink of a live proc-fd directory must report EINVAL",
+            );
+        }
+        let mut cross_process_observer = worker.fork_child(3, false, false).unwrap();
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut cross_process_observer,
+                &mut memory,
+                thread_anchor,
+                "80",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::EACCES),
+            "a dumpable thread target still requires the capability subset",
+        );
+        proc_fd_test_capset(
+            &mut worker,
+            &mut memory,
+            reduced_capabilities,
+            reduced_capabilities,
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut cross_process_observer,
+                &mut memory,
+                thread_anchor,
+                "80",
+                OUTPUT,
+                4096,
+            ),
+            (expected_b.len() as i64, expected_b.clone()),
+            "a dumpable thread target capability subset must be readable",
+        );
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_prctl as u64,
+                    [libc::PR_SET_DUMPABLE as u64, 0, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        cross_process_observer.state.capability_effective &= !(1_u64 << CAP_SYS_PTRACE);
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut cross_process_observer,
+                &mut memory,
+                thread_anchor,
+                "80",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::EACCES),
+            "an inherited thread anchor must enforce target dumpability",
+        );
+        cross_process_observer.state.capability_effective |= 1_u64 << CAP_SYS_PTRACE;
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut cross_process_observer,
+                &mut memory,
+                thread_anchor,
+                "80",
+                OUTPUT,
+                4096,
+            ),
+            (expected_b.len() as i64, expected_b.clone()),
+        );
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_prctl as u64,
+                    [libc::PR_SET_DUMPABLE as u64, 1, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        drop(cross_process_observer);
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut worker,
+                &mut memory,
+                libc::AT_FDCWD,
+                &format!("{numeric_thread_path}/80"),
+                OUTPUT,
+                4096,
+            ),
+            (expected_b.len() as i64, expected_b.clone()),
+            "numeric task path must accept a canonical TID above the fd limit",
+        );
+        for anchor in [worker_anchor, thread_anchor] {
+            let expected_inode = worker.state.proc_fd_directories[&anchor].visible_inode;
+            assert_eq!(
+                worker.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_fstat as u64,
+                        [anchor as u64, 2 * PAGE_SIZE, 0, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                0,
+            );
+            let stat: libc::stat = read_struct(&memory, 2 * PAGE_SIZE);
+            assert_eq!(stat.st_mode, libc::S_IFDIR | 0o500);
+            assert_eq!(stat.st_ino, expected_inode);
+            write_c_string(&mut memory, 0x100, "");
+            assert_eq!(
+                worker.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_statx as u64,
+                        [
+                            anchor as u64,
+                            0x100,
+                            libc::AT_EMPTY_PATH as u64,
+                            libc::STATX_BASIC_STATS as u64,
+                            2 * PAGE_SIZE,
+                            0,
+                        ],
+                    ),
+                    &memory,
+                ),
+                0,
+            );
+            let statx: libc::statx = read_struct(&memory, 2 * PAGE_SIZE);
+            assert_eq!(statx.stx_mode, (libc::S_IFDIR | 0o500) as u16);
+            assert_eq!(statx.stx_ino, expected_inode);
+        }
+        drop(worker);
+        for anchor in [worker_anchor, numeric_anchor] {
+            assert_eq!(
+                proc_fd_test_readlinkat(&mut child, &mut memory, anchor, "80", OUTPUT, 4096,),
+                (expected_b.len() as i64, expected_b.clone()),
+                "process anchor must survive the opening worker",
+            );
+        }
+        for anchor in [thread_anchor, numeric_thread_anchor] {
+            assert_eq!(
+                proc_fd_test_readlinkat(&mut child, &mut memory, anchor, "80", OUTPUT, 4096,).0,
+                negative_errno(libc::ENOENT),
+                "thread anchor must expire with its target worker",
+            );
+        }
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fstat as u64,
+                    [thread_anchor as u64, 2 * PAGE_SIZE, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::ENOENT),
+        );
+        write_c_string(&mut memory, 0x100, "");
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_statx as u64,
+                    [
+                        thread_anchor as u64,
+                        0x100,
+                        libc::AT_EMPTY_PATH as u64,
+                        libc::STATX_BASIC_STATS as u64,
+                        2 * PAGE_SIZE,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::ENOENT),
+        );
+        let missing_thread_path = format!(
+            "/proc/{worker_pid}/task/{}/fd",
+            worker_tid.checked_add(1).unwrap()
+        );
+        for path in [numeric_thread_path.as_str(), missing_thread_path.as_str()] {
+            assert_eq!(
+                proc_fd_test_readlinkat(
+                    &mut child,
+                    &mut memory,
+                    libc::AT_FDCWD,
+                    path,
+                    OUTPUT,
+                    4096,
+                )
+                .0,
+                negative_errno(libc::ENOENT),
+                "dead or missing numeric task fd-directory must not look live",
+            );
+        }
+        for flags in [
+            libc::O_PATH | libc::O_DIRECTORY,
+            libc::O_WRONLY,
+            libc::O_CREAT | libc::O_EXCL,
+            libc::O_TMPFILE | libc::O_RDWR,
+        ] {
+            assert_eq!(
+                proc_fd_test_open(&mut child, &mut memory, &numeric_thread_path, flags),
+                negative_errno(libc::ENOENT),
+                "a dead numeric task directory must fail before flag-specific errors",
+            );
+        }
+        let stale_thread_path = format!("/proc/self/fd/{thread_anchor}");
+        for (dirfd, path, flags) in [
+            (libc::AT_FDCWD, stale_thread_path.as_str(), 0),
+            (thread_anchor, "", libc::AT_EMPTY_PATH),
+        ] {
+            write_c_string(&mut memory, 0x100, path);
+            assert_eq!(
+                child.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_faccessat2 as u64,
+                        [dirfd as u64, 0x100, libc::W_OK as u64, flags as u64, 0, 0],
+                    ),
+                    &memory,
+                ),
+                negative_errno(libc::ENOENT),
+                "stale proc-fd directory access must fail closed",
+            );
+        }
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                libc::AT_FDCWD,
+                &stale_thread_path,
+                OUTPUT,
+                4096,
+            ),
+            (
+                numeric_thread_path.len() as i64,
+                numeric_thread_path.as_bytes().to_vec(),
+            ),
+        );
+        let reopened_stale_thread = proc_fd_test_open(
+            &mut child,
+            &mut memory,
+            &stale_thread_path,
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(reopened_stale_thread >= 0);
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                reopened_stale_thread as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::ENOENT),
+        );
+
+        parent
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap()
+            .remove(parent.state.tid, parent.task_generation);
+        parent.release_files_on_exit();
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                inherited_anchor as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::ENOENT),
+            "an inherited anchor must fail closed after its target process exits",
+        );
+        let stale_process_path = format!("/proc/self/fd/{inherited_anchor}");
+        let reopened_stale_process = proc_fd_test_open(
+            &mut child,
+            &mut memory,
+            &stale_process_path,
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(reopened_stale_process >= 0);
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                reopened_stale_process as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::ENOENT),
+        );
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fstat as u64,
+                    [reopened_stale_process as u64, 2 * PAGE_SIZE, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::ENOENT),
+        );
+        write_c_string(&mut memory, 0x100, "");
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(
+                    libc::SYS_statx as u64,
+                    [
+                        reopened_stale_process as u64,
+                        0x100,
+                        libc::AT_EMPTY_PATH as u64,
+                        libc::STATX_BASIC_STATS as u64,
+                        2 * PAGE_SIZE,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::ENOENT),
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut child,
+                &mut memory,
+                child_anchor as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            ),
+            (expected_b.len() as i64, expected_b.clone()),
+        );
+
+        // Native procfs keeps `/proc/self/fd` bound to the process generation
+        // when the leader pthread exits but a worker remains. Both an existing
+        // process anchor and a newly opened one must remain usable; the final
+        // worker exit then makes their bound process generation non-live.
+        let mut surviving_worker = child.thread_child(8).unwrap();
+        child
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap()
+            .remove(child.state.tid, child.task_generation);
+        for (path, target) in [
+            (
+                "/proc/self/fd",
+                ProcFdDirectoryTarget {
+                    kind: ProcFdDirectoryKind::ProcessSelf,
+                    tid: surviving_worker.state.pid,
+                },
+            ),
+            (
+                "/proc/thread-self/fd",
+                ProcFdDirectoryTarget {
+                    kind: ProcFdDirectoryKind::ThreadSelf,
+                    tid: surviving_worker.state.tid,
+                },
+            ),
+        ] {
+            let inode = proc_fd_directory_visible_inode(&surviving_worker.state, target);
+            write_c_string(&mut memory, 0x100, path);
+            assert_eq!(
+                surviving_worker.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_newfstatat as u64,
+                        [libc::AT_FDCWD as u64, 0x100, 2 * PAGE_SIZE, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                0,
+            );
+            let stat: libc::stat = read_struct(&memory, 2 * PAGE_SIZE);
+            assert_eq!(stat.st_mode, libc::S_IFDIR | 0o500);
+            assert_eq!(stat.st_ino, inode);
+            assert_eq!(
+                surviving_worker.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_statx as u64,
+                        [
+                            libc::AT_FDCWD as u64,
+                            0x100,
+                            0,
+                            libc::STATX_BASIC_STATS as u64,
+                            2 * PAGE_SIZE,
+                            0,
+                        ],
+                    ),
+                    &memory,
+                ),
+                0,
+            );
+            let statx: libc::statx = read_struct(&memory, 2 * PAGE_SIZE);
+            assert_eq!(statx.stx_mode, (libc::S_IFDIR | 0o500) as u16);
+            assert_eq!(statx.stx_ino, inode);
+            for mode in [libc::F_OK, libc::R_OK, libc::W_OK, libc::X_OK] {
+                assert_eq!(
+                    surviving_worker.execute(
+                        &SyscallRequest::new(
+                            libc::SYS_faccessat2 as u64,
+                            [libc::AT_FDCWD as u64, 0x100, mode as u64, 0, 0, 0],
+                        ),
+                        &memory,
+                    ),
+                    0,
+                    "procfs access hook must accept mode {mode} for {path}",
+                );
+            }
+        }
+        assert_eq!(
+            surviving_worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fstat as u64,
+                    [child_anchor as u64, 2 * PAGE_SIZE, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        write_c_string(&mut memory, 0x100, "");
+        assert_eq!(
+            surviving_worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_statx as u64,
+                    [
+                        child_anchor as u64,
+                        0x100,
+                        libc::AT_EMPTY_PATH as u64,
+                        libc::STATX_BASIC_STATS as u64,
+                        2 * PAGE_SIZE,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut surviving_worker,
+                &mut memory,
+                child_anchor as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::ENOENT),
+            "self anchor child lookup requires the original leader task",
+        );
+        for path in [
+            "/proc/self/fd/80".to_owned(),
+            format!("/proc/{}/fd/80", child.state.pid),
+        ] {
+            assert_eq!(
+                proc_fd_test_readlinkat(
+                    &mut surviving_worker,
+                    &mut memory,
+                    libc::AT_FDCWD,
+                    &path,
+                    OUTPUT,
+                    4096,
+                )
+                .0,
+                negative_errno(libc::ENOENT),
+            );
+        }
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut surviving_worker,
+                &mut memory,
+                libc::AT_FDCWD,
+                "/proc/thread-self/fd/80",
+                OUTPUT,
+                4096,
+            ),
+            (expected_b.len() as i64, expected_b.clone()),
+        );
+        let post_leader_anchor = proc_fd_test_open(
+            &mut surviving_worker,
+            &mut memory,
+            "/proc/self/fd",
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(post_leader_anchor >= 0);
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut surviving_worker,
+                &mut memory,
+                post_leader_anchor as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::ENOENT),
+        );
+        let surviving_thread_anchor = proc_fd_test_open(
+            &mut surviving_worker,
+            &mut memory,
+            "/proc/thread-self/fd",
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(surviving_thread_anchor >= 0);
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut surviving_worker,
+                &mut memory,
+                surviving_thread_anchor as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            ),
+            (expected_b.len() as i64, expected_b),
+        );
+        drop(surviving_worker);
+        for anchor in [child_anchor, post_leader_anchor, surviving_thread_anchor] {
+            assert_eq!(
+                proc_fd_test_readlinkat(
+                    &mut child,
+                    &mut memory,
+                    anchor as libc::c_int,
+                    "80",
+                    OUTPUT,
+                    4096,
+                )
+                .0,
+                negative_errno(libc::ENOENT),
+            );
+        }
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(kvm-proc-fd-link-aliases): Review anchor fd lifecycle and refusal gates.
+    #[test]
+    fn proc_fd_directory_anchor_dup_reopen_exec_and_scm_are_fail_closed() {
+        const TARGET_FD: libc::c_int = 80;
+        const OUTPUT: u64 = PAGE_SIZE;
+        const STAT: u64 = 2 * PAGE_SIZE;
+
+        let root = TestDir::new();
+        let path = root.0.join("anchor-target");
+        std::fs::write(&path, b"target").unwrap();
+        let expected = path.as_os_str().as_bytes().to_vec();
+        let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        proc_fd_test_replace(&mut executor, &mut memory, "anchor-target", TARGET_FD);
+        let anchor = proc_fd_test_open(
+            &mut executor,
+            &mut memory,
+            "/proc/self/fd",
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(anchor >= 0);
+        let anchor = anchor as libc::c_int;
+        assert!(executor.state.proc_fd_directories.contains_key(&anchor));
+
+        let trailing_anchor = proc_fd_test_open(
+            &mut executor,
+            &mut memory,
+            "/proc/self/fd/",
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(trailing_anchor >= 0);
+        for directory in ["/proc/self/fd", "/proc/self/fd/"] {
+            assert_eq!(
+                proc_fd_test_readlinkat(
+                    &mut executor,
+                    &mut memory,
+                    libc::AT_FDCWD,
+                    directory,
+                    OUTPUT,
+                    4096,
+                )
+                .0,
+                negative_errno(libc::EINVAL),
+            );
+        }
+        for (dirfd, path) in [
+            (anchor, format!("{anchor}/")),
+            (libc::AT_FDCWD, format!("/proc/self/fd/{anchor}/")),
+        ] {
+            assert_eq!(
+                proc_fd_test_readlinkat(&mut executor, &mut memory, dirfd, &path, OUTPUT, 4096,).0,
+                negative_errno(libc::EINVAL),
+            );
+        }
+
+        write_c_string(&mut memory, 0x100, "/proc/self/fd");
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_newfstatat as u64,
+                    [libc::AT_FDCWD as u64, 0x100, STAT, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        let path_stat: libc::stat = read_struct(&memory, STAT);
+        assert_eq!(path_stat.st_mode, libc::S_IFDIR | 0o500);
+        write_c_string(&mut memory, 0x100, "/proc/self/fd/");
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_newfstatat as u64,
+                    [libc::AT_FDCWD as u64, 0x100, STAT, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        let trailing_path_stat: libc::stat = read_struct(&memory, STAT);
+        assert_eq!(trailing_path_stat.st_mode, path_stat.st_mode);
+        assert_eq!(trailing_path_stat.st_ino, path_stat.st_ino);
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_fstat as u64, [anchor as u64, STAT, 0, 0, 0, 0],),
+                &memory,
+            ),
+            0,
+        );
+        let descriptor_stat: libc::stat = read_struct(&memory, STAT);
+        assert_eq!(descriptor_stat.st_mode, libc::S_IFDIR | 0o500);
+        assert_eq!(descriptor_stat.st_ino, path_stat.st_ino);
+        let flags = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_fcntl as u64,
+                [anchor as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+            ),
+            &memory,
+        );
+        assert_eq!(
+            flags & i64::from(libc::O_PATH | libc::O_DIRECTORY),
+            i64::from(libc::O_PATH | libc::O_DIRECTORY),
+        );
+
+        memory.write(OUTPUT, &[0xa5; 11]).unwrap();
+        assert_eq!(
+            proc_fd_test_readlinkat(&mut executor, &mut memory, anchor, "80", OUTPUT, 10,),
+            (10, expected[..10].to_vec()),
+        );
+        assert_eq!(
+            read_guest_bytes::<11>(&memory, OUTPUT).unwrap()[10],
+            0xa5,
+            "readlinkat must not append a NUL after a truncated result",
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(&mut executor, &mut memory, anchor, "80", OUTPUT, 0).0,
+            negative_errno(libc::EINVAL),
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(&mut executor, &mut memory, -1, "80", OUTPUT, 4096).0,
+            negative_errno(libc::EBADF),
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(&mut executor, &mut memory, TARGET_FD, "80", OUTPUT, 4096,).0,
+            negative_errno(libc::ENOTDIR),
+        );
+        for relative in ["./80", "././80", "../fd/80", "../fd//80"] {
+            assert_eq!(
+                proc_fd_test_readlinkat(&mut executor, &mut memory, anchor, relative, OUTPUT, 4096,),
+                (expected.len() as i64, expected.clone()),
+            );
+        }
+        for descendant in ["80/", "80/child"] {
+            assert_eq!(
+                proc_fd_test_readlinkat(
+                    &mut executor,
+                    &mut memory,
+                    anchor,
+                    descendant,
+                    OUTPUT,
+                    4096,
+                )
+                .0,
+                negative_errno(libc::ENOTDIR),
+            );
+        }
+        for direct in [
+            "/proc/self/fd//80".to_owned(),
+            "/proc/self/fd/./80".to_owned(),
+            "/proc//self//fd//80".to_owned(),
+            "/proc///self/fd/./80".to_owned(),
+            "/proc/thread-self/fd/../fd/80".to_owned(),
+            format!("/proc/{}/fd/../fd/80", executor.state.pid),
+            format!(
+                "/proc/{}/task/{}/fd/../fd/80",
+                executor.state.pid, executor.state.tid
+            ),
+            "/dev/fd/../fd/80".to_owned(),
+        ] {
+            assert_eq!(
+                proc_fd_test_readlinkat(
+                    &mut executor,
+                    &mut memory,
+                    libc::AT_FDCWD,
+                    &direct,
+                    OUTPUT,
+                    4096,
+                ),
+                (expected.len() as i64, expected.clone()),
+            );
+        }
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut executor,
+                &mut memory,
+                libc::AT_FDCWD,
+                "/proc/self/fd/080",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::ENOENT),
+        );
+        for descendant in ["/proc/self/fd/80/", "/proc/self/fd/80/child"] {
+            assert_eq!(
+                proc_fd_test_readlinkat(
+                    &mut executor,
+                    &mut memory,
+                    libc::AT_FDCWD,
+                    descendant,
+                    OUTPUT,
+                    4096,
+                )
+                .0,
+                negative_errno(libc::ENOTDIR),
+            );
+        }
+        for missing in ["79", "080", "not-a-fd"] {
+            assert_eq!(
+                proc_fd_test_readlinkat(
+                    &mut executor,
+                    &mut memory,
+                    anchor,
+                    missing,
+                    8 * PAGE_SIZE,
+                    4096,
+                )
+                .0,
+                negative_errno(libc::ENOENT),
+                "target lookup must precede output validation for {missing}",
+            );
+        }
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut executor,
+                &mut memory,
+                anchor,
+                "80",
+                8 * PAGE_SIZE,
+                4096,
+            )
+            .0,
+            negative_errno(libc::EFAULT),
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut executor,
+                &mut memory,
+                libc::AT_FDCWD,
+                "/proc/self/fd/../fd/80",
+                OUTPUT,
+                4096,
+            ),
+            (expected.len() as i64, expected.clone()),
+        );
+
+        let alias = executor.execute(
+            &SyscallRequest::new(libc::SYS_dup as u64, [anchor as u64, 0, 0, 0, 0, 0]),
+            &memory,
+        );
+        assert!(alias >= 0);
+        assert!(Arc::ptr_eq(
+            &executor.state.proc_fd_directories[&anchor],
+            &executor.state.proc_fd_directories[&(alias as libc::c_int)],
+        ));
+        let cloexec = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_fcntl as u64,
+                [anchor as u64, libc::F_DUPFD_CLOEXEC as u64, 40, 0, 0, 0],
+            ),
+            &memory,
+        );
+        assert_eq!(cloexec, 40);
+        let procfd_path = format!("/proc/self/fd/{anchor}");
+        for mode in [libc::F_OK, libc::R_OK, libc::W_OK, libc::X_OK] {
+            write_c_string(&mut memory, 0x100, &procfd_path);
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_faccessat2 as u64,
+                        [libc::AT_FDCWD as u64, 0x100, mode as u64, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                0,
+                "followed proc-fd anchor access mode {mode}",
+            );
+            write_c_string(&mut memory, 0x100, "");
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_faccessat2 as u64,
+                        [
+                            anchor as u64,
+                            0x100,
+                            mode as u64,
+                            libc::AT_EMPTY_PATH as u64,
+                            0,
+                            0,
+                        ],
+                    ),
+                    &memory,
+                ),
+                0,
+                "AT_EMPTY_PATH proc-fd anchor access mode {mode}",
+            );
+        }
+        for path in ["/proc/self/fd", procfd_path.as_str()] {
+            assert_eq!(
+                proc_fd_test_open(
+                    &mut executor,
+                    &mut memory,
+                    path,
+                    libc::O_TMPFILE | libc::O_RDWR,
+                ),
+                negative_errno(libc::EOPNOTSUPP),
+            );
+            for access_mode in [libc::O_RDONLY, libc::O_WRONLY, libc::O_RDWR] {
+                assert_eq!(
+                    proc_fd_test_open(
+                        &mut executor,
+                        &mut memory,
+                        path,
+                        libc::O_CREAT | libc::O_EXCL | access_mode,
+                    ),
+                    negative_errno(libc::EEXIST),
+                );
+            }
+            for (flags, errno) in [
+                (libc::O_RDONLY | libc::O_CREAT, libc::EISDIR),
+                (libc::O_RDONLY | libc::O_TRUNC, libc::EISDIR),
+                (libc::O_RDONLY | libc::O_CREAT | libc::O_TRUNC, libc::EISDIR),
+                (libc::O_RDONLY | libc::O_DIRECT, libc::EINVAL),
+                (libc::O_WRONLY | libc::O_DIRECT, libc::EISDIR),
+                (libc::O_RDWR | libc::O_DIRECT, libc::EISDIR),
+                (
+                    libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECT,
+                    libc::EISDIR,
+                ),
+                (
+                    libc::O_RDONLY | libc::O_TRUNC | libc::O_DIRECT,
+                    libc::EISDIR,
+                ),
+            ] {
+                assert_eq!(
+                    proc_fd_test_open(&mut executor, &mut memory, path, flags),
+                    negative_errno(errno),
+                    "non-O_PATH flag ordering for {path} with {flags:#x}",
+                );
+            }
+        }
+        for access_mode in [libc::O_RDONLY, libc::O_WRONLY, libc::O_RDWR] {
+            assert_eq!(
+                proc_fd_test_open(
+                    &mut executor,
+                    &mut memory,
+                    "/proc/self/fd/",
+                    libc::O_CREAT | libc::O_EXCL | access_mode,
+                ),
+                negative_errno(libc::EISDIR),
+                "terminal slash must preserve directory lookup semantics",
+            );
+        }
+        for flags in [
+            libc::O_RDONLY,
+            libc::O_WRONLY,
+            libc::O_RDONLY | libc::O_DIRECT,
+            libc::O_RDONLY | libc::O_CREAT,
+            libc::O_RDONLY | libc::O_TRUNC,
+        ] {
+            assert_eq!(
+                proc_fd_test_open(
+                    &mut executor,
+                    &mut memory,
+                    &procfd_path,
+                    flags | libc::O_NOFOLLOW,
+                ),
+                negative_errno(libc::ELOOP),
+                "reopened magic-link NOFOLLOW precedence for {flags:#x}",
+            );
+        }
+        assert_eq!(
+            proc_fd_test_open(
+                &mut executor,
+                &mut memory,
+                &procfd_path,
+                libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW,
+            ),
+            negative_errno(libc::EEXIST),
+        );
+        for access_mode in [libc::O_RDONLY, libc::O_WRONLY] {
+            assert_eq!(
+                proc_fd_test_open(
+                    &mut executor,
+                    &mut memory,
+                    &procfd_path,
+                    access_mode | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+                ),
+                negative_errno(libc::ENOTDIR),
+            );
+        }
+        for extra_flags in [0, libc::O_EXCL, libc::O_DIRECT] {
+            assert_eq!(
+                proc_fd_test_open(
+                    &mut executor,
+                    &mut memory,
+                    &procfd_path,
+                    libc::O_TMPFILE | libc::O_RDWR | libc::O_NOFOLLOW | extra_flags,
+                ),
+                negative_errno(libc::ENOTDIR),
+            );
+        }
+        assert_eq!(
+            proc_fd_test_open(
+                &mut executor,
+                &mut memory,
+                "/proc/self/fd/",
+                libc::O_TMPFILE | libc::O_RDWR | libc::O_NOFOLLOW,
+            ),
+            negative_errno(libc::EOPNOTSUPP),
+        );
+        let reopened = proc_fd_test_open(
+            &mut executor,
+            &mut memory,
+            &procfd_path,
+            libc::O_PATH | libc::O_DIRECTORY,
+        );
+        assert!(reopened >= 0);
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut executor,
+                &mut memory,
+                reopened as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            ),
+            (expected.len() as i64, expected.clone()),
+        );
+
+        const PIPE_FDS: u64 = 3 * PAGE_SIZE;
+        const SOCKET_FDS: u64 = PIPE_FDS + 2 * std::mem::size_of::<libc::c_int>() as u64;
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_pipe2 as u64, [PIPE_FDS, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            0,
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_socketpair as u64,
+                    [
+                        libc::AF_UNIX as u64,
+                        libc::SOCK_DGRAM as u64,
+                        0,
+                        SOCKET_FDS,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, SOCKET_FDS);
+        for (fd, prefix) in [
+            (pipe_fds[0], b"pipe:[".as_slice()),
+            (socket_fds[0], b"socket:[".as_slice()),
+        ] {
+            let direct = proc_fd_test_readlinkat(
+                &mut executor,
+                &mut memory,
+                libc::AT_FDCWD,
+                &format!("/proc/self/fd/{fd}"),
+                OUTPUT,
+                4096,
+            );
+            assert!(direct.1.starts_with(prefix), "unexpected link: {direct:?}");
+            assert_eq!(
+                proc_fd_test_readlinkat(
+                    &mut executor,
+                    &mut memory,
+                    anchor,
+                    &fd.to_string(),
+                    OUTPUT,
+                    4096,
+                ),
+                direct,
+                "anchor-relative and direct proc-fd links must share identity",
+            );
+        }
+
+        let overwritten = executor.execute(
+            &SyscallRequest::new(libc::SYS_dup as u64, [anchor as u64, 0, 0, 0, 0, 0]),
+            &memory,
+        );
+        assert!(overwritten >= 0);
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_dup2 as u64,
+                    [TARGET_FD as u64, overwritten as u64, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            overwritten,
+        );
+        assert!(
+            !executor
+                .state
+                .proc_fd_directories
+                .contains_key(&(overwritten as libc::c_int))
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut executor,
+                &mut memory,
+                overwritten as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::ENOTDIR),
+        );
+
+        assert_ne!(host_fd(&executor.state, TARGET_FD), Some(TARGET_FD));
+        const SCM_PAYLOAD: u64 = SOCKET_FDS + 2 * std::mem::size_of::<libc::c_int>() as u64;
+        const SCM_IOV: u64 = SCM_PAYLOAD + 16;
+        const SCM_MESSAGE: u64 = SCM_IOV + 32;
+        const SCM_CONTROL: u64 = SCM_MESSAGE + 64;
+        memory.write(SCM_PAYLOAD, b"x").unwrap();
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                SCM_IOV,
+                &libc::iovec {
+                    iov_base: SCM_PAYLOAD as usize as *mut libc::c_void,
+                    iov_len: 1,
+                },
+            ),
+            0,
+        );
+        for rights in [[anchor, TARGET_FD], [TARGET_FD, anchor]] {
+            let mut control = rights_control(&rights);
+            let unchanged = control.clone();
+            assert_eq!(
+                translate_outgoing_control(&mut control, &executor.state, false),
+                Err(negative_errno(libc::ENOSYS)),
+            );
+            assert_eq!(
+                control, unchanged,
+                "mixed SCM_RIGHTS refusal must precede every rewrite"
+            );
+
+            memory.write(SCM_CONTROL, &unchanged).unwrap();
+            let mut message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+            message.msg_iov = SCM_IOV as usize as *mut libc::iovec;
+            message.msg_iovlen = 1;
+            message.msg_control = SCM_CONTROL as usize as *mut libc::c_void;
+            message.msg_controllen = unchanged.len();
+            assert_eq!(write_struct(&mut memory, SCM_MESSAGE, &message), 0);
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_sendmsg as u64,
+                        [socket_fds[0] as u64, SCM_MESSAGE, 0, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                negative_errno(libc::ENOSYS),
+            );
+            let mut guest_control = vec![0; unchanged.len()];
+            memory.read(SCM_CONTROL, &mut guest_control).unwrap();
+            assert_eq!(guest_control, unchanged);
+            let mut byte = 0_u8;
+            // SAFETY: the peer descriptor is live and byte provides one byte
+            // of writable storage. MSG_DONTWAIT makes the empty-queue check
+            // bounded and distinguishes refusal from accidental delivery.
+            assert_eq!(
+                unsafe {
+                    libc::recv(
+                        host_fd(&executor.state, socket_fds[1]).unwrap(),
+                        std::ptr::from_mut(&mut byte).cast(),
+                        1,
+                        libc::MSG_DONTWAIT,
+                    )
+                },
+                -1,
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EAGAIN),
+                "a refused mixed SCM_RIGHTS message must not deliver a datagram",
+            );
+        }
+
+        let forged_binding = executor
+            .state
+            .proc_carrier_authority
+            .mint(
+                SYNTHETIC_PROC_FD_DIRECTORY_PATH,
+                b"",
+                false,
+                true,
+                libc::O_PATH,
+            )
+            .unwrap();
+        let shared = FileTableState::try_from_elf(&executor.state).unwrap();
+        let files_before = executor.state.files.len();
+        let descriptions_before = executor
+            .state
+            .proc_fd_directories
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut budget = crate::proc_carrier::CarrierAuthBudget::new();
+        let mut cache = crate::proc_carrier::CarrierAuthCache::new();
+        assert_eq!(
+            prepare_received_rights(
+                &mut executor.state,
+                &shared,
+                &mut [0; std::mem::size_of::<libc::c_int>()],
+                vec![PendingReceivedRight {
+                    control_offset: 0,
+                    file: forged_binding,
+                }],
+                &mut budget,
+                &mut cache,
+            )
+            .err(),
+            Some(negative_errno(libc::EBADMSG)),
+        );
+        assert_eq!(executor.state.files.len(), files_before);
+        assert_eq!(
+            executor
+                .state
+                .proc_fd_directories
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            descriptions_before,
+        );
+        assert_eq!(
+            shared
+                .proc_fd_directories
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            descriptions_before,
+        );
+
+        let replacement = test_exec_replacement(&root.0, &executor.state);
+        executor.replace_after_exec(replacement);
+        assert!(executor.state.proc_fd_directories.contains_key(&anchor));
+        assert!(
+            !executor
+                .state
+                .proc_fd_directories
+                .contains_key(&(cloexec as libc::c_int))
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut executor,
+                &mut memory,
+                alias as libc::c_int,
+                "80",
+                OUTPUT,
+                4096,
+            ),
+            (expected.len() as i64, expected),
+        );
+
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [anchor as u64, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            0,
+        );
+        let reused = proc_fd_test_open(&mut executor, &mut memory, "anchor-target", libc::O_RDONLY);
+        assert_eq!(reused, i64::from(anchor));
+        assert!(!executor.state.proc_fd_directories.contains_key(&anchor));
+        assert_eq!(
+            proc_fd_test_readlinkat(&mut executor, &mut memory, anchor, "80", OUTPUT, 4096,).0,
+            negative_errno(libc::ENOTDIR),
+        );
     }
 
     #[test]
@@ -35651,7 +38470,9 @@ mod tests {
             ) > 0
         );
         // A reused numeric leader ID must not resurrect the old open description.
-        life.lock().unwrap().register(1, 1, 1, true);
+        life.lock()
+            .unwrap()
+            .register(1, 1, 1, true, GUEST_CAPABILITY_MASK);
         assert_eq!(
             worker.execute(
                 &SyscallRequest::new(
@@ -41970,7 +44791,7 @@ mod tests {
         state.tid = 3;
         state.ppid = 1;
         state.task_lifecycle = Arc::new(std::sync::Mutex::new(
-            crate::elf::TaskLifecycleTable::with_root(3, 3, 3, true),
+            crate::elf::TaskLifecycleTable::with_root(3, 3, 3, true, GUEST_CAPABILITY_MASK),
         ));
         let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         let mut executor = ElfExecutor::new(state, false);
@@ -46375,6 +49196,7 @@ mod tests {
         const HEAD_SENTINEL: u64 = 0xaaaa_aaaa_aaaa_aaaa;
         const LENGTH_SENTINEL: u64 = 0xbbbb_bbbb_bbbb_bbbb;
         const INVALID: u64 = PAGE_SIZE + 8;
+        const CAP_SYS_TIME: u64 = 25;
 
         let root = TestDir::new();
         let mut parent = ElfExecutor::new(test_state(&root.0), false);
@@ -46387,9 +49209,27 @@ mod tests {
             .write(LENGTH_OUTPUT, &LENGTH_SENTINEL.to_ne_bytes())
             .unwrap();
 
-        // Fixed-root credentials normally permit peer reads. Once the caller
-        // drops CAP_SYS_PTRACE, a nondumpable process is rejected before either
-        // output location is modified.
+        let reduced_capabilities =
+            GUEST_CAPABILITY_MASK & !(1_u64 << CAP_SYS_PTRACE) & !(1_u64 << CAP_SYS_TIME);
+        parent.state.capability_effective = reduced_capabilities;
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent.state,
+                &[2, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
+            ),
+            0,
+            "REALCREDS authorization must use caller permitted, not effective, capabilities",
+        );
+        memory
+            .write(HEAD_OUTPUT, &HEAD_SENTINEL.to_ne_bytes())
+            .unwrap();
+        memory
+            .write(LENGTH_OUTPUT, &LENGTH_SENTINEL.to_ne_bytes())
+            .unwrap();
+
+        // Permitted CAP_SYS_PTRACE alone is not an override: the bit must be in
+        // the effective set when the target is nondumpable.
         assert_eq!(
             prctl(
                 &mut child.state,
@@ -46397,7 +49237,6 @@ mod tests {
             ),
             0
         );
-        parent.state.capability_effective &= !(1_u64 << CAP_SYS_PTRACE);
         assert_eq!(
             get_robust_list(
                 &mut memory,
@@ -46409,7 +49248,68 @@ mod tests {
         assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), HEAD_SENTINEL);
         assert_eq!(read_struct::<u64>(&memory, LENGTH_OUTPUT), LENGTH_SENTINEL);
 
-        parent.state.capability_effective |= 1_u64 << CAP_SYS_PTRACE;
+        proc_fd_test_capset(
+            &mut parent,
+            &mut memory,
+            reduced_capabilities | (1_u64 << CAP_SYS_PTRACE),
+            GUEST_CAPABILITY_MASK,
+        );
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent.state,
+                &[2, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
+            ),
+            0,
+            "effective CAP_SYS_PTRACE must override dumpability and the capability subset",
+        );
+        assert_eq!(
+            prctl(
+                &mut child.state,
+                &[libc::PR_SET_DUMPABLE as u64, 1, 0, 0, 0, 0],
+            ),
+            0
+        );
+        memory
+            .write(HEAD_OUTPUT, &HEAD_SENTINEL.to_ne_bytes())
+            .unwrap();
+        memory
+            .write(LENGTH_OUTPUT, &LENGTH_SENTINEL.to_ne_bytes())
+            .unwrap();
+
+        proc_fd_test_capset(
+            &mut parent,
+            &mut memory,
+            reduced_capabilities,
+            reduced_capabilities,
+        );
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent.state,
+                &[2, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
+            ),
+            negative_errno(libc::EPERM),
+            "a missing caller-permitted capability must deny a dumpable target",
+        );
+        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), HEAD_SENTINEL);
+        assert_eq!(read_struct::<u64>(&memory, LENGTH_OUTPUT), LENGTH_SENTINEL);
+
+        proc_fd_test_capset(
+            &mut child,
+            &mut memory,
+            reduced_capabilities,
+            reduced_capabilities,
+        );
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent.state,
+                &[2, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
+            ),
+            0,
+            "a dumpable target permitted subset must be readable",
+        );
         assert_eq!(
             set_robust_list(
                 &mut parent.state,
@@ -47690,7 +50590,7 @@ mod tests {
             state.tid = 2;
             state.ppid = 1;
             state.task_lifecycle = Arc::new(std::sync::Mutex::new(
-                crate::elf::TaskLifecycleTable::with_root(2, 2, 2, true),
+                crate::elf::TaskLifecycleTable::with_root(2, 2, 2, true, GUEST_CAPABILITY_MASK),
             ));
             state
         };
@@ -49134,16 +52034,18 @@ mod tests {
         leader.pid = 37;
         leader.tid = 37;
         leader.task_lifecycle = Arc::new(std::sync::Mutex::new(
-            crate::elf::TaskLifecycleTable::with_root(37, 37, 37, true),
+            crate::elf::TaskLifecycleTable::with_root(37, 37, 37, true, GUEST_CAPABILITY_MASK),
         ));
         leader.executable_path = executable.clone();
         leader.executable_file = Some(Arc::new(std::fs::File::open(&executable).unwrap()));
         leader.executable_image = Arc::from(b"loaded image".as_slice());
-        leader
-            .task_lifecycle
-            .lock()
-            .unwrap()
-            .register(38, 37, 37, true);
+        leader.task_lifecycle.lock().unwrap().register(
+            38,
+            37,
+            37,
+            true,
+            leader.capability_permitted,
+        );
         let mut worker = leader.try_clone_for_fork(38).unwrap();
         worker.pid = 37;
         worker.ppid = leader.ppid;
@@ -49972,10 +52874,12 @@ mod tests {
     fn capability_syscalls_round_trip_and_bound_the_exec_persona() {
         const HEADER: u64 = 0x100;
         const DATA: u64 = 0x200;
+        const CAP_SYS_NICE: u64 = 23;
         const CAP_SYS_TIME: u64 = 25;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
+        let task_generation = current_task_generation(&state);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         let write_header = |memory: &mut GuestMemory, version: u32, pid: i32| {
             let mut bytes = [0; 8];
@@ -49996,10 +52900,29 @@ mod tests {
         memory
             .write(DATA, &capability_data_bytes(reduced, reduced, 1))
             .unwrap();
-        assert_eq!(capset(&memory, &mut state, &[HEADER, DATA, 0, 0, 0, 0]), 0);
+        assert_eq!(
+            capset_with_lifecycle(
+                &memory,
+                &mut state,
+                &[HEADER, DATA, 0, 0, 0, 0],
+                task_generation.unwrap(),
+            )
+            .unwrap(),
+            0
+        );
         assert_eq!(state.capability_effective, reduced);
         assert_eq!(state.capability_permitted, reduced);
         assert_eq!(state.capability_inheritable, 1);
+        assert_eq!(
+            state
+                .task_lifecycle
+                .lock()
+                .unwrap()
+                .get(state.tid)
+                .unwrap()
+                .capability_permitted,
+            reduced,
+        );
 
         assert_eq!(
             prctl_cap_ambient(&mut state, libc::PR_CAP_AMBIENT_RAISE as u64, 0),
@@ -50013,12 +52936,30 @@ mod tests {
         memory
             .write(DATA, &capability_data_bytes(reduced, reduced, 0))
             .unwrap();
-        assert_eq!(capset(&memory, &mut state, &[HEADER, DATA, 0, 0, 0, 0]), 0);
+        assert_eq!(
+            capset_with_lifecycle(
+                &memory,
+                &mut state,
+                &[HEADER, DATA, 0, 0, 0, 0],
+                task_generation.unwrap(),
+            )
+            .unwrap(),
+            0
+        );
         assert_eq!(state.capability_ambient, 0);
         memory
             .write(DATA, &capability_data_bytes(reduced, reduced, 1))
             .unwrap();
-        assert_eq!(capset(&memory, &mut state, &[HEADER, DATA, 0, 0, 0, 0]), 0);
+        assert_eq!(
+            capset_with_lifecycle(
+                &memory,
+                &mut state,
+                &[HEADER, DATA, 0, 0, 0, 0],
+                task_generation.unwrap(),
+            )
+            .unwrap(),
+            0
+        );
         assert_eq!(
             prctl_cap_ambient(&mut state, libc::PR_CAP_AMBIENT_RAISE as u64, 0),
             0
@@ -50029,19 +52970,101 @@ mod tests {
             0
         );
         assert_eq!(
+            prctl(&mut state, &[PR_CAPBSET_DROP, CAP_SYS_NICE, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
             prctl(&mut state, &[PR_CAPBSET_READ, CAP_SYS_TIME, 0, 0, 0, 0]),
             0
         );
         assert_eq!(prctl(&mut state, &[PR_CAPBSET_READ, 0, 0, 0, 0, 0]), 1);
 
+        let exec_capabilities = reduced & !(1_u64 << CAP_SYS_NICE);
+        assert_ne!(state.capability_permitted, state.capability_bounding);
         let child = state.try_clone_for_fork(2).unwrap();
-        assert_eq!(child.capability_bounding, reduced);
+        assert_eq!(child.capability_bounding, exec_capabilities);
         let mut after_exec = test_exec_replacement(&root.0, &state);
         after_exec.inherit_process_state(state);
-        assert_eq!(after_exec.capability_effective, reduced);
-        assert_eq!(after_exec.capability_permitted, reduced);
-        assert_eq!(after_exec.capability_bounding, reduced);
+        assert_eq!(after_exec.capability_effective, exec_capabilities);
+        assert_eq!(after_exec.capability_permitted, exec_capabilities);
+        assert_eq!(after_exec.capability_bounding, exec_capabilities);
         assert_eq!(after_exec.capability_ambient, 1);
+        assert_eq!(
+            after_exec
+                .task_lifecycle
+                .lock()
+                .unwrap()
+                .get(after_exec.tid)
+                .unwrap()
+                .capability_permitted,
+            exec_capabilities,
+        );
+    }
+
+    #[test]
+    fn capability_lifecycle_rejects_stale_generation_updates() {
+        const HEADER: u64 = 0x100;
+        const DATA: u64 = 0x200;
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let old_generation = executor.task_generation;
+        let replacement_permitted = GUEST_CAPABILITY_MASK & !(1_u64 << CAP_SYS_PTRACE);
+        {
+            let mut lifecycle = executor.state.task_lifecycle.lock().unwrap();
+            lifecycle.remove(executor.state.tid, old_generation);
+            let replacement_generation = lifecycle.register(
+                executor.state.tid,
+                executor.state.pid,
+                executor.state.pgid,
+                executor.state.dumpable,
+                replacement_permitted,
+            );
+            assert_ne!(replacement_generation, old_generation);
+        }
+        let mut header = [0; 8];
+        header[..4].copy_from_slice(&LINUX_CAPABILITY_VERSION_3.to_ne_bytes());
+        header[4..].copy_from_slice(&0_i32.to_ne_bytes());
+        memory.write(HEADER, &header).unwrap();
+        memory.write(DATA, &capability_data_bytes(0, 0, 0)).unwrap();
+        let error = executor
+            .execute_checked(
+                &SyscallRequest::new(libc::SYS_capset as u64, [HEADER, DATA, 0, 0, 0, 0]),
+                &memory,
+            )
+            .unwrap_err();
+        assert!(matches!(error, crate::Error::UnexpectedVcpuExit(message)
+            if message.contains("capset task generation")));
+        assert_eq!(executor.state.capability_permitted, GUEST_CAPABILITY_MASK);
+        let lifecycle = executor.state.task_lifecycle.lock().unwrap();
+        assert_eq!(
+            lifecycle
+                .get(executor.state.tid)
+                .unwrap()
+                .capability_permitted,
+            replacement_permitted,
+        );
+    }
+
+    #[test]
+    fn capability_lifecycle_adoption_registers_current_permitted_set() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let old_generation = current_task_generation(&state).unwrap();
+        let reduced = GUEST_CAPABILITY_MASK & !(1_u64 << 25);
+        state.capability_effective = reduced;
+        state.capability_permitted = reduced;
+        state
+            .task_lifecycle
+            .lock()
+            .unwrap()
+            .remove(state.tid, old_generation);
+
+        let executor = ElfExecutor::new(state, false);
+        let lifecycle = executor.state.task_lifecycle.lock().unwrap();
+        let adopted = lifecycle.get(executor.state.tid).unwrap();
+        assert_eq!(adopted.generation, executor.task_generation);
+        assert_eq!(adopted.capability_permitted, reduced);
     }
 
     #[test]

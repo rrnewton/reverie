@@ -246,6 +246,8 @@ pub(crate) struct TaskLifecycleState {
     pub pgid: i32,
     pub robust_list_head: u64,
     pub dumpable: bool,
+    /// Exact task-credential snapshot used by Linux commoncap ptrace checks.
+    pub capability_permitted: u64,
 }
 
 #[derive(Debug, Default)]
@@ -267,13 +269,26 @@ struct ProcessExitState {
 }
 
 impl TaskLifecycleTable {
-    pub(crate) fn with_root(tid: i32, tgid: i32, pgid: i32, dumpable: bool) -> Self {
+    pub(crate) fn with_root(
+        tid: i32,
+        tgid: i32,
+        pgid: i32,
+        dumpable: bool,
+        capability_permitted: u64,
+    ) -> Self {
         let mut table = Self::default();
-        table.register(tid, tgid, pgid, dumpable);
+        table.register(tid, tgid, pgid, dumpable, capability_permitted);
         table
     }
 
-    pub(crate) fn register(&mut self, tid: i32, tgid: i32, pgid: i32, dumpable: bool) -> u64 {
+    pub(crate) fn register(
+        &mut self,
+        tid: i32,
+        tgid: i32,
+        pgid: i32,
+        dumpable: bool,
+        capability_permitted: u64,
+    ) -> u64 {
         self.next_generation = self
             .next_generation
             .checked_add(1)
@@ -296,6 +311,7 @@ impl TaskLifecycleTable {
                 pgid,
                 robust_list_head: 0,
                 dumpable,
+                capability_permitted,
             },
         );
         // A reused numeric TID never inherits the old task's signal endpoint.
@@ -309,9 +325,10 @@ impl TaskLifecycleTable {
         tgid: i32,
         pgid: i32,
         dumpable: bool,
+        capability_permitted: u64,
         signals: &SharedThreadSignalState,
     ) -> u64 {
-        let generation = self.register(tid, tgid, pgid, dumpable);
+        let generation = self.register(tid, tgid, pgid, dumpable, capability_permitted);
         self.signal_targets.insert(tid, signals.downgrade());
         generation
     }
@@ -322,9 +339,10 @@ impl TaskLifecycleTable {
         tgid: i32,
         pgid: i32,
         dumpable: bool,
+        capability_permitted: u64,
         signals: &SharedThreadSignalState,
     ) -> u64 {
-        let generation = self.ensure_registered(tid, tgid, pgid, dumpable);
+        let generation = self.ensure_registered(tid, tgid, pgid, dumpable, capability_permitted);
         self.signal_targets.insert(tid, signals.downgrade());
         generation
     }
@@ -344,11 +362,12 @@ impl TaskLifecycleTable {
         tgid: i32,
         pgid: i32,
         dumpable: bool,
+        capability_permitted: u64,
     ) -> u64 {
         self.tasks
             .get(&tid)
             .map(|task| task.generation)
-            .unwrap_or_else(|| self.register(tid, tgid, pgid, dumpable))
+            .unwrap_or_else(|| self.register(tid, tgid, pgid, dumpable, capability_permitted))
     }
 
     pub(crate) fn remove(&mut self, tid: i32, generation: u64) {
@@ -436,7 +455,13 @@ impl TaskLifecycleTable {
         true
     }
 
-    pub(crate) fn reset_after_exec(&mut self, tid: i32, tgid: i32, pgid: i32) -> u64 {
+    pub(crate) fn reset_after_exec(
+        &mut self,
+        tid: i32,
+        tgid: i32,
+        pgid: i32,
+        capability_permitted: u64,
+    ) -> u64 {
         if let Some(task) = self.tasks.get_mut(&tid) {
             self.process_exits
                 .remove(&(task.tgid, task.process_generation));
@@ -444,9 +469,10 @@ impl TaskLifecycleTable {
             task.pgid = pgid;
             task.robust_list_head = 0;
             task.dumpable = true;
+            task.capability_permitted = capability_permitted;
             task.generation
         } else {
-            self.register(tid, tgid, pgid, true)
+            self.register(tid, tgid, pgid, true, capability_permitted)
         }
     }
 
@@ -455,9 +481,10 @@ impl TaskLifecycleTable {
         tid: i32,
         tgid: i32,
         pgid: i32,
+        capability_permitted: u64,
         signals: &SharedThreadSignalState,
     ) -> u64 {
-        let generation = self.reset_after_exec(tid, tgid, pgid);
+        let generation = self.reset_after_exec(tid, tgid, pgid, capability_permitted);
         self.signal_targets.insert(tid, signals.downgrade());
         generation
     }
@@ -524,6 +551,22 @@ impl TaskLifecycleTable {
             found = true;
         }
         found
+    }
+
+    pub(crate) fn set_capability_permitted(
+        &mut self,
+        tid: i32,
+        generation: u64,
+        capability_permitted: u64,
+    ) -> bool {
+        let Some(task) = self.tasks.get_mut(&tid) else {
+            return false;
+        };
+        if task.generation != generation {
+            return false;
+        }
+        task.capability_permitted = capability_permitted;
+        true
     }
 }
 
@@ -868,6 +911,13 @@ pub(crate) struct LoadedStaticElf {
     pub proc_mounts: std::sync::Arc<crate::proc_mounts::ProcMountSnapshot>,
     pub fdinfo_files:
         std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::FdinfoDescription>>,
+    /// Authenticated O_PATH anchors for the guest's synthetic `/proc/self/fd`
+    /// directory. Each description retains the exact opener task and file
+    /// table rather than resolving relative operations in the reader's table.
+    pub proc_fd_directories: std::collections::BTreeMap<
+        i32,
+        std::sync::Arc<crate::executor::ProcFdDirectoryDescription>,
+    >,
     pub fdinfo_table: std::sync::Weak<std::sync::Mutex<crate::executor::FileTableState>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Preserve deterministic file-object identity.
     // TODO-HUMAN-REVIEW(PR-136): Review descriptor identity and fork inheritance.
@@ -1021,6 +1071,7 @@ impl LoadedStaticElf {
             regular_create_directory_policy: self.regular_create_directory_policy,
             proc_mounts: self.proc_mounts.clone(),
             fdinfo_files: self.fdinfo_files.clone(),
+            proc_fd_directories: self.proc_fd_directories.clone(),
             fdinfo_table: self.fdinfo_table.clone(),
             fd_object_inodes: self.fd_object_inodes.clone(),
             file_identity_table: self.file_identity_table.clone(),
@@ -1108,6 +1159,11 @@ impl LoadedStaticElf {
             .into_iter()
             .filter(|(fd, _)| files.contains_key(fd))
             .collect();
+        let proc_fd_directories = previous
+            .proc_fd_directories
+            .into_iter()
+            .filter(|(fd, _)| files.contains_key(fd))
+            .collect();
         let fd_object_inodes: std::collections::BTreeMap<_, _> = previous
             .fd_object_inodes
             .into_iter()
@@ -1158,6 +1214,7 @@ impl LoadedStaticElf {
                 previous.tid,
                 previous.pid,
                 previous.pgid,
+                previous.capability_bounding,
                 &thread_signals,
             );
             (process_signals, thread_signals)
@@ -1213,6 +1270,7 @@ impl LoadedStaticElf {
         self.regular_create_directory_policy = regular_create_directory_policy;
         self.proc_mounts = previous.proc_mounts;
         self.fdinfo_files = fdinfo_files;
+        self.proc_fd_directories = proc_fd_directories;
         self.fdinfo_table = previous.fdinfo_table;
         self.fd_object_inodes = fd_object_inodes;
         self.file_identity_table = file_identity_table;
@@ -1636,7 +1694,11 @@ fn load_executable(
         thread_signals: SharedThreadSignalState::default(),
         signal_dequeue_failure: None,
         task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
-            1, 1, 1, true,
+            1,
+            1,
+            1,
+            true,
+            GUEST_CAPABILITY_MASK,
         ))),
         files: std::collections::BTreeMap::new(),
         file_retirement: FileRetirement::default(),
@@ -1655,6 +1717,7 @@ fn load_executable(
         regular_create_directory_policy: initialize_regular_create_directory_policy()?,
         proc_mounts: std::sync::Arc::new(crate::proc_mounts::ProcMountSnapshot::capture()?),
         fdinfo_files: std::collections::BTreeMap::new(),
+        proc_fd_directories: std::collections::BTreeMap::new(),
         fdinfo_table: std::sync::Weak::new(),
         fd_object_inodes: std::collections::BTreeMap::new(),
         file_identity_table: std::sync::Arc::new(std::sync::Mutex::new(GuestFileIdentityTable {

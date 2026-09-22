@@ -8276,6 +8276,137 @@ thread_pid=opener_tid opener_not_reader=1\n"
     assert_eq!(tool_repeat, tool);
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(kvm-proc-fd-link-aliases): Review guest-owned proc-fd link aliases.
+// This fixture establishes exact native/direct/Tool stdout, stderr, exit, and
+// repeat parity only. It does not claim L2/log parity or a complete procfs.
+#[test]
+fn proc_fd_link_aliases_run_on_kvm() {
+    if !kvm_available("KVM proc-fd link aliases") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "proc-fd-link-aliases",
+        r#"
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+static void print_link(const char *label, const char *path, size_t capacity) {
+  char buffer[128];
+  ssize_t count = readlink(path, buffer, capacity);
+  if (count < 0) {
+    perror(label);
+    exit(EXIT_FAILURE);
+  }
+  printf("%s=%.*s\n", label, (int)count, buffer);
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return EXIT_FAILURE;
+  const char *target = argv[1];
+  int target_fd = open(target, O_CREAT | O_RDWR | O_TRUNC, 0600);
+  if (target_fd < 0) {
+    perror("open target");
+    return EXIT_FAILURE;
+  }
+
+  char canonical_path[64];
+  char thread_self_path[64];
+  char numeric_path[64];
+  char dev_fd_path[64];
+  char lexical_path[64];
+  char fd_name[16];
+  int canonical_written = snprintf(canonical_path, sizeof(canonical_path),
+                                   "/proc/self/fd/%d", target_fd);
+  int thread_self_written =
+      snprintf(thread_self_path, sizeof(thread_self_path),
+               "/proc/thread-self/fd/%d", target_fd);
+  int numeric_written = snprintf(numeric_path, sizeof(numeric_path),
+                                 "/proc/%ld/fd/%d", (long)getpid(), target_fd);
+  int dev_fd_written =
+      snprintf(dev_fd_path, sizeof(dev_fd_path), "/dev/fd/%d", target_fd);
+  int lexical_written = snprintf(lexical_path, sizeof(lexical_path),
+                                 "/proc/self/fd/../fd/%d", target_fd);
+  int fd_name_written = snprintf(fd_name, sizeof(fd_name), "%d", target_fd);
+  if (canonical_written < 0 ||
+      (size_t)canonical_written >= sizeof(canonical_path) ||
+      thread_self_written < 0 ||
+      (size_t)thread_self_written >= sizeof(thread_self_path) ||
+      numeric_written < 0 || (size_t)numeric_written >= sizeof(numeric_path) ||
+      dev_fd_written < 0 || (size_t)dev_fd_written >= sizeof(dev_fd_path) ||
+      lexical_written < 0 || (size_t)lexical_written >= sizeof(lexical_path) ||
+      fd_name_written < 0 || (size_t)fd_name_written >= sizeof(fd_name)) {
+    return EXIT_FAILURE;
+  }
+
+  print_link("canonical", canonical_path, 128);
+  print_link("thread-self", thread_self_path, 128);
+  print_link("truncated", canonical_path, 10);
+  print_link("numeric", numeric_path, 128);
+  print_link("dev-fd", dev_fd_path, 128);
+  print_link("lexical", lexical_path, 128);
+
+  int directory = open("/proc/self/fd", O_PATH | O_DIRECTORY);
+  if (directory < 0) {
+    perror("open proc fd directory");
+    return EXIT_FAILURE;
+  }
+  char buffer[128];
+  ssize_t count = readlinkat(directory, fd_name, buffer, sizeof(buffer));
+  if (count < 0) {
+    perror("readlinkat");
+    return EXIT_FAILURE;
+  }
+  printf("readlinkat=%.*s\n", (int)count, buffer);
+  int result = close(directory) | close(target_fd) | unlink(target);
+  return result == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+"#,
+    );
+    let target = directory.0.join("proc-fd-link-aliases-target");
+    let target = target.to_str().unwrap();
+    let truncated = std::str::from_utf8(&target.as_bytes()[..target.len().min(10)]).unwrap();
+    let expected = format!(
+        "canonical={target}\n\
+thread-self={target}\n\
+truncated={truncated}\n\
+numeric={target}\n\
+dev-fd={target}\n\
+lexical={target}\n\
+readlinkat={target}\n"
+    )
+    .into_bytes();
+
+    let native = std::process::Command::new(&executable)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert_eq!(native.stdout, expected);
+    assert!(native.stderr.is_empty(), "native: {native:?}");
+
+    let executable = executable.to_str().unwrap();
+    let direct = run_host_program_captured(executable, &[executable, target], &directory.0);
+    let direct_repeat = run_host_program_captured(executable, &[executable, target], &directory.0);
+    assert_eq!(direct, (expected.to_vec(), Vec::new()));
+    assert_eq!(direct_repeat, direct);
+
+    let tool = run_host_program_with_tool_captured(executable, &[executable, target], &directory.0);
+    let tool_repeat =
+        run_host_program_with_tool_captured(executable, &[executable, target], &directory.0);
+    assert_eq!(tool, (expected.to_vec(), Vec::new()));
+    assert_eq!(tool, direct);
+    assert_eq!(tool_repeat, tool);
+}
+
 #[test]
 fn kvm_direct_and_tool_match_prctl_identity_cell() {
     let directory = TestDirectory::new();
@@ -10482,6 +10613,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
     for test in [
         "native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes",
         "kvm_thread_self_procfs_binds_opener_identity_across_handoff",
+        "proc_fd_link_aliases_run_on_kvm",
         "kvm_direct_and_tool_match_prctl_identity_cell",
         "kvm_direct_and_tool_match_thp_disable_cell",
     ] {

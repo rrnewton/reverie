@@ -211,6 +211,7 @@ fn signal_dequeue_reused_task_refuses_before_all_three_removals() {
                 executor.state.pid,
                 executor.state.pgid,
                 true,
+                executor.state.capability_permitted,
             );
             assert_ne!(generation, original.task_generation);
         }
@@ -348,8 +349,13 @@ fn parked_handles_reject_equal_ordinals_across_fork_and_stale_callbacks() {
     {
         let mut lifecycle = parent.state.task_lifecycle.lock().unwrap();
         lifecycle.remove(parent.state.tid, parent.task_generation);
-        let replacement =
-            lifecycle.register(parent.state.tid, parent.state.pid, parent.state.pgid, true);
+        let replacement = lifecycle.register(
+            parent.state.tid,
+            parent.state.pid,
+            parent.state.pgid,
+            true,
+            parent.state.capability_permitted,
+        );
         assert_ne!(replacement, parent.task_generation);
     }
     assert!(

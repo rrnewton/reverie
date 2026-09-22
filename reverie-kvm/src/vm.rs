@@ -1610,6 +1610,7 @@ impl KvmBackend {
                 pid,
                 pid,
                 loaded.dumpable,
+                loaded.capability_permitted,
             )));
         }
         Ok(())
@@ -1721,6 +1722,7 @@ impl KvmBackend {
             self.root_pid,
             self.root_pid,
             loaded.dumpable,
+            loaded.capability_permitted,
         )));
         loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
         configure_long_mode(

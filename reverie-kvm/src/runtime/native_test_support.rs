@@ -194,6 +194,7 @@ where
             pid.as_raw(),
             pid.as_raw(),
             true,
+            state.capability_permitted,
         )));
         Self::from_executor(
             ElfExecutor::with_output(state, None),

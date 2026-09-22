@@ -2083,12 +2083,13 @@ mod tests {
         );
         executor.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
         // Numeric reuse in the same lifecycle cannot revive the old generation.
-        executor
-            .state
-            .task_lifecycle
-            .lock()
-            .unwrap()
-            .register(1, 1, 1, true);
+        executor.state.task_lifecycle.lock().unwrap().register(
+            1,
+            1,
+            1,
+            true,
+            executor.state.capability_permitted,
+        );
         assert_eq!(
             control.publish_alarm(id, alarm(id)),
             ProcessPublication::Rejected(PublicationRejection::StaleProcess)

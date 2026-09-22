@@ -411,6 +411,7 @@ fn process_alarm_signal_receiver_lifetime_and_process_actions_refuse_before_muta
                     executor.state.pid,
                     executor.state.pgid,
                     true,
+                    executor.state.capability_permitted,
                 );
                 (Invalid, Errno::ESRCH)
             }
