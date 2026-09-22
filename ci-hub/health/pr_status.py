@@ -2504,7 +2504,8 @@ def render_report(statuses: Sequence[RepoStatus], warn_threshold: int, engine: s
             lines.append(
                 "    Review protocol source: canonical issue comments, inline review "
                 "comments, native reviews, and current GitHub actor permission from "
-                "the shared review authority; reporting only, not merge admission."
+                "the shared review authority; public-only reporting, not merge admission. "
+                "Explicit local review packets are not discovered by this view."
             )
             lines.append(
                 "    Review protocol: "

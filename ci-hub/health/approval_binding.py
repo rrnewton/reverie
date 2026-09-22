@@ -75,10 +75,12 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
 import subprocess
+import stat
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -1239,6 +1241,218 @@ def comment_database_id(record: dict[str, Any]) -> "str | None":
 
 class ReviewRecordError(ValueError):
     """A review record cannot support an authority or chronology decision."""
+
+
+LOCAL_REVIEW_TRIGGERS = frozenset(
+    {"new-syscall", "reverie-core-api", "new-determinization", "detcore-scheduling"}
+)
+
+
+def _closed_local_object(value: object, keys: set[str], context: str) -> dict:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ReviewRecordError(f"{context}: missing or unexpected fields")
+    return value
+
+
+def _local_json(raw: bytes, context: str) -> object:
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ReviewRecordError(f"{context}: duplicate field {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(raw, object_pairs_hook=unique)
+    except (UnicodeError, ValueError) as error:
+        raise ReviewRecordError(f"{context}: invalid JSON: {error}") from error
+
+
+def _local_file_bytes(path: Path, context: str) -> bytes:
+    """Never block on a FIFO or interpret a directory/device as review evidence."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as source:
+            before = os.fstat(source.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise ReviewRecordError(f"{context}: not a regular retained file")
+            raw = source.read(before.st_size + 1)
+            after = os.fstat(source.fileno())
+        if (
+            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or len(raw) != before.st_size
+        ):
+            raise ReviewRecordError(f"{context}: retained bytes changed during read")
+    except OSError as error:
+        raise ReviewRecordError(f"{context}: cannot read retained evidence: {error}") from error
+    return raw
+
+
+def _local_artifact(value: object, root: Path, context: str) -> tuple[dict, bytes]:
+    """Read a retained local artifact; a hash binds bytes, never authorship."""
+    ref = _closed_local_object(value, {"path", "bytes", "sha256"}, context)
+    name, size, digest = ref["path"], ref["bytes"], ref["sha256"]
+    if (
+        not isinstance(name, str) or not name or "\0" in name
+        or type(size) is not int or size < 0
+        or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+    ):
+        raise ReviewRecordError(f"{context}: invalid artifact reference")
+    path = Path(name)
+    path = path if path.is_absolute() else root / path
+    raw = _local_file_bytes(path, context)
+    if len(raw) != size or hashlib.sha256(raw).hexdigest() != digest:
+        raise ReviewRecordError(f"{context}: declared size or digest disagrees")
+    return {**ref, "path": str(path.resolve())}, raw
+
+
+def authenticate_local_attestor(repo: str, read_json: Callable[[str], object]) -> dict:
+    """Authenticate the executing relay actor now, not a claimed packet author."""
+    user = read_json("user")
+    login = user.get("login") if isinstance(user, dict) else None
+    if not isinstance(login, str) or not login.strip():
+        raise ReviewRecordError("local review: authenticated GitHub actor unavailable")
+    login = login.casefold()
+    permission = read_json(f"repos/{repo}/collaborators/{login}/permission")
+    if not isinstance(permission, dict):
+        raise ReviewRecordError("local review: actor permission unavailable")
+    actor = permission.get("user")
+    if not isinstance(actor, dict) or str(actor.get("login", "")).casefold() != login:
+        raise ReviewRecordError("local review: permission actor does not match authenticated actor")
+    roles = {
+        value.casefold() for value in (permission.get("permission"), permission.get("role_name"))
+        if isinstance(value, str) and value
+    }
+    if not roles & AUTHORIZED_REVIEW_PERMISSIONS:
+        raise ReviewRecordError("local review: authenticated actor lacks current review permission")
+    return {"login": login, "permission": "/".join(sorted(roles)),
+            "authentication": "live-gh-user-and-repository-permission"}
+
+
+def local_review_attestation(
+    packet_path: Path,
+    *,
+    repo: str,
+    pr: int,
+    head: str,
+    source_identity: Callable[[str, str], dict],
+    read_json: Callable[[str], object],
+    critical_required: bool,
+    labels: Sequence[str],
+) -> dict:
+    """Verify an ordinary local review relayed by the currently authenticated actor.
+
+    This is deliberately NOT a GitHub review record. The actor attests to the
+    independent review/provenance it inspected, as when posting another worker's
+    report. Unsigned native results and collaboration captures are not signatures.
+    Public objections must be evaluated separately and cannot be retired here.
+    """
+    if critical_required or POST_FACTO_LABEL in labels:
+        raise ReviewRecordError("local review is unavailable for core/post-facto review")
+    packet_bytes = _local_file_bytes(packet_path, "local review packet")
+    packet = _closed_local_object(
+        _local_json(packet_bytes, "local review packet"),
+        {"schema", "repository", "pr", "head", "base", "tree", "diff_sha256",
+         "family", "report", "completion", "provenance", "triggers"},
+        "local review packet",
+    )
+    if type(packet["schema"]) is not int or packet["schema"] != 1:
+        raise ReviewRecordError("local review: unsupported packet schema")
+    if (packet["repository"] != repo or type(packet["pr"]) is not int
+            or packet["pr"] != pr or packet["head"] != head):
+        raise ReviewRecordError("local review: repository/PR/exact head mismatch")
+    for key in ("base", "head", "tree"):
+        if not isinstance(packet[key], str) or re.fullmatch(r"[0-9a-f]{40}", packet[key]) is None:
+            raise ReviewRecordError(f"local review: {key} must be a full object ID")
+    if packet["family"] not in LANES:
+        raise ReviewRecordError("local review: unknown review family")
+    # The fixed reviewed base is not the moving target-branch tip.
+    try:
+        actual = source_identity(packet["base"], head)
+    except (ValueError, OSError) as error:
+        raise ReviewRecordError(f"local review: cannot verify reviewed source: {error}") from error
+    if any(actual.get(key) != packet[key] for key in ("base", "head", "tree", "diff_sha256")):
+        raise ReviewRecordError("local review: complete reviewed source/diff identity disagrees")
+    triggers = _closed_local_object(packet["triggers"], set(LOCAL_REVIEW_TRIGGERS), "local triggers")
+    for name, assessment in triggers.items():
+        _closed_local_object(assessment, {"applies", "reason"}, f"trigger {name}")
+        if assessment["applies"] is not False or not isinstance(assessment["reason"], str) or not assessment["reason"].strip():
+            raise ReviewRecordError(f"local review: triggered or unassessed class {name}")
+    root = packet_path.resolve().parent
+    report_ref, report_raw = _local_artifact(packet["report"], root, "review report")
+    try:
+        report = report_raw.decode("utf-8")
+    except UnicodeError as error:
+        raise ReviewRecordError("local review report is not UTF-8") from error
+    assertions = [line for line in marker_lines(report) if marker_assertion(line)]
+    expected = (MARKER_APPROVED, packet["family"], head)
+    if len(assertions) != 1 or parse_marker(assertions[0]) != expected:
+        raise ReviewRecordError("local report must contain exactly one canonical exact-head approval")
+    completion_ref, completion_raw = _local_artifact(packet["completion"], root, "review completion")
+    completion = _closed_local_object(
+        _local_json(completion_raw, "review completion"),
+        {"schema", "reviewer", "implementor", "head", "base", "tree", "diff_sha256",
+         "report_sha256", "triggers_sha256", "verdict", "completed_at", "open_findings"}, "review completion",
+    )
+    if type(completion["schema"]) is not int or completion["schema"] != 1:
+        raise ReviewRecordError("local review: unsupported completion schema")
+    if (any(completion[key] != packet[key] for key in ("head", "base", "tree", "diff_sha256"))
+            or completion["report_sha256"] != report_ref["sha256"]
+            or completion["triggers_sha256"] != hashlib.sha256(json.dumps(triggers, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            or completion["verdict"] != "approve" or completion["open_findings"] != []):
+        raise ReviewRecordError("local review: completion/source/report or open findings disagree")
+    reviewer, implementor = completion["reviewer"], completion["implementor"]
+    if (not isinstance(reviewer, str) or not reviewer.strip()
+            or not isinstance(implementor, str) or not implementor.strip() or reviewer == implementor):
+        raise ReviewRecordError("local review requires genuine technical independence")
+    try:
+        completed_at = datetime.datetime.fromisoformat(completion["completed_at"].replace("Z", "+00:00"))
+        if completed_at.utcoffset() is None:
+            raise ValueError("timezone required")
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ReviewRecordError("local review: invalid completion time") from error
+    provenance = _closed_local_object(packet["provenance"], {"kind", "evidence"}, "review provenance")
+    evidence_ref, evidence_raw = _local_artifact(provenance["evidence"], root, "provider evidence")
+    provider = _local_json(evidence_raw, "provider evidence")
+    if provenance["kind"] == "native-result":
+        if (not isinstance(provider, dict) or provider.get("type") != "result"
+                or provider.get("subtype") != "success" or provider.get("is_error") is not False
+                or not isinstance(provider.get("session_id"), str) or not provider["session_id"]
+                or type(provider.get("num_turns")) is not int or provider["num_turns"] <= 0
+                or not isinstance(provider.get("modelUsage"), dict) or not provider["modelUsage"]
+                or provider.get("result") != report):
+            raise ReviewRecordError("local review: native terminal result does not bind literal report")
+        provider_identity = {"session_id": provider["session_id"], "models": sorted(provider["modelUsage"])}
+    elif provenance["kind"] == "attestor-observed-collaboration":
+        # This capture is a publisher's witnessed relay, not a fabricated signed
+        # harness export. Its limitations remain visible in the admission receipt.
+        _closed_local_object(provider, {"reviewer", "message", "observed_at"}, "collaboration capture")
+        message = provider["message"]
+        if (provider["reviewer"] != reviewer or not isinstance(message, str)
+                or head not in message or report_ref["sha256"] not in message
+                or completion_ref["sha256"] not in message):
+            raise ReviewRecordError("local review: observed independent completion binding is missing")
+        if not isinstance(provider["observed_at"], str) or not provider["observed_at"].strip():
+            raise ReviewRecordError("local review: collaboration observation time is missing")
+        provider_identity = {"reviewer": reviewer, "observed_at": provider["observed_at"]}
+    else:
+        raise ReviewRecordError("local review: unsupported provider evidence format")
+    actor = authenticate_local_attestor(repo, read_json)
+    return {
+        "schema": 1, "origin": "local-authenticated-relay", "repository": repo, "pr": pr,
+        "head": head, "base": packet["base"], "tree": packet["tree"],
+        "diff_sha256": packet["diff_sha256"], "lane": packet["family"], "state": BOUND_CURRENT,
+        "attestor": actor, "technical_reviewer": reviewer, "implementor": implementor,
+        "reviewer_identifiers_are_attestor_metadata": True,
+        "packet_path": str(packet_path.resolve()), "packet_sha256": hashlib.sha256(packet_bytes).hexdigest(),
+        "report": report_ref, "completion": completion_ref, "provenance": evidence_ref,
+        "provenance_kind": provenance["kind"], "provider_identity": provider_identity,
+        "provider_files_authenticated": False, "public_record": False,
+        "attested_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "triggers": triggers,
+    }
 
 
 AUTHORIZED_REVIEW_PERMISSIONS = frozenset({"admin", "maintain", "write", "triage"})

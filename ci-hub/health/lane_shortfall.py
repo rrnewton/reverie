@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Report open heads needing a review lane, from markers rather than labels.
+"""Report public review lanes, from markers rather than labels.
+
+This is a public-only inventory, not merge admission. Explicit retained local
+packets accepted by gh-merge-verified are not discovered here; zero public lanes
+does not establish that no independent local review exists.
 
 An ordinary change is complete with either valid lane. A critical attestation
 requires both lanes; only those one-lane heads are reported as one lane short.

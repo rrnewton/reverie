@@ -115,6 +115,7 @@ USAGE
     ci-hub/bin/gh-merge-verified <pr-number> [--repo owner/name] [--verify-only]
                                  [--run-current-main-copy]
                                  [--expect-head <sha>]
+                                 [--local-review <retained-packet.json> --receipt <new-output.json>]
                                  [-- extra `gh pr merge` args...]
 
     # merge, then prove it landed
@@ -150,6 +151,9 @@ EXIT
        head moves. This direct merge path cannot prove a mechanical rebase, so
        both lanes must bind the current head. Labels are reconciliation caches and
        cannot add, remove, or satisfy a required lane. Nothing was attempted.
+       An explicit local review is accepted only for ordinary source, through a
+       currently authenticated relay actor, with complete public objection reads.
+       It cannot replace core/post-facto reviews or publish held report bytes.
     7  REFUSED TO MERGE: this tool cannot prove it is the version on dev-hermit main,
        so its own admission checks may be ABSENT from the copy being run. A stale
        lander does not fail -- it SKIPS the checks and reports a clean landing, which
@@ -211,6 +215,7 @@ request for its own stale checkout.
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
 import re
 import pathlib
@@ -338,6 +343,10 @@ def write_receipt(path, record: dict) -> None:
                 "  This is NOT a statement about whether the change landed.")
     if not path:
         return
+    if "local_review_admission" in record:
+        durable_new_receipt(pathlib.Path(path), record)
+        print(f"gh-merge-verified: local landing receipt written to {path}")
+        return
     try:
         with open(path, "w") as fh:
             json.dump(record, fh, indent=2, sort_keys=True)
@@ -346,6 +355,60 @@ def write_receipt(path, record: dict) -> None:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot write receipt {path}: {exc}",
             "  This is NOT a statement about whether the change landed.")
     print(f"gh-merge-verified: receipt written to {path}")
+
+
+def durable_new_receipt(path: pathlib.Path, record: dict) -> str:
+    """Preserve a new admission/terminal record, including directory durability."""
+    data = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        if path.read_bytes() != data:
+            raise OSError("receipt readback disagrees")
+    except OSError as error:
+        die(4, f"gh-merge-verified: cannot durably retain new receipt {path}: {error}",
+            "  No receipt is overwritten. A premerge admission alone is not a landing result.")
+    return hashlib.sha256(data).hexdigest()
+
+
+def reviewed_source_identity(base: str, head: str) -> dict:
+    """Bind the complete reviewed diff, independent of a moving main tip."""
+    rc, _, _ = run(["git", "--no-replace-objects", "merge-base", "--is-ancestor", base, head])
+    if rc != 0:
+        raise ValueError("local review: reviewed base is not an ancestor of head")
+    rc, tree, _ = run(["git", "--no-replace-objects", "rev-parse", f"{head}^{{tree}}"])
+    if rc != 0:
+        raise ValueError("local review: cannot read source tree")
+    result = subprocess.run(["git", "--no-replace-objects", "diff", "--no-ext-diff", "--no-textconv",
+                             "--no-renames", "--full-index", "--binary", base, head, "--"], capture_output=True)
+    if result.returncode != 0:
+        raise ValueError("local review: cannot read full reviewed diff")
+    diff = result.stdout
+    if not diff:
+        raise ValueError("local review: reviewed change is empty")
+    return {"base": base, "head": head, "tree": tree.strip(),
+            "diff_sha256": hashlib.sha256(diff).hexdigest()}
+
+
+def recheck_local_review(attestation: dict) -> None:
+    """Do not admit bytes changed after the authenticated relay read."""
+    grammar = _load_grammar()
+    packet = pathlib.Path(attestation["packet_path"])
+    try:
+        if hashlib.sha256(grammar._local_file_bytes(packet, "packet")).hexdigest() != attestation["packet_sha256"]:
+            raise grammar.ReviewRecordError("local review packet changed before merge")
+        for name in ("report", "completion", "provenance"):
+            grammar._local_artifact(attestation[name], packet.parent, name)
+    except (OSError, grammar.ReviewRecordError) as error:
+        die(6, f"gh-merge-verified: local review changed or became unavailable: {error}")
 
 
 def die(code: int, *lines: str) -> None:
@@ -879,21 +942,26 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     return problems
 
 def review_admission_problems(pr: str, repo: str, head: str) -> list[str]:
+    """Public-only compatibility interface for existing callers."""
+    return review_admission(pr, repo, head)[0]
+
+
+def review_admission(pr: str, repo: str, head: str, local_path=None) -> tuple[list[str], dict | None]:
     """Missing canonical exact-head review evidence for the configured set.
 
     An ordinary change requires one review lane. Any canonical critical-class
-    attestation requires both existing lanes. Canonical comment artifacts and
-    current GitHub actor permission are authority; passed-review labels are
-    cache state and are deliberately absent from this decision.
+    attestation requires both existing public lanes. Ordinary local input uses
+    the same current GitHub relay permission with retained independent review;
+    it cannot retire a public objection. Passed-review labels remain caches.
     """
     grammar = _load_grammar()
     fetched = _github_review_records(pr, repo, grammar)
     if fetched is None:
-        return ["__UNREADABLE__"]
+        return ["__UNREADABLE__"], None
     try:
         comments = grammar.canonical_review_records(fetched)
     except grammar.ReviewRecordError:
-        return ["__UNREADABLE__"]
+        return ["__UNREADABLE__"], None
     lane_rows: list[dict[str, object]] = []
     for lane in grammar.LANES:
         malformed: list[tuple[str, str]] = []
@@ -908,7 +976,7 @@ def review_admission_problems(pr: str, repo: str, head: str) -> list[str]:
             current_head=head,
         )
         if malformed:
-            return ["__UNREADABLE__"]
+            return ["__UNREADABLE__"], None
         state = grammar.classify_approval(
             head,
             shas,
@@ -927,13 +995,44 @@ def review_admission_problems(pr: str, repo: str, head: str) -> list[str]:
         return [
             f"unresolved review objection in {row['lane']}"
             for row in policy["objection_rows"]
-        ]
+        ], None
+    local = None
+    if local_path is not None:
+        def read_json(path):
+            rc, output, _ = run(gh_argv(["gh", "api", path]))
+            if rc != 0:
+                raise grammar.ReviewRecordError(f"local review: current GitHub read failed: {path}")
+            try:
+                return json.loads(output)
+            except json.JSONDecodeError as error:
+                raise grammar.ReviewRecordError("local review: malformed current GitHub reply") from error
+        try:
+            current_pr = read_json(f"repos/{repo}/pulls/{pr}")
+            if (current_pr.get("head", {}).get("sha") != head
+                    or current_pr.get("base", {}).get("repo", {}).get("full_name") != repo
+                    or current_pr.get("state") != "open"):
+                raise grammar.ReviewRecordError("local review: live PR target/head/state mismatch")
+            labels = current_pr["labels"]
+            if not isinstance(labels, list) or any(not isinstance(item, dict) or not isinstance(item.get("name"), str) for item in labels):
+                raise grammar.ReviewRecordError("local review: current PR labels unreadable")
+            local = grammar.local_review_attestation(
+                pathlib.Path(local_path), repo=repo, pr=int(pr), head=head,
+                source_identity=reviewed_source_identity, read_json=read_json,
+                critical_required=critical, labels=[item["name"] for item in labels],
+            )
+            # Record real public observations separately; never forge a comment
+            # actor, ID, version, or retirement for this local approval.
+            local["public_review_records"] = fetched
+            lane_rows.append({"lane": local["lane"], "state": local["state"]})
+            policy = grammar.review_lane_policy(lane_rows, critical)
+        except (grammar.ReviewRecordError, KeyError, TypeError, AttributeError) as error:
+            return [str(error)], None
     if critical:
         missing = list(policy["missing_lanes"])
-        return [f"missing exact-head {lane} approval" for lane in missing]
+        return [f"missing exact-head {lane} approval" for lane in missing], None
     if not policy["satisfied"]:
-        return ["required approval set missing: no canonical exact-head review approval"]
-    return []
+        return ["required approval set missing: no canonical exact-head review approval"], None
+    return [], local
 
 
 def parse_options(argv: list[str]):
@@ -960,6 +1059,7 @@ def parse_options(argv: list[str]):
     use_current_main_copy = False
     expect_head = None
     receipt_path = None
+    local_review_path = None
     extra: list[str] = []
     i = 1
     while i < len(argv):
@@ -980,13 +1080,17 @@ def parse_options(argv: list[str]):
             if i + 1 >= len(argv):
                 raise ValueError("--receipt needs an output path; run --help for an example")
             receipt_path, i = argv[i + 1], i + 2
+        elif arg == "--local-review":
+            if i + 1 >= len(argv) or local_review_path is not None:
+                raise ValueError("--local-review requires exactly one retained packet path")
+            local_review_path, i = argv[i + 1], i + 2
         elif arg == "--":
             extra.extend(argv[i + 1 :])
             i = len(argv)
         else:
             extra.append(arg)
             i += 1
-    return repo, verify_only, use_current_main_copy, expect_head, receipt_path, extra
+    return repo, verify_only, use_current_main_copy, expect_head, receipt_path, local_review_path, extra
 
 
 def main() -> None:
@@ -1026,10 +1130,30 @@ def main() -> None:
             use_current_main_copy,
             expect_head,
             receipt_path,
+            local_review_path,
             extra,
         ) = parse_options(argv)
     except ValueError as error:
         die(1, f"gh-merge-verified: {error}")
+
+    local_admission = None
+    if local_review_path is not None:
+        if verify_only or not receipt_path or re.fullmatch(r"[0-9a-f]{40}", expect_head or "") is None:
+            die(1, "gh-merge-verified: --local-review requires a full --expect-head and new --receipt, in normal merge mode")
+        if any(arg.split("=", 1)[0] in {"--admin", "--auto"} for arg in extra):
+            die(1, "gh-merge-verified: local review does not authorize admin bypass or deferred auto-merge")
+        matches = [arg.split("=", 1)[1] for arg in extra if arg.startswith("--match-head-commit=")]
+        for position, arg in enumerate(extra):
+            if arg == "--match-head-commit":
+                if position + 1 == len(extra):
+                    die(1, "gh-merge-verified: --match-head-commit requires the reviewed head")
+                matches.append(extra[position + 1])
+        if matches and matches != [expect_head]:
+            die(1, "gh-merge-verified: local review and --match-head-commit disagree")
+        if not matches:
+            extra.extend(["--match-head-commit", expect_head])
+        if pathlib.Path(receipt_path).exists() or pathlib.Path(receipt_path + ".admission.json").exists():
+            die(1, "gh-merge-verified: local receipt paths already exist; preserve them and choose a new receipt")
 
     if use_current_main_copy and verify_only:
         die(
@@ -1161,7 +1285,7 @@ def main() -> None:
                 "  There is deliberately no override flag.",
                 "  FALSE POSITIVE? The match is anchored to column 0, so an unindented quotation",
                 "  of a marker re-asserts it. Indent quoted markers by one space.")
-        review_problems = review_admission_problems(pr, repo, head)
+        review_problems, local_admission = review_admission(pr, repo, head, local_review_path)
         if review_problems == ["__UNREADABLE__"]:
             die(8, "gh-merge-verified: ADMISSION COULD NOT RUN -- could not read canonical "
                    f"review evidence for #{pr}.",
@@ -1172,7 +1296,9 @@ def main() -> None:
                 *[f"    {problem}" for problem in review_problems],
                 "",
                 "  Labels are caches and cannot satisfy this requirement.",
-                "  TO PROCEED: obtain the missing canonical exact-head approval comment(s):",
+                "  TO PROCEED: repair the explicitly supplied local packet, or obtain the missing"
+                if local_review_path else "  TO PROCEED: obtain the missing canonical exact-head approval comment(s):",
+                "  canonical exact-head public approval(s):" if local_review_path else "",
                 f"  APPROVED-AT: <lane> {head}",
                 "  ⚠️ A MISSING LANE TOKEN READS AS MALFORMED, NOT AS AN APPROVAL: write",
                 "  'APPROVED-AT: claude <sha>', not 'APPROVED-AT <sha>'. That one-token typo is",
@@ -1216,6 +1342,24 @@ def main() -> None:
                 main_before = mb.strip()
 
     if not verify_only:
+        if local_admission is not None:
+            # The fixed reviewed base may lag main, but must belong to main's
+            # history. A feature-only base would hide earlier PR changes.
+            base_status = None
+            if main_before is not None:
+                base_status, _, _ = run(["git", "--no-replace-objects", "merge-base", "--is-ancestor",
+                                         local_admission["base"], main_before])
+            if base_status != 0:
+                die(6, "gh-merge-verified: local reviewed base is not proven in fresh main history; refusing incomplete source review")
+            recheck_local_review(local_admission)
+            admission_path = pathlib.Path(receipt_path + ".admission.json")
+            admission_hash = durable_new_receipt(admission_path, {
+                "phase": "premerge-admission", "merge_performed": False,
+                "review": local_admission, "main_before": main_before,
+                "helper_sha256": hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
+                "policy_sha256": hashlib.sha256(pathlib.Path(_load_grammar().__file__).read_bytes()).hexdigest(),
+            })
+            resolution["local_review_admission"] = {"path": str(admission_path.resolve()), "sha256": admission_hash}
         # NO PIPE: the status read here is `gh pr merge`'s own.
         rc, out, err = run(gh_argv(["gh", "pr", "merge", pr, "--repo", repo, *extra]))
         sys.stdout.write(out)

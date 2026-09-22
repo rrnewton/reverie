@@ -30,6 +30,7 @@ Exits 0 when every case matches its expectation, 1 otherwise.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -995,18 +996,18 @@ def argv_cases() -> None:
         ("owned flag after the gh flags",
          ["7", "--repo", "r/h", "--squash", "--expect-head", "ABC"], "ABC", ["--squash"]),
     ]:
-        _repo, _vo, _cm, got_head, _rc, got_extra = tool.parse_options(argv)
+        _repo, _vo, _cm, got_head, _rc, _local, got_extra = tool.parse_options(argv)
         check(f"position does not matter: {label}",
               got_head == want_head and got_extra == want_extra,
               f"expect_head={got_head!r} extra={got_extra!r}; wanted {want_head!r} / {want_extra!r}")
 
-    _r, _v, _cm, head, _rc, extra = tool.parse_options(
+    _r, _v, _cm, head, _rc, _local, extra = tool.parse_options(
         ["7", "--repo", "r/h", "--expct-head", "ABC", "--", "--squash"])
     check("a misspelled flag before `--` is FORWARDED, never silently dropped",
           "--expct-head" in extra and "ABC" in extra and head is None,
           f"the typo vanished instead of reaching gh: extra={extra!r}")
 
-    _r, _v, current_main, _head, _rc, extra = tool.parse_options(
+    _r, _v, current_main, _head, _rc, _local, extra = tool.parse_options(
         ["7", "--squash", "--run-current-main-copy"]
     )
     check(
@@ -1014,7 +1015,7 @@ def argv_cases() -> None:
         current_main and "--run-current-main-copy" not in extra,
         f"current_main={current_main!r} extra={extra!r}",
     )
-    _r, _v, current_main, _head, _rc, extra = tool.parse_options(
+    _r, _v, current_main, _head, _rc, _local, extra = tool.parse_options(
         ["7", "--", "--run-current-main-copy"]
     )
     check(
@@ -1162,6 +1163,172 @@ def reviewer_name_metadata_cases() -> None:
                   f"got exit {code}, expected {expect_code}\n{out}")
 
 
+def local_review_cases() -> None:
+    """Drive the real helper through local admission and squash verification.
+
+    The provider, authenticated actor and GitHub API are explicitly synthetic;
+    Git source identities, packet bytes, receipts and landing effects are real.
+    No public comment is created, and every refusal must avoid the merge call.
+    """
+    cases = (
+        ("accepted", 0), ("wrong-head", 6), ("changed-report", 6),
+        ("admin-equals", 1), ("auto-equals", 1), ("feature-only-base", 6),
+        ("unprivileged", 6), ("missing-provenance", 6),
+        ("core-label", 6), ("sticky-critical", 6),
+        ("newer-refusal", 5), ("stale-refusal", 5),
+        ("unreadable-public", 8), ("malformed-public", 5),
+    )
+    for scenario, expected in cases:
+        with tempfile.TemporaryDirectory(prefix="gh-local-review-test-") as tmp:
+            root = Path(tmp)
+            origin, work = build_fixture(root, "absent")
+            head = git_output(origin, "rev-parse", "feature")
+            base = git_output(origin, "rev-parse", "main")
+            if scenario == "feature-only-base":
+                # An otherwise valid exact packet for only the final feature
+                # commit must not hide the earlier tracked.txt PR change.
+                base = head
+                git(origin, "checkout", "--quiet", "feature")
+                (origin / "later.txt").write_text("only the final feature change\n")
+                git(origin, "add", "later.txt")
+                git(origin, "commit", "--quiet", "-m", "later feature change")
+                head = git_output(origin, "rev-parse", "feature")
+                git(origin, "update-ref", "refs/pull/1/head", head)
+                git(origin, "checkout", "--quiet", "main")
+            tree = git_output(origin, "rev-parse", "feature^{tree}")
+            diff = subprocess.run(
+                ["git", "--no-replace-objects", "diff", "--no-ext-diff", "--no-textconv",
+                 "--no-renames", "--full-index", "--binary", base, head, "--"],
+                cwd=origin, capture_output=True, check=True,
+            ).stdout
+            # Main advances independently after the immutable reviewed base.
+            (origin / "unrelated.txt").write_text("current main is preserved\n")
+            git(origin, "add", "unrelated.txt")
+            git(origin, "commit", "--quiet", "-m", "unrelated main advance")
+            before = git_output(origin, "rev-parse", "main")
+            (origin / "tracked.txt").write_text("branch content\n")
+            git(origin, "commit", "--quiet", "-am", "squash landing")
+            landed = git_output(origin, "rev-parse", "main")
+            git(origin, "update-ref", "refs/heads/main", before)
+
+            def artifact(name, value):
+                raw = (value if isinstance(value, str) else json.dumps(value) + "\n").encode()
+                path = root / name
+                path.write_bytes(raw)
+                return {"path": str(path), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+
+            report = artifact("review.md", f"[fixture worker, role=reviewer]\nAPPROVED-AT: codex {head}\nIndependent fixture review.\n")
+            triggers = {name: {"applies": False, "reason": "Synthetic text-file change only."} for name in (
+                "new-syscall", "reverie-core-api", "new-determinization", "detcore-scheduling",
+            )}
+            identity = {"head": head, "base": base, "tree": tree, "diff_sha256": hashlib.sha256(diff).hexdigest()}
+            completion = artifact("completion.json", {
+                "schema": 1, **identity, "reviewer": "fixture-review-worker", "implementor": "fixture-author-worker",
+                "report_sha256": report["sha256"], "verdict": "approve", "open_findings": [],
+                "triggers_sha256": hashlib.sha256(json.dumps(triggers, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                "completed_at": "2026-09-22T00:00:00Z",
+            })
+            provenance = artifact("observed-completion.json", {
+                "reviewer": "fixture-review-worker", "observed_at": "2026-09-22T00:00:01Z",
+                "message": f"Completed {head}, report {report['sha256']}, completion {completion['sha256']}",
+            })
+            packet = {"schema": 1, "repository": "fixture/repo", "pr": 1, **identity,
+                      "family": "codex", "report": report, "completion": completion, "triggers": triggers,
+                      "provenance": {"kind": "attestor-observed-collaboration", "evidence": provenance}}
+            if scenario == "wrong-head":
+                packet["head"] = base
+            if scenario == "changed-report":
+                Path(report["path"]).write_text("changed after review\n")
+            if scenario == "missing-provenance":
+                Path(provenance["path"]).unlink()
+            packet_path = root / "packet.json"
+            packet_path.write_text(json.dumps(packet))
+            comments = []
+            marker = {
+                "newer-refusal": f"CHANGES-REQUESTED-AT: claude {head}",
+                "stale-refusal": f"CHANGES-REQUESTED-AT: claude {base}",
+                "malformed-public": "APPROVED-AT: codex malformed",
+                "sticky-critical": f"REVIEW-DISPATCH-ATTESTATION\nhead: {base}\ncritical-class: detcore-scheduling",
+            }.get(scenario)
+            if marker:
+                comments.append({"id": 900001, "body": marker, "user": {"login": "public-reviewer"},
+                                 "created_at": "2026-09-22T00:01:00Z", "updated_at": "2026-09-22T00:01:00Z"})
+            config = {"origin": str(origin), "head": head, "landed": landed, "scenario": scenario,
+                      "comments": comments, "labels": [{"name": "post-facto-human-review"}] if scenario == "core-label" else []}
+            (root / "gh-config.json").write_text(json.dumps(config))
+            bindir = root / "bin"
+            bindir.mkdir()
+            log = root / "calls.jsonl"
+            (bindir / "gh").write_text("#!/usr/bin/env python3\n" + r'''
+import json, pathlib, subprocess, sys
+root = pathlib.Path(__file__).resolve().parents[1]
+c = json.loads((root / "gh-config.json").read_text())
+args = sys.argv[1:]
+with (root / "calls.jsonl").open("a") as output:
+    output.write(json.dumps(args) + "\n")
+def emit(value):
+    print(json.dumps(value))
+    raise SystemExit(0)
+if args[:2] == ["pr", "merge"]:
+    assert args[args.index("--match-head-commit") + 1] == c["head"]
+    assert "--squash" in args and "--admin" not in args and "--auto" not in args
+    subprocess.run(["git", "-C", c["origin"], "update-ref", "refs/heads/main", c["landed"]], check=True)
+    emit({"fixture_merge": True})
+assert args[0] == "api" and "--method" not in args and "-X" not in args, args
+if args[1] == "graphql":
+    emit([{"data": {"repository": {"pullRequest": {"reviews": {"nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}}}}}])
+path = args[-1]
+if path == "user":
+    emit({"login": "fixture-relay"})
+if "/collaborators/" in path:
+    actor = path.split("/")[-2]
+    permission = "read" if c["scenario"] == "unprivileged" and actor == "fixture-relay" else "write"
+    emit({"permission": permission, "user": {"login": actor}})
+if path.endswith("/pulls/1"):
+    emit({"state": "open", "head": {"sha": c["head"]}, "base": {"repo": {"full_name": "fixture/repo"}}, "labels": c["labels"]})
+if "/issues/1/comments" in path:
+    if c["scenario"] == "unreadable-public":
+        raise SystemExit(23)
+    emit([c["comments"]])
+if "/pulls/1/comments" in path:
+    emit([[]])
+raise AssertionError(args)
+''')
+            (bindir / "gh").chmod(0o755)
+            (bindir / "with-proxy").write_text('#!/bin/sh\nexec "$@"\n')
+            (bindir / "with-proxy").chmod(0o755)
+            receipt = root / "landing.json"
+            extra = {"admin-equals": ["--admin=true"], "auto-equals": ["--auto=true"]}.get(scenario, [])
+            env = {**os.environ, "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+                   "GH_MERGE_VERIFIED_REMOTE": str(origin), "GH_MERGE_VERIFIED_SELFCHECK": "off",
+                   "GIT_ALLOW_PROTOCOL": "file"}
+            code, out = run([sys.executable, str(TOOL), "1", "--repo", "fixture/repo", "--expect-head", head,
+                             "--local-review", str(packet_path), "--receipt", str(receipt), "--", "--squash", *extra], cwd=work, env=env)
+            calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+            merges = [call for call in calls if call[:2] == ["pr", "merge"]]
+            check(f"local {scenario}: native {expected}", code == expected, out)
+            check(f"local {scenario}: merge boundary", len(merges) == (1 if expected == 0 else 0), str(calls))
+            if expected:
+                check(f"local {scenario}: main/receipt unchanged", git_output(origin, "rev-parse", "main") == before
+                      and not receipt.exists() and not Path(str(receipt) + ".admission.json").exists(), out)
+            elif code == 0:
+                terminal = json.loads(receipt.read_text())
+                admission_path = Path(terminal["local_review_admission"]["path"])
+                raw = admission_path.read_bytes()
+                admission = json.loads(raw)
+                check("local accepted: durable separate admission", admission["phase"] == "premerge-admission"
+                      and admission["merge_performed"] is False
+                      and hashlib.sha256(raw).hexdigest() == terminal["local_review_admission"]["sha256"], str(terminal))
+                check("local accepted: source and current actor", admission["review"]["base"] == base
+                      and admission["main_before"] == before and before != base
+                      and admission["review"]["attestor"]["login"] == "fixture-relay", str(admission))
+                check("local accepted: real squash effect", terminal["arrived"] == ["tracked.txt"]
+                      and terminal["absent"] == [] and terminal["moved_on"] == [] and terminal["main_sha"] == landed
+                      and git_output(origin, "show", "main:unrelated.txt") == "current main is preserved", str(terminal))
+                check("local accepted: all public surfaces queried", all(any(needle in " ".join(call) for call in calls)
+                      for needle in ("issues/1/comments", "pulls/1/comments", "graphql")), str(calls))
+
+
 def main() -> int:
     if not TOOL.exists():
         print(f"gh-merge-verified-test: {TOOL} is missing", file=sys.stderr)
@@ -1192,6 +1359,7 @@ def main() -> int:
     receipt_cases()
     argv_cases()
     expect_head_cases()
+    local_review_cases()
 
     print()
     if FAILURES:

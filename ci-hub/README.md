@@ -402,9 +402,77 @@ Agent-utils PR #117 owns normalization of that optional metadata in its callers;
 this repository's authority depends only on the canonical review artifact and
 the immutable GitHub actor's current repository permission.
 
-The canonical exact-head comment is the authority. Review labels are a cache
-that `review-attest` reconciles after verifying the comment; a label without the
-comment does not establish approval.
+For this public writer, the canonical exact-head comment is the authority.
+Review labels are a cache that `review-attest` reconciles after verifying the
+comment; a label without the comment does not establish public approval.
+
+### Ordinary reviews retained locally
+
+`gh-merge-verified --local-review PACKET --expect-head FULL_SHA --receipt NEW_FILE`
+provides a separate, explicit route for an ordinary PR whose independent review
+must remain local. It performs the normal merge and complete landed-content
+verification. It does not post the report or modify review labels. Core and
+post-facto changes, including sticky critical dispatch requirements, must use
+the existing public review protocol; this option cannot supply either lane.
+
+The current authenticated GitHub actor relays the independent worker's review,
+just as a public publisher may post another worker's report. The tool reads
+`gh api user` and that actor's current repository permission itself; a login in
+a file grants no authority. Optional fleet disclosure may remain degraded.
+Technical independence is required, but sharing a GitHub publisher or OS account
+does not make independent workers the same reviewer. Native result files and
+observed collaboration messages remain unsigned evidence, not authenticated
+provider signatures.
+
+The schema1 packet has exactly `schema`, `repository`, integer `pr`, full
+`head`, fixed reviewed `base`, `tree`, `diff_sha256`, `family`, `report`,
+`completion`, `provenance` and `triggers` fields. The diff digest covers
+`git --no-replace-objects diff --no-ext-diff --no-textconv --no-renames
+--full-index --binary BASE HEAD --`. The reviewed base must be an ancestor of
+freshly observed main, so a feature-only intermediate base cannot hide earlier
+PR changes; it need not equal today's moving main tip. Each artifact reference has exactly `path`, `bytes` and
+`sha256`; paths resolve relative to the packet or name an existing retained
+absolute path. The report must contain one canonical current-head approval.
+
+The completion record has exactly `schema:1`, distinct technical `reviewer` and
+`implementor` identifiers, the same `head`, `base`, `tree`, `diff_sha256`,
+`report_sha256`, `triggers_sha256`, `verdict:"approve"`, a timezone-bearing `completed_at`, and
+`open_findings:[]`. These fields summarize the independently completed review;
+they are not evidence without the original provider completion. `provenance`
+has `kind` and an artifact `evidence` reference. `native-result` checks a
+successful native JSON result's session/model/turn metadata and literal report.
+`attestor-observed-collaboration` retains the actual witnessed completion
+message with `reviewer`, `message` and `observed_at`; the message must bind the
+full head, report digest and completion-record digest. This latter record is
+explicitly the publisher's observed relay, not an invented signed harness
+export. Missing original completion/provenance must be resolved locally before
+using the route; hashing a Markdown file alone is insufficient.
+
+`triggers` contains exactly `new-syscall`, `reverie-core-api`,
+`new-determinization` and `detcore-scheduling`, each with the independent source
+review's `applies:false` and substantive `reason`. Any applicable or unassessed
+trigger refuses. This is an exact-source review obligation, not permission to
+declare core work ordinary. The completion binds the SHA256 of `triggers`
+encoded as sorted-key compact JSON (`separators=(",", ":")`, UTF-8), so a relay
+cannot silently reclassify it after review. Technical reviewer identifiers are
+attestor metadata, not independently authenticated GitHub actors. Every live public review surface, permission,
+malformed record and unresolved objection is still checked. A local approval
+cannot retire a public refusal. Keep known local findings/withdrawals with the
+retained review case; selecting an obsolete approval does not resolve them.
+
+Use a new receipt name in an existing owned evidence directory. Before merge,
+the helper creates `NEW_FILE.admission.json` exclusively, fsyncs the file and
+directory, and reads it back. The unchanged premerge record binds local source,
+report/provenance, live actor permission and public review observations. The
+separate terminal `NEW_FILE` references its digest and records the actual
+landed-content result. A premerge receipt without a terminal result proves no
+landing. Referenced original evidence stays under its existing retention hold.
+There is no new history store or automatic upload.
+
+This local route has no GitHub-wide discovery or server-issued chronology for
+private reports. A later lander must re-open the evidence and attest afresh,
+including all current public objections. Public-only status tools below do not
+discover these local packets and must not describe them as public approvals.
 
 Approval and refusal both apply the numbered `adversarial-review-<family><N>`
 activity label. Approval additionally applies `passed-review-<family>`; refusal

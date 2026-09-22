@@ -1,5 +1,14 @@
 # Landing mutex (`ci-hub land-lock`)
 
+For ordinary reviews explicitly retained locally, the supported direct landing
+route is `gh-merge-verified --local-review PACKET --expect-head FULL_SHA
+--receipt NEW_FILE`, documented in `ci-hub/README.md`. It preserves the existing
+independent source-review and public-objection requirements while authenticating
+the current relay actor. Core/post-facto reviews remain public. `land-pr.sh` and
+its mechanical-rebase reader remain public-evidence consumers; they do not
+silently import local packets or turn their absence into a global review verdict.
+No local packet changes this document's applicable manifest landing mutex.
+
 **Follow skill `hermit-validation-authority` for validation authority.**
 
 A small, deterministic **shared-file landing mutex** that serializes PR landings

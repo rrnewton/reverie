@@ -497,3 +497,14 @@ makes you an author of it for this purpose.
 If the fleet wants the gate to enforce what the protocol already states, the
 check is cheap: compare the comment author against the pull-request author and
 refuse a lane bound by the author.
+# Public and local review evidence
+
+Review status and lane-shortfall inventories read public GitHub records and
+current actor permissions. They are reporting views, not merge admission, and
+do not discover private retained review packets. A missing public approval is
+not proof that no independent local review exists. Ordinary source may use the
+explicit authenticated local-relay route documented in `ci-hub/README.md` and
+implemented by the shared authority plus `gh-merge-verified --local-review`.
+That route still reads all public objections and cannot satisfy core/post-facto
+dual reviews. It does not write public labels or make local evidence globally
+discoverable. The default public review readers retain their existing decisions.
