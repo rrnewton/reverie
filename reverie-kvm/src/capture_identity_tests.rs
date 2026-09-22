@@ -6,7 +6,7 @@ fn capture_native_stat(fd: RawFd) -> libc::stat {
 }
 
 #[test]
-fn captured_output_identity_matches_pipefs_and_preserves_proc_symlinks() {
+fn captured_output_identity_is_deterministic_and_preserves_proc_symlinks() {
     let root = TestDir::new();
     let mut state = test_state(&root.0);
     let mut memory = GuestMemory::new(0, 0x4000).unwrap();
@@ -21,7 +21,6 @@ fn captured_output_identity_matches_pipefs_and_preserves_proc_symlinks() {
         0
     );
     let pipe: [i32; 2] = read_struct(&memory, 0x1800);
-    let native_pipe = capture_native_stat(state.files[&pipe[0]].as_raw_fd());
     let ordinary =
         assert_descriptor_stat_routes(&mut memory, &mut state, pipe[0], Some(&mut output));
     let ordinary_identity = &state.fd_object_inodes[&pipe[0]];
@@ -34,30 +33,73 @@ fn captured_output_identity_matches_pipefs_and_preserves_proc_symlinks() {
         )
     );
     let mut captured_inodes = Vec::new();
-    for (fd, keeper) in [1, 2].into_iter().zip(output.identities.descriptors()) {
-        let native_capture = capture_native_stat(keeper);
-        assert_eq!(
-            unsafe { libc::fcntl(keeper, libc::F_GETFD) },
-            libc::FD_CLOEXEC
-        );
+    for fd in [1, 2] {
+        let native_carrier = capture_native_stat(host_fd(&state, fd).unwrap());
         let captured =
             assert_descriptor_stat_routes(&mut memory, &mut state, fd, Some(&mut output));
+        assert_eq!(captured.st_dev, synthetic_dev(SYNTHETIC_PIPE_DEV_MINOR));
         assert_eq!(
-            native_capture.st_dev, native_pipe.st_dev,
-            "capture and guest pipe carriers must share host pipefs"
+            captured.st_ino,
+            if fd == 1 {
+                capture_identity::CAPTURE_STDOUT_INODE
+            } else {
+                capture_identity::CAPTURE_STDERR_INODE
+            }
         );
         assert_eq!(
-            (captured.st_dev, captured.st_ino),
-            (native_capture.st_dev, native_capture.st_ino)
-        );
-        assert_ne!(
             captured.st_dev, ordinary.st_dev,
-            "captured output keeps its existing host-backed CaptureIdentity domain"
+            "all guest-visible pipe objects share one synthetic device"
         );
         assert_ne!(
-            captured.st_ino, native_pipe.st_ino,
-            "the reserved capture inode is a distinct live pipe"
+            captured.st_ino, ordinary.st_ino,
+            "the capture stream and guest-created pipe are distinct live objects"
         );
+        assert_ne!(
+            (captured.st_dev, captured.st_ino),
+            (native_carrier.st_dev, native_carrier.st_ino),
+            "the invoking process's output carrier identity must not be guest-visible"
+        );
+        write_c_string(&mut memory, 0x100, "");
+        for (mask, returned_bit, mount_id) in [
+            (
+                libc::STATX_BASIC_STATS,
+                libc::STATX_MNT_ID,
+                SYNTHETIC_PIPE_MNT_ID,
+            ),
+            (
+                libc::STATX_MNT_ID,
+                libc::STATX_MNT_ID,
+                SYNTHETIC_PIPE_MNT_ID,
+            ),
+            (
+                STATX_MNT_ID_UNIQUE,
+                STATX_MNT_ID_UNIQUE,
+                SYNTHETIC_PIPE_UNIQUE_MNT_ID,
+            ),
+            (
+                libc::STATX_MNT_ID | STATX_MNT_ID_UNIQUE,
+                STATX_MNT_ID_UNIQUE,
+                SYNTHETIC_PIPE_UNIQUE_MNT_ID,
+            ),
+        ] {
+            assert_eq!(
+                metadata_call(
+                    &mut memory,
+                    &mut state,
+                    Some(&mut output),
+                    libc::SYS_statx,
+                    [fd as u64, 0x100, libc::AT_EMPTY_PATH as u64, mask as u64, 0x1800, 0],
+                ),
+                0
+            );
+            let extended: libc::statx = read_struct(&memory, 0x1800);
+            assert_eq!(extended.stx_mask, libc::STATX_BASIC_STATS | returned_bit);
+            assert_eq!(extended.stx_mnt_id, mount_id);
+            assert_eq!(
+                (extended.stx_dev_major, extended.stx_dev_minor, extended.stx_ino),
+                (SYNTHETIC_DEV_MAJOR, SYNTHETIC_PIPE_DEV_MINOR, captured.st_ino)
+            );
+        }
         captured_inodes.push(captured.st_ino);
         write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
         for (number, args) in [
@@ -115,7 +157,13 @@ fn captured_output_identity_matches_pipefs_and_preserves_proc_symlinks() {
         memory.read(0x2000, &mut bytes).unwrap();
         assert_eq!(bytes, expected.as_bytes());
     }
-    assert_ne!(captured_inodes[0], captured_inodes[1]);
+    assert_eq!(
+        captured_inodes,
+        [
+            capture_identity::CAPTURE_STDOUT_INODE,
+            capture_identity::CAPTURE_STDERR_INODE,
+        ]
+    );
 }
 
 fn capture_executor_stat(executor: &mut ElfExecutor, memory: &GuestMemory, fd: i32) -> (u64, u64) {
@@ -128,6 +176,309 @@ fn capture_executor_stat(executor: &mut ElfExecutor, memory: &GuestMemory, fd: i
     );
     let stat: libc::stat = read_struct(memory, 0x800);
     (stat.st_dev, stat.st_ino)
+}
+
+#[test]
+fn captured_output_fdinfo_is_synthetic_and_observes_the_current_alias() {
+    const KERNEL_O_LARGEFILE: i64 = 0o100000;
+    let mut fixture = FdinfoFixture::new(true);
+    let expected_record = |flags: i64, inode: libc::ino_t| {
+        assert!(flags >= 0);
+        format!(
+            "pos:\t0\nflags:\t0{flags:o}\nmnt_id:\t{}\nino:\t{inode}\n",
+            SYNTHETIC_PIPE_MNT_ID
+        )
+        .into_bytes()
+    };
+
+    for (fd, inode) in [
+        (libc::STDOUT_FILENO, capture_identity::CAPTURE_STDOUT_INODE),
+        (libc::STDERR_FILENO, capture_identity::CAPTURE_STDERR_INODE),
+    ] {
+        let flags = fixture.call(
+            libc::SYS_fcntl,
+            [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+        );
+        assert_eq!(flags, i64::from(libc::O_WRONLY));
+        let info = fixture.info(i64::from(fd));
+        assert_eq!(fixture.read(info, 4096), expected_record(flags, inode));
+        assert_eq!(fixture.call(libc::SYS_close, [info as u64, 0, 0, 0, 0, 0]), 0);
+    }
+
+    let alias = fixture.call(libc::SYS_dup, [1, 0, 0, 0, 0, 0]);
+    assert!(alias >= 3);
+    assert_eq!(
+        fixture.call(
+            libc::SYS_fcntl,
+            [
+                alias as u64,
+                libc::F_SETFL as u64,
+                libc::O_NONBLOCK as u64,
+                0,
+                0,
+                0,
+            ],
+        ),
+        0
+    );
+    assert_eq!(
+        fixture.call(
+            libc::SYS_fcntl,
+            [1, libc::F_GETFL as u64, 0, 0, 0, 0]
+        ),
+        i64::from(libc::O_WRONLY | libc::O_NONBLOCK),
+        "dup must share captured stdout's virtual open description"
+    );
+    assert_eq!(
+        fixture.call(
+            libc::SYS_fcntl,
+            [
+                alias as u64,
+                libc::F_SETFD as u64,
+                libc::FD_CLOEXEC as u64,
+                0,
+                0,
+                0,
+            ],
+        ),
+        0
+    );
+    let alias_flags = i64::from(libc::O_WRONLY | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    let alias_info = fixture.info(alias);
+    assert_eq!(
+        fixture.read(alias_info, 4096),
+        expected_record(alias_flags, capture_identity::CAPTURE_STDOUT_INODE)
+    );
+
+    fixture
+        .memory
+        .write(
+            0x100,
+            CString::new(format!("/proc/self/fd/{alias}"))
+                .unwrap()
+                .as_bytes_with_nul(),
+        )
+        .unwrap();
+    let reopened = fixture.call(
+        libc::SYS_openat,
+        [
+            libc::AT_FDCWD as u64,
+            0x100,
+            (libc::O_WRONLY | libc::O_APPEND) as u64,
+            0,
+            0,
+            0,
+        ],
+    );
+    assert!(reopened >= 3);
+    assert_eq!(
+        fixture.call(
+            libc::SYS_fcntl,
+            [alias as u64, libc::F_SETFL as u64, 0, 0, 0, 0]
+        ),
+        0
+    );
+    assert_eq!(
+        fixture.call(
+            libc::SYS_fcntl,
+            [reopened as u64, libc::F_GETFL as u64, 0, 0, 0, 0]
+        ),
+        i64::from(libc::O_WRONLY | libc::O_APPEND) | KERNEL_O_LARGEFILE,
+        "proc-fd reopen must own independent captured-output status flags"
+    );
+    let reopened_info = fixture.info(reopened);
+    assert_eq!(
+        fixture.read(reopened_info, 4096),
+        expected_record(
+            i64::from(libc::O_WRONLY | libc::O_APPEND) | KERNEL_O_LARGEFILE,
+            capture_identity::CAPTURE_STDOUT_INODE,
+        )
+    );
+
+    fixture
+        .memory
+        .write(
+            0x100,
+            CString::new(format!("/proc/self/fd/{alias}"))
+                .unwrap()
+                .as_bytes_with_nul(),
+        )
+        .unwrap();
+    let path_only = fixture.call(
+        libc::SYS_openat,
+        [
+            libc::AT_FDCWD as u64,
+            0x100,
+            (libc::O_PATH | libc::O_WRONLY | libc::O_APPEND | libc::O_NONBLOCK) as u64,
+            0,
+            0,
+            0,
+        ],
+    );
+    assert!(path_only >= 3, "O_PATH capture reopen returned {path_only}");
+    assert_eq!(
+        fixture.call(
+            libc::SYS_fcntl,
+            [path_only as u64, libc::F_GETFL as u64, 0, 0, 0, 0]
+        ),
+        i64::from(libc::O_PATH),
+        "O_PATH suppresses ordinary access and status flags"
+    );
+    assert_eq!(
+        fixture.call(
+            libc::SYS_fcntl,
+            [path_only as u64, libc::F_SETFL as u64, 0, 0, 0, 0]
+        ),
+        negative_errno(libc::EBADF)
+    );
+    let path_info = fixture.info(path_only);
+    assert_eq!(
+        fixture.read(path_info, 4096),
+        expected_record(
+            i64::from(libc::O_PATH),
+            capture_identity::CAPTURE_STDOUT_INODE,
+        )
+    );
+
+    // An already-open fdinfo description follows the current entry in its
+    // bound file table. Replacing stdout with stderr changes the next record
+    // to stderr's virtual pipe identity rather than retaining a stale snapshot.
+    let live_info = fixture.info(1);
+    assert_eq!(fixture.call(libc::SYS_dup2, [2, 1, 0, 0, 0, 0]), 1);
+    assert_eq!(
+        fixture.read(live_info, 4096),
+        expected_record(
+            i64::from(libc::O_WRONLY),
+            capture_identity::CAPTURE_STDERR_INODE,
+        )
+    );
+
+    let mut noncapture = FdinfoFixture::new(false);
+    noncapture
+        .memory
+        .write(0x100, b"/proc/self/fd/1\0")
+        .unwrap();
+    let ordinary_path = noncapture.call(
+        libc::SYS_openat,
+        [
+            libc::AT_FDCWD as u64,
+            0x100,
+            (libc::O_PATH | libc::O_WRONLY | libc::O_NONBLOCK) as u64,
+            0,
+            0,
+            0,
+        ],
+    );
+    assert!(ordinary_path >= 3);
+    assert!(!noncapture
+        .executor
+        .state
+        .capture_status_flags
+        .contains_key(&(ordinary_path as i32)));
+    assert_eq!(
+        noncapture.call(
+            libc::SYS_fcntl,
+            [ordinary_path as u64, libc::F_GETFL as u64, 0, 0, 0, 0]
+        ),
+        i64::from(libc::O_PATH)
+    );
+    assert_eq!(
+        noncapture.call(
+            libc::SYS_fcntl,
+            [ordinary_path as u64, libc::F_SETFL as u64, 0, 0, 0, 0]
+        ),
+        negative_errno(libc::EBADF),
+        "non-capture proc-fd reopen must retain host O_PATH behavior"
+    );
+}
+
+#[test]
+fn captured_output_status_ignores_ambient_and_closed_supervisor_stdout() {
+    const TEST: &str =
+        "executor::tests::captured_output_status_ignores_ambient_and_closed_supervisor_stdout";
+    const COMPLETE: &str = "capture virtual status control completed";
+    if !capture_test_child(TEST, COMPLETE) {
+        return;
+    }
+
+    let saved_stdout = unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) };
+    assert!(saved_stdout >= 3);
+    let original_flags = unsafe { libc::fcntl(1, libc::F_GETFL) };
+    assert!(original_flags >= 0);
+    assert_eq!(
+        unsafe {
+            libc::fcntl(
+                1,
+                libc::F_SETFL,
+                original_flags | libc::O_APPEND | libc::O_NONBLOCK,
+            )
+        },
+        0
+    );
+
+    let root = TestDir::new();
+    let mut executor = ElfExecutor::new(test_state(&root.0), true);
+    let memory = GuestMemory::new(0, 0x4000).unwrap();
+    assert_eq!(
+        executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_fcntl as u64,
+                [1, libc::F_GETFL as u64, 0, 0, 0, 0],
+            ),
+            &memory,
+        ),
+        i64::from(libc::O_WRONLY),
+        "ambient supervisor status bits must not seed captured stdout"
+    );
+    let generation = executor
+        .state
+        .task_lifecycle
+        .lock()
+        .unwrap()
+        .get(executor.state.tid)
+        .unwrap()
+        .generation;
+    let description = FdinfoDescription {
+        target_tid: executor.state.tid,
+        target_generation: generation,
+        target_fd: libc::STDOUT_FILENO,
+        table: Arc::downgrade(&executor.file_table),
+        lifecycle: executor.state.task_lifecycle.clone(),
+        capture_output: true,
+        path: b"/proc/1/fdinfo/1".to_vec(),
+        nofollow_status: false,
+        sequence: Mutex::default(),
+    };
+    assert_eq!(unsafe { libc::close(1) }, 0);
+    assert_eq!(
+        executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_fcntl as u64,
+                [1, libc::F_GETFL as u64, 0, 0, 0, 0],
+            ),
+            &memory,
+        ),
+        i64::from(libc::O_WRONLY),
+        "closed supervisor stdout must not close virtual captured stdout"
+    );
+    assert_eq!(
+        description.observe().unwrap(),
+        format!(
+            "pos:\t0\nflags:\t0{:o}\nmnt_id:\t{}\nino:\t{}\n",
+            libc::O_WRONLY,
+            SYNTHETIC_PIPE_MNT_ID,
+            capture_identity::CAPTURE_STDOUT_INODE,
+        )
+        .into_bytes()
+    );
+
+    assert_eq!(
+        unsafe { libc::fcntl(saved_stdout, libc::F_SETFL, original_flags) },
+        0
+    );
+    assert_eq!(unsafe { libc::dup2(saved_stdout, 1) }, 1);
+    assert_eq!(unsafe { libc::close(saved_stdout) }, 0);
+    eprintln!("{COMPLETE}");
 }
 
 #[test]
@@ -145,11 +496,28 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
     let stderr = capture_executor_stat(&mut parent, &memory, 2);
     assert_eq!(stdout.0, stderr.0);
     assert_ne!(stdout.1, stderr.1);
+    let next_dynamic_inode = parent
+        .state
+        .file_identity_table
+        .lock()
+        .unwrap()
+        .next_inode;
     let alias = parent.execute(
         &SyscallRequest::new(libc::SYS_dup as u64, [1, 0, 0, 0, 0, 0]),
         &memory,
     ) as i32;
     assert!(alias >= 3);
+    assert_eq!(
+        parent.state.file_identity_table.lock().unwrap().next_inode,
+        next_dynamic_inode,
+        "captured dup must not consume a dynamic object identity"
+    );
+    let alias_object = parent.state.fd_object_inodes[&alias].clone();
+    let stdout_status = parent.state.capture_status_flags[&1].clone();
+    assert!(Arc::ptr_eq(
+        &parent.state.capture_status_flags[&alias],
+        &stdout_status
+    ));
     let fcntl_alias = parent.execute(
         &SyscallRequest::new(
             libc::SYS_fcntl as u64,
@@ -158,6 +526,19 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
         &memory,
     ) as i32;
     assert!(fcntl_alias >= 20);
+    assert!(Arc::ptr_eq(
+        &parent.state.fd_object_inodes[&fcntl_alias],
+        &alias_object
+    ));
+    assert!(Arc::ptr_eq(
+        &parent.state.capture_status_flags[&fcntl_alias],
+        &stdout_status
+    ));
+    assert_eq!(
+        parent.state.file_identity_table.lock().unwrap().next_inode,
+        next_dynamic_inode,
+        "captured F_DUPFD must not consume a dynamic object identity"
+    );
     write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{alias}"));
     let reopened = parent.execute(
         &SyscallRequest::new(
@@ -167,9 +548,55 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
         &memory,
     ) as i32;
     assert!(reopened >= 3);
+    assert!(Arc::ptr_eq(
+        &parent.state.fd_object_inodes[&reopened],
+        &alias_object
+    ));
+    assert!(!Arc::ptr_eq(
+        &parent.state.capture_status_flags[&reopened],
+        &stdout_status
+    ));
+    assert_eq!(
+        parent.state.file_identity_table.lock().unwrap().next_inode,
+        next_dynamic_inode,
+        "captured proc-fd reopen must not consume a dynamic object identity"
+    );
     for fd in [alias, fcntl_alias, reopened] {
         assert_eq!(capture_executor_stat(&mut parent, &memory, fd), stdout);
     }
+    assert_eq!(
+        parent.execute(
+            &SyscallRequest::new(libc::SYS_pipe2 as u64, [0x3000, 0, 0, 0, 0, 0]),
+            &memory,
+        ),
+        0
+    );
+    let pipe: [i32; 2] = read_struct(&memory, 0x3000);
+    let pipe_identity = parent.state.fd_object_inodes[&pipe[0]].clone();
+    assert!(Arc::ptr_eq(
+        &pipe_identity,
+        &parent.state.fd_object_inodes[&pipe[1]]
+    ));
+    assert_eq!(pipe_identity.kind, GuestFileIdentityKind::Pipe);
+    assert_eq!(pipe_identity.inode, next_dynamic_inode);
+    assert_eq!(
+        parent.state.file_identity_table.lock().unwrap().next_inode,
+        next_dynamic_inode + 1
+    );
+    for fd in pipe {
+        assert_eq!(
+            parent.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [fd as u64, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            0
+        );
+    }
+    assert_eq!(
+        parent.state.file_identity_table.lock().unwrap().next_inode,
+        next_dynamic_inode + 1,
+        "object retirement must not roll back the deterministic allocator"
+    );
     let mut sibling = parent.thread_child(2).unwrap();
     assert_eq!(
         sibling.execute(
@@ -183,6 +610,10 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
     let mut child = parent.fork_child(3, false, false).unwrap();
     let replacement = test_exec_replacement(&root.0, &child.state);
     child.replace_after_exec(replacement);
+    assert!(Arc::ptr_eq(
+        &child.state.capture_status_flags[&alias],
+        &stdout_status
+    ));
     assert_eq!(capture_executor_stat(&mut child, &memory, alias), stdout);
     assert_eq!(capture_executor_stat(&mut child, &memory, 1), stderr);
     assert_eq!(
@@ -206,6 +637,7 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
         capture_executor_stat(&mut parent, &memory, alias),
         (raw.st_dev, raw.st_ino)
     );
+    assert!(!parent.state.capture_status_flags.contains_key(&alias));
     assert_eq!(
         capture_executor_stat(&mut sibling, &memory, alias),
         (raw.st_dev, raw.st_ino)
@@ -215,6 +647,10 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
         stdout,
         "private fork retains its old capture alias"
     );
+    assert!(Arc::ptr_eq(
+        &child.state.capture_status_flags[&alias],
+        &stdout_status
+    ));
     memory.write(0x200, b"a").unwrap();
     assert_eq!(
         child.execute(

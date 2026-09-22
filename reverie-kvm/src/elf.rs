@@ -20,6 +20,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
@@ -61,6 +62,7 @@ const _: () = assert!(BOOT_RESERVED_END <= MAIN_LOAD_BIAS);
 const INTERPRETER_LOAD_BIAS: u64 = 16 * 1024 * 1024;
 const IOPRIO_CLASS_SHIFT: u32 = 13;
 pub(crate) const GUEST_CAPABILITY_MASK: u64 = (1_u64 << 41) - 1;
+pub(crate) const FIRST_GUEST_FILE_IDENTITY_INODE: u64 = 0x2100_0000;
 /// Page-aligned program-break gap reserved between a large main image and a
 /// relocated interpreter base. Only applies when the main image would overrun
 /// the historical fixed [`INTERPRETER_LOAD_BIAS`]; small PIEs are unaffected.
@@ -888,6 +890,10 @@ pub(crate) struct LoadedStaticElf {
     pub loginuid_fds: std::collections::BTreeSet<i32>,
     pub stdout_alias_fds: std::collections::BTreeSet<i32>,
     pub stderr_alias_fds: std::collections::BTreeSet<i32>,
+    /// Guest-visible status flags for in-memory captured-output open file
+    /// descriptions. Dup and fork share each Arc; a proc-fd reopen gets a new
+    /// one. This keeps capture semantics independent of supervisor fd 1/2.
+    pub capture_status_flags: std::collections::BTreeMap<i32, Arc<AtomicI32>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Model guest close-on-exec state independently.
     // TODO-HUMAN-REVIEW(#86): Review descriptor and signal inheritance across exec.
     pub cloexec_fds: std::collections::BTreeSet<i32>,
@@ -945,6 +951,7 @@ impl LoadedStaticElf {
             retired.extend(self.take_stdin());
         }
         self.fd_entry_ids.insert(fd, std::sync::Arc::new(()));
+        self.capture_status_flags.remove(&fd);
         // Every caller that creates or replaces a descriptor passes through
         // here. Clear stale virtual O_NOFOLLOW state before a synthetic-proc
         // caller deliberately reapplies it for the new description.
@@ -963,6 +970,7 @@ impl LoadedStaticElf {
     pub(crate) fn remove_file(&mut self, fd: i32) -> Option<std::fs::File> {
         let file = self.files.remove(&fd);
         self.fd_entry_ids.remove(&fd);
+        self.capture_status_flags.remove(&fd);
         file
     }
 
@@ -1069,6 +1077,7 @@ impl LoadedStaticElf {
             loginuid_fds: self.loginuid_fds.clone(),
             stdout_alias_fds: self.stdout_alias_fds.clone(),
             stderr_alias_fds: self.stderr_alias_fds.clone(),
+            capture_status_flags: self.capture_status_flags.clone(),
             cloexec_fds: self.cloexec_fds.clone(),
             closed_standard_fds: self.closed_standard_fds.clone(),
             children: std::collections::BTreeMap::new(),
@@ -1151,6 +1160,16 @@ impl LoadedStaticElf {
             .stderr_alias_fds
             .into_iter()
             .filter(|fd| !cloexec_fds.contains(fd) && files.contains_key(fd))
+            .collect();
+        let capture_status_flags = previous
+            .capture_status_flags
+            .into_iter()
+            .filter(|(fd, _)| {
+                !cloexec_fds.contains(fd)
+                    && (files.contains_key(fd)
+                        || ((*fd == libc::STDOUT_FILENO || *fd == libc::STDERR_FILENO)
+                            && !previous.closed_standard_fds.contains(fd)))
+            })
             .collect();
         let proc_files: std::collections::BTreeMap<_, _> = previous
             .proc_files
@@ -1275,6 +1294,7 @@ impl LoadedStaticElf {
         self.loginuid_fds = loginuid_fds;
         self.stdout_alias_fds = stdout_alias_fds;
         self.stderr_alias_fds = stderr_alias_fds;
+        self.capture_status_flags = capture_status_flags;
         self.cloexec_fds = std::collections::BTreeSet::new();
         self.closed_standard_fds = closed_standard_fds;
         self.children = previous.children;
@@ -1720,6 +1740,7 @@ fn load_executable(
         loginuid_fds: std::collections::BTreeSet::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
         stderr_alias_fds: std::collections::BTreeSet::new(),
+        capture_status_flags: std::collections::BTreeMap::new(),
         cloexec_fds: std::collections::BTreeSet::new(),
         closed_standard_fds: std::collections::BTreeSet::new(),
         children: std::collections::BTreeMap::new(),
@@ -1734,7 +1755,7 @@ fn load_executable(
         fdinfo_table: std::sync::Weak::new(),
         fd_object_inodes: std::collections::BTreeMap::new(),
         file_identity_table: std::sync::Arc::new(std::sync::Mutex::new(GuestFileIdentityTable {
-            next_inode: 0x2100_0000,
+            next_inode: FIRST_GUEST_FILE_IDENTITY_INODE,
             objects: std::collections::BTreeMap::new(),
         })),
     })

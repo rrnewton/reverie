@@ -31,6 +31,8 @@ use crate::GuestMemory;
 use crate::SyscallRequest;
 use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::SegmentBase;
+#[cfg(any(test, feature = "native-test-support"))]
+use crate::elf::FIRST_GUEST_FILE_IDENTITY_INODE;
 use crate::elf::GUEST_CAPABILITY_MASK;
 use crate::elf::GuestFileIdentity;
 use crate::elf::GuestFileIdentityEntry;
@@ -1757,6 +1759,7 @@ pub(crate) struct FileTableState {
     loginuid_fds: std::collections::BTreeSet<i32>,
     stdout_alias_fds: std::collections::BTreeSet<i32>,
     stderr_alias_fds: std::collections::BTreeSet<i32>,
+    capture_status_flags: std::collections::BTreeMap<i32, Arc<AtomicI32>>,
     cloexec_fds: std::collections::BTreeSet<i32>,
     closed_standard_fds: std::collections::BTreeSet<i32>,
     proc_files: std::collections::BTreeMap<i32, u64>,
@@ -1887,29 +1890,42 @@ impl FdinfoDescription {
                 || table.random_device_fds.contains(&self.target_fd)
                 || table.loginuid_fds.contains(&self.target_fd)
                 || table.signalfd_fds.contains(&self.target_fd)
-                || (self.capture_output
-                    && (table.stdout_alias_fds.contains(&self.target_fd)
-                        || table.stderr_alias_fds.contains(&self.target_fd)
-                        || ((self.target_fd == 1 || self.target_fd == 2)
-                            && !table.files.contains_key(&self.target_fd)
-                            && !table.closed_standard_fds.contains(&self.target_fd))))
             {
                 return Err(negative_errno(libc::ENOSYS));
             }
-            let host = table
-                .files
-                .get(&self.target_fd)
-                .map(AsRawFd::as_raw_fd)
-                .or_else(|| {
-                    if table.closed_standard_fds.contains(&self.target_fd) {
-                        return None;
-                    }
-                    match self.target_fd {
-                        0 => table.stdin.as_ref().map(AsRawFd::as_raw_fd),
-                        1 | 2 => Some(self.target_fd),
-                        _ => None,
-                    }
-                })
+            if self.capture_output
+                && let Some(alias) = output_alias_from_sets(
+                    self.target_fd,
+                    &table.stdout_alias_fds,
+                    &table.stderr_alias_fds,
+                    file_table_open_standard(&table, self.target_fd),
+                )
+            {
+                let status = if let Some(status) = table.capture_status_flags.get(&self.target_fd) {
+                    status.load(Ordering::SeqCst)
+                } else if let Some(file) = table.files.get(&self.target_fd) {
+                    // Compatibility for a pre-existing mapped alias that was
+                    // created before capture-owned flag state was initialized.
+                    fd_status_flags(file.as_raw_fd())?
+                } else {
+                    libc::O_WRONLY
+                };
+                let flags = status
+                    | if table.cloexec_fds.contains(&self.target_fd) {
+                        libc::O_CLOEXEC
+                    } else {
+                        0
+                    };
+                // Captured output is an in-memory virtual pipe. Never read the
+                // unrelated supervisor carrier's fdinfo record: its position,
+                // mount, inode, and lock rows vary with the invoking shell.
+                // Status/CLOEXEC flags still follow the live guest descriptor.
+                return Ok(synthetic_captured_output_fdinfo(
+                    CaptureObjectIdentity::for_alias(alias),
+                    flags,
+                ));
+            }
+            let host = file_table_host_fd(&table, self.target_fd)
                 .ok_or_else(|| negative_errno(libc::ENOENT))?;
             // F_GETFL and the descriptor's guest CLOEXEC belong to the same
             // table observation as F_SETFD/F_SETFL. Internal dup CLOEXEC is not
@@ -1999,6 +2015,17 @@ impl FdinfoDescription {
             .expect("KVM fdinfo sequence lock poisoned")
             .seek(args[1] as i64, args[2] as libc::c_int, || self.observe())
     }
+}
+
+fn synthetic_captured_output_fdinfo(
+    identity: CaptureObjectIdentity,
+    flags: libc::c_int,
+) -> Vec<u8> {
+    format!(
+        "pos:\t0\nflags:\t0{flags:o}\nmnt_id:\t{}\nino:\t{}\n",
+        SYNTHETIC_PIPE_MNT_ID, identity.inode
+    )
+    .into_bytes()
 }
 
 fn fdinfo_private_carrier_error(
@@ -2294,15 +2321,17 @@ fn ensure_fdinfo_content_supported(
     // open_file has exclusive access to state. Do not lock fdinfo_table here:
     // successful description reads retain the established seq -> table ->
     // lifecycle order, while refused opens allocate no description/seq state.
-    let host = host_fd(state, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
     if state.proc_files.contains_key(&fd)
         || state.random_device_fds.contains(&fd)
         || state.loginuid_fds.contains(&fd)
         || signalfd_mask(state, fd).is_some()
-        || (capture_output && output_alias(state, fd).is_some())
     {
         return Err(negative_errno(libc::ENOSYS));
     }
+    if capture_output && output_alias(state, fd).is_some() {
+        return Ok(());
+    }
+    let host = host_fd(state, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
     ensure_fdinfo_object(host)
 }
 
@@ -2451,6 +2480,7 @@ impl FileTableState {
             loginuid_fds: state.loginuid_fds.clone(),
             stdout_alias_fds: state.stdout_alias_fds.clone(),
             stderr_alias_fds: state.stderr_alias_fds.clone(),
+            capture_status_flags: state.capture_status_flags.clone(),
             cloexec_fds: state.cloexec_fds.clone(),
             closed_standard_fds: state.closed_standard_fds.clone(),
             proc_files: state.proc_files.clone(),
@@ -2528,6 +2558,9 @@ impl FileTableState {
         state.loginuid_fds.clone_from(&self.loginuid_fds);
         state.stdout_alias_fds.clone_from(&self.stdout_alias_fds);
         state.stderr_alias_fds.clone_from(&self.stderr_alias_fds);
+        state
+            .capture_status_flags
+            .clone_from(&self.capture_status_flags);
         state.cloexec_fds.clone_from(&self.cloexec_fds);
         state
             .closed_standard_fds
@@ -2666,6 +2699,9 @@ impl ElfExecutor {
     }
 
     pub(crate) fn with_output(mut state: LoadedStaticElf, output: Option<CapturedOutput>) -> Self {
+        if output.is_some() {
+            initialize_captured_output_status(&mut state);
+        }
         let file_table;
         let _retirement = state.file_retirement.hold();
         let transaction = state.signal_transaction.clone();
@@ -8587,6 +8623,7 @@ fn open_guest_fd_path(
         return new_fd;
     }
     let source_object_inode = guest_fd_object_identity(state, guest_fd);
+    let source_capture_status = state.capture_status_flags.get(&guest_fd).cloned();
 
     // Opening a proc-fd magic link creates a fresh open file description. A
     // descriptor duplication would incorrectly share the source offset and
@@ -8597,12 +8634,22 @@ fn open_guest_fd_path(
         Ok(file) => file,
         Err(error) => return error,
     };
-    let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
-    if new_fd >= 0 {
-        state
-            .fd_object_inodes
-            .insert(new_fd as libc::c_int, source_object_inode);
-    }
+    let capture_status = if source_capture_status.is_some() {
+        match fd_status_flags(file.as_raw_fd()) {
+            Ok(flags) => Some(Arc::new(AtomicI32::new(flags))),
+            Err(error) => return error,
+        }
+    } else {
+        None
+    };
+    let new_fd = insert_file_with_identity(
+        state,
+        file,
+        close_on_exec,
+        source_alias,
+        source_object_inode,
+        capture_status,
+    );
     if new_fd >= 0
         && let Some(inode) = source_proc_inode
     {
@@ -8795,6 +8842,20 @@ fn set_output_alias(state: &mut LoadedStaticElf, fd: libc::c_int, alias: Option<
         }
         None => {}
     }
+    if alias.is_none() {
+        state.capture_status_flags.remove(&fd);
+    }
+}
+
+fn initialize_captured_output_status(state: &mut LoadedStaticElf) {
+    for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        if is_open_standard(state, fd) {
+            state
+                .capture_status_flags
+                .entry(fd)
+                .or_insert_with(|| Arc::new(AtomicI32::new(libc::O_WRONLY)));
+        }
+    }
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review shared descriptor-object identity allocation.
@@ -8958,18 +9019,50 @@ fn insert_file_with_flags(
     close_on_exec: bool,
     output_alias: Option<OutputAlias>,
 ) -> i64 {
+    insert_file_with_optional_identity(state, file, close_on_exec, output_alias, None, None)
+}
+
+fn insert_file_with_identity(
+    state: &mut LoadedStaticElf,
+    file: std::fs::File,
+    close_on_exec: bool,
+    output_alias: Option<OutputAlias>,
+    identity: Arc<GuestFileIdentity>,
+    capture_status: Option<Arc<AtomicI32>>,
+) -> i64 {
+    insert_file_with_optional_identity(
+        state,
+        file,
+        close_on_exec,
+        output_alias,
+        Some(identity),
+        capture_status,
+    )
+}
+
+fn insert_file_with_optional_identity(
+    state: &mut LoadedStaticElf,
+    file: std::fs::File,
+    close_on_exec: bool,
+    output_alias: Option<OutputAlias>,
+    identity: Option<Arc<GuestFileIdentity>>,
+    capture_status: Option<Arc<AtomicI32>>,
+) -> i64 {
     let Some(fd) = (0..GUEST_NOFILE_LIMIT)
         .find(|fd| !is_open_standard(state, *fd) && !state.files.contains_key(fd))
     else {
         state.file_retirement.retire([file]);
         return negative_errno(libc::EMFILE);
     };
-    let object_inode = match allocate_fd_object_inode(state, &file) {
-        Ok(inode) => inode,
-        Err(error) => {
-            state.file_retirement.retire([file]);
-            return error;
-        }
+    let object_inode = match identity {
+        Some(identity) => identity,
+        None => match allocate_fd_object_inode(state, &file) {
+            Ok(inode) => inode,
+            Err(error) => {
+                state.file_retirement.retire([file]);
+                return error;
+            }
+        },
     };
     // The selected slot is vacant; this cannot retire a description,
     // including when the caller holds signal_transaction.
@@ -8982,6 +9075,10 @@ fn insert_file_with_flags(
         state.cloexec_fds.remove(&fd);
     }
     set_output_alias(state, fd, output_alias);
+    if let Some(status) = capture_status {
+        debug_assert!(output_alias.is_some());
+        state.capture_status_flags.insert(fd, status);
+    }
     i64::from(fd)
 }
 
@@ -8990,6 +9087,7 @@ fn insert_file_with_flags(
 // TODO-HUMAN-REVIEW(PR-136): Review fcntl duplicate object identity propagation.
 struct DuplicateFdSource {
     output_alias: Option<OutputAlias>,
+    capture_status: Option<Arc<AtomicI32>>,
     proc_inode: Option<u64>,
     synthetic_proc_nofollow: bool,
     fdinfo: Option<Arc<FdinfoDescription>>,
@@ -9125,6 +9223,10 @@ fn duplicate_fd_at_or_above(
         state.closed_standard_fds.remove(&fd);
     }
     set_output_alias(state, fd, source.output_alias);
+    if let Some(status) = source.capture_status {
+        debug_assert!(source.output_alias.is_some());
+        state.capture_status_flags.insert(fd, status);
+    }
     if let Some(inode) = source.proc_inode {
         state.proc_files.insert(fd, inode);
     }
@@ -9175,6 +9277,7 @@ fn duplicate_fd(
     let source_is_random = state.random_device_fds.contains(&old_fd);
     let source_is_loginuid = state.loginuid_fds.contains(&old_fd);
     let source_signalfd_mask = signalfd_mask(state, old_fd);
+    let source_capture_status = state.capture_status_flags.get(&old_fd).cloned();
     let Some(old_host_fd) = host_fd(state, old_fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -9243,6 +9346,10 @@ fn duplicate_fd(
             state.proc_fd_directories.remove(&new_fd);
         }
         set_output_alias(state, new_fd, source_alias);
+        if let Some(status) = source_capture_status.clone() {
+            debug_assert!(source_alias.is_some());
+            state.capture_status_flags.insert(new_fd, status);
+        }
         if let Some(inode) = source_proc_inode {
             state.proc_files.insert(new_fd, inode);
         } else {
@@ -9257,11 +9364,15 @@ fn duplicate_fd(
         state.file_retirement.retire(retired);
         i64::from(new_fd)
     } else {
-        let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
+        let new_fd = insert_file_with_identity(
+            state,
+            file,
+            close_on_exec,
+            source_alias,
+            source_object_inode,
+            source_capture_status,
+        );
         if new_fd >= 0 {
-            state
-                .fd_object_inodes
-                .insert(new_fd as libc::c_int, source_object_inode);
             if source_is_random {
                 state.random_device_fds.insert(new_fd as libc::c_int);
             }
@@ -12011,6 +12122,8 @@ fn commit_received_rights(
         ] {
             set.remove(&fd);
         }
+        state.capture_status_flags.remove(&fd);
+        shared.capture_status_flags.remove(&fd);
         state.fdinfo_files.remove(&fd);
         shared.fdinfo_files.remove(&fd);
         state.proc_fd_directories.remove(&fd);
@@ -13143,7 +13256,7 @@ fn synthetic_captured_output_stat(identity: CaptureObjectIdentity) -> libc::stat
     // guest. Model the capture sink as the pipe used by process-based backends.
     // SAFETY: libc::stat is plain-old-data; a zeroed value is valid.
     let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
-    stat.st_dev = identity.device;
+    stat.st_dev = synthetic_dev(SYNTHETIC_PIPE_DEV_MINOR);
     stat.st_ino = identity.inode;
     stat.st_mode = libc::S_IFIFO | 0o600;
     stat.st_nlink = 1;
@@ -13154,7 +13267,10 @@ fn synthetic_captured_output_stat(identity: CaptureObjectIdentity) -> libc::stat
     stat
 }
 
-fn synthetic_captured_output_statx(identity: CaptureObjectIdentity) -> libc::statx {
+fn synthetic_captured_output_statx(
+    identity: CaptureObjectIdentity,
+    requested_mask: libc::c_uint,
+) -> libc::statx {
     let stat = synthetic_captured_output_stat(identity);
     // SAFETY: libc::statx is plain-old-data; a zeroed value is valid.
     let mut extended = unsafe { std::mem::zeroed::<libc::statx>() };
@@ -13167,6 +13283,15 @@ fn synthetic_captured_output_statx(identity: CaptureObjectIdentity) -> libc::sta
     extended.stx_ino = stat.st_ino;
     extended.stx_dev_major = libc::major(stat.st_dev);
     extended.stx_dev_minor = libc::minor(stat.st_dev);
+    if requested_mask & STATX_MNT_ID_UNIQUE != 0 {
+        extended.stx_mask |= STATX_MNT_ID_UNIQUE;
+        extended.stx_mnt_id = SYNTHETIC_PIPE_UNIQUE_MNT_ID;
+    } else {
+        // Linux reports the legacy mount ID for pipefs even when the caller's
+        // BASIC_STATS request does not name it explicitly.
+        extended.stx_mask |= libc::STATX_MNT_ID;
+        extended.stx_mnt_id = SYNTHETIC_PIPE_MNT_ID;
+    }
     extended.stx_atime.tv_sec = stat.st_atime;
     extended.stx_mtime.tv_sec = stat.st_mtime;
     extended.stx_ctime.tv_sec = stat.st_ctime;
@@ -13490,7 +13615,7 @@ fn statx(
         return write_struct(
             memory,
             args[4],
-            &synthetic_captured_output_statx(capture.identity(alias)),
+            &synthetic_captured_output_statx(capture.identity(alias), args[3] as libc::c_uint),
         );
     }
     let opened_file;
@@ -15751,18 +15876,28 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
     let source_is_random = state.random_device_fds.contains(&guest_fd);
     let source_is_loginuid = state.loginuid_fds.contains(&guest_fd);
     let source_signalfd_mask = signalfd_mask(state, guest_fd);
-    let Some(host_fd) = host_fd(state, guest_fd) else {
+    let source_capture_status = state.capture_status_flags.get(&guest_fd).cloned();
+    let host_fd = host_fd(state, guest_fd);
+    let command = args[1] as libc::c_int;
+    if host_fd.is_none()
+        && !(source_capture_status.is_some()
+            && matches!(
+                command,
+                libc::F_GETFL | libc::F_GETFD | libc::F_SETFD | libc::F_SETFL
+            ))
+    {
         return negative_errno(libc::EBADF);
-    };
+    }
     let source_object_inode = guest_fd_object_identity(state, guest_fd);
-    match args[1] as libc::c_int {
+    match command {
         libc::F_DUPFD => duplicate_fd_at_or_above(
             state,
-            host_fd,
+            host_fd.expect("non-virtual fcntl command requires a host fd"),
             args[2],
             false,
             DuplicateFdSource {
                 output_alias: source_alias,
+                capture_status: source_capture_status.clone(),
                 proc_inode: source_proc_inode,
                 synthetic_proc_nofollow: source_synthetic_proc_nofollow,
                 fdinfo: source_fdinfo,
@@ -15775,11 +15910,12 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
         ),
         libc::F_DUPFD_CLOEXEC => duplicate_fd_at_or_above(
             state,
-            host_fd,
+            host_fd.expect("non-virtual fcntl command requires a host fd"),
             args[2],
             true,
             DuplicateFdSource {
                 output_alias: source_alias,
+                capture_status: source_capture_status.clone(),
                 proc_inode: source_proc_inode,
                 synthetic_proc_nofollow: source_synthetic_proc_nofollow,
                 fdinfo: source_fdinfo,
@@ -15790,7 +15926,12 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 signalfd_mask: source_signalfd_mask,
             },
         ),
-        libc::F_GETFL => match fd_status_flags(host_fd) {
+        libc::F_GETFL => match source_capture_status
+            .as_ref()
+            .map(|status| Ok(status.load(Ordering::SeqCst)))
+            .unwrap_or_else(|| {
+                fd_status_flags(host_fd.expect("non-capture F_GETFL requires a host fd"))
+            }) {
             Ok(flags) => i64::from(
                 flags
                     | if source_synthetic_proc_nofollow {
@@ -15830,10 +15971,10 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(#120): guest F_SETFL applies the
         // kernel-settable file status flags (O_APPEND/O_ASYNC/O_DIRECT/
-        // O_NOATIME/O_NONBLOCK) to the backing host descriptor. Access mode and
-        // creation flags are silently ignored, matching fcntl(2). Without this,
-        // programs that set O_NONBLOCK on a freshly created pipe (e.g. xz)
-        // observe ENOSYS and abort.
+        // O_NOATIME/O_NONBLOCK) to a capture-owned description or the backing
+        // host descriptor. Access mode and creation flags are silently ignored,
+        // matching fcntl(2). Without this, programs that set O_NONBLOCK on a
+        // freshly created pipe (e.g. xz) observe ENOSYS and abort.
         libc::F_SETFL => {
             let settable = libc::O_APPEND
                 | libc::O_ASYNC
@@ -15852,8 +15993,23 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 // reject before changing the shared open-file description.
                 return negative_errno(libc::ENOSYS);
             }
-            // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
-            zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) })
+            if let Some(status) = source_capture_status {
+                let current = status.load(Ordering::SeqCst);
+                if current & libc::O_PATH != 0 {
+                    return negative_errno(libc::EBADF);
+                }
+                status.store((current & !settable) | flags, Ordering::SeqCst);
+                0
+            } else {
+                // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
+                zero_or_errno(unsafe {
+                    libc::fcntl(
+                        host_fd.expect("non-capture F_SETFL requires a host fd"),
+                        libc::F_SETFL,
+                        flags,
+                    )
+                })
+            }
         }
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-211): Review KVM advisory-lock forwarding.
@@ -15877,7 +16033,13 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 command => command,
             };
             // SAFETY: host_fd is live and lock is a fully initialized flock value.
-            zero_or_errno(unsafe { libc::fcntl(host_fd, host_command, &lock) })
+            zero_or_errno(unsafe {
+                libc::fcntl(
+                    host_fd.expect("advisory locking requires a host fd"),
+                    host_command,
+                    &lock,
+                )
+            })
         }
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(rrnewton/reverie#318): Review KVM guest pipe-capacity
@@ -15890,7 +16052,12 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
         // querying or setting pipe capacity could not implement that policy.
         libc::F_GETPIPE_SZ => {
             // SAFETY: host_fd names a live descriptor; F_GETPIPE_SZ takes no third argument.
-            let result = unsafe { libc::fcntl(host_fd, libc::F_GETPIPE_SZ) };
+            let result = unsafe {
+                libc::fcntl(
+                    host_fd.expect("F_GETPIPE_SZ requires a host fd"),
+                    libc::F_GETPIPE_SZ,
+                )
+            };
             if result < 0 {
                 io_error(std::io::Error::last_os_error())
             } else {
@@ -15900,7 +16067,13 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
         libc::F_SETPIPE_SZ => {
             let size = args[2] as libc::c_int;
             // SAFETY: host_fd names a live descriptor; F_SETPIPE_SZ consumes one int size.
-            let result = unsafe { libc::fcntl(host_fd, libc::F_SETPIPE_SZ, size) };
+            let result = unsafe {
+                libc::fcntl(
+                    host_fd.expect("F_SETPIPE_SZ requires a host fd"),
+                    libc::F_SETPIPE_SZ,
+                    size,
+                )
+            };
             if result < 0 {
                 io_error(std::io::Error::last_os_error())
             } else {
@@ -18849,6 +19022,7 @@ pub(crate) fn native_loaded_state_with_authority(
         loginuid_fds: std::collections::BTreeSet::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
         stderr_alias_fds: std::collections::BTreeSet::new(),
+        capture_status_flags: std::collections::BTreeMap::new(),
         cloexec_fds: std::collections::BTreeSet::new(),
         closed_standard_fds: std::collections::BTreeSet::new(),
         children: std::collections::BTreeMap::new(),
@@ -18864,7 +19038,7 @@ pub(crate) fn native_loaded_state_with_authority(
         proc_mounts: Arc::new(crate::proc_mounts::ProcMountSnapshot::capture().unwrap()),
         fd_object_inodes: std::collections::BTreeMap::new(),
         file_identity_table: Arc::new(std::sync::Mutex::new(crate::elf::GuestFileIdentityTable {
-            next_inode: 0x2100_0000,
+            next_inode: FIRST_GUEST_FILE_IDENTITY_INODE,
             objects: std::collections::BTreeMap::new(),
         })),
     }
@@ -23212,7 +23386,7 @@ mod tests {
                 .identity(output_alias(&state, fd).unwrap());
             assert_eq!(
                 (stat.st_dev, stat.st_ino),
-                (identity.device, identity.inode)
+                (synthetic_dev(SYNTHETIC_PIPE_DEV_MINOR), identity.inode)
             );
             assert_eq!(stat.st_mode, libc::S_IFIFO | 0o600);
             assert_eq!(stat.st_size, 0);
@@ -36456,7 +36630,6 @@ mod tests {
             ("synthetic-proc", synthetic_proc),
             ("random", random),
             ("signalfd", signalfd),
-            ("captured-output", libc::STDOUT_FILENO as i64),
             ("anonymous-inode", anonymous_inode),
         ]
     }
@@ -39154,10 +39327,6 @@ mod tests {
     #[test]
     fn fdinfo_dispatch_keeps_private_carriers_and_supervisor_procfs_unavailable() {
         let mut f = FdinfoFixture::new(true);
-        assert_eq!(
-            f.open("/proc/self/fdinfo/1", libc::O_RDONLY),
-            negative_errno(libc::ENOSYS)
-        );
         let target = f.open("a", libc::O_RDWR);
         let info = f.info(target);
         for path in ["/proc/self/mountinfo", "/dev/urandom"] {
@@ -39612,7 +39781,7 @@ mod tests {
                 .identity(output_alias(&state, fd).unwrap());
             assert_eq!(
                 (captured.st_dev, captured.st_ino),
-                (identity.device, identity.inode)
+                (synthetic_dev(SYNTHETIC_PIPE_DEV_MINOR), identity.inode)
             );
             write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
             let expected = format!("pipe:[{}]", captured.st_ino).into_bytes();

@@ -1,10 +1,19 @@
-// Private identities for the in-memory capture streams. An owned anonymous
-// pipe endpoint reserves each native inode for the whole capture lifetime.
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 
 use super::OutputAlias;
+
+// Per-fd proc/object inodes occupy 0x2000_0000..=0x201f_ffff and dynamically
+// allocated file identities start at 0x2100_0000. Keep capture objects in the
+// gap so their identity is independent of both the current fd and allocation
+// order while remaining collision-free within the synthetic pipe device.
+pub(super) const CAPTURE_STDOUT_INODE: libc::ino_t = 0x2020_0000;
+pub(super) const CAPTURE_STDERR_INODE: libc::ino_t = 0x2020_0001;
+const LAST_FD_DERIVED_INODE: libc::ino_t =
+    0x2000_0000 + ((super::GUEST_NOFILE_LIMIT as libc::ino_t - 1) * 2) + 1;
+const _: () = assert!(CAPTURE_STDOUT_INODE > LAST_FD_DERIVED_INODE);
+const _: () = assert!(CAPTURE_STDERR_INODE < crate::elf::FIRST_GUEST_FILE_IDENTITY_INODE);
 
 #[cfg(test)]
 thread_local! {
@@ -27,13 +36,24 @@ pub(super) type CaptureDropProbe = Box<dyn FnOnce([std::os::fd::RawFd; 2]) + Sen
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CaptureObjectIdentity {
-    pub(super) device: libc::dev_t,
     pub(super) inode: libc::ino_t,
 }
 
+impl CaptureObjectIdentity {
+    pub(super) const fn for_alias(alias: OutputAlias) -> Self {
+        Self {
+            inode: match alias {
+                OutputAlias::Stdout => CAPTURE_STDOUT_INODE,
+                OutputAlias::Stderr => CAPTURE_STDERR_INODE,
+            },
+        }
+    }
+}
+
 struct CapturePipe {
-    identity: CaptureObjectIdentity,
-    // Never installed in a guest file table, used for I/O, or exported.
+    // Never installed in a guest file table, used for I/O, or exported. The
+    // keeper preserves the existing fallible setup and root-owner lifecycle;
+    // guest-visible identity comes exclusively from the fixed metadata above.
     _keeper: OwnedFd,
 }
 
@@ -76,23 +96,15 @@ impl CapturePipe {
         if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
             return Err(std::io::Error::other("capture identity is not a pipe"));
         }
-        // No writer or buffered data exists. Keep one endpoint to prevent inode
-        // reuse; do not retain an extra descriptor merely to reserve its peer.
         #[cfg(test)]
         PIPES_PREPARED.set(PIPES_PREPARED.get() + 1);
-        Ok(Self {
-            identity: CaptureObjectIdentity {
-                device: stat.st_dev,
-                inode: stat.st_ino,
-            },
-            _keeper: keeper,
-        })
+        Ok(Self { _keeper: keeper })
     }
 }
 
 pub(super) struct CapturedPipeIdentities {
-    stdout: CapturePipe,
-    stderr: CapturePipe,
+    _stdout: CapturePipe,
+    _stderr: CapturePipe,
     #[cfg(test)]
     pub(super) drop_probe: std::sync::Mutex<Option<CaptureDropProbe>>,
 }
@@ -102,8 +114,8 @@ impl CapturedPipeIdentities {
         let stdout = CapturePipe::try_new()?;
         let stderr = CapturePipe::try_new()?;
         Ok(Self {
-            stdout,
-            stderr,
+            _stdout: stdout,
+            _stderr: stderr,
             #[cfg(test)]
             drop_probe: std::sync::Mutex::new(None),
         })
@@ -111,16 +123,19 @@ impl CapturedPipeIdentities {
 
     pub(super) fn metadata(&self) -> CaptureMetadata {
         CaptureMetadata {
-            stdout: self.stdout.identity,
-            stderr: self.stderr.identity,
+            // Keep captured-output objects outside the sequential allocator
+            // and per-fd proc ranges. Aliases retain these fixed object IDs
+            // after the original standard slot is replaced or closed.
+            stdout: CaptureObjectIdentity::for_alias(OutputAlias::Stdout),
+            stderr: CaptureObjectIdentity::for_alias(OutputAlias::Stderr),
         }
     }
 
     #[cfg(test)]
     pub(super) fn descriptors(&self) -> [std::os::fd::RawFd; 2] {
         [
-            self.stdout._keeper.as_raw_fd(),
-            self.stderr._keeper.as_raw_fd(),
+            self._stdout._keeper.as_raw_fd(),
+            self._stderr._keeper.as_raw_fd(),
         ]
     }
 }

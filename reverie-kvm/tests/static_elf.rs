@@ -14146,6 +14146,7 @@ struct identity {
   unsigned long long cookie;
   unsigned long long legacy_mount;
   unsigned long long unique_mount;
+  unsigned long long fdinfo_flags;
 };
 
 static int same_identity(struct identity left, struct identity right,
@@ -14157,7 +14158,8 @@ static int same_identity(struct identity left, struct identity right,
 }
 
 static int fdinfo_identity(int fd, unsigned long long *inode,
-                           unsigned long long *mount) {
+                           unsigned long long *mount,
+                           unsigned long long *flags) {
   char path[64], bytes[4096];
   int length = snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd);
   if (length <= 0 || length >= (int)sizeof(path)) return -1;
@@ -14168,7 +14170,7 @@ static int fdinfo_identity(int fd, unsigned long long *inode,
   if (close(info) != 0 || count <= 0) return -3;
   errno = saved;
   bytes[count] = 0;
-  int found_inode = 0, found_mount = 0;
+  int found_inode = 0, found_mount = 0, found_flags = 0;
   char *line = bytes;
   while (line && *line) {
     const char *value = 0;
@@ -14181,18 +14183,22 @@ static int fdinfo_identity(int fd, unsigned long long *inode,
       value = line + 7;
       output = mount;
       if (found_mount++) return -4;
+    } else if (!strncmp(line, "flags:", 6)) {
+      value = line + 6;
+      output = flags;
+      if (found_flags++) return -4;
     }
     if (value) {
       char *end = 0;
       errno = 0;
-      unsigned long long parsed = strtoull(value, &end, 10);
+      unsigned long long parsed = strtoull(value, &end, output == flags ? 8 : 10);
       if (errno || end == value || (*end != '\n' && *end != 0)) return -5;
       *output = parsed;
     }
     line = strchr(line, '\n');
     if (line) ++line;
   }
-  return found_inode == 1 && found_mount == 1 ? 0 : -6;
+  return found_inode == 1 && found_mount == 1 && found_flags == 1 ? 0 : -6;
 }
 
 static int observe(int fd, int anchor, const char *kind, int socket,
@@ -14249,8 +14255,8 @@ static int observe(int fd, int anchor, const char *kind, int socket,
   if (length != direct_count || memcmp(direct_link, expected, length))
     return base + 12;
 
-  unsigned long long info_inode = 0, info_mount = 0;
-  if (fdinfo_identity(fd, &info_inode, &info_mount) != 0 ||
+  unsigned long long info_inode = 0, info_mount = 0, info_flags = 0;
+  if (fdinfo_identity(fd, &info_inode, &info_mount, &info_flags) != 0 ||
       info_inode != (unsigned long long)direct.st_ino ||
       info_mount != legacy_statx.stx_mnt_id) return base + 13;
   unsigned long long cookie = 0;
@@ -14266,6 +14272,7 @@ static int observe(int fd, int anchor, const char *kind, int socket,
   identity->cookie = cookie;
   identity->legacy_mount = legacy_statx.stx_mnt_id;
   identity->unique_mount = unique_statx.stx_mnt_id;
+  identity->fdinfo_flags = info_flags;
   return 0;
 }
 
@@ -14322,7 +14329,8 @@ int main(int argc, char **argv) {
       pipe2(pipes, O_CLOEXEC) ||
       socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets)) return 10;
 
-  struct identity stdin_id, pipe_id[2], socket_id[2], alias;
+  struct identity stdin_id, captured_stdout, captured_stderr;
+  struct identity pipe_id[2], socket_id[2], alias;
   int result = observe(0, anchor, "pipe", 0, deterministic, &stdin_id, 5);
   if (result) return result;
   int stdin_alias = dup(0);
@@ -14340,6 +14348,24 @@ int main(int argc, char **argv) {
              stdin_id.inode != host_stdin_inode) {
     return 311;
   }
+
+  result = observe(1, anchor, "pipe", 0, deterministic, &captured_stdout, 332);
+  if (!result)
+    result = observe(2, anchor, "pipe", 0, deterministic, &captured_stderr, 352);
+  if (result || same_identity(captured_stdout, captured_stderr, 0))
+    return result ? result : 371;
+  if (deterministic &&
+      (major((dev_t)captured_stdout.device) != 0 ||
+       minor((dev_t)captured_stdout.device) != 0xff03 ||
+       captured_stdout.inode != 0x20200000ULL ||
+       captured_stderr.device != captured_stdout.device ||
+       captured_stderr.inode != 0x20200001ULL ||
+       captured_stdout.fdinfo_flags != O_WRONLY ||
+       captured_stderr.fdinfo_flags != O_WRONLY ||
+       captured_stdout.legacy_mount != 0x7fffff03ULL ||
+       captured_stderr.legacy_mount != 0x7fffff03ULL ||
+       captured_stdout.unique_mount != 0xffffffffffffff03ULL ||
+       captured_stderr.unique_mount != 0xffffffffffffff03ULL)) return 372;
 
   result = observe(pipes[0], anchor, "pipe", 0, deterministic, &pipe_id[0], 20);
   if (!result) result = observe(pipes[1], anchor, "pipe", 0, deterministic,
@@ -14413,12 +14439,19 @@ int main(int argc, char **argv) {
       same_identity(new_socket, socket_id[0], 1)) return result ? result : 288;
 
   if (deterministic) {
-    printf("stdin=%llu:%llu:%llu:%llu pipe=%llu:%llu:%llu:%llu "
+    printf("stdin=%llu:%llu:%llu:%llu capture-out=%llu:%llu:%llu:%llu:%llu "
+           "capture-err=%llu:%llu:%llu:%llu:%llu pipe=%llu:%llu:%llu:%llu "
            "socket0=%llu:%llu:%llu:%llu:%llu "
            "socket1=%llu:%llu:%llu:%llu:%llu reused-pipe=%llu:%llu:%llu:%llu "
            "reused-socket=%llu:%llu:%llu:%llu:%llu\n",
            stdin_id.device, stdin_id.inode, stdin_id.legacy_mount,
-           stdin_id.unique_mount, pipe_id[0].device, pipe_id[0].inode, pipe_id[0].legacy_mount,
+           stdin_id.unique_mount, captured_stdout.device, captured_stdout.inode,
+           captured_stdout.legacy_mount, captured_stdout.unique_mount,
+           captured_stdout.fdinfo_flags,
+           captured_stderr.device, captured_stderr.inode,
+           captured_stderr.legacy_mount, captured_stderr.unique_mount,
+           captured_stderr.fdinfo_flags,
+           pipe_id[0].device, pipe_id[0].inode, pipe_id[0].legacy_mount,
            pipe_id[0].unique_mount, socket_id[0].device, socket_id[0].inode,
            socket_id[0].cookie, socket_id[0].legacy_mount,
            socket_id[0].unique_mount, socket_id[1].device, socket_id[1].inode,
@@ -14430,6 +14463,7 @@ int main(int argc, char **argv) {
   } else {
     puts("native anonymous-object relationships ok");
   }
+  if (fputs("capture-stderr-ok\n", stderr) < 0) return 373;
   return 0;
 }
 "#,
@@ -14466,7 +14500,7 @@ int main(int argc, char **argv) {
         .unwrap();
     assert_eq!(native.status.code(), Some(0), "native: {native:?}");
     assert_eq!(native.stdout, b"native anonymous-object relationships ok\n");
-    assert!(native.stderr.is_empty(), "native: {native:?}");
+    assert_eq!(native.stderr, b"capture-stderr-ok\n", "native: {native:?}");
 
     let executable = executable.to_str().unwrap();
     let run = |with_tool: bool| {
@@ -14496,7 +14530,10 @@ int main(int argc, char **argv) {
     let direct = run(false);
     let direct_repeat = run(false);
     assert!(direct.0.starts_with(b"stdin="), "direct stdout: {direct:?}");
-    assert!(direct.1.is_empty(), "direct stderr: {direct:?}");
+    assert_eq!(
+        direct.1, b"capture-stderr-ok\n",
+        "direct stderr: {direct:?}"
+    );
     assert_eq!(direct_repeat, direct, "fresh direct KVM identities changed");
 
     let tool = run(true);
