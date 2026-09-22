@@ -14102,9 +14102,10 @@ int main(void) {
     assert_eq!(tool_stderr, native.stderr);
 }
 
-// Anonymous pipe/socket object numbers are intentionally compared only among
-// fresh KVM runs. Native Linux is the relationship oracle, but its allocator
-// is host-global and therefore cannot supply the deterministic numeric values.
+// Anonymous pipe/socket object numbers, including a fresh caller-supplied pipe
+// stdin, are intentionally compared only among fresh KVM runs. Native Linux is
+// the relationship oracle, but its allocator is host-global and therefore
+// cannot supply the deterministic numeric values.
 // This test makes no L2-exit, syscall-log, or record/replay-parity claim.
 // SCM coverage keeps one source alias for each sent object live through recv.
 // Queued send -> close every guest reference -> receive can remint and is not
@@ -14305,20 +14306,46 @@ static int receive_rights(int socket, int *fds, size_t count) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 2) return 1;
+  if (argc != 4) return 1;
   int deterministic = !strcmp(argv[1], "kvm");
   if (!deterministic && strcmp(argv[1], "native")) return 2;
+  char *end = 0;
+  errno = 0;
+  unsigned long long host_stdin_device = strtoull(argv[2], &end, 10);
+  if (errno || end == argv[2] || *end) return 3;
+  errno = 0;
+  unsigned long long host_stdin_inode = strtoull(argv[3], &end, 10);
+  if (errno || end == argv[3] || *end) return 4;
   int anchor = open("/proc/self/fd", O_PATH | O_DIRECTORY | O_CLOEXEC);
   int channel[2], pipes[2], sockets[2];
   if (anchor < 0 || socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0, channel) ||
       pipe2(pipes, O_CLOEXEC) ||
       socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets)) return 10;
 
-  struct identity pipe_id[2], socket_id[2], alias;
-  int result = observe(pipes[0], anchor, "pipe", 0, deterministic, &pipe_id[0], 20);
+  struct identity stdin_id, pipe_id[2], socket_id[2], alias;
+  int result = observe(0, anchor, "pipe", 0, deterministic, &stdin_id, 5);
+  if (result) return result;
+  int stdin_alias = dup(0);
+  if (stdin_alias < 0) return 19;
+  if ((result = observe(stdin_alias, anchor, "pipe", 0, deterministic, &alias, 290)) ||
+      !same_identity(alias, stdin_id, 0)) return result ? result : 309;
+  if (deterministic) {
+    if (stdin_id.device == host_stdin_device || stdin_id.inode == host_stdin_inode)
+      return 310;
+    if (major((dev_t)stdin_id.device) != 0 ||
+        minor((dev_t)stdin_id.device) != 0xff03 ||
+        stdin_id.legacy_mount != 0x7fffff03ULL ||
+        stdin_id.unique_mount != 0xffffffffffffff03ULL) return 312;
+  } else if (stdin_id.device != host_stdin_device ||
+             stdin_id.inode != host_stdin_inode) {
+    return 311;
+  }
+
+  result = observe(pipes[0], anchor, "pipe", 0, deterministic, &pipe_id[0], 20);
   if (!result) result = observe(pipes[1], anchor, "pipe", 0, deterministic,
                                 &pipe_id[1], 40);
   if (result || !same_identity(pipe_id[0], pipe_id[1], 0)) return result ? result : 59;
+  if (deterministic && same_identity(stdin_id, pipe_id[0], 0)) return 313;
   result = observe(sockets[0], anchor, "socket", 1, deterministic, &socket_id[0], 60);
   if (!result) result = observe(sockets[1], anchor, "socket", 1, deterministic,
                                 &socket_id[1], 80);
@@ -14336,8 +14363,12 @@ int main(int argc, char **argv) {
   if (child < 0) return 141;
   if (child == 0) {
     struct identity inherited;
-    int child_result = observe(pipe_alias, anchor, "pipe", 0, deterministic,
-                               &inherited, 142);
+    int child_result = observe(0, anchor, "pipe", 0, deterministic,
+                               &inherited, 312);
+    if (!child_result && !same_identity(inherited, stdin_id, 0)) child_result = 331;
+    if (!child_result)
+      child_result = observe(pipe_alias, anchor, "pipe", 0, deterministic,
+                             &inherited, 142);
     if (!child_result && !same_identity(inherited, pipe_id[0], 0)) child_result = 161;
     if (!child_result)
       child_result = observe(socket_alias, anchor, "socket", 1, deterministic,
@@ -14382,10 +14413,12 @@ int main(int argc, char **argv) {
       same_identity(new_socket, socket_id[0], 1)) return result ? result : 288;
 
   if (deterministic) {
-    printf("pipe=%llu:%llu:%llu:%llu socket0=%llu:%llu:%llu:%llu:%llu "
+    printf("stdin=%llu:%llu:%llu:%llu pipe=%llu:%llu:%llu:%llu "
+           "socket0=%llu:%llu:%llu:%llu:%llu "
            "socket1=%llu:%llu:%llu:%llu:%llu reused-pipe=%llu:%llu:%llu:%llu "
            "reused-socket=%llu:%llu:%llu:%llu:%llu\n",
-           pipe_id[0].device, pipe_id[0].inode, pipe_id[0].legacy_mount,
+           stdin_id.device, stdin_id.inode, stdin_id.legacy_mount,
+           stdin_id.unique_mount, pipe_id[0].device, pipe_id[0].inode, pipe_id[0].legacy_mount,
            pipe_id[0].unique_mount, socket_id[0].device, socket_id[0].inode,
            socket_id[0].cookie, socket_id[0].legacy_mount,
            socket_id[0].unique_mount, socket_id[1].device, socket_id[1].inode,
@@ -14402,8 +14435,33 @@ int main(int argc, char **argv) {
 "#,
     );
 
+    fn fresh_pipe_stdin() -> (std::fs::File, std::fs::File, u64, u64) {
+        use std::os::fd::AsRawFd;
+        use std::os::fd::FromRawFd;
+
+        let mut pipe = [-1; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        let reader = unsafe { std::fs::File::from_raw_fd(pipe[0]) };
+        let writer = unsafe { std::fs::File::from_raw_fd(pipe[1]) };
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        assert_eq!(
+            unsafe { libc::fstat(reader.as_raw_fd(), stat.as_mut_ptr()) },
+            0
+        );
+        let stat = unsafe { stat.assume_init() };
+        (reader, writer, stat.st_dev, stat.st_ino)
+    }
+
+    let (native_stdin, native_writer, native_device, native_inode) = fresh_pipe_stdin();
+    drop(native_writer);
+    let native_device = native_device.to_string();
+    let native_inode = native_inode.to_string();
     let native = std::process::Command::new(&executable)
-        .arg("native")
+        .args(["native", native_device.as_str(), native_inode.as_str()])
+        .stdin(std::process::Stdio::from(native_stdin))
         .output()
         .unwrap();
     assert_eq!(native.status.code(), Some(0), "native: {native:?}");
@@ -14411,15 +14469,38 @@ int main(int argc, char **argv) {
     assert!(native.stderr.is_empty(), "native: {native:?}");
 
     let executable = executable.to_str().unwrap();
-    let direct = run_host_program_captured(executable, &[executable, "kvm"], &directory.0);
-    let direct_repeat = run_host_program_captured(executable, &[executable, "kvm"], &directory.0);
-    assert!(direct.0.starts_with(b"pipe="), "direct stdout: {direct:?}");
+    let run = |with_tool: bool| {
+        let (stdin, writer, host_device, host_inode) = fresh_pipe_stdin();
+        drop(writer);
+        let host_device = host_device.to_string();
+        let host_inode = host_inode.to_string();
+        let argv = [executable, "kvm", host_device.as_str(), host_inode.as_str()];
+        let image = std::fs::read(executable).unwrap();
+        let mut backend = KvmBackend::new_with_stdin(256 * 1024 * 1024, Some(stdin)).unwrap();
+        backend
+            .install_static_elf_with_context(&image, &argv, &["PATH=/usr/bin:/bin"], &directory.0)
+            .unwrap();
+        if with_tool {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            assert_eq!(code, 0, "Tool stdout={stdout:?} stderr={stderr:?}");
+            (stdout, stderr)
+        } else {
+            let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+            assert_eq!(code, 0, "direct stdout={stdout:?} stderr={stderr:?}");
+            (stdout, stderr)
+        }
+    };
+    let direct = run(false);
+    let direct_repeat = run(false);
+    assert!(direct.0.starts_with(b"stdin="), "direct stdout: {direct:?}");
     assert!(direct.1.is_empty(), "direct stderr: {direct:?}");
     assert_eq!(direct_repeat, direct, "fresh direct KVM identities changed");
 
-    let tool = run_host_program_with_tool_captured(executable, &[executable, "kvm"], &directory.0);
-    let tool_repeat =
-        run_host_program_with_tool_captured(executable, &[executable, "kvm"], &directory.0);
+    let tool = run(true);
+    let tool_repeat = run(true);
     assert_eq!(tool, direct, "Tool and direct KVM identities differ");
     assert_eq!(tool_repeat, tool, "fresh Tool KVM identities changed");
 }

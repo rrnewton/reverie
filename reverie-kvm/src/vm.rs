@@ -1725,6 +1725,7 @@ impl KvmBackend {
             loaded.capability_permitted,
         )));
         loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
+        crate::executor::initialize_inherited_stdin_identity(&mut loaded)?;
         configure_long_mode(
             &mut self.memory,
             &self.vcpu,

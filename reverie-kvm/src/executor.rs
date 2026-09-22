@@ -3471,11 +3471,19 @@ impl ElfExecutor {
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let stdin = self.state.take_stdin();
         let retired = std::mem::take(&mut self.state.files);
+        let identities = std::mem::take(&mut self.state.fd_object_inodes);
         self.state.fd_entry_ids.clear();
         self.file_table = Arc::new(Mutex::new(FileTableState::default()));
         let action = self.process_action.take();
         drop(_transaction);
         drop(_files);
+        // Drop this executor's old shared-table reference before its local
+        // identities. A live CLONE_FILES sibling keeps both the table and its
+        // identity Arcs; otherwise no exited process silently acts as an
+        // identity escrow for a descriptor held only by a kernel SCM queue.
+        drop(files);
+        drop(identities);
+        cleanup_fd_object_inodes(&self.state);
         self.state
             .file_retirement
             .retire(retired.into_values().chain(stdin));
@@ -8910,6 +8918,37 @@ fn allocate_fd_object_inode(
     };
     table.objects.insert(prepared.key, entry);
     Ok(identity)
+}
+
+fn negative_result_as_io(error: i64) -> std::io::Error {
+    let errno = error
+        .checked_neg()
+        .and_then(|errno| libc::c_int::try_from(errno).ok())
+        .filter(|errno| *errno > 0)
+        .unwrap_or(libc::EIO);
+    std::io::Error::from_raw_os_error(errno)
+}
+
+/// Register a caller-supplied anonymous stdin before publishing the initial
+/// file table. `KvmBackend` owns a stable duplicate of this description, so it
+/// cannot race a later supervisor replacement of fd 0. Ordinary stdin keeps
+/// its native metadata and does not consume the deterministic inode sequence.
+pub(crate) fn initialize_inherited_stdin_identity(
+    state: &mut LoadedStaticElf,
+) -> std::io::Result<()> {
+    if state.fd_object_inodes.contains_key(&libc::STDIN_FILENO) {
+        return Ok(());
+    }
+    let Some(stdin) = state.stdin.as_ref() else {
+        return Ok(());
+    };
+    let prepared = inspect_file_identity(stdin).map_err(negative_result_as_io)?;
+    if prepared.kind == GuestFileIdentityKind::Ordinary {
+        return Ok(());
+    }
+    let identity = allocate_fd_object_inode(state, stdin).map_err(negative_result_as_io)?;
+    state.fd_object_inodes.insert(libc::STDIN_FILENO, identity);
+    Ok(())
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review descriptor insertion and identity allocation.
@@ -37074,6 +37113,7 @@ mod tests {
         // This is loader setup, before the executor publishes its file table.
         // SAFETY: each successful pipe descriptor is transferred to one File.
         state.stdin = Some(unsafe { std::fs::File::from_raw_fd(pipe[0]) });
+        initialize_inherited_stdin_identity(&mut state).unwrap();
         let writer = unsafe { std::fs::File::from_raw_fd(pipe[1]) };
         (
             FdinfoFixture {
@@ -37271,6 +37311,12 @@ mod tests {
     fn inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime() {
         let (mut f, mut writer) = inherited_pipe_stdin_fixture(false);
         let local = f.executor.state.stdin.as_ref().unwrap().as_raw_fd();
+        let identity = f.executor.state.fd_object_inodes[&libc::STDIN_FILENO].clone();
+        assert_eq!(identity.kind, GuestFileIdentityKind::Pipe);
+        assert!(Arc::ptr_eq(
+            &identity,
+            &f.executor.file_table.lock().unwrap().fd_object_inodes[&libc::STDIN_FILENO]
+        ));
         let authoritative = f
             .executor
             .file_table
@@ -37282,6 +37328,14 @@ mod tests {
             .as_raw_fd();
         let mut child = f.executor.fork_child(2, false, false).unwrap();
         assert!(!Arc::ptr_eq(&f.executor.file_table, &child.file_table));
+        assert!(Arc::ptr_eq(
+            &identity,
+            &child.state.fd_object_inodes[&libc::STDIN_FILENO]
+        ));
+        assert!(Arc::ptr_eq(
+            &identity,
+            &child.file_table.lock().unwrap().fd_object_inodes[&libc::STDIN_FILENO]
+        ));
         let child_local = child.state.stdin.as_ref().unwrap().as_raw_fd();
         let child_authoritative = child
             .file_table
@@ -37335,6 +37389,14 @@ mod tests {
         let replacement = test_exec_replacement(&f.root.0, &f.executor.state);
         f.executor.replace_after_exec(replacement);
         assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
+        assert!(Arc::ptr_eq(
+            &identity,
+            &f.executor.state.fd_object_inodes[&libc::STDIN_FILENO]
+        ));
+        assert!(Arc::ptr_eq(
+            &identity,
+            &f.executor.file_table.lock().unwrap().fd_object_inodes[&libc::STDIN_FILENO]
+        ));
         assert_eq!(
             f.executor
                 .file_table
@@ -37362,12 +37424,71 @@ mod tests {
         f.executor.replace_after_exec(replacement);
         assert!(f.executor.state.stdin.is_none());
         assert!(f.executor.file_table.lock().unwrap().stdin.is_none());
+        assert!(
+            !f.executor
+                .state
+                .fd_object_inodes
+                .contains_key(&libc::STDIN_FILENO)
+        );
+        assert!(
+            !f.executor
+                .file_table
+                .lock()
+                .unwrap()
+                .fd_object_inodes
+                .contains_key(&libc::STDIN_FILENO)
+        );
         assert_eq!(
             f.call(libc::SYS_read, [0, PAGE_SIZE, 1, 0, 0, 0]),
             negative_errno(libc::EBADF)
         );
         f.executor.release_files_on_exit();
         assert!(f.executor.state.stdin.is_none());
+    }
+
+    #[test]
+    fn exited_executor_drops_anonymous_identities_without_live_file_table_owners() {
+        let (mut owner, _writer) = inherited_pipe_stdin_fixture(false);
+        let weak_identity =
+            Arc::downgrade(&owner.executor.state.fd_object_inodes[&libc::STDIN_FILENO]);
+        let weak_table = Arc::downgrade(&owner.executor.file_table);
+        owner.executor.release_files_on_exit();
+        assert!(owner.executor.state.fd_object_inodes.is_empty());
+        assert!(weak_table.upgrade().is_none());
+        assert!(weak_identity.upgrade().is_none());
+        assert!(
+            owner
+                .executor
+                .state
+                .file_identity_table
+                .lock()
+                .unwrap()
+                .objects
+                .is_empty()
+        );
+
+        let (mut owner, _writer) = inherited_pipe_stdin_fixture(false);
+        let sibling = owner.executor.thread_child(2).unwrap();
+        let weak_identity =
+            Arc::downgrade(&owner.executor.state.fd_object_inodes[&libc::STDIN_FILENO]);
+        let shared_table = Arc::downgrade(&owner.executor.file_table);
+        owner.executor.release_files_on_exit();
+        assert!(weak_identity.upgrade().is_some());
+        assert!(shared_table.upgrade().is_some());
+        drop(sibling);
+        cleanup_fd_object_inodes(&owner.executor.state);
+        assert!(weak_identity.upgrade().is_none());
+        assert!(shared_table.upgrade().is_none());
+        assert!(
+            owner
+                .executor
+                .state
+                .file_identity_table
+                .lock()
+                .unwrap()
+                .objects
+                .is_empty()
+        );
     }
 
     type RetirementObservations = Arc<Mutex<Vec<Vec<(i32, libc::mode_t)>>>>;

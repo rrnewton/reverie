@@ -1172,10 +1172,15 @@ impl LoadedStaticElf {
             .into_iter()
             .filter(|(fd, _)| files.contains_key(fd))
             .collect();
+        let inherited_stdin_open = stdin.is_some()
+            && !cloexec_fds.contains(&libc::STDIN_FILENO)
+            && !files.contains_key(&libc::STDIN_FILENO);
         let fd_object_inodes: std::collections::BTreeMap<_, _> = previous
             .fd_object_inodes
             .into_iter()
-            .filter(|(fd, _)| files.contains_key(fd))
+            .filter(|(fd, _)| {
+                files.contains_key(fd) || (*fd == libc::STDIN_FILENO && inherited_stdin_open)
+            })
             .collect();
         let task_lifecycle = previous.task_lifecycle.clone();
         let file_identity_table = previous.file_identity_table.clone();
