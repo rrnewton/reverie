@@ -3747,7 +3747,7 @@ class StartUnitTest(unittest.TestCase):
         publication = next(command for command in self.fake.commands
                            if len(command) > 1 and command[1].endswith("ci-hub/series/mirror.py"))
         self.assertIn("--results", publication)
-        self.assertEqual("validate-test.service", publication[publication.index("--finalized-run-id") + 1])
+        self.assertEqual("validate-test", publication[publication.index("--finalized-run-id") + 1])
 
     def test_ledger_mirror_failure_is_loud_without_changing_green_verdict(self) -> None:
         self.fake.ledger_mirror_rc = 1
@@ -3801,7 +3801,8 @@ class StartUnitTest(unittest.TestCase):
             return start_unit.run_command(command, **kwargs)
 
         errors = io.StringIO()
-        with contextlib.redirect_stderr(errors):
+        with (contextlib.redirect_stderr(errors),
+              mock.patch.object(start_unit.time, "monotonic_ns", return_value=1_000_000_000_000)):
             result = start_unit.finalize_ledger_mirror(
                 self.root, self.root, record_path, record=record, run=run,
             )
@@ -3823,6 +3824,29 @@ class StartUnitTest(unittest.TestCase):
             self.assertIn("exit 7", record["ledger_mirror"]["detail"])
             self.assertIn("synthetic mirror diagnostic", record["ledger_mirror"]["detail"])
             self.assertIn("CELL LEDGER PUBLICATION INCOMPLETE", error)
+
+    def test_mirror_deadline_uses_actual_remaining_stop_post_budget(self) -> None:
+        start = 10_000_000_000
+        def run(command, **kwargs):
+            self.assertEqual(["systemctl", "--user", "show", "validate-test.service",
+                              "-p", "ActiveExitTimestampMonotonic", "-p", "TimeoutStopUSec"], command)
+            return subprocess.CompletedProcess(command, 0,
+                "ActiveExitTimestampMonotonic=5000000\nTimeoutStopUSec=10min\n", "")
+        with mock.patch.object(Path, "read_text", return_value="0::/user.slice/validate-test.service\n"):
+            deadline = start_unit._retirement_publication_deadline(
+                "validate-test", run=run, started_ns=start)
+        self.assertEqual(605_000_000_000, deadline)
+        self.assertEqual(595_000_000_000, deadline - start)
+
+    def test_stop_post_deadline_refuses_unbound_unit_timing(self) -> None:
+        for values in ("", "ActiveExitTimestampMonotonic=0\nTimeoutStopUSec=10min\n",
+                       "ActiveExitTimestampMonotonic=5000000\nTimeoutStopUSec=1h\n"):
+            with self.subTest(values=values), mock.patch.object(
+                Path, "read_text", return_value="0::/user.slice/validate-test.service\n"
+            ), self.assertRaisesRegex(ValueError, "active stop-post deadline"):
+                start_unit._retirement_publication_deadline(
+                    "validate-test", started_ns=10_000_000_000,
+                    run=lambda command, **kwargs: subprocess.CompletedProcess(command, 0, values, ""))
 
     def test_successful_publication_is_not_repeated_on_reentry(self) -> None:
         rc, _output, error = self.invoke()

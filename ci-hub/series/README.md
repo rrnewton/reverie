@@ -32,6 +32,18 @@ Unknown dirty writer contents and unpublished derived commits are retained for
 recovery, never silently reset. Concurrent batches keep their event IDs and
 original timestamps; conflicting bodies for one ID refuse publication.
 
+The mirror CLI uses one monotonic lifecycle deadline for preparation, lock
+acquisition, the complete held transaction, and cleanup. It enforces the
+existing caller ceiling of 1,800 seconds; validation stop-post instead supplies the actual remaining part
+of its existing 600-second service teardown budget. Retries do not restart this
+clock. The bounded worker waits for the ledger lock within that same deadline,
+rather than refusing after 60 seconds while a legitimate transaction is active.
+An owned child cgroup keeps every child inside the caller's existing resource
+limits, including descendants that create a new session. Deadline or monitor
+death reaps that exact subtree; unavailable containment refuses before publishing.
+Timeouts remain delivery failures and preserve the original validation verdict,
+spool, and evidence for supported recovery.
+
 The ledger checkout is `hermit_test_ledger` under the shared parent, or the
 explicit `DEV_HERMIT_TEST_LEDGER_ROOT` override. It must be an initialized checkout
 with the expected repository origin. The publisher passes its held lock to the

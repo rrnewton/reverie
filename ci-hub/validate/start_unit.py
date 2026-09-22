@@ -6033,8 +6033,13 @@ def finalize_ledger_mirror(
     *,
     record: Mapping[str, Any],
     run: Runner,
+    lifecycle_deadline_ns: int | None = None,
 ) -> dict[str, Any]:
     """Publish directly to the cell ledger after the validation verdict exists."""
+    started_ns = time.monotonic_ns()
+    deadline_ns = min(started_ns + 1800 * 1_000_000_000,
+                      lifecycle_deadline_ns if lifecycle_deadline_ns is not None
+                      else started_ns + 1800 * 1_000_000_000)
     if cell_ledger_published(record):
         return dict(record)
     # Historical reattachment reads its existing handoff. It must not turn an
@@ -6080,7 +6085,11 @@ def finalize_ledger_mirror(
                 # E2E_RUN_ID uses the launcher's suffix-free identity; the
                 # durable handle names the corresponding systemd .service.
                 command.extend(["--finalized-run-id", sanitize_unit(unit)])
-            result = run(command, cwd=root, check=False, timeout=1800)
+            remaining = (deadline_ns - time.monotonic_ns()) / 1e9
+            if remaining <= 2:
+                raise ValueError("publication lifecycle deadline exhausted before preparation")
+            command.extend(["--lifecycle-deadline-ns", str(deadline_ns)])
+            result = run(command, cwd=root, check=False, timeout=remaining)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             outcome = {
                 "state": "failed",
@@ -6272,6 +6281,32 @@ def cleanup_after_attach(
             )
 
 
+def _retirement_publication_deadline(
+    unit: str, *, run: Runner, started_ns: int,
+) -> int:
+    """Keep publication inside this stop-post's actual remaining unit budget."""
+    deadline = started_ns + VALIDATE_TEARDOWN_TIMEOUT_SECONDS * 1_000_000_000
+    membership = Path("/proc/self/cgroup").read_text().strip().split("::", 1)[1]
+    if f"{sanitize_unit(unit)}.service" not in Path(membership).parts:
+        # An explicit standalone --retire-unit has no active stop-post to
+        # inherit. It receives the same finite teardown ceiling from entry.
+        return deadline
+    result = run(["systemctl", "--user", "show", f"{sanitize_unit(unit)}.service",
+                  "-p", "ActiveExitTimestampMonotonic", "-p", "TimeoutStopUSec"],
+                 check=False, timeout=2)
+    fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    # systemctl's numeric microsecond timestamp is monotonic; TimeoutStopUSec
+    # is rendered as a duration, so request its existing known cap separately
+    # and refuse any unit that does not carry the launcher's declared value.
+    expected = f"{VALIDATE_TEARDOWN_TIMEOUT_SECONDS // 60}min"
+    if (result.returncode or fields.get("TimeoutStopUSec") != expected
+            or not fields.get("ActiveExitTimestampMonotonic", "").isdigit()
+            or int(fields["ActiveExitTimestampMonotonic"]) <= 0):
+        raise ValueError("cannot bind publication to the active stop-post deadline")
+    return min(deadline, int(fields["ActiveExitTimestampMonotonic"]) * 1000
+               + VALIDATE_TEARDOWN_TIMEOUT_SECONDS * 1_000_000_000)
+
+
 def retire_unit_after_writeback(
     raw_unit: str,
     *,
@@ -6314,6 +6349,7 @@ def retire_unit_after_writeback(
     # re-enters through `systemd-run --working-directory=$PWD`, so a cwd inside
     # the target makes the REMOVER'S OWN UNIT refuse to start. `root` and the
     # recorded paths are absolute, so nothing below depends on where we stand.
+    retirement_started_ns = time.monotonic_ns()
     os.chdir("/")
 
     unit = sanitize_unit(raw_unit)
@@ -6346,12 +6382,20 @@ def retire_unit_after_writeback(
         )
         return 0
 
+    try:
+        lifecycle_deadline_ns = _retirement_publication_deadline(
+            unit, run=run, started_ns=retirement_started_ns,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(f"validate-run: RETIRE-REFUSED {unit}: {error}; original results retained.", file=sys.stderr)
+        return EXIT_COULD_NOT_DETERMINE
     record = finalize_ledger_mirror(
         root,
         tool_root,
         record_path,
         record=record,
         run=run,
+        lifecycle_deadline_ns=lifecycle_deadline_ns,
     )
 
     checkout = Path(raw_checkout)

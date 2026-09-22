@@ -57,6 +57,11 @@
 #                      cgroup boxing cannot be established. NOT recommended (defeats the
 #                      whole point); provided for parity with the underlying runner.
 #
+#   --inherited-deadline-ns N  passthrough-only absolute CLOCK_MONOTONIC deadline.
+#                      Own a child cgroup under the current caller; preserve all
+#                      inherited CPU/memory/task limits. Includes setup and cleanup,
+#                      adds no CPU-time cap, and refuses without child-cgroup support.
+#                      Cannot be combined with independent resource/receipt options.
 #   --passthrough      (alias --exec) TRANSPARENT-PASSTHROUGH mode. Stream the child's fd1/fd2
 #                      VERBATIM (byte-identical: no `[box.<tag>]` banner/prefix, no scope id on
 #                      the consumed streams) and propagate the child's REAL exit status (a
@@ -90,6 +95,8 @@ SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 
 cpu_budget=240
+cpu_budget_explicit=0
+inherited_deadline_ns=""
 wall=""
 mem=""
 cores=""
@@ -117,8 +124,9 @@ done
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --cpu-budget) [ $# -ge 2 ] || die "--cpu-budget needs a value"; cpu_budget="$2"; shift 2 ;;
-    --cpu-budget=*) cpu_budget="${1#*=}"; shift ;;
+    --inherited-deadline-ns) [ $# -ge 2 ] || die "--inherited-deadline-ns needs a value"; inherited_deadline_ns="$2"; shift 2 ;;
+    --cpu-budget) [ $# -ge 2 ] || die "--cpu-budget needs a value"; cpu_budget="$2"; cpu_budget_explicit=1; shift 2 ;;
+    --cpu-budget=*) cpu_budget="${1#*=}"; cpu_budget_explicit=1; shift ;;
     --wall)       [ $# -ge 2 ] || die "--wall needs a value"; wall="$2"; shift 2 ;;
     --wall=*)     wall="${1#*=}"; shift ;;
     --mem)        [ $# -ge 2 ] || die "--mem needs a value"; mem="$2"; shift 2 ;;
@@ -147,6 +155,15 @@ done
 [ $# -ge 1 ] || die "no command given (use '-- CMD [ARGS...]')"
 case "$cpu_budget" in ''|*[!0-9]*) die "--cpu-budget must be a positive integer (seconds)";; esac
 [ "$cpu_budget" -gt 0 ] || die "--cpu-budget must be > 0"
+if [ -n "$inherited_deadline_ns" ]; then
+  [[ $inherited_deadline_ns =~ ^[1-9][0-9]{0,17}$ ]] || die "invalid absolute monotonic deadline"
+  [ "$passthrough" -eq 1 ] || die "--inherited-deadline-ns requires --passthrough"
+  [ -z "$wall$mem$cores$actual_json$perf_dir" ] && [ "$allow_cgroup_failure" -eq 0 ] && [ "$cpu_budget_explicit" -eq 0 ] ||
+    die "inherited deadline mode preserves caller resources and requires boxing"
+  # Publication already belongs to the caller's CPU/memory/task envelope.
+  # This opt-in mode adds only its caller's absolute lifecycle deadline.
+  cpu_budget=0
+fi
 if [ -n "$wall" ]; then
   case "$wall" in ''|*[!0-9]*) die "--wall must be a positive integer (seconds)";; esac
   [ "$wall" -gt 0 ] || die "--wall must be > 0"
@@ -217,7 +234,9 @@ passthrough_run() {
   # fail-closed exit 3 with NO child started (unless explicitly downgraded).
   local have_box=1
   [ "$(stat -fc %T /sys/fs/cgroup 2>/dev/null || true)" = "cgroup2fs" ] || have_box=0
-  systemctl --user show -p Version >/dev/null 2>&1 || have_box=0
+  if [ -z "$inherited_deadline_ns" ]; then
+    systemctl --user show -p Version >/dev/null 2>&1 || have_box=0
+  fi
   if [ "$have_box" -eq 0 ]; then
     if [ "$allow_cgroup_failure" -eq 1 ]; then
       diag "WARNING: cgroup boxing unavailable — running UNBOXED (--allow-cgroup-failure). No reaper."
@@ -258,11 +277,22 @@ PY
   local unit runner_pid="" cgpath=""
   local cgroup_resolved=0 final_usage_observed=0 runner_waited=0
   local payload_completed=0 payload_status_file="" payload_release_file="" hold_dir=""
+  local watchdog_pid=""
   local receipt_pid="" completed_cpu_observed=0 completed_cpu_nsec="" maximum_usage=0 accounting_failed=0
   local budget_usec=$(( cpu_budget * 1000000 ))
   local reaped=0 last_usage=0 termination="completed" status=0
   local teardown_armed=1 pending_signal=0 scope_teardown_proven=0 teardown_exhausted=0
   local manager_wall=1800 wall_deadline=0
+  _pt_monotonic_ns() { /usr/bin/python3 -c 'import time; print(time.monotonic_ns())'; }
+  _pt_deadline_expired() {
+    if [ -n "$inherited_deadline_ns" ]; then
+      # Keep the final two seconds INSIDE the caller's deadline for cgroup.kill,
+      # population verification and reaping. No retry starts a fresh budget.
+      [ "$(_pt_monotonic_ns)" -ge "$(( inherited_deadline_ns - 2000000000 ))" ]
+    else
+      [ "$wall_deadline" -gt 0 ] && [ "$(date +%s)" -ge "$wall_deadline" ]
+    fi
+  }
   if [ -n "$wall" ]; then
     manager_wall=$(( wall + 2 ))
     wall_deadline=$(( $(date +%s) + wall ))
@@ -277,6 +307,24 @@ PY
   # Memory cap -> cgroup memory.max with swap disabled, so the kernel HARD-OOM-kills the
   # subtree at the cap instead of swapping past it (matches the outer safe-ci.slice policy).
   [ -n "$mem_bytes" ] && sr+=(-p "MemoryMax=$mem_bytes" -p "MemorySwapMax=0")
+  if [ -n "$inherited_deadline_ns" ]; then
+    local caller_cgroup
+    caller_cgroup="$(awk -F: '$1 == "0" && $2 == "" { print $3 }' /proc/self/cgroup)"
+    [[ $caller_cgroup == /* && $caller_cgroup != / && $caller_cgroup != *..* ]] ||
+      die "cannot establish caller cgroup"
+    cgpath="/sys/fs/cgroup$caller_cgroup/$unit"
+    _pt_deadline_expired && { echo "hermit-box-run: lifecycle deadline expired before setup" >&2; exit 124; }
+    # No sibling systemd unit and no controller/limit writes: all resources
+    # remain accounted to and bounded by the original caller's ancestors.
+    sr=(bash -c '
+      group=$1; deadline=$2; monitor=$3; shift 3
+      printf "%s\n" "$BASHPID" >"$group/cgroup.procs" || exit 3
+      export HERMIT_BOX_LIFECYCLE_CGROUP="$group"
+      export HERMIT_BOX_LIFECYCLE_DEADLINE_NS="$deadline"
+      export HERMIT_BOX_LIFECYCLE_MONITOR_PID="$monitor"
+      exec "$@"
+    ' bash "$cgpath" "$inherited_deadline_ns" "$$")
+  fi
   diag "scope=$unit cpu-budget=${cpu_budget}s wall=${wall:-none} mem=${mem_bytes:-none} cmd: $*"
 
   # Preserve BYTE-IDENTICAL passthrough: the boxed CHILD must own the caller's REAL fd1/fd2,
@@ -297,6 +345,7 @@ PY
     if [ -n "$cgpath" ] && [ -r "$cgpath/cgroup.procs" ]; then
       return 0
     fi
+    [ -z "$inherited_deadline_ns" ] || return 1
     cgpath=""
     discovered="$(systemctl --user show -p ControlGroup --value "$unit" 2>/dev/null || true)"
     if [ -n "$discovered" ] && [ -r "/sys/fs/cgroup$discovered/cgroup.procs" ]; then
@@ -340,12 +389,34 @@ PY
     done
     return 1
   }
+  _pt_monotonic_ms() { /usr/bin/awk '{ printf "%d\n", $1 * 1000 }' /proc/uptime; }
+  _pt_wait_unit_absent() {
+    [ -n "$inherited_deadline_ns" ] && [ ! -d "$cgpath" ]
+  }
   _pt_kill_scope() {
     local attempts=${1:-20} attempt kill_requested=0
     local started deadline short_deadline now
     _pt_monotonic_ms() {
       /usr/bin/awk '{ printf "%d\n", $1 * 1000 }' /proc/uptime
     }
+    if [ -n "$inherited_deadline_ns" ]; then
+      [ -d "$cgpath" ] || return 0
+      echo 1 >"$cgpath/cgroup.kill" 2>/dev/null || return 1
+      while :; do
+        if awk '$1 == "populated" && $2 == "0" { found=1 } END { exit !found }' "$cgpath/cgroup.events"; then
+          # Payload-created empty descendant cgroups are still our subtree.
+          /usr/bin/python3 - "$cgpath" <<'REMOVE_CGROUPS'
+import os, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+for directory, children, files in os.walk(root, topdown=False):
+    pathlib.Path(directory).rmdir()
+REMOVE_CGROUPS
+          return $?
+        fi
+        [ "$(_pt_monotonic_ns)" -lt "$inherited_deadline_ns" ] || return 1
+        sleep 0.02
+      done
+    fi
     started="$(_pt_monotonic_ms)"
     deadline=$(( started + 800 ))
     short_deadline=$(( started + 250 ))
@@ -436,6 +507,12 @@ PY
     if _pt_kill_scope "$attempts"; then
       scope_teardown_proven=1
       return 0
+    fi
+    if [ -n "$inherited_deadline_ns" ]; then
+      teardown_exhausted=1
+      status=3
+      diag "ERROR: owned child cgroup remained populated at lifecycle deadline."
+      return 1
     fi
     accounting_failed=1
     status=3
@@ -779,11 +856,12 @@ CPU_REFERENCE_PY
     return 1
   }
   _pt_reap_for_wall_timeout() {
-    diag "WALL-TIMEOUT: exceeded ${wall}s wall-clock — reaping via cgroup.kill"
+    diag "WALL-TIMEOUT: lifecycle deadline exceeded — reaping via cgroup.kill"
     termination="wall_backstop"
     _pt_freeze_and_capture || true
     _pt_kill_or_refuse || true
     reaped=1
+    [ -z "$inherited_deadline_ns" ] || status=124
   }
   _pt_teardown() {
     local status=$1
@@ -798,6 +876,11 @@ CPU_REFERENCE_PY
       teardown_verified=1
     fi
     _pt_release_holder || true
+    if [ -n "$watchdog_pid" ]; then
+      kill -KILL "$watchdog_pid" 2>/dev/null || true
+      wait "$watchdog_pid" 2>/dev/null || true
+      watchdog_pid=""
+    fi
     if [ -n "$runner_pid" ]; then
       wait "$runner_pid" 2>/dev/null || true
       runner_pid=""
@@ -818,6 +901,7 @@ CPU_REFERENCE_PY
     fi
     if [ -n "$hold_dir" ] && [ "$teardown_verified" -eq 1 ]; then
       rm -f -- "$hold_dir"/cpu.{ready,ready.tmp,finish,finish.tmp,final,final.tmp,readback,readback.tmp,error,error.tmp}
+      rm -f -- "$hold_dir/watchdog" "$hold_dir/watchdog.tmp"
       rm -f -- "$payload_status_file" "$payload_status_file.tmp" \
         "$payload_release_file" 2>/dev/null || true
       rmdir -- "$hold_dir" 2>/dev/null || true
@@ -833,6 +917,15 @@ CPU_REFERENCE_PY
   trap '_pt_teardown 129' HUP
   trap '_pt_teardown $?' EXIT
 
+  if [ -n "$inherited_deadline_ns" ]; then
+    # The exact path is known and cleanup is armed BEFORE creating anything.
+    # A setup-time signal can therefore remove even an empty owned cgroup.
+    mkdir -- "$cgpath" || { echo "hermit-box-run: caller does not support owned child cgroup" >&8; exit 3; }
+    [ -w "$cgpath/cgroup.kill" ] && [ -w "$cgpath/cgroup.procs" ] || {
+      echo "hermit-box-run: child cgroup cannot enforce cleanup" >&8; exit 3;
+    }
+  fi
+
   local -a scope_command=("$@")
   hold_dir="$(mktemp -d -t hermit-box-run-hold.XXXXXX)" || {
     echo "hermit-box-run: could not create cgroup hold directory (exit 3)" >&8
@@ -845,6 +938,67 @@ CPU_REFERENCE_PY
     rmdir -- "$hold_dir" 2>/dev/null || true
     exit 3
   }
+  if [ -n "$inherited_deadline_ns" ]; then
+    # The monitor may itself receive SIGKILL. This tiny watchdog stays inside
+    # the SAME caller resource envelope, outside the payload child cgroup. It
+    # can kill only the exact newly-created inode and never outlives its one
+    # monotonic deadline. Normal completion removes that inode and reaps it.
+    /usr/bin/python3 - "$cgpath" "$inherited_deadline_ns" "$$" "$hold_dir" "${HBR_AUTO_DIAG:-}" <<'LIFECYCLE_WATCHDOG' 7>&- 8>&- &
+import os, pathlib, sys, time
+root, deadline, monitor, hold, auto_diag = sys.argv[1:]
+root, hold = pathlib.Path(root), pathlib.Path(hold)
+deadline, monitor = int(deadline), int(monitor)
+try:
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+except FileNotFoundError:
+    raise SystemExit(0)  # a fast payload already completed verified cleanup
+identity = os.fstat(descriptor)
+try:
+    while root.exists():
+        try:
+            current = root.stat()
+            if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
+                raise SystemExit("owned cgroup identity changed; refusing another inode")
+            orphan = os.getppid() != monitor
+            if orphan or time.monotonic_ns() >= deadline - 2_000_000_000:
+                temporary = hold / "watchdog.tmp"
+                temporary.write_text("monitor-lost" if orphan else "deadline")
+                temporary.replace(hold / "watchdog")
+                # The open directory binds this kill to the original inode,
+                # even if its pathname is removed/reused concurrently.
+                kill = os.open("cgroup.kill", os.O_WRONLY, dir_fd=descriptor)
+                try:
+                    os.write(kill, b"1")
+                finally:
+                    os.close(kill)
+                while root.exists() and "populated 0" not in (root / "cgroup.events").read_text():
+                    if time.monotonic_ns() >= deadline:
+                        raise SystemExit("owned cgroup remained populated at lifecycle deadline")
+                    time.sleep(.01)
+                if orphan:
+                    if root.exists():
+                        for directory, children, files in os.walk(root, topdown=False):
+                            pathlib.Path(directory).rmdir()
+                    for name in ("status", "status.tmp", "release", "watchdog", "watchdog.tmp"):
+                        (hold / name).unlink(missing_ok=True)
+                    hold.rmdir()
+                    if auto_diag:
+                        pathlib.Path(auto_diag).unlink(missing_ok=True)
+                break
+            time.sleep(.02)
+        except FileNotFoundError:
+            # The monitor normally kills/removes the same owned child. Its
+            # verified disappearance is completion, not a cleanup failure.
+            if not root.exists():
+                break
+            raise
+finally:
+    os.close(descriptor)
+LIFECYCLE_WATCHDOG
+    watchdog_pid=$!
+    diag "lifecycle-watchdog=$watchdog_pid deadline-ns=$inherited_deadline_ns"
+  fi
+
   # Keep one inert process in every passthrough scope after the payload exits.
   # Without the holder, a fast no-receipt command can disappear before the
   # first ControlGroup query, which makes a real cgroup look unavailable and
@@ -882,7 +1036,9 @@ raise SystemExit(completed.returncode)
   trap 'pending_signal=143' TERM
   trap 'pending_signal=130' INT
   trap 'pending_signal=129' HUP
-  /usr/bin/setsid --wait "${sr[@]}" -- "${scope_command[@]}" \
+  local -a launch_separator=(--)
+  [ -z "$inherited_deadline_ns" ] || launch_separator=()
+  /usr/bin/setsid --wait "${sr[@]}" "${launch_separator[@]}" "${scope_command[@]}" \
     1>&7 2>&8 7>&- 8>&- 9>&- &
   runner_pid=$!
   if [ "$pending_signal" -ne 0 ]; then
@@ -903,6 +1059,7 @@ raise SystemExit(completed.returncode)
       break
     fi
     kill -0 "$runner_pid" 2>/dev/null || break   # child already finished
+    _pt_deadline_expired && break
     sleep 0.05
   done
 
@@ -946,7 +1103,7 @@ raise SystemExit(completed.returncode)
   else
     diag "cgroup=$cgpath"
     local setup_wall_expired=0 reference_status=0
-    if [ "$wall_deadline" -gt 0 ] && [ "$(date +%s)" -ge "$wall_deadline" ]; then
+    if _pt_deadline_expired; then
       setup_wall_expired=1
     fi
     if [ -n "$actual_json" ]; then
@@ -994,7 +1151,7 @@ raise SystemExit(completed.returncode)
         last_usage="$usage_sample"
         maximum_usage="$usage_sample"
       fi
-      if [ "${last_usage:-0}" -gt "$budget_usec" ]; then
+      if [ "$cpu_budget" -gt 0 ] && [ "${last_usage:-0}" -gt "$budget_usec" ]; then
         diag "CPU-TIMEOUT: usage_usec=$last_usage exceeded budget=${budget_usec} (${cpu_budget}s) — reaping via cgroup.kill"
         termination="cpu_budget"
         _pt_freeze_and_capture || true
@@ -1002,7 +1159,7 @@ raise SystemExit(completed.returncode)
         reaped=1
         break
       fi
-      if [ "$wall_deadline" -gt 0 ] && [ "$(date +%s)" -ge "$wall_deadline" ]; then
+      if _pt_deadline_expired; then
         _pt_reap_for_wall_timeout
         break
       fi
@@ -1010,10 +1167,16 @@ raise SystemExit(completed.returncode)
     done
   fi
 
+  if [ -n "$inherited_deadline_ns" ] && [ -f "$hold_dir/watchdog" ]; then
+    termination="wall_backstop"
+    reaped=1
+    status=124
+  fi
   if [ "$runner_waited" -eq 0 ]; then
     local runner_status=0
     for _ in $(seq 1 250); do
       kill -0 "$runner_pid" 2>/dev/null || break
+      if [ -n "$inherited_deadline_ns" ] && [ "$(_pt_monotonic_ns)" -ge "$inherited_deadline_ns" ]; then break; fi
       sleep 0.02
     done
     if kill -0 "$runner_pid" 2>/dev/null; then
@@ -1024,7 +1187,7 @@ raise SystemExit(completed.returncode)
     fi
     wait "$runner_pid" 2>/dev/null || runner_status=$?
     runner_pid=""
-    if [ "$payload_completed" -eq 0 ] && [ "$status" -ne 3 ]; then
+    if [ "$payload_completed" -eq 0 ] && [ "$status" -ne 3 ] && [ "$status" -ne 124 ]; then
       status=$runner_status
     fi
     runner_waited=1
@@ -1072,7 +1235,21 @@ raise SystemExit(completed.returncode)
       diag "ERROR: exact transient unit was not collected at cleanup deadline."
     fi
   fi
+  if [ -n "$watchdog_pid" ]; then
+    for _ in $(seq 1 25); do
+      kill -0 "$watchdog_pid" 2>/dev/null || break
+      sleep 0.02
+    done
+    if kill -0 "$watchdog_pid" 2>/dev/null; then
+      status=3
+      diag "ERROR: lifecycle watchdog did not exit after owned cgroup removal."
+      kill -KILL "$watchdog_pid" 2>/dev/null || true
+    fi
+    wait "$watchdog_pid" 2>/dev/null || status=3
+    watchdog_pid=""
+  fi
   if [ -n "$hold_dir" ] && [ "$final_teardown_verified" -eq 1 ]; then
+    rm -f -- "$hold_dir/watchdog" "$hold_dir/watchdog.tmp"
     rm -f -- "$hold_dir"/cpu.{ready,ready.tmp,finish,finish.tmp,final,final.tmp,readback,readback.tmp,error,error.tmp}
     rm -f -- "$payload_status_file" "$payload_status_file.tmp" \
       "$payload_release_file" 2>/dev/null || true

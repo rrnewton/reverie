@@ -41,6 +41,7 @@ WRITER_RELATIVE = Path("ignored/ci-hub/test-ledger-writer")
 PUBLICATION_LOCK = "ci-hub-series-publication.lock"
 LOCK_FD_ENV = "DEV_HERMIT_TEST_LEDGER_PUBLISH_LOCK_FD"
 DEFAULT_TIMEOUT_SECONDS = 900
+LIFECYCLE_TIMEOUT_SECONDS = 1800
 DEFAULT_ATTEMPTS = 3
 SCORECARD_COMMANDS = (
     "observe-results", "import-results", "update-observations",
@@ -112,12 +113,20 @@ def _require_clean(repo: Path) -> None:
 
 
 @contextlib.contextmanager
-def publication_writer(parent: Path, *, net_wrapper: str) -> Iterator[tuple[Path, Path, int]]:
+def publication_writer(
+    parent: Path, *, net_wrapper: str, lifecycle_deadline_ns: int | None = None,
+) -> Iterator[tuple[Path, Path, int]]:
+    if lifecycle_deadline_ns is not None:
+        _verify_lifecycle_worker(lifecycle_deadline_ns)
     ledger = series.ledger_root(parent)
     common = Path(_git(ledger, "rev-parse", "--path-format=absolute", "--git-common-dir"))
     writer = series.shared_parent_root(parent) / WRITER_RELATIVE
     with (common / PUBLICATION_LOCK).open("a+b") as lock:
-        deadline = time.monotonic() + 60
+        # Direct library callers retain their existing finite wait. Only the
+        # production worker with a verified whole-lifecycle reaper may wait for
+        # its remaining shared deadline; this budget never restarts per retry.
+        deadline = (lifecycle_deadline_ns / 1e9 if lifecycle_deadline_ns is not None
+                    else time.monotonic() + 60)
         while True:
             try:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -515,6 +524,7 @@ def mirror(
     publish_only: bool = False, scorecard_command: str | None = None,
     scorecard_args: Sequence[str] = (),
     tool_checkout: Path | None = None, finalized_run_id: str | None = None,
+    lifecycle_deadline_ns: int | None = None,
 ) -> dict[str, Any]:
     if remote_url != REMOTE_URL:
         raise MirrorRefused("unexpected ledger repository")
@@ -551,7 +561,7 @@ def mirror(
             # Compilation cannot acquire publication authority or prevent the
             # independent, durable raw-row append below.
             tool_preparation_error = error
-    with publication_writer(parent, net_wrapper=net_wrapper) as (ledger, writer, lock_fd):
+    with publication_writer(parent, net_wrapper=net_wrapper, lifecycle_deadline_ns=lifecycle_deadline_ns) as (ledger, writer, lock_fd):
         if legacy_export:
             # Preserving legacy bytes must neither drain unrelated pending rows
             # nor claim that the existing scorecard was regenerated.
@@ -628,7 +638,30 @@ def mirror(
         return report
 
 
+def _verify_lifecycle_worker(deadline_ns: int) -> None:
+    """Bind the internal worker to the real inherited cleanup domain."""
+    try:
+        group = Path(os.environ["HERMIT_BOX_LIFECYCLE_CGROUP"])
+        monitor = int(os.environ["HERMIT_BOX_LIFECYCLE_MONITOR_PID"])
+        declared = int(os.environ["HERMIT_BOX_LIFECYCLE_DEADLINE_NS"])
+        actual = Path("/sys/fs/cgroup" + Path("/proc/self/cgroup").read_text().strip().split("::", 1)[1])
+        ancestor = Path("/sys/fs/cgroup" + Path(f"/proc/{monitor}/cgroup").read_text().strip().split("::", 1)[1])
+        command = Path(f"/proc/{monitor}/cmdline").read_bytes().split(b"\0")
+        expected_runner = str(TOOL_ROOT / "scripts/hermit-box-run").encode()
+        if (declared != deadline_ns or group != actual or group.parent != ancestor
+                or not group.name.startswith(f"hermit-box-run-{monitor}-")
+                or expected_runner not in command
+                or b"--inherited-deadline-ns" not in command
+                or str(deadline_ns).encode() not in command
+                or not (group / "cgroup.kill").is_file()):
+            raise ValueError("worker does not belong to the declared live cleanup domain")
+    except (KeyError, OSError, ValueError, IndexError) as error:
+        raise MirrorRefused(f"unverified publication lifecycle: {error}") from error
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    started_ns = time.monotonic_ns()
+    actual_argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--parent", type=Path, required=True)
     parser.add_argument("--source-checkout", type=Path)
@@ -641,18 +674,38 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--scorecard-arg", action="append", default=[])
     parser.add_argument("--net-wrapper", default=os.environ.get("WITH_PROXY", "with-proxy"))
     parser.add_argument("--attempts", type=int, default=DEFAULT_ATTEMPTS)
-    args = parser.parse_args(argv)
+    parser.add_argument("--lifecycle-deadline-ns", type=int,
+                        help="absolute monotonic caller deadline; capped at the existing 1800-second lifecycle ceiling")
+    parser.add_argument("--bounded-worker", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args(actual_argv)
     if args.attempts <= 0 or (not args.publish_only and (args.source_checkout is None or args.target is None)):
         parser.error("positive attempts and either --publish-only or --source-checkout/--target are required")
     if args.finalized_run_id is not None and (args.results is None or args.publish_only or args.scorecard_command):
         parser.error("--finalized-run-id requires --results and ordinary scorecard publication")
+    deadline_ns = min(started_ns + LIFECYCLE_TIMEOUT_SECONDS * 1_000_000_000,
+                      args.lifecycle_deadline_ns if args.lifecycle_deadline_ns is not None
+                      else started_ns + LIFECYCLE_TIMEOUT_SECONDS * 1_000_000_000)
+    if deadline_ns <= time.monotonic_ns() + 2_000_000_000:
+        print("ledger publication: TIMEOUT: lifecycle deadline exhausted before preparation", file=sys.stderr)
+        return 124
+    if not args.bounded_worker:
+        # The child cgroup is below this caller, so preparation, lock waiting,
+        # every held child (including setsid descendants), and cleanup retain
+        # the caller's original resource accounting and one absolute deadline.
+        command = [str(TOOL_ROOT / "scripts/hermit-box-run"), "--passthrough",
+                   "--inherited-deadline-ns", str(deadline_ns), "--diag-fd", "2", "--",
+                   sys.executable, str(Path(__file__).resolve()), *actual_argv,
+                   "--lifecycle-deadline-ns", str(deadline_ns), "--bounded-worker"]
+        os.execv(command[0], command)
     try:
+        _verify_lifecycle_worker(deadline_ns)
         report = mirror(
             args.parent.resolve(), args.source_checkout.resolve() if args.source_checkout else None,
             args.target, submodule_remote(args.parent.resolve()), net_wrapper=args.net_wrapper,
             attempts=args.attempts, results=args.results, publish_only=args.publish_only,
             scorecard_command=args.scorecard_command, scorecard_args=args.scorecard_arg,
             tool_checkout=args.tool_checkout, finalized_run_id=args.finalized_run_id,
+            lifecycle_deadline_ns=deadline_ns,
         )
     except (MirrorRefused, OSError, KeyError, TypeError, series.SeriesError) as error:
         print(f"ledger publication: FAILED: {error}", file=sys.stderr)

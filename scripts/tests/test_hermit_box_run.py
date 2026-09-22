@@ -103,6 +103,143 @@ class HermitBoxRunTests(unittest.TestCase):
         runner.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
         runner.chmod(0o755)
 
+    def test_inherited_deadline_keeps_exact_status_and_rejects_cpu_conflict(self) -> None:
+        for status in (0, 7):
+            with self.subTest(status=status):
+                completed = subprocess.run([
+                    str(self.box), '--passthrough', '--inherited-deadline-ns',
+                    str(time.monotonic_ns()+8_000_000_000), '--', sys.executable,
+                    '-c', f"import sys; print('out'); print('err', file=sys.stderr); sys.exit({status})"],
+                    capture_output=True, text=True, timeout=10)
+                self.assertEqual(status, completed.returncode, completed.stderr)
+                self.assertEqual('out\n', completed.stdout)
+                self.assertEqual('err\n', completed.stderr)
+        refused = subprocess.run([str(self.box), '--passthrough', '--inherited-deadline-ns',
+            str(time.monotonic_ns()+8_000_000_000), '--cpu-budget', '1', '--', '/bin/true'],
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(2, refused.returncode)
+        self.assertIn('preserves caller resources', refused.stderr)
+
+    def test_inherited_deadline_charges_setup_before_payload(self) -> None:
+        adapters = self.base / 'setup-bin'
+        adapters.mkdir()
+        stat = adapters / 'stat'
+        stat.write_text('#!/bin/sh\nsleep 1\nexec /usr/bin/stat "$@"\n')
+        stat.chmod(0o755)
+        marker = self.base / 'unexpected-payload'
+        deadline = time.monotonic_ns()+2_500_000_000
+        completed = subprocess.run([str(self.box), '--passthrough', '--inherited-deadline-ns',
+            str(deadline), '--', '/usr/bin/touch', str(marker)],
+            env={**os.environ, 'PATH':str(adapters)+os.pathsep+os.environ['PATH']},
+            capture_output=True, text=True, timeout=5)
+        self.assertEqual(124, completed.returncode, completed.stderr)
+        self.assertFalse(marker.exists())
+        self.assertIn('deadline expired before setup', completed.stderr)
+
+    def test_inherited_setup_signal_removes_owned_empty_group(self) -> None:
+        adapters = self.base / 'signal-bin'
+        adapters.mkdir()
+        marker = self.base / 'created-group'
+        mkdir = adapters / 'mkdir'
+        mkdir.write_text('#!/bin/sh\n/bin/mkdir "$@" || exit $?\nprintf "%s\\n" "$2" >"'+str(marker)+'"\nkill -TERM "$PPID"\n')
+        mkdir.chmod(0o755)
+        completed = subprocess.run([str(self.box), '--passthrough', '--inherited-deadline-ns',
+            str(time.monotonic_ns()+8_000_000_000), '--', '/bin/true'],
+            env={**os.environ, 'PATH':str(adapters)+os.pathsep+os.environ['PATH']},
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(143, completed.returncode, completed.stderr)
+        group = Path(marker.read_text().strip())
+        self.assertIn('hermit-box-run-', group.name)
+        self.assertFalse(group.exists())
+
+    def test_inherited_monitor_sigkill_watchdog_reaps_and_exits(self) -> None:
+        diag = self.base / 'watchdog.diag'
+        marker = self.base / 'payload.json'
+        payload = self.base / 'payload.py'
+        payload.write_text("""import json, os, pathlib, signal, sys
+os.setsid()
+pathlib.Path(sys.argv[1]).write_text(json.dumps({'pid':os.getpid(), 'group':pathlib.Path('/proc/self/cgroup').read_text()}))
+signal.pause()
+""")
+        process = subprocess.Popen([str(self.box), '--passthrough', '--inherited-deadline-ns',
+            str(time.monotonic_ns()+8_000_000_000), '--diag-log', str(diag), '--',
+            sys.executable, str(payload), str(marker)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self.terminate, process)
+        limit = time.monotonic()+4
+        while not marker.exists():
+            self.assertIsNone(process.poll())
+            self.assertLess(time.monotonic(), limit)
+            time.sleep(.01)
+        record = json.loads(marker.read_text())
+        watchdog = int(re.search(r'lifecycle-watchdog=(\d+)', diag.read_text()).group(1))
+        group = Path('/sys/fs/cgroup'+record['group'].strip().split('::',1)[1])
+        process.kill()
+        process.wait(timeout=2)
+        self.assertEqual(-signal.SIGKILL, process.returncode)
+        limit = time.monotonic()+2
+        while group.exists() or process_active(watchdog) or process_active(record['pid']):
+            self.assertLess(time.monotonic(), limit, 'watchdog must promptly reap exact owned subtree and exit')
+            time.sleep(.01)
+        self.assertFalse(group.exists())
+        self.assertFalse(process_active(watchdog))
+        self.assertFalse(process_active(record['pid']))
+
+    def test_inherited_deadline_reaps_lock_holding_setsid_descendant(self) -> None:
+        lock = self.base / "publication.lock"
+        ready = self.base / "holder.json"
+        acquired = self.base / "contender.json"
+        holder = self.base / "holder.py"
+        holder.write_text("""import fcntl, json, os, pathlib, signal, sys
+lock=open(sys.argv[1], 'a+b')
+fcntl.flock(lock, fcntl.LOCK_EX)
+child=os.fork()
+if child==0:
+ os.setsid()
+ pathlib.Path(sys.argv[2]).write_text(json.dumps({'pid':os.getpid(), 'parent':os.getppid(), 'cgroup':pathlib.Path('/proc/self/cgroup').read_text()}))
+ signal.pause()
+else:
+ signal.pause()
+""")
+        contender = self.base / "contender.py"
+        contender.write_text("""import fcntl, json, pathlib, sys
+with open(sys.argv[1], 'a+b') as lock:
+ fcntl.flock(lock, fcntl.LOCK_EX)
+ pathlib.Path(sys.argv[2]).write_text(json.dumps({'cgroup':pathlib.Path('/proc/self/cgroup').read_text()}))
+""")
+        parent = Path('/sys/fs/cgroup' + Path('/proc/self/cgroup').read_text().strip().split('::',1)[1])
+        names = ('cpu.max', 'memory.max', 'memory.swap.max', 'pids.max', 'cpuset.cpus.effective')
+        before = {name:(parent/name).read_text() for name in names if (parent/name).exists()}
+        def command(deadline, source, output, label):
+            return [str(self.box), '--passthrough', '--inherited-deadline-ns', str(deadline),
+                    '--diag-log', str(self.base / (label+'.diag')), '--',
+                    sys.executable, str(source), str(lock), str(output)]
+        deadline = time.monotonic_ns() + 6_000_000_000
+        first = subprocess.Popen(command(deadline, holder, ready, 'holder'), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(self.terminate, first)
+        while not ready.exists():
+            self.assertIsNone(first.poll())
+            self.assertLess(time.monotonic_ns(), deadline)
+            time.sleep(.01)
+        record = json.loads(ready.read_text())
+        group = Path('/sys/fs/cgroup' + record['cgroup'].strip().split('::',1)[1])
+        self.assertEqual(parent, group.parent)
+        second = subprocess.Popen(command(time.monotonic_ns()+10_000_000_000, contender, acquired, 'contender'),
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(self.terminate, second)
+        stdout, stderr = first.communicate(timeout=8)
+        self.assertEqual(124, first.returncode, stderr.decode()+(self.base/'holder.diag').read_text())
+        self.assertLess(time.monotonic_ns(), deadline, 'cleanup must finish inside the original absolute deadline')
+        self.assertFalse(process_active(record['pid']))
+        self.assertFalse(group.exists())
+        second_out, second_err = second.communicate(timeout=10)
+        self.assertEqual(0, second.returncode, second_err.decode()+(self.base/'contender.diag').read_text())
+        self.assertTrue(acquired.is_file(), 'the exact publication lock must be reusable after descendant cleanup')
+        second_group = Path('/sys/fs/cgroup' + json.loads(acquired.read_text())['cgroup'].strip().split('::',1)[1])
+        self.assertEqual(parent, second_group.parent)
+        self.assertFalse(second_group.exists())
+        self.assertEqual(before, {name:(parent/name).read_text() for name in before})
+        self.assertIn('cpu-budget=0s', (self.base/'holder.diag').read_text())
+
     def run_actual_probe(
         self,
         *,

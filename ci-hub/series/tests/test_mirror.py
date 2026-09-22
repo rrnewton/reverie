@@ -38,6 +38,20 @@ HELP_FIXTURE = (
 )
 
 
+def bounded_fixture_command(command: list[str]) -> list[str]:
+    """Install the existing checker/query doubles inside the real bounded worker.
+
+    Production re-exec cannot carry an in-process runpy patch across exec. The
+    fixture keeps that same bootstrap inside the actual cleanup domain instead;
+    mirror still verifies its deadline/cgroup context before acquiring a lock.
+    The original subprocess harness has a 30-second ceiling.
+    """
+    deadline = time.monotonic_ns() + 30_000_000_000
+    return [str(mirror.TOOL_ROOT / "scripts/hermit-box-run"), "--passthrough",
+            "--inherited-deadline-ns", str(deadline), "--diag-fd", "2", "--",
+            *command, "--lifecycle-deadline-ns", str(deadline), "--bounded-worker"]
+
+
 def row(identifier: str, outcome: str = "passed") -> dict:
     return {
         "schema": "stress-series/v1", "event_id": identifier,
@@ -521,8 +535,8 @@ class DirectLedgerFixture(unittest.TestCase):
         def native_run(command, **kwargs):
             calls.append(command)
             return subprocess.run(
-                [sys.executable, "-B", "-c", bootstrap, expected_run_id, *command[1:],
-                 "--tool-checkout", str(self.tool)],
+                bounded_fixture_command([sys.executable, "-B", "-c", bootstrap,
+                    expected_run_id, *command[1:], "--tool-checkout", str(self.tool)]),
                 cwd=kwargs.get("cwd"), capture_output=True, text=True, timeout=30,
             )
 
@@ -790,7 +804,8 @@ class DirectLedgerFixture(unittest.TestCase):
 
         def sweep_child(command, **kwargs):
             if str(MODULE) in command:
-                command = [sys.executable, "-B", "-c", bootstrap, *command[1:]]
+                command = bounded_fixture_command(
+                    [sys.executable, "-B", "-c", bootstrap, *command[1:]])
             return native_run(command, **kwargs)
 
         batch = self.append("completed-before-push-failure", "diverged")
