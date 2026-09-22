@@ -710,9 +710,9 @@ fn execute_basic_syscall_inner(
     } else if number == libc::SYS_statx as u64 {
         statx(memory, state, args, capture_metadata)
     } else if number == libc::SYS_statfs as u64 {
-        statfs(memory, state, args)
+        statfs(memory, state, args, capture_metadata)
     } else if number == libc::SYS_fstatfs as u64 {
-        fstatfs(memory, state, args)
+        fstatfs(memory, state, args, capture_metadata)
     } else if number == libc::SYS_access as u64 {
         access(memory, state, args)
     } else if number == libc::SYS_faccessat as u64 {
@@ -13696,7 +13696,12 @@ fn sanitize_statx_timestamps(stat: &mut libc::statx) {
 }
 
 // TODO-HUMAN-REVIEW(PR-114): Review guest descriptor path resolution for statfs.
-fn statfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn statfs(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
     let path = match read_c_string(memory, args[0], 4096) {
         Ok(path) if !path.is_empty() => path,
         Ok(_) => return negative_errno(libc::ENOENT),
@@ -13706,6 +13711,13 @@ fn statfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
         Ok(metadata) => metadata,
         Err(error) => return error,
     };
+    if let (Some(metadata), Some(capture)) = (guest_path, capture)
+        && let Some(alias) = output_alias(state, metadata.guest_fd)
+    {
+        // The descriptor path names the virtual capture pipe, not whichever
+        // object the invoking supervisor happened to place at host fd 1/2.
+        return fstatfs_host(memory, capture.statfs_carrier(alias), args[1]);
+    }
     let opened_file;
     let host_fd = if let Some(metadata) = guest_path {
         metadata.host_fd
@@ -13719,10 +13731,18 @@ fn statfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
     fstatfs_host(memory, host_fd, args[1])
 }
 
-fn fstatfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn fstatfs(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
     let Ok(guest_fd) = libc::c_int::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    if let (Some(capture), Some(alias)) = (capture, output_alias(state, guest_fd)) {
+        return fstatfs_host(memory, capture.statfs_carrier(alias), args[1]);
+    }
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };

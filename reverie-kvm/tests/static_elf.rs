@@ -10617,6 +10617,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "kvm_direct_and_tool_match_prctl_identity_cell",
         "kvm_direct_and_tool_match_thp_disable_cell",
         "anonymous_pipe_socket_identities_are_repeatable_on_kvm",
+        "captured_output_statfs_matches_native_and_is_repeatable_on_kvm",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
@@ -14100,6 +14101,300 @@ int main(void) {
         run_host_program_with_tool_captured(executable, &[executable], &directory.0);
     assert_eq!(tool_stdout, native.stdout);
     assert_eq!(tool_stderr, native.stderr);
+}
+
+// Captured stdout/stderr are virtual pipes even when this test process was
+// launched with regular files in its host fd 1/2 slots.  Exercise every
+// descriptor/path spelling against an independent native pipe oracle, then
+// require repeat equality for direct and Tool-owned KVM execution.  This is
+// output/exit/status evidence only, not an L2-log or record/replay claim.
+#[test]
+fn captured_output_statfs_matches_native_and_is_repeatable_on_kvm() {
+    const TEST: &str = "captured_output_statfs_matches_native_and_is_repeatable_on_kvm";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "captured-output-statfs",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/magic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/statfs.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static void normalize(struct statfs *value) {
+  unsigned long long free_blocks = value->f_blocks < 1000000
+      ? value->f_blocks : 1000000;
+  value->f_bfree = free_blocks;
+  value->f_bavail = free_blocks;
+  value->f_ffree = value->f_files == 0 ? 0
+      : (value->f_files < 500000 ? value->f_files : 500000);
+  memset(&value->f_fsid, 0, sizeof(value->f_fsid));
+}
+
+static int bytes_zero(const void *memory, size_t length) {
+  const unsigned char *bytes = memory;
+  for (size_t index = 0; index < length; ++index)
+    if (bytes[index] != 0) return 0;
+  return 1;
+}
+
+static int pipe_shape(const struct statfs *value, int deterministic) {
+  long page = sysconf(_SC_PAGESIZE);
+  return value->f_type == PIPEFS_MAGIC && value->f_bsize == page &&
+      value->f_blocks == 0 && value->f_bfree == 0 &&
+      value->f_bavail == 0 && value->f_files == 0 &&
+      value->f_ffree == 0 && value->f_namelen == 255 &&
+      value->f_frsize == page &&
+      (!deterministic || bytes_zero(&value->f_fsid, sizeof(value->f_fsid)));
+}
+
+static int same_pipe(struct statfs actual, struct statfs expected,
+                     int deterministic) {
+  if (!pipe_shape(&actual, deterministic) ||
+      !pipe_shape(&expected, deterministic)) return 0;
+  normalize(&actual);
+  normalize(&expected);
+  return !memcmp(&actual, &expected, sizeof(actual));
+}
+
+static int fstatfs_pipe(int fd, const struct statfs *expected,
+                        int deterministic, int code) {
+  struct statfs actual;
+  memset(&actual, 0, sizeof(actual));
+  if (fstatfs(fd, &actual) != 0 ||
+      !same_pipe(actual, *expected, deterministic)) return code;
+  return 0;
+}
+
+static int statfs_pipe(const char *path, const struct statfs *expected,
+                       int deterministic, int code) {
+  struct statfs actual;
+  memset(&actual, 0, sizeof(actual));
+  if (statfs(path, &actual) != 0 ||
+      !same_pipe(actual, *expected, deterministic)) return code;
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 1;
+  int deterministic = !strcmp(argv[1], "kvm");
+  if (!deterministic && strcmp(argv[1], "native")) return 2;
+
+  struct statfs expected;
+  memset(&expected, 0, sizeof(expected));
+  if (fstatfs(STDOUT_FILENO, &expected) != 0 ||
+      !pipe_shape(&expected, deterministic)) return 10;
+
+  int result = fstatfs_pipe(STDERR_FILENO, &expected, deterministic, 11);
+  int duplicate = dup(STDOUT_FILENO);
+  int fcntl_duplicate = fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 20);
+  if (result || duplicate < 0 || fcntl_duplicate < 20) return result ? result : 12;
+  if ((result = fstatfs_pipe(duplicate, &expected, deterministic, 13)) ||
+      (result = fstatfs_pipe(fcntl_duplicate, &expected, deterministic, 14)))
+    return result;
+
+  int reopened = open("/proc/self/fd/1", O_WRONLY | O_CLOEXEC);
+  int path_only = open("/proc/self/fd/1", O_PATH | O_CLOEXEC);
+  if (reopened < 0 || path_only < 0) return 15;
+  if ((result = fstatfs_pipe(reopened, &expected, deterministic, 16)) ||
+      (result = fstatfs_pipe(path_only, &expected, deterministic, 17)))
+    return result;
+
+  char numeric[128];
+  if (snprintf(numeric, sizeof(numeric), "/proc/%d/fd/1", getpid()) >=
+      (int)sizeof(numeric)) return 18;
+  const char *paths[] = {
+      "/dev/fd/1", "/proc/self/fd/1", "/proc/thread-self/fd/1", numeric};
+  for (unsigned index = 0; index < sizeof(paths) / sizeof(paths[0]); ++index) {
+    result = statfs_pipe(paths[index], &expected, deterministic, 19 + index);
+    if (result) return result;
+  }
+
+  int pipes[2];
+  if (pipe2(pipes, O_CLOEXEC) != 0) return 24;
+  if ((result = fstatfs_pipe(pipes[0], &expected, deterministic, 25)) ||
+      (result = fstatfs_pipe(pipes[1], &expected, deterministic, 26)))
+    return result;
+
+  pid_t child = fork();
+  if (child < 0) return 27;
+  if (child == 0)
+    _exit(fstatfs_pipe(STDOUT_FILENO, &expected, deterministic, 28));
+  int status = 0;
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 0) return 29;
+
+  int ordinary = open("ordinary-statfs", O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC,
+                      0600);
+  if (ordinary < 0) return 30;
+  struct statfs ordinary_fd, ordinary_path;
+  memset(&ordinary_fd, 0, sizeof(ordinary_fd));
+  memset(&ordinary_path, 0, sizeof(ordinary_path));
+  if (fstatfs(ordinary, &ordinary_fd) != 0 ||
+      statfs("ordinary-statfs", &ordinary_path) != 0 ||
+      ordinary_fd.f_type == PIPEFS_MAGIC || ordinary_path.f_type == PIPEFS_MAGIC)
+    return 31;
+  normalize(&ordinary_fd);
+  normalize(&ordinary_path);
+  if (memcmp(&ordinary_fd, &ordinary_path, sizeof(ordinary_fd))) return 32;
+
+  int saved_capture = dup(STDOUT_FILENO);
+  if (saved_capture < 0 || dup2(ordinary, STDOUT_FILENO) != STDOUT_FILENO)
+    return 33;
+  struct statfs replacement;
+  memset(&replacement, 0, sizeof(replacement));
+  if (fstatfs(STDOUT_FILENO, &replacement) != 0 ||
+      replacement.f_type == PIPEFS_MAGIC) return 34;
+  normalize(&replacement);
+  if (memcmp(&replacement, &ordinary_fd, sizeof(replacement)) ||
+      dup2(saved_capture, STDOUT_FILENO) != STDOUT_FILENO) return 35;
+
+  int closed = dup(STDOUT_FILENO);
+  if (closed < 0 || close(closed) != 0) return 36;
+  char closed_path[128];
+  if (snprintf(closed_path, sizeof(closed_path), "/proc/self/fd/%d", closed) >=
+      (int)sizeof(closed_path)) return 37;
+  unsigned char output[sizeof(struct statfs)], sentinel[sizeof(struct statfs)];
+  memset(output, 0xa5, sizeof(output));
+  memcpy(sentinel, output, sizeof(output));
+  errno = 0;
+  if (syscall(SYS_fstatfs, closed, output) != -1 || errno != EBADF ||
+      memcmp(output, sentinel, sizeof(output))) return 38;
+  errno = 0;
+  if (syscall(SYS_statfs, closed_path, output) != -1 || errno != ENOENT ||
+      memcmp(output, sentinel, sizeof(output))) return 39;
+  errno = 0;
+  if (syscall(SYS_fstatfs, STDOUT_FILENO, (void *)1) != -1 ||
+      errno != EFAULT) return 40;
+  errno = 0;
+  if (syscall(SYS_statfs, "/proc/self/fd/1", (void *)1) != -1 ||
+      errno != EFAULT) return 41;
+
+  if (close(duplicate) || close(fcntl_duplicate) || close(reopened) ||
+      close(path_only) || close(pipes[0]) || close(pipes[1]) ||
+      close(saved_capture) || close(ordinary) || unlink("ordinary-statfs"))
+    return 42;
+  puts("captured-output-statfs-ok");
+  if (fputs("captured-output-statfs-err\n", stderr) < 0) return 43;
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable)
+        .arg("native")
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert_eq!(native.stdout, b"captured-output-statfs-ok\n");
+    assert_eq!(native.stderr, b"captured-output-statfs-err\n");
+
+    let executable = executable.to_str().unwrap();
+    let run = |with_tool: bool| {
+        let image = std::fs::read(executable).unwrap();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, "kvm"],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        if with_tool {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        }
+    };
+
+    struct RestoreStandardDescriptors {
+        stdout: std::fs::File,
+        stderr: std::fs::File,
+    }
+    impl Drop for RestoreStandardDescriptors {
+        fn drop(&mut self) {
+            use std::os::fd::AsRawFd;
+            assert_eq!(unsafe { libc::dup2(self.stdout.as_raw_fd(), 1) }, 1);
+            assert_eq!(unsafe { libc::dup2(self.stderr.as_raw_fd(), 2) }, 2);
+        }
+    }
+
+    let results = {
+        use std::os::fd::AsRawFd;
+        use std::os::fd::FromRawFd;
+
+        let saved_stdout = unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) };
+        let saved_stderr = unsafe { libc::fcntl(2, libc::F_DUPFD_CLOEXEC, 3) };
+        assert!(saved_stdout >= 3 && saved_stderr >= 3);
+        let restore = RestoreStandardDescriptors {
+            stdout: unsafe { std::fs::File::from_raw_fd(saved_stdout) },
+            stderr: unsafe { std::fs::File::from_raw_fd(saved_stderr) },
+        };
+        let ambient_stdout = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(directory.0.join("ambient-stdout"))
+            .unwrap();
+        let ambient_stderr = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(directory.0.join("ambient-stderr"))
+            .unwrap();
+        assert_eq!(unsafe { libc::dup2(ambient_stdout.as_raw_fd(), 1) }, 1);
+        assert_eq!(unsafe { libc::dup2(ambient_stderr.as_raw_fd(), 2) }, 2);
+        let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+        assert_eq!(unsafe { libc::fstatfs(1, filesystem.as_mut_ptr()) }, 0);
+        assert_ne!(unsafe { filesystem.assume_init() }.f_type, 0x5049_5045);
+
+        let direct = run(false);
+        let direct_repeat = run(false);
+        let tool = run(true);
+        let tool_repeat = run(true);
+        drop(restore);
+        (direct, direct_repeat, tool, tool_repeat)
+    };
+
+    for (label, result) in [
+        ("direct", &results.0),
+        ("direct-repeat", &results.1),
+        ("tool", &results.2),
+        ("tool-repeat", &results.3),
+    ] {
+        assert_eq!(
+            result.0,
+            0,
+            "{label}: stdout={} stderr={}",
+            String::from_utf8_lossy(&result.1),
+            String::from_utf8_lossy(&result.2)
+        );
+        assert_eq!(result.1, native.stdout, "{label}");
+        assert_eq!(result.2, native.stderr, "{label}");
+    }
+    assert_eq!(results.1, results.0, "direct KVM result changed");
+    assert_eq!(results.2, results.0, "Tool and direct KVM results differ");
+    assert_eq!(results.3, results.2, "Tool KVM result changed");
 }
 
 // Anonymous pipe/socket object numbers, including a fresh caller-supplied pipe

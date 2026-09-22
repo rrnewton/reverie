@@ -1,6 +1,7 @@
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
+use std::os::fd::RawFd;
 
 use super::OutputAlias;
 
@@ -128,6 +129,12 @@ impl CapturedPipeIdentities {
             // after the original standard slot is replaced or closed.
             stdout: CaptureObjectIdentity::for_alias(OutputAlias::Stdout),
             stderr: CaptureObjectIdentity::for_alias(OutputAlias::Stderr),
+            // These descriptors are private lifetime anchors, not guest file
+            // table entries.  Metadata-only syscalls may use them as stable
+            // pipefs carriers instead of consulting inherited supervisor
+            // stdout or stderr.
+            stdout_statfs_carrier: self._stdout._keeper.as_raw_fd(),
+            stderr_statfs_carrier: self._stderr._keeper.as_raw_fd(),
         }
     }
 
@@ -155,6 +162,8 @@ impl Drop for CapturedPipeIdentities {
 pub(super) struct CaptureMetadata {
     stdout: CaptureObjectIdentity,
     stderr: CaptureObjectIdentity,
+    stdout_statfs_carrier: RawFd,
+    stderr_statfs_carrier: RawFd,
 }
 
 impl CaptureMetadata {
@@ -162,6 +171,16 @@ impl CaptureMetadata {
         match alias {
             OutputAlias::Stdout => self.stdout,
             OutputAlias::Stderr => self.stderr,
+        }
+    }
+
+    /// A read-end pipe keeper suitable only for filesystem metadata queries.
+    /// It is not a descriptor-creation carrier: duplicating it would give a
+    /// captured O_WRONLY guest alias a physically readable host description.
+    pub(super) fn statfs_carrier(self, alias: OutputAlias) -> RawFd {
+        match alias {
+            OutputAlias::Stdout => self.stdout_statfs_carrier,
+            OutputAlias::Stderr => self.stderr_statfs_carrier,
         }
     }
 }

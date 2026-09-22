@@ -5,6 +5,23 @@ fn capture_native_stat(fd: RawFd) -> libc::stat {
     unsafe { stat.assume_init() }
 }
 
+fn capture_native_statfs(fd: RawFd) -> libc::statfs {
+    let mut stat = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+    assert_eq!(unsafe { libc::fstatfs(fd, stat.as_mut_ptr()) }, 0);
+    unsafe { stat.assume_init() }
+}
+
+fn statfs_bytes(stat: &libc::statfs) -> &[u8] {
+    // SAFETY: stat is live for the returned borrow and every byte belongs to
+    // the plain Linux ABI structure. Callers initialize the complete value.
+    unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(stat).cast::<u8>(),
+            std::mem::size_of::<libc::statfs>(),
+        )
+    }
+}
+
 #[test]
 fn captured_output_identity_is_deterministic_and_preserves_proc_symlinks() {
     let root = TestDir::new();
@@ -418,7 +435,7 @@ fn captured_output_status_ignores_ambient_and_closed_supervisor_stdout() {
 
     let root = TestDir::new();
     let mut executor = ElfExecutor::new(test_state(&root.0), true);
-    let memory = GuestMemory::new(0, 0x4000).unwrap();
+    let mut memory = GuestMemory::new(0, 0x4000).unwrap();
     assert_eq!(
         executor.execute(
             &SyscallRequest::new(
@@ -470,6 +487,58 @@ fn captured_output_status_ignores_ambient_and_closed_supervisor_stdout() {
             capture_identity::CAPTURE_STDOUT_INODE,
         )
         .into_bytes()
+    );
+
+    let mut reference_pipe = [-1; 2];
+    assert_eq!(
+        unsafe { libc::pipe2(reference_pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+        0
+    );
+    let mut expected_filesystem = capture_native_statfs(reference_pipe[0]);
+    // KVM applies the same deterministic fsid normalization used for every
+    // host-backed statfs result. Pipe capacity counts are already zero.
+    expected_filesystem.f_fsid = unsafe { std::mem::zeroed() };
+    assert_eq!(unsafe { libc::close(reference_pipe[0]) }, 0);
+    assert_eq!(unsafe { libc::close(reference_pipe[1]) }, 0);
+
+    assert_eq!(
+        executor.execute(
+            &SyscallRequest::new(libc::SYS_fstatfs as u64, [1, 0x1000, 0, 0, 0, 0]),
+            &memory,
+        ),
+        0,
+        "capture fstatfs must not consult closed supervisor stdout"
+    );
+    let direct: libc::statfs = read_struct(&memory, 0x1000);
+    assert_eq!(statfs_bytes(&direct), statfs_bytes(&expected_filesystem));
+
+    write_c_string(&mut memory, 0x100, "/proc/self/fd/1");
+    assert_eq!(
+        executor.execute(
+            &SyscallRequest::new(libc::SYS_statfs as u64, [0x100, 0x1800, 0, 0, 0, 0]),
+            &memory,
+        ),
+        0,
+        "capture proc-fd statfs must not consult closed supervisor stdout"
+    );
+    let through_path: libc::statfs = read_struct(&memory, 0x1800);
+    assert_eq!(statfs_bytes(&through_path), statfs_bytes(&direct));
+    assert_eq!(
+        executor.execute(
+            &SyscallRequest::new(libc::SYS_fstatfs as u64, [1, 0x5000, 0, 0, 0, 0]),
+            &memory,
+        ),
+        negative_errno(libc::EFAULT)
+    );
+    assert_eq!(
+        executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_fstatfs as u64,
+                [GUEST_NOFILE_LIMIT as u64, 0x5000, 0, 0, 0, 0],
+            ),
+            &memory,
+        ),
+        negative_errno(libc::EBADF)
     );
 
     assert_eq!(
