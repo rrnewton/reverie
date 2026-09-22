@@ -5,6 +5,9 @@ acceptance contract. It exists so kernel-7.1 cells can be planned without
 altering or replacing the earlier kernel-6.13 experiment records in
 `../tfa-flaky-tests_20260917`.
 
+The completed campaign result and its evidence audit are recorded in
+[`RESULTS.md`](RESULTS.md).
+
 The acceptance authority remains dev-hermit commit
 `9d7f603c43618715b9245c74acb3e164c17d2ae8`, path
 `ai_docs/tfa-acceptance-bracket-2026-09-17.md`, blob
