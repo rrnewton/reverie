@@ -603,8 +603,10 @@ pub(crate) mod entry_action_tests {
             assert!(starts.lock().unwrap().is_empty());
             assert_eq!(*group.transport_slots.lock().unwrap(), slots);
             if site == Site::Exec {
-                let (status, stdout, stderr) =
-                    backend.run_static_elf_process(&mut executor).unwrap();
+                let (status, stdout, stderr) = futures::executor::block_on(
+                    backend.run_static_elf_process(&mut executor),
+                )
+                .unwrap();
                 assert_eq!(status, ExitStatus::Exited(EXEC_EXIT));
                 assert!(stdout.is_empty() && stderr.is_empty());
             } else {

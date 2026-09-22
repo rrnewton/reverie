@@ -21,6 +21,14 @@ pub(crate) struct ToolPanics {
 }
 
 impl ToolPanics {
+    pub(crate) fn has_pending(&self) -> bool {
+        !self
+            .pending
+            .lock()
+            .expect("KVM Tool panic lock poisoned")
+            .is_empty()
+    }
+
     pub(crate) fn take(&self) -> Vec<PanicPayload> {
         std::mem::take(&mut *self.pending.lock().expect("KVM Tool panic lock poisoned"))
     }
