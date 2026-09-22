@@ -1,0 +1,30 @@
+ZippyDB DRocksDB seed-0 readiness failure
+
+The first strict-verify replica entered the guest but emitted no selected-test oracle line. Hermit reported:
+
+Deadlock detected: thread(s) waiting on futex, but no runnable threads left.
+  turn 1476360, committed time 1_767_226_014.902_027_085s
+  run queue: 0 runnable
+  threads (1), by dettid:
+    dtid 3: FutexWait: R
+  futex waiters (1), by futex:
+    private MmId { creator: DetPid(3), generation: 1 } address 0x7fffbb29fbd8: dtid 3 (bitset 0xffffffff)
+  timed-out futex waiters: none
+  timed waiters: none
+  external IO blockers: none
+  rt_sigsuspend blockers: none
+  sigchld deferred: none; sigchld ready: none
+
+HERMIT_INTERNAL_FAILURE class=container-child-exit status=Exited(1)
+Error: Sandbox container exited unexpectedly: Exited(1)
+
+The only retained verifier log was:
+/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-drocksdb-verify-3482641-1789884345113574049/run1_log_Wigm7
+bytes=1073742000
+sha256=e32e503bdcdaef92b5e4a7ceb0d49e4c864e2903bfcb3224e36809791082533a
+truncated=true
+
+Its terminal marker says:
+=== HERMIT LOG TRUNCATED: reached the configured size bound (HERMIT_LOG_MAX_BYTES). Output beyond this point was DISCARDED. The run itself continued and was NOT affected. ===
+
+At capture, verifier qgroup 0/258 reported referenced=68620288 exclusive=68620288 limit=8000000000. The separate safehermit log qgroup also reported under-limit. The wrapper report itself is complete and states bound.disk=APPLIED:8G, bound.bytes=APPLIED:67108864, truncated=false, elapsed_secs=406, and exit_code=125; that wrapper truncation field covers its 825-byte stderr stream, not the separately retained 1 GB verifier file.

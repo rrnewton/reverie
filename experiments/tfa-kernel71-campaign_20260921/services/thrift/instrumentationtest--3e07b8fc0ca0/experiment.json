@@ -1,0 +1,868 @@
+{
+  "schema_version": 2,
+  "record_type": "TFA_TARGET_EXPERIMENT",
+  "contract": {
+    "commit": "9d7f603c43618715b9245c74acb3e164c17d2ae8",
+    "path": "ai_docs/tfa-acceptance-bracket-2026-09-17.md",
+    "blob": "4a53f0c25623ad6371ee86b4556adada1218745d"
+  },
+  "identity": {
+    "service": "thrift",
+    "canonical_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+    "target_key_sha256": "3e07b8fc0ca0b9f498450c35f3501c1cb91f5ea46ab354b890dda91ac7e2edfe",
+    "target_directory": "services/thrift/instrumentationtest--3e07b8fc0ca0",
+    "testinfra_id": "281475235299286",
+    "test_name": "RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest",
+    "source_label_qualifier": null,
+    "test_selector": {
+      "kind": "EXACT_FILTER",
+      "flag": "--exact",
+      "value": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+    },
+    "build_mode_selector": [
+      "@fbcode//mode/dev-tsan"
+    ],
+    "invoked_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+    "standalone_argv": [
+      "buck",
+      "test",
+      "@fbcode//mode/dev-tsan",
+      "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "--",
+      "--exact",
+      "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+    ],
+    "experiment_id": "thrift/instrumentationtest--3e07b8fc0ca0",
+    "alias_resolution": {
+      "input_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "resolved_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "method": "buck2-targets-show-output-from-pinned-source",
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "evidence": "buck2 targets --show-output @fbcode//mode/dev-tsan resolved to buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest; executable x86-64 ELF, 11514064 bytes, SHA-256 2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc."
+    }
+  },
+  "candidate_ranking": {
+    "pfs": {
+      "value": 0.1722,
+      "displayed_percent": "17.22%",
+      "partition": "2026-09-17",
+      "metric": "probability_of_flaky_state",
+      "role": "ranking_only",
+      "may_parameterize_seed_budget": false
+    },
+    "native_failure_rate": {
+      "failures": 0,
+      "executed": 29,
+      "rate": 0.0,
+      "rate_fraction": "0/29",
+      "displayed_percent": "0.00%",
+      "window": "trailing one week; latest up to 100 final outcomes",
+      "limit": 100,
+      "final_only": true,
+      "purposes": [
+        "CONTINUOUS",
+        "STRESS_RUN",
+        "STRESS_RUN_NEW_TEST"
+      ],
+      "pass_statuses": [
+        "PASSED"
+      ],
+      "failure_statuses": [
+        "FAILED",
+        "FATAL",
+        "TIMEOUT"
+      ],
+      "excluded_statuses": [
+        "OMITTED",
+        "SKIPPED",
+        "INFRA_FAILURE"
+      ],
+      "source": "meta testinfra.result history",
+      "role": "planning_prior_only"
+    }
+  },
+  "plan": {
+    "plan_id": "thrift-instrumentation-kernel71-ptrace-strict-chaos-target-races-v1",
+    "plan_sha256": "9526db1cfce5077f12d07b0ea02236b1aae98382887838b6f1b0e49b7f642633",
+    "sealed_at": "2026-09-21T16:57:23Z",
+    "sealed_by": "codex-tfa-kernel71-campaign",
+    "campaign_owner_identity": "rrnewton",
+    "authorized_routes": [
+      {
+        "route_id": "thrift-instrumentation-kernel71-existing-elf",
+        "route_sha256": "c8057a658e91d55758fe2bd64bcb1a0ea1c4c7500fa663b4adfec77f4f1140fe",
+        "fallback_of": null,
+        "authorized_cell_ids": [
+          "thrift-instrumentation-kernel71-ptrace-strict-chaos-target-races"
+        ],
+        "canonical_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/dev-tsan"
+        ],
+        "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "build_argv": [
+          "buck",
+          "test",
+          "@fbcode//mode/dev-tsan",
+          "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+          "--",
+          "--exact",
+          "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        ],
+        "launch_argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-instrumentation-verify-3353985-1790009553614361814",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+          "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        ],
+        "repeat_matcher": {
+          "kind": "BUILTIN_VERIFY",
+          "comparison": "BitwiseInfoV1"
+        },
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "notes": "PRE-RUN SEAL: one authorized cell thrift-instrumentation-kernel71-ptrace-strict-chaos-target-races; Hermit revision 4630ee2a61f93221a43e2baec0a15f34102a2c61, binary SHA-256 5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; test ELF SHA-256 2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc; host devbig030.atn3.facebook.com, kernel Linux 7.1.3-0_fbk0_0_g295ad0959f34, x86_64 AMD EPYC 9D85 158-Core Processor; PMU type 4/RCB available; ptrace strict chaos with --chaos-target-races; only --fuzz-seed varies; BitwiseInfoV1 with no relaxations; verifier qgroup /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-instrumentation-verify-3353985-1790009553614361814. Native screening used taskset CPU 0 to bound host-sized worker fanout. Prior logs from this exact fixed Hermit binary record a virtualized sched_getaffinity mask containing only CPU 0, so the formal route adds no taskset wrapper."
+      }
+    ],
+    "target_oracle": {
+      "oracle_id": "thrift-instrumentation-selected-gtest-v1",
+      "defined_before_runs": true,
+      "unmodified": true,
+      "selected_test_executed_predicate": "GoogleTest output declares exactly one test from one suite and contains exactly one [ RUN      ] RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest line.",
+      "pass_predicate": "The selected line is [       OK ] RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest, the summary reports exactly one passed test, the guest exits 0 without a signal, and the predeclared snapshot-size failure signature is absent.",
+      "fail_classes": [
+        {
+          "failure_class_id": "gtest-snapshot-size-2",
+          "target_owned": true,
+          "predicate": "After the exact selected-test RUN line, stdout contains exactly one fbcode/thrift/lib/cpp2/test/InstrumentationTest.cpp:836: Failure block in which reqSnapshots.size() is Which is: 2 and the expected value is 3, and the guest exits nonzero or by signal. Hermit, wrapper, loader, sanitizer-only, dependency, infrastructure, and outer-timeout failures are excluded."
+        }
+      ],
+      "timeout_policy": {
+        "target_timeout_can_fail": false,
+        "target_timeout_predicate": null,
+        "target_timeout_failure_class_id": null,
+        "outer_timeout_is_censored": true
+      }
+    },
+    "measurement_design": {
+      "purpose": "EXISTENCE_DISCOVERY",
+      "swept_coordinate": {
+        "flag": "--fuzz-seed",
+        "domain": "unsigned 64-bit integers; explicit prefix 0 through 35",
+        "scheduler_modes": [
+          "--chaos-target-races"
+        ]
+      },
+      "fixed_seed_roots": {
+        "--seed": 0,
+        "--rng-seed": 0,
+        "--sched-seed": 0,
+        "--fuzz-seed": null
+      },
+      "seed_population": {
+        "kind": "EXPLICIT_VALUES",
+        "values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35
+        ]
+      },
+      "selection_order": {
+        "kind": "EXPLICIT",
+        "seed_values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35
+        ]
+      },
+      "without_replacement": true,
+      "design_basis": {
+        "kind": "RATE_BOUND",
+        "expected_hermit_fail_probability": 0.1,
+        "provenance_kind": "MINIMUM_DETECTABLE_RATE",
+        "provenance": "Prospective minimum detectable Hermit target-FAIL probability 0.10 selected before material execution. A CPU-0 native diagnostic captured the exact target assertion once after three PASS executions, but this is non-equivalent planning context only, not formal evidence or a Hermit rate claim.",
+        "equivalence_to_hermit": false,
+        "max_miss_probability": 0.05
+      },
+      "miss_probability_override": null,
+      "required_valid_seed_tuples": 29,
+      "max_attempted_seed_tuples": 36,
+      "stop_rule": "BOTH_ARMS_THEN_REPEAT",
+      "repeat_min_executions_per_arm": 2,
+      "repeat_attempt_cap": 2,
+      "independence_assumption": "Distinct predeclared fuzz seeds are treated as independent only for the prospective minimum-detectable-rate calculation; no native-to-Hermit rate equivalence is asserted."
+    },
+    "resource_bounds": {
+      "wall_seconds": 120,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "stderr_bytes": 67108864,
+      "retained_log_bytes": 67108864,
+      "disk_guard": "8G"
+    },
+    "artifact_policy": {
+      "scratch_root": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign",
+      "terminal_evidence_must_be_durable": true,
+      "digest_algorithm": "sha256"
+    }
+  },
+  "plan_receipt": {
+    "commit": "b819db93c2ea9e4ee8fbc49037fb752ea5fdd150",
+    "path": "services/thrift/instrumentationtest--3e07b8fc0ca0/experiment.json",
+    "blob": "f1aebb17871848c5e10cf2f0bf14e47b07a9c1f6"
+  },
+  "attempt_state": "MATERIAL",
+  "cells": [
+    {
+      "cell_id": "thrift-instrumentation-kernel71-ptrace-strict-chaos-target-races",
+      "route_id": "thrift-instrumentation-kernel71-existing-elf",
+      "route_sha256": "c8057a658e91d55758fe2bd64bcb1a0ea1c4c7500fa663b4adfec77f4f1140fe",
+      "plan_sha256": "9526db1cfce5077f12d07b0ea02236b1aae98382887838b6f1b0e49b7f642633",
+      "frozen_at": "2026-09-21T16:57:23Z",
+      "cell_sha256": "3b2f2ec43c4edd71246d952f88a2570e4e4eb099fc0f1866caa5e03832c7b38d",
+      "canonical_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "target_source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "hermit_source_revision": "4630ee2a61f93221a43e2baec0a15f34102a2c61",
+      "hermit_binary_sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
+      "test_artifact_sha256": "2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc",
+      "guest": {
+        "argv": [
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+          "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        ],
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "mounts": [
+          "type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+        ],
+        "immutable_inputs": [
+          {
+            "artifact_id": "thrift-kernel71-test-elf",
+            "kind": "OTHER",
+            "storage": "LOCAL_IGNORED",
+            "locator": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+            "sha256": "2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc",
+            "bytes": 11514064,
+            "capture_limit_bytes": 11514064,
+            "truncated": false,
+            "media_type": "application/x-executable"
+          }
+        ],
+        "working_directory": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-campaign_20260921"
+      },
+      "hermit": {
+        "backend": "ptrace",
+        "strict": true,
+        "chaos": true,
+        "relaxations": [],
+        "argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-instrumentation-verify-3353985-1790009553614361814",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+          "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        ],
+        "scheduler_heuristic": "random",
+        "swept_coordinate": "--fuzz-seed",
+        "fixed_seed_roots": {
+          "--seed": 0,
+          "--rng-seed": 0,
+          "--sched-seed": 0,
+          "--fuzz-seed": null
+        }
+      },
+      "timing": {
+        "requested_max_timeslice": 200000000,
+        "effective_max_timeslice": 200000000
+      },
+      "pmu": {
+        "available": true,
+        "effective_timer": "RCB",
+        "fallback_recorded": false
+      },
+      "host": {
+        "hostname": "devbig030.atn3.facebook.com",
+        "kernel": "Linux 7.1.3-0_fbk0_0_g295ad0959f34",
+        "architecture": "x86_64",
+        "cpu": "AMD EPYC 9D85 158-Core Processor",
+        "capabilities": {
+          "pmu": true,
+          "mount_namespace": true,
+          "buck_out_bind": true,
+          "safehermit_disk_qgroup": true
+        }
+      },
+      "oracle_id": "thrift-instrumentation-selected-gtest-v1",
+      "resource_bounds": {
+        "wall_seconds": 120,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "stderr_bytes": 67108864,
+        "retained_log_bytes": 67108864,
+        "disk_guard": "8G"
+      }
+    }
+  ],
+  "events": [
+    {
+      "event_id": "thrift-launch-boundary-20260921T171956Z",
+      "kind": "LAUNCH",
+      "plan_sha256": "9526db1cfce5077f12d07b0ea02236b1aae98382887838b6f1b0e49b7f642633",
+      "route_id": "thrift-instrumentation-kernel71-existing-elf",
+      "route_sha256": "c8057a658e91d55758fe2bd64bcb1a0ea1c4c7500fa663b4adfec77f4f1140fe",
+      "canonical_target": "fbcode//thrift/lib/cpp2/test:InstrumentationTest",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//thrift/lib/cpp2/test:InstrumentationTest - RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": null,
+      "cell_sha256": null,
+      "measurement_role": null,
+      "started_at": "2026-09-21T17:19:56Z",
+      "finished_at": "2026-09-21T17:20:12Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "{SAFEHERMIT_REPORT}",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "{SWEEP}",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-instrumentation-verify-3353985-1790009553614361814",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+        "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      ],
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 1,
+        "target_oracle": "AMBIGUOUS",
+        "failure_class_id": null,
+        "harness_status": "ERROR",
+        "diagnostic": "The intended formal seed-0 verify invocation reached the exact selected test and emitted a strict BitwiseInfoV1-matched GTest PASS, but safehermit reported bound.disk=NOT_APPLIED. The frozen 8G wrapper-log guard was absent, so this is a rejected LAUNCH boundary rather than a cell-bound Hermit execution or seed sample."
+      },
+      "invocation_id": null,
+      "replica_index": null,
+      "seed": null,
+      "effective_config_sha256": null,
+      "artifacts": [
+        {
+          "artifact_id": "thrift-boundary-20260921T171956Z-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/boundary-20260921T171956Z-seed-000.stdout.txt",
+          "sha256": "5651f54d258ecc9f65edc96dc18651232dd2ca98a2e7e55eb7c364e21d1e111c",
+          "bytes": 691,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-boundary-20260921T171956Z-stderr",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/boundary-20260921T171956Z-seed-000.stderr.txt",
+          "sha256": "48bea6cf1dde79bf619c2700cab1342bca3c7649213f6ef09d3c3855efc0ef6e",
+          "bytes": 1682,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-boundary-20260921T171956Z-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/boundary-20260921T171956Z-seed-000.safehermit.txt",
+          "sha256": "d21b718825d838a4efae08ccc1fbbc87d0dc91bab13107bc4eb2c5a395902fdc",
+          "bytes": 1562,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-boundary-20260921T171956Z-unbounded",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/boundary-20260921T171956Z-seed-000.unbounded.txt",
+          "sha256": "7b65937cef6d32d63c645580213974289a8a7de70ea15500e0bb1a0620261e24",
+          "bytes": 409,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-boundary-20260921T171956Z-hermit-log",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/boundary-20260921T171956Z-seed-000.hermit-log.txt",
+          "sha256": "48bea6cf1dde79bf619c2700cab1342bca3c7649213f6ef09d3c3855efc0ef6e",
+          "bytes": 1682,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-boundary-20260921T171956Z-hermit-log-meta",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/boundary-20260921T171956Z-seed-000.hermit-log-meta.txt",
+          "sha256": "bd86ab61eaca65e41f9f2a7d96b52c045a14742d2b9c0e677dac31f7c77ca553",
+          "bytes": 59,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-boundary-20260921T171956Z-registry",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/boundary-20260921T171956Z-seed-000.registry.json",
+          "sha256": "db28b7f2c8fe564204870c73b2af10f3a924c9ae8b4153489dad2e0d22bc562c",
+          "bytes": 533,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "thrift-boundary-20260921T171956Z-invocation",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/boundary-20260921T171956Z-seed-000.invocation.json",
+          "sha256": "eb2e5d821b27dc9e11895a339cf34f07ff8d71e2cac6858efdbd9bb4b45b8504",
+          "bytes": 2017,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "thrift-boundary-20260921T171956Z-verifier-manifest",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/boundary-20260921T171956Z-seed-000.verifier-manifest.txt",
+          "sha256": "0445ea6d795fef35ce4cd68e6ab20d1ca64621fa3a96fe13e31ebbbd0efc6a18",
+          "bytes": 881,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "thrift-boundary-20260921T171956Z-diagnostic",
+          "kind": "DIAGNOSTIC",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/boundary-20260921T171956Z-seed-000.diagnostic.json",
+          "sha256": "5185493277c6ed3686d334dd98c1d80b2a4616c64f79154a75d723d4d34d1c2c",
+          "bytes": 2076,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "thrift-boundary-20260921T171956Z-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/thrift/instrumentationtest--3e07b8fc0ca0/evidence/boundary-20260921T171956Z-seed-000.result.json",
+          "sha256": "05a6fcd5c800db503128728ddcacc0e5c88ad0b03c333fd7aded0a9189a7b8e3",
+          "bytes": 2212,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        }
+      ]
+    }
+  ],
+  "samples": [],
+  "matchers": [],
+  "outcome_history": [
+    {
+      "classification_id": "thrift-kernel71-boundary-rejected-20260921T172013Z",
+      "classified_at": "2026-09-21T17:20:13Z",
+      "supersedes": null,
+      "evidence_refs": [
+        "thrift-launch-boundary-20260921T171956Z",
+        "thrift-boundary-20260921T171956Z-result",
+        "thrift-boundary-20260921T171956Z-diagnostic",
+        "thrift-boundary-20260921T171956Z-safehermit",
+        "thrift-boundary-20260921T171956Z-unbounded",
+        "thrift-boundary-20260921T171956Z-invocation",
+        "thrift-boundary-20260921T171956Z-verifier-manifest"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "thrift-instrumentation-kernel71-existing-elf",
+          "cell_ids": [
+            "thrift-instrumentation-kernel71-ptrace-strict-chaos-target-races"
+          ],
+          "evidence_event_ids": [
+            "thrift-launch-boundary-20260921T171956Z"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-instrumentation-verify-3353985-1790009553614361814",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+          "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+        ]
+      ],
+      "inspected_artifacts": [
+        "thrift-boundary-20260921T171956Z-stdout",
+        "thrift-boundary-20260921T171956Z-stderr",
+        "thrift-boundary-20260921T171956Z-safehermit",
+        "thrift-boundary-20260921T171956Z-unbounded",
+        "thrift-boundary-20260921T171956Z-hermit-log",
+        "thrift-boundary-20260921T171956Z-hermit-log-meta",
+        "thrift-boundary-20260921T171956Z-registry",
+        "thrift-boundary-20260921T171956Z-invocation",
+        "thrift-boundary-20260921T171956Z-verifier-manifest",
+        "thrift-boundary-20260921T171956Z-diagnostic",
+        "thrift-boundary-20260921T171956Z-result"
+      ],
+      "missing_or_ambiguous_facts": [
+        "The intended formal invocation lacked the sealed 8G safehermit wrapper-log disk guard, so no authorized frozen cell or admissible discovery tuple was instantiated.",
+        "The exact selected test emitted a GTest PASS and strict BitwiseInfoV1 matched, but that observation is permanently ineligible as PASS, confirmation, guest-execution count, or stopping evidence.",
+        "No properly bounded seed tuple has established either the PASS or predeclared target-owned FAIL arm."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Prospectively instantiate the already-authorized frozen cell, set host-only SAFEHERMIT_LOG_ROOT=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit, require bound.disk=APPLIED:8G, and execute sealed fuzz seed 0 as the first eligible discovery tuple."
+      ]
+    }
+  ],
+  "current_outcome": {
+    "classification_id": "thrift-kernel71-boundary-rejected-20260921T172013Z",
+    "classified_at": "2026-09-21T17:20:13Z",
+    "supersedes": null,
+    "evidence_refs": [
+      "thrift-launch-boundary-20260921T171956Z",
+      "thrift-boundary-20260921T171956Z-result",
+      "thrift-boundary-20260921T171956Z-diagnostic",
+      "thrift-boundary-20260921T171956Z-safehermit",
+      "thrift-boundary-20260921T171956Z-unbounded",
+      "thrift-boundary-20260921T171956Z-invocation",
+      "thrift-boundary-20260921T171956Z-verifier-manifest"
+    ],
+    "kind": "NOT-DETERMINABLE",
+    "route_evidence": [
+      {
+        "route_id": "thrift-instrumentation-kernel71-existing-elf",
+        "cell_ids": [
+          "thrift-instrumentation-kernel71-ptrace-strict-chaos-target-races"
+        ],
+        "evidence_event_ids": [
+          "thrift-launch-boundary-20260921T171956Z"
+        ]
+      }
+    ],
+    "inspected_commands": [
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "{SAFEHERMIT_REPORT}",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "{SWEEP}",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-instrumentation-verify-3353985-1790009553614361814",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/94ec6645b5dc6cae/thrift/lib/cpp2/test/__InstrumentationTest__/InstrumentationTest",
+        "--gtest_filter=RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest"
+      ]
+    ],
+    "inspected_artifacts": [
+      "thrift-boundary-20260921T171956Z-stdout",
+      "thrift-boundary-20260921T171956Z-stderr",
+      "thrift-boundary-20260921T171956Z-safehermit",
+      "thrift-boundary-20260921T171956Z-unbounded",
+      "thrift-boundary-20260921T171956Z-hermit-log",
+      "thrift-boundary-20260921T171956Z-hermit-log-meta",
+      "thrift-boundary-20260921T171956Z-registry",
+      "thrift-boundary-20260921T171956Z-invocation",
+      "thrift-boundary-20260921T171956Z-verifier-manifest",
+      "thrift-boundary-20260921T171956Z-diagnostic",
+      "thrift-boundary-20260921T171956Z-result"
+    ],
+    "missing_or_ambiguous_facts": [
+      "The intended formal invocation lacked the sealed 8G safehermit wrapper-log disk guard, so no authorized frozen cell or admissible discovery tuple was instantiated.",
+      "The exact selected test emitted a GTest PASS and strict BitwiseInfoV1 matched, but that observation is permanently ineligible as PASS, confirmation, guest-execution count, or stopping evidence.",
+      "No properly bounded seed tuple has established either the PASS or predeclared target-owned FAIL arm."
+    ],
+    "measurement_budget_exhausted": false,
+    "pending_in_scope_measurements": [
+      "Prospectively instantiate the already-authorized frozen cell, set host-only SAFEHERMIT_LOG_ROOT=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit, require bound.disk=APPLIED:8G, and execute sealed fuzz seed 0 as the first eligible discovery tuple."
+    ]
+  }
+}

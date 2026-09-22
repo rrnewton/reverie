@@ -1,0 +1,180 @@
+:: Run1...
+:: Run2...
+:: Comparing captured verification logs...
+Logs contain 36096 | 36096 messages total
+Logs contain 36095 | 36095 detcore-specific messages
+Logs contain 36095 | 36095 INFO messages
+Logs contain 29760 | 29760 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (36095 | 36095 INFO messages compared).
+Logs contain 1 | 1 scheduler empty-run-queue kick messages
+Logs contain 42 | 42 scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 258, committed virtual time 1767225600218146355ns, run 2 first at turn 258, committed virtual time 1767225600218146355ns)
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-verify-4145838-1790000155205015507/run1_log_4nnzu
+::   run 2: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-httpcoro-verify-4145838-1790000155205015507/run2_log_oP0SN
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Success: deterministic. Determinism verified.
+E0101 00:00:00.574846     3 HTTP2Codec.cpp:1480] ignore unknown settingsId=4294967926 value=0
+F0101 00:00:02.614037     3 HTTPDownstreamCoroSessionTests.cpp:1685] Check failed: bodyEvent.hasException() 
+*** Check failure stack trace: ***
+*** Aborted at 1767225602 (Unix time, try 'date -d @1767225602') ***
+*** Signal 6 (SIGABRT) (0x3) received by PID 3 (pthread TID 0x7ffff2774080) (linux TID 3) (maybe from PID 3, UID 0) (code: sent by tkill or tgkill), stack trace: ***
+==3==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+    @ 000000000002cf2b folly::symbolizer::(anonymous namespace)::innerSignalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:598
+    @ 000000000002cbc2 folly::symbolizer::(anonymous namespace)::signalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:615
+    @ 000000000004455f (unknown)
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/libc_sigaction.c:8
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c
+    @ 000000000009ca13 pthread_kill
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_kill.c:46
+    @ 00000000000444ac raise
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/posix/raise.c:26
+    @ 000000000002c432 abort
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/stdlib/abort.c:79
+    @ 0000000000008cad folly::(anonymous namespace)::wrapped_abort()
+                       ./xplat/folly/init/Init.cpp:53
+    @ 000000000000c28c google::LogMessage::Fail()
+                       /home/engshare/third-party2/glog/0.3.2_fb/src/glog-0.3.2/src/logging.cc:1519
+    @ 00000000000103b2 google::LogMessage::SendToLog()
+                       /home/engshare/third-party2/glog/0.3.2_fb/src/glog-0.3.2/src/logging.cc:1473
+    @ 000000000000bece google::LogMessage::Flush()
+                       /home/engshare/third-party2/glog/0.3.2_fb/src/glog-0.3.2/src/logging.cc:1346
+    @ 000000000000cbb8 google::LogMessageFatal::~LogMessageFatal()
+                       /home/engshare/third-party2/glog/0.3.2_fb/src/glog-0.3.2/src/logging.cc:2013
+    @ 0000000000eb36c2 proxygen::coro::test::H2DownstreamSessionTest_ResetRateLimit_Test::co_TestBody()::$_1::operator()(proxygen::coro::HTTPSourceHolder) const [clone .resume]
+                       ./fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp:1685
+    @ 000000000000b2d3 std::__n4861::coroutine_handle<void>::resume() const
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/coroutine:127
+    @ 000000000000b1bd folly::resumeCoroutineWithNewAsyncStackRoot(std::__n4861::coroutine_handle<void>, folly::AsyncStackFrame&)
+                       ./xplat/folly/tracing/AsyncStack.cpp:218
+    @ 0000000000c2c642 void folly::resumeCoroutineWithNewAsyncStackRoot<folly::coro::detail::TaskPromise<void> >(std::__n4861::coroutine_handle<folly::coro::detail::TaskPromise<void> >)
+                       fbsource/folly/tracing/AsyncStack-inl.h:75
+    @ 0000000000c2c4f9 folly::coro::TaskWithExecutor<void>::Awaiter::await_suspend<folly::coro::detail::InlineTaskDetached::promise_type>(std::__n4861::coroutine_handle<folly::coro::detail::InlineTaskDetached::promise_type>)::{lambda()#1}::operator()()
+                       fbsource/folly/coro/Task.h:517
+    @ 0000000000c2c37c void folly::detail::function::call_<folly::coro::TaskWithExecutor<void>::Awaiter::await_suspend<folly::coro::detail::InlineTaskDetached::promise_type>(std::__n4861::coroutine_handle<folly::coro::detail::InlineTaskDetached::promise_type>)::{lambda()#1}, true, false, void>(, folly::detail::function::Data&)
+                       fbsource/folly/Function.h:341
+    @ 000000000009c252 folly::detail::function::FunctionTraits<void ()>::operator()()
+                       fbsource/folly/Function.h:370
+    @ 000000000009bed4 folly::EventBase::FuncRunner::operator()(folly::Function<void ()>&&)
+                       ./xplat/folly/io/async/EventBase.cpp:233
+    @ 000000000009aecb folly::AtomicNotificationQueueTaskStatus folly::detail::invokeConsumerWithTask<folly::Function<void ()>, folly::EventBase::FuncRunner&>(folly::EventBase::FuncRunner&, folly::Function<void ()>&&, std::shared_ptr<folly::RequestContext>&&)
+                       fbsource/folly/io/async/AtomicNotificationQueue-inl.h:258
+    @ 000000000009aab5 bool folly::AtomicNotificationQueue<folly::Function<void ()> >::drive<folly::EventBase::FuncRunner&>(folly::EventBase::FuncRunner&)
+                       fbsource/folly/io/async/AtomicNotificationQueue-inl.h:328
+    @ 000000000009a047 bool folly::EventBaseAtomicNotificationQueue<folly::Function<void ()>, folly::EventBase::FuncRunner>::drive<folly::EventBase::FuncRunner&>(folly::EventBase::FuncRunner&)
+                       fbsource/folly/io/async/EventBaseAtomicNotificationQueue-inl.h:275
+    @ 00000000000c0e99 folly::EventBaseAtomicNotificationQueue<folly::Function<void ()>, folly::EventBase::FuncRunner>::execute()
+                       fbsource/folly/io/async/EventBaseAtomicNotificationQueue-inl.h:294
+    @ 00000000000da08b folly::EventBaseAtomicNotificationQueue<folly::Function<void ()>, folly::EventBase::FuncRunner>::handlerReady(unsigned short)
+                       fbsource/folly/io/async/EventBaseAtomicNotificationQueue-inl.h:286
+    @ 00000000001062b9 folly::EventHandler::libeventCallback(int, short, void*)
+                       ./xplat/folly/io/async/EventHandler.cpp:165
+    @ 0000000000008608 event_base_loop
+                       /home/engshare/third-party2/libevent/1.4.14b_hphp/src/libevent-1.4.14b-stable/event.c:390
+    @ 0000000000081fef (anonymous namespace)::EventBaseBackend::eb_event_base_loop(int)
+                       ./xplat/folly/io/async/EventBase.cpp:113
+    @ 00000000000bbfdf folly::EventBase::loopMain(int, folly::EventBase::LoopOptions)
+                       ./xplat/folly/io/async/EventBase.cpp:656
+    @ 00000000000b5815 folly::EventBase::loopBody(int, folly::EventBase::LoopOptions)
+                       ./xplat/folly/io/async/EventBase.cpp:562
+    @ 00000000000b5456 folly::EventBase::loop()
+                       ./xplat/folly/io/async/EventBase.cpp:523
+    @ 0000000000eb7fd3 proxygen::coro::test::H2DownstreamSessionTest_ResetRateLimit_Test::co_TestBody() [clone .resume]
+                       ./fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp:1691
+    @ 000000000000b2d3 std::__n4861::coroutine_handle<void>::resume() const
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/coroutine:127
+    @ 000000000000b1bd folly::resumeCoroutineWithNewAsyncStackRoot(std::__n4861::coroutine_handle<void>, folly::AsyncStackFrame&)
+                       ./xplat/folly/tracing/AsyncStack.cpp:218
+    @ 0000000000c5e292 void folly::resumeCoroutineWithNewAsyncStackRoot<folly::coro::detail::BlockingWaitPromise<void> >(std::__n4861::coroutine_handle<folly::coro::detail::BlockingWaitPromise<void> >)
+                       fbsource/folly/tracing/AsyncStack-inl.h:75
+    @ 0000000000c5e149 folly::coro::detail::BlockingWaitTask<void>::getVia(folly::DrivableExecutor*, folly::AsyncStackFrame&) &&::{lambda()#1}::operator()()
+                       fbsource/folly/coro/BlockingWait.h:226
+    @ 0000000000c5dfcc void folly::detail::function::call_<folly::coro::detail::BlockingWaitTask<void>::getVia(folly::DrivableExecutor*, folly::AsyncStackFrame&) &&::{lambda()#1}, true, false, void>(, folly::detail::function::Data&)
+                       fbsource/folly/Function.h:341
+    @ 000000000074fda2 folly::detail::function::FunctionTraits<void ()>::operator()()
+                       fbsource/folly/Function.h:370
+    @ 0000000000c5922e folly::coro::detail::BlockingWaitExecutor::drive()::{lambda()#1}::operator()() const
+                       fbsource/folly/coro/BlockingWait.h:304
+    @ 0000000000c58c54 std::invoke_result<folly::coro::detail::BlockingWaitExecutor::drive()::{lambda()#1}>::type folly::fibers::(anonymous namespace)::runNoInline<folly::coro::detail::BlockingWaitExecutor::drive()::{lambda()#1}>(folly::coro::detail::BlockingWaitExecutor::drive()::{lambda()#1}&&)
+                       fbsource/folly/fibers/FiberManagerInternal-inl.h:50
+    @ 0000000000c58bd4 std::invoke_result<folly::coro::detail::BlockingWaitExecutor::drive()::{lambda()#1}>::type folly::fibers::runInMainContext<folly::coro::detail::BlockingWaitExecutor::drive()::{lambda()#1}>(folly::coro::detail::BlockingWaitExecutor::drive()::{lambda()#1}&&)
+                       fbsource/folly/fibers/FiberManagerInternal-inl.h:636
+    @ 0000000000c545c2 folly::coro::detail::BlockingWaitExecutor::drive()
+                       fbsource/folly/coro/BlockingWait.h:298
+    @ 0000000000c5be1e folly::coro::detail::BlockingWaitTask<void>::getVia(folly::DrivableExecutor*, folly::AsyncStackFrame&) &&
+                       fbsource/folly/coro/BlockingWait.h:229
+    @ 0000000000c51e11 folly::coro::detail::decay_rvalue_reference<folly::coro::await_result<decltype (folly::coro::folly_cpo__::co_viaIfAsync((static_cast<folly::ExecutorKeepAlive<folly::Executor> (*)() noexcept>(decltype(nullptr)))(), (static_cast<folly::coro::Task<void> (*)() noexcept>(decltype(nullptr)))())), void>::type>::type folly::coro::blocking_wait_fn::operator()<folly::coro::Task<void> >(folly::coro::Task<void>&&, folly::DrivableExecutor*) const
+                       fbsource/folly/coro/BlockingWait.h:400
+    @ 0000000000c4fa04 folly::coro::detail::decay_rvalue_reference<folly::coro::await_result<decltype (folly::coro::folly_cpo__::co_viaIfAsync((static_cast<folly::ExecutorKeepAlive<folly::Executor> (*)() noexcept>(decltype(nullptr)))(), (static_cast<folly::coro::Task<void> (*)() noexcept>(decltype(nullptr)))())), void>::type>::type folly::coro::blocking_wait_fn::operator()<folly::coro::Task<void> >(folly::coro::Task<void>&&) const
+                       fbsource/folly/coro/BlockingWait.h:435
+    @ 0000000000acce05 proxygen::coro::test::H2DownstreamSessionTest_ResetRateLimit_Test::TestBody()
+                       ./fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp:1649
+    @ 000000000010d6cd void testing::internal::HandleSehExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*)
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2707
+    @ 000000000010d1b5 void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*)
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2743
+    @ 000000000010cf7d testing::Test::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2782
+    @ 0000000000110799 testing::TestInfo::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2928
+    @ 00000000001171a4 testing::TestSuite::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:3106
+    @ 0000000000145934 testing::internal::UnitTestImpl::RunAllTests()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:6089
+    @ 000000000014686d bool testing::internal::HandleSehExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*)
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2707
+    @ 00000000001441ba bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*)
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:2743
+    @ 0000000000143bcf testing::UnitTest::Run()
+                       third-party/googletest/HEAD/googletest/googletest/src/gtest.cc:5630
+    @ 0000000000002910 RUN_ALL_TESTS()
+                       third-party/googletest/HEAD/googletest/googletest/include/gtest/gtest.h:2348
+    @ 000000000000263c main
+                       ./fbcode/common/gtest/LightMain.cpp:20
+    @ 000000000002c656 __libc_start_call_main
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/nptl/libc_start_call_main.h:58
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86/libc-start.c
+    @ 000000000002c717 __libc_start_main
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../csu/libc-start.c:409
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86/libc-start.c
+    @ 000000000063b0e0 _start
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/csu/../sysdeps/x86_64/start.S:116
+
+*** Check failure async stack trace: ***
+*** First async stack root: 0x7bfff006fc40, normal stack frame pointer holding async stack root: 0x7fffffffc250, return address: 0x555556180643 ***
+*** First async stack frame pointer: 0x7d1ff14038e0, return address: 0x55555617e927, async stack trace: ***
+    @ 000000000002cf2c folly::symbolizer::(anonymous namespace)::innerSignalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:601
+    @ 000000000002cbc3 folly::symbolizer::(anonymous namespace)::signalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:615
+    @ 0000000000044560 (unknown)
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/libc_sigaction.c:13
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c
+    @ 00000000000444ad raise
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/posix/raise.c:27
+    @ 000000000002c433 abort
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/stdlib/abort.c:81
+    @ 0000000000008cae folly::(anonymous namespace)::wrapped_abort()
+                       ./xplat/folly/init/Init.cpp:53
+    @ 000000000000c28d (unknown)
+                       /home/engshare/third-party2/glog/0.3.2_fb/src/glog-0.3.2/src/logging.cc:1519
+    @ 00000000000103b3 google::LogMessage::SendToLog()
+                       /home/engshare/third-party2/glog/0.3.2_fb/src/glog-0.3.2/src/logging.cc:1473
+    @ 000000000000becf google::LogMessage::Flush()
+                       /home/engshare/third-party2/glog/0.3.2_fb/src/glog-0.3.2/src/logging.cc:1347
+    @ 000000000000cbb9 google::LogMessageFatal::~LogMessageFatal()
+                       /home/engshare/third-party2/glog/0.3.2_fb/src/glog-0.3.2/src/logging.cc:2014
+    @ 0000000000eb36c3 proxygen::coro::test::H2DownstreamSessionTest_ResetRateLimit_Test::co_TestBody()::$_1::operator()(proxygen::coro::HTTPSourceHolder) const [clone .resume]
+                       ./fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp:1685
+    @ 000000000000b2d4 std::__n4861::coroutine_handle<void>::resume() const
+                       fbcode/third-party-buck/platform010/build/libgcc/include/c++/trunk/coroutine:127
+    @ 0000000000c2a927 decltype ((((*this).awaiter_).await_suspend)({parm#1})) folly::coro::detail::ValueOnlyAwaiterBase<folly::coro::TaskWithExecutor<void> >::await_suspend<folly::coro::detail::InlineTaskDetached::promise_type>(std::__n4861::coroutine_handle<folly::coro::detail::InlineTaskDetached::promise_type>)
+                       fbsource/folly/coro/ViaIfAsync.h:631
+    @ 0000000000eb7f2f proxygen::coro::test::H2DownstreamSessionTest_ResetRateLimit_Test::co_TestBody() [clone .resume]
+                       ./fbcode/proxygen/lib/http/coro/test/HTTPDownstreamCoroSessionTests.cpp:1689
+    @ 000000000000afd6 folly::detached_task()
+                       ./xplat/folly/tracing/AsyncStack.cpp:188

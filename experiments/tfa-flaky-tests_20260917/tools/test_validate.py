@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import signal as signal_module
 import shutil
 import subprocess
 import sys
@@ -60,9 +61,13 @@ def artifact_payloads(record: dict) -> dict[str, bytes]:
                 binary_hash = cells[event["cell_id"]]["hermit_binary_sha256"]
                 bounds = record["plan"]["resource_bounds"]
                 result = event["result"]
-                signal = result["signal"]
-                final_exit = 128 + signal if signal is not None else result["exit_code"]
-                unit_result = "signal" if signal is not None else (
+                signal_name = result["signal"]
+                signal_number = (
+                    signal_module.Signals[signal_name].value
+                    if signal_name is not None else None
+                )
+                final_exit = 128 + signal_number if signal_number is not None else result["exit_code"]
+                unit_result = "signal" if signal_name is not None else (
                     "success" if final_exit == 0 else "exit-code"
                 )
                 rows = {
@@ -81,8 +86,8 @@ def artifact_payloads(record: dict) -> dict[str, bytes]:
                     "runner_exit_code": str(final_exit), "unit_result": unit_result,
                     "exit_code": str(final_exit),
                 }
-                if signal is not None:
-                    rows["process_signal"] = str(signal)
+                if signal_number is not None:
+                    rows["process_signal"] = str(signal_number)
                 payloads[item["artifact_id"]] = "".join(
                     f"safehermit: {key}={value}\n" for key, value in rows.items()
                 ).encode()
@@ -1379,6 +1384,31 @@ class ValidatorTest(unittest.TestCase):
         self.rewrite_record(path, record)
         self.commit_record(path, [report["locator"]])
         self.assert_invalid("wall bound differs")
+
+    def test_safehermit_accepts_symbolic_signal_result(self) -> None:
+        record = working_record(self.entry)
+        event = record["events"][0]
+        event["result"].update(
+            exit_code=132,
+            signal="SIGILL",
+            selected_test_executed_count=0,
+            target_oracle="NOT_RUN",
+            failure_class_id=None,
+            harness_status="ERROR",
+        )
+        report = next(
+            item for item in event["artifacts"]
+            if item["kind"] == "SAFEHERMIT_REPORT"
+        )
+        payload = artifact_payloads(record)[report["artifact_id"]]
+        errors = validator._safehermit_report_errors(
+            payload,
+            record["cells"][0],
+            event["result"],
+            record["plan"]["resource_bounds"],
+            "signal-report",
+        )
+        self.assertEqual(errors, [])
 
     def test_tracked_artifact_worktree_must_equal_git_index(self) -> None:
         record = working_record(self.entry)

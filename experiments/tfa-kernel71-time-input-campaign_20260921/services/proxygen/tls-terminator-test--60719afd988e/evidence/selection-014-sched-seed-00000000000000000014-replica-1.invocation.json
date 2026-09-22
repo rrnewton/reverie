@@ -1,0 +1,165 @@
+{
+  "argv": [
+    "bin/safehermit",
+    "--sh-report",
+    "services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-014-sched-seed-00000000000000000014-replica-1.safehermit.txt",
+    "--sh-deadline",
+    "120",
+    "--sh-max-log-bytes",
+    "67108864",
+    "--sh-disk-limit",
+    "8G",
+    "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+    "run",
+    "--backend",
+    "ptrace",
+    "--strict",
+    "--chaos",
+    "--base-env=minimal",
+    "--env",
+    "LC_ALL=C",
+    "--env",
+    "TZ=UTC",
+    "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+    "--epoch=2026-09-21T18:54:35Z",
+    "--clock-multiplier=1.0",
+    "--seed",
+    "0",
+    "--rng-seed",
+    "0",
+    "--sched-seed",
+    "14",
+    "--fuzz-seed",
+    "0",
+    "--sched-heuristic",
+    "random",
+    "--max-timeslice",
+    "200000000",
+    "--verify",
+    "--verify-strict",
+    "--verify-allow",
+    "both",
+    "--keep-logs",
+    "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372",
+    "--",
+    "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test",
+    "--gtest_filter=TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect",
+    "--gtest_also_run_disabled_tests"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-time-input-campaign_20260921",
+  "execution_boundary": {
+    "head_commit": "44d8bd1b2e1d0ab0aaf7392227de6a93a2b07503",
+    "plan_receipt": {
+      "blob": "7e9e1e0c8f9fbf9f30ea527d072c18d31401d24e",
+      "commit": "3f9914e834c5c3a2ffd9c5460a278f2191986d1a",
+      "helper_blobs": [
+        {
+          "blob": "fda050969911bee78ac5674313b78acc6464a468",
+          "path": "experiments/tfa-kernel71-time-input-campaign_20260921/tools/admit_tls_sched_now_seed.py"
+        },
+        {
+          "blob": "e78db09a68d4d26ec43c3ce3bc2eea7261b4b86b",
+          "path": "experiments/tfa-kernel71-time-input-campaign_20260921/tools/create_tls_sched_now_plan.py"
+        },
+        {
+          "blob": "3481d30d9770fa664a49b32217404157a2bb3cdb",
+          "path": "experiments/tfa-kernel71-time-input-campaign_20260921/tools/run_tls_sched_now_seed.py"
+        }
+      ],
+      "path": "services/proxygen/tls-terminator-test--60719afd988e/experiment.json"
+    },
+    "plan_sha256": "92b8e74e69199867373ec7152f6a84dd773e08d46e2bf8e3c6943488a7658205",
+    "record_blob": "9ff6b79bc95501bcb6b1fc71cec42d436d98a71e",
+    "record_repository_path": "experiments/tfa-kernel71-time-input-campaign_20260921/services/proxygen/tls-terminator-test--60719afd988e/experiment.json",
+    "route_id": "tls-kernel71-sched-now-existing-elf-v1",
+    "route_sha256": "b663dc76cf5354419aa558d9ffc0fea84d5918eb1acbbe612a8294a97ddcb267"
+  },
+  "finished_at": "2026-09-21T20:46:58Z",
+  "host_environment": {
+    "HERMIT_BIN": null,
+    "RUST_LOG": null,
+    "SAFEHERMIT_LOG_ROOT": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit"
+  },
+  "paths": {
+    "safehermit_qgroup_after": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/tls-sched-now-input/selection-014-sched-seed-00000000000000000014/safehermit-qgroup-after.txt",
+    "safehermit_report": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-time-input-campaign_20260921/services/proxygen/tls-terminator-test--60719afd988e/evidence/selection-014-sched-seed-00000000000000000014-replica-1.safehermit.txt",
+    "stderr": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/tls-sched-now-input/selection-014-sched-seed-00000000000000000014/stderr.txt",
+    "stdout": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/tls-sched-now-input/selection-014-sched-seed-00000000000000000014/stdout.txt",
+    "verifier_qgroup_after": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/tls-sched-now-input/selection-014-sched-seed-00000000000000000014/verifier-qgroup-after.txt",
+    "verifier_qgroup_before": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/tls-sched-now-input/selection-014-sched-seed-00000000000000000014/verifier-qgroup-before.txt"
+  },
+  "postcheck_errors": [],
+  "preflight": {
+    "binaries": [
+      {
+        "bytes": 415330552,
+        "label": "Hermit",
+        "path": "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a"
+      },
+      {
+        "bytes": 991876712,
+        "label": "test",
+        "path": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/49bed21049d8ec65/proxygen/facebook/fwdproxy/tlsterm/test/__tls_terminator_test__/tls_terminator_test",
+        "sha256": "e7a5278312bb9daa6d38a9a03cc2001cd31f8c64a92791d92d5aa47c20f66566"
+      }
+    ],
+    "host": {
+      "cpu": "AMD EPYC 9D85 158-Core Processor",
+      "hostname": "devbig030.atn3.facebook.com",
+      "kernel_release": "7.1.3-0_fbk0_0_g295ad0959f34",
+      "machine": "x86_64",
+      "perf_event_paranoid": "1",
+      "pmu_type": "4",
+      "system": "Linux"
+    },
+    "mount": "/dev/loop1 btrfs",
+    "qgroup": {
+      "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372",
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "referenced=880590848 exclusive=880590848 limit=8000000000\n"
+    }
+  },
+  "process_returncode": 1,
+  "safehermit_qgroup_after": {
+    "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-safehermit-20260921T204625Z-1296121-1296492-1790023585426108743",
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "referenced=16384 exclusive=16384 limit=8000000000\n"
+  },
+  "schema_version": 1,
+  "seed": {
+    "flag": "--sched-seed",
+    "value": 14
+  },
+  "selection_index": 14,
+  "started_at": "2026-09-21T20:46:25Z",
+  "state": "COMPLETE",
+  "stdout_cap": {
+    "chunk_bytes": 65536,
+    "kill": {
+      "command": null,
+      "error": null,
+      "returncode": null,
+      "unit": null
+    },
+    "limit_bytes": 67108864,
+    "method": "constant-memory-drain-and-systemd-cgroup-kill",
+    "observed_bytes": 341,
+    "truncated": false,
+    "written_bytes": 341
+  },
+  "stdout_cap_policy": {
+    "chunk_bytes": 65536,
+    "limit_bytes": 67108864,
+    "method": "constant-memory-drain-and-systemd-cgroup-kill",
+    "overflow_action": "systemctl --user kill --signal=SIGKILL UNIT"
+  },
+  "verifier_qgroup_after": {
+    "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-sched-now-2936582-20260921-1036584-1790016867759891372",
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "referenced=880590848 exclusive=880590848 limit=8000000000\n"
+  }
+}

@@ -1,0 +1,1000 @@
+{
+  "schema_version": 2,
+  "record_type": "TFA_TARGET_EXPERIMENT",
+  "contract": {
+    "commit": "9d7f603c43618715b9245c74acb3e164c17d2ae8",
+    "path": "ai_docs/tfa-acceptance-bracket-2026-09-17.md",
+    "blob": "4a53f0c25623ad6371ee86b4556adada1218745d"
+  },
+  "identity": {
+    "service": "mcrouter",
+    "canonical_target": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+    "target_key_sha256": "82eb51b9426da3ea01d4a6ca05d1622eddba968c97ac511a84ed4cbc26424298",
+    "target_directory": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d",
+    "testinfra_id": "562950220120091",
+    "test_name": "McRefillWrapperBucketized/0.refillOnMiss",
+    "source_label_qualifier": null,
+    "test_selector": {
+      "kind": "EXACT_FILTER",
+      "flag": "--exact",
+      "value": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test - McRefillWrapperBucketized/0.refillOnMiss"
+    },
+    "build_mode_selector": [
+      "@fbcode//mode/dev-tsan"
+    ],
+    "invoked_target": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+    "standalone_argv": [
+      "buck",
+      "test",
+      "@fbcode//mode/dev-tsan",
+      "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+      "--",
+      "--exact",
+      "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test - McRefillWrapperBucketized/0.refillOnMiss"
+    ],
+    "experiment_id": "mcrouter/mc-refill-route-wrapper-test--82eb51b9426d",
+    "alias_resolution": {
+      "input_target": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+      "resolved_target": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+      "method": "pinned-cohort-target-and-existing-buck-output",
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "evidence": "The fixed cohort resolves this canonical target. Existing executable /home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test is 12366336 bytes with SHA-256 3eaa55b7765bee4a5dbf578a535e24438d757d76b0d3e0d8f0da5185ff29b369."
+    }
+  },
+  "candidate_ranking": {
+    "pfs": {
+      "value": 0.4939,
+      "displayed_percent": "49.39%",
+      "partition": "2026-09-17",
+      "metric": "probability_of_flaky_state",
+      "role": "ranking_only",
+      "may_parameterize_seed_budget": false
+    },
+    "native_failure_rate": {
+      "failures": 77,
+      "executed": 97,
+      "rate": 0.7938144329896907,
+      "rate_fraction": "77/97",
+      "displayed_percent": "79.38%",
+      "window": "trailing one week; latest up to 100 final outcomes",
+      "limit": 100,
+      "final_only": true,
+      "purposes": [
+        "CONTINUOUS",
+        "STRESS_RUN",
+        "STRESS_RUN_NEW_TEST"
+      ],
+      "pass_statuses": [
+        "PASSED"
+      ],
+      "failure_statuses": [
+        "FAILED",
+        "FATAL",
+        "TIMEOUT"
+      ],
+      "excluded_statuses": [
+        "OMITTED",
+        "SKIPPED",
+        "INFRA_FAILURE"
+      ],
+      "source": "meta testinfra.result history",
+      "role": "planning_prior_only"
+    }
+  },
+  "plan": {
+    "plan_id": "mcrefill-kernel71-ptrace-strict-chaos-target-races-v1",
+    "plan_sha256": "5cbbb9057f300bbce90b29055d3dfb14002d71284b6519ebebc6e368583f53a8",
+    "sealed_at": "2026-09-21T14:58:36Z",
+    "sealed_by": "codex-tfa-kernel71-campaign",
+    "campaign_owner_identity": "rrnewton",
+    "authorized_routes": [
+      {
+        "route_id": "mcrefill-kernel71-existing-elf",
+        "route_sha256": "e1154b38e12f993a94077e89a52fad5fc603cca1e6bcc29a4ef6dc4775fd1a83",
+        "fallback_of": null,
+        "authorized_cell_ids": [
+          "mcrefill-kernel71-ptrace-strict-chaos-target-races"
+        ],
+        "canonical_target": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test - McRefillWrapperBucketized/0.refillOnMiss"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/dev-tsan"
+        ],
+        "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "build_argv": [
+          "buck",
+          "test",
+          "@fbcode//mode/dev-tsan",
+          "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+          "--",
+          "--exact",
+          "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test - McRefillWrapperBucketized/0.refillOnMiss"
+        ],
+        "launch_argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-mcrefill-verify-3174621-1790002707339803842",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test",
+          "--gtest_filter=McRefillWrapperBucketized/0.refillOnMiss"
+        ],
+        "repeat_matcher": {
+          "kind": "BUILTIN_VERIFY",
+          "comparison": "BitwiseInfoV1"
+        },
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "notes": "PRE-RUN SEAL: one authorized cell mcrefill-kernel71-ptrace-strict-chaos-target-races; Hermit revision 4630ee2a61f93221a43e2baec0a15f34102a2c61, binary SHA-256 5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; test ELF SHA-256 3eaa55b7765bee4a5dbf578a535e24438d757d76b0d3e0d8f0da5185ff29b369; host devbig030.atn3.facebook.com, kernel Linux 7.1.3-0_fbk0_0_g295ad0959f34, x86_64 AMD EPYC 9D85 158-Core Processor; PMU type 4/RCB available; ptrace strict chaos with --chaos-target-races; only --fuzz-seed varies; BitwiseInfoV1 with no relaxations; verifier qgroup /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-mcrefill-verify-3174621-1790002707339803842."
+      }
+    ],
+    "target_oracle": {
+      "oracle_id": "mcrefill-selected-gtest-v1",
+      "defined_before_runs": true,
+      "unmodified": true,
+      "selected_test_executed_predicate": "GoogleTest output contains [ RUN      ] McRefillWrapperBucketized/0.refillOnMiss and the summary reports exactly one selected test.",
+      "pass_predicate": "The selected test line is [       OK ] McRefillWrapperBucketized/0.refillOnMiss, the summary reports one passed test, and the guest exits 0 without a signal.",
+      "fail_classes": [
+        {
+          "failure_class_id": "gtest-selected-test-failure",
+          "target_owned": true,
+          "predicate": "The selected test line is [  FAILED  ] McRefillWrapperBucketized/0.refillOnMiss, the summary reports one failed selected test, and the guest exits nonzero, excluding Hermit, wrapper, dependency, infrastructure, and outer-timeout failures."
+        },
+        {
+          "failure_class_id": "selected-test-sanitizer-failure",
+          "target_owned": true,
+          "predicate": "After [ RUN      ] McRefillWrapperBucketized/0.refillOnMiss, the unchanged ASan/TSan oracle reports a sanitizer finding causally owned by that selected test and the guest exits nonzero, excluding Hermit, wrapper, dependency, and infrastructure failures."
+        }
+      ],
+      "timeout_policy": {
+        "target_timeout_can_fail": false,
+        "target_timeout_predicate": null,
+        "target_timeout_failure_class_id": null,
+        "outer_timeout_is_censored": true
+      }
+    },
+    "measurement_design": {
+      "purpose": "EXISTENCE_DISCOVERY",
+      "swept_coordinate": {
+        "flag": "--fuzz-seed",
+        "domain": "unsigned 64-bit integers; explicit prefix 0 through 16",
+        "scheduler_modes": [
+          "--chaos-target-races"
+        ]
+      },
+      "fixed_seed_roots": {
+        "--seed": 0,
+        "--rng-seed": 0,
+        "--sched-seed": 0,
+        "--fuzz-seed": null
+      },
+      "seed_population": {
+        "kind": "EXPLICIT_VALUES",
+        "values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16
+        ]
+      },
+      "selection_order": {
+        "kind": "EXPLICIT",
+        "seed_values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16
+        ]
+      },
+      "without_replacement": true,
+      "design_basis": {
+        "kind": "RATE_BOUND",
+        "expected_hermit_fail_probability": 0.7938144329896907,
+        "provenance_kind": "NATIVE_EMPIRICAL_RATE",
+        "provenance": "The fixed cohort records 77 failures among 97 final native outcomes. This is a non-equivalent planning prior only, not a Hermit rate claim.",
+        "equivalence_to_hermit": false,
+        "max_miss_probability": 0.05
+      },
+      "miss_probability_override": null,
+      "required_valid_seed_tuples": 13,
+      "max_attempted_seed_tuples": 17,
+      "stop_rule": "BOTH_ARMS_THEN_REPEAT",
+      "repeat_min_executions_per_arm": 2,
+      "repeat_attempt_cap": 2,
+      "independence_assumption": "Distinct predeclared fuzz seeds are treated as independent only for the planning calculation; native and Hermit rates are not asserted equivalent."
+    },
+    "resource_bounds": {
+      "wall_seconds": 120,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "stderr_bytes": 67108864,
+      "retained_log_bytes": 67108864,
+      "disk_guard": "8G"
+    },
+    "artifact_policy": {
+      "scratch_root": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign",
+      "terminal_evidence_must_be_durable": true,
+      "digest_algorithm": "sha256"
+    }
+  },
+  "plan_receipt": {
+    "commit": "a93e41964f084e0e96dd1198cb04de5bbaae4566",
+    "path": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/experiment.json",
+    "blob": "3b51fa90a293d35eb049ea6b94cfcb203f0501d6"
+  },
+  "attempt_state": "MATERIAL",
+  "cells": [
+    {
+      "cell_id": "mcrefill-kernel71-ptrace-strict-chaos-target-races",
+      "route_id": "mcrefill-kernel71-existing-elf",
+      "route_sha256": "e1154b38e12f993a94077e89a52fad5fc603cca1e6bcc29a4ef6dc4775fd1a83",
+      "plan_sha256": "5cbbb9057f300bbce90b29055d3dfb14002d71284b6519ebebc6e368583f53a8",
+      "frozen_at": "2026-09-21T14:58:36Z",
+      "cell_sha256": "ffda82604aa9d584708bc33e46ecebf558f0643ac82545cfeb2917dcd3c63723",
+      "canonical_target": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test - McRefillWrapperBucketized/0.refillOnMiss"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "target_source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "hermit_source_revision": "4630ee2a61f93221a43e2baec0a15f34102a2c61",
+      "hermit_binary_sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
+      "test_artifact_sha256": "3eaa55b7765bee4a5dbf578a535e24438d757d76b0d3e0d8f0da5185ff29b369",
+      "guest": {
+        "argv": [
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test",
+          "--gtest_filter=McRefillWrapperBucketized/0.refillOnMiss"
+        ],
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "mounts": [
+          "type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+        ],
+        "immutable_inputs": [
+          {
+            "artifact_id": "mcrefill-kernel71-test-elf",
+            "kind": "OTHER",
+            "storage": "LOCAL_IGNORED",
+            "locator": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test",
+            "sha256": "3eaa55b7765bee4a5dbf578a535e24438d757d76b0d3e0d8f0da5185ff29b369",
+            "bytes": 12366336,
+            "capture_limit_bytes": 12366336,
+            "truncated": false,
+            "media_type": "application/x-executable"
+          }
+        ],
+        "working_directory": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-campaign_20260921"
+      },
+      "hermit": {
+        "backend": "ptrace",
+        "strict": true,
+        "chaos": true,
+        "relaxations": [],
+        "argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-mcrefill-verify-3174621-1790002707339803842",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test",
+          "--gtest_filter=McRefillWrapperBucketized/0.refillOnMiss"
+        ],
+        "scheduler_heuristic": "random",
+        "swept_coordinate": "--fuzz-seed",
+        "fixed_seed_roots": {
+          "--seed": 0,
+          "--rng-seed": 0,
+          "--sched-seed": 0,
+          "--fuzz-seed": null
+        }
+      },
+      "timing": {
+        "requested_max_timeslice": 200000000,
+        "effective_max_timeslice": 200000000
+      },
+      "pmu": {
+        "available": true,
+        "effective_timer": "RCB",
+        "fallback_recorded": false
+      },
+      "host": {
+        "hostname": "devbig030.atn3.facebook.com",
+        "kernel": "Linux 7.1.3-0_fbk0_0_g295ad0959f34",
+        "architecture": "x86_64",
+        "cpu": "AMD EPYC 9D85 158-Core Processor",
+        "capabilities": {
+          "pmu": true,
+          "mount_namespace": true,
+          "buck_out_bind": true,
+          "safehermit_disk_qgroup": true
+        }
+      },
+      "oracle_id": "mcrefill-selected-gtest-v1",
+      "resource_bounds": {
+        "wall_seconds": 120,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "stderr_bytes": 67108864,
+        "retained_log_bytes": 67108864,
+        "disk_guard": "8G"
+      }
+    }
+  ],
+  "events": [
+    {
+      "event_id": "mcrefill-fuzz-000-replica-1",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "5cbbb9057f300bbce90b29055d3dfb14002d71284b6519ebebc6e368583f53a8",
+      "route_id": "mcrefill-kernel71-existing-elf",
+      "route_sha256": "e1154b38e12f993a94077e89a52fad5fc603cca1e6bcc29a4ef6dc4775fd1a83",
+      "canonical_target": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test - McRefillWrapperBucketized/0.refillOnMiss"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "mcrefill-kernel71-ptrace-strict-chaos-target-races",
+      "cell_sha256": "ffda82604aa9d584708bc33e46ecebf558f0643ac82545cfeb2917dcd3c63723",
+      "measurement_role": "DISCOVERY",
+      "started_at": "2026-09-21T15:11:20Z",
+      "finished_at": "2026-09-21T15:11:38Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-mcrefill-verify-3174621-1790002707339803842",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test",
+        "--gtest_filter=McRefillWrapperBucketized/0.refillOnMiss"
+      ],
+      "result": {
+        "exit_code": 127,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 0,
+        "target_oracle": "NOT_RUN",
+        "failure_class_id": null,
+        "harness_status": "ERROR",
+        "diagnostic": "status=CENSORED; selected=0; unit_result=exit-code; exit=127; BitwiseInfoV1=matched"
+      },
+      "invocation_id": "mcrefill-fuzz-000-verify",
+      "replica_index": 1,
+      "seed": {
+        "flag": "--fuzz-seed",
+        "value": 0
+      },
+      "effective_config_sha256": "ffda82604aa9d584708bc33e46ecebf558f0643ac82545cfeb2917dcd3c63723",
+      "artifacts": [
+        {
+          "artifact_id": "mcrefill-fuzz-000-replica-1-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-1.stdout.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "mcrefill-fuzz-000-replica-1-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-1.stderr.txt",
+          "sha256": "b4c32263de99a1e12387cd5d907d4f133d061a66d00923e28a6ad654dcc10c36",
+          "bytes": 1382,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "mcrefill-fuzz-000-replica-1-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-1.result.json",
+          "sha256": "ca3e77c5c41a16484cde70b28b0fdd249c937bdf2ba7c32c593eaf570ccc910a",
+          "bytes": 1794,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "mcrefill-fuzz-000-replica-1-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-1.safehermit.txt",
+          "sha256": "f0d39007d7f0928a499dd1dcb46de810ac9315c38f01cbca31aea53df94b8744",
+          "bytes": 1783,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        }
+      ]
+    },
+    {
+      "event_id": "mcrefill-fuzz-000-replica-2",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "5cbbb9057f300bbce90b29055d3dfb14002d71284b6519ebebc6e368583f53a8",
+      "route_id": "mcrefill-kernel71-existing-elf",
+      "route_sha256": "e1154b38e12f993a94077e89a52fad5fc603cca1e6bcc29a4ef6dc4775fd1a83",
+      "canonical_target": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//mcrouter/facebook/test/toaster_tests:mc_refill_route_wrapper_test - McRefillWrapperBucketized/0.refillOnMiss"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev-tsan"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "mcrefill-kernel71-ptrace-strict-chaos-target-races",
+      "cell_sha256": "ffda82604aa9d584708bc33e46ecebf558f0643ac82545cfeb2917dcd3c63723",
+      "measurement_role": "CONFIRMATION",
+      "started_at": "2026-09-21T15:11:20Z",
+      "finished_at": "2026-09-21T15:11:38Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-2.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-mcrefill-verify-3174621-1790002707339803842",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test",
+        "--gtest_filter=McRefillWrapperBucketized/0.refillOnMiss"
+      ],
+      "result": {
+        "exit_code": 127,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 0,
+        "target_oracle": "NOT_RUN",
+        "failure_class_id": null,
+        "harness_status": "ERROR",
+        "diagnostic": "status=CENSORED; selected=0; unit_result=exit-code; exit=127; BitwiseInfoV1=matched"
+      },
+      "invocation_id": "mcrefill-fuzz-000-verify",
+      "replica_index": 2,
+      "seed": {
+        "flag": "--fuzz-seed",
+        "value": 0
+      },
+      "effective_config_sha256": "ffda82604aa9d584708bc33e46ecebf558f0643ac82545cfeb2917dcd3c63723",
+      "artifacts": [
+        {
+          "artifact_id": "mcrefill-fuzz-000-replica-2-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-2.stdout.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "mcrefill-fuzz-000-replica-2-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-2.stderr.txt",
+          "sha256": "b4c32263de99a1e12387cd5d907d4f133d061a66d00923e28a6ad654dcc10c36",
+          "bytes": 1382,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "mcrefill-fuzz-000-replica-2-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-2.result.json",
+          "sha256": "19a90d48e2dbd4dcfa3cf8681caa4d43f4bbf2d9376c42bdbc97df63fc05d2d5",
+          "bytes": 1797,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "mcrefill-fuzz-000-replica-2-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-2.safehermit.txt",
+          "sha256": "f0d39007d7f0928a499dd1dcb46de810ac9315c38f01cbca31aea53df94b8744",
+          "bytes": 1783,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        }
+      ]
+    }
+  ],
+  "samples": [
+    {
+      "sample_id": "mcrefill-fuzz-000-sample",
+      "cell_id": "mcrefill-kernel71-ptrace-strict-chaos-target-races",
+      "seed": {
+        "flag": "--fuzz-seed",
+        "value": 0
+      },
+      "selection_index": 0,
+      "status": "CENSORED",
+      "target_outcome": null,
+      "failure_class_id": null,
+      "censor_reason": "The selected test did not produce a qualifying target verdict.",
+      "execution_event_ids": [
+        "mcrefill-fuzz-000-replica-1",
+        "mcrefill-fuzz-000-replica-2"
+      ]
+    }
+  ],
+  "matchers": [
+    {
+      "matcher_id": "mcrefill-fuzz-000-matcher",
+      "kind": "BUILTIN_VERIFY",
+      "execution_event_ids": [
+        "mcrefill-fuzz-000-replica-1",
+        "mcrefill-fuzz-000-replica-2"
+      ],
+      "complete": true,
+      "same_target_outcome": true,
+      "same_failure_class": true,
+      "canonical_info_artifact": {
+        "artifact_id": "mcrefill-fuzz-000-matcher-canonical-info",
+        "kind": "CANONICAL_INFO",
+        "storage": "TRACKED",
+        "locator": "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000.canonical-info.json",
+        "sha256": "b48b301c702ed8d311db5ed183b3196b7eb8e04e074fd5fb0d916903fb1d7513",
+        "bytes": 335,
+        "capture_limit_bytes": 67108864,
+        "truncated": false,
+        "media_type": "application/json"
+      },
+      "details": {
+        "verified": true,
+        "bitwise_parity": true,
+        "comparison": "BitwiseInfoV1",
+        "relaxations": []
+      }
+    }
+  ],
+  "outcome_history": [
+    {
+      "classification_id": "mcrefill-kernel71-pending",
+      "classified_at": "2026-09-21T15:11:39Z",
+      "supersedes": null,
+      "evidence_refs": [
+        "mcrefill-fuzz-000-replica-1",
+        "mcrefill-fuzz-000-replica-2"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "mcrefill-kernel71-existing-elf",
+          "cell_ids": [
+            "mcrefill-kernel71-ptrace-strict-chaos-target-races"
+          ],
+          "evidence_event_ids": [
+            "mcrefill-fuzz-000-replica-1",
+            "mcrefill-fuzz-000-replica-2"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-1.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-mcrefill-verify-3174621-1790002707339803842",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test",
+          "--gtest_filter=McRefillWrapperBucketized/0.refillOnMiss"
+        ],
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-2.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-mcrefill-verify-3174621-1790002707339803842",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test",
+          "--gtest_filter=McRefillWrapperBucketized/0.refillOnMiss"
+        ]
+      ],
+      "inspected_artifacts": [
+        "mcrefill-fuzz-000-replica-1-result",
+        "mcrefill-fuzz-000-replica-2-result"
+      ],
+      "missing_or_ambiguous_facts": [
+        "A complete distinct-seed PASS/target-owned-FAIL bracket is not yet present."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Seeds 1-16 remain in the predeclared population, but further execution is deferred because the exact native case emitted no marker within 25 seconds and formal seed 0 failed in the loader before the target oracle."
+      ]
+    }
+  ],
+  "current_outcome": {
+    "classification_id": "mcrefill-kernel71-pending",
+    "classified_at": "2026-09-21T15:11:39Z",
+    "supersedes": null,
+    "evidence_refs": [
+      "mcrefill-fuzz-000-replica-1",
+      "mcrefill-fuzz-000-replica-2"
+    ],
+    "kind": "NOT-DETERMINABLE",
+    "route_evidence": [
+      {
+        "route_id": "mcrefill-kernel71-existing-elf",
+        "cell_ids": [
+          "mcrefill-kernel71-ptrace-strict-chaos-target-races"
+        ],
+        "evidence_event_ids": [
+          "mcrefill-fuzz-000-replica-1",
+          "mcrefill-fuzz-000-replica-2"
+        ]
+      }
+    ],
+    "inspected_commands": [
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-mcrefill-verify-3174621-1790002707339803842",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test",
+        "--gtest_filter=McRefillWrapperBucketized/0.refillOnMiss"
+      ],
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/mcrouter/mc-refill-route-wrapper-test--82eb51b9426d/evidence/seed-000-replica-2.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-mcrefill-verify-3174621-1790002707339803842",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/037d27793008077d/mcrouter/facebook/test/toaster_tests/__mc_refill_route_wrapper_test__/mc_refill_route_wrapper_test",
+        "--gtest_filter=McRefillWrapperBucketized/0.refillOnMiss"
+      ]
+    ],
+    "inspected_artifacts": [
+      "mcrefill-fuzz-000-replica-1-result",
+      "mcrefill-fuzz-000-replica-2-result"
+    ],
+    "missing_or_ambiguous_facts": [
+      "A complete distinct-seed PASS/target-owned-FAIL bracket is not yet present."
+    ],
+    "measurement_budget_exhausted": false,
+    "pending_in_scope_measurements": [
+      "Seeds 1-16 remain in the predeclared population, but further execution is deferred because the exact native case emitted no marker within 25 seconds and formal seed 0 failed in the loader before the target oracle."
+    ]
+  }
+}

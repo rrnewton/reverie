@@ -1,0 +1,1 @@
+{"complete":true,"details":{"bitwise_parity":true,"comparison":"BitwiseInfoV1","relaxations":[],"verified":true},"execution_event_ids":["httpcoro-fuzz-004-replica-1","httpcoro-fuzz-004-replica-2"],"kind":"BUILTIN_VERIFY","matcher_id":"httpcoro-fuzz-004-matcher","same_failure_class":true,"same_target_outcome":true,"schema_version":1}

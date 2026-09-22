@@ -1,0 +1,9 @@
+Candidate: fbcode//cachelib/common/tests:event-tracker-test
+Selected test: EventTrackerTest.NvmCacheWithEventTracker; scheduler seed 0.
+Native: PASS in 64.44 seconds wall with 2881712 KiB peak RSS.
+Hermit: exit 1 in 2.45 seconds outer wall; safehermit elapsed_secs=1.
+All sealed bounds were APPLIED and truncated=false.
+BitwiseInfoV1 compared 6149 INFO records per replica and found no substantive differences.
+The target oracle did not run: AddressSanitizer aborted on failed setrlimit(RLIMIT_CORE).
+The retained Detcore INFO trace shows prlimit64(pid=0, resource=4) first returning the virtual unlimited/unlimited limit, then returning EPERM for the mutation. Hermit's handle_prlimit64 implementation rejects every mutation except RLIMIT_STACK and RLIMIT_NOFILE, including this idempotent RLIMIT_CORE mutation that Linux permits. This is a Hermit Linux-compatibility defect, not target FAIL.
+Retained bounded-run logs (LOCAL_IGNORED): run1_log_OQX1b, 1657638 bytes, SHA-256 50836b240472091fc3babf89f955578e11bf2f04127567c9128955166416b676; run2_log_rVSoz, 1657638 bytes, SHA-256 c453d4417d69103a1e235ff8d1a0a0c24f73772d256ba764be018d755efca10e; both under /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244.

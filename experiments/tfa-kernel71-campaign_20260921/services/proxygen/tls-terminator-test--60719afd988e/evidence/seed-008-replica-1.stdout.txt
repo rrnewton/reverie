@@ -1,0 +1,5 @@
+Note: Google Test filter = TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from TlsTerminatorTest/TlsTerminatorTest
+[ RUN      ] TlsTerminatorTest/TlsTerminatorTest.terminateTls/h1_innerTls_http_connect

@@ -1,0 +1,235 @@
+:: Run1...
+:: Run2...
+:: Comparing captured verification logs...
+Logs contain 6328 | 6328 messages total
+Logs contain 6322 | 6322 detcore-specific messages
+Logs contain 6323 | 6323 INFO messages
+Logs contain 5653 | 5653 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 6314 (run 1) and 6314 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;52;31m3[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;22;32m1[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;52;31m3[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;22;32m1[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 6308: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1077: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 6308: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1077: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1072: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1073: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1074: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1075: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1076: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1072: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1073: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1074: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1075: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1076: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 6316 (run 1) and 6316 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;52;31m1[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;22;32m3[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;52;31m1[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 1[0m[1;48;5;22;32m3[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 6308: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1077: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 6308: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1077: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1072: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1073: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1074: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1075: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1076: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1072: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1073: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1074: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1075: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1076: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 6318 (run 1) and 6318 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m9[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m5[0m[32m in pid 3.."[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;52;31m9[0m[31m in pid 3.."[0m
+[32m>"INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid [0m[1;48;5;22;32m5[0m[32m in pid 3.."[0m
+Divergent syscall context:
+  run 1, log message 6308: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1077: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 6308: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1077: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1072: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1073: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1074: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1075: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1076: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1072: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1073: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1074: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1075: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1076: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 6319 (run 1) and 6320 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler::[0m[1;48;5;52;31mrunqu[0m[31meue[0m[1;48;5;52;31m:[0m[31m [0m[1;48;5;52;31mDETLOG[0m[31m [0m[1;48;5;52;31mSCHEDRAND:[0m[31m [[0m[1;48;5;52;31m0,1)[0m[31m [0m[1;48;5;52;31m=>[0m[31m [0m[1;48;5;52;31m0[0m[31m"[0m
+[32m>"INFO detcore::scheduler:[0m[1;48;5;22;32m logically_kill[0m[32m:[0m[1;48;5;22;32m Sch[0m[32me[0m[1;48;5;22;32md[0m[32mu[0m[1;48;5;22;32ml[0m[32me[0m[1;48;5;22;32mr[0m[32m [0m[1;48;5;22;32mremoving[0m[32m [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mknowledge of [0m[32m[[0m[1;48;5;22;32mdet]tid[0m[32m [0m[1;48;5;22;32m9[0m[32m [0m[1;48;5;22;32min pid 3..[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler::[0m[1;48;5;52;31mrunqu[0m[31meue[0m[1;48;5;52;31m:[0m[31m [0m[1;48;5;52;31mDETLOG[0m[31m [0m[1;48;5;52;31mSCHEDRAND:[0m[31m [[0m[1;48;5;52;31m0,1)[0m[31m [0m[1;48;5;52;31m=>[0m[31m [0m[1;48;5;52;31m0[0m[31m"[0m
+[32m>"INFO detcore::scheduler:[0m[1;48;5;22;32m logically_kill[0m[32m:[0m[1;48;5;22;32m Sch[0m[32me[0m[1;48;5;22;32md[0m[32mu[0m[1;48;5;22;32ml[0m[32me[0m[1;48;5;22;32mr[0m[32m [0m[1;48;5;22;32mremoving[0m[32m [0m[1;48;5;22;32mall[0m[32m [0m[1;48;5;22;32mknowledge of [0m[32m[[0m[1;48;5;22;32mdet]tid[0m[32m [0m[1;48;5;22;32m9[0m[32m [0m[1;48;5;22;32min pid 3..[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 6308: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1077: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 6308: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1077: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1072: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1073: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1074: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1075: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1076: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1072: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1073: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1074: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1075: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1076: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 6320 (run 1) and 6321 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler:[0m[1;48;5;52;31m [sched-step5] >>>>>>>\n\n COMMIT tu[0m[31mr[0m[1;48;5;52;31mn 175, dettid 3 [0m[31mu[0m[1;48;5;52;31msi[0m[31mn[0m[1;48;5;52;31mg reso[0m[31mu[0m[1;48;5;52;31mrc[0m[31me[0m[1;48;5;52;31ms {F[0m[31mu[0m[1;48;5;52;31mt[0m[31me[0m[1;48;5;52;31mxWait[0m[31m: R[0m[1;48;5;52;31m}[0m[31m, [0m[1;48;5;52;31mon[0m[31m [0m[1;48;5;52;31mpreviously committed 1_767_225_6[0m[31m0[0m[1;48;5;52;31m0.498_271_510s[0m[31m"[0m
+[32m>"INFO detcore::scheduler:[0m[1;48;5;22;32m:[0m[32mrun[0m[1;48;5;22;32mq[0m[32mueue: [0m[1;48;5;22;32mDETLOG SCHED[0m[32mR[0m[1;48;5;22;32mAND: [0[0m[32m,[0m[1;48;5;22;32m1)[0m[32m [0m[1;48;5;22;32m=>[0m[32m 0"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler:[0m[1;48;5;52;31m [sched-step5] >>>>>>>\n\n COMMIT tu[0m[31mr[0m[1;48;5;52;31mn 175, dettid 3 [0m[31mu[0m[1;48;5;52;31msi[0m[31mn[0m[1;48;5;52;31mg reso[0m[31mu[0m[1;48;5;52;31mrc[0m[31me[0m[1;48;5;52;31ms {F[0m[31mu[0m[1;48;5;52;31mt[0m[31me[0m[1;48;5;52;31mxWait[0m[31m: R[0m[1;48;5;52;31m}[0m[31m, [0m[1;48;5;52;31mon[0m[31m [0m[1;48;5;52;31mpreviously committed 1_767_225_6[0m[31m0[0m[1;48;5;52;31m0.498_271_510s[0m[31m"[0m
+[32m>"INFO detcore::scheduler:[0m[1;48;5;22;32m:[0m[32mrun[0m[1;48;5;22;32mq[0m[32mueue: [0m[1;48;5;22;32mDETLOG SCHED[0m[32mR[0m[1;48;5;22;32mAND: [0[0m[32m,[0m[1;48;5;22;32m1)[0m[32m [0m[1;48;5;22;32m=>[0m[32m 0"[0m
+Divergent syscall context:
+  run 1, log message 6308: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1077: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 6308: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1077: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1072: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1073: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1074: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1075: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1076: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1072: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1073: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1074: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1075: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1076: getpid() = Ok(3)
+
+(INFO) Mismatch at log messages 6323 (run 1) and 6322 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [0m[1;48;5;52;31mlogi[0m[31mc[0m[1;48;5;52;31mally_kill: Sc[0m[31mhed[0m[1;48;5;52;31mul[0m[31me[0m[1;48;5;52;31mr[0m[31m [0m[1;48;5;52;31mremovi[0m[31mn[0m[1;48;5;52;31mg[0m[31m [0m[1;48;5;52;31mall[0m[31m [0m[1;48;5;52;31mk[0m[31mn[0m[1;48;5;52;31mowledge[0m[31m [0m[1;48;5;52;31mof[0m[31m [0m[1;48;5;52;31m[[0m[31mdet[0m[1;48;5;52;31m][0m[31mtid [0m[1;48;5;52;31m5[0m[31m in pid [0m[1;48;5;52;31m3[0m[31m.[0m[1;48;5;52;31m.[0m[31m"[0m
+[32m>"INFO detcore::scheduler: [0m[1;48;5;22;32m[s[0m[32mched[0m[1;48;5;22;32m-st[0m[32me[0m[1;48;5;22;32mp5][0m[32m [0m[1;48;5;22;32m>>>>>>>\[0m[32mn[0m[1;48;5;22;32m\n[0m[32m [0m[1;48;5;22;32mCOMMIT[0m[32m [0m[1;48;5;22;32mtur[0m[32mn [0m[1;48;5;22;32m175,[0m[32m dettid [0m[1;48;5;22;32m3[0m[32m [0m[1;48;5;22;32mus[0m[32min[0m[1;48;5;22;32mg[0m[32m [0m[1;48;5;22;32mresources {FutexWait: R}, on [0m[32mp[0m[1;48;5;22;32mrev[0m[32mi[0m[1;48;5;22;32mously committe[0m[32md [0m[1;48;5;22;32m1_767_225_600[0m[32m.[0m[1;48;5;22;32m498_271_510s[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [0m[1;48;5;52;31mlogi[0m[31mc[0m[1;48;5;52;31mally_kill: Sc[0m[31mhed[0m[1;48;5;52;31mul[0m[31me[0m[1;48;5;52;31mr[0m[31m [0m[1;48;5;52;31mremovi[0m[31mn[0m[1;48;5;52;31mg[0m[31m [0m[1;48;5;52;31mall[0m[31m [0m[1;48;5;52;31mk[0m[31mn[0m[1;48;5;52;31mowledge[0m[31m [0m[1;48;5;52;31mof[0m[31m [0m[1;48;5;52;31m[[0m[31mdet[0m[1;48;5;52;31m][0m[31mtid [0m[1;48;5;52;31m5[0m[31m in pid [0m[1;48;5;52;31m3[0m[31m.[0m[1;48;5;52;31m.[0m[31m"[0m
+[32m>"INFO detcore::scheduler: [0m[1;48;5;22;32m[s[0m[32mched[0m[1;48;5;22;32m-st[0m[32me[0m[1;48;5;22;32mp5][0m[32m [0m[1;48;5;22;32m>>>>>>>\[0m[32mn[0m[1;48;5;22;32m\n[0m[32m [0m[1;48;5;22;32mCOMMIT[0m[32m [0m[1;48;5;22;32mtur[0m[32mn [0m[1;48;5;22;32m175,[0m[32m dettid [0m[1;48;5;22;32m3[0m[32m [0m[1;48;5;22;32mus[0m[32min[0m[1;48;5;22;32mg[0m[32m [0m[1;48;5;22;32mresources {FutexWait: R}, on [0m[32mp[0m[1;48;5;22;32mrev[0m[32mi[0m[1;48;5;22;32mously committe[0m[32md [0m[1;48;5;22;32m1_767_225_600[0m[32m.[0m[1;48;5;22;32m498_271_510s[0m[32m"[0m
+Divergent syscall context:
+  run 1, log message 6308: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1077: tgkill(3, 9, 6) = Ok(0)
+  run 2, log message 6308: INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1077: tgkill(3, 9, 6) = Ok(0)
+  Prior completed syscalls for run 1:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1072: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1073: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1074: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1075: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1076: getpid() = Ok(3)
+  Prior completed syscalls for run 2:
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1072: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1073: pidfd_open(9, 0) = Err(Errno(ENOENT))
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1074: rt_sigprocmask(1, 0x7ffff5af77d0, NULL, 8) = Ok(0)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1075: gettid() = Ok(9)
+    INFO detcore: DETLOG [syscall][detcore, dtid 9] finish syscall #1076: getpid() = Ok(3)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-verify-2445005-1790002126313307991/run1_log_PpRjW
+::   run 2: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-tls-verify-2445005-1790002126313307991/run2_log_iAOzj
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Failure: nondeterministic.
+E0101 00:00:00.239487     9 ExceptionTracer.cpp:261] terminate() called, exception stack follows
+E0101 00:00:00.381318    11 ExceptionTracer.cpp:261] terminate() called, exception stack follows
+E0101 00:00:00.240021     9 ExceptionTracer.cpp:263] Exception type: (unknown type) (9 frames)
+    @ 000000000dfcd2b8 folly::(anonymous namespace)::Initializer::Initializer()::{lambda(std::__exception_ptr::exception_ptr)#1}::__invoke(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionStackTraceLib.cpp:175
+    @ 00000000043ccada std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracerLib.cpp:86
+    @ 00000000040d143f folly::exception_wrapper::throw_exception() const
+                       fbsource/folly/ExceptionWrapper-inl.h:197
+    @ 00000000040d130e folly::coro::detail::BlockingWaitTask<void>::getVia(folly::DrivableExecutor*, folly::AsyncStackFrame&) &&
+                       fbsource/folly/Try-inl.h:241
+    @ 00000000040d117e folly::coro::detail::decay_rvalue_reference<folly::coro::await_result<decltype (folly::coro::folly_cpo__::co_viaIfAsync((static_cast<folly::ExecutorKeepAlive<folly::Executor> (*)() noexcept>(decltype(nullptr)))(), (static_cast<folly::coro::Task<void> (*)() noexcept>(decltype(nullptr)))())), void>::type>::type folly::coro::blocking_wait_fn::operator()<folly::coro::Task<void> >(folly::coro::Task<void>&&, folly::DrivableExecutor*) const
+                       fbsource/folly/coro/BlockingWait.h:400
+    @ 00000000040d0fd7 std::thread::_State_impl<std::thread::_Invoker<std::tuple<proxygen::TlsTerminatorTest_terminateTls_Test::TestBody()::$_0> > >::_M_run()
+                       ./fbcode/proxygen/facebook/fwdproxy/tlsterm/test/TlsTerminatorTest.cpp:308
+    @ 00000000000e8bc4 execute_native_thread_routine
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82
+    @ 000000000009abc8 start_thread
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_create.c:434
+    @ 000000000012cecb __clone3
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+E0101 00:00:00.391018     9 ExceptionTracer.cpp:265] exception stack complete
+terminate called after throwing an instance of 'folly::AsyncSocketException'
+  what():  AsyncSocketException: fizz::FizzVerificationException: certificate verification failed: certificate is not yet valid, type = SSL error
+E0101 00:00:00.381839    11 ExceptionTracer.cpp:263] Exception type: (unknown type) (9 frames)
+    @ 000000000dfcd2b8 folly::(anonymous namespace)::Initializer::Initializer()::{lambda(std::__exception_ptr::exception_ptr)#1}::__invoke(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionStackTraceLib.cpp:175
+    @ 00000000043ccada std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracerLib.cpp:86
+    @ 00000000040d143f folly::exception_wrapper::throw_exception() const
+                       fbsource/folly/ExceptionWrapper-inl.h:197
+    @ 00000000040d130e folly::coro::detail::BlockingWaitTask<void>::getVia(folly::DrivableExecutor*, folly::AsyncStackFrame&) &&
+                       fbsource/folly/Try-inl.h:241
+    @ 00000000040d117e folly::coro::detail::decay_rvalue_reference<folly::coro::await_result<decltype (folly::coro::folly_cpo__::co_viaIfAsync((static_cast<folly::ExecutorKeepAlive<folly::Executor> (*)() noexcept>(decltype(nullptr)))(), (static_cast<folly::coro::Task<void> (*)() noexcept>(decltype(nullptr)))())), void>::type>::type folly::coro::blocking_wait_fn::operator()<folly::coro::Task<void> >(folly::coro::Task<void>&&, folly::DrivableExecutor*) const
+                       fbsource/folly/coro/BlockingWait.h:400
+    @ 00000000040df958 std::thread::_State_impl<std::thread::_Invoker<std::tuple<proxygen::TlsTerminatorTest_terminateTls_Test::TestBody()::$_1> > >::_M_run()
+                       ./fbcode/proxygen/facebook/fwdproxy/tlsterm/test/TlsTerminatorTest.cpp:316
+    @ 00000000000e8bc4 execute_native_thread_routine
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82
+    @ 000000000009abc8 start_thread
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_create.c:434
+    @ 000000000012cecb __clone3
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81
+
+E0101 00:00:00.396231    11 ExceptionTracer.cpp:265] exception stack complete
+terminate called recursively
+*** Aborted at 1767225600 (Unix time, try 'date -d @1767225600') ***
+*** Signal 6 (SIGABRT) (0x3) received by PID 3 (pthread TID 0x7ffff5afe640) (linux TID 9) (maybe from PID 3, UID 0) (code: sent by tkill or tgkill), stack trace: ***
+    @ 000000000417ff6f folly::symbolizer::(anonymous namespace)::signalHandler(int, siginfo_t*, void*)
+                       ./xplat/folly/debugging/symbolizer/SignalHandler.cpp:598
+    @ 000000000004455f (unknown)
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/libc_sigaction.c:8
+                       -> /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/unix/sysv/linux/x86_64/libc_sigaction.c
+    @ 000000000009ca13 pthread_kill
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_kill.c:46
+    @ 00000000000444ac raise
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/signal/../sysdeps/posix/raise.c:26
+    @ 000000000002c432 abort
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/stdlib/abort.c:79
+    @ 00000000000ad594 __gnu_cxx::__verbose_terminate_handler()
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/vterminate.cc:95
+    @ 0000000005191419 folly::exception_tracer::(anonymous namespace)::terminateHandler()
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracer.cpp:270
+    @ 00000000000ab0f9 __cxxabiv1::__terminate(void (*)())
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_terminate.cc:48
+    @ 00000000000ab164 std::terminate()
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_terminate.cc:58
+    @ 00000000000ab0ef std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/libsupc++/../../.././libstdc++-v3/libsupc++/eh_ptr.cc:217
+    @ 00000000043ccb55 std::rethrow_exception(std::__exception_ptr::exception_ptr)
+                       ./xplat/folly/debugging/exception_tracer/ExceptionTracerLib.cpp:244
+    @ 00000000040d143f folly::exception_wrapper::throw_exception() const
+                       fbsource/folly/ExceptionWrapper-inl.h:197
+    @ 00000000040d130e folly::coro::detail::BlockingWaitTask<void>::getVia(folly::DrivableExecutor*, folly::AsyncStackFrame&) &&
+                       fbsource/folly/Try-inl.h:241
+    @ 00000000040d117e folly::coro::detail::decay_rvalue_reference<folly::coro::await_result<decltype (folly::coro::folly_cpo__::co_viaIfAsync((static_cast<folly::ExecutorKeepAlive<folly::Executor> (*)() noexcept>(decltype(nullptr)))(), (static_cast<folly::coro::Task<void> (*)() noexcept>(decltype(nullptr)))())), void>::type>::type folly::coro::blocking_wait_fn::operator()<folly::coro::Task<void> >(folly::coro::Task<void>&&, folly::DrivableExecutor*) const
+                       fbsource/folly/coro/BlockingWait.h:400
+    @ 00000000040d0fd7 std::thread::_State_impl<std::thread::_Invoker<std::tuple<proxygen::TlsTerminatorTest_terminateTls_Test::TestBody()::$_0> > >::_M_run()
+                       ./fbcode/proxygen/facebook/fwdproxy/tlsterm/test/TlsTerminatorTest.cpp:308
+    @ 00000000000e8bc4 execute_native_thread_routine
+                       /home/engshare/third-party2/libgcc/11.x/src/gcc-11.x/x86_64-facebook-linux/libstdc++-v3/src/c++11/../../../.././libstdc++-v3/src/c++11/thread.cc:82
+    @ 000000000009abc8 start_thread
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/nptl/pthread_create.c:434
+    @ 000000000012cecb __clone3
+                       /home/engshare/third-party2/glibc/2.34/src/glibc-2.34/misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:81

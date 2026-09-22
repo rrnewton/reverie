@@ -1,0 +1,9 @@
+Candidate: fbcode//thrift/lib/cpp2/test:InstrumentationTest
+Selected test: RequestInstrumentationTestWithFinishedDebugPayload.snapshotStartedProcessingTest; scheduler seed 0.
+Native: PASS in 1.17 seconds wall with 220532 KiB peak RSS.
+Hermit: exit 132 / SIGILL in 5.36 seconds outer wall; safehermit elapsed_secs=4.
+All sealed bounds were APPLIED and truncated=false.
+BitwiseInfoV1 compared 15829 INFO records per replica and found no substantive differences.
+The target oracle did not run: ThreadSanitizer aborted on failed setrlimit(RLIMIT_CORE), followed by an allocator CHECK failure.
+The retained Detcore trace shows the same local product defect: prlimit64(pid=0, RLIMIT_CORE) reports unlimited/unlimited, then Hermit rejects the idempotent mutation with EPERM even though Linux permits it.
+Retained bounded-run logs (LOCAL_IGNORED): run1_log_PFi7Y, 4214392 bytes, SHA-256 4adc15d3ff726611579f2b40deb41c21ad10bf700a8cc9dc8a000989e6eca1dd; run2_log_WZ7lB, 4214392 bytes, SHA-256 d65ecf63edf6d5924d7290344094f1acc26879940829b9c7d00d5b3a3bfaf88b; both under /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244.

@@ -1,0 +1,34 @@
+:: Run1...
+:: Run2...
+:: Comparing captured verification logs...
+Logs contain 9447 | 9447 messages total
+Logs contain 9445 | 9445 detcore-specific messages
+Logs contain 9447 | 9447 INFO messages
+Logs contain 8913 | 8913 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (9447 | 9447 INFO messages compared).
+Logs contain 1 | 1 scheduler empty-run-queue kick messages
+Logs contain 42 | 42 scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 275, committed virtual time 1790024276156378982ns, run 2 first at turn 275, committed virtual time 1790024276156378982ns)
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-sched-611100-1790025639833750331/run1_log_OuLo4
+::   run 2: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-k71-asyncssl-sched-611100-1790025639833750331/run2_log_vyIx8
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Success: deterministic. Determinism verified.
+I0921 20:57:56.284763     3 TestSSLServer.cpp:103] Accepting connections on [::]:32768
+I0921 20:57:56.296834     5 TestSSLServer.h:71] Connection accepted
+SSLServerAcceptCallback::connAccepted
+writeSuccess
+HandshakeCallback::connectionAccepted
+readDataAvailable, len 1
+writeSuccess
+readDataAvailable, len 1
+writeSuccess
+readDataAvailable, len 1
+writeSuccess
+readDataAvailable, len 1
+readEOF
+I0921 20:57:56.340420     3 TestSSLServer.cpp:41] Waiting for server thread to exit
+readEOF
+I0921 20:57:56.344951     5 TestSSLServer.cpp:101] Server thread exited event loop

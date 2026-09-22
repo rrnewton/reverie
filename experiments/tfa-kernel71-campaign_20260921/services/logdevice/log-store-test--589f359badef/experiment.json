@@ -1,0 +1,1036 @@
+{
+  "schema_version": 2,
+  "record_type": "TFA_TARGET_EXPERIMENT",
+  "contract": {
+    "commit": "9d7f603c43618715b9245c74acb3e164c17d2ae8",
+    "path": "ai_docs/tfa-acceptance-bracket-2026-09-17.md",
+    "blob": "4a53f0c25623ad6371ee86b4556adada1218745d"
+  },
+  "identity": {
+    "service": "logdevice",
+    "canonical_target": "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+    "target_key_sha256": "589f359badefab14a350d88d995b48bc8adbd3153e07915e3d498191172b08b0",
+    "target_directory": "services/logdevice/log-store-test--589f359badef",
+    "testinfra_id": "281475271465112",
+    "test_name": "LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries",
+    "source_label_qualifier": null,
+    "test_selector": {
+      "kind": "EXACT_FILTER",
+      "flag": "--exact",
+      "value": "fbcode//logdevice/logservice/server/log_store/test:log_store_test - LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+    },
+    "build_mode_selector": [
+      "@fbcode//mode/dev"
+    ],
+    "invoked_target": "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+    "standalone_argv": [
+      "buck",
+      "test",
+      "@fbcode//mode/dev",
+      "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+      "--",
+      "--exact",
+      "fbcode//logdevice/logservice/server/log_store/test:log_store_test - LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+    ],
+    "experiment_id": "logdevice/log-store-test--589f359badef",
+    "alias_resolution": {
+      "input_target": "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+      "resolved_target": "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+      "method": "pinned-cohort-target-and-existing-buck-output",
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "evidence": "The fixed cohort resolves this canonical target. Existing executable /home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test is 23180776 bytes with SHA-256 73282dba27129be8c390b39cb0ca07affc66287a1d6db1f5f38562e89ef80b6b."
+    }
+  },
+  "candidate_ranking": {
+    "pfs": {
+      "value": 0.2771,
+      "displayed_percent": "27.71%",
+      "partition": "2026-09-17",
+      "metric": "probability_of_flaky_state",
+      "role": "ranking_only",
+      "may_parameterize_seed_budget": false
+    },
+    "native_failure_rate": {
+      "failures": 3,
+      "executed": 32,
+      "rate": 0.09375,
+      "rate_fraction": "3/32",
+      "displayed_percent": "9.38%",
+      "window": "trailing one week; latest up to 100 final outcomes",
+      "limit": 100,
+      "final_only": true,
+      "purposes": [
+        "CONTINUOUS",
+        "STRESS_RUN",
+        "STRESS_RUN_NEW_TEST"
+      ],
+      "pass_statuses": [
+        "PASSED"
+      ],
+      "failure_statuses": [
+        "FAILED",
+        "FATAL",
+        "TIMEOUT"
+      ],
+      "excluded_statuses": [
+        "OMITTED",
+        "SKIPPED",
+        "INFRA_FAILURE"
+      ],
+      "source": "meta testinfra.result history",
+      "role": "planning_prior_only"
+    }
+  },
+  "plan": {
+    "plan_id": "logstore-kernel71-ptrace-strict-chaos-target-races-v1",
+    "plan_sha256": "10b0081f2fd1263ddc25b5ee76b9dec345e8985b88a03471b0164dee7b3bf997",
+    "sealed_at": "2026-09-21T14:56:22Z",
+    "sealed_by": "codex-tfa-kernel71-campaign",
+    "campaign_owner_identity": "rrnewton",
+    "authorized_routes": [
+      {
+        "route_id": "logstore-kernel71-existing-elf",
+        "route_sha256": "8db322d5eb44f7eca6c99f74e1327b84f7d7a40e0880ef515f50a49c99a6c919",
+        "fallback_of": null,
+        "authorized_cell_ids": [
+          "logstore-kernel71-ptrace-strict-chaos-target-races"
+        ],
+        "canonical_target": "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+        "test_selector": {
+          "kind": "EXACT_FILTER",
+          "flag": "--exact",
+          "value": "fbcode//logdevice/logservice/server/log_store/test:log_store_test - LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+        },
+        "build_mode_selector": [
+          "@fbcode//mode/dev"
+        ],
+        "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+        "build_argv": [
+          "buck",
+          "test",
+          "@fbcode//mode/dev",
+          "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+          "--",
+          "--exact",
+          "fbcode//logdevice/logservice/server/log_store/test:log_store_test - LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+        ],
+        "launch_argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test",
+          "--gtest_filter=LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+        ],
+        "repeat_matcher": {
+          "kind": "BUILTIN_VERIFY",
+          "comparison": "BitwiseInfoV1"
+        },
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "notes": "PRE-RUN SEAL: one authorized cell logstore-kernel71-ptrace-strict-chaos-target-races; Hermit revision 4630ee2a61f93221a43e2baec0a15f34102a2c61, binary SHA-256 5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a; test ELF SHA-256 73282dba27129be8c390b39cb0ca07affc66287a1d6db1f5f38562e89ef80b6b; host devbig030.atn3.facebook.com, kernel Linux 7.1.3-0_fbk0_0_g295ad0959f34, x86_64 AMD EPYC 9D85 158-Core Processor; PMU type 4/RCB available; ptrace strict chaos with --chaos-target-races; only --fuzz-seed varies; BitwiseInfoV1 with no relaxations; verifier qgroup /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987."
+      }
+    ],
+    "target_oracle": {
+      "oracle_id": "logstore-selected-gtest-v1",
+      "defined_before_runs": true,
+      "unmodified": true,
+      "selected_test_executed_predicate": "GoogleTest output contains [ RUN      ] LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries and the summary reports exactly one selected test.",
+      "pass_predicate": "The selected test line is [       OK ] LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries, the summary reports one passed test, and the guest exits 0 without a signal.",
+      "fail_classes": [
+        {
+          "failure_class_id": "gtest-selected-test-failure",
+          "target_owned": true,
+          "predicate": "The selected test line is [  FAILED  ] LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries, the summary reports one failed selected test, and the guest exits nonzero, excluding Hermit, wrapper, dependency, infrastructure, and outer-timeout failures."
+        },
+        {
+          "failure_class_id": "selected-test-sanitizer-failure",
+          "target_owned": true,
+          "predicate": "After [ RUN      ] LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries, the unchanged ASan/TSan oracle reports a sanitizer finding causally owned by that selected test and the guest exits nonzero, excluding Hermit, wrapper, dependency, and infrastructure failures."
+        }
+      ],
+      "timeout_policy": {
+        "target_timeout_can_fail": false,
+        "target_timeout_predicate": null,
+        "target_timeout_failure_class_id": null,
+        "outer_timeout_is_censored": true
+      }
+    },
+    "measurement_design": {
+      "purpose": "EXISTENCE_DISCOVERY",
+      "swept_coordinate": {
+        "flag": "--fuzz-seed",
+        "domain": "unsigned 64-bit integers; explicit prefix 0 through 34",
+        "scheduler_modes": [
+          "--chaos-target-races"
+        ]
+      },
+      "fixed_seed_roots": {
+        "--seed": 0,
+        "--rng-seed": 0,
+        "--sched-seed": 0,
+        "--fuzz-seed": null
+      },
+      "seed_population": {
+        "kind": "EXPLICIT_VALUES",
+        "values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34
+        ]
+      },
+      "selection_order": {
+        "kind": "EXPLICIT",
+        "seed_values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34
+        ]
+      },
+      "without_replacement": true,
+      "design_basis": {
+        "kind": "RATE_BOUND",
+        "expected_hermit_fail_probability": 0.09375,
+        "provenance_kind": "NATIVE_EMPIRICAL_RATE",
+        "provenance": "The fixed cohort records 3 failures among 32 final native outcomes. This is a non-equivalent planning prior only, not a Hermit rate claim.",
+        "equivalence_to_hermit": false,
+        "max_miss_probability": 0.05
+      },
+      "miss_probability_override": null,
+      "required_valid_seed_tuples": 31,
+      "max_attempted_seed_tuples": 35,
+      "stop_rule": "BOTH_ARMS_THEN_REPEAT",
+      "repeat_min_executions_per_arm": 2,
+      "repeat_attempt_cap": 2,
+      "independence_assumption": "Distinct predeclared fuzz seeds are treated as independent only for the planning calculation; native and Hermit rates are not asserted equivalent."
+    },
+    "resource_bounds": {
+      "wall_seconds": 120,
+      "memory_bytes": 17179869184,
+      "swap_bytes": 0,
+      "stderr_bytes": 67108864,
+      "retained_log_bytes": 67108864,
+      "disk_guard": "8G"
+    },
+    "artifact_policy": {
+      "scratch_root": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign",
+      "terminal_evidence_must_be_durable": true,
+      "digest_algorithm": "sha256"
+    }
+  },
+  "plan_receipt": {
+    "commit": "a37349f778ca3bf63044a8142e301465705e6b97",
+    "path": "services/logdevice/log-store-test--589f359badef/experiment.json",
+    "blob": "049119f8a3df2e1ebbcf9585045fed7aab32fca9"
+  },
+  "attempt_state": "MATERIAL",
+  "cells": [
+    {
+      "cell_id": "logstore-kernel71-ptrace-strict-chaos-target-races",
+      "route_id": "logstore-kernel71-existing-elf",
+      "route_sha256": "8db322d5eb44f7eca6c99f74e1327b84f7d7a40e0880ef515f50a49c99a6c919",
+      "plan_sha256": "10b0081f2fd1263ddc25b5ee76b9dec345e8985b88a03471b0164dee7b3bf997",
+      "frozen_at": "2026-09-21T14:56:22Z",
+      "cell_sha256": "a3aeb70f64b0606d66553c6d0cc6b1a5b3800143427a6d23318a506a55425679",
+      "canonical_target": "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//logdevice/logservice/server/log_store/test:log_store_test - LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "target_source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "hermit_source_revision": "4630ee2a61f93221a43e2baec0a15f34102a2c61",
+      "hermit_binary_sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a",
+      "test_artifact_sha256": "73282dba27129be8c390b39cb0ca07affc66287a1d6db1f5f38562e89ef80b6b",
+      "guest": {
+        "argv": [
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test",
+          "--gtest_filter=LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+        ],
+        "environment": {
+          "LC_ALL": "C",
+          "TZ": "UTC"
+        },
+        "mounts": [
+          "type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out"
+        ],
+        "immutable_inputs": [
+          {
+            "artifact_id": "logstore-kernel71-test-elf",
+            "kind": "OTHER",
+            "storage": "LOCAL_IGNORED",
+            "locator": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test",
+            "sha256": "73282dba27129be8c390b39cb0ca07affc66287a1d6db1f5f38562e89ef80b6b",
+            "bytes": 23180776,
+            "capture_limit_bytes": 23180776,
+            "truncated": false,
+            "media_type": "application/x-executable"
+          }
+        ],
+        "working_directory": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-campaign_20260921"
+      },
+      "hermit": {
+        "backend": "ptrace",
+        "strict": true,
+        "chaos": true,
+        "relaxations": [],
+        "argv": [
+          "bin/safehermit",
+          "--sh-report",
+          "{SAFEHERMIT_REPORT}",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "{SWEEP}",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test",
+          "--gtest_filter=LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+        ],
+        "scheduler_heuristic": "random",
+        "swept_coordinate": "--fuzz-seed",
+        "fixed_seed_roots": {
+          "--seed": 0,
+          "--rng-seed": 0,
+          "--sched-seed": 0,
+          "--fuzz-seed": null
+        }
+      },
+      "timing": {
+        "requested_max_timeslice": 200000000,
+        "effective_max_timeslice": 200000000
+      },
+      "pmu": {
+        "available": true,
+        "effective_timer": "RCB",
+        "fallback_recorded": false
+      },
+      "host": {
+        "hostname": "devbig030.atn3.facebook.com",
+        "kernel": "Linux 7.1.3-0_fbk0_0_g295ad0959f34",
+        "architecture": "x86_64",
+        "cpu": "AMD EPYC 9D85 158-Core Processor",
+        "capabilities": {
+          "pmu": true,
+          "mount_namespace": true,
+          "buck_out_bind": true,
+          "safehermit_disk_qgroup": true
+        }
+      },
+      "oracle_id": "logstore-selected-gtest-v1",
+      "resource_bounds": {
+        "wall_seconds": 120,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "stderr_bytes": 67108864,
+        "retained_log_bytes": 67108864,
+        "disk_guard": "8G"
+      }
+    }
+  ],
+  "events": [
+    {
+      "event_id": "logstore-fuzz-000-replica-1",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "10b0081f2fd1263ddc25b5ee76b9dec345e8985b88a03471b0164dee7b3bf997",
+      "route_id": "logstore-kernel71-existing-elf",
+      "route_sha256": "8db322d5eb44f7eca6c99f74e1327b84f7d7a40e0880ef515f50a49c99a6c919",
+      "canonical_target": "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//logdevice/logservice/server/log_store/test:log_store_test - LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "logstore-kernel71-ptrace-strict-chaos-target-races",
+      "cell_sha256": "a3aeb70f64b0606d66553c6d0cc6b1a5b3800143427a6d23318a506a55425679",
+      "measurement_role": "DISCOVERY",
+      "started_at": "2026-09-21T14:57:10Z",
+      "finished_at": "2026-09-21T14:57:30Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test",
+        "--gtest_filter=LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+      ],
+      "result": {
+        "exit_code": 127,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 0,
+        "target_oracle": "NOT_RUN",
+        "failure_class_id": null,
+        "harness_status": "ERROR",
+        "diagnostic": "status=CENSORED; selected=0; unit_result=exit-code; exit=127; BitwiseInfoV1=matched"
+      },
+      "invocation_id": "logstore-fuzz-000-verify",
+      "replica_index": 1,
+      "seed": {
+        "flag": "--fuzz-seed",
+        "value": 0
+      },
+      "effective_config_sha256": "a3aeb70f64b0606d66553c6d0cc6b1a5b3800143427a6d23318a506a55425679",
+      "artifacts": [
+        {
+          "artifact_id": "logstore-fuzz-000-replica-1-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-1.stdout.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "logstore-fuzz-000-replica-1-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-1.stderr.txt",
+          "sha256": "3dfd6be036aa3dafe0ff99cbcb17f604b27f0a161386169ea55594bba8b1d107",
+          "bytes": 1377,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "logstore-fuzz-000-replica-1-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-1.result.json",
+          "sha256": "29dddb9bb831b1ab5b7457304356b95f086e28dce1565ef3c5fd8de62537ffd5",
+          "bytes": 1795,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "logstore-fuzz-000-replica-1-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-1.safehermit.txt",
+          "sha256": "c8f90a2da4ed0ea706274f6ae64685f047bbf8c4c902214a585b2beaef1c6098",
+          "bytes": 1799,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        }
+      ]
+    },
+    {
+      "event_id": "logstore-fuzz-000-replica-2",
+      "kind": "HERMIT_EXECUTION",
+      "plan_sha256": "10b0081f2fd1263ddc25b5ee76b9dec345e8985b88a03471b0164dee7b3bf997",
+      "route_id": "logstore-kernel71-existing-elf",
+      "route_sha256": "8db322d5eb44f7eca6c99f74e1327b84f7d7a40e0880ef515f50a49c99a6c919",
+      "canonical_target": "fbcode//logdevice/logservice/server/log_store/test:log_store_test",
+      "test_selector": {
+        "kind": "EXACT_FILTER",
+        "flag": "--exact",
+        "value": "fbcode//logdevice/logservice/server/log_store/test:log_store_test - LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+      },
+      "build_mode_selector": [
+        "@fbcode//mode/dev"
+      ],
+      "source_revision": "7f239d5b37dfbecf32fed144468da461f998add5",
+      "cell_id": "logstore-kernel71-ptrace-strict-chaos-target-races",
+      "cell_sha256": "a3aeb70f64b0606d66553c6d0cc6b1a5b3800143427a6d23318a506a55425679",
+      "measurement_role": "CONFIRMATION",
+      "started_at": "2026-09-21T14:57:10Z",
+      "finished_at": "2026-09-21T14:57:30Z",
+      "argv": [
+        "bin/safehermit",
+        "--sh-report",
+        "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-2.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test",
+        "--gtest_filter=LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+      ],
+      "result": {
+        "exit_code": 127,
+        "signal": null,
+        "timed_out": false,
+        "timeout_origin": "NONE",
+        "guest_started": true,
+        "selected_test_executed_count": 0,
+        "target_oracle": "NOT_RUN",
+        "failure_class_id": null,
+        "harness_status": "ERROR",
+        "diagnostic": "status=CENSORED; selected=0; unit_result=exit-code; exit=127; BitwiseInfoV1=matched"
+      },
+      "invocation_id": "logstore-fuzz-000-verify",
+      "replica_index": 2,
+      "seed": {
+        "flag": "--fuzz-seed",
+        "value": 0
+      },
+      "effective_config_sha256": "a3aeb70f64b0606d66553c6d0cc6b1a5b3800143427a6d23318a506a55425679",
+      "artifacts": [
+        {
+          "artifact_id": "logstore-fuzz-000-replica-2-stdout",
+          "kind": "STDOUT",
+          "storage": "TRACKED",
+          "locator": "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-2.stdout.txt",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "logstore-fuzz-000-replica-2-stderr",
+          "kind": "STDERR",
+          "storage": "TRACKED",
+          "locator": "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-2.stderr.txt",
+          "sha256": "3dfd6be036aa3dafe0ff99cbcb17f604b27f0a161386169ea55594bba8b1d107",
+          "bytes": 1377,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        },
+        {
+          "artifact_id": "logstore-fuzz-000-replica-2-result",
+          "kind": "RESULT",
+          "storage": "TRACKED",
+          "locator": "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-2.result.json",
+          "sha256": "093ccef9620a13340404cfe0fb9fd4edb2278e5f564a841e4bbeb9c8bb47db62",
+          "bytes": 1798,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "application/json"
+        },
+        {
+          "artifact_id": "logstore-fuzz-000-replica-2-safehermit",
+          "kind": "SAFEHERMIT_REPORT",
+          "storage": "TRACKED",
+          "locator": "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-2.safehermit.txt",
+          "sha256": "c8f90a2da4ed0ea706274f6ae64685f047bbf8c4c902214a585b2beaef1c6098",
+          "bytes": 1799,
+          "capture_limit_bytes": 67108864,
+          "truncated": false,
+          "media_type": "text/plain"
+        }
+      ]
+    }
+  ],
+  "samples": [
+    {
+      "sample_id": "logstore-fuzz-000-sample",
+      "cell_id": "logstore-kernel71-ptrace-strict-chaos-target-races",
+      "seed": {
+        "flag": "--fuzz-seed",
+        "value": 0
+      },
+      "selection_index": 0,
+      "status": "CENSORED",
+      "target_outcome": null,
+      "failure_class_id": null,
+      "censor_reason": "The selected test did not produce a qualifying target verdict.",
+      "execution_event_ids": [
+        "logstore-fuzz-000-replica-1",
+        "logstore-fuzz-000-replica-2"
+      ]
+    }
+  ],
+  "matchers": [
+    {
+      "matcher_id": "logstore-fuzz-000-matcher",
+      "kind": "BUILTIN_VERIFY",
+      "execution_event_ids": [
+        "logstore-fuzz-000-replica-1",
+        "logstore-fuzz-000-replica-2"
+      ],
+      "complete": true,
+      "same_target_outcome": true,
+      "same_failure_class": true,
+      "canonical_info_artifact": {
+        "artifact_id": "logstore-fuzz-000-matcher-canonical-info",
+        "kind": "CANONICAL_INFO",
+        "storage": "TRACKED",
+        "locator": "services/logdevice/log-store-test--589f359badef/evidence/seed-000.canonical-info.json",
+        "sha256": "e29ba93b33d29b8d2cff620a12f89c7759aa8df2b2ab9157e8e2db9eaac3e7b4",
+        "bytes": 335,
+        "capture_limit_bytes": 67108864,
+        "truncated": false,
+        "media_type": "application/json"
+      },
+      "details": {
+        "verified": true,
+        "bitwise_parity": true,
+        "comparison": "BitwiseInfoV1",
+        "relaxations": []
+      }
+    }
+  ],
+  "outcome_history": [
+    {
+      "classification_id": "logstore-kernel71-pending",
+      "classified_at": "2026-09-21T14:57:31Z",
+      "supersedes": null,
+      "evidence_refs": [
+        "logstore-fuzz-000-replica-1",
+        "logstore-fuzz-000-replica-2"
+      ],
+      "kind": "NOT-DETERMINABLE",
+      "route_evidence": [
+        {
+          "route_id": "logstore-kernel71-existing-elf",
+          "cell_ids": [
+            "logstore-kernel71-ptrace-strict-chaos-target-races"
+          ],
+          "evidence_event_ids": [
+            "logstore-fuzz-000-replica-1",
+            "logstore-fuzz-000-replica-2"
+          ]
+        }
+      ],
+      "inspected_commands": [
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-1.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test",
+          "--gtest_filter=LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+        ],
+        [
+          "bin/safehermit",
+          "--sh-report",
+          "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-2.safehermit.txt",
+          "--sh-deadline",
+          "120",
+          "--sh-max-log-bytes",
+          "67108864",
+          "--sh-disk-limit",
+          "8G",
+          "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+          "run",
+          "--backend",
+          "ptrace",
+          "--strict",
+          "--chaos",
+          "--chaos-target-races",
+          "--base-env=minimal",
+          "--env",
+          "LC_ALL=C",
+          "--env",
+          "TZ=UTC",
+          "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+          "--seed",
+          "0",
+          "--rng-seed",
+          "0",
+          "--sched-seed",
+          "0",
+          "--fuzz-seed",
+          "0",
+          "--sched-heuristic",
+          "random",
+          "--max-timeslice",
+          "200000000",
+          "--verify",
+          "--verify-strict",
+          "--verify-allow",
+          "both",
+          "--keep-logs",
+          "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987",
+          "--",
+          "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test",
+          "--gtest_filter=LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+        ]
+      ],
+      "inspected_artifacts": [
+        "logstore-fuzz-000-replica-1-result",
+        "logstore-fuzz-000-replica-2-result"
+      ],
+      "missing_or_ambiguous_facts": [
+        "A complete distinct-seed PASS/target-owned-FAIL bracket is not yet present."
+      ],
+      "measurement_budget_exhausted": false,
+      "pending_in_scope_measurements": [
+        "Seeds 1-34 remain in the predeclared population, but further execution is deferred because the exact native case emitted no marker within 13 seconds and formal seed 0 failed in the loader before the target oracle."
+      ]
+    }
+  ],
+  "current_outcome": {
+    "classification_id": "logstore-kernel71-pending",
+    "classified_at": "2026-09-21T14:57:31Z",
+    "supersedes": null,
+    "evidence_refs": [
+      "logstore-fuzz-000-replica-1",
+      "logstore-fuzz-000-replica-2"
+    ],
+    "kind": "NOT-DETERMINABLE",
+    "route_evidence": [
+      {
+        "route_id": "logstore-kernel71-existing-elf",
+        "cell_ids": [
+          "logstore-kernel71-ptrace-strict-chaos-target-races"
+        ],
+        "evidence_event_ids": [
+          "logstore-fuzz-000-replica-1",
+          "logstore-fuzz-000-replica-2"
+        ]
+      }
+    ],
+    "inspected_commands": [
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-1.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test",
+        "--gtest_filter=LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+      ],
+      [
+        "bin/safehermit",
+        "--sh-report",
+        "services/logdevice/log-store-test--589f359badef/evidence/seed-000-replica-2.safehermit.txt",
+        "--sh-deadline",
+        "120",
+        "--sh-max-log-bytes",
+        "67108864",
+        "--sh-disk-limit",
+        "8G",
+        "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "run",
+        "--backend",
+        "ptrace",
+        "--strict",
+        "--chaos",
+        "--chaos-target-races",
+        "--base-env=minimal",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+        "--seed",
+        "0",
+        "--rng-seed",
+        "0",
+        "--sched-seed",
+        "0",
+        "--fuzz-seed",
+        "0",
+        "--sched-heuristic",
+        "random",
+        "--max-timeslice",
+        "200000000",
+        "--verify",
+        "--verify-strict",
+        "--verify-allow",
+        "both",
+        "--keep-logs",
+        "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-logstore-verify-3012349-1790002573993825987",
+        "--",
+        "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/bfa56033afdaaeb5/logdevice/logservice/server/log_store/test/__log_store_test__/log_store_test",
+        "--gtest_filter=LogStoreTest.StoreRecordCondWriteFailedSameEpoch_FallbackReadFailsAndRetries"
+      ]
+    ],
+    "inspected_artifacts": [
+      "logstore-fuzz-000-replica-1-result",
+      "logstore-fuzz-000-replica-2-result"
+    ],
+    "missing_or_ambiguous_facts": [
+      "A complete distinct-seed PASS/target-owned-FAIL bracket is not yet present."
+    ],
+    "measurement_budget_exhausted": false,
+    "pending_in_scope_measurements": [
+      "Seeds 1-34 remain in the predeclared population, but further execution is deferred because the exact native case emitted no marker within 13 seconds and formal seed 0 failed in the loader before the target oracle."
+    ]
+  }
+}

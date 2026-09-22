@@ -1,0 +1,165 @@
+{
+  "argv": [
+    "bin/safehermit",
+    "--sh-report",
+    "services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-009-fuzz-seed-00000000000000000009-replica-1.safehermit.txt",
+    "--sh-deadline",
+    "120",
+    "--sh-max-log-bytes",
+    "67108864",
+    "--sh-disk-limit",
+    "8G",
+    "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+    "run",
+    "--backend",
+    "ptrace",
+    "--strict",
+    "--chaos",
+    "--chaos-target-races",
+    "--base-env=minimal",
+    "--env",
+    "LC_ALL=C",
+    "--env",
+    "TZ=UTC",
+    "--mount=type=bind,source=/home/newton/work/tfa/fbsource/buck-out,target=/home/newton/work/tfa/fbsource/buck-out",
+    "--epoch=2026-09-21T19:32:11Z",
+    "--seed",
+    "0",
+    "--rng-seed",
+    "0",
+    "--sched-seed",
+    "0",
+    "--fuzz-seed",
+    "9",
+    "--sched-heuristic",
+    "random",
+    "--max-timeslice",
+    "200000000",
+    "--verify",
+    "--verify-strict",
+    "--verify-allow",
+    "both",
+    "--keep-logs",
+    "--verify-log-dir=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-asyncssl-target-races-2936582-20260-821242-1790019131136919477",
+    "--",
+    "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+    "--gtest_filter=AsyncSSLSocketByteEventTest.ObserverAttachedBeforeConnect",
+    "--gtest_also_run_disabled_tests"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-time-input-campaign_20260921",
+  "execution_boundary": {
+    "head_commit": "0ec0c1b98dfc6bc1bcac3089687a88be6828cff3",
+    "plan_receipt": {
+      "blob": "2034683d6e873b75ebb1d59b0e2af082df81c1fb",
+      "commit": "ce2ff3d424441fd1e54e34ed66ecb0b2c665e853",
+      "helper_blobs": [
+        {
+          "blob": "50a75bbd33e92aabacd388d9ed9ece25b51fb920",
+          "path": "experiments/tfa-kernel71-time-input-campaign_20260921/tools/admit_asyncssl_target_races_seed.py"
+        },
+        {
+          "blob": "0f6e57f6dd6497cf49b7ae305e814e57aa75ffc4",
+          "path": "experiments/tfa-kernel71-time-input-campaign_20260921/tools/create_asyncssl_target_races_plan.py"
+        },
+        {
+          "blob": "ea8d40d44f994779fe5ac5b0ef65084f58315f70",
+          "path": "experiments/tfa-kernel71-time-input-campaign_20260921/tools/run_asyncssl_target_races_seed.py"
+        }
+      ],
+      "path": "services/folly/async-ssl-socket-test--cefc173a09b4/experiment.json"
+    },
+    "plan_sha256": "1787aa49e5dc0bbc43445b0ffd2a0bc7ca87a3eba55ed6de2f2fd5a78c03ce08",
+    "record_blob": "93deed59027b96b7cd13e7da7d91bf7905362cb3",
+    "record_repository_path": "experiments/tfa-kernel71-time-input-campaign_20260921/services/folly/async-ssl-socket-test--cefc173a09b4/experiment.json",
+    "route_id": "asyncssl-kernel71-target-races-existing-elf-v1",
+    "route_sha256": "0fc25e90eab803540ccd8dede0430432805a9fa5028132aae8c3e640aa259fba"
+  },
+  "finished_at": "2026-09-21T20:06:44Z",
+  "host_environment": {
+    "HERMIT_BIN": null,
+    "RUST_LOG": null,
+    "SAFEHERMIT_LOG_ROOT": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit"
+  },
+  "paths": {
+    "safehermit_qgroup_after": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/asyncssl-target-races/selection-009-fuzz-seed-00000000000000000009/safehermit-qgroup-after.txt",
+    "safehermit_report": "/home/newton/work/dev-hermit/worktrees/slots/hermit-tfa-kernel71-campaign/experiments/tfa-kernel71-time-input-campaign_20260921/services/folly/async-ssl-socket-test--cefc173a09b4/evidence/selection-009-fuzz-seed-00000000000000000009-replica-1.safehermit.txt",
+    "stderr": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/asyncssl-target-races/selection-009-fuzz-seed-00000000000000000009/stderr.txt",
+    "stdout": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/asyncssl-target-races/selection-009-fuzz-seed-00000000000000000009/stdout.txt",
+    "verifier_qgroup_after": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/asyncssl-target-races/selection-009-fuzz-seed-00000000000000000009/verifier-qgroup-after.txt",
+    "verifier_qgroup_before": "/home/newton/work/dev-hermit/ignored/tfa-kernel71-campaign/asyncssl-target-races/selection-009-fuzz-seed-00000000000000000009/verifier-qgroup-before.txt"
+  },
+  "postcheck_errors": [],
+  "preflight": {
+    "binaries": [
+      {
+        "bytes": 415330552,
+        "label": "Hermit",
+        "path": "/home/newton/work/dev-hermit/ignored/tfa-rlimit-core-rerun-20260920-4630ee2a/stable-5c422b85/hermit-4630ee2a",
+        "sha256": "5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a"
+      },
+      {
+        "bytes": 17651096,
+        "label": "test",
+        "path": "/home/newton/work/tfa/fbsource/buck-out/v2/art/fbcode/d45633ec019a63e6/folly/io/async/test/__async_ssl_socket_test__/async_ssl_socket_test",
+        "sha256": "47b6c727a7d1e568433883fb6e4693b08348e93ab8b8e41a3c3b8638217acc46"
+      }
+    ],
+    "host": {
+      "cpu": "AMD EPYC 9D85 158-Core Processor",
+      "hostname": "devbig030.atn3.facebook.com",
+      "kernel_release": "7.1.3-0_fbk0_0_g295ad0959f34",
+      "machine": "x86_64",
+      "perf_event_paranoid": "1",
+      "pmu_type": "4",
+      "system": "Linux"
+    },
+    "mount": "/dev/loop1 btrfs",
+    "qgroup": {
+      "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-asyncssl-target-races-2936582-20260-821242-1790019131136919477",
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "referenced=34881536 exclusive=34881536 limit=8000000000\n"
+    }
+  },
+  "process_returncode": 0,
+  "safehermit_qgroup_after": {
+    "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-safehermit-20260921T200639Z-170616-171425-1790021199688953028",
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "referenced=0 exclusive=0 limit=8000000000\n"
+  },
+  "schema_version": 1,
+  "seed": {
+    "flag": "--fuzz-seed",
+    "value": 9
+  },
+  "selection_index": 9,
+  "started_at": "2026-09-21T20:06:39Z",
+  "state": "COMPLETE",
+  "stdout_cap": {
+    "chunk_bytes": 65536,
+    "kill": {
+      "command": null,
+      "error": null,
+      "returncode": null,
+      "unit": null
+    },
+    "limit_bytes": 67108864,
+    "method": "constant-memory-drain-and-systemd-cgroup-kill",
+    "observed_bytes": 576,
+    "truncated": false,
+    "written_bytes": 576
+  },
+  "stdout_cap_policy": {
+    "chunk_bytes": 65536,
+    "limit_bytes": 67108864,
+    "method": "constant-memory-drain-and-systemd-cgroup-kill",
+    "overflow_action": "systemctl --user kill --signal=SIGKILL UNIT"
+  },
+  "verifier_qgroup_after": {
+    "path": "/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-asyncssl-target-races-2936582-20260-821242-1790019131136919477",
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "referenced=34881536 exclusive=34881536 limit=8000000000\n"
+  }
+}

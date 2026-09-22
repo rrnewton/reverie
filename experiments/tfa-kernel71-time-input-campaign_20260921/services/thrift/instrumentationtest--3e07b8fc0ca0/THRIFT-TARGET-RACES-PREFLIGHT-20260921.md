@@ -1,0 +1,34 @@
+# Thrift Instrumentation target-races preflight
+
+At `2026-09-21T19:01:04Z`, the prospective boundary fixed:
+
+- host `devbig030.atn3.facebook.com`, Linux
+  `7.1.3-0_fbk0_0_g295ad0959f34`, x86_64 AMD EPYC 9D85;
+- CPU PMU type 4 and `perf_event_paranoid=1`;
+- Hermit revision `4630ee2a61f93221a43e2baec0a15f34102a2c61`,
+  binary size 415,330,552, SHA-256
+  `5c422b8599ebc9471f8395f52f4f8c286919fad09bee1b4e7b63199b010fe04a`;
+- selected test ELF size 11,514,064, SHA-256
+  `2ec5d2128aa5af3ae86d46659054dd72b64ef86a389cf89934901a2e094cd0fc`;
+- bounded `/dev/loop1` Btrfs filesystem mounted under
+  `/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt`.
+
+The retained verifier-log subvolume is:
+
+```text
+/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-target-races-2936582-2026092-2509374-1790017256666514686
+```
+
+The pre-plan readback was:
+
+```text
+referenced=16384 exclusive=16384 limit=8000000000
+```
+
+Every invocation must independently authenticate the exact committed record
+and the create/run/admission helper blobs sealed in its plan receipt.  It must
+also authenticate the separate live lethal 64-MiB stdout cap,
+binary digests, host facts, live qgroup limits, applied 120-second wall bound,
+16-GiB memory and zero-swap cgroup bounds, 64-MiB stderr bound, 8-GB log-root
+disk bound, and safehermit stderr `truncated=false`.  Otherwise it is refused
+or censored.

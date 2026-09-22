@@ -1,0 +1,21 @@
+:: Run1...
+:: Run2...
+:: Comparing captured verification logs...
+Logs contain 6151 | 6151 messages total
+Logs contain 6148 | 6148 detcore-specific messages
+Logs contain 6149 | 6149 INFO messages
+Logs contain 5918 | 5918 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (6149 | 6149 INFO messages compared).
+Logs contain 1 | 1 scheduler empty-run-queue kick messages
+Logs contain 14 | 14 scheduler COMMIT records reading /proc/self/maps (run 1 first at turn 229, committed virtual time 1767225600284721280ns, run 2 first at turn 229, committed virtual time 1767225600284721280ns)
+:: Verification logs retained:
+::   run 1: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244/run1_log_OQX1b
+::   run 2: /home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-cachelib-event-tracker-verify-42890-1789908009750411244/run2_log_rVSoz
+:: comparison=BitwiseInfoV1 relaxations=none
+:: Success: deterministic. Determinism verified.
+AddressSanitizer: CHECK failed: sanitizer_posix_libcdep.cpp:127 "((0)) == ((setrlimit(RLIMIT_CORE, &rlim)))" (0x0, 0xffffffffffffffff) (tid=3)
+    <empty stack>
+

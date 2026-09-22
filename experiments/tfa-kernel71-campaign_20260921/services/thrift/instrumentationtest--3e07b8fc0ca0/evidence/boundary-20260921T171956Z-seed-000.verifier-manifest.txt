@@ -1,0 +1,11 @@
+verifier_qgroup=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-instrumentation-verify-3353985-1790009553614361814
+qgroup_report=referenced=13860864 exclusive=13860864 limit=8000000000
+run1_path=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-instrumentation-verify-3353985-1790009553614361814/run1_log_Gw2fl
+run1_bytes=6922021
+run1_sha256=66bd376e2e000030b8d813a11a13588aaeb889784ea4f5bb96f6a1431de6e349
+run2_path=/home/newton/work/dev-hermit/ignored/safehermit-loopback/mnt/safehermit/brs-tfa-kernel71-thrift-instrumentation-verify-3353985-1790009553614361814/run2_log_9kSjp
+run2_bytes=6922021
+run2_sha256=6cf3f4f84ac663193d87ace31f67c33bfeb0b7b8ebbff33d816d9b15042a15d6
+comparison=BitwiseInfoV1
+relaxations=none
+formal_eligibility=rejected-because-safehermit-disk-bound-not-applied
