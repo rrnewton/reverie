@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -36,6 +37,7 @@ ledger_store: Any = None
 ledger_publisher: Any = None
 series_store: Any = None
 validation_ledger: Any = None
+finalized_proof: Any = None
 _AUTHORITY_IMPORT_READER_STATE: dict[str, Any] | None = None
 
 
@@ -76,12 +78,14 @@ _READER_PATHS = (
     Path("ci-hub/lib/published_receipt.rs"),
     Path("ci-hub/lib/qualifying_receipt.rs"),
     Path("ci-hub/lib/records.rs"),
+    Path("ci-hub/lib/rust_toolchain.py"),
     Path("ci-hub/lib/validate_lock.rs"),
     Path("ci-hub/lib/validate_run_handle.rs"),
     Path("ci-hub/lib/validate_status.rs"),
     Path("ci-hub/lib/validation_evidence.rs"),
     Path("ci-hub/qualifying_receipt.py"),
     Path("ci-hub/series/check-series-rows.rs"),
+    Path("ci-hub/series/finalized_proof.py"),
     Path("ci-hub/series/series.py"),
     Path("ci-hub/validate/final_validate_status.py"),
     Path("ci-hub/validate/flake_class.py"),
@@ -388,7 +392,9 @@ def _input_store_and_location(relative: str) -> tuple[str, str] | None:
     return None
 
 
-def _git_input_files(checkout: Path, commit: str) -> dict[str, GitSource]:
+def _git_input_files(
+    checkout: Path, commit: str, roots: tuple[str, ...] = ("ledger", "ledger-recovery", "series"),
+) -> dict[str, GitSource]:
     listed = _git(
         checkout,
         [
@@ -397,9 +403,7 @@ def _git_input_files(checkout: Path, commit: str) -> dict[str, GitSource]:
             "-z",
             commit,
             "--",
-            "ledger",
-            "ledger-recovery",
-            "series",
+            *roots,
         ],
     )
     sources: dict[str, GitSource] = {}
@@ -539,7 +543,7 @@ def _discover_mutable_sources(parent: Path, data_root: Path) -> list[MutableSour
     retained_series = series_spool / ledger_publisher.RETAINED_SUBDIR
     _check_directory_path(data_root, series_spool)
     _check_directory_path(data_root, retained_series)
-    tracked_series = parent / "series"
+    tracked_series = series_store.ledger_root(parent) / "series"
     for path in series_store.store_paths(parent):
         path = Path(path)
         try:
@@ -766,6 +770,7 @@ def _import_authorities(reader_state: Any) -> dict[str, Any]:
     global ledger_publisher
     global series_store
     global validation_ledger
+    global finalized_proof
 
     before = reader_state()
     sys.path.insert(0, str(LEDGER_DIR))
@@ -776,6 +781,7 @@ def _import_authorities(reader_state: Any) -> dict[str, Any]:
             "publisher": importlib.import_module("publisher"),
             "series": importlib.import_module("series"),
             "validate_rows": importlib.import_module("validate_rows"),
+            "finalized_proof": importlib.import_module("finalized_proof"),
         }
     except (ImportError, OSError) as error:
         raise ExportRefused(f"cannot load canonical readers: {error}") from error
@@ -784,6 +790,7 @@ def _import_authorities(reader_state: Any) -> dict[str, Any]:
         "publisher": LEDGER_DIR / "publisher.py",
         "series": SERIES_DIR / "series.py",
         "validate_rows": LEDGER_DIR / "validate_rows.py",
+        "finalized_proof": SERIES_DIR / "finalized_proof.py",
     }
     for name, module in loaded.items():
         actual = Path(str(getattr(module, "__file__", ""))).resolve()
@@ -799,6 +806,7 @@ def _import_authorities(reader_state: Any) -> dict[str, Any]:
     ledger_publisher = loaded["publisher"]
     series_store = loaded["series"]
     validation_ledger = loaded["validate_rows"]
+    finalized_proof = loaded["finalized_proof"]
     return after
 
 
@@ -883,11 +891,147 @@ def _incomplete_data() -> list[dict[str, str]]:
     ]
 
 
+def _proof_reader() -> Any:
+    global finalized_proof
+    if finalized_proof is None:
+        path = SERIES_DIR / "finalized_proof.py"
+        spec = importlib.util.spec_from_file_location("website_finalized_proof", path)
+        if spec is None or spec.loader is None:
+            raise ExportRefused("cannot load finalized proof byte reader")
+        finalized_proof = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(finalized_proof)
+    return finalized_proof
+
+
+def captured_proof_objects(value: Any) -> dict[str, bytes]:
+    """Validate retained public operands, without granting canonical authority.
+
+    One UTF-8 byte string per digest is shared by every manifest referencing it.
+    Original relative destinations remain separate and cannot disagree in bytes.
+    The unchanged native reader still owns schema-10 evidence semantics.
+    """
+    proof = _proof_reader()
+    if not isinstance(value, dict) or set(value) != {"schema", "manifests", "objects", "missing_current_terminals"}:
+        raise ExportRefused("captured finalized proof has unknown or missing fields")
+    if type(value["schema"]) is not int or value["schema"] != 1:
+        raise ExportRefused("captured finalized proof schema is unsupported")
+    if not isinstance(value["manifests"], list) or not isinstance(value["objects"], dict):
+        raise ExportRefused("captured finalized proof populations have invalid types")
+    blobs: dict[str, bytes] = {}
+    for digest, text in value["objects"].items():
+        if (not isinstance(digest, str) or re.fullmatch("[0-9a-f]{64}", digest) is None
+                or not isinstance(text, str)):
+            raise ExportRefused("captured proof object needs a digest and exact UTF-8 bytes")
+        try:
+            encoded = text.encode("utf-8", errors="strict")
+        except UnicodeError as error:
+            raise ExportRefused("captured proof object has invalid Unicode") from error
+        if _sha256(encoded) != digest:
+            raise ExportRefused("captured proof object digest differs from exact bytes")
+        blobs[digest] = encoded
+    destinations: dict[str, bytes] = {}
+    referenced: set[str] = set()
+    paths: list[str] = []
+    identities: set[tuple[str, ...]] = set()
+    events: set[str] = set()
+    for manifest in value["manifests"]:
+        proof.validate_manifest(manifest)
+        path = proof.carrier_path(manifest)
+        identity = proof.carrier_identity(manifest)
+        event = manifest["terminal"]["event_id"]
+        if identity in identities or event in events:
+            raise ExportRefused("captured proof repeats or conflicts with a terminal")
+        identities.add(identity)
+        events.add(event)
+        paths.append(path)
+        total = 0
+        for role in proof.ROLES:
+            descriptor = manifest["artifacts"][role]
+            digest = descriptor["sha256"]
+            encoded = blobs.get(digest)
+            if encoded is None or len(encoded) != descriptor["bytes"]:
+                raise ExportRefused("captured proof object is absent or its byte length differs")
+            total += len(encoded)
+            if total > proof.ARTIFACT_BYTES_PER_ROW:
+                raise ExportRefused("captured proof exceeds the existing aggregate reader limit")
+            destination = descriptor["path"]
+            if destination in destinations and destinations[destination] != encoded:
+                raise ExportRefused("original artifact path has conflicting captured bytes")
+            destinations[destination] = encoded
+            referenced.add(digest)
+    if paths != sorted(set(paths)):
+        raise ExportRefused("captured carriers must have unique sorted identities")
+    if referenced != set(blobs):
+        raise ExportRefused("captured proof has unreferenced objects")
+    missing = value["missing_current_terminals"]
+    terminal_fields = {"repository", "run_id", "record_id", "event_id", "event_sha256", "hermit_commit"}
+    if not isinstance(missing, list):
+        raise ExportRefused("missing current terminals must be an array")
+    previous_missing: list[str] = []
+    for terminal in missing:
+        if (not isinstance(terminal, dict) or set(terminal) != terminal_fields
+                or terminal["repository"] != "rrnewton/hermit"
+                or any(not isinstance(terminal[key], str) or not terminal[key].strip()
+                       for key in terminal_fields)
+                or re.fullmatch("[0-9a-f]{64}", terminal["event_sha256"]) is None
+                or re.fullmatch("[0-9a-f]{40}", terminal["hermit_commit"]) is None):
+            raise ExportRefused("missing current terminal descriptor is invalid")
+        if terminal["event_id"] in events:
+            raise ExportRefused("captured proof both provides and omits a current terminal")
+        events.add(terminal["event_id"])
+        previous_missing.append(_canonical_bytes(terminal).decode())
+    if previous_missing != sorted(set(previous_missing)):
+        raise ExportRefused("missing current terminals must be unique and sorted")
+    proof.require_publishable_strings(value)
+    return destinations
+
+
+def stage_captured_proof(root: Path, value: Any) -> None:
+    _proof_reader().stage_artifacts(root, captured_proof_objects(value))
+
+
+def _capture_finalized_proof(namespace: Any, ledger: Path, commit: str) -> dict[str, Any]:
+    proof = _proof_reader()
+    index = proof.read_carriers(ledger, commit)
+    manifests: list[dict] = []
+    objects: dict[str, str] = {}
+    missing: list[dict] = []
+    # Query the complete correction groups first. In particular, a successor
+    # with another schema still supersedes an older schema-10 terminal.
+    for selected in namespace.terminals(repo="hermit", schema_version=10):
+        row, terminal = selected["row"], selected["terminal"]
+        if row.get("schema_version") != 10:
+            continue
+        manifest = proof.carrier_for_row(index, row, terminal)
+        if manifest is None:
+            # Missing transport is not fabricated evidence or a new admission
+            # gate. The unchanged native verifier reports Unavailable and no
+            # predecessor's operands are substituted for this current event.
+            missing.append(terminal)
+            continue
+        namespace.verify_origin(manifest["parent"], terminal)
+        for encoded in proof.read_artifact_objects(ledger, commit, manifest).values():
+            digest = _sha256(encoded)
+            text = encoded.decode("utf-8", errors="strict")
+            if digest in objects and objects[digest] != text:
+                raise ExportRefused("captured proof digest has conflicting bytes")
+            objects[digest] = text
+        manifests.append(manifest)
+    value = {"schema": 1, "manifests": sorted(manifests, key=proof.carrier_path),
+             "objects": dict(sorted(objects.items())),
+             "missing_current_terminals": sorted(missing, key=_canonical_bytes)}
+    captured_proof_objects(value)
+    return value
+
+
 def _validation_export(
     snapshot_root: Path,
+    *, committed_source: tuple[Path, str] | None = None,
+    namespace: Any = None,
 ) -> dict[str, Any]:
-    events = validation_ledger.events(root=snapshot_root)
-    history_rows = validation_ledger.rows(root=snapshot_root)
+    events = namespace.events() if namespace is not None else validation_ledger.events(root=snapshot_root)
+    history_rows = (namespace.rows() if namespace is not None else
+                    validation_ledger.rows(root=snapshot_root, committed_source=committed_source))
     portable_history = _portable_history_rows(history_rows, snapshot_root)
     history_jsonl = _opaque_jsonl(portable_history, "HistoryRow")
     return {
@@ -918,8 +1062,10 @@ def _series_export(
     commit: str,
     published_paths: list[Path],
     local_paths: list[Path],
+    *,
+    repository: str = "https://github.com/rrnewton/dev-hermit.git",
 ) -> dict[str, Any]:
-    published = series_store.published_snapshot_at(parent, commit)
+    published = series_store.published_snapshot_at(parent, commit, repository=repository)
     if published.commit != commit:
         raise ExportRefused(
             f"series snapshot resolved {published.commit}, expected {commit}"
@@ -927,7 +1073,7 @@ def _series_export(
     copied_published_rows = series_store.union(published_paths)
     if _canonical_bytes(copied_published_rows) != _canonical_bytes(published.rows):
         raise ExportRefused(
-            "published series rows disagree with the captured parent commit files"
+            "published series rows disagree with the captured repository commit files"
         )
     rows = series_store.union([*published_paths, *local_paths])
     rows_jsonl = _opaque_jsonl(rows, "SeriesRow")
@@ -983,7 +1129,11 @@ def _provenance_sources(
     )
 
 
-def build_export(parent_value: Path, published_ref: str) -> dict[str, Any]:
+def build_export(
+    parent_value: Path, published_ref: str, series_ref: str = "refs/remotes/origin/main",
+    *, published_only: bool = False, state_root: Path | None = None,
+    validation_history_commit: str | None = None,
+) -> dict[str, Any]:
     _refuse_authority_overrides()
     reader_before = _reader_state()
     imported_reader = _load_authorities()
@@ -991,17 +1141,47 @@ def build_export(parent_value: Path, published_ref: str) -> dict[str, Any]:
         raise ExportRefused("reader commit or files changed before authority import")
     parent = _require_repository_root(parent_value)
     commit = _resolve_commit(parent, published_ref)
-    data_root = series_store.shared_parent_root(parent).resolve()
+    state = _require_repository_root(state_root) if state_root is not None else parent
+    if validation_history_commit is not None:
+        if not isinstance(validation_history_commit, str) or _SHA_RE.fullmatch(validation_history_commit) is None:
+            raise ExportRefused("validation history requires a full immutable commit")
+        if not published_only:
+            raise ExportRefused("fresh validation history requires published-only capture")
+    data_root = series_store.shared_parent_root(state).resolve()
     if not data_root.is_dir():
         raise ExportRefused(f"parent data root is unavailable: {data_root}")
 
-    git_files = _git_input_files(parent, commit)
-    mutable = _capture_mutable_sources(parent, data_root)
+    # Validation receipts still belong to dev-hermit. Cell history belongs to
+    # the ledger repository; never interpret its commit as a parent commit.
+    ledger = series_store.ledger_root(state)
+    series_commit = _resolve_commit(ledger, series_ref)
+    series_tree = _git(ledger, ["rev-parse", f"{series_commit}:series"]).decode().strip()
+    # Freeze public series first; source code and canonical P data are distinct.
+    git_files = {
+        path: source for path, source in _git_input_files(ledger, series_commit, ("series",)).items()
+        if source.store == "series"
+    }
+    if validation_history_commit is None:
+        git_files.update(_git_input_files(parent, commit, ("ledger", "ledger-recovery")))
+    mutable = [] if published_only else _capture_mutable_sources(state, data_root)
 
     with tempfile.TemporaryDirectory(
         prefix="compatibility-website-inputs-"
     ) as raw_snapshot:
         snapshot_root = Path(raw_snapshot)
+        namespace = None
+        if validation_history_commit is not None:
+            commit = validation_history_commit
+            # This is the real canonical Git root. The temporary snapshot only
+            # supplies portable row pathname expansion, never Git authority.
+            namespace = validation_ledger.capture_committed_validation_namespace(
+                state, commit, state_root=snapshot_root,
+            )
+            for source in namespace.source_files():
+                relative = source["path"]
+                store, location = _input_store_and_location(relative) or ("", "")
+                git_files[relative] = GitSource(store, location, relative,
+                                               source["blob_oid"], source["data"])
         for relative, source in git_files.items():
             _write_snapshot_file(snapshot_root, relative, source.data)
         for source, data in mutable:
@@ -1013,12 +1193,16 @@ def build_export(parent_value: Path, published_ref: str) -> dict[str, Any]:
             for source, _data in mutable
             if source.store == "series"
         ]
-        validation = _validation_export(snapshot_root)
+        validation = _validation_export(
+            snapshot_root, committed_source=((state if namespace is not None else parent), commit),
+            **({"namespace": namespace} if namespace is not None else {}),
+        )
         series = _series_export(
-            parent,
-            commit,
+            state,
+            series_commit,
             published_series_paths,
             local_series_paths,
+            repository=series_store.LEDGER_REPOSITORY,
         )
         sources = _provenance_sources(snapshot_root, git_files, mutable)
 
@@ -1026,7 +1210,11 @@ def build_export(parent_value: Path, published_ref: str) -> dict[str, Any]:
             "incomplete_data": _incomplete_data(),
             "provenance": {
                 "parent_commit": commit,
-                "published_ref": published_ref,
+                "published_ref": commit if namespace is not None else published_ref,
+                "series_repository": series_store.LEDGER_REPOSITORY,
+                "series_commit": series_commit,
+                "series_tree": series_tree,
+                "published_only": published_only,
                 "reader_ci_hub_tree": reader_before["ci_hub_tree"],
                 "reader_commit": reader_before["commit"],
                 "reader_files": reader_before["files"],
@@ -1040,6 +1228,10 @@ def build_export(parent_value: Path, published_ref: str) -> dict[str, Any]:
             "series": series,
             "validation_ledger": validation,
         }
+        if namespace is not None:
+            result["provenance"]["finalized_proof"] = _capture_finalized_proof(
+                namespace, ledger, series_commit,
+            )
     reader_after = _reader_state()
     if _canonical_bytes(reader_before) != _canonical_bytes(reader_after):
         raise ExportRefused("reader commit or files changed during export")
@@ -1079,7 +1271,7 @@ def build_historical_export(
             _write_snapshot_file(snapshot_root, relative, source.data)
 
         published_series_paths = sorted((snapshot_root / "series").glob("*/*/*.jsonl"))
-        validation = _validation_export(snapshot_root)
+        validation = _validation_export(snapshot_root, committed_source=(parent, commit))
         series = _series_export(
             parent,
             commit,
@@ -1152,6 +1344,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--record-id", help="unique historical HistoryRow record id")
     parser.add_argument("--run-id", help="unique historical validation run id")
+    parser.add_argument("--series-ref", default="refs/remotes/origin/main",
+                        help="cell-ledger commit or ref for current exports; resolved once, never fetched")
+    parser.add_argument("--published-only", action="store_true",
+                        help="exclude all unpublished and retained local spool files")
+    parser.add_argument("--state-root", type=Path,
+                        help="shared checkout owning the cell ledger and local spools; defaults to --parent")
     arguments = parser.parse_args(argv)
     try:
         if arguments.historical:
@@ -1166,7 +1364,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             if arguments.record_id is not None or arguments.run_id is not None:
                 raise ExportRefused("--record-id and --run-id require --historical")
-            value = build_export(arguments.parent, arguments.published_ref)
+            value = build_export(arguments.parent, arguments.published_ref, arguments.series_ref,
+                                 published_only=arguments.published_only, state_root=arguments.state_root)
     except (ExportRefused, OSError, ValueError) as error:
         print(f"compatibility-website input export: REFUSED: {error}", file=sys.stderr)
         return 2

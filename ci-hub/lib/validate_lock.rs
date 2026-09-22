@@ -29,7 +29,8 @@ use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -939,6 +940,154 @@ struct ProcessOwner {
     boot_id: String,
     pid: u32,
     start_ticks: u64,
+}
+
+const STATE_AUTHORITY_ENV: &str = "DEV_HERMIT_STATE_AUTHORITY";
+const STATE_AUTHORITY_SCHEMA: &str = "dev-hermit-state-authority/v1";
+
+/// A held STATE directory, independent of how executable TOOL bytes are supplied.
+///
+/// Both descriptors stay in this supervisor and are close-on-exec. The payload
+/// receives a /proc locator, not an inherited directory descriptor. Its validator
+/// must bind the sealed record to this exact live admission owner before using
+/// the directory. This is same-UID provenance, not a privilege boundary.
+struct ValidationStateAuthority {
+    directory: File,
+    record: File,
+    path: PathBuf,
+    identity: (u64, u64),
+    locator: String,
+}
+
+impl ValidationStateAuthority {
+    fn retain(
+        state_root: &Path,
+        owner: &ProcessOwner,
+        kind: Kind,
+        target: &str,
+    ) -> Result<Self, ValidateLockError> {
+        if current_process_owner()? != *owner {
+            return Err(ValidateLockError::InvalidState(
+                "state authority owner is not this live supervisor".into(),
+            ));
+        }
+        let path = fs::canonicalize(state_root)
+            .map_err(|e| io_error("resolve state authority root", state_root, e))?;
+        if !state_root.is_absolute() || path != state_root {
+            return Err(ValidateLockError::InvalidState(
+                "state authority requires the canonical absolute STATE root".into(),
+            ));
+        }
+        let directory = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&path)
+            .map_err(|e| io_error("retain state authority directory", &path, e))?;
+        let metadata = directory
+            .metadata()
+            .map_err(|e| io_error("inspect state authority directory", &path, e))?;
+        let name = c"dev-hermit-state-authority";
+        // SAFETY: the name is terminated and the returned descriptor is owned below.
+        let fd = unsafe {
+            libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
+        };
+        if fd < 0 {
+            return Err(io_error(
+                "create state authority record",
+                &path,
+                io::Error::last_os_error(),
+            ));
+        }
+        // SAFETY: successful memfd_create returned a new owned descriptor.
+        let mut record = unsafe { File::from_raw_fd(fd) };
+        let value = serde_json::json!({
+            "schema": STATE_AUTHORITY_SCHEMA,
+            "holder_pid": owner.pid,
+            "holder_start_ticks": owner.start_ticks,
+            "holder_boot_id": owner.boot_id,
+            "holder_host": owner.host,
+            "kind": kind.as_str(),
+            "target": target,
+            "authority_fd": record.as_raw_fd(),
+            "state_fd": directory.as_raw_fd(),
+            "state_root": path,
+            "state_dev": metadata.dev(),
+            "state_ino": metadata.ino(),
+        });
+        let mut bytes = serde_json::to_vec(&value)
+            .map_err(|e| ValidateLockError::InvalidState(format!("encode state authority: {e}")))?;
+        bytes.push(b'\n');
+        if bytes.len() > 4096 {
+            return Err(ValidateLockError::InvalidState(
+                "state authority record exceeds 4096 bytes".into(),
+            ));
+        }
+        record
+            .write_all(&bytes)
+            .map_err(|e| io_error("write state authority record", &path, e))?;
+        record
+            .set_permissions(fs::Permissions::from_mode(0o400))
+            .map_err(|e| io_error("make state authority record read-only", &path, e))?;
+        let seals =
+            libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+        // SAFETY: record owns this valid memfd; sealing changes no other descriptor.
+        if unsafe { libc::fcntl(record.as_raw_fd(), libc::F_ADD_SEALS, seals) } != 0 {
+            return Err(io_error(
+                "seal state authority record",
+                &path,
+                io::Error::last_os_error(),
+            ));
+        }
+        let result = Self {
+            locator: format!("/proc/{}/fd/{}", owner.pid, record.as_raw_fd()),
+            directory,
+            record,
+            path,
+            identity: (metadata.dev(), metadata.ino()),
+        };
+        result.verify()?;
+        Ok(result)
+    }
+
+    fn verify(&self) -> Result<(), ValidateLockError> {
+        let held = self
+            .directory
+            .metadata()
+            .map_err(|e| io_error("inspect held STATE", &self.path, e))?;
+        let live = fs::symlink_metadata(&self.path)
+            .map_err(|e| io_error("inspect canonical STATE", &self.path, e))?;
+        let record = self
+            .record
+            .metadata()
+            .map_err(|e| io_error("inspect sealed STATE record", &self.path, e))?;
+        // SAFETY: the record descriptor remains owned by self.
+        let seals = unsafe { libc::fcntl(self.record.as_raw_fd(), libc::F_GET_SEALS) };
+        let required =
+            libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+        if !held.is_dir()
+            || !live.is_dir()
+            || held.nlink() == 0
+            || (held.dev(), held.ino()) != self.identity
+            || (live.dev(), live.ino()) != self.identity
+            || fs::canonicalize(&self.path)
+                .map_err(|e| io_error("recheck canonical STATE", &self.path, e))?
+                != self.path
+            || !record.is_file()
+            || record.nlink() != 0
+            || record.mode() & 0o222 != 0
+            || seals < 0
+            || seals & required != required
+        {
+            return Err(ValidateLockError::InvalidState(
+                "held STATE or sealed authority changed identity".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn apply(&self, command: &mut Command) {
+        command.env(STATE_AUTHORITY_ENV, &self.locator);
+    }
 }
 
 impl ProcessOwner {
@@ -5853,6 +6002,10 @@ impl ValidateLock {
         // because locals drop in reverse declaration order.
         let _admission_outcome = AdmissionOutcomeGuard::new(tool_root, &attribution);
         let owner = prepare_run_before_admission(tool_root, &args, &attribution)?;
+        // Retain mutable STATE independently of immutable TOOL certification.
+        // This value outlives the gated child and its complete supervision.
+        let state_authority =
+            ValidationStateAuthority::retain(state_root, &owner, args.kind, &args.target)?;
 
         // Refuse immutable-floor and current-main violations BEFORE this run
         // enters the box-global queue. A stale head must not wait for scarce
@@ -6191,6 +6344,7 @@ impl ValidateLock {
         }
         let owner_file = active.paths.owner.clone();
         let mut gated = match spawn_gated_child(&args.child[0], &args.child[1..], |command| {
+            state_authority.apply(command);
             // The child may record `concurrent_validates=0` only when it can
             // prove it is descended from this live, process-bound lock owner.
             command
@@ -7075,6 +7229,129 @@ fn terminate_child_group(child: &mut Child, target: &str, cause: &str) {
 
 #[cfg(test)]
 mod tests {
+
+    fn state_authority_fixture(name: &str) -> PathBuf {
+        let path = env::temp_dir().join(format!(
+            "ci-hub-state-authority-{name}-{}",
+            std::process::id(),
+        ));
+        fs::create_dir(&path).unwrap();
+        path
+    }
+
+    fn wait_state_probe(child: &mut Child) -> ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("state authority probe exceeded five seconds");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn state_authority_survives_gated_exec_without_inherited_descriptors() {
+        let root = state_authority_fixture("exec");
+        let owner = current_process_owner().unwrap();
+        let authority =
+            ValidationStateAuthority::retain(&root, &owner, Kind::Validate, HEX_SHA).unwrap();
+        let script = r#"
+import fcntl,json,os,sys
+from pathlib import Path
+location=os.environ['DEV_HERMIT_STATE_AUTHORITY']
+value=json.loads(Path(location).read_bytes())
+assert set(value)==set('schema holder_pid holder_start_ticks holder_boot_id holder_host kind target authority_fd state_fd state_root state_dev state_ino'.split())
+assert value['schema']=='dev-hermit-state-authority/v1'
+assert value['holder_pid']==int(sys.argv[1]) and value['target']==sys.argv[2]
+assert value['kind']=='validate' and value['state_root']==sys.argv[3]
+state=f"/proc/{value['holder_pid']}/fd/{value['state_fd']}"
+state_identity=(value['state_dev'],value['state_ino'])
+record_stat=os.stat(location); record_identity=(record_stat.st_dev,record_stat.st_ino)
+# The real start gate execs a shell and then this reader. Neither of the
+# supervisor's descriptors may leak into its descriptor table.
+for descriptor in Path('/proc/self/fd').iterdir():
+ try: item=descriptor.stat()
+ except FileNotFoundError: continue
+ assert (item.st_dev,item.st_ino) not in (state_identity,record_identity)
+with open(location,'rb') as source:
+ required=fcntl.F_SEAL_SEAL|fcntl.F_SEAL_SHRINK|fcntl.F_SEAL_GROW|fcntl.F_SEAL_WRITE
+ assert fcntl.fcntl(source,fcntl.F_GET_SEALS)&required==required
+ assert source.read().endswith(b'\n')
+held=os.open(state,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+try:
+ item=os.fstat(held); assert (item.st_dev,item.st_ino)==state_identity
+ assert fcntl.fcntl(held,fcntl.F_GETFD)&fcntl.FD_CLOEXEC
+finally: os.close(held)
+"#;
+        let mut gated = spawn_gated_child(
+            &OsString::from("/usr/bin/python3"),
+            &[
+                "-c".into(),
+                script.into(),
+                owner.pid.to_string().into(),
+                HEX_SHA.into(),
+                root.clone().into_os_string(),
+            ],
+            |command| authority.apply(command),
+        )
+        .unwrap();
+        authority.verify().unwrap();
+        gated.release().unwrap();
+        assert!(wait_state_probe(&mut gated.child).success());
+        authority.verify().unwrap();
+        drop(authority);
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn state_authority_closed_before_release_does_not_authorize_payload() {
+        let root = state_authority_fixture("closed");
+        let authority = ValidationStateAuthority::retain(
+            &root,
+            &current_process_owner().unwrap(),
+            Kind::Validate,
+            HEX_SHA,
+        )
+        .unwrap();
+        let script = "import json,os,sys; from pathlib import Path\ntry: value=json.loads(Path(os.environ['DEV_HERMIT_STATE_AUTHORITY']).read_bytes())\nexcept (OSError, ValueError): sys.exit(73)\nif not isinstance(value,dict) or value.get('state_root')!=sys.argv[1]: sys.exit(73)\nraise AssertionError('closed supervisor authority remained accessible')";
+        let mut gated = spawn_gated_child(
+            &OsString::from("/usr/bin/python3"),
+            &["-c".into(), script.into(), root.clone().into_os_string()],
+            |command| authority.apply(command),
+        )
+        .unwrap();
+        drop(authority);
+        gated.release().unwrap();
+        assert_eq!(wait_state_probe(&mut gated.child).code(), Some(73));
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn state_authority_rejects_foreign_owner_alias_and_replaced_root() {
+        let root = state_authority_fixture("identity");
+        let mut owner = current_process_owner().unwrap();
+        owner.start_ticks += 1;
+        assert!(ValidationStateAuthority::retain(&root, &owner, Kind::Validate, HEX_SHA).is_err());
+        let owner = current_process_owner().unwrap();
+        let alias = root.with_extension("alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        assert!(ValidationStateAuthority::retain(&alias, &owner, Kind::Validate, HEX_SHA).is_err());
+        fs::remove_file(alias).unwrap();
+        let authority =
+            ValidationStateAuthority::retain(&root, &owner, Kind::Validate, HEX_SHA).unwrap();
+        let moved = root.with_extension("moved");
+        fs::rename(&root, &moved).unwrap();
+        fs::create_dir(&root).unwrap();
+        assert!(authority.verify().is_err());
+        drop(authority);
+        fs::remove_dir(root).unwrap();
+        fs::remove_dir(moved).unwrap();
+    }
 
     #[test]
     fn admission_forwards_recorded_branch_and_clears_an_unrecorded_one() {

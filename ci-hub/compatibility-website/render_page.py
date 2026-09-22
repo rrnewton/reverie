@@ -23,8 +23,8 @@ import sys
 import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -123,13 +123,18 @@ PAGE_WORDING = {
     "live": PageWording(
         meta_description="Hermit compatibility evidence from validated Stage 1 artifacts",
         title_suffix="Hermit compatibility",
-        banner="Recorded data — source commits are on Overview",
+        banner=None,
         footer=(
             "Generated locally from validated Stage 1 artifacts. "
             "No network resources are used."
         ),
         provenance_heading="Build provenance",
-        landing_lead="A navigable view of the recorded facts in this build.",
+        landing_lead=(
+            "Hermit is a reproducible container for Linux programs. It controls "
+            "thread scheduling, time, and randomness so a program can run the "
+            "same way again."
+        ),
+        landing_introduction=True,
         cell_table_caption="Green and red result rows in this build.",
         cells_lead=(
             "Cells that the Stage 1 projection can render, with links to their "
@@ -383,6 +388,11 @@ class SiteModel:
     selection_run_references: Mapping[tuple[str, str, str, str], Mapping[str, Any]]
     event_run_references: Mapping[str, Mapping[str, Any]]
     wording: PageWording
+    presentation: Mapping[str, Any] | None = None
+
+    @functools.cached_property
+    def backend_history(self) -> list[dict[str, Any]]:
+        return _compute_backend_history(self)
 
 
 @functools.cache
@@ -540,7 +550,7 @@ def _hermit_commit_link(commit: Any) -> str:
     value = str(commit)
     if re.fullmatch(r"[0-9a-f]{40}", value) is None:
         raise RenderRefused(f"Hermit commit is not a full SHA: {value!r}")
-    return _github_link(_commit_url("hermit", value), value, code=True)
+    return _github_link(_commit_url("hermit", value), value[:12], code=True)
 
 
 def _github_link(href: str, label: str, *, code: bool = False) -> str:
@@ -1197,9 +1207,8 @@ def _result_reading(model: SiteModel) -> str:
         red_sentence = "No cell in this snapshot carries a recorded failure."
     elif red_selected == 0:
         red_sentence = (
-            f"None of the {red} red cells is selected by full in this snapshot, so "
-            "every one of them is a result retained from an earlier run rather "
-            "than a failure of the run recorded above."
+            f"None of the {red} red cells is selected by full in this snapshot. "
+            "These retained failures fall outside this snapshot’s full-profile selection."
         )
     elif red_selected == red:
         red_sentence = f"All {red} red cells are selected by full in this snapshot."
@@ -1368,189 +1377,307 @@ def _red_cell_partial_credit(
     }
 
 
+def _repeat_state(recorded: Mapping[str, Any]) -> str:
+    """Interpret only the typed canonical comparison, never an aggregate GREEN."""
+    verdict = recorded.get("cell_verdict", {})
+    comparison = verdict.get("comparison", {})
+    counts = verdict.get("compared_log_messages", {})
+    if not isinstance(counts, Mapping) or not isinstance(comparison, Mapping):
+        return "unavailable"
+    if (
+        verdict.get("comparison_tier") != "canonical-bitwise"
+        or comparison.get("strictness") != "canonical"
+        or comparison.get("log_scope") != "info"
+        or comparison.get("compare_io_buffers") is not True
+        or comparison.get("exact_remainder") is not True
+        or any(type(counts.get(side)) is not int or counts[side] <= 0 for side in ("left", "right"))
+    ):
+        return "unavailable"
+    state = verdict.get("state")
+    if state == "compared-and-diverged":
+        return "diverged"
+    if (
+        state == "compared-and-matched"
+        and verdict.get("bitwise_parity") is True
+        and counts["left"] == counts["right"]
+    ):
+        # Modern summaries retain prior adverse attempts separately.
+        return str(recorded.get("ordinary_comparison", "matched"))
+    return "unavailable"
+
+
+def _parity_state(recorded: Mapping[str, Any]) -> str:
+    parity = recorded.get("backend_parity")
+    if (
+        recorded.get("comparison_authority") != "selected-attempt-v1"
+        or not isinstance(parity, Mapping)
+        or parity.get("artifact_verified") is not True
+    ):
+        return "unavailable"
+    summary = parity.get("summary", {})
+    if (
+        summary.get("reference_backend") != "ptrace"
+        or summary.get("record_envelope") != "cross_backend_detcore_v1"
+    ):
+        return "unavailable"
+    attempts = summary.get("attempts", ())
+    if any(attempt.get("cross", {}).get("state") == "diverged" for attempt in attempts):
+        return "diverged"
+    return "matched" if parity.get("clean_match") is True else "unavailable"
+
+
+def _cell_metrics(model: SiteModel, cell: Mapping[str, Any]) -> dict[str, Any]:
+    rows = _latest_series_rows(model, cell)
+    records = [] if rows is None else [
+        _exact_validation_cell(model, cell, str(row["event_id"])) for row in rows
+    ]
+    result: dict[str, Any] = {}
+    for name, reader in (("determinism", _repeat_state), ("parity", _parity_state)):
+        states = ["unavailable" if record is None else reader(record) for record in records]
+        state = (
+            "diverged" if "diverged" in states else
+            "matched" if states and all(value == "matched" for value in states) else
+            "unavailable"
+        )
+        partial = None
+        if state == "matched":
+            partial = Fraction(1)
+        elif state == "diverged" and name == "determinism":
+            partial = _red_cell_partial_credit(model, cell)["value"]
+        # Cross-backend summaries have no complete execution length. A loose
+        # divergence position is not a denominator and earns no partial credit.
+        result[name] = {"state": state, "partial": partial}
+    return result
+
+
 def _backend_rows(model: SiteModel) -> tuple[dict[str, Any], ...]:
-    by_backend: dict[str, list[Mapping[str, Any]]] = {}
+    reference = {
+        (str(cell["test"]), str(cell["mode"]))
+        for cell in model.cells
+        if cell["backend"] == "ptrace" and _cell_state(cell) == "green"
+    }
+    by_backend: dict[str, dict[tuple[str, str], Mapping[str, Any]]] = {}
     for cell in model.cells:
         backend = str(cell["backend"])
         if backend in {"native", "e9patch"}:
             continue
-        by_backend.setdefault(backend, []).append(cell)
+        key = (str(cell["test"]), str(cell["mode"]))
+        previous = by_backend.setdefault(backend, {}).get(key)
+        if previous is not None and previous != cell:
+            raise RenderRefused(f"conflicting backend-independent cell identity: {backend}/{key}")
+        by_backend[backend][key] = cell
     rows = []
-    for backend, backend_cells in by_backend.items():
-        result_cells = [
-            cell
-            for cell in backend_cells
-            if _cell_state(cell) in {"green", "red"}
-        ]
-        excluded = 0
-        unavailable = 0
-        scores: list[Fraction] = []
-        if backend == "ptrace":
-            population = result_cells
-            for cell in population:
-                if _cell_state(cell) == "green":
-                    scores.append(Fraction(1))
-                    continue
-                partial_credit = _red_cell_partial_credit(model, cell)
-                if partial_credit["value"] is None:
-                    unavailable += 1
-                else:
-                    scores.append(partial_credit["value"])
-        else:
-            population = []
-            for cell in result_cells:
-                ptrace_id = f"{cell['test']}/{cell['mode']}/ptrace"
-                ptrace = model.cell_by_id.get(ptrace_id)
-                if ptrace is None or _cell_state(ptrace) != "green":
-                    excluded += 1
-                    continue
-                population.append(cell)
-                if _cell_state(cell) == "green":
-                    scores.append(Fraction(1))
-                    continue
-                partial_credit = _red_cell_partial_credit(model, cell)
-                if partial_credit["value"] is None:
-                    unavailable += 1
-                else:
-                    scores.append(partial_credit["value"])
-        green = sum(_cell_state(cell) == "green" for cell in population)
-        denominator = len(population)
-        rows.append(
-            {
-                "backend": backend,
-                "denominator": denominator,
-                "excluded": excluded,
-                "green": green,
-                "green_percentage": (
-                    None if denominator == 0 else Fraction(green, denominator)
-                ),
-                "partial_percentage": (
-                    None
-                    if denominator == 0 or unavailable
-                    else sum(scores, Fraction()) / denominator
-                ),
-                "unavailable": unavailable,
+    for backend, cells in sorted(by_backend.items()):
+        population = [cells.get(key) for key in sorted(reference)]
+        metrics = [None if cell is None else _cell_metrics(model, cell) for cell in population]
+        item: dict[str, Any] = {
+            "backend": backend,
+            "denominator": len(reference),
+            "excluded": len(set(cells) - reference),
+            "failed": sum(cell is not None and _cell_state(cell) == "red" for cell in population),
+            "missing": sum(cell is None or _cell_state(cell) == "never-measured" for cell in population),
+        }
+        for name in ("determinism", "parity"):
+            values = [None if metric is None else metric[name] for metric in metrics]
+            full = sum(value is not None and value["state"] == "matched" for value in values)
+            known = sum(value is not None and value["state"] != "unavailable" for value in values)
+            partial = sum((value["partial"] for value in values if value is not None and value["partial"] is not None), Fraction())
+            item[name] = {
+                "full": full,
+                "with_partial": partial,
+                "unavailable": len(reference) - known,
+                "partial_unavailable": sum(value is not None and value["state"] == "diverged" and value["partial"] is None for value in values),
+                "percentage": None if not reference or not known else Fraction(full, len(reference)),
+                "partial_percentage": None if not reference or not known else partial / len(reference),
             }
-        )
-    return tuple(
-        sorted(
-            rows,
-            key=lambda row: (
-                row["partial_percentage"] is None,
-                -(
-                    row["partial_percentage"]
-                    if row["partial_percentage"] is not None
-                    else Fraction()
-                ),
-                row["green_percentage"] is None,
-                -(
-                    row["green_percentage"]
-                    if row["green_percentage"] is not None
-                    else Fraction()
-                ),
-                str(row["backend"]),
-            ),
-        )
-    )
+        rows.append(item)
+    return tuple(sorted(rows, key=lambda row: (
+        row["determinism"]["percentage"] is None,
+        -(row["determinism"]["percentage"] or Fraction()),
+        str(row["backend"]),
+    )))
 
 
 def _backend_snapshot_position(model: SiteModel) -> str:
-    """Distinguish all backend results from the narrower leaderboard population."""
-    leaderboard = {str(row["backend"]): row for row in _backend_rows(model)}
-    positions = []
-    exclusions = []
-    for backend, label in (("kvm", "KVM"), ("liteinst", "LiteInst")):
-        result_cells = [
-            cell
-            for cell in model.cells
-            if cell["backend"] == backend
-            and _cell_state(cell) in {"green", "red"}
-        ]
-        green = sum(_cell_state(cell) == "green" for cell in result_cells)
-        positions.append(
-            f"{_counted(green, label + ' Green cell')} out of "
-            f"{_counted(len(result_cells), label + ' cell')} with a result"
+    observations = []
+    for backend in ("kvm", "liteinst"):
+        cells = [cell for cell in model.cells if cell["backend"] == backend]
+        observations.append(
+            f"{backend}: {sum(_cell_state(cell) == 'green' for cell in cells)} recorded Green, "
+            f"{sum(_cell_state(cell) == 'red' for cell in cells)} recorded failures"
         )
-        row = leaderboard.get(backend)
-        if row is None:
-            exclusions.append(f"no {label} leaderboard row")
-        else:
-            exclusions.append(
-                f"{_counted(row['excluded'], label + ' result cell')} "
-                "without a ptrace-Green reference excluded"
-            )
-    return (
-        '<div class="backend-position">'
-        '<p><strong>KVM and LiteInst in this artifact.</strong> The complete Cells '
-        f"data records {positions[0]}, and {positions[1]}. These are positions in "
-        "this artifact, not changes since an earlier snapshot and not counts of "
-        "cross-backend matches.</p>"
-        "<p>The leaderboard below uses a narrower population for non-ptrace "
-        "backends: only result cells whose matching test and mode are Green on "
-        f"ptrace. It reports {exclusions[0]} and {exclusions[1]}. The aggregate "
-        "does not explain why two executions differ; missing records, extra "
-        "records, and virtual-time differences remain separate observations.</p>"
-        "</div>"
-    )
+    return ('<details class="backend-position"><summary>Recorded outcomes and comparison evidence</summary><p><strong>KVM and LiteInst in this artifact.</strong> '
+            'Recorded outcomes (' + _escape('; '.join(observations))
+            + ') remain in Cells. These are positions in this artifact, not changes since an earlier snapshot '
+            'and not counts of cross-backend matches. A Green outcome alone does not establish either comparison below.</p></details>')
+
+
+def _metric_amount(value: Fraction | int) -> str:
+    if not isinstance(value, Fraction) or value.denominator == 1:
+        return str(int(value))
+    # Keep weighted partial numerators exact; parentheses distinguish this
+    # fraction from the separate common-population denominator.
+    return f"({value})"
 
 
 def _backend_leaderboard(model: SiteModel) -> str:
     rows = []
     for item in _backend_rows(model):
-        denominator = item["denominator"]
-        green = (
-            "Not available"
-            if item["green_percentage"] is None
-            else _percentage(item["green_percentage"])
+        columns = []
+        for name in ("determinism", "parity"):
+            metric = item[name]
+            for amount, percentage in (("full", "percentage"), ("with_partial", "partial_percentage")):
+                value = metric[percentage]
+                label = "Not available" if value is None else _percentage(value)
+                columns.append(
+                    f'<td><strong>{label}</strong><span class="secondary">'
+                    f'{_metric_amount(metric[amount])} / {item["denominator"]} cells</span></td>'
+                )
+        details = (
+            f'{item["failed"]} failed; {item["missing"]} missing/unmeasured; '
+            f'{item["determinism"]["unavailable"]} without determinism evidence; '
+            f'{item["parity"]["unavailable"]} without parity evidence; '
+            f'{item["excluded"]} outside the reference population'
         )
-        partial = (
-            "Not available"
-            if item["partial_percentage"] is None
-            else _percentage(item["partial_percentage"])
-        )
-        if item["backend"] == "ptrace" and item["partial_percentage"] is not None:
-            partial += " (estimate)"
-        details = [_counted(denominator, "result cell")]
-        if item["backend"] != "ptrace":
-            details.append(
-                f"{_counted(item['excluded'], 'result cell')} "
-                "without a ptrace-green reference excluded"
-            )
-        if item["unavailable"]:
-            details.append(
-                "partial credit unavailable for "
-                f"{_counted(item['unavailable'], 'red cell')}"
-            )
-        rows.append(
-            f'<tr><th scope="row"><code>{_escape(item["backend"])}</code></th>'
-            f'<td><strong>{green}</strong><span class="secondary">{item["green"]} of {denominator} cells</span></td>'
-            f'<td><strong>{partial}</strong></td><td>{_escape("; ".join(details))}</td></tr>'
-        )
-    headings = "".join(
-        (
-            _column_heading("Backend", "The backend recorded on the cell."),
-            _column_heading(
-                "Green cells",
-                "Green cells divided by the result-cell population stated in this row.",
-            ),
-            _column_heading(
-                "Counting partial credit",
-                "Green cells count as one. A red non-ptrace cell uses its first divergent scheduler turn divided by the complete scheduler-turn length of the same-commit passing ptrace execution, capped at one.",
-            ),
-            _column_heading(
-                "Population",
-                "Non-ptrace rows include only result cells whose matching test and mode are green on ptrace. Ptrace uses its own result cells.",
-            ),
-        )
-    )
+        rows.append(f'<tr><th scope="row"><code>{_escape(item["backend"])}</code></th>'
+                    + ''.join(columns) + f'<td>{_escape(details)}</td></tr>')
+    headings = ''.join(_column_heading(title, help_text) for title, help_text in (
+        ("Backend", "Recorded instrumentation backend; native and e9patch preprocessing are excluded."),
+        ("Determinism", "Canonical repeat matches / all distinct ptrace-Green test-and-mode cells."),
+        ("Det. w/partial", "Full matches plus recorded qualifying partial fractions / the same common denominator."),
+        ("Parity", "Explicit authenticated comparisons against ptrace / the same common denominator. Repeat bitwise_parity is not cross-backend parity."),
+        ("Parity w/partial", "Full parity plus qualifying partial parity fractions / the same denominator. Missing complete operand lengths receive no partial credit."),
+        ("Evidence coverage", "Failures and missing/unexecuted cells stay in the denominator. Missing comparison evidence earns no credit."),
+    ))
     return (
-        '<section id="backends"><h2>Backends</h2>'
-        f'{_backend_snapshot_position(model)}'
-        '<p>Non-ptrace percentages use result cells whose matching test and mode are green on ptrace. '
-        'A red cell receives partial credit from its first divergent scheduler turn against the complete same-commit ptrace execution. '
-        'Result cells without that ptrace-green reference are excluded and reported below. Ptrace partial credit is an estimate from its two recorded runs.</p>'
-        '<div class="table-scroll"><table class="backend-leaderboard"><caption>Backend compatibility</caption>'
+        '<section id="backends"><h2>Backends</h2>' + _backend_snapshot_position(model)
+        + '<p>Every percentage uses the same distinct test-and-mode population recorded Green on ptrace. '
+        'The <strong>w/partial</strong> columns add qualifying partial fractions to full matches. Missing and failed cells stay in the denominator.</p>'
+        '<details><summary>How comparison evidence earns credit</summary><p>'
+        'Numerators count demonstrated comparisons, not generic Green labels. '
+        'An absent or empty reference population is unavailable. Partial determinism uses the recorded first divergent scheduler turn '
+        'and a complete same-commit ptrace execution; no missing measurement is inferred as partial. '
+        'Parity requires explicit cross-backend evidence. A column with no supported observations is unavailable.</p></details>'
+        '<div class="table-scroll"><table class="backend-leaderboard"><caption>Backend comparison coverage</caption>'
         f'<thead><tr>{headings}</tr></thead><tbody>{"".join(rows)}</tbody></table></div></section>'
+    )
+
+
+def _backend_history(model: SiteModel) -> list[dict[str, Any]]:
+    return model.backend_history
+
+
+def _compute_backend_history(model: SiteModel) -> list[dict[str, Any]]:
+    """Replay the existing reducer as of each recorded UTC date, not ever-green."""
+    reducer = _writer()._build_data_module()._modules().reducer
+    rows = [reducer._normalise_series_row(row, index) for index, row in enumerate(model.series_rows)]
+    by_cell: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_cell.setdefault(row["cell"], []).append(row)
+    days = sorted({row["emitted_at"][0].astimezone(timezone.utc).date().isoformat() for row in rows})
+    catalogue = []
+    for identity in sorted(model.manifest_cell_ids):
+        test, mode, backend = identity.rsplit("/", 2)
+        metadata = model.test_by_id[test]
+        catalogue.append({
+            "selected_by": model.cell_by_id.get(identity, {}).get("selected_by", {}),
+            "cell": identity, "test": test, "mode": mode, "backend": backend,
+            "category": metadata["category"], "lane": metadata["lane"],
+        })
+    history = []
+    for day in days:
+        end = datetime.fromisoformat(day).replace(tzinfo=timezone.utc) + timedelta(days=1)
+        cells = []
+        past_by_cell = {
+            identity: tuple(row for row in values if datetime.fromisoformat(str(row["emitted_at"]).replace("Z", "+00:00")) < end)
+            for identity, values in model.series_by_cell.items()
+        }
+        for cell in catalogue:
+            population = [row for row in by_cell.get(cell["cell"], ()) if row["emitted_at"][0] < end]
+            reduced, omission = reducer._reduce_cell(
+                cell, population, model.runs["current_main_ancestry"],
+                model.runs["validate_run_selection"],
+                {cell["cell"]: cell.get("selected_by", {})},
+            )
+            if reduced is None:
+                # A later no-result/ambiguous execution must not carry an older
+                # green value forward. Keep this population member unavailable.
+                reduced = {**cell, "state": "never-measured", "latest_result": None,
+                           "latest_event_ids": [], "history_unavailable": omission["reason"]}
+            cells.append(reduced)
+        snapshot = replace(model, cells=tuple(cells),
+                           cell_by_id={cell["cell"]: cell for cell in cells},
+                           series_by_cell=past_by_cell)
+        for item in _backend_rows(snapshot):
+            history.append({
+                "date": day, "backend": item["backend"], "reference_cells": item["denominator"],
+                **{name: {
+                    "green_cells": None if item[name]["percentage"] is None else item[name]["full"],
+                    "unavailable_cells": item[name]["unavailable"],
+                } for name in ("determinism", "parity")},
+            })
+    return history
+
+
+def _backend_history_chart(model: SiteModel) -> str:
+    history = _backend_history(model)
+    days = sorted({point["date"] for point in history})
+    if not days:
+        return '<section id="backend-history"><h2>Backend history</h2><p>No recorded comparison history is available.</p></section>'
+    times = {day: datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp() for day in days}
+    first, last = times[days[0]], times[days[-1]]
+    maximum = max((point[name]["green_cells"] or 0 for point in history for name in ("determinism", "parity")), default=0)
+    ymax = max(1, maximum)
+    width, height, left, top = 900, 320, 65, 25
+    def x(day: str) -> float:
+        return left + (times[day] - first) * 800 / max(86400, last - first)
+    def y(count: int) -> float:
+        return top + 240 * (1 - count / ymax)
+    colors = ("#1769aa", "#a23c16", "#6c43a5", "#087b69", "#864b14", "#555555")
+    lines, legend = [], []
+    markers: dict[tuple[float, float], dict[str, Any]] = {}
+    for index, backend in enumerate(sorted({point["backend"] for point in history})):
+        points = [point for point in history if point["backend"] == backend]
+        color = colors[index % len(colors)]
+        for name in ("determinism", "parity"):
+            commands = []
+            connected = False
+            for point in points:
+                count = point[name]["green_cells"]
+                if count is None:
+                    connected = False
+                    continue
+                px, py = x(point["date"]), y(count)
+                commands.append(f'H {px:.2f} V {py:.2f}' if connected else f'M {px:.2f} {py:.2f}')
+                marker = markers.setdefault((px, py), {"color": color, "labels": []})
+                marker["labels"].append(f'{backend} {name}, {point["date"]}: {count} green cells; reference {point["reference_cells"]}')
+                connected = True
+            dash = ' stroke-dasharray="7 4"' if name == "parity" else ''
+            if commands:
+                lines.append(f'<path d="{" ".join(commands)}" fill="none" stroke="{color}" stroke-width="2"{dash}/>' )
+            legend.append(f'<span><svg width="26" height="12" aria-hidden="true"><path d="M 0 6 H 26" stroke="{color}" stroke-width="2"{dash}/></svg> {_escape(backend)} {name}</span>')
+    # Draw hit targets after every line. Co-located observations share a title,
+    # so one backend's stroke or dot cannot hide another backend's tooltip.
+    for (px, py), marker in markers.items():
+        label = _escape('; '.join(marker["labels"]))
+        lines.append(f'<circle cx="{px:.2f}" cy="{py:.2f}" r="4" fill="{marker["color"]}" tabindex="0" aria-label="{label}"><title>{label}</title></circle>')
+    anchor = model.data["provenance"].get("canonical_input_provenance", {})
+    commit = anchor.get("series_commit", anchor.get("parent_commit", model.data["provenance"].get("parent_commit")))
+    table = ''.join(f'<tr><td>{point["date"]}</td><td>{_escape(point["backend"])}</td><td>{point["determinism"]["green_cells"] if point["determinism"]["green_cells"] is not None else "Not available"}</td><td>{point["parity"]["green_cells"] if point["parity"]["green_cells"] is not None else "Not available"}</td><td>{point["reference_cells"]}</td></tr>' for point in history)
+    return (
+        '<section id="backend-history"><h2>Backend history</h2>'
+        '<p>Latest recorded state at each UTC date for the current catalogue and current main ancestry, within that date’s ptrace-Green population. '
+        'Counts can fall after regressions. Steps carry recorded state; they are not interpolated measurements. '
+        'Gaps mean no supported comparison evidence, including legacy periods. Dashed lines are parity against ptrace.</p>'
+        f'<div class="chart-scroll"><svg class="history-chart" viewBox="0 0 {width} {height}" role="img" aria-label="Recorded green-cell counts over time, by backend and comparison">'
+        f'<path d="M {left} {top} V 265 H 875" fill="none" stroke="currentColor"/>'
+        f'<text x="{left}" y="18">Green cells</text><text x="30" y="{top + 5}">{ymax}</text><text x="42" y="270">0</text>'
+        f'<text x="{left}" y="294">{days[0]}</text><text x="875" y="294" text-anchor="end">{days[-1]} UTC</text>'
+        + ''.join(lines) + '</svg></div><div class="history-legend">' + ''.join(legend) + '</div>'
+        f'<p>Ledger anchor: <code>{_escape(commit)}</code>. Latest recorded date: {days[-1]}. '
+        '<a href="data/site-summary.json.gz">Machine-readable history and source provenance</a>.</p>'
+        '<details><summary>Recorded counts by date</summary><div class="table-scroll"><table><thead><tr><th>Date (UTC)</th><th>Backend</th><th>Determinism</th><th>Parity</th><th>Ptrace reference</th></tr></thead><tbody>'
+        + table + '</tbody></table></div></details></section>'
     )
 
 
@@ -1573,6 +1700,7 @@ def _overview(model: SiteModel, page: str) -> str:
       {_state_summary(model, page)}
       {_result_reading(model)}
       {_backend_leaderboard(model)}
+    {_backend_history_chart(model)}
       <p class="evidence-counts">
         {_count_link(page, 'cells/index.html', 'series-rows', runs['series_physical_row_count'], 'admitted canonical series rows', runs['series_represented_run_count'])}.
         {_count_link(page, 'runs/index.html', 'validation-runs', len(model.history_rows), 'admitted validation ledger rows')}.
@@ -2189,15 +2317,121 @@ def _run_listing(model: SiteModel, page: str, *, show_heading: bool = True) -> s
     </section>"""
 
 
+def presentation_commits(data: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """The exact source identities eligible for presentation-only commit dates."""
+    provenance = data["provenance"]
+    identities = {
+        ("dev-hermit", str(provenance["parent_commit"])),
+        ("hermit", str(provenance["hermit_commit"])),
+        ("hermit", str(provenance["hermit_main_commit"])),
+    }
+    identities.update(
+        ("hermit", str(row["series"]["tree"]))
+        for row in data["runs"]["series_rows"]
+    )
+    canonical = provenance.get("canonical_input_provenance", {})
+    if "series_commit" in canonical:
+        if canonical.get("series_repository") != "https://github.com/rrnewton/hermit_test_ledger.git":
+            raise RenderRefused("presentation cell ledger repository is unexpected")
+        identities.add(("hermit_test_ledger", str(canonical["series_commit"])))
+    return tuple(sorted(identities))
+
+
+def validate_presentation(value: Any, data: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != {"build_started_at", "commits"}:
+        raise RenderRefused("presentation provenance fields are not exact")
+    _eastern_timestamp(value["build_started_at"], "website build start", include_seconds=True)
+    rows = value["commits"]
+    if not isinstance(rows, list):
+        raise RenderRefused("presentation commit dates must be an array")
+    identities = []
+    for row in rows:
+        if not isinstance(row, Mapping) or set(row) != {"repository", "commit", "committed_at"}:
+            raise RenderRefused("presentation commit date fields are not exact")
+        if row["repository"] not in {"hermit", "dev-hermit", "hermit_test_ledger"} or not isinstance(row["commit"], str) or re.fullmatch(r"[0-9a-f]{40}", row["commit"]) is None:
+            raise RenderRefused("presentation commit identity is invalid")
+        if row["committed_at"] is not None:
+            _eastern_timestamp(row["committed_at"], "source commit date", include_seconds=True)
+        identities.append((row["repository"], row["commit"]))
+    if identities != sorted(set(identities)):
+        raise RenderRefused("presentation commit identities must be unique and sorted")
+    if data is not None and tuple(identities) != presentation_commits(data):
+        raise RenderRefused("presentation commits disagree with recorded source identities")
+    return {"build_started_at": value["build_started_at"], "commits": [dict(row) for row in rows]}
+
+
+def _readable_time(value: Any, label: str) -> str:
+    if value is None:
+        return "Not recorded"
+    _eastern_timestamp(value, label, include_seconds=True)
+    instant = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(EASTERN_TIME_ZONE)
+    return f'<time datetime="{_escape(value)}">{instant.strftime("%b %-d, %Y · %-I:%M %p %Z")}</time>'
+
+
+def _measurement_freshness(model: SiteModel) -> str:
+    values = [cell.get("latest_result_time") for cell in model.cells if _cell_state(cell) in {"green", "red"}]
+    values = [value for value in values if isinstance(value, str)]
+    latest = max(values, key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00"))) if values else None
+    recorded = [str(row["emitted_at"]) for row in model.series_rows]
+    latest_recorded = max(recorded, key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00"))) if recorded else None
+    return (
+        '<p class="measurement-freshness"><strong>Latest selected measurement:</strong> '
+        + _readable_time(latest, "latest selected measurement")
+        + '. <strong>Latest history entry:</strong> '
+        + _readable_time(latest_recorded, "latest retained history entry")
+        + '.</p><p>The totals combine qualifying results from multiple runs. History also retains other runs; rebuilding this website does not rerun the tests.</p>'
+    )
+
+
 def _provenance(model: SiteModel, page: str = "index.html") -> str:
     provenance = model.data["provenance"]
+    presentation = model.presentation or {}
+    dates = {(row["repository"], row["commit"]): row["committed_at"] for row in presentation.get("commits", [])}
+    revisions: dict[str, list[Mapping[str, Any]]] = {}
+    for cell in model.cells:
+        for row in _latest_series_rows(model, cell) or ():
+            revisions.setdefault(str(row["series"]["tree"]), []).append(row)
+    measured_rows = []
+    for commit, rows in sorted(
+        revisions.items(),
+        key=lambda item: (
+            max(datetime.fromisoformat(row["emitted_at"].replace("Z", "+00:00")) for row in item[1]),
+            item[0],
+        ),
+        reverse=True,
+    ):
+        measured = max((row["emitted_at"] for row in rows), key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00")))
+        depths = {_canonical(row["series"].get("depth", {}).get("hermit")) for row in rows}
+        depth = json.loads(next(iter(depths))) if len(depths) == 1 else None
+        complete_depth = isinstance(depth, Mapping) and all(type(depth.get(key)) is int and depth[key] >= 0 for key in ("first_parent", "commits"))
+        first_parent = f'{depth["first_parent"]:,}' if complete_depth else "Not recorded consistently"
+        reachable = f'{depth["commits"]:,}' if complete_depth else "Not recorded consistently"
+        measured_rows.append(f'<tr><th scope="row">{_hermit_commit_link(commit)}</th><td>{_readable_time(dates.get(("hermit", commit)), "measured commit date")}</td><td>{_readable_time(measured, "measurement date")}</td><td>{first_parent}</td><td>{reachable}</td></tr>')
+    source_rows = []
+    for label, repository, field in (("Hermit catalogue", "hermit", "hermit_commit"), ("Hermit reference revision", "hermit", "hermit_main_commit"), ("Website data generator (private repository)", "dev-hermit", "parent_commit")):
+        commit = str(provenance[field])
+        source_rows.append(f'<tr><th scope="row">{label}</th><td>{_github_link(_commit_url(repository, commit), commit[:12], code=True)}</td><td>{_readable_time(dates.get((repository, commit)), "source commit date")}</td></tr>')
+    ledger_commit = provenance.get("canonical_input_provenance", {}).get("series_commit")
+    if ledger_commit:
+        source_rows.append(f'<tr><th scope="row">Cell result ledger</th><td>{_github_link(_commit_url("hermit_test_ledger", ledger_commit), ledger_commit[:12], code=True)}</td><td>{_readable_time(dates.get(("hermit_test_ledger", ledger_commit)), "cell ledger commit date")}</td></tr>')
     return f"""
     <section id="provenance">
       <h2>{_escape(model.wording.provenance_heading)}</h2>
+      <p><strong>Website build started:</strong> {_readable_time(presentation.get('build_started_at'), 'website build start')}. This is the website generation time, not the age of its measurements.</p>
+      <p id="source-provenance-caption"><strong>Sources used to build this website.</strong> Commit dates are Git committer dates.</p>
+      <div class="table-scroll"><table class="source-provenance" aria-labelledby="source-provenance-caption"><thead><tr>{_column_heading("Purpose", "The role this exact source revision played in producing the site data.")}{_column_heading("Source commit", "A short hash linked to the complete immutable Git commit.")}{_column_heading("Commit date", "The commit object’s committer timestamp; not a measurement or website build date.")}</tr></thead><tbody>{''.join(source_rows)}</tbody></table></div>
+      <details><summary>Measured Hermit revisions and commit depth</summary>
+      <p>Each row identifies a revision used by the selected cell results. Its measurement date is the latest selected result at that revision; its commit date describes the source, not a test run.</p>
+      <p id="measurement-provenance-caption"><strong>Measured revisions, newest measurement first.</strong></p>
+      <div class="table-scroll"><table class="measurement-provenance" aria-labelledby="measurement-provenance-caption"><thead><tr>{_column_heading("Hermit commit", "The exact Hermit revision used for these selected test results.")}{_column_heading("Commit date", "The measured commit object’s committer timestamp; not a test execution date.")}{_column_heading("Latest measurement", "The latest selected cell measurement at this exact Hermit revision.")}{_column_heading("First-parent depth", "Recorded commits along this Hermit revision’s first-parent chain, including itself.")}{_column_heading("All reachable commits", "All recorded Hermit commits reachable from this revision, including merged side branches.")}</tr></thead><tbody>{''.join(measured_rows)}</tbody></table></div>
+      <p>First-parent depth counts commits along the revision’s first-parent chain, including the revision itself. All reachable commits also counts merged side branches. These are recorded Hermit history counts, not elapsed time or a claim that a revision is that many commits behind main. A distance requires a verified ancestry relationship. Missing or conflicting depths are not inferred.</p>
+      </details>
       <details><summary>Full provenance</summary><dl class="facts">
         <div><dt>Hermit commit used for manifest policy</dt><dd>{_github_link(_commit_url('hermit', str(provenance['hermit_commit'])), str(provenance['hermit_commit']), code=True)}</dd></div>
         <div><dt>Hermit commit used for ancestry classification</dt><dd>{_github_link(_commit_url('hermit', str(provenance['hermit_main_commit'])), str(provenance['hermit_main_commit']), code=True)}</dd></div>
-        <div><dt>dev-hermit source commit</dt><dd>{_github_link(_commit_url('dev-hermit', str(provenance['parent_commit'])), str(provenance['parent_commit']), code=True)}</dd></div>
+        <div><dt>dev-hermit source commit (private repository)</dt><dd>{_github_link(_commit_url('dev-hermit', str(provenance['parent_commit'])), str(provenance['parent_commit']), code=True)}</dd></div>
         <div><dt>Manifest digest</dt><dd><code>{_escape(provenance['manifest_sha256'])}</code></dd></div>
         <div><dt>Captured series source digest</dt><dd><code>{_escape(provenance['series_rows_sha256'])}</code></dd></div>
         <div><dt>Public series projection digest</dt><dd><code>{_escape(provenance['series_rows_projection_sha256'])}</code></dd></div>
@@ -2240,7 +2474,7 @@ def _historical_measurement_note(model: SiteModel) -> str:
     )
 
 
-def _landing_introduction(model: SiteModel) -> str:
+def _historical_introduction(model: SiteModel) -> str:
     return f"""
     <div class="scorecard-introduction">
       <p>For more context, see the <a href="https://github.com/rrnewton/hermit/blob/main/README.md">README</a> and the high-level <a href="https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/">introduction in the blog post</a>.</p>
@@ -2248,6 +2482,18 @@ def _landing_introduction(model: SiteModel) -> str:
       {_historical_measurement_note(model)}
       <p>Comparing two dates means opening two snapshots and comparing them; no page on this site does that for you.</p>
       <p>Read the result counts against the right denominator. Green and red are counted only over cells for which this artifact has a selected result, which is a much smaller population than the manifest. The remaining cells are reported separately and are not counted as failures; folding them into the result denominator would understate the pass rate.</p>
+    </div>"""
+
+
+def _landing_introduction(model: SiteModel) -> str:
+    if "historical" in model.data["provenance"]:
+        return _historical_introduction(model)
+    measurement_note = _measurement_freshness(model)
+    return f"""
+    <div class="scorecard-introduction">
+      <p>This scorecard shows which workloads have been tested and how Hermit’s execution backends compare. <strong>Determinism</strong> measures whether repeated runs agree; <strong>parity</strong> measures agreement with the reference ptrace backend. Each test cell is a workload, execution mode, and backend. The tables distinguish passing results, failures, and missing measurements.</p>
+      <p>Start with the <a href="https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/">introduction to Hermit</a>, or visit the <a href="https://github.com/rrnewton/hermit/blob/main/README.md">README for setup and usage</a>.</p>
+      {measurement_note}
     </div>"""
 
 
@@ -2261,7 +2507,7 @@ def _landing_page(model: SiteModel) -> bytes:
     )
     return _layout(
         page,
-        "Compatibility evidence",
+        "Hermit compatibility scorecard" if model.wording.landing_introduction else "Compatibility evidence",
         model.wording.landing_lead,
         content,
         (("Overview", None),),
@@ -3451,7 +3697,7 @@ def _latest_series_rows(
     return tuple(rows)
 
 
-def _exact_validation_verdict(
+def _exact_validation_cell(
     model: SiteModel,
     cell: Mapping[str, Any],
     event_id: str,
@@ -3505,7 +3751,14 @@ def _exact_validation_verdict(
         and candidate.get("category") == cell.get("category")
         and candidate.get("lane") == cell.get("lane")
     ]
-    return verdict_rows[0]["cell_verdict"] if len(verdict_rows) == 1 else None
+    return verdict_rows[0] if len(verdict_rows) == 1 else None
+
+
+def _exact_validation_verdict(
+    model: SiteModel, cell: Mapping[str, Any], event_id: str
+) -> Mapping[str, Any] | None:
+    recorded = _exact_validation_cell(model, cell, event_id)
+    return None if recorded is None else recorded["cell_verdict"]
 
 
 def _consistent_coordinate(
@@ -3780,6 +4033,7 @@ def _browser_summary(model: SiteModel, omission_ids: frozenset[str]) -> dict[str
         browser_omissions.append(item)
     result = {
         "cells": cells,
+        "backend_history": _backend_history(model),
         "counts": _browser_copy(model.data["counts"]),
         "custom_commands": _browser_copy(model.custom_commands),
         "omissions": browser_omissions,
@@ -3969,9 +4223,11 @@ def _site_favicon() -> bytes:
 
 
 def render_site(
-    build: Mapping[str, Any], data: Mapping[str, Any], *, wording: str = "fixture"
+    build: Mapping[str, Any], data: Mapping[str, Any], *, wording: str = "fixture",
+    presentation: Mapping[str, Any] | None = None,
 ) -> dict[str, bytes]:
     model = _site_model(build, data, wording=wording)
+    model = replace(model, presentation=validate_presentation(presentation, model.data))
     files = {
         "assets/favicon.svg": _site_favicon(),
         "assets/site.css": _site_css(),

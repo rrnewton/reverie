@@ -20,7 +20,9 @@ import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -85,6 +87,7 @@ GENERATOR_PATHS = (
     "ci-hub/compatibility-website/export_inputs.py",
     "ci-hub/compatibility-website/reduce.py",
     "ci-hub/compatibility-website/render_page.py",
+    "ci-hub/compatibility-website/nightly_publication.py",
     "ci-hub/compatibility-website/write_data.py",
     "ci-hub/compatibility-website/assets/favicon.svg",
     "ci-hub/compatibility-website/assets/site.css",
@@ -94,9 +97,11 @@ GENERATOR_PATHS = (
     "ci-hub/ledger/publisher.py",
     "ci-hub/ledger/validate_rows.py",
     "ci-hub/lib/bounded_capture.py",
+    "ci-hub/lib/rust_toolchain.py",
     "ci-hub/lib/ledger_event.rs",
     "ci-hub/qualifying_receipt.py",
     "ci-hub/series/check-series-rows.rs",
+    "ci-hub/series/finalized_proof.py",
     "ci-hub/series/series.py",
     "ci-hub/validate/qualifying-receipt.json",
 )
@@ -122,12 +127,14 @@ STAGE_1_READER_PATHS = (
     "ci-hub/lib/published_receipt.rs",
     "ci-hub/lib/qualifying_receipt.rs",
     "ci-hub/lib/records.rs",
+    "ci-hub/lib/rust_toolchain.py",
     "ci-hub/lib/validate_lock.rs",
     "ci-hub/lib/validate_run_handle.rs",
     "ci-hub/lib/validate_status.rs",
     "ci-hub/lib/validation_evidence.rs",
     "ci-hub/qualifying_receipt.py",
     "ci-hub/series/check-series-rows.rs",
+    "ci-hub/series/finalized_proof.py",
     "ci-hub/series/series.py",
     "ci-hub/validate/final_validate_status.py",
     "ci-hub/validate/flake_class.py",
@@ -153,6 +160,7 @@ class WebsiteRefused(Exception):
 @dataclass(frozen=True)
 class Modules:
     build_data: Any
+    series: Any
     export_inputs: Any
     writer: Any
     renderer: Any
@@ -178,6 +186,24 @@ class _CapturedFile:
 
 
 @dataclass
+class _TreeValidation:
+    """One invocation's successful semantic check, never its filesystem checks."""
+
+    modules: Modules
+    manifest_sha256: str | None = None
+
+    def reproduce(self, manifest: Mapping[str, Any], files: Mapping[str, bytes]) -> None:
+        if _modules() is not self.modules:
+            raise WebsiteRefused("website generator capture changed during validation")
+        identity = _digest(manifest)
+        if identity != self.manifest_sha256:
+            _reproduce_expected_bytes(manifest, files)
+            if _modules() is not self.modules:
+                raise WebsiteRefused("website generator capture changed during validation")
+            self.manifest_sha256 = identity
+
+
+@dataclass
 class ValidatedWebsite:
     path: Path
     descriptor: int
@@ -185,6 +211,7 @@ class ValidatedWebsite:
     reused: bool
     output_root: OutputRoot | None = None
     verify_sources: Callable[[], None] | None = None
+    semantic_validation: _TreeValidation | None = None
 
     def recheck(self) -> None:
         if self.output_root is not None:
@@ -195,10 +222,16 @@ class ValidatedWebsite:
                 self.verify_sources,
             )
             return
-        _read_open_tree(self.descriptor, self.path, expected=self.manifest)
+        _read_open_tree(
+            self.descriptor, self.path, expected=self.manifest,
+            semantic_validation=self.semantic_validation,
+        )
         if self.verify_sources is not None:
             self.verify_sources()
-        _read_open_tree(self.descriptor, self.path, expected=self.manifest)
+        _read_open_tree(
+            self.descriptor, self.path, expected=self.manifest,
+            semantic_validation=self.semantic_validation,
+        )
 
     def release_output_root(self) -> None:
         if self.output_root is not None:
@@ -282,8 +315,10 @@ def _captured_reader_modules(
 ) -> dict[str, Any]:
     aliases = (
         "bounded_capture",
+        "rust_toolchain",
         "ledger",
         "series",
+        "finalized_proof",
         "flaky_cells",
         "flake_class",
         "gate_completeness",
@@ -311,8 +346,10 @@ def _captured_reader_modules(
 
     try:
         bounded = load("bounded_capture", "ci-hub/lib/bounded_capture.py")
+        rust_toolchain = load("rust_toolchain", "ci-hub/lib/rust_toolchain.py")
         ledger = load("ledger", "ci-hub/ledger/ledger.py")
         series = load("series", "ci-hub/series/series.py")
+        finalized_proof = load("finalized_proof", "ci-hub/series/finalized_proof.py")
         flaky_cells = load("flaky_cells", "ci-hub/validate/flaky_cells.py")
         flake_class = load("flake_class", "ci-hub/validate/flake_class.py")
         gate_completeness = load(
@@ -335,6 +372,7 @@ def _captured_reader_modules(
         validate_rows = load("validate_rows", "ci-hub/ledger/validate_rows.py")
         readers = {
             "bounded_capture": bounded,
+            "rust_toolchain": rust_toolchain,
             "flake_class": flake_class,
             "flaky_cells": flaky_cells,
             "gate_completeness": gate_completeness,
@@ -344,6 +382,7 @@ def _captured_reader_modules(
             "qualifying_receipt": qualifying,
             "admission_paths": admission_paths,
             "series": series,
+            "finalized_proof": finalized_proof,
             "validate_rows": validate_rows,
         }
     finally:
@@ -400,6 +439,7 @@ def _bind_export_authorities(
         export_inputs.ledger_publisher = readers["publisher"]
         export_inputs.series_store = readers["series"]
         export_inputs.validation_ledger = readers["validate_rows"]
+        export_inputs.finalized_proof = readers["finalized_proof"]
         return state
 
     def load_authorities() -> dict[str, Any]:
@@ -437,6 +477,7 @@ def _modules() -> Modules:
     build_data._LOADED_MODULES = build_data.Modules(
         export_inputs=export_inputs,
         reducer=reducer,
+        rust_toolchain=readers["rust_toolchain"],
     )
     writer = load(
         "compatibility_website_combined_writer",
@@ -464,6 +505,7 @@ def _modules() -> Modules:
         raise WebsiteRefused("website generator files changed while being captured")
     return Modules(
         build_data=build_data,
+        series=readers["series"],
         export_inputs=export_inputs,
         writer=writer,
         renderer=renderer,
@@ -707,6 +749,7 @@ def _manifest(
     generator_files: list[dict[str, Any]],
     *,
     wording: str,
+    presentation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     _require_exact_artifact_inventory(files, stage_1_build["counts"])
     artifacts = _artifact_rows(files)
@@ -726,6 +769,8 @@ def _manifest(
         "schema_version": SCHEMA_VERSION,
         "wording": wording,
     }
+    if presentation is not None:
+        generator["presentation"] = presentation
     inputs = {
         "stage_1_build_json": stage_1_build,
         "stage_1_build_json_bytes": len(stage_1_build_bytes),
@@ -737,6 +782,8 @@ def _manifest(
         "tree_sha256": tree_sha256,
         "wording": generator["wording"],
     }
+    if presentation is not None:
+        freshness["presentation_sha256"] = _digest(presentation)
     return {
         "artifacts": artifacts,
         "artifacts_sha256": artifacts_sha256,
@@ -753,7 +800,8 @@ def _manifest(
 
 
 def compose(
-    data: Mapping[str, Any], *, wording: str = "live"
+    data: Mapping[str, Any], *, wording: str = "live",
+    presentation: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
     before = _generator_files()
     modules = _modules()
@@ -767,7 +815,8 @@ def compose(
         stage_1_build_bytes = stage_1_files["build.json"]
         stage_1_build = _object(json.loads(stage_1_build_bytes), "Stage 1 build.json")
         _require_wording_matches_stage_1(wording, stage_1_build)
-        pages = modules.renderer.render_site(stage_1_build, data, wording=wording)
+        presentation = modules.renderer.validate_presentation(presentation, data)
+        pages = modules.renderer.render_site(stage_1_build, data, wording=wording, presentation=presentation)
         modules.renderer._validate_output_files(pages)
     except (
         json.JSONDecodeError,
@@ -789,7 +838,8 @@ def compose(
     if before != after or after != bound:
         raise WebsiteRefused("website generator files changed during composition")
     manifest = _manifest(
-        stage_1_build, stage_1_build_bytes, files, bound, wording=wording
+        stage_1_build, stage_1_build_bytes, files, bound, wording=wording,
+        presentation=presentation,
     )
     complete = {"build.json": _json_bytes(manifest) + b"\n", **files}
     return manifest, dict(sorted(complete.items()))
@@ -797,9 +847,18 @@ def compose(
 
 def _validated_generator(value: Any) -> dict[str, Any]:
     generator = dict(_object(value, "website generator"))
+    fields = {"files", "files_sha256", "name", "schema_version", "wording"}
+    if "presentation" in generator:
+        fields.add("presentation")
+        try:
+            if generator["presentation"] is None:
+                raise _modules().renderer.RenderRefused("presentation provenance is null")
+            _modules().renderer.validate_presentation(generator["presentation"])
+        except _modules().renderer.RenderRefused as error:
+            raise WebsiteRefused(str(error)) from error
     _exact_fields(
         generator,
-        frozenset({"files", "files_sha256", "name", "schema_version", "wording"}),
+        frozenset(fields),
         "website generator",
     )
     if (
@@ -1015,6 +1074,8 @@ def _validate_manifest(value: Any) -> dict[str, Any]:
         "tree_sha256": tree_sha256,
         "wording": generator["wording"],
     }
+    if "presentation" in generator:
+        freshness["presentation_sha256"] = _digest(generator["presentation"])
     if manifest["freshness_sha256"] != _digest(freshness):
         raise WebsiteRefused("website freshness digest disagrees with its inputs")
     return json.loads(_json_bytes(manifest))
@@ -1070,6 +1131,7 @@ def _read_open_tree_untranslated(
     *,
     expected: Mapping[str, Any] | None = None,
     require_name: bool = True,
+    semantic_validation: _TreeValidation | None = None,
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
     writer = _modules().writer
     _require_directory_mode(root, "website root")
@@ -1123,7 +1185,13 @@ def _read_open_tree_untranslated(
     finally:
         for descriptor in directories.values():
             os.close(descriptor)
-    _reproduce_expected_bytes(manifest, files)
+    # All bytes, canonical manifest, inventories, permissions and held-directory
+    # checks above run every time. Their exact content identity permits reusing
+    # only a completed reproduction within this invocation's captured modules.
+    if semantic_validation is None:
+        _reproduce_expected_bytes(manifest, files)
+    else:
+        semantic_validation.reproduce(manifest, files)
     return manifest, files
 
 
@@ -1133,6 +1201,7 @@ def _read_open_tree(
     *,
     expected: Mapping[str, Any] | None = None,
     require_name: bool = True,
+    semantic_validation: _TreeValidation | None = None,
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
     writer = _modules().writer
     try:
@@ -1141,6 +1210,7 @@ def _read_open_tree(
             path,
             expected=expected,
             require_name=require_name,
+            semantic_validation=semantic_validation,
         )
     except WebsiteRefused:
         raise
@@ -1187,7 +1257,8 @@ def _reproduce_expected_bytes(
                 "embedded Stage 1 build.json disagrees with its validated data"
             )
         pages = modules.renderer.render_site(
-            stage_1_build, validated, wording=str(manifest["generator"]["wording"])
+            stage_1_build, validated, wording=str(manifest["generator"]["wording"]),
+            presentation=manifest["generator"].get("presentation"),
         )
         modules.renderer._validate_output_files(pages)
     except (
@@ -1210,17 +1281,24 @@ def _reproduce_expected_bytes(
 
 
 def _open_validated_at(
-    parent: int, name: str, path: Path, *, expected: Mapping[str, Any] | None = None
+    parent: int, name: str, path: Path, *, expected: Mapping[str, Any] | None = None,
+    semantic_validation: _TreeValidation | None = None,
 ) -> ValidatedWebsite:
     writer = _modules().writer
     descriptor = None
     try:
         descriptor = writer._open_directory(parent, name)
-        manifest, _files = _read_open_tree(descriptor, path, expected=expected)
+        validation = semantic_validation or _TreeValidation(_modules())
+        manifest, _files = _read_open_tree(
+            descriptor, path, expected=expected, semantic_validation=validation,
+        )
         writer._require_entry(
             parent, name, descriptor, "website target changed during validation"
         )
-        return ValidatedWebsite(path, descriptor, manifest, reused=expected is not None)
+        return ValidatedWebsite(
+            path, descriptor, manifest, reused=expected is not None,
+            semantic_validation=validation,
+        )
     except BaseException as error:
         try:
             if descriptor is not None:
@@ -1373,7 +1451,10 @@ def _return_target(
 
     def require_target() -> None:
         _require_output_root(output)
-        _read_open_tree(value.descriptor, value.path, expected=value.manifest)
+        _read_open_tree(
+            value.descriptor, value.path, expected=value.manifest,
+            semantic_validation=value.semantic_validation,
+        )
         try:
             writer._require_entry(
                 output.descriptor,
@@ -1484,12 +1565,14 @@ def _materialize(
     verify_sources: Callable[[], None] | None = None,
 ) -> ValidatedWebsite:
     writer = _modules().writer
+    validation = _TreeValidation(_modules())
     target = str(manifest["freshness_sha256"])
     path = output.path / target
     _require_output_root(output)
     if writer._entry(output.descriptor, target) is not None:
         existing = _open_validated_at(
-            output.descriptor, target, path, expected=manifest
+            output.descriptor, target, path, expected=manifest,
+            semantic_validation=validation,
         )
         try:
             return _return_target(output, target, existing, verify_sources)
@@ -1543,14 +1626,16 @@ def _materialize(
         os.fchmod(root, 0o555)
         writer._fsync_directory(root)
         _read_open_tree(
-            root, output.path / temporary, expected=manifest, require_name=False
+            root, output.path / temporary, expected=manifest, require_name=False,
+            semantic_validation=validation,
         )
         _require_output_root(output)
         if verify_sources is not None:
             verify_sources()
         _require_output_root(output)
         _read_open_tree(
-            root, output.path / temporary, expected=manifest, require_name=False
+            root, output.path / temporary, expected=manifest, require_name=False,
+            semantic_validation=validation,
         )
         writer._require_entry(
             output.descriptor,
@@ -1564,7 +1649,8 @@ def _materialize(
             if error.errno != errno.EEXIST:
                 raise
             winner = _open_validated_at(
-                output.descriptor, target, path, expected=manifest
+                output.descriptor, target, path, expected=manifest,
+                semantic_validation=validation,
             )
             try:
                 _return_target(output, target, winner, verify_sources)
@@ -1574,7 +1660,9 @@ def _materialize(
                 winner.close()
                 raise
         writer._fsync_directory(output.descriptor)
-        validated = _read_open_tree(root, path, expected=manifest)[0]
+        validated = _read_open_tree(
+            root, path, expected=manifest, semantic_validation=validation,
+        )[0]
         writer._require_entry(
             output.descriptor, target, root, "published website changed"
         )
@@ -1582,7 +1670,9 @@ def _materialize(
         result = _return_target(
             output,
             target,
-            ValidatedWebsite(path, root, validated, reused=False),
+            ValidatedWebsite(
+                path, root, validated, reused=False, semantic_validation=validation,
+            ),
             verify_sources,
         )
         keep_root = True
@@ -1651,15 +1741,23 @@ def _git_oid(checkout: Path, reference: str) -> str:
     return value
 
 
-def _live_data() -> dict[str, Any]:
+def _live_data(*, series_ref: str | None = None, published_only: bool = False, state_root: Path | None = None, validation_history_commit: str | None = None) -> dict[str, Any]:
     modules = _modules()
     parent_commit = _git_oid(REPOSITORY, "HEAD")
     hermit = REPOSITORY / "hermit"
     hermit_commit = _git_oid(hermit, "HEAD")
     hermit_main = _git_oid(hermit, "refs/remotes/origin/main")
+    options = {}
+    if series_ref is not None or published_only:
+        options.update(series_ref=series_ref, published_only=published_only)
+    if state_root is not None:
+        options["state_root"] = state_root
+    if validation_history_commit is not None:
+        options["validation_history_commit"] = validation_history_commit
     try:
         return modules.build_data.build_data(
-            REPOSITORY, parent_commit, hermit, hermit_commit, hermit_main
+            REPOSITORY, parent_commit, hermit, hermit_commit, hermit_main,
+            **options,
         )
     except modules.build_data.BuildRefused as error:
         raise WebsiteRefused(f"Stage 1 build refused: {error}") from error
@@ -1671,8 +1769,9 @@ def publish(
     *,
     wording: str = "live",
     verify_sources: Callable[[], None] | None = None,
+    presentation: Mapping[str, Any] | None = None,
 ) -> ValidatedWebsite:
-    manifest, files = compose(data, wording=wording)
+    manifest, files = compose(data, wording=wording, presentation=presentation)
     expected_generators = json.loads(_json_bytes(manifest["generator"]["files"]))
 
     def combined_verification() -> None:
@@ -1748,13 +1847,75 @@ def _runtime_source_identity() -> tuple[str, str, str, str]:
     )
 
 
-def build(output_root: Path = DEFAULT_OUTPUT_ROOT) -> ValidatedWebsite:
-    data = json.loads(_json_bytes(_live_data()))
+def capture_presentation(
+    data: Mapping[str, Any], build_started_at: str, *,
+    parent: Path = REPOSITORY, hermit: Path | None = None,
+    state_root: Path | None = None,
+) -> dict[str, Any]:
+    """Capture dates from immutable commit objects, separately from test times."""
+    modules = _modules()
+    repositories = {"dev-hermit": parent, "hermit": hermit or parent / "hermit"}
+    identities = modules.renderer.presentation_commits(data)
+    if any(repository == "hermit_test_ledger" for repository, _commit in identities):
+        try:
+            repositories["hermit_test_ledger"] = modules.series.ledger_root(state_root or parent)
+        except modules.series.SeriesError as error:
+            raise WebsiteRefused(f"cannot resolve recorded cell ledger: {error}") from error
+    environment = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    rows = []
+    for repository, commit in identities:
+        if len(commit) != 40 or any(value not in "0123456789abcdef" for value in commit):
+            raise WebsiteRefused("presentation source is not a full commit identity")
+        try:
+            result = modules.export_inputs.capture_bounded_process(
+                ["git", "--no-replace-objects", "-C", str(repositories[repository]),
+                 "show", "--no-patch", "--format=%cI", f"{commit}^{{commit}}"],
+                environment=environment, timeout=20, stdout_limit=128, stderr_limit=512,
+            )
+        except (OSError, subprocess.TimeoutExpired, modules.export_inputs.OutputLimitExceeded) as error:
+            raise WebsiteRefused(f"cannot capture source commit date: {error}") from error
+        committed_at = None
+        if result.returncode == 0:
+            try:
+                instant = datetime.fromisoformat(result.stdout.decode().strip())
+                if instant.tzinfo is None or result.stderr:
+                    raise ValueError("commit date is not an unambiguous Git timestamp")
+                committed_at = instant.astimezone(timezone.utc).isoformat()
+            except (UnicodeError, ValueError) as error:
+                raise WebsiteRefused(f"cannot read source commit date: {error}") from error
+        # Historical source objects may be absent in this checkout. Do not
+        # substitute HEAD, the ledger emission date, or a filesystem timestamp.
+        rows.append({"repository": repository, "commit": commit, "committed_at": committed_at})
+    value = {"build_started_at": build_started_at, "commits": rows}
+    try:
+        return modules.renderer.validate_presentation(value, data)
+    except modules.renderer.RenderRefused as error:
+        raise WebsiteRefused(str(error)) from error
+
+
+def build(output_root: Path = DEFAULT_OUTPUT_ROOT, *, series_ref: str | None = None, published_only: bool = False, state_root: Path | None = None, validation_history_commit: str | None = None) -> ValidatedWebsite:
+    # Refuse an unusable destination before compiling or exporting source data.
+    # Publication repeats this check while acquiring the output-root lock.
+    _output_location(output_root)
+    build_started_at = datetime.now(timezone.utc).isoformat()
+    options = {}
+    if series_ref is not None or published_only:
+        options.update(series_ref=series_ref, published_only=published_only)
+    if state_root is not None:
+        options["state_root"] = state_root
+    if validation_history_commit is not None:
+        options["validation_history_commit"] = validation_history_commit
+    def live_data() -> dict[str, Any]:
+        return _live_data(**options)
+
+    data = json.loads(_json_bytes(live_data()))
+    presentation = capture_presentation(data, build_started_at, state_root=state_root)
     expected_stage_1 = _stage_1_files(data)
 
     def verify_live_sources() -> None:
         _require_live_sources(data)
-        observed_stage_1 = _stage_1_files(_live_data())
+        observed_stage_1 = _stage_1_files(live_data())
         _require_live_sources(data)
         if observed_stage_1 != expected_stage_1:
             raise WebsiteRefused("Stage 1 source bytes changed during website build")
@@ -1764,6 +1925,7 @@ def build(output_root: Path = DEFAULT_OUTPUT_ROOT) -> ValidatedWebsite:
         output_root,
         wording="live",
         verify_sources=verify_live_sources,
+        presentation=presentation,
     )
 
 
@@ -1776,6 +1938,8 @@ def build_historical(
     manifest_commit: str,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
 ) -> ValidatedWebsite:
+    _output_location(output_root)
+    build_started_at = datetime.now(timezone.utc).isoformat()
     modules = _modules()
 
     def source_data() -> dict[str, Any]:
@@ -1794,6 +1958,7 @@ def build_historical(
             ) from error
 
     data = json.loads(_json_bytes(source_data()))
+    presentation = capture_presentation(data, build_started_at, parent=parent, hermit=manifest_hermit)
     expected_stage_1 = _stage_1_files(data)
 
     def verify_historical_sources() -> None:
@@ -1808,6 +1973,7 @@ def build_historical(
         output_root,
         wording="historical",
         verify_sources=verify_historical_sources,
+        presentation=presentation,
     )
 
 
@@ -1891,6 +2057,9 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_OUTPUT_ROOT,
         help="user-owned publication directory (default: checkout sibling)",
     )
+    nightly = commands.add_parser("nightly", help="build and publish through the existing daily health scheduler", allow_abbrev=False)
+    nightly.add_argument("action", choices=("launch", "run"))
+    nightly.add_argument("--state-root", type=Path, required=True)
     serve_parser = commands.add_parser(
         "serve",
         help="validate and serve an existing website",
@@ -1971,6 +2140,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("DOCS PARSE OK: compatibility-website " + " ".join(raw))
         return 0
     try:
+        if arguments.command == "nightly":
+            module_path = REPOSITORY / "ci-hub/compatibility-website/nightly_publication.py"
+            specification = importlib.util.spec_from_file_location("compatibility_website_nightly", module_path)
+            if specification is None or specification.loader is None:
+                raise WebsiteRefused("cannot load nightly publication module")
+            nightly = importlib.util.module_from_spec(specification)
+            specification.loader.exec_module(nightly)
+            # The CLI re-executes its captured source in a private namespace;
+            # sys.modules['__main__'] still names the earlier bootstrap module.
+            return getattr(nightly, arguments.action)(SimpleNamespace(**globals()), arguments.state_root.resolve())
         if arguments.command == "serve":
             website = validate_website(arguments.root)
             _exec_server(website, arguments.port)

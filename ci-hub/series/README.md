@@ -5,15 +5,50 @@ represents one run, or a set of exactly equal observations when `num_runs` is
 greater than one.
 
 ```
-series/<team>/<short-host>/<YYYY>-<MM>.jsonl        tracked, published
+hermit_test_ledger/series/<team>/<short-host>/<YYYY>-<MM>.jsonl  published
 ignored/ci-hub/series-spool/                        live, unpublished
 ```
 
-The scheduled `ledger_publish_sweep` drains both validation-ledger and per-test
-series batches through the same append-only publisher and serialized parent-main
-writer. Until that succeeds, the producing checkout reads its own spool. After
-it succeeds, another checkout reads the tracked `series/` shard after fetching
-parent main. `series_spool_backlog` reports batches that remain unpublished.
+Ordinary validation completion publishes cell batches directly to the existing
+`rrnewton/hermit_test_ledger` repository. The scheduled `ledger_publish_sweep`
+retries pending batches hourly through the same append-aware publisher, even
+when no later validation runs. Its existing detached worker logs to
+`ignored/ci-hub/ledger-publish-backlog.log`; a failed worker is reported before
+the next sweep retries it. The separate hourly `series_spool_backlog` check
+reports pending batch count and age, so launch success is never delivery proof.
+The retry publishes raw rows without re-running tests or changing their verdict.
+Derived-scorecard errors remain explicit; nightly reads a named published commit.
+Validation-run
+receipts remain in the parent ledger; cell history is not committed there again.
+
+`mirror.py` retains its historical command name. It locks the ledger Git common
+directory and reuses one linked writer at `ignored/ci-hub/test-ledger-writer`.
+A fresh fetch and verified published commit authorize draining a batch. Until
+then, readers retain the ignored spool; a failed push leaves it retryable.
+Retry preserves a durable recovery ref before replaying a raw append onto the
+new remote head. Every prior event must be unchanged and every new event must
+still match its retained spool body; otherwise recovery refuses.
+Unknown dirty writer contents and unpublished derived commits are retained for
+recovery, never silently reset. Concurrent batches keep their event IDs and
+original timestamps; conflicting bodies for one ID refuse publication.
+
+The ledger checkout is `hermit_test_ledger` under the shared parent, or the
+explicit `DEV_HERMIT_TEST_LEDGER_ROOT` override. It must be an initialized checkout
+with the expected repository origin. The publisher passes its held lock to the
+stable scorecard tool; an environment path alone grants no write authority.
+The stable tool reads the measured Hermit checkout and writes only the ledger's
+`scorecard/` area. Its tool commit and measured source commit are recorded
+separately. A derived-scorecard failure records incomplete delivery and retains
+inputs while preserving both the measured verdict and any published raw rows.
+
+Before the first Hermit catalogue trim, `scorecard.rs export-legacy` archives the
+exact old cells document and its source identity in `scorecard/legacy/` in this
+same repository. No conversion fabricates missing historical measurement fields.
+
+A projection binds the current catalogue's exact identities and selection.
+New identities remain unmeasured until real observations exist. Retired history
+remains in the ledger's committed ancestry; a stale projection must be regenerated
+before it can describe the new catalogue.
 
 Step 3 of the https://github.com/rrnewton/hermit/pull/2447 storage plan created
 this store. The validate and pressure-test writers and the history command below
@@ -171,7 +206,7 @@ python3 ci-hub/series/series.py history \
   --test applications/git-repository-workflow
 ```
 
-This freshly fetches parent `origin/main`, reads its published shards plus the
+This freshly fetches the test ledger’s `origin/main`, reads its published shards plus the
 unpublished and retained local spool, prints the number of stored rows and
 represented runs, starts with each cell's all-history
 `wall_time_min_ms` and `wall_time_max_ms`, then shows each row's source SHA,
@@ -192,7 +227,7 @@ python3 ci-hub/series/series.py snapshot \
   --output ignored/validate/<run>/scorecard-series-snapshot.json
 ```
 
-The command refreshes parent `origin/main` before and after local capture,
+The command refreshes the test ledger’s `origin/main` before and after local capture,
 requires both reads to name the same exact commit and `series/` tree, and
 combines that immutable published snapshot with one stable generation of the
 local live and published-retained spool. It validates and orders every row
@@ -344,3 +379,8 @@ python3 ci-hub/series/tests/test_series_invariants.py
 ```
 
 Every guard is demonstrated **refusing**, not merely passing.
+
+Snapshot `source.repository` identifies the repository owning its commit and tree.
+New snapshots name `https://github.com/rrnewton/hermit_test_ledger.git`; omission
+in old snapshots means `https://github.com/rrnewton/dev-hermit.git`. This storage
+identity never replaces a measurement's Hermit or Reverie source commit.

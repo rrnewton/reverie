@@ -295,6 +295,21 @@ def build_data_value() -> dict[str, Any]:
     return value
 
 
+@pytest.mark.parametrize("schema", [1, 2])
+def test_normalized_legacy_and_current_metadata_provenance_round_trip(schema: int) -> None:
+    value = build_data_value()
+    value["provenance"]["manifest_metadata_schema"] = schema
+    files = write_data.render_tree(value)
+    assert json.loads(files["build.json"])["provenance"]["manifest_metadata_schema"] == schema
+
+
+def test_unknown_normalized_metadata_provenance_refuses() -> None:
+    value = build_data_value()
+    value["provenance"]["manifest_metadata_schema"] = 3
+    with pytest.raises(write_data.WriteRefused, match="metadata schema"):
+        write_data.render_tree(value)
+
+
 def test_cli_help_describes_authorities_and_atomic_refusal_contract() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--help"],

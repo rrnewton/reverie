@@ -67,6 +67,9 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ledger"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import rust_toolchain  # noqa: E402
 
 from ledger import (  # noqa: E402  (path set above)
     LedgerError,
@@ -83,6 +86,9 @@ HOST_FACTS_ENVELOPE_VERSION = "stress-series/v2"
 ENVELOPE_VERSION = "stress-series/v3"
 SCORECARD_SNAPSHOT_SCHEMA = "scorecard-series-snapshot/v1"
 SCORECARD_SNAPSHOT_SOURCE = "series"
+LEDGER_REPOSITORY = "https://github.com/rrnewton/hermit_test_ledger.git"
+PARENT_REPOSITORY = "https://github.com/rrnewton/dev-hermit.git"
+LEDGER_ROOT_ENV = "DEV_HERMIT_TEST_LEDGER_ROOT"
 SERIES_SPOOL_LOCK_TIMEOUT_SECONDS = 5.0
 SCORECARD_SNAPSHOT_MAX_DIRECTORY_ENTRIES = 4096
 SCORECARD_SNAPSHOT_IDENTITY_TIMEOUT_SECONDS = 1.0
@@ -93,7 +99,7 @@ Create one immutable scorecard-series-snapshot/v1 file from the exact parent
 origin/main series tree and the bounded local series sources.
 
 options:
-  --parent <dev-hermit root>  parent checkout whose series evidence is read
+  --parent <dev-hermit root>  workspace containing the ledger checkout and local spool
   --output <run-scoped.json>  new snapshot path; an existing different file refuses
   -h, --help                  show this help and exit successfully"""
 READABLE_ENVELOPE_VERSIONS = frozenset({
@@ -161,6 +167,8 @@ class PublishedSnapshot:
 
     commit: str
     rows: list[dict]
+    # Older snapshots named the parent repository implicitly.
+    repository: str = PARENT_REPOSITORY
 
 
 @dataclass(frozen=True)
@@ -231,6 +239,38 @@ def shared_parent_root(parent: Any) -> Path:
 def spool_dir(parent: Any) -> Path:
     """The live, UNPUBLISHED spool in the shared parent checkout."""
     return shared_parent_root(parent) / "ignored" / "ci-hub" / "series-spool"
+
+
+def ledger_root(parent: Any) -> Path:
+    """Resolve the existing cell ledger; never create or silently replace it."""
+    state = shared_parent_root(parent)
+    configured = _git(state, [
+        "config", "--file", str(state / ".gitmodules"), "--get",
+        "submodule.hermit_test_ledger.url",
+    ])
+    if configured.returncode or configured.stdout.strip() != LEDGER_REPOSITORY:
+        raise SeriesError("hermit_test_ledger submodule URL is absent or unexpected")
+    override = os.environ.get(LEDGER_ROOT_ENV)
+    root = Path(override).expanduser().resolve() if override else state / "hermit_test_ledger"
+    if not _is_checkout(root):
+        raise SeriesError(f"cell ledger checkout is unavailable: {root}")
+    # get-url expands transport rewrites; the configured identity remains the
+    # ledger URL even when a proxy or a local test remote supplies transport.
+    remote = _git(root, ["config", "--get", "remote.origin.url"])
+    if remote.returncode or remote.stdout.strip() not in {
+        LEDGER_REPOSITORY, "git@github.com:rrnewton/hermit_test_ledger.git",
+    }:
+        raise SeriesError(f"cell ledger checkout has an unexpected origin: {root}")
+    return root
+
+
+def published_repository(parent: Any, repository: str) -> Path:
+    """Keep historical parent SHAs in the repository that originally owned them."""
+    if repository == PARENT_REPOSITORY:
+        return Path(parent).resolve()
+    if repository == LEDGER_REPOSITORY:
+        return ledger_root(parent)
+    raise SeriesError(f"unsupported series repository identity: {repository!r}")
 
 
 def row_identity(row: dict) -> tuple[str, str, int, int]:
@@ -446,16 +486,24 @@ def _run_shared_checker(
 ) -> subprocess.CompletedProcess[str]:
     """Invoke Hermit's shared row checker without accepting partial output."""
     checker = Path(__file__).resolve().with_name("check-series-rows.rs")
+    # The checker compiles the current tool's Hermit dependency, which may use
+    # a different channel from an inherited historical measurement environment.
+    tool_hermit = checker.parents[2] / "hermit"
+    environment = dict(os.environ)
     try:
+        selected = rust_toolchain.selected_toolchain(tool_hermit, environment=environment)
+        environment["RUSTUP_TOOLCHAIN"] = selected
+        environment["RUSTUP_AUTO_INSTALL"] = "0"
         return subprocess.run(
-            [str(checker), *arguments],
+            ["rust-script", "--force", "--toolchain", selected, str(checker), *arguments],
             input=checker_input,
+            env=environment,
             capture_output=True,
             text=True,
             timeout=300,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired, UnicodeError) as error:
+    except (rust_toolchain.ToolchainRefused, OSError, subprocess.TimeoutExpired, UnicodeError) as error:
         raise SeriesError(f"cannot run the shared SeriesRow checker: {error}") from error
 
 
@@ -806,11 +854,19 @@ def append_cell_rows(parent: Any, path: Any, rows: Iterable[dict]) -> int:
     """Append projected cell rows once, refusing a changed repeated identity."""
     path = Path(path)
     checked = validate_rows(rows)
+    # Read the locally available immutable ledger ref before taking the spool
+    # lock. Publishing/fetching is separate from retaining a producer's result.
+    published = published_snapshot_at(
+        parent, "refs/remotes/origin/main", repository=LEDGER_REPOSITORY,
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     with series_spool_transition_lock(path.parent, exclusive=True):
         # Check both the live spool and published shards. Once a batch has been
         # published and its spool removed, re-emitting it must still be a no-op.
-        existing = union(store_paths(parent))
+        local = sorted(path.parent.glob("*.jsonl")) + sorted(
+            (path.parent / "published").glob("*.jsonl")
+        )
+        existing = union_events([*published.rows, *union(local)])
         known = {str(row.get("event_id", "")): row for row in existing}
         pending = []
         batch_ids = set()
@@ -843,8 +899,7 @@ def append_cell_rows(parent: Any, path: Any, rows: Iterable[dict]) -> int:
 
 def store_paths(parent: Any) -> list[Path]:
     """Every tracked, live, and published-but-not-yet-synced batch."""
-    parent = Path(parent)
-    tracked = sorted((parent / "series").glob("*/*/*.jsonl"))
+    tracked = sorted((ledger_root(parent) / "series").glob("*/*/*.jsonl"))
     spool = spool_dir(parent)
     live = sorted(spool.glob("*.jsonl"))
     retained = sorted((spool / "published").glob("*.jsonl"))
@@ -875,20 +930,31 @@ def refresh_origin_main(checkout: Any, repository: str) -> None:
 
 
 def published_snapshot(parent: Any) -> PublishedSnapshot:
-    """Fetch once, then read one resolved parent ``origin/main`` snapshot."""
-    parent = Path(parent)
-    refresh_origin_main(parent, "parent")
-    return published_snapshot_at(parent, "refs/remotes/origin/main")
+    """Fetch the ledger, then read one immutable published revision."""
+    root = ledger_root(parent)
+    refresh_origin_main(root, "cell ledger")
+    return published_snapshot_at(
+        parent, "refs/remotes/origin/main", repository=LEDGER_REPOSITORY,
+    )
 
 
-def published_snapshot_at(parent: Any, published_ref: str) -> PublishedSnapshot:
+def published_snapshot_at(
+    parent: Any, published_ref: str, *, repository: str = PARENT_REPOSITORY,
+) -> PublishedSnapshot:
     """Resolve ``published_ref`` once and read only that immutable commit.
 
     Every tree and blob lookup below uses the resolved 40-hex object id.  A
     concurrent fetch may move the caller's ref after resolution, but it cannot
     splice shards from two revisions into one reported snapshot.
     """
-    parent = Path(parent)
+    return _published_snapshot_at_repo(
+        published_repository(parent, repository), published_ref, repository=repository,
+    )
+
+
+def _published_snapshot_at_repo(
+    parent: Path, published_ref: str, *, repository: str,
+) -> PublishedSnapshot:
     resolved = _git(parent, [
         "--no-replace-objects", "rev-parse", "--verify", f"{published_ref}^{{commit}}",
     ])
@@ -928,7 +994,7 @@ def published_snapshot_at(parent: Any, published_ref: str) -> PublishedSnapshot:
                 f"parent {commit}:{relative}: final line has no newline terminator"
             )
         rows.extend(parse_line(line) for line in shown.stdout.splitlines() if line.strip())
-    return PublishedSnapshot(commit, union_events(validate_read_rows(rows)))
+    return PublishedSnapshot(commit, union_events(validate_read_rows(rows)), repository)
 
 
 def published_rows(parent: Any) -> list[dict]:
@@ -936,9 +1002,11 @@ def published_rows(parent: Any) -> list[dict]:
     return published_snapshot(parent).rows
 
 
-def published_rows_at(parent: Any, published_ref: str) -> list[dict]:
+def published_rows_at(
+    parent: Any, published_ref: str, *, repository: str = PARENT_REPOSITORY,
+) -> list[dict]:
     """Compatibility wrapper returning rows from one resolved revision."""
-    return published_snapshot_at(parent, published_ref).rows
+    return published_snapshot_at(parent, published_ref, repository=repository).rows
 
 
 def history_store_rows(parent: Any) -> list[dict]:
@@ -1669,7 +1737,7 @@ def _snapshot_source_generation(lock: _SeriesSpoolLock) -> tuple[Any, ...]:
 
 
 def _origin_main_commit(parent: Path) -> str:
-    """Bind the exact fetched parent origin/main commit."""
+    """Bind the exact fetched origin/main commit of the supplied repository."""
     origin_ref = "refs/remotes/origin/main"
     resolved = _git(parent, [
         "--no-replace-objects", "rev-parse", "--verify", f"{origin_ref}^{{commit}}",
@@ -1677,7 +1745,7 @@ def _origin_main_commit(parent: Path) -> str:
     commit = resolved.stdout.strip()
     if resolved.returncode != 0 or _SHA_RE.fullmatch(commit) is None:
         detail = resolved.stderr.strip() or resolved.stdout.strip() or "no output"
-        raise SeriesError(f"cannot bind parent origin/main for scorecard snapshot: {detail}")
+        raise SeriesError(f"cannot bind ledger origin/main for scorecard snapshot: {detail}")
     return commit
 
 
@@ -1685,13 +1753,16 @@ def _origin_main_commit(parent: Path) -> str:
 def _scorecard_projection_capture(parent: Any):
     """Build a snapshot while retaining every mutable source descriptor."""
     parent = Path(parent).resolve()
+    repository = ledger_root(parent)
     # Both network refreshes run outside the bounded writer lock. The snapshot
     # is usable only when the exact published ref and the independently
     # recomputed local source generation stay unchanged across capture.
-    refresh_origin_main(parent, "parent")
-    published_commit = _origin_main_commit(parent)
-    published = published_snapshot_at(parent, published_commit)
-    source_tree = _series_tree_at(parent, published.commit)
+    refresh_origin_main(repository, "cell ledger")
+    published_commit = _origin_main_commit(repository)
+    published = _published_snapshot_at_repo(
+        repository, published_commit, repository=LEDGER_REPOSITORY,
+    )
+    source_tree = _series_tree_at(repository, published.commit)
     with contextlib.ExitStack() as held_sources:
         with series_spool_transition_lock(
             spool_dir(parent), exclusive=False,
@@ -1710,11 +1781,11 @@ def _scorecard_projection_capture(parent: Any):
                     "series source generation changed during scorecard snapshot capture"
                 )
 
-        refresh_origin_main(parent, "parent")
-        refreshed_commit = _origin_main_commit(parent)
+        refresh_origin_main(repository, "cell ledger")
+        refreshed_commit = _origin_main_commit(repository)
         if refreshed_commit != published_commit:
             raise SeriesError(
-                "parent origin/main changed during scorecard snapshot capture: "
+                "ledger origin/main changed during scorecard snapshot capture: "
                 f"{published_commit} -> {refreshed_commit}"
             )
 
@@ -1737,6 +1808,7 @@ def _scorecard_projection_capture(parent: Any):
         snapshot = {
             "schema": SCORECARD_SNAPSHOT_SCHEMA,
             "source": {
+                "repository": LEDGER_REPOSITORY,
                 "path": SCORECARD_SNAPSHOT_SOURCE,
                 "commit": published.commit,
                 "tree": source_tree,
@@ -1808,10 +1880,15 @@ def _validate_snapshot_payload(
     }:
         raise SeriesError("scorecard snapshot has an invalid top-level shape")
     source = snapshot.get("source")
-    if not isinstance(source, dict) or set(source) != {
-        "path", "commit", "tree", "published_rows", "local_sources",
-    }:
+    required_source = {"path", "commit", "tree", "published_rows", "local_sources"}
+    if not isinstance(source, dict) or set(source) not in (
+        required_source, required_source | {"repository"},
+    ):
         raise SeriesError("scorecard snapshot has an invalid source identity")
+    if source.get("repository", PARENT_REPOSITORY) not in {
+        PARENT_REPOSITORY, LEDGER_REPOSITORY,
+    }:
+        raise SeriesError("scorecard snapshot names an unsupported repository")
     if (
         snapshot.get("schema") != SCORECARD_SNAPSHOT_SCHEMA
         or source.get("path") != SCORECARD_SNAPSHOT_SOURCE
@@ -4298,7 +4375,7 @@ def _cmd_history(argv: list[str]) -> int:
     represented = sum(int((row.get("series") or {}).get("num_runs", 1)) for row in rows)
     print(
         f"test={wanted_test} rows={len(rows)} runs={represented} "
-        "source=parent-origin-main+local-spool"
+        "source=test-ledger-origin-main+local-spool"
     )
     by_cell: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -4444,7 +4521,7 @@ def _usage(message: str) -> int:
         "  series.py snapshot --parent <root> --output <run-scoped.json>\n"
         "append validates complete series rows. append-cells converts typed harness\n"
         "results, compresses exact equal runs, and writes the UNPUBLISHED spool.\n"
-        "history freshly reads tracked shards from parent origin/main plus that local spool.\n"
+        "history freshly reads tracked shards from test-ledger origin/main plus that local spool.\n"
         "snapshot atomically writes that canonical union with immutable source identities;\n"
         "an unavailable source is refused and never replaced by stale tracked output.",
         file=sys.stderr,

@@ -30,6 +30,7 @@ from typing import Any, TextIO
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import git_env  # noqa: E402
+import rust_toolchain
 import qualifying_receipt
 import pane_owner
 import run_registry
@@ -389,6 +390,9 @@ HERMIT_MIN_CLEANUP_GRACE_SECONDS = 60
 # healthy range while making a multi-hour validate impossible.
 HERMIT_MAX_RUN_TIMEOUT_SECONDS = 4_200
 HERMIT_MAX_CHILD_DEADLINE_SECONDS = 4_800
+# The ordinary whole-run window must enclose quick.build's committed 3600s
+# node limit while leaving the existing cleanup reserve inside this ceiling.
+HERMIT_DEFAULT_CHILD_DEADLINE_SECONDS = 4_800
 
 CANONICAL_TERMINAL_VERDICTS = {"VALIDATED": 0, "FAILED": 3}
 CANONICAL_REMEASUREMENT_VERDICTS = frozenset(
@@ -573,6 +577,15 @@ TEARDOWN_ENTRY_POINT = "ci-hub/validate/start_unit.py"
 # part-way; too large only makes a waiter block longer, visibly, before the sweep
 # picks the tree up. Prefer the second.
 VALIDATE_TEARDOWN_TIMEOUT_SECONDS = 600
+
+# Hermit's parent command and Rust driver compile before the driver enters its
+# independently bounded DAG scope. The caller's service is a sibling and does
+# not contain these compilers. Bound this service from creation; the later DAG
+# scope retains its own aggregate CPU, outer memory, and per-step limits.
+HERMIT_SERVICE_STARTUP_RESERVE_SECONDS = 600
+HERMIT_SERVICE_CPU_QUOTA_PERCENT = 200
+HERMIT_SERVICE_MEMORY_MAX_BYTES = 8 * 1024**3
+HERMIT_SERVICE_TASKS_MAX = 4096
 
 # One registry query per sweep, including refusals. This bounds only lock
 # acquisition; the separate removal census keeps its existing budget.
@@ -2756,6 +2769,10 @@ def cleanup_recorded_checkout(
         return False, [], None
     if not checkout.exists():
         return False, [], None
+    if cell_ledger_attempted(record):
+        publish_recorded_scorecard_handoff(
+            root, record_path, record, checkout, unit, run=run, tool_root=tool_root,
+        )
     if checkout.parent == validate_checkout_parent(root) and wrkslots is None:
         wrkslots = recorded_wrkslots_identity(record, checkout)
         if wrkslots is None:
@@ -4418,14 +4435,40 @@ def build_systemd_command(
     framework_result: Path | None = None,
     unit_tool_prefix: Sequence[str] | None = None,
     teardown_tool_prefix: Sequence[str] | None = None,
+    driver_rust_toolchain: str | None = None,
+    measured_rust_toolchain: str | None = None,
 ) -> list[str]:
     state_root = root if state_root is None else state_root
     child_deadline = effective_child_deadline(repo, child_deadline)
+    service_resource_properties: list[str] = []
+    if repo == "rrnewton/hermit":
+        # RuntimeMax covers startup, admission wait, and the already-bounded
+        # child. ExecStopPost has the separate existing TimeoutStopSec reserve.
+        # Neither bound widens the child's deadline or any DAG/test budget.
+        service_resource_properties = [
+            "--property", f"CPUQuota={HERMIT_SERVICE_CPU_QUOTA_PERCENT}%",
+            "--property", f"MemoryMax={HERMIT_SERVICE_MEMORY_MAX_BYTES}",
+            "--property", "MemorySwapMax=0",
+            "--property", f"TasksMax={HERMIT_SERVICE_TASKS_MAX}",
+            "--property", (
+                f"RuntimeMaxSec={wait + child_deadline + HERMIT_SERVICE_STARTUP_RESERVE_SECONDS}"
+            ),
+        ]
     home = environment.get("HOME", "")
     path = environment.get("PATH", "")
     if not home or not path:
         raise ValueError("HOME and PATH must be set so cargo/rustup resolve inside the user unit")
     build_budget_env: list[str] = []
+    if measured_rust_toolchain is not None:
+        # rust-script invokes Cargo from its generated project directory, where
+        # Rustup cannot discover the measured checkout's toolchain file. Keep
+        # this measured selection in DAG children even with a current driver.
+        build_budget_env.extend(
+            [
+                "--setenv", f"RUSTUP_TOOLCHAIN={measured_rust_toolchain}",
+                "--setenv", "RUSTUP_AUTO_INSTALL=0",
+            ]
+        )
     for key in ("CARGO_BUILD_JOBS", "THIRD_PARTY_BUILD_JOBS"):
         value = environment.get(key)
         if value:
@@ -4505,6 +4548,8 @@ def build_systemd_command(
     if frozen_validate:
         if repo != "rrnewton/hermit":
             raise ValueError("frozen-validate currently supports only rrnewton/hermit")
+        if driver_rust_toolchain is None:
+            raise ValueError("frozen-validate requires the current driver toolchain")
         if frozen_result is None:
             raise ValueError("frozen-validate requires a durable non-canonical result path")
         build_budget_env.extend(
@@ -4584,7 +4629,7 @@ def build_systemd_command(
     else:
         # validate-lock's child deadline begins when this helper starts. Anchor
         # Hermit's monotonic deadline here, BEFORE with-proxy and rust-script can
-        # spend part of the enclosing 3600 seconds compiling the driver. Setting
+        # spend part of the enclosing child deadline compiling the driver. Setting
         # the epoch when start_unit builds the command would charge FIFO wait;
         # setting it inside validate.rs would fail to charge its own compilation.
         child.extend(
@@ -4600,6 +4645,7 @@ def build_systemd_command(
             child.extend(
                 [
                     "with-proxy",
+                    "rust-script", "--force", "--toolchain", driver_rust_toolchain,
                     str(root / "hermit/scripts/validate.rs"),
                     *(validate_args or ["full"]),
                 ]
@@ -4609,8 +4655,9 @@ def build_systemd_command(
                 [
                     "/bin/sh",
                     "-c",
-                    'exec with-proxy "$DEV_HERMIT_TOOL_ROOT/hermit/scripts/validate.rs" "$@"',
-                    "frozen-validate",
+                    'exec with-proxy rust-script --force --toolchain "$0" '
+                    '"$DEV_HERMIT_TOOL_ROOT/hermit/scripts/validate.rs" "$@"',
+                    driver_rust_toolchain,
                     *(validate_args or ["full"]),
                 ]
             )
@@ -4640,6 +4687,7 @@ def build_systemd_command(
         f"ci-hub full validation {repo} {target[:12]} ({agent})",
         "--working-directory",
         str(checkout),
+        *service_resource_properties,
         "--setenv",
         f"HOME={home}",
         "--setenv",
@@ -5170,91 +5218,14 @@ def write_scorecard_from_results(
     run: Runner,
     json_output: bool,
 ) -> list[dict[str, object]] | None:
-    """Run the locked writer and capture the exact generated file identities."""
-    source_checkout = source_checkout.resolve()
-    review_command = shlex.join(
-        ["git", "-C", str(source_checkout), "diff", "--", *SCORECARD_PATHS]
+    """Historical caller compatibility; history no longer mutates Hermit files."""
+    print(
+        "validate-run: local scorecard writeback is retired; publish the retained "
+        "results through ci-hub/series/mirror.py to hermit_test_ledger. "
+        "The canonical validation verdict is unchanged.",
+        file=sys.stderr,
     )
-    output = sys.stderr if json_output else sys.stdout
-
-    def failed(reason: str) -> None:
-        print(
-            "validate-run: compatibility scorecard NOT UPDATED: "
-            f"{reason}. The established validate verdict is unchanged.",
-            file=sys.stderr,
-        )
-        print(f"validate-run: review with: {review_command}", file=sys.stderr)
-        return None
-
-    try:
-        head = checked_output(
-            ["git", "-C", str(source_checkout), "rev-parse", "HEAD^{commit}"],
-            run=run,
-            purpose="cannot resolve source checkout HEAD before updating the compatibility scorecard",
-        )
-        if head != target:
-            return failed(
-                f"source checkout HEAD moved from validated target {target} to {head}"
-            )
-
-        tool = source_checkout / "ci/compat-envelope/scorecard.rs"
-        if not tool.is_file():
-            return failed(f"missing {tool}")
-
-        result = run(
-            [str(tool), "observe-results", "--results", str(results.resolve())],
-            cwd=source_checkout,
-            check=False,
-        )
-        if result.stdout:
-            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", file=output)
-        if result.stderr:
-            print(
-                result.stderr,
-                end="" if result.stderr.endswith("\n") else "\n",
-                file=sys.stderr,
-            )
-        if result.returncode != 0:
-            # CARRY THE REASON, NOT ONLY THE NUMBER. scorecard.rs maps EVERY
-            # Err to exit 2, so the status names no condition; the condition is
-            # only ever on stderr. Recording the code alone produced nine
-            # durable writeback failures all reading "refused with exit status:
-            # 2", and diagnosing the actual cause required reading the run log
-            # -- which is not a step the cleanup that consumes this record can
-            # take.
-            #
-            # ⚠️ RECORD THE TOOL'S OWN STDERR, WHOLE, RATHER THAN A LINE
-            # SELECTED OUT OF IT. An earlier version of this kept only the LAST
-            # line, which is wrong for the 12 of scorecard.rs's 201 error
-            # strings shaped "unknown <x> option `{arg}`\n\n{USAGE}": the
-            # sentence is FIRST and a 45-line usage block follows, so the last
-            # line records usage text as the reason -- plausible-looking and
-            # wrong, which is worse than the bare number it replaced. No
-            # selection is needed anyway: the tool has exactly ONE eprintln!,
-            # at scorecard.rs main(), and every progress line goes to stdout,
-            # so its stderr IS the refusal and nothing else. Recording it whole
-            # also keeps this the SAME sentence the program emits rather than a
-            # second description that can drift from it.
-            #
-            # Bounded because those usage blocks are long, and truncation is
-            # stated rather than silent so a reader knows to go to the log.
-            reason = (result.stderr or "").strip()
-            if len(reason) > SCORECARD_REASON_LIMIT:
-                reason = (
-                    reason[:SCORECARD_REASON_LIMIT]
-                    + f" [truncated at {SCORECARD_REASON_LIMIT} characters; full text on stderr]"
-                )
-            return failed(
-                f"observe-results exited {result.returncode}"
-                + (f": {reason}" if reason else "")
-            )
-        identities, _files = _scorecard_source_files(source_checkout)
-        print(f"validate-run: review with: {review_command}", file=output)
-        return identities
-    except Exception as error:
-        # The verdict exists already. Even an unexpected local filesystem or
-        # process-launch error must leave that result as the caller's exit code.
-        return failed(str(error))
+    return None
 
 
 def scorecard_handoff_path(root: Path, unit: str) -> Path:
@@ -5623,6 +5594,24 @@ def publish_recorded_scorecard_handoff(
         != "rrnewton/hermit"
     ):
         return None
+    if cell_ledger_attempted(record):
+        if not cell_ledger_published(record):
+            raise RuntimeError("cell ledger publication is incomplete; retain original results")
+        if not checkout.exists():
+            return None
+        identity = recorded_wrkslots_identity(record, checkout)
+        if identity is None:
+            raise RuntimeError("published validation checkout has no exact wrkslots identity")
+        require_live_scorecard_checkout(
+            root, checkout, str(record.get("target")), identity,
+            run=run, tool_root=tool_root, registration_status=registration_status,
+        )
+        authored = tree_disposition.authored_work(checkout, run=run)
+        if authored is None or any(authored):
+            raise RuntimeError("published validation checkout has authored work or unknown state; retained")
+        # History is in the immutable ledger commit. There is no new local
+        # scorecard file set to copy; older records retain their original path.
+        return None
     target = record.get("target")
     if not isinstance(target, str):
         raise RuntimeError("materialized scorecard handoff has no target commit")
@@ -5774,6 +5763,27 @@ def publish_recorded_scorecard_handoff(
 
 COMMIT_STATUS_PUBLICATION_SUCCEEDED = frozenset({"published", "unchanged"})
 LEDGER_MIRROR_SUCCEEDED = frozenset({"published", "unchanged"})
+CELL_LEDGER_REPOSITORY = "https://github.com/rrnewton/hermit_test_ledger.git"
+
+
+def cell_ledger_attempted(record: Mapping[str, Any]) -> bool:
+    value = record.get("ledger_mirror")
+    return isinstance(value, dict) and value.get("repository") == CELL_LEDGER_REPOSITORY
+
+
+def cell_ledger_published(record: Mapping[str, Any]) -> bool:
+    """New publication replaces local scorecard writeback, not old receipts."""
+    publication = record.get("ledger_mirror")
+    return (
+        isinstance(publication, dict)
+        and publication.get("repository") == CELL_LEDGER_REPOSITORY
+        and publication.get("state") in LEDGER_MIRROR_SUCCEEDED
+        and isinstance(publication.get("commit"), str)
+        and SHA_RE.fullmatch(publication["commit"]) is not None
+        and isinstance(publication.get("scorecard"), dict)
+        and publication["scorecard"].get("state") == "published"
+        and publication["scorecard"].get("hermit_commit") == record.get("target")
+    )
 
 
 def finalize_commit_status_publication(
@@ -6024,9 +6034,14 @@ def finalize_ledger_mirror(
     record: Mapping[str, Any],
     run: Runner,
 ) -> dict[str, Any]:
-    """Run the post-validation mirror without changing the validate result."""
-    existing = record.get("ledger_mirror")
-    if isinstance(existing, dict) and existing.get("state") in LEDGER_MIRROR_SUCCEEDED:
+    """Publish directly to the cell ledger after the validation verdict exists."""
+    if cell_ledger_published(record):
+        return dict(record)
+    # Historical reattachment reads its existing handoff. It must not turn an
+    # old/retired source checkout into a new publication observation.
+    if record.get("state") == "unknown" and record.get("service_result_schema") in {
+        service_result.WRITEBACK_SCHEMA_VERSION, service_result.SELECTION_SCHEMA_VERSION,
+    }:
         return dict(record)
     if canonical_repo(str(record.get("repo", "rrnewton/hermit"))) != "rrnewton/hermit":
         return dict(record)
@@ -6034,11 +6049,19 @@ def finalize_ledger_mirror(
     recorded_at = datetime.now(timezone.utc).isoformat()
     checkout_value = record.get("checkout") or record.get("source_checkout")
     target = record.get("target")
+    results = record.get("e2e_result_root")
+    unit = record.get("unit")
     if not all(isinstance(value, str) and value for value in (checkout_value, target)):
         outcome: dict[str, Any] = {
             "state": "failed",
             "recorded_at": recorded_at,
             "detail": "run handle omitted checkout or target",
+        }
+    elif isinstance(results, str) and results and not (isinstance(unit, str) and unit.strip()):
+        outcome = {
+            "state": "failed",
+            "recorded_at": recorded_at,
+            "detail": "finalized results omitted the canonical run unit; publication remains pending",
         }
     else:
         command = [
@@ -6051,6 +6074,11 @@ def finalize_ledger_mirror(
             "--target",
             str(target),
         ]
+        if isinstance(results, str) and results:
+            command.extend(["--results", results])
+            # The launcher sets E2E_RUN_ID to this exact unit. The publisher
+            # resolves the canonical row; the run record supplies no proof JSON.
+            command.extend(["--finalized-run-id", unit])
         try:
             result = run(command, cwd=root, check=False, timeout=1800)
         except (OSError, subprocess.SubprocessError) as error:
@@ -6063,8 +6091,12 @@ def finalize_ledger_mirror(
             try:
                 report = json.loads(result.stdout.strip().splitlines()[-1])
                 state = report["state"]
-                if result.returncode != 0 or state not in LEDGER_MIRROR_SUCCEEDED:
+                if state not in {*LEDGER_MIRROR_SUCCEEDED, "derived-failed"}:
                     raise ValueError(f"exit {result.returncode}, state {state!r}")
+                if result.returncode != (1 if state == "derived-failed" else 0):
+                    raise ValueError(f"exit {result.returncode}, state {state!r}")
+                if report.get("repository") != CELL_LEDGER_REPOSITORY:
+                    raise ValueError("publication did not name the cell ledger repository")
                 commit = report["commit"]
                 source_commit = report["source_commit"]
                 source_tree = report["source_tree"]
@@ -6087,7 +6119,14 @@ def finalize_ledger_mirror(
                     "source_commit": source_commit,
                     "source_tree": source_tree,
                     "rows": rows,
+                    "repository": report["repository"],
+                    "source_repository": report.get("source_repository"),
+                    "series_commit": report.get("series_commit"),
+                    "raw_publication": report.get("raw_publication"),
+                    "scorecard": report.get("scorecard"),
                 }
+                if state == "derived-failed":
+                    outcome["detail"] = report.get("scorecard", {}).get("error", "scorecard generation failed")
             except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                 detail = (result.stderr or result.stdout).strip()
                 if len(detail) > 4000:
@@ -6100,17 +6139,18 @@ def finalize_ledger_mirror(
 
     if outcome["state"] in LEDGER_MIRROR_SUCCEEDED:
         print(
-            "validate-run: LEDGER MIRROR "
+            "validate-run: CELL LEDGER "
             f"{str(outcome['state']).upper()} commit={outcome['commit']} "
             f"rows={outcome['rows']}",
             file=sys.stderr,
         )
     else:
         print(
-            "validate-run: LEDGER MIRROR FAILED: "
+            "validate-run: CELL LEDGER PUBLICATION INCOMPLETE: "
             f"{outcome['detail']}. The canonical validation verdict is unchanged.",
             file=sys.stderr,
         )
+    outcome["repository"] = CELL_LEDGER_REPOSITORY
     return bookkeep_record(
         record_path,
         base_record=record,
@@ -6315,41 +6355,14 @@ def retire_unit_after_writeback(
     )
 
     checkout = Path(raw_checkout)
-    scorecard_files = write_scorecard_from_results(
-        checkout,
-        str(target),
-        Path(str(results)),
-        run=run,
-        json_output=json_output,
-    )
-    if scorecard_files is None:
+    if not cell_ledger_published(record):
         print(
-            f"validate-run: RETIRE-REFUSED {unit}: the scorecard writeback did not "
-            "complete, so the checkout still holds the only copy of its results.",
+            f"validate-run: RETIRE-REFUSED {unit}: direct cell-ledger publication "
+            "is incomplete; original results and checkout are retained.",
             file=sys.stderr,
         )
         return EXIT_COULD_NOT_DETERMINE
-
-    handoff = handoff_scorecard_after_writeback(
-        root,
-        record_path,
-        checkout,
-        str(target),
-        unit,
-        writeback_completed=True,
-        expected_files=scorecard_files,
-        wrkslots=recorded_wrkslots_identity(record, checkout),
-        run=run,
-        tool_root=tool_root,
-    )
-    if handoff is None:
-        print(
-            f"validate-run: RETIRE-REFUSED {unit}: the writeback completed but its "
-            "handoff was not published, so the output is still only inside the "
-            "checkout.",
-            file=sys.stderr,
-        )
-        return EXIT_COULD_NOT_DETERMINE
+    handoff = f"{CELL_LEDGER_REPOSITORY}@{record['ledger_mirror']['commit']}"
 
     # THE SAME AUTHORISATION THE SWEEP APPLIES, because this path removes too and
     # must not become the way around it. A checkout holding uncommitted paths is
@@ -6526,7 +6539,12 @@ def attach(
         service_result.SELECTION_SCHEMA_VERSION,
     }
     handoff_recorded = recorded_handoff is not None
-    if handoff_required and handoff_recorded:
+    if cell_ledger_attempted(updated):
+        # The published ledger commit is the handoff. Do not rewrite or copy
+        # Hermit's catalogue as a second history destination.
+        scorecard_updated = cell_ledger_published(updated)
+        handoff_required = False
+    elif handoff_required and handoff_recorded:
         try:
             if historical_result:
                 scorecard_handoff = publish_recorded_scorecard_handoff(
@@ -6636,6 +6654,8 @@ def attach(
         run=run,
         tool_root=tool_root,
         retain_checkout_reason=(
+            "cell history publication is incomplete; retain original results for retry"
+            if cell_ledger_attempted(updated) and not scorecard_updated else
             "its scorecard output could not be handed off durably"
             if handoff_required and scorecard_handoff is None
             else None
@@ -6643,7 +6663,7 @@ def attach(
     )
     return (
         canonical_exit
-        if scorecard_updated or canonical_exit != EXIT_PASSED
+        if cell_ledger_attempted(updated) or scorecard_updated or canonical_exit != EXIT_PASSED
         else EXIT_COULD_NOT_DETERMINE
     )
 
@@ -6793,7 +6813,7 @@ def parser() -> argparse.ArgumentParser:
         "--child-deadline",
         type=int,
         help=(
-            "payload wall deadline (default: Hermit 3600s; Reverie 8000s). "
+            "payload wall deadline (default: Hermit 4800s; Reverie 8000s). "
             "Hermit requires more than 61s so its derived run timeout and "
             "cleanup grace both fit inside this bound; Hermit requests are capped "
             f"at {HERMIT_MAX_CHILD_DEADLINE_SECONDS}s and cannot raise the "
@@ -7050,7 +7070,7 @@ def main(
             "pass the pull-request NUMBER, e.g. --pr 2614, or omit --pr entirely",
         )
     requested_child_deadline = args.child_deadline or (
-        8000 if repo == "rrnewton/reverie" else 3600
+        8000 if repo == "rrnewton/reverie" else HERMIT_DEFAULT_CHILD_DEADLINE_SECONDS
     )
     child_deadline = effective_child_deadline(repo, requested_child_deadline)
     if child_deadline != requested_child_deadline:
@@ -7097,6 +7117,17 @@ def main(
     def remove_current_fresh_checkout() -> bool:
         if fresh_checkout is None or source_checkout is None:
             return True
+        if cleanup_record_path is not None:
+            record = run_registry.read_record(cleanup_record_path)
+            if cell_ledger_attempted(record):
+                try:
+                    publish_recorded_scorecard_handoff(
+                        state_root, cleanup_record_path, record, fresh_checkout, unit,
+                        run=run, tool_root=tool_root,
+                    )
+                except (OSError, RuntimeError, ValueError) as error:
+                    print(f"validate-run: completed checkout RETAINED: {error}", file=sys.stderr)
+                    return False
         return remove_fresh_checkout(
             source_checkout,
             fresh_checkout,
@@ -7226,6 +7257,24 @@ def main(
                 )
             checkout = fresh_checkout
         preflight(tool_root, checkout, args.target, repo=repo, run=run)
+        driver_rust_toolchain = None
+        driver_rust_toolchain_root = None
+        measured_rust_toolchain = None
+        if repo == "rrnewton/hermit":
+            measured_rust_toolchain = rust_toolchain.selected_toolchain(
+                checkout, environment=environment
+            )
+            # Frozen measurement intentionally executes the current tool's H
+            # driver; ordinary validation executes the measured checkout's.
+            driver_rust_toolchain_root = (
+                tool_root / "hermit" if args.frozen_validate else checkout
+            )
+            driver_rust_toolchain = (
+                rust_toolchain.selected_toolchain(
+                    driver_rust_toolchain_root, environment=environment
+                )
+                if args.frozen_validate else measured_rust_toolchain
+            )
         runtime_root = prepare_runtime_root(environment)
         private_cargo_home = prepare_private_cargo_home(
             state_root,
@@ -7305,6 +7354,8 @@ def main(
             framework_result=framework_result,
             unit_tool_prefix=service_tool_prefix,
             teardown_tool_prefix=service_teardown_prefix,
+            driver_rust_toolchain=driver_rust_toolchain,
+            measured_rust_toolchain=measured_rust_toolchain,
         )
         if args.dry_run:
             pane = None
@@ -7337,15 +7388,6 @@ def main(
                     "checkout": str(checkout),
                     "source_checkout": str(source_checkout),
                     "materialized_target": args.materialize_target,
-                    **(
-                        {
-                            "scorecard_handoff": str(
-                                scorecard_handoff_path(state_root, unit)
-                            )
-                        }
-                        if args.materialize_target and repo == "rrnewton/hermit"
-                        else {}
-                    ),
                     **({"branch": source_branch} if source_branch is not None else {}),
                     "temporary_checkout": fresh_checkout is not None,
                     **(
@@ -7386,6 +7428,21 @@ def main(
                 # A pane for a unit that has not launched can otherwise outlive
                 # a reservation refusal and manufacture an UNKNOWN result.
                 run_registry.reserve_log(log)
+                if driver_rust_toolchain is not None:
+                    with log.open("a", encoding="utf-8") as retained:
+                        print(
+                            "validate-run: Rust toolchain "
+                            f"{driver_rust_toolchain} selected from "
+                            f"{driver_rust_toolchain_root / 'rust-toolchain.toml'}",
+                            file=retained,
+                        )
+                        if args.frozen_validate:
+                            print(
+                                "validate-run: measured Rust toolchain "
+                                f"{measured_rust_toolchain} selected from "
+                                f"{checkout / 'rust-toolchain.toml'}",
+                                file=retained,
+                            )
                 run_registry.update_record(record_path, state="launching")
             except Exception as error:
                 detail = str(error)
@@ -7775,7 +7832,9 @@ def main(
         )
         print(f"  {row[:160]}")
     scorecard_files: list[dict[str, object]] | None = None
-    if repo != "rrnewton/hermit":
+    if cell_ledger_attempted(updated):
+        scorecard_updated = cell_ledger_published(updated)
+    elif repo != "rrnewton/hermit":
         scorecard_updated = True
     elif source_checkout is not None:
         scorecard_files = write_scorecard_from_results(
@@ -7799,6 +7858,7 @@ def main(
         args.materialize_target
         and repo == "rrnewton/hermit"
         and fresh_checkout is not None
+        and not cell_ledger_attempted(updated)
     )
     if handoff_required:
         scorecard_handoff = handoff_scorecard_after_writeback(
@@ -7826,7 +7886,9 @@ def main(
         scorecard_updated=scorecard_updated,
         run=run,
     )
-    if handoff_required and scorecard_handoff is None:
+    if (handoff_required and scorecard_handoff is None) or (
+        cell_ledger_attempted(updated) and not scorecard_updated
+    ):
         print(
             f"validate-run: materialized target checkout RETAINED at {fresh_checkout}; "
             "its scorecard output could not be handed off durably, so the checkout "
@@ -7838,14 +7900,15 @@ def main(
     # The normal completion path, and the one that matters most: without this the
     # per-run cargo home leaks on EVERY successful validate.
     remove_private_cargo_home(private_cargo_home, run=run)
-    remove_runtime_root(runtime_root, run=run)
+    if not cell_ledger_attempted(updated) or scorecard_updated:
+        remove_runtime_root(runtime_root, run=run)
     emit_report(
         {**updated, "event": "finished", "unit": f"{unit}.service"},
         json_output=args.json,
     )
     return (
         canonical_exit
-        if scorecard_updated or canonical_exit != EXIT_PASSED
+        if cell_ledger_attempted(updated) or scorecard_updated or canonical_exit != EXIT_PASSED
         else EXIT_COULD_NOT_DETERMINE
     )
 

@@ -1013,3 +1013,31 @@ footer {
     white-space: normal;
   }
 }
+
+.history-chart { width: 100%; min-width: 720px; height: auto; }
+.history-chart text { fill: currentColor; font-size: 16px; }
+.history-chart path { pointer-events: none; }
+.history-legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; }
+.history-legend span { white-space: nowrap; }
+
+/* Keep date/count labels readable on phones without widening the page. */
+.chart-scroll { overflow-x: auto; }
+.backend-leaderboard td:last-child { white-space: normal; min-width: 16rem; max-width: 28rem; }
+
+/* Keep words and short commits readable; the existing wrapper scrolls on mobile. */
+.table-scroll table.source-provenance {
+  min-width: 36rem;
+  width: 100%;
+}
+.source-provenance th,
+.source-provenance td {
+  overflow-wrap: normal;
+  white-space: normal;
+}
+.source-provenance code {
+  white-space: nowrap;
+}
+.source-provenance caption,
+.measurement-provenance caption {
+  white-space: normal;
+}

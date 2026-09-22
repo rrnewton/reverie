@@ -2928,103 +2928,178 @@ def _model_with_red_kvm_cell() -> tuple[Any, dict[str, Any]]:
     )
 
 
-def test_backend_leaderboard_uses_same_commit_ptrace_scheduler_turn_length() -> None:
+def test_backend_leaderboard_requires_typed_evidence_for_partial_credit() -> None:
     model, kvm = _model_with_red_kvm_cell()
-
-    rows = {row["backend"]: row for row in render_page._backend_rows(model)}
-    assert rows["kvm"] == {
-        "backend": "kvm",
-        "denominator": 1,
-        "excluded": 0,
-        "green": 0,
-        "green_percentage": 0.0,
-        "partial_percentage": 0.5,
-        "unavailable": 0,
-    }
+    # The existing coordinate estimate is retained on the raw detail page, but
+    # a legacy pressure failure is not silently upgraded to typed determinism.
+    assert render_page._red_cell_partial_credit(model, kvm)["value"] == 0.5
+    row = {item["backend"]: item for item in render_page._backend_rows(model)}["kvm"]
+    assert row["denominator"] == 1
+    assert row["failed"] == 1
+    assert row["determinism"]["percentage"] is None
+    assert row["parity"]["percentage"] is None
     source = render_page._backend_leaderboard(model)
-    assert "Green cells" in source
-    assert "Counting partial credit" in source
-    assert "0.0%" in source
-    assert "50.0%" in source
-    assert "same-commit ptrace execution" in source
-    assert [row["backend"] for row in render_page._backend_rows(model)] == [
-        "ptrace",
-        "kvm",
-    ]
-    no_score = {**copy.deepcopy(kvm), "backend": "liteinst", "mode": "run"}
-    no_score["cell"] = "tests/hello/run/liteinst"
-    ordered = render_page._backend_rows(replace(model, cells=(*model.cells, no_score)))
-    assert [row["backend"] for row in ordered] == ["ptrace", "kvm", "liteinst"]
+    for title in ("Determinism", "Det. w/partial", "Parity", "Parity w/partial"):
+        assert title in source
+    assert "0 / 1 cells" in source
+    assert "without determinism evidence" in source
 
-    wrong_commit_ptrace = copy.deepcopy(model.cell_by_id["tests/hello/verify/ptrace"])
-    wrong_commit_ptrace["latest_result_tree"] = "3" * 40
-    historical_reference_model = replace(
-        model,
-        cell_by_id={
-            **model.cell_by_id,
-            "tests/hello/verify/ptrace": wrong_commit_ptrace,
-        },
-    )
-    still_available = {
-        row["backend"]: row
-        for row in render_page._backend_rows(historical_reference_model)
-    }["kvm"]
-    assert still_available["partial_percentage"] == 0.5
 
-    unmatched = copy.deepcopy(kvm)
-    unmatched["latest_result_tree"] = "3" * 40
-    unmatched_current = copy.deepcopy(model.series_by_event["event-kvm-current"])
-    unmatched_current["series"]["tree"] = "3" * 40
-    unavailable_model = replace(
-        model,
-        cells=(model.cells[0], unmatched),
-        cell_by_id={
-            str(model.cells[0]["cell"]): model.cells[0],
-            str(unmatched["cell"]): unmatched,
-        },
-        series_by_cell={
-            **model.series_by_cell,
-            str(unmatched["cell"]): (
-                model.series_by_event["event-kvm-previous"],
-                unmatched_current,
-            ),
-        },
-        series_by_event={
-            **model.series_by_event,
-            "event-kvm-current": unmatched_current,
-        },
-    )
-    unavailable = {
-        row["backend"]: row for row in render_page._backend_rows(unavailable_model)
-    }["kvm"]
-    assert unavailable["green_percentage"] == 0.0
-    assert unavailable["partial_percentage"] is None
-    assert unavailable["unavailable"] == 1
+def _typed_kvm_model(*, matched: bool, parity: bool = False) -> tuple[Any, dict[str, Any]]:
+    model, kvm = _model_with_red_kvm_cell()
+    kvm = copy.deepcopy(kvm)
+    kvm.update(latest_result="pass" if matched else "product_failure", state="green" if matched else "red")
+    current = copy.deepcopy(model.series_by_event["event-kvm-current"])
+    current.update(producer="validate", product_result=kvm["latest_result"], run_id="validate-run-1")
+    current["series"].update(outcome="matched" if matched else "diverged", result=kvm["latest_result"])
+    reference = copy.deepcopy(model.event_run_references["event-1"])
+    kvm["selected_by"] = {reference["selection"]: [{"run_id": current["run_id"], "tree": current["series"]["tree"], "event_ids": [current["event_id"]]}]}
+    history = copy.deepcopy(model.history_rows[0])
+    recorded = copy.deepcopy(history["cell_results"]["recorded"]["cells"][0])
+    recorded["backend"] = "kvm"
+    recorded["cell_verdict"].update(state="compared-and-matched" if matched else "compared-and-diverged", bitwise_parity=matched)
+    if parity:
+        recorded.update(comparison_authority="selected-attempt-v1", ordinary_comparison="matched" if matched else "diverged", backend_parity={
+            "artifact_verified": True, "clean_match": True,
+            "summary": {"reference_backend": "ptrace", "record_envelope": "cross_backend_detcore_v1", "attempts": [{"cross": {"state": "matched"}}]},
+        })
+    history["cell_results"]["recorded"]["cells"].append(recorded)
+    return replace(model, cells=(model.cells[0], kvm),
+        cell_by_id={model.cells[0]["cell"]: model.cells[0], kvm["cell"]: kvm},
+        history_rows=(history,),
+        event_run_references={**model.event_run_references, current["event_id"]: reference},
+        series_by_cell={**model.series_by_cell, kvm["cell"]: (current,)},
+        series_by_event={**model.series_by_event, current["event_id"]: current},
+    ), kvm
 
-    no_reference_model = replace(
-        model,
-        cell_by_id={str(kvm["cell"]): kvm},
-        cells=(kvm,),
-    )
-    excluded = render_page._backend_rows(no_reference_model)[0]
-    assert excluded["denominator"] == 0
-    assert excluded["excluded"] == 1
-    assert excluded["green_percentage"] is None
-    assert excluded["partial_percentage"] is None
-    assert render_page._red_cell_partial_credit(no_reference_model, kvm) == {
-        "estimated": False,
-        "reason": "the matching test and mode are not green on ptrace",
-        "value": None,
-    }
 
-    native = {**copy.deepcopy(kvm), "backend": "native"}
-    native["cell"] = "tests/hello/verify/native"
-    e9patch = {**copy.deepcopy(kvm), "backend": "e9patch"}
-    e9patch["cell"] = "tests/hello/verify/e9patch"
-    without_non_backends = replace(model, cells=(*model.cells, native, e9patch))
-    assert {"native", "e9patch"}.isdisjoint(
-        row["backend"] for row in render_page._backend_rows(without_non_backends)
+def test_backend_common_reference_includes_missing_and_deduplicates() -> None:
+    model, kvm = _typed_kvm_model(matched=True)
+    ptrace = model.cells[0]
+    second = {**ptrace, "test": "tests/second", "cell": "tests/second/verify/ptrace"}
+    model = replace(model, cells=(*model.cells, second, copy.deepcopy(second)))
+    rows = {row["backend"]: row for row in render_page._backend_rows(model)}
+    assert rows["kvm"]["denominator"] == rows["ptrace"]["denominator"] == 2
+    assert rows["kvm"]["missing"] == 1
+    assert rows["kvm"]["determinism"]["full"] == 1
+    assert rows["kvm"]["determinism"]["percentage"] == 0.5
+    assert rows["kvm"]["parity"]["percentage"] is None
+
+
+@pytest.mark.parametrize("reference", ["absent", "failed", "unmeasured"])
+def test_backend_missing_reference_has_no_percentage(reference: str) -> None:
+    model, kvm = _typed_kvm_model(matched=True)
+    cells = [kvm]
+    if reference != "absent":
+        cells.append({**model.cells[0], "state": "red" if reference == "failed" else "never-measured", "latest_result": "product_failure" if reference == "failed" else None})
+    row = next(row for row in render_page._backend_rows(replace(model, cells=tuple(cells))) if row["backend"] == "kvm")
+    assert row["denominator"] == 0
+    for name in ("determinism", "parity"):
+        assert row[name]["percentage"] is None
+        assert row[name]["partial_percentage"] is None
+
+
+def test_backend_parity_is_not_repeat_bitwise_parity() -> None:
+    model, _ = _typed_kvm_model(matched=True, parity=True)
+    row = next(row for row in render_page._backend_rows(model) if row["backend"] == "kvm")
+    assert row["determinism"]["full"] == row["parity"]["full"] == 1
+    for field in ("comparison_authority", "backend_parity"):
+        history = copy.deepcopy(model.history_rows[0])
+        del history["cell_results"]["recorded"]["cells"][1][field]
+        row = next(row for row in render_page._backend_rows(replace(model, history_rows=(history,))) if row["backend"] == "kvm")
+        assert row["determinism"]["full"] == 1
+        assert row["parity"]["percentage"] is None
+
+
+def test_backend_typed_divergence_retains_same_anchor_partial_only() -> None:
+    model, kvm = _typed_kvm_model(matched=False)
+    row = next(row for row in render_page._backend_rows(model) if row["backend"] == "kvm")
+    assert row["failed"] == 1
+    assert row["determinism"]["percentage"] == 0
+    assert row["determinism"]["partial_percentage"] == 0.5
+    assert row["parity"]["partial_percentage"] is None
+    wrong = copy.deepcopy(model.series_by_cell[kvm["cell"]][0]);wrong["series"]["tree"] = "3" * 40
+    changed = replace(model, series_by_cell={**model.series_by_cell, kvm["cell"]: (wrong,)})
+    row = next(row for row in render_page._backend_rows(changed) if row["backend"] == "kvm")
+    assert row["determinism"]["percentage"] is None
+
+
+def _model_with_backend_history() -> Any:
+    model, kvm = _typed_kvm_model(matched=False)
+    failed = copy.deepcopy(model.series_by_event["event-kvm-current"])
+    earlier = copy.deepcopy(failed)
+    earlier.update(event_id="kvm-earlier", run_id="validate-earlier", emitted_at="2026-09-01T00:00:00Z", product_result="pass")
+    earlier["series"].update(outcome="matched", result="pass")
+    unavailable = copy.deepcopy(failed)
+    unavailable.update(event_id="kvm-missing", run_id="validate-missing", emitted_at="2026-09-03T00:00:00Z", product_result=None)
+    unavailable["series"].update(outcome="no_result", result=None)
+    old_history = copy.deepcopy(model.history_rows[0])
+    old_history.update(run_id="validate-earlier", history_row_sha256="7" * 64)
+    old_history["cell_results"]["recorded"]["cells"][1]["cell_verdict"].update(state="compared-and-matched", bitwise_parity=True)
+    earlier_path = "runs/earlier.html"
+    reference = {**model.event_run_references[failed["event_id"]], "run_id": "validate-earlier", "history_row_sha256": "7" * 64, "path": earlier_path}
+    kvm = copy.deepcopy(kvm)
+    kvm["selected_by"]["super"].append({"run_id": "validate-earlier", "tree": "1" * 40, "event_ids": [earlier["event_id"]]})
+    all_rows = (model.series_by_event["event-1"], earlier, failed, unavailable)
+    runs = {**model.runs, "validate_run_selection": {
+        **model.runs["validate_run_selection"],
+        **{row["event_id"]: {"path": "super", "selected": True} for row in (earlier, failed, unavailable)},
+    }}
+    model = replace(model, cells=(model.cells[0], kvm),
+        manifest_cell_ids=frozenset((model.cells[0]["cell"], kvm["cell"])),
+        cell_by_id={model.cells[0]["cell"]: model.cells[0], kvm["cell"]: kvm},
+        runs=runs, series_rows=all_rows,
+        series_by_cell={model.cells[0]["cell"]: (all_rows[0],), kvm["cell"]: (earlier, failed, unavailable)},
+        series_by_event={row["event_id"]: row for row in all_rows},
+        history_rows=(*model.history_rows, old_history), history_paths=(*model.history_paths, earlier_path),
+        event_run_references={**model.event_run_references, earlier["event_id"]: reference},
     )
+    return model
+
+
+def test_backend_history_preserves_regression_then_explicit_gap() -> None:
+    model = _model_with_backend_history()
+    points = {point["date"]: point for point in render_page._backend_history(model) if point["backend"] == "kvm"}
+    assert points["2026-09-01"]["determinism"]["green_cells"] == 1
+    assert points["2026-09-02"]["determinism"]["green_cells"] == 0
+    assert points["2026-09-03"]["determinism"]["green_cells"] is None
+    assert all(point["parity"]["green_cells"] is None for point in points.values())
+    assert all(point["reference_cells"] == 1 for point in points.values())
+    chart = render_page._backend_history_chart(model)
+    assert "kvm determinism" in chart and "kvm parity" in chart
+    assert 'stroke-dasharray="7 4"' in chart
+    assert "Green cells" in chart and "UTC" in chart
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_backend_history_hover_preserves_overlapping_observations(
+    chromium_browser: Any, width: int
+) -> None:
+    model = _model_with_backend_history()
+    css = render_page.SITE_CSS_PATH.read_text()
+    page = chromium_browser.new_page(viewport={"width": width, "height": 1000})
+    try:
+        page.set_content(
+            f"<style>{css}</style><main>"
+            + render_page._backend_history_chart(model)
+            + "</main>"
+        )
+        marker = page.locator('.history-chart circle[aria-label*="kvm determinism"]').first
+        marker.evaluate("element => element.addEventListener('mouseover', () => window.markerHovered = true)")
+        marker.hover()
+        assert "kvm determinism" in marker.locator("title").text_content()
+        assert page.evaluate("window.markerHovered")
+        assert marker.evaluate("element => { const r = element.getBoundingClientRect(); return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === element; }")
+        assert page.locator(".history-legend").inner_text().count("kvm") == 2
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        chart = page.locator(".history-chart")
+        assert chart.bounding_box()["width"] >= 640
+        assert chart.locator("text").first.evaluate("element => parseFloat(getComputedStyle(element).fontSize) * element.getScreenCTM().a") >= 12
+        if width < 640:
+            scroll = page.locator(".chart-scroll")
+            assert scroll.evaluate("element => element.scrollWidth > element.clientWidth")
+    finally:
+        page.close()
 
 
 def test_ptrace_scheduler_turn_length_weights_latest_passing_rows_by_num_runs() -> None:
@@ -4706,13 +4781,12 @@ def test_backend_position_derives_broad_and_leaderboard_populations() -> None:
 
     source = render_page._backend_snapshot_position(model)
 
-    assert "1 KVM Green cell out of 2 KVM cells with a result" in source
-    assert "1 LiteInst Green cell out of 1 LiteInst cell with a result" in source
-    assert "1 KVM result cell without a ptrace-Green reference excluded" in source
-    assert "1 LiteInst result cell without a ptrace-Green reference excluded" in source
-    assert "not changes since an earlier snapshot" in source
-    assert "not counts of cross-backend matches" in source
-    assert "missing records, extra records, and virtual-time differences" in source
+    assert "kvm: 1 recorded Green, 1 recorded failures" in source
+    assert "liteinst: 1 recorded Green, 0 recorded failures" in source
+    rows = {row["backend"]: row for row in render_page._backend_rows(model)}
+    assert rows["kvm"]["excluded"] == rows["liteinst"]["excluded"] == 1
+    assert rows["kvm"]["denominator"] == rows["liteinst"]["denominator"] == 1
+    assert "Green outcome alone does not establish either comparison" in source
 
 
 def test_cell_identity_heading_breaks_only_at_its_separators(
@@ -5048,3 +5122,92 @@ def test_recorded_evidence_order_is_total_so_the_build_stays_reproducible() -> N
     assert order(first) == order(second)
     keys = order(first)
     assert keys == sorted(keys, reverse=True)
+
+
+def _presentation(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "build_started_at": "2026-09-21T20:00:00Z",
+        "commits": [
+            {"repository": repo, "commit": commit, "committed_at": "2026-08-20T12:00:00Z"}
+            for repo, commit in render_page.presentation_commits(data)
+        ],
+    }
+
+
+def test_live_first_visitor_intro_and_dates_keep_measurements_separate() -> None:
+    data = representative_build_data()
+    original = copy.deepcopy(data)
+    source = render_page.render_site(_build(data), data, wording="live", presentation=_presentation(data))["index.html"].decode()
+    assert "Recorded data — source commits are on Overview" not in source
+    assert "A navigable view of the recorded facts in this build." not in source
+    assert "Hermit is a reproducible container for Linux programs" in source
+    assert "reference ptrace backend" in source
+    assert 'href="https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/"' in source
+    assert 'href="https://github.com/rrnewton/hermit/blob/main/README.md"' in source
+    assert "Website build started:" in source and "Sep 21, 2026" in source
+    assert "Latest selected measurement:" in source and "Aug 30, 2026" in source
+    assert "Latest history entry:" in source
+    assert "Aug 20, 2026" in source
+    assert "rebuilding this website does not rerun the tests" in source
+    assert f'>{data["provenance"]["hermit_commit"][:12]}</code>' in source
+    assert data == original
+
+
+def test_recorded_depth_is_not_invented_or_called_distance() -> None:
+    data = representative_build_data()
+    model = render_page._site_model(_build(data), data, wording="live")
+    assert "Not recorded consistently" in render_page._provenance(model)
+    row = model.series_rows[0]
+    row["series"]["depth"] = {"hermit": {"first_parent": 2491, "commits": 2566}}
+    source = render_page._provenance(model)
+    assert "<td>2,491</td><td>2,566</td>" in source
+    assert "A distance requires a verified ancestry relationship" in source
+    assert "First-parent depth" in source
+    assert "Website build started:</strong> Not recorded" in source
+
+
+@pytest.mark.parametrize("change", ["unknown-sha", "moving-ref", "foreign-repo", "duplicate", "extra-field", "naive-time"])
+def test_presentation_provenance_refuses_unbound_or_ambiguous_identity(change: str) -> None:
+    data = representative_build_data()
+    value = _presentation(data)
+    if change == "unknown-sha": value["commits"][0]["commit"] = "f" * 40
+    elif change == "moving-ref": value["commits"][0]["commit"] = "HEAD"
+    elif change == "foreign-repo": value["commits"][0]["repository"] = "other"
+    elif change == "duplicate": value["commits"].append(copy.deepcopy(value["commits"][0]))
+    elif change == "extra-field": value["claim"] = "fresh tests"
+    else: value["build_started_at"] = "2026-09-21T20:00:00"
+    with pytest.raises(render_page.RenderRefused):
+        render_page.render_site(_build(data), data, wording="live", presentation=value)
+
+
+def test_measurement_revision_order_uses_instants_including_fractional_utc() -> None:
+    data = representative_build_data()
+    model = render_page._site_model(_build(data), data, wording="live")
+    cells, rows_by_cell = [], {}
+    for index, timestamp in enumerate(("2026-09-12T20:31:07Z", "2026-09-12T20:31:07.5+00:00")):
+        row = copy.deepcopy(model.series_rows[0])
+        row["event_id"] = f"fractional-{index}"
+        row["emitted_at"] = timestamp
+        row["series"]["tree"] = str(index + 1) * 40
+        row["series"]["cell"] = f"tests/fractional-{index}/verify/ptrace"
+        cell = copy.deepcopy(model.cells[0])
+        cell.update(cell=row["series"]["cell"], latest_event_ids=[row["event_id"]],
+                    latest_result_time=timestamp, latest_result_tree=row["series"]["tree"])
+        cells.append(cell)
+        rows_by_cell[cell["cell"]] = (row,)
+    model = replace(model, cells=tuple(cells), series_by_cell=rows_by_cell)
+    text = render_page._provenance(model)
+    start = text.index('class="measurement-provenance"')
+    assert text.index('/commit/' + '2' * 40, start) < text.index('/commit/' + '1' * 40, start)
+
+
+def test_presentation_names_exact_cell_ledger_separately_from_generator() -> None:
+    data = representative_build_data()
+    canonical = data["provenance"]["canonical_input_provenance"]
+    canonical.update(series_commit="a" * 40, series_repository="https://github.com/rrnewton/hermit_test_ledger.git")
+    record = _presentation(data)
+    assert ("hermit_test_ledger", "a" * 40) in render_page.presentation_commits(data)
+    assert render_page.validate_presentation(record, data) == record
+    canonical["series_repository"] = "https://github.com/example/foreign.git"
+    with pytest.raises(render_page.RenderRefused, match="cell ledger repository"):
+        render_page.validate_presentation(record, data)

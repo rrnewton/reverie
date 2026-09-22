@@ -102,6 +102,11 @@ class LedgerMirrorRecord(TypedDict, total=False):
     source_tree: str
     rows: int
     detail: str
+    repository: str
+    source_repository: str
+    series_commit: str
+    raw_publication: dict[str, Any]
+    scorecard: dict[str, Any]
 
 
 class TerminationRequestRecord(TypedDict, total=False):
@@ -463,6 +468,9 @@ def _commit_status_publication(value: Any) -> None:
 def _ledger_mirror(value: Any) -> None:
     if not isinstance(value, dict):
         raise _error("ledger_mirror", "must be an object")
+    if "repository" in value:
+        _cell_ledger_publication(value)
+        return
     state = value.get("state")
     if state in {"published", "unchanged"}:
         required = {
@@ -493,6 +501,55 @@ def _ledger_mirror(value: Any) -> None:
     rows = value.get("rows")
     if not isinstance(rows, int) or isinstance(rows, bool) or rows < 0:
         raise _error("ledger_mirror.rows", "must be a nonnegative integer")
+
+
+def _cell_ledger_publication(value: dict[str, Any]) -> None:
+    """Extension of the historical mirror record, with explicit storage identity."""
+    repository = "https://github.com/rrnewton/hermit_test_ledger.git"
+    if value.get("repository") != repository:
+        raise _error("ledger_mirror.repository", "must name hermit_test_ledger")
+    if value.get("state") == "failed":
+        _ledger_mirror({key: item for key, item in value.items() if key != "repository"})
+        return
+    required = {
+        "state", "recorded_at", "repository", "commit", "source_commit", "source_tree",
+        "rows", "source_repository", "series_commit", "raw_publication", "scorecard",
+    }
+    if value.get("state") == "derived-failed":
+        required.add("detail")
+        _required_text(value, "detail")
+    if set(value) != required or value.get("source_repository") != repository:
+        raise _error("ledger_mirror", "direct publication has an invalid repository or field set")
+    legacy = {key: value[key] for key in (
+        "recorded_at", "commit", "source_commit", "source_tree", "rows"
+    )}
+    legacy["state"] = "published" if value["state"] == "derived-failed" else value["state"]
+    _ledger_mirror(legacy)
+    if value["series_commit"] != value["source_commit"]:
+        raise _error("ledger_mirror.series_commit", "must equal the named source commit")
+    if not isinstance(value["raw_publication"], dict):
+        raise _error("ledger_mirror.raw_publication", "must retain the publisher outcome")
+    scorecard = value["scorecard"]
+    expected = "failed" if value["state"] == "derived-failed" else "published"
+    if not isinstance(scorecard, dict) or scorecard.get("state") != expected:
+        raise _error("ledger_mirror.scorecard", f"must retain the {expected} scorecard outcome")
+    if expected == "published":
+        sha = scorecard.get("hermit_commit")
+        files = scorecard.get("files")
+        if (not isinstance(sha, str) or len(sha) != 40
+                or any(ch not in "0123456789abcdef" for ch in sha)):
+            raise _error("ledger_mirror.scorecard.hermit_commit", "must name the exact producer commit")
+        if not isinstance(files, dict) or set(files) != {"scorecard/SCORECARD.md", "scorecard/cells.json"}:
+            raise _error("ledger_mirror.scorecard.files", "must bind both generated files")
+        for digest in files.values():
+            if not isinstance(digest, str) or len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+                raise _error("ledger_mirror.scorecard.files", "must contain complete SHA-256 identities")
+        if "tool_hermit_commit" in scorecard:
+            tool = scorecard["tool_hermit_commit"]
+            if not isinstance(tool, str) or len(tool) != 40 or any(ch not in "0123456789abcdef" for ch in tool):
+                raise _error("ledger_mirror.scorecard.tool_hermit_commit", "must name the exact tool commit")
+    elif not isinstance(scorecard.get("error"), str) or not scorecard["error"].strip():
+        raise _error("ledger_mirror.scorecard.error", "must explain incomplete derived publication")
 
 
 def _required_text(value: Mapping[str, Any], field: str) -> str:

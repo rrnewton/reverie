@@ -309,8 +309,10 @@ fn project_manifest(manifest: ManifestMetadata) -> Result<Value, String> {
         cells,
         selected_by_full_custom_commands,
     } = manifest;
-    if schema != 1 {
-        return Err(format!("manifest metadata schema must be 1, got {schema}"));
+    // Schema 2 binds independently resolved CPU and wall limits. The typed
+    // CellMetadata decoder requires both; project_cell also refuses zero.
+    if schema != 2 {
+        return Err(format!("manifest metadata schema must be 2, got {schema}"));
     }
     if manifest_schema == 0 {
         return Err("manifest_schema must be positive".into());
@@ -740,8 +742,8 @@ fn project_history(
 
 fn history_exclusion_reasons(row: &HistoryRow) -> Result<Vec<String>, String> {
     let mut reasons = BTreeSet::new();
-    if !matches!(row.schema_version, Some(7 | 8)) {
-        reasons.insert("validation HistoryRow schema is not 7 or 8".to_owned());
+    if !matches!(row.schema_version, Some(7..=10)) {
+        reasons.insert("validation HistoryRow schema is not 7, 8, 9 or 10".to_owned());
     }
     if !row_is_hermit(row) {
         reasons.insert("validation HistoryRow is not a Hermit row".to_owned());
@@ -775,6 +777,9 @@ fn history_exclusion_reasons(row: &HistoryRow) -> Result<Vec<String>, String> {
             reasons.insert(format!(
                 "validation HistoryRow schema {schema} has no supported cell_results"
             ));
+        }
+        CellResultsForWebsite::Unavailable(reason) => {
+            reasons.insert(format!("validation cell evidence unavailable: {reason}"));
         }
     }
     Ok(reasons.into_iter().collect())
@@ -884,7 +889,8 @@ fn historical_source(
         CellResultsForWebsite::Complete(evidence) => evidence,
         CellResultsForWebsite::Absent
         | CellResultsForWebsite::Schema6WithoutLaterComparisonFields
-        | CellResultsForWebsite::UnsupportedSchema(_) => {
+        | CellResultsForWebsite::UnsupportedSchema(_)
+        | CellResultsForWebsite::Unavailable(_) => {
             return Err("historical selected row has no complete cell_results evidence".into());
         }
     };
@@ -1202,12 +1208,13 @@ fn project_history_cell_results(
         CellResultsForWebsite::Complete(evidence) => {
             public.insert(
                 "cell_results".into(),
-                project_cell_results(row, evidence.as_ref())?,
+                project_cell_results(row, evidence.as_ref(), evidence.modern.as_deref())?,
             );
         }
         CellResultsForWebsite::Absent
         | CellResultsForWebsite::Schema6WithoutLaterComparisonFields
-        | CellResultsForWebsite::UnsupportedSchema(_) => {
+        | CellResultsForWebsite::UnsupportedSchema(_)
+        | CellResultsForWebsite::Unavailable(_) => {
             return Err("admitted validation HistoryRow has incomplete cell_results".into());
         }
     }
@@ -1369,7 +1376,16 @@ fn project_gate(gate: &GateHistoryRow, raw: &Value, index: usize) -> Result<Valu
     Ok(Value::Object(public))
 }
 
-fn project_cell_results(row: &HistoryRow, evidence: &CellResultsEvidence) -> Result<Value, String> {
+fn project_cell_results(
+    row: &HistoryRow,
+    evidence: &CellResultsEvidence,
+    modern: Option<&crate::records::VerifiedValidationEvidenceV10>,
+) -> Result<Value, String> {
+    if (row.schema_version == Some(10)) != modern.is_some() {
+        return Err(
+            "website schema-10 projection requires its retained artifact verification".into(),
+        );
+    }
     let CellResultsEvidence {
         run_id,
         hermit_sha,
@@ -1392,10 +1408,54 @@ fn project_cell_results(row: &HistoryRow, evidence: &CellResultsEvidence) -> Res
         .iter()
         .map(project_identity)
         .collect::<Result<Vec<_>, _>>()?;
-    let cells = cells
+    let mut cells = cells
         .iter()
         .map(project_cell_result)
         .collect::<Result<Vec<_>, _>>()?;
+    if let Some(evidence) = modern {
+        // Preserve the exact verifier result used for this projection. Never
+        // reparse the row summary as authority or reopen a second artifact set.
+        for (public, cell) in cells.iter_mut().zip(&evidence.cell_results.cells) {
+            let observations = evidence
+                .observations
+                .iter()
+                .filter(|observation| {
+                    observation.identity == cell.identity()
+                        && observation.relation == crate::records::ComparisonRelationV10::Ordinary
+                })
+                .map(|observation| &observation.verdict)
+                .collect::<Vec<_>>();
+            let ordinary = if observations.iter().any(|verdict| {
+                matches!(
+                    verdict,
+                    crate::records::ComparisonObservationVerdictV10::Diverged
+                )
+            }) {
+                "diverged"
+            } else if !observations.is_empty()
+                && observations.iter().all(|verdict| {
+                    matches!(
+                        verdict,
+                        crate::records::ComparisonObservationVerdictV10::Matched
+                    )
+                })
+            {
+                "matched"
+            } else {
+                "unavailable"
+            };
+            public["comparison_authority"] = Value::String("selected-attempt-v1".into());
+            public["ordinary_comparison"] = Value::String(ordinary.into());
+            public["backend_parity"] = match &cell.backend_parity {
+                RequiredNullable::Null => Value::Null,
+                RequiredNullable::Value(parity) => serde_json::json!({
+                    "artifact_verified": true,
+                    "clean_match": parity.is_clean_match(),
+                    "summary": parity,
+                }),
+            };
+        }
+    }
     debug_assert_eq!(*selected_count as usize, selected.len());
     debug_assert_eq!(*recorded_count as usize, cells.len());
     Ok(serde_json::json!({
@@ -1767,7 +1827,7 @@ fn validate_history_selections(
     for (run_id, selection) in selections {
         let unknown = selection
             .selected_cells
-            .difference(&allowed_cells)
+            .difference(allowed_cells)
             .cloned()
             .collect::<Vec<_>>();
         if !unknown.is_empty() {
@@ -2593,7 +2653,7 @@ mod tests {
 
     fn manifest() -> Value {
         serde_json::json!({
-            "schema": 1,
+            "schema": 2,
             "manifest_schema": 3,
             "manifest_sha256": "a".repeat(64),
             "tests": [{
@@ -2635,6 +2695,55 @@ mod tests {
             }],
             "selected_by_full_custom_commands": [],
         })
+    }
+
+    #[test]
+    fn actual_manifest_metadata_preserves_separate_cpu_and_wall_limits() {
+        let hermit = std::path::Path::new(file!())
+            .parent()
+            .unwrap()
+            .join("../../hermit")
+            .canonicalize()
+            .unwrap();
+        let metadata = hermit_manifest_plan::manifest_metadata::build_export(&hermit).unwrap();
+        assert_eq!(metadata.schema, 2);
+        let encoded = serde_json::to_vec(&metadata).unwrap();
+        let result = project(&encoded, "", "", None, |_| {
+            panic!("empty history must not query ancestry")
+        })
+        .unwrap();
+        assert_eq!(
+            result["manifest"]["cells"].as_object().unwrap().len(),
+            metadata.cells.len()
+        );
+        assert!(!metadata.cells.is_empty());
+        for cell in &metadata.cells {
+            let identity = format!("{}/{}/{}", cell.test, cell.mode, cell.backend);
+            let projected = &result["manifest"]["cells"][&identity];
+            assert_eq!(projected["timeout_seconds"], cell.timeout_seconds);
+            assert_eq!(projected["cpu_timeout_seconds"], cell.cpu_timeout_seconds);
+        }
+
+        let mut distinct = manifest();
+        distinct["cells"][0]["timeout_seconds"] = Value::from(30);
+        distinct["cells"][0]["cpu_timeout_seconds"] = Value::from(7);
+        let result = project(&canonical_bytes(&distinct), "", "", None, |_| Ok(None)).unwrap();
+        let cell = &result["manifest"]["cells"]["fixture/test/verify/ptrace"];
+        assert_eq!(cell["timeout_seconds"], 30);
+        assert_eq!(cell["cpu_timeout_seconds"], 7);
+        for schema in [0, 1, 3] {
+            let mut invalid = distinct.clone();
+            invalid["schema"] = Value::from(schema);
+            assert!(project(&canonical_bytes(&invalid), "", "", None, |_| Ok(None)).is_err());
+        }
+        for field in ["timeout_seconds", "cpu_timeout_seconds"] {
+            let mut missing = distinct.clone();
+            missing["cells"][0].as_object_mut().unwrap().remove(field);
+            assert!(project(&canonical_bytes(&missing), "", "", None, |_| Ok(None)).is_err());
+            let mut zero = distinct.clone();
+            zero["cells"][0][field] = Value::from(0);
+            assert!(project(&canonical_bytes(&zero), "", "", None, |_| Ok(None)).is_err());
+        }
     }
 
     fn series(run_id: &str, tree: &str, event_id: &str) -> Value {
@@ -2746,6 +2855,77 @@ mod tests {
     }
 
     #[test]
+    fn website_schema10_projects_verified_operands_and_refuses_changed_artifacts() {
+        use crate::validation_evidence::{fixtures::Store, verify};
+        let store = Store::new();
+        let row = store.exact("selected-attempt-v1/matched");
+        let CellResultsForWebsite::Complete(evidence) =
+            failure_obligations::cell_results_for_website_with(&row, |row| verify(row, &store.0))
+                .unwrap()
+        else {
+            panic!("exact selected-attempt fixture must be admitted")
+        };
+        let public =
+            project_cell_results(&row, evidence.as_ref(), evidence.modern.as_deref()).unwrap();
+        let cell = &public["recorded"]["cells"][0];
+        assert_eq!(cell["comparison_authority"], "selected-attempt-v1");
+        assert_eq!(cell["ordinary_comparison"], "matched");
+        assert_eq!(cell["backend_parity"]["artifact_verified"], true);
+        assert_eq!(cell["backend_parity"]["clean_match"], true);
+        assert!(project_cell_results(&row, evidence.as_ref(), None).is_err());
+
+        let raw = serde_json::to_value(&row).unwrap();
+        let path = store
+            .0
+            .join(raw["cell_results"]["artifact"]["path"].as_str().unwrap());
+        std::fs::write(&path, b"changed operand bytes\n").unwrap();
+        assert!(matches!(
+            failure_obligations::cell_results_for_website_with(&row, |row| verify(row, &store.0))
+                .unwrap(),
+            CellResultsForWebsite::Unavailable(_)
+        ));
+        std::fs::remove_file(&path).unwrap();
+        assert!(matches!(
+            failure_obligations::cell_results_for_website_with(&row, |row| verify(row, &store.0))
+                .unwrap(),
+            CellResultsForWebsite::Unavailable(_)
+        ));
+        let legacy = store.exact("matched");
+        assert!(matches!(
+            failure_obligations::cell_results_for_website_with(&legacy, |row| verify(
+                row, &store.0
+            ))
+            .unwrap(),
+            CellResultsForWebsite::Unavailable(_)
+        ));
+    }
+
+    #[test]
+    fn website_schema9_retains_ordinary_evidence_without_inventing_backend_parity() {
+        let mut raw = history_row(8, "record-nine", "run-nine", &"c".repeat(40));
+        raw["schema_version"] = Value::from(9);
+        let row: HistoryRow = serde_json::from_value(raw).unwrap();
+        assert!(history_exclusion_reasons(&row).unwrap().is_empty());
+        let CellResultsForWebsite::Complete(evidence) =
+            failure_obligations::cell_results_for_website(&row).unwrap()
+        else {
+            panic!("schema nine ordinary evidence must remain readable")
+        };
+        let public =
+            project_cell_results(&row, evidence.as_ref(), evidence.modern.as_deref()).unwrap();
+        assert_eq!(
+            public["recorded"]["cells"][0]["cell_verdict"]["state"],
+            "compared-and-matched"
+        );
+        assert!(public["recorded"]["cells"][0]
+            .get("backend_parity")
+            .is_none());
+        assert!(public["recorded"]["cells"][0]
+            .get("comparison_authority")
+            .is_none());
+    }
+
+    #[test]
     fn history_admission_is_strict_and_exclusion_reasons_can_overlap() {
         let commit = "c".repeat(40);
         let admitted = history_row(7, "record-good", "run-good", &commit);
@@ -2767,7 +2947,7 @@ mod tests {
             .iter()
             .any(|((schema, reason), counts)| {
                 schema == "6"
-                    && reason == "validation HistoryRow schema is not 7 or 8"
+                    && reason == "validation HistoryRow schema is not 7, 8, 9 or 10"
                     && *counts == (1, 1)
             }));
         assert!(projected
@@ -3056,7 +3236,7 @@ mod tests {
         let error = project(
             &canonical_bytes(&manifest()),
             &jsonl(&[missing_reverie]),
-            &jsonl(&[complete_series.clone()]),
+            &jsonl(std::slice::from_ref(&complete_series)),
             Some(("record-eight", "run-eight")),
             |_| Ok(Some(true)),
         )

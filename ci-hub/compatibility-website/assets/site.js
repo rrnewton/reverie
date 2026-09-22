@@ -3147,11 +3147,12 @@
   function validateSummary(summary) {
     exactObject(
       summary,
-      ['cells', 'counts', 'custom_commands', 'omissions', 'projection_audit', 'provenance', 'raw_artifacts', 'recorded_outside_manifest', 'runs', 'schema_version', 'tests'],
+      ['backend_history', 'cells', 'counts', 'custom_commands', 'omissions', 'projection_audit', 'provenance', 'raw_artifacts', 'recorded_outside_manifest', 'runs', 'schema_version', 'tests'],
       'site summary',
     );
     if (
       summary.schema_version !== 1 ||
+      !Array.isArray(summary.backend_history) ||
       !Array.isArray(summary.cells) ||
       !Array.isArray(summary.tests) ||
       !Array.isArray(summary.runs) ||

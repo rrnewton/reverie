@@ -1470,6 +1470,37 @@ mod tests {
         let mut r = clean_full_pass(PASS_SHA);
         r.profile = Some("quick".into());
         assert_eq!(assess(&[r], PASS_SHA).verdict, Verdict::NotValidated);
+
+        // Canonical selected-package receipts may retain real schema-10
+        // evidence without acquiring full-profile or full-selection authority.
+        // Exercise the coverage guard directly: this old fixture does not
+        // contain schema-10 proof artifacts, so assess alone could refuse for
+        // an unrelated reason after changing its version.
+        assert!(is_clean_full_coverage(&clean_full_pass(PASS_SHA), PASS_SHA));
+        for profile in [
+            "only-quick",
+            "only-full",
+            "only-portable",
+            "only-hosted-portable",
+        ] {
+            for selection in ["only", "full"] {
+                let mut selected = clean_full_pass(PASS_SHA);
+                selected.schema_version = Some(10);
+                selected.profile = Some(profile.into());
+                selected.selection_mode = Some(selection.into());
+                assert!(
+                    !is_clean_full_coverage(&selected, PASS_SHA),
+                    "{profile}/{selection}"
+                );
+                let assessed = assess(&[selected], PASS_SHA);
+                assert_eq!(
+                    assessed.verdict,
+                    Verdict::NotValidated,
+                    "{profile}/{selection}"
+                );
+                assert!(assessed.qualifying.is_empty(), "{profile}/{selection}");
+            }
+        }
     }
 
     #[test]

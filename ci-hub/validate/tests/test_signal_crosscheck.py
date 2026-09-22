@@ -118,6 +118,47 @@ def current_service_result(**updates: object) -> dict[str, object]:
 
 
 class SignalCrosscheckTests(unittest.TestCase):
+    def test_catalogue_history_uses_named_ledger_commit_and_refuses_missing_population(self):
+        url = signal_crosscheck.canonical_series.LEDGER_REPOSITORY
+        identity = {"lane": "portable", "category": "c-programs", "test": "c-programs/hello",
+                    "mode": "verify", "backend": "ptrace", "status": "green"}
+        catalogue = {"schema": 9, "history": {"repository": url, "path": "scorecard/cells.json"},
+                     "cells": [identity]}
+        detailed = {"schema": 8, "cells": [{**identity, "observations": [{"preserved": True}],
+                                            "measurement": "measured-and-passed"}]}
+        snapshot = signal_crosscheck.canonical_series.PublishedSnapshot("b" * 40, [], repository=url)
+        calls = []
+        def read(repo, *args):
+            calls.append((repo, args))
+            if repo == Path("hermit"):
+                return json.dumps(catalogue)
+            self.assertEqual(Path("ledger"), repo)
+            self.assertTrue(args[-1].startswith("b" * 40 + ":scorecard/"))
+            return json.dumps(detailed) if args[-1].endswith("cells.json") else "published table"
+        with mock.patch.object(signal_crosscheck, "git_text", side_effect=read), mock.patch.object(
+                signal_crosscheck.canonical_series, "ledger_root", return_value=Path("ledger")):
+            cells, markdown, source = signal_crosscheck._scorecard_documents(
+                Path("parent"), Path("hermit"), "a" * 40, snapshot)
+            self.assertEqual(detailed, cells)
+            self.assertEqual("published table", markdown)
+            self.assertEqual("b" * 40, source["commit"])
+            self.assertFalse(any(repo == Path("hermit") and args[-1].endswith("SCORECARD.md") for repo, args in calls))
+            detailed["cells"] = []
+            with self.assertRaisesRegex(signal_crosscheck.CrosscheckError, "differs"):
+                signal_crosscheck._scorecard_documents(Path("parent"), Path("hermit"), "a" * 40, snapshot)
+            # A fresh projection may legitimately replace the current catalogue
+            # population. Newly selected cells have no invented measurements.
+            added = {**identity, "test": "c-programs/new-test"}
+            catalogue["cells"] = [added]
+            detailed["cells"] = [{**added, "observations": [], "measurement": "unmeasured"}]
+            fresh, _, _ = signal_crosscheck._scorecard_documents(
+                Path("parent"), Path("hermit"), "a" * 40, snapshot)
+            self.assertEqual([], fresh["cells"][0]["observations"])
+            self.assertEqual("unmeasured", fresh["cells"][0]["measurement"])
+            catalogue["history"]["repository"] = "https://example.invalid/foreign"
+            with self.assertRaisesRegex(signal_crosscheck.CrosscheckError, "unsupported"):
+                signal_crosscheck._scorecard_documents(Path("parent"), Path("hermit"), "a" * 40, snapshot)
+
     def test_scorecard_population_wording_refuses_ambiguous_or_malformed_forms(
         self,
     ) -> None:
@@ -1198,7 +1239,7 @@ class SignalCrosscheckTests(unittest.TestCase):
                 mock.patch.object(
                     signal_crosscheck.canonical_series,
                     "published_snapshot_at",
-                    side_effect=lambda _root, revision: (
+                    side_effect=lambda _root, revision, **kwargs: (
                         signal_crosscheck.canonical_series.PublishedSnapshot(
                             revision, series_rows
                         )

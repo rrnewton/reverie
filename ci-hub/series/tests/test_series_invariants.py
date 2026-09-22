@@ -698,6 +698,38 @@ class RowLinter(unittest.TestCase):
                 series.validate_row(row(series=payload))
 
 
+class SharedCheckerToolchain(unittest.TestCase):
+    def test_checker_uses_its_tool_dependency_channel_not_inherited_measurement(self):
+        selected = "nightly-2026-07-12-x86_64-unknown-linux-gnu"
+        checker = Path(series.__file__).resolve().with_name("check-series-rows.rs")
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.dict(os.environ, {"RUSTUP_TOOLCHAIN": "nightly-2025-01-01", "RUSTUP_AUTO_INSTALL": "1"}), \
+             mock.patch.object(series.rust_toolchain, "selected_toolchain", return_value=selected) as resolve, \
+             mock.patch.object(series.subprocess, "run", return_value=completed) as run:
+            result = series._run_shared_checker("immutable input\n", ["--read"])
+            self.assertEqual(os.environ["RUSTUP_TOOLCHAIN"], "nightly-2025-01-01")
+            self.assertEqual(os.environ["RUSTUP_AUTO_INSTALL"], "1")
+        self.assertIs(result, completed)
+        self.assertEqual(resolve.call_args.args, (checker.parents[2] / "hermit",))
+        self.assertEqual(run.call_args.args[0], [
+            "rust-script", "--force", "--toolchain", selected, str(checker), "--read",
+        ])
+        self.assertEqual(run.call_args.kwargs["input"], "immutable input\n")
+        self.assertEqual(run.call_args.kwargs["env"]["RUSTUP_TOOLCHAIN"], selected)
+        self.assertEqual(run.call_args.kwargs["env"]["RUSTUP_AUTO_INSTALL"], "0")
+        self.assertEqual(run.call_args.kwargs["timeout"], 300)
+        self.assertFalse(run.call_args.kwargs["check"])
+
+    def test_unavailable_tool_dependency_compiler_refuses_before_checker(self):
+        with mock.patch.object(
+            series.rust_toolchain, "selected_toolchain",
+            side_effect=series.rust_toolchain.ToolchainRefused("declared compiler unavailable"),
+        ), mock.patch.object(series.subprocess, "run") as run:
+            with self.assertRaisesRegex(series.SeriesError, "declared compiler unavailable"):
+                series._run_shared_checker("immutable input\n", ["--projection-results"])
+        run.assert_not_called()
+
+
 class ProjectionResultsReader(unittest.TestCase):
     @staticmethod
     def _legacy(event_id="legacy"):
@@ -1018,6 +1050,11 @@ class StoreMechanics(unittest.TestCase):
 
 
 class Publication(unittest.TestCase):
+    def setUp(self):
+        # These existing fixtures are the selected history repository. Identity
+        # routing across distinct repos is covered by test_mirror.py.
+        self.enterContext(mock.patch.object(series, "ledger_root", side_effect=lambda parent: Path(parent)))
+
     def _git(self, repo, *args):
         return subprocess.run(
             ["git", "-C", str(repo), *args],
@@ -1094,7 +1131,7 @@ class Publication(unittest.TestCase):
             with contextlib.redirect_stdout(stdout):
                 rc = series.main(["history", "--parent", str(reader), "--test", test])
             self.assertEqual(rc, 0)
-            self.assertIn("rows=1 runs=1 source=parent-origin-main+local-spool", stdout.getvalue())
+            self.assertIn("rows=1 runs=1 source=test-ledger-origin-main+local-spool", stdout.getvalue())
             self.assertEqual(
                 self._git(reader, "rev-parse", "HEAD"),
                 reader_head,
@@ -1222,9 +1259,9 @@ class Publication(unittest.TestCase):
             ) as snapshot_at:
                 actual = series.published_snapshot(Path("/parent"))
         self.assertIs(actual, expected)
-        refresh.assert_called_once_with(Path("/parent"), "parent")
+        refresh.assert_called_once_with(Path("/parent"), "cell ledger")
         snapshot_at.assert_called_once_with(
-            Path("/parent"), "refs/remotes/origin/main"
+            Path("/parent"), "refs/remotes/origin/main", repository=series.LEDGER_REPOSITORY
         )
 
     def test_series_publication_refuses_a_row_the_series_linter_rejects(self):
@@ -1282,11 +1319,10 @@ class Publication(unittest.TestCase):
                 attribution="test attribution",
             )
         command = run.call_args.args[0]
-        self.assertEqual(command[command.index("--store") + 1], "series")
-        self.assertEqual(
-            command[command.index("--spool-dir") + 1],
-            "/producer/ignored/ci-hub/series-spool",
-        )
+        self.assertTrue(command[1].endswith("ci-hub/series/mirror.py"))
+        self.assertIn("--publish-only", command)
+        self.assertEqual(command[command.index("--parent") + 1], "/producer")
+        self.assertNotIn("--writer", command)
         self.assertEqual(report["store"], "series")
         self.assertEqual(report["published"], 1)
 
@@ -1296,6 +1332,7 @@ class ScorecardProjectionSnapshot(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.repo = Path(self.temporary.name) / "parent"
+        self.enterContext(mock.patch.object(series, "ledger_root", return_value=self.repo))
         subprocess.run(
             ["git", "init", "-q", "-b", "main", str(self.repo)], check=True
         )
@@ -2373,6 +2410,16 @@ class CellResultProjection(unittest.TestCase):
         # The linked-worktree case below still exercises real common-dir lookup.
         subprocess.run(["git", "init", "-q", str(self.parent)], check=True)
         self.assertEqual(series.spool_dir(self.parent), self.parent / "ignored/ci-hub/series-spool")
+        (self.parent / ".gitmodules").write_text(
+            '[submodule "hermit_test_ledger"]\n path = hermit_test_ledger\n'
+            f' url = {series.LEDGER_REPOSITORY}\n')
+        (self.parent / ".gitignore").write_text("hermit_test_ledger/\nignored/\n")
+        ledger = self.parent / "hermit_test_ledger"
+        subprocess.run(["git", "init", "-q", str(ledger)], check=True)
+        subprocess.run(["git", "-C", str(ledger), "-c", "user.name=t", "-c", "user.email=t@invalid",
+                        "commit", "--allow-empty", "-qm", "empty published fixture"], check=True)
+        subprocess.run(["git", "-C", str(ledger), "remote", "add", "origin", series.LEDGER_REPOSITORY], check=True)
+        subprocess.run(["git", "-C", str(ledger), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
         self.repo = self.parent / "hermit"
         self.repo.mkdir()
         subprocess.run(["git", "-C", str(self.repo), "init", "-q"], check=True)
@@ -4506,9 +4553,18 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(len(files[0].read_text().splitlines()), 2)
         self.assertEqual(series.union(files), stored)
 
-        tracked = self.parent / "series/hermit/host/2026-08.jsonl"
+        ledger = self.parent / "hermit_test_ledger"
+        tracked = ledger / "series/hermit/host/2026-08.jsonl"
         tracked.parent.mkdir(parents=True)
         files[0].replace(tracked)
+        subprocess.run(["git", "-C", str(ledger), "add", "series"], check=True)
+        subprocess.run([
+            "git", "-C", str(ledger), "-c", "user.name=t", "-c", "user.email=t@invalid",
+            "commit", "-qm", "publish original batch",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(ledger), "update-ref", "refs/remotes/origin/main", "HEAD",
+        ], check=True)
         stdin = io.StringIO(
             "\n".join(json.dumps(self._cell(i)) for i in range(2)) + "\n"
         )
@@ -4815,6 +4871,9 @@ class CellResultProjection(unittest.TestCase):
 
 class HistoryCli(unittest.TestCase):
     TEST = "applications/git-repository-workflow"
+
+    def setUp(self):
+        self.enterContext(mock.patch.object(series, "ledger_root", side_effect=lambda parent: Path(parent)))
 
     def _git(self, repo, *args):
         return subprocess.run(

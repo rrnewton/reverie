@@ -51,6 +51,13 @@ def repository(tmp_path: Path, name: str) -> tuple[Path, str]:
 def make_checkouts(tmp_path: Path) -> tuple[Path, str, Path, str]:
     parent, parent_commit = repository(tmp_path, "parent")
     hermit, hermit_commit = repository(tmp_path, "hermit")
+    (hermit / "rust-toolchain.toml").write_bytes(
+        (REPOSITORY / "hermit/rust-toolchain.toml").read_bytes()
+    )
+    git(hermit, "add", "rust-toolchain.toml")
+    git(hermit, "commit", "-m", "bind the selected Hermit toolchain")
+    hermit_commit = git(hermit, "rev-parse", "HEAD")
+    git(hermit, "update-ref", "refs/remotes/origin/main", hermit_commit)
     return parent, parent_commit, hermit, hermit_commit
 
 
@@ -58,7 +65,7 @@ def manifest_metadata(*cells: str) -> dict[str, Any]:
     cells = cells or (CELL,)
     test_ids = sorted({cell.rsplit("/", 2)[0] for cell in cells})
     return {
-        "schema": 1,
+        "schema": 2,
         "manifest_schema": 3,
         "manifest_sha256": "a" * 64,
         "tests": [
@@ -794,6 +801,7 @@ def test_build_packages_one_rust_projection_without_source_interpretation(
     assert calls == 1
     assert result["counts"]["in_manifest_cell_count"] == 1
     assert result["runs"]["series_physical_row_count"] == 1
+    assert result["provenance"]["manifest_metadata_schema"] == 2
     keys: set[str] = set()
     stack: list[Any] = [result]
     while stack:
@@ -1180,6 +1188,20 @@ def test_historical_build_binds_distinct_ledger_manifest_and_measured_commits(
     }
 
 
+def test_new_metadata_provenance_refuses_legacy_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent, parent_commit, hermit, hermit_commit = make_checkouts(tmp_path)
+    canonical = canonical_input(parent_commit, [])
+    manifest = manifest_metadata()
+    manifest["schema"] = 1
+    # Even an already-constructed projection cannot relabel legacy metadata
+    # as a newly produced schema-2 artifact.
+    install_inputs(monkeypatch, canonical, manifest)
+    with pytest.raises(build_data.BuildRefused, match="new manifest metadata must use schema 2"):
+        build_data.build_data(parent, parent_commit, hermit, hermit_commit, hermit_commit)
+
+
 def test_live_provenance_refuses_reader_hermit_mismatch() -> None:
     canonical = canonical_input("1" * 40, [])
     canonical["provenance"]["reader_hermit"]["gitlink_commit"] = "3" * 40
@@ -1422,6 +1444,7 @@ def test_manifest_metadata_refuses_nonzero_and_success_stderr(
     result: subprocess.CompletedProcess[bytes],
     message: str,
 ) -> None:
+    monkeypatch.setattr(build_data, "_hermit_toolchain", lambda *_args: "fixture-toolchain")
     monkeypatch.setattr(build_data, "_capture", lambda *_args, **_kwargs: result)
 
     with pytest.raises(build_data.BuildRefused, match=message):
@@ -1443,6 +1466,7 @@ def test_projection_refuses_invalid_json_framing(
     stdout: bytes,
     message: str,
 ) -> None:
+    monkeypatch.setattr(build_data, "_hermit_toolchain", lambda *_args: "fixture-toolchain")
     canonical = {
         key: value
         for key, value in canonical_input("1" * 40, []).items()
@@ -1492,6 +1516,7 @@ def test_projection_refuses_nonzero_and_success_stderr(
     result: subprocess.CompletedProcess[bytes],
     message: str,
 ) -> None:
+    monkeypatch.setattr(build_data, "_hermit_toolchain", lambda *_args: "fixture-toolchain")
     canonical = {
         key: value
         for key, value in canonical_input("1" * 40, []).items()
@@ -1518,6 +1543,7 @@ def test_projection_refuses_nonzero_and_success_stderr(
 def test_projection_maps_live_output_cap_to_a_build_refusal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(build_data, "_hermit_toolchain", lambda *_args: "fixture-toolchain")
     canonical = {
         key: value
         for key, value in canonical_input("1" * 40, []).items()
@@ -1538,6 +1564,69 @@ def test_projection_maps_live_output_cap_to_a_build_refusal(
             "2" * 40,
             None,
         )
+
+
+def test_projection_carries_measured_hermit_toolchain_and_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hermit = tmp_path / "measured-hermit"
+    state = tmp_path / "canonical-state"
+    monkeypatch.setenv("RUSTUP_TOOLCHAIN", "unrelated-ambient-stable")
+    selected = "nightly-2099-01-01-x86_64-unknown-linux-gnu"
+    calls = []
+
+    def resolve(checkout, *, environment):
+        assert checkout == hermit
+        calls.append("resolve")
+        return selected
+
+    class ProjectionReached(Exception):
+        pass
+
+    def project(command, *, cwd, environment):
+        assert calls == ["resolve"]
+        assert command[:5] == ["rust-script", "--force", "--toolchain", selected, str(build_data.PROJECTION_COMMAND)]
+        assert cwd == hermit
+        assert environment["RUSTUP_TOOLCHAIN"] == selected
+        assert environment["RUSTUP_AUTO_INSTALL"] == "0"
+        assert environment["DEV_HERMIT_PARENT"] == str(state.resolve())
+        raise ProjectionReached
+
+    monkeypatch.setattr(build_data._modules().rust_toolchain, "selected_toolchain", resolve)
+    monkeypatch.setattr(build_data, "_bounded_projection_process", project)
+    canonical = {key: value for key, value in canonical_input("1" * 40, []).items()
+                 if not key.startswith("_fixture_")}
+    with pytest.raises(ProjectionReached):
+        build_data._run_projection(
+            captured(manifest_metadata()), captured(canonical),
+            hermit, "2" * 40, None, state_root=state,
+        )
+
+
+def test_manifest_metadata_carries_declared_toolchain(tmp_path, monkeypatch):
+    selected = "nightly-2099-01-01-x86_64-unknown-linux-gnu"
+    monkeypatch.setenv("RUSTUP_TOOLCHAIN", "unrelated-stable")
+    mutable_target = tmp_path / "state-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(mutable_target))
+    monkeypatch.setattr(build_data, "_hermit_toolchain", lambda *_args: selected)
+    def capture_command(command, *, cwd, env, **_bounds):
+        assert cwd == tmp_path and command[:2] == ["cargo", "run"]
+        assert env["RUSTUP_TOOLCHAIN"] == selected
+        assert env["RUSTUP_AUTO_INSTALL"] == "0"
+        assert env["CARGO_TARGET_DIR"] == str(mutable_target)
+        return subprocess.CompletedProcess(command, 0, build_data._canonical_bytes(manifest_metadata()) + b"\n", b"")
+    monkeypatch.setattr(build_data, "_capture", capture_command)
+    assert build_data._run_manifest_metadata(tmp_path).value["schema"] == 2
+
+
+def test_selected_hermit_toolchain_refusal_prevents_compilation(tmp_path, monkeypatch):
+    resolver = build_data._modules().rust_toolchain
+    def refuse(*_args, **_kwargs):
+        raise resolver.ToolchainRefused("required compiler unavailable")
+    monkeypatch.setattr(resolver, "selected_toolchain", refuse)
+    monkeypatch.setattr(build_data, "_capture", lambda *_args, **_kwargs: pytest.fail("must not compile"))
+    with pytest.raises(build_data.BuildRefused, match="required compiler unavailable"):
+        build_data._run_manifest_metadata(tmp_path)
 
 
 def test_source_has_no_parallel_rust_type_tables_or_private_qualifying_bridge() -> None:
@@ -1651,3 +1740,170 @@ def test_cli_help_names_exact_authorities() -> None:
     assert "canonical ledger and series" in help_text
     assert "manifest policy and ancestry" in help_text
     assert result.stderr == ""
+
+
+def test_fresh_validation_provenance_keeps_reader_and_data_identity_separate():
+    value = canonical_input("1" * 40, [])["provenance"]
+    value.update(parent_commit="2" * 40, published_ref="2" * 40, published_only=True,
+        finalized_proof={"schema": 1, "manifests": [], "objects": {}, "missing_current_terminals": []})
+    result = build_data._canonical_provenance(value, "1" * 40, historical=False,
+                                              validation_history_commit="2" * 40)
+    assert result["reader_commit"] == "1" * 40
+    assert result["parent_commit"] == result["published_ref"] == "2" * 40
+    with pytest.raises(build_data.BuildRefused, match="parent_commit and published_ref"):
+        build_data._canonical_provenance(value, "1" * 40, historical=False,
+                                         validation_history_commit="3" * 40)
+    with pytest.raises(build_data.BuildRefused, match="reader commit"):
+        build_data._canonical_provenance(value, "3" * 40, historical=False,
+                                         validation_history_commit="2" * 40)
+    value["reader_hermit"]["checkout_commit"] = "4" * 40
+    with pytest.raises(build_data.BuildRefused, match="checkout and gitlink"):
+        build_data._canonical_provenance(value, "1" * 40, historical=False,
+                                         validation_history_commit="2" * 40)
+
+
+def test_fresh_validation_provenance_requires_closed_captured_proof():
+    value = canonical_input("1" * 40, [])["provenance"]
+    value.update(parent_commit="2" * 40, published_ref="2" * 40, published_only=True)
+    with pytest.raises(build_data.BuildRefused, match="captured finalized proof"):
+        build_data._canonical_provenance(value, "1" * 40, historical=False,
+                                         validation_history_commit="2" * 40)
+    value["finalized_proof"] = {"schema": 1, "manifests": [], "objects": {},
+                               "missing_current_terminals": [], "qualified": True}
+    with pytest.raises(build_data.BuildRefused, match="unknown or missing fields"):
+        build_data._canonical_provenance(value, "1" * 40, historical=False,
+                                         validation_history_commit="2" * 40)
+
+
+@pytest.mark.parametrize("handoff", ["present", "absent", "corrected"])
+def test_portable_proof_real_native_current_terminal_credit(tmp_path, monkeypatch, handoff):
+    """Real Git query, carrier and native projection over structural fixtures.
+
+    Rebind the retained ordinary schema-10 fixture to a tiny measured Git
+    repository, updating original operands and their hashes consistently.
+    This does not run a guest or qualify a real validation attempt.
+    """
+    monkeypatch.syspath_prepend(str(REPOSITORY / "ci-hub/ledger"))
+    import validate_rows
+
+    export = build_data._modules().export_inputs
+    proof = export._proof_reader()
+    parent, _old_parent, hermit, hermit_commit = make_checkouts(tmp_path)
+    git(parent, "remote", "add", "origin", validate_rows.CANONICAL_PARENT_REPOSITORY)
+    ledger, ledger_commit = repository(tmp_path, "public-ledger")
+    git(ledger, "remote", "add", "origin", proof.LEDGER_REPOSITORY)
+    state = tmp_path / "original-retained-state"
+    state.mkdir()
+    fixtures = REPOSITORY / "ci-hub/validate/tests/fixtures/schema10/selected-attempt-v1"
+    row = json.loads((fixtures / "ordinary-only-row.json").read_bytes().replace(b"a" * 40, hermit_commit.encode()))
+    row.update(repo="hermit", record_id="original", host="fixture-host",
+               producer="synthetic-portable-proof-control",
+               cwd=validate_rows.WORKSPACE_TOKEN + "/hermit", commit=hermit_commit,
+               selection_mode="full", result="pass", started_at="2026-08-31T00:00:00Z",
+               finished_at="2026-08-31T00:01:00Z")
+    row["cell_results"]["hermit_sha"] = hermit_commit
+    row["test_results"]["hermit_sha"] = hermit_commit
+    for reference, suffix in (
+        (row["constructed_plan"], "plan.json"),
+        (row["cell_results"]["artifact"], "cells.jsonl"),
+        (row["test_results"]["artifact"], "tests.jsonl"),
+    ):
+        raw = (fixtures / ("ordinary-only-" + suffix)).read_bytes()
+        raw = raw.replace(b"a" * 40, hermit_commit.encode())
+        reference["sha256"] = hashlib.sha256(raw).hexdigest()
+        if "bytes" in reference:
+            reference["bytes"] = len(raw)
+        path = state / reference["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    original = validate_rows._event_for_row(row, parent)
+    shard = parent / "ledger/hermit/fixture-host/2026-08.jsonl"
+    shard.parent.mkdir(parents=True)
+    shard.write_bytes(_jsonl([original]))
+
+    def commit_namespace():
+        git(parent, "add", "--", "ledger")
+        git(parent, "commit", "-m", "Synthetic canonical proof input")
+        commit = git(parent, "rev-parse", "HEAD")
+        git(parent, "update-ref", "refs/remotes/origin/main", commit)
+        return commit
+
+    parent_commit = commit_namespace()
+    with validate_rows.capture_committed_validation_namespace(parent, parent_commit, state_root=state) as ns:
+        [selected] = ns.terminals(repo="hermit", schema_version=10)
+        artifacts, objects = proof.capture_artifacts(state, selected["row"])
+        manifest = proof.make_manifest(
+            selected, artifacts, parent_commit=parent_commit, hermit_tool_commit=hermit_commit,
+            snapshot={"source": {"commit": ledger_commit,
+                                 "tree": git(ledger, "rev-parse", "HEAD^{tree}")},
+                      "rows_sha256": hashlib.sha256(b"").hexdigest()},
+        )
+        if handoff != "absent":
+            proof.stage_carrier(ledger, manifest, objects)
+            git(ledger, "add", "--", "scorecard")
+            git(ledger, "commit", "-m", "Synthetic published proof carrier")
+            ledger_commit = git(ledger, "rev-parse", "HEAD")
+    if handoff == "corrected":
+        current = copy.deepcopy(row)
+        current.update(record_id="current", corrects="original", result="no_result",
+                       finished_at="2026-08-31T00:02:00Z")
+        shard.write_bytes(_jsonl([original, validate_rows._event_for_row(current, parent)]))
+        parent_commit = commit_namespace()
+
+    with validate_rows.capture_committed_validation_namespace(parent, parent_commit, state_root=state) as ns:
+        retained = export._capture_finalized_proof(ns, ledger, ledger_commit)
+        [selected] = ns.terminals(repo="hermit", schema_version=10)
+        assert selected["row"]["record_id"] == ("current" if handoff == "corrected" else "original")
+        history = ns.rows()
+    cell = "backend-parity-c/fixture/verify/kvm"
+    observation = series_row("portable-native-event", hermit_commit, run_id=row["run_id"], cell=cell)
+    canonical = canonical_input(parent_commit, [observation], validation_rows=history)
+    canonical = {key: value for key, value in canonical.items() if not key.startswith("_fixture_")}
+    canonical["provenance"]["finalized_proof"] = retained
+    canonical["provenance"]["published_only"] = True
+    canonical["provenance"]["reader_hermit"] = {"checkout_commit": hermit_commit, "gitlink_commit": hermit_commit}
+    metadata = manifest_metadata(cell)
+    metadata["tests"][0]["category"] = "backend-parity-c"
+    metadata["cells"][0]["category"] = "backend-parity-c"
+    result = build_data._run_projection(captured(metadata), captured(canonical), hermit, hermit_commit, None)
+    (tmp_path / "native-projection.json").write_bytes(build_data._canonical_bytes(result) + b"\n")
+    assert result["input"]["series_rows"]["row_count"] == 1
+    if handoff == "present":
+        assert len(retained["manifests"]) == 1 and retained["missing_current_terminals"] == []
+        assert [item["record_id"] for item in result["current_validation_run_rows"]] == ["original"]
+        assert result["counts"]["projection_admitted_physical_row_count"] == 1
+        assert result["validate_run_selection"] == {"portable-native-event": {"path": "full", "selected": True}}
+        provenance = build_data._build_provenance(
+            captured(canonical), canonical["provenance"], captured(metadata), result,
+            {"parent": parent_commit, "hermit": hermit_commit, "hermit_main": hermit_commit,
+             "validation_history": parent_commit})
+        stage = build_data._artifact_result(result, build_data._reduce_projection(result), provenance)
+        assert build_data.validate_build_data(stage) == stage
+        # Keep the actual admitted row, its output digests and counts intact;
+        # a separately well-formed empty transport still cannot support it.
+        altered = copy.deepcopy(stage)
+        altered["provenance"]["canonical_input_provenance"]["finalized_proof"] = {
+            "schema": 1, "manifests": [], "objects": {},
+            "missing_current_terminals": [selected["terminal"]]}
+        with pytest.raises(build_data.BuildRefused, match="without its current carrier"):
+            build_data.validate_build_data(altered)
+        # A coherent replacement object is still not the cells artifact named
+        # by the unchanged public native row. Keep output digests/counts intact.
+        altered = copy.deepcopy(stage)
+        proof_value = altered["provenance"]["canonical_input_provenance"]["finalized_proof"]
+        cells = proof_value["manifests"][0]["artifacts"]["cells"]
+        replacement = proof_value["objects"].pop(cells["sha256"]) + "\n"
+        cells["sha256"] = hashlib.sha256(replacement.encode()).hexdigest()
+        cells["bytes"] = len(replacement.encode())
+        proof_value["objects"][cells["sha256"]] = replacement
+        export.captured_proof_objects(proof_value)
+        with pytest.raises(build_data.BuildRefused, match="cells artifact differs"):
+            build_data.validate_build_data(altered)
+    else:
+        assert retained["manifests"] == [] and retained["objects"] == {}
+        assert retained["missing_current_terminals"] == [selected["terminal"]]
+        assert result["current_validation_run_rows"] == []
+        assert result["validate_run_selection"] == {}
+        assert result["counts"]["projection_admitted_physical_row_count"] == 0
+        assert result["counts"]["projection_excluded_physical_row_count"] == 1
+        assert "validation cell evidence unavailable" in json.dumps(result["projection_exclusion_counts"])

@@ -374,7 +374,7 @@ def ledger_report(root: Path, sha: str, repo: str) -> tuple[dict[str, Any], list
 def series_report(
     tool_root: Path, state_root: Path, sha: str
 ) -> tuple[dict[str, Any], canonical_series.PublishedSnapshot]:
-    snapshot = canonical_series.published_snapshot(tool_root)
+    snapshot = canonical_series.published_snapshot(state_root)
     published = snapshot.rows
     spool = canonical_series.spool_dir(state_root)
     local_paths = sorted(spool.glob("*.jsonl")) + sorted(
@@ -387,6 +387,7 @@ def series_report(
         "scope": "per-cell observations; not whole-run receipt authority",
         "published_ref": "refs/remotes/origin/main",
         "published_ref_sha": snapshot.commit,
+        "published_repository": snapshot.repository,
         "published_rows": len(published),
         "local_spool_rows": len(local),
         "logical_rows": len(combined),
@@ -680,6 +681,46 @@ def git_tree_at(repo: Path, commit: str, path: str) -> str:
     return tree
 
 
+def _scorecard_documents(root, hermit, content_sha, published):
+    cells = _json_object(
+        git_text(hermit, "show", f"{content_sha}:ci/compat-envelope/cells.json"), "cells.json"
+    )
+    if cells.get("schema") != 9:
+        return cells, git_text(hermit, "show", f"{content_sha}:SCORECARD.md"), None
+    if cells.get("history") != {
+        "repository": canonical_series.LEDGER_REPOSITORY, "path": "scorecard/cells.json"
+    }:
+        raise CrosscheckError("catalogue names an unsupported history repository or path")
+    if published.repository != canonical_series.LEDGER_REPOSITORY:
+        raise CrosscheckError("catalogue history requires an exact published ledger snapshot")
+    ledger = canonical_series.ledger_root(root)
+    detailed = _json_object(
+        git_text(ledger, "show", f"{published.commit}:scorecard/cells.json"), "ledger cells.json"
+    )
+
+    def selection(document):
+        entries = document.get("cells")
+        if not isinstance(entries, list):
+            raise CrosscheckError("catalogue/history cells must be an array")
+        identities = {}
+        for cell in entries:
+            if not isinstance(cell, dict):
+                raise CrosscheckError("catalogue/history cell must be an object")
+            identity = tuple(cell.get(key) for key in ("lane", "category", "test", "mode", "backend"))
+            if not all(isinstance(key, str) and key for key in identity) or identity in identities:
+                raise CrosscheckError("catalogue/history cell identity is missing or duplicated")
+            identities[identity] = cell.get("status")
+        return identities
+
+    if selection(cells) != selection(detailed):
+        raise CrosscheckError("published history catalogue differs from the requested Hermit selection")
+    markdown = git_text(ledger, "show", f"{published.commit}:scorecard/SCORECARD.md")
+    return detailed, markdown, {
+        "repository": published.repository, "commit": published.commit,
+        "path": "scorecard/cells.json", "catalogue_schema": 9,
+    }
+
+
 def scorecard_report(
     root: Path,
     hermit: Path,
@@ -694,11 +735,9 @@ def scorecard_report(
         raise CrosscheckError(
             f"unsupported scorecard content match {content_matched_by!r}"
         )
-    cells = _json_object(
-        git_text(hermit, "show", f"{content_sha}:ci/compat-envelope/cells.json"),
-        "cells.json",
+    cells, markdown, history_source = _scorecard_documents(
+        root, hermit, content_sha, published_series_snapshot,
     )
-    markdown = git_text(hermit, "show", f"{content_sha}:SCORECARD.md")
     detcore_tree = git_text(hermit, "rev-parse", f"{content_sha}:detcore").strip()
     entries = cells.get("cells")
     if not isinstance(entries, list):
@@ -801,6 +840,13 @@ def scorecard_report(
     source = projection.get("source")
     source_commit = projection.get("source_commit")
     source_tree = projection.get("source_tree")
+    source_repository = projection.get(
+        "source_repository", canonical_series.PARENT_REPOSITORY,
+    )
+    if source_repository not in {
+        canonical_series.PARENT_REPOSITORY, canonical_series.LEDGER_REPOSITORY,
+    }:
+        raise CrosscheckError("cells.json projection names an unsupported repository")
     source_snapshot: canonical_series.PublishedSnapshot | None = None
     comparison: dict[str, Any] | None = None
     source_commit_on_published_history: bool | None = None
@@ -819,23 +865,31 @@ def scorecard_report(
                 "cells.json projection source_tree must be a lowercase 40-hex "
                 f"object id, got {source_tree!r}"
             )
-        source_commit_on_published_history = commit_is_ancestor(
-            root, source_commit, published_series_snapshot.commit
-        )
-        if source_commit_on_published_history and source_tree is not None:
+        source_root = canonical_series.published_repository(root, source_repository)
+        same_repository = source_repository == published_series_snapshot.repository
+        if same_repository:
+            source_commit_on_published_history = commit_is_ancestor(
+                source_root, source_commit, published_series_snapshot.commit
+            )
+        # Parent-era commits remain parent objects. Their rows can be compared
+        # across migration; they cannot be ancestors in the separate ledger.
+        eligible_source = source_commit_on_published_history or not same_repository
+        if eligible_source and source_tree is not None:
             canonical_source_tree = git_tree_at(
-                root, source_commit, CANONICAL_SERIES_PATH
+                source_root, source_commit, CANONICAL_SERIES_PATH
             )
             source_tree_matches = source_tree == canonical_source_tree
         if (
-            source_commit_on_published_history
+            eligible_source
             and source == CANONICAL_SERIES_PATH
             and source_tree_matches
         ):
             source_snapshot = (
                 published_series_snapshot
-                if source_commit == published_series_snapshot.commit
-                else canonical_series.published_snapshot_at(root, source_commit)
+                if same_repository and source_commit == published_series_snapshot.commit
+                else canonical_series.published_snapshot_at(
+                    root, source_commit, repository=source_repository,
+                )
             )
             comparison = compare_series_snapshots(
                 source_snapshot.rows, published_series_snapshot.rows
@@ -850,6 +904,7 @@ def scorecard_report(
         "requested_sha": requested_sha,
         "content_sha": content_sha,
         "content_matched_by": content_matched_by,
+        "history_source": history_source,
         "projection_rows_scope": "canonical event map at projection.source_commit",
         "schema": cells_schema,
         "cell_count": len(entries),

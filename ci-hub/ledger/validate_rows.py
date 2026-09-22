@@ -21,14 +21,18 @@ import fcntl
 import json
 import os
 import hashlib
+import re
 import socket
+import selectors
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Iterable
 
-from ledger import LedgerError, read_shard, union_events, validate_event, validate_events
+from ledger import LedgerError, parse_line, read_shard, union_events, validate_event, validate_events
 from publisher import retained, spool, spooled
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -209,16 +213,19 @@ def _git_environment() -> dict[str, str]:
     return environment
 
 
-def _tracked_historical_shard(root: Path, relative: Path) -> list[dict] | None:
-    """Read one named regular-file shard from the selected worktree's HEAD."""
-    path = root / relative
-    component = root
+def _tracked_historical_shard(
+    root: Path, relative: Path, *, commit: str = "HEAD", snapshot_root: Path | None = None,
+) -> list[dict] | None:
+    """Read a named Git blob, checking any captured copy byte for byte."""
+    current_root = snapshot_root if snapshot_root is not None else root
+    path = current_root / relative
+    component = current_root
     for part in relative.parts:
         component /= part
         if component.is_symlink():
             return None
     try:
-        path.resolve().relative_to(root.resolve())
+        path.resolve().relative_to(current_root.resolve())
     except ValueError:
         return None
     if not path.is_file():
@@ -237,7 +244,7 @@ def _tracked_historical_shard(root: Path, relative: Path) -> list[dict] | None:
         if top.returncode != 0 or Path(top.stdout.strip()).resolve() != root.resolve():
             return None
         entry = subprocess.run(
-            [*arguments, "ls-tree", "-z", "HEAD", "--", relative.as_posix()],
+            [*arguments, "ls-tree", "-z", f"{commit}^{{commit}}", "--", relative.as_posix()],
             check=False,
             capture_output=True,
             timeout=10,
@@ -252,10 +259,9 @@ def _tracked_historical_shard(root: Path, relative: Path) -> list[dict] | None:
         ):
             return None
         contents = subprocess.run(
-            [*arguments, "show", f"HEAD:{relative.as_posix()}"],
+            [*arguments, "show", f"{commit}:{relative.as_posix()}"],
             check=False,
             capture_output=True,
-            text=True,
             timeout=10,
             env=environment,
         )
@@ -264,17 +270,34 @@ def _tracked_historical_shard(root: Path, relative: Path) -> list[dict] | None:
     if contents.returncode != 0:
         return None
     try:
+        if snapshot_root is not None and path.read_bytes() != contents.stdout:
+            return None
         return [json.loads(line) for line in contents.stdout.splitlines() if line]
-    except (json.JSONDecodeError, TypeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
         return None
 
 
-def _historical_repository_mismatch_source_digests(root: Path) -> frozenset[str]:
-    """Require each exception in both current and HEAD-tracked named shards."""
+def _historical_repository_mismatch_source_digests(
+    root: Path, *, committed_source: tuple[Path, str] | None = None,
+) -> frozenset[str]:
+    """Require the exact exception in both current and Git-bound named shards.
+
+    Ordinary readers bind to their worktree HEAD. An immutable export instead
+    supplies its original repository and commit; its non-Git snapshot must
+    contain byte-identical copies of both committed shards.
+    """
+    if committed_source is not None:
+        source_root, source_commit = committed_source
+        if not isinstance(source_commit, str) or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
+            raise ValueError("captured validation source requires an immutable commit SHA")
     copies: list[dict[str, str]] = []
     for relative in HISTORICAL_REPOSITORY_MISMATCH_SHARDS:
         path = root / relative
-        tracked_events = _tracked_historical_shard(root, relative)
+        tracked_events = (
+            _tracked_historical_shard(root, relative)
+            if committed_source is None else
+            _tracked_historical_shard(source_root, relative, commit=source_commit, snapshot_root=root)
+        )
         if tracked_events is None:
             return frozenset()
         for events_in_source in (read_shard(path), tracked_events):
@@ -1371,10 +1394,15 @@ def current_validation_run_rows(items: Iterable[dict]) -> list[dict]:
     return [row for index, row in enumerate(rows) if index not in superseded]
 
 
-def _validated_events(*, root: Path, preserve_admission: bool = False) -> tuple[list[dict], frozenset[str]]:
+def _validated_events(
+    *, root: Path, preserve_admission: bool = False,
+    committed_source: tuple[Path, str] | None = None,
+) -> tuple[list[dict], frozenset[str]]:
     """Read the event union once and refuse every malformed member."""
     items = events(root=root, preserve_admission=preserve_admission)
-    historical_source_digests = _historical_repository_mismatch_source_digests(root)
+    historical_source_digests = _historical_repository_mismatch_source_digests(
+        root, committed_source=committed_source,
+    )
     # Preserve the original envelope too: normalizing a duplicate legacy_row
     # could erase an earlier admission claim before Rust judges its shape.
     validation_options = ({"serializer": _admission_event_identity} if preserve_admission else {})
@@ -1405,11 +1433,9 @@ def _validated_events(*, root: Path, preserve_admission: bool = False) -> tuple[
     return items, historical_source_digests
 
 
-def _rows_from_events(items: list[dict], *, root: Path) -> list[dict]:
-    """Project the already-read event union to the HistoryRow compatibility view."""
+def _row_projections(items: list[dict], *, root: Path) -> Iterable[tuple[str, dict]]:
+    """Keep each projected row's actual terminal envelope identity."""
     replacements, correction_ids = _legacy_row_corrections(items)
-    out: list[dict] = []
-    seen: set[str] = set()
     for event in items:
         event_id = str(event.get("event_id") or "")
         if event_id in correction_ids:
@@ -1438,10 +1464,18 @@ def _rows_from_events(items: list[dict], *, root: Path) -> list[dict]:
                     # Retain the original bad row for its per-row refusal.
                     # Do not repair/re-hash it or poison another selected row.
                     restored = row
-            identity = _admission_event_identity(restored)
-            if identity not in seen:
-                seen.add(identity)
-                out.append(restored)
+            yield current, restored
+
+
+def _rows_from_events(items: list[dict], *, root: Path) -> list[dict]:
+    """Project the already-read event union to the HistoryRow compatibility view."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for _event_id, restored in _row_projections(items, root=root):
+        identity = _admission_event_identity(restored)
+        if identity not in seen:
+            seen.add(identity)
+            out.append(restored)
     return out
 
 
@@ -1524,10 +1558,15 @@ def status_input(*, root: Path | None = None, preserve_admission: bool = False) 
     }
 
 
-def rows(*, root: Path | None = None, preserve_admission: bool = False) -> list[dict]:
-    """HistoryRow compatibility view of the one canonical event union."""
+def rows(
+    *, root: Path | None = None, preserve_admission: bool = False,
+    committed_source: tuple[Path, str] | None = None,
+) -> list[dict]:
+    """HistoryRow view, with explicit Git provenance for an immutable snapshot."""
     root = (root or repository_root()).resolve()
-    items, _historical_source_digests = _validated_events(root=root, preserve_admission=preserve_admission)
+    items, _historical_source_digests = _validated_events(
+        root=root, preserve_admission=preserve_admission, committed_source=committed_source,
+    )
     return _rows_from_events(items, root=root)
 
 
@@ -1548,18 +1587,38 @@ def canonical_finalized_row(
     must still verify the selected row's admission, finalized evidence and
     producer census; this selection does not manufacture those proofs.
     """
+    root = (root or repository_root()).resolve()
+    items, _ = _validated_events(root=root, preserve_admission=True)
+    return _select_finalized_row(
+        _rows_from_events(items, root=root), repo=repo, run_id=run_id,
+        record_id=record_id, commit=commit, cwd=cwd, started_at=started_at,
+    )
+
+
+def _select_finalized_row(
+    rows: list[dict], *, repo: str, run_id: str, record_id: str,
+    commit: str, cwd: str, started_at: str,
+) -> dict:
     expected = dict(repo=repo, run_id=run_id, record_id=record_id,
                     commit=commit, cwd=cwd, started_at=started_at)
     for field, value in expected.items():
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"canonical producer selector requires nonempty {field}")
 
-    root = (root or repository_root()).resolve()
-    items, _ = _validated_events(root=root, preserve_admission=True)
+    selected = _current_finalized_row(rows, repo=repo, run_id=run_id)
+    for field, value in expected.items():
+        if selected.get(field) != value:
+            raise ValueError(f"canonical producer terminal differs from requested {field}")
+    return selected
+
+
+def _current_finalized_row(rows: list[dict], *, repo: str, run_id: str) -> dict:
+    """Check the whole correction group before projecting its terminal."""
+
     team = _ledger_team(repo)
     # Canonical repository aliases share a correction group. Literal repo
     # equality is required only for the selected terminal, below.
-    group = [row for row in _rows_from_events(items, root=root)
+    group = [row for row in rows
              if _ledger_team(row.get("repo")) == team and row.get("run_id") == run_id]
     if not group:
         raise ValueError("canonical producer run is absent")
@@ -1603,10 +1662,275 @@ def canonical_finalized_row(
     # Only a fully checked group may use the existing current-run projection.
     # Keep that reader's historical/diagnostic behavior unchanged.
     [selected] = current_validation_run_rows(group)
-    for field, value in expected.items():
-        if selected.get(field) != value:
-            raise ValueError(f"canonical producer terminal differs from requested {field}")
     return selected
+
+
+CANONICAL_PARENT_REPOSITORY = "https://github.com/rrnewton/dev-hermit.git"
+_COMMITTED_GIT_BYTES = 256 << 20  # Same per-command capacity as canonical export.
+
+
+def _committed_git(root: Path, *arguments: str, limit: int = _COMMITTED_GIT_BYTES) -> bytes:
+    """Bound Git transport independently of the size claimed by an object."""
+    command = ["git", "--no-replace-objects", "-C", str(root), *arguments]
+    environment = _git_environment()
+    environment["GIT_NO_LAZY_FETCH"] = "1"
+    with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, env=environment) as process:
+        output = bytearray()
+        errors = bytearray()
+        deadline = time.monotonic() + 60
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, (output, limit))
+                selector.register(process.stderr, selectors.EVENT_READ, (errors, 65536))
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ValueError("committed validation Git read timed out")
+                    for key, _event in selector.select(remaining):
+                        chunk = os.read(key.fileobj.fileno(), 65536)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        buffer, capacity = key.data
+                        if len(buffer) + len(chunk) > capacity:
+                            raise ValueError("committed validation Git read exceeds capacity")
+                        buffer.extend(chunk)
+                status = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            if status != 0 or errors:
+                raise ValueError(
+                    f"committed validation Git read refused ({status}): "
+                    + errors[:1000].decode(errors="replace").strip()
+                )
+            return bytes(output)
+        except BaseException:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            raise
+
+
+def _committed_sha(value: object, label: str, length: int = 40) -> str:
+    if not isinstance(value, str) or re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is None:
+        raise ValueError(f"committed validation {label} requires an exact lowercase digest")
+    return value
+
+
+def _committed_path(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("committed validation input path is not a string")
+    parts = value.split("/")
+    if (not parts or parts[0] not in {"ledger", "ledger-recovery"}
+            or any(part in {"", ".", ".."} or "\0" in part for part in parts)):
+        raise ValueError("committed validation input has an unsafe namespace path")
+    return value
+
+
+def _committed_shard(value: str) -> bool:
+    return re.fullmatch(
+        r"(?:ledger/[^/]+/[^/]+/[0-9]{4}-[0-9]{2}\.jsonl|"
+        r"ledger-recovery/[^/]+/[^/]+/[0-9]{4}-[0-9]{2}/[^/]+\.jsonl)", value,
+    ) is not None
+
+
+class CommittedValidationNamespace:
+    """One complete immutable namespace; construction never accepts event subsets.
+
+    Git supplies authority and exact original bytes. ``state_root`` only expands
+    private path tokens. This selector grants no admission or artifact proof.
+    """
+
+    def __init__(self, source_root: Path, source_commit: str, *, state_root: Path | None = None):
+        self._root = Path(source_root).resolve()
+        self._commit = _committed_sha(source_commit, "source commit")
+        state = Path(state_root).resolve() if state_root is not None else self._root
+        top = _committed_git(self._root, "rev-parse", "--show-toplevel").decode().strip()
+        if Path(top).resolve() != self._root:
+            raise ValueError("committed validation source must be the exact Git root")
+        origin = _committed_git(self._root, "config", "--get-all", "remote.origin.url").decode().strip()
+        # The hosted reader uses a read-only deploy key; both exact spellings
+        # name the same fixed repository. Public provenance always uses HTTPS.
+        if origin not in {CANONICAL_PARENT_REPOSITORY, "git@github.com:rrnewton/dev-hermit.git"}:
+            raise ValueError("committed validation source is not the canonical parent repository")
+        resolved = _committed_git(self._root, "rev-parse", "--verify", f"{self._commit}^{{commit}}").decode().strip()
+        if resolved != self._commit:
+            raise ValueError("committed validation source identity changed")
+        # The caller fetches first. An arbitrary unpublished object in this
+        # repository is not made canonical merely by supplying its full hash.
+        _committed_git(self._root, "merge-base", "--is-ancestor", self._commit,
+                       "refs/remotes/origin/main")
+        self._sources: list[dict] = []
+        listed = _committed_git(self._root, "ls-tree", "-r", "-z", self._commit,
+                                "--", "ledger", "ledger-recovery")
+        for entry in listed.split(b"\0"):
+            if not entry:
+                continue
+            metadata, raw_path = entry.split(b"\t", 1)
+            mode, kind, object_id = metadata.decode().split()
+            relative = _committed_path(raw_path.decode("utf-8"))
+            if kind != "blob" or mode not in {"100644", "100755"}:
+                raise ValueError("committed validation namespace contains a nonregular Git entry")
+            _committed_sha(object_id, "blob")
+            data = _committed_git(self._root, "cat-file", "blob", object_id)
+            self._sources.append({"path": relative, "blob_oid": object_id, "data": data})
+        self._sources.sort(key=lambda value: value["path"])
+        self._occurrences: dict[str, list[dict]] = {}
+        with tempfile.TemporaryDirectory(prefix="canonical-committed-validation-") as raw:
+            snapshot = Path(raw)
+            for source in self._sources:
+                path = snapshot / source["path"]
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(source["data"])
+            # This reader still validates the entire event union, the original
+            # admission pairs, and the two exact historical exception shards.
+            items, _ = _validated_events(
+                root=snapshot, preserve_admission=True,
+                committed_source=(self._root, self._commit),
+            )
+            for source in self._sources:
+                if not _committed_shard(source["path"]):
+                    continue
+                for line in source["data"].splitlines(keepends=True):
+                    if not line.strip():
+                        continue
+                    event = parse_line(line.decode("utf-8"),
+                                       object_pairs_hook=qualifying_receipt.AdmissionJsonObject)
+                    digest = hashlib.sha256(_admission_event_identity(event).encode()).hexdigest()
+                    self._occurrences.setdefault(digest, []).append({
+                        "repository": CANONICAL_PARENT_REPOSITORY,
+                        "commit": self._commit, "shard": source["path"],
+                        "blob_oid": source["blob_oid"],
+                        "event_line_sha256": hashlib.sha256(line).hexdigest(),
+                    })
+        self._events = {event["event_id"]: event for event in items}
+        self._projections = list(_row_projections(items, root=state))
+        self._rows = _rows_from_events(items, root=state)
+        self._origin_cache: dict[tuple[str, str, str], bytes] = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exception):
+        return False
+
+    def rows(self) -> list[dict]:
+        return copy.deepcopy(self._rows)
+
+    def events(self) -> list[dict]:
+        """The original validated union, for existing event count/digest capture."""
+        return copy.deepcopy(list(self._events.values()))
+
+    def source_files(self) -> list[dict]:
+        """Original path/blob/data operands for provenance and reproduction."""
+        return copy.deepcopy(self._sources)
+
+    def terminals(self, *, repo: str, schema_version: int | None = None) -> list[dict]:
+        """Select whole current groups without granting website admission.
+
+        A schema filter chooses groups containing that schema, not individual
+        rows within a correction chain. Thus a successor of another schema
+        still supersedes the older row. Failed and unavailable outcomes are
+        retained; callers must use the native admission/proof verifier.
+        """
+        if not isinstance(repo, str) or not repo.strip():
+            raise ValueError("canonical producer selector requires nonempty repo")
+        if schema_version is not None and (type(schema_version) is not int or schema_version < 1):
+            raise ValueError("committed validation schema selector must be a positive integer")
+        team = _ledger_team(repo)
+        groups: dict[str, list[dict]] = {}
+        for row in self._rows:
+            if _ledger_team(row.get("repo")) == team:
+                groups.setdefault(row.get("run_id"), []).append(row)
+        selected = []
+        for run_id, group in groups.items():
+            if schema_version is not None and not any(
+                row.get("schema_version") == schema_version for row in group
+            ):
+                continue
+            if not isinstance(run_id, str) or not run_id.strip():
+                raise ValueError("canonical producer selector requires nonempty run_id")
+            row = _current_finalized_row(self._rows, repo=repo, run_id=run_id)
+            selected.append(self.select(**{key: row.get(key) for key in (
+                "repo", "run_id", "record_id", "commit", "cwd", "started_at",
+            )}))
+        return sorted(selected, key=lambda item: item["terminal"]["run_id"])
+
+    def select(self, **selector) -> dict:
+        row = _select_finalized_row(self._rows, **selector)
+        identity = _admission_event_identity(row)
+        terminals = {event_id for event_id, projected in self._projections
+                     if _admission_event_identity(projected) == identity}
+        if len(terminals) != 1:
+            raise ValueError("committed validation terminal has ambiguous original events")
+        event_id = next(iter(terminals))
+        event = self._events[event_id]
+        digest = hashlib.sha256(_admission_event_identity(event).encode()).hexdigest()
+        team = _ledger_team(row["repo"])
+        if team not in {"hermit", "reverie"}:
+            raise ValueError("committed validation terminal has no canonical repository")
+        terminal = {"repository": f"rrnewton/{team}", "run_id": row["run_id"],
+                    "record_id": row["record_id"], "event_id": event_id,
+                    "event_sha256": digest, "hermit_commit": row["commit"]}
+        return copy.deepcopy({"row": row, "terminal": terminal,
+                              "parent": self._occurrences[digest][0]})
+
+    def verify_origin(self, parent: dict, terminal: dict) -> None:
+        """Revalidate an original carrier occurrence against this current graph."""
+        parent_fields = {"repository", "commit", "shard", "blob_oid", "event_line_sha256"}
+        terminal_fields = {"repository", "run_id", "record_id", "event_id", "event_sha256", "hermit_commit"}
+        if not isinstance(parent, dict) or set(parent) != parent_fields:
+            raise ValueError("committed validation parent descriptor has unknown or missing fields")
+        if not isinstance(terminal, dict) or set(terminal) != terminal_fields:
+            raise ValueError("committed validation terminal descriptor has unknown or missing fields")
+        if parent["repository"] != CANONICAL_PARENT_REPOSITORY:
+            raise ValueError("committed validation parent descriptor has the wrong repository")
+        commit = _committed_sha(parent["commit"], "original source commit")
+        blob = _committed_sha(parent["blob_oid"], "original blob")
+        line_digest = _committed_sha(parent["event_line_sha256"], "original line", 64)
+        _committed_sha(terminal["event_sha256"], "original event", 64)
+        _committed_sha(terminal["hermit_commit"], "measured commit")
+        shard = _committed_path(parent["shard"])
+        if not _committed_shard(shard):
+            raise ValueError("committed validation original occurrence is not a canonical shard")
+        candidates = [row for event_id, row in self._projections if event_id == terminal["event_id"]]
+        if len(candidates) != 1:
+            raise ValueError("committed validation original event is absent or superseded")
+        row = candidates[0]
+        selector = {key: row.get(key) for key in ("repo", "run_id", "record_id", "commit", "cwd", "started_at")}
+        if self.select(**selector)["terminal"] != terminal:
+            raise ValueError("committed validation original event is not the current terminal")
+        key = (commit, shard, blob)
+        if key not in self._origin_cache:
+            _committed_git(self._root, "merge-base", "--is-ancestor", commit, self._commit)
+            entry = _committed_git(self._root, "ls-tree", "-z", commit, "--", shard)
+            expected = f"100644 blob {blob}\t{shard}\0".encode()
+            executable = f"100755 blob {blob}\t{shard}\0".encode()
+            if entry not in (expected, executable):
+                raise ValueError("committed validation original shard/blob identity differs")
+            self._origin_cache[key] = _committed_git(self._root, "cat-file", "blob", blob)
+        for line in self._origin_cache[key].splitlines(keepends=True):
+            if hashlib.sha256(line).hexdigest() != line_digest:
+                continue
+            event = parse_line(line.decode("utf-8"),
+                               object_pairs_hook=qualifying_receipt.AdmissionJsonObject)
+            if (event.get("event_id") == terminal["event_id"]
+                    and hashlib.sha256(_admission_event_identity(event).encode()).hexdigest()
+                    == terminal["event_sha256"]):
+                return
+        raise ValueError("committed validation original terminal line is absent or changed")
+
+
+def capture_committed_validation_namespace(
+    source_root: Path, source_commit: str, *, state_root: Path | None = None,
+) -> CommittedValidationNamespace:
+    return CommittedValidationNamespace(source_root, source_commit, state_root=state_root)
+
+
+def canonical_finalized_row_at_commit(
+    source_root: Path, source_commit: str, *, state_root: Path | None = None, **selector,
+) -> dict:
+    with capture_committed_validation_namespace(source_root, source_commit, state_root=state_root) as snapshot:
+        return snapshot.select(**selector)
 
 
 def emit_jsonl(items: Iterable[dict]) -> None:

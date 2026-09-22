@@ -735,6 +735,75 @@ def test_exact_historical_repository_mismatch_is_readable(tmp_path: Path):
     ]
 
 
+def historical_snapshot_fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
+    source = tmp_path / "source"
+    previous = repository(source)
+    event = production_historical_repository_mismatch("legacy-000246-000")
+    write_historical_repository_mismatch_copies(source, event)
+    commit = git(source, "rev-parse", "HEAD").stdout.strip()
+    snapshot = tmp_path / "snapshot"
+    for relative in validate_rows.HISTORICAL_REPOSITORY_MISMATCH_SHARDS:
+        destination = snapshot / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((source / relative).read_bytes())
+    return source, snapshot, commit, previous
+
+
+def test_captured_history_binds_original_commit_without_a_git_snapshot(tmp_path: Path):
+    source, snapshot, commit, _ = historical_snapshot_fixture(tmp_path)
+    expected = validate_rows.rows(root=source)
+    with pytest.raises(ValueError, match="historical repository-mismatch event"):
+        validate_rows.rows(root=snapshot)
+
+    # The capture remains anchored when the source checkout advances or has dirt.
+    primary = source / validate_rows.HISTORICAL_REPOSITORY_MISMATCH_SHARDS[0]
+    primary.write_text("{}\n")
+    git(source, "add", str(primary))
+    git(source, "commit", "-qm", "move the source beyond the captured commit")
+    primary.write_text("uncommitted source bytes\n")
+    actual = validate_rows.rows(root=snapshot, committed_source=(source, commit))
+    assert json.dumps(actual, sort_keys=True).replace(str(snapshot), "{{ROOT}}") == \
+        json.dumps(expected, sort_keys=True).replace(str(source), "{{ROOT}}")
+    assert actual[0]["repo"] == "reverie"
+
+
+@pytest.mark.parametrize("shard_index", [0, 1])
+@pytest.mark.parametrize("damage", ["missing", "byte-change", "symlink"])
+def test_captured_history_requires_both_exact_regular_git_blobs(
+    tmp_path: Path, shard_index: int, damage: str,
+):
+    source, snapshot, commit, _ = historical_snapshot_fixture(tmp_path)
+    relative = validate_rows.HISTORICAL_REPOSITORY_MISMATCH_SHARDS[shard_index]
+    path = snapshot / relative
+    if damage == "missing":
+        path.unlink()
+    elif damage == "byte-change":
+        # Parsed events and their known original digests still match; the
+        # immutable captured file nevertheless differs from its named Git blob.
+        path.write_bytes(path.read_bytes() + b"\n")
+    else:
+        path.unlink()
+        path.symlink_to(source / relative)
+    with pytest.raises(ValueError, match="historical repository-mismatch event"):
+        validate_rows.rows(root=snapshot, committed_source=(source, commit))
+
+
+@pytest.mark.parametrize("binding", ["wrong-commit", "foreign-repository", "tree-object", "moving-ref"])
+def test_captured_history_refuses_wrong_immutable_source(tmp_path: Path, binding: str):
+    source, snapshot, commit, previous = historical_snapshot_fixture(tmp_path)
+    if binding == "wrong-commit":
+        commit = previous
+    elif binding == "foreign-repository":
+        source = tmp_path / "foreign"
+        repository(source, content="different repository\n")
+    elif binding == "tree-object":
+        commit = git(source, "rev-parse", "HEAD^{tree}").stdout.strip()
+    else:
+        commit = "HEAD"
+    with pytest.raises(ValueError, match="historical repository-mismatch event|immutable commit SHA"):
+        validate_rows.rows(root=snapshot, committed_source=(source, commit))
+
+
 @pytest.mark.parametrize("provenance", ["non-git", "untracked", "foreign-root"])
 def test_historical_repository_mismatch_requires_tracked_source_provenance(
     tmp_path: Path, provenance: str
@@ -996,6 +1065,297 @@ def _producer_selector_event(row: dict, root: Path) -> dict:
 def _producer_selector_args(row: dict) -> dict:
     return {key: row[key] for key in
             ("repo", "run_id", "record_id", "commit", "cwd", "started_at")}
+
+
+def _commit_namespace(root: Path) -> str:
+    # Tiny real Git data repository, not a product checkout or admitted run.
+    if not (root / ".git").exists():
+        repository(root)
+        git(root, "remote", "add", "origin", validate_rows.CANONICAL_PARENT_REPOSITORY)
+    git(root, "add", "ledger", *(["ledger-recovery"] if (root / "ledger-recovery").exists() else []))
+    git(root, "commit", "-qm", "synthetic committed ledger namespace")
+    commit = git(root, "rev-parse", "HEAD").stdout.strip()
+    git(root, "update-ref", "refs/remotes/origin/main", commit)
+    return commit
+
+
+def test_committed_namespace_complete_recovery_and_original_occurrences(tmp_path: Path):
+    source = tmp_path / "source"
+    state = tmp_path / "reader-state"
+    state.mkdir()
+    first = _producer_selector_row(source, record_id="first")
+    final = _producer_selector_row(source, corrects="first")
+    original = _producer_selector_event(first, source)
+    terminal = _producer_selector_event(final, source)
+    terminal["event_id"] = "actual-envelope-id-not-record-id"
+    primary = write_events(source, original, terminal)
+    recovery = source / "ledger-recovery/hermit/hosta/2026-08/retained.jsonl"
+    recovery.parent.mkdir(parents=True)
+    recovery.write_bytes((json.dumps(terminal, sort_keys=True) + "\n").encode())
+    commit = _commit_namespace(source)
+    expected = {**final, "cwd": str(state / "hermit")}
+
+    with validate_rows.capture_committed_validation_namespace(source, commit, state_root=state) as ns:
+        selected = ns.select(**_producer_selector_args(expected))
+        assert selected["row"] == expected
+        assert selected["terminal"]["event_id"] == terminal["event_id"]
+        assert selected["terminal"]["record_id"] == final["record_id"]
+        assert selected["terminal"]["event_sha256"] == hashlib.sha256(
+            validate_rows._admission_event_identity(terminal).encode()).hexdigest()
+        assert selected["row"]["result"] == "fail"
+        assert selected["row"]["executed_tests"] is None
+        assert len(ns.rows()) == 2  # identical primary/recovery overlap collapses
+        assert ns.events() == validate_rows.events(root=source, preserve_admission=True)
+        copied_events = ns.events()
+        copied_events[0]["legacy_row"]["result"] = "pass"
+        assert copied_events != ns.events()
+        ns.verify_origin(selected["parent"], selected["terminal"])
+        with pytest.raises(ValueError, match="terminal differs from requested record_id"):
+            ns.select(**_producer_selector_args({**first, "cwd": expected["cwd"]}))
+        captured = ns.source_files()
+        assert {item["path"] for item in captured} == {
+            primary.relative_to(source).as_posix(), recovery.relative_to(source).as_posix()}
+        selected["row"]["result"] = "pass"
+        captured[0]["data"] = b"not the original bytes"
+        assert ns.select(**_producer_selector_args(expected))["row"]["result"] == "fail"
+        assert ns.source_files()[0]["data"] != captured[0]["data"]
+
+
+def test_committed_namespace_retry_keeps_original_origin_after_unrelated_advance(tmp_path: Path):
+    source = _producer_selector_row(tmp_path)
+    event = _producer_selector_event(source, tmp_path)
+    path = write_events(tmp_path, event)
+    before = _commit_namespace(tmp_path)
+    selected = validate_rows.canonical_finalized_row_at_commit(
+        tmp_path, before, **_producer_selector_args(source))
+    unrelated = _producer_selector_event(
+        _producer_selector_row(tmp_path, run_id="other-run", record_id="other-record"), tmp_path)
+    path.write_bytes(path.read_bytes() + (json.dumps(unrelated) + "\n").encode())
+    after = _commit_namespace(tmp_path)
+    with validate_rows.capture_committed_validation_namespace(tmp_path, after) as ns:
+        current = ns.select(**_producer_selector_args(source))
+        assert current["terminal"] == selected["terminal"]
+        assert current["parent"] != selected["parent"]
+        ns.verify_origin(selected["parent"], selected["terminal"])
+        ns.verify_origin(selected["parent"], selected["terminal"])
+    assert selected["parent"]["commit"] == before
+
+
+def test_committed_namespace_ignores_mutable_sources_but_rejects_committed_successor(tmp_path: Path):
+    source = _producer_selector_row(tmp_path)
+    event = _producer_selector_event(source, tmp_path)
+    path = write_events(tmp_path, event)
+    old = _commit_namespace(tmp_path)
+    selected = validate_rows.canonical_finalized_row_at_commit(tmp_path, old, **_producer_selector_args(source))
+    successor = _producer_selector_row(tmp_path, record_id="successor", corrects=source["record_id"])
+    next_event = _producer_selector_event(successor, tmp_path)
+    validate_rows._spool_record_event(next_event, tmp_path)
+    path.write_bytes(path.read_bytes() + (json.dumps(next_event) + "\n").encode())
+    # A mutable worktree and its live spool cannot replace captured Git bytes.
+    assert validate_rows.canonical_finalized_row_at_commit(
+        tmp_path, old, **_producer_selector_args(source)) == selected
+    new = _commit_namespace(tmp_path)
+    with validate_rows.capture_committed_validation_namespace(tmp_path, new) as ns:
+        with pytest.raises(ValueError, match="terminal differs from requested record_id"):
+            ns.select(**_producer_selector_args(source))
+        with pytest.raises(ValueError, match="terminal differs from requested record_id"):
+            ns.verify_origin(selected["parent"], selected["terminal"])
+        assert ns.select(**_producer_selector_args(successor))["terminal"] != selected["terminal"]
+
+
+def test_committed_namespace_tracks_event_correction_with_unchanged_record_id(tmp_path: Path):
+    source = _producer_selector_row(tmp_path, gates=[{
+        "name": "check.example", "result": "fail", "failure_origin": "outer_gate",
+        "failed_substeps": None,
+    }])
+    original = _producer_selector_event(source, tmp_path)
+    path = write_events(tmp_path, original)
+    first = _commit_namespace(tmp_path)
+    old = validate_rows.canonical_finalized_row_at_commit(tmp_path, first, **_producer_selector_args(source))
+    correction = correction_for(original)
+    path.write_bytes(path.read_bytes() + (json.dumps(correction) + "\n").encode())
+    second = _commit_namespace(tmp_path)
+    with validate_rows.capture_committed_validation_namespace(tmp_path, second) as ns:
+        new = ns.select(**_producer_selector_args(source))
+        assert new["row"]["gates"][0]["failed_substeps"] == []
+        assert new["terminal"]["record_id"] == old["terminal"]["record_id"]
+        assert new["terminal"]["event_id"] == correction["event_id"]
+        assert new["terminal"]["event_sha256"] != old["terminal"]["event_sha256"]
+        ns.verify_origin(new["parent"], new["terminal"])
+        with pytest.raises(ValueError, match="absent or superseded"):
+            ns.verify_origin(old["parent"], old["terminal"])
+
+
+@pytest.mark.parametrize("kind", ["conflict", "truncated", "symlink", "gitlink", "branch"])
+def test_committed_namespace_refuses_opposing_full_namespace(tmp_path: Path, kind: str):
+    source = _producer_selector_row(tmp_path)
+    event = _producer_selector_event(source, tmp_path)
+    write_events(tmp_path, event)
+    first = _commit_namespace(tmp_path)
+    recovery = tmp_path / "ledger-recovery/hermit/hosta/2026-08/opponent.jsonl"
+    recovery.parent.mkdir(parents=True)
+    if kind == "symlink":
+        recovery.symlink_to(tmp_path / "ledger/hermit/hosta/2026-08.jsonl")
+    elif kind == "gitlink":
+        git(tmp_path, "update-index", "--add", "--cacheinfo", "160000", first,
+            "ledger-recovery/hermit/hosta/2026-08/opponent")
+    else:
+        opposing = copy.deepcopy(event)
+        if kind == "conflict":
+            opposing["legacy_row"]["result"] = "pass"
+        elif kind == "branch":
+            opposing = _producer_selector_event(
+                _producer_selector_row(tmp_path, record_id="unrelated-terminal"), tmp_path)
+        recovery.write_bytes((json.dumps(opposing) + ("" if kind == "truncated" else "\n")).encode())
+    if kind == "gitlink":
+        git(tmp_path, "commit", "-qm", "synthetic nonregular namespace")
+        commit = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+        git(tmp_path, "update-ref", "refs/remotes/origin/main", commit)
+    else:
+        commit = _commit_namespace(tmp_path)
+    with pytest.raises((ValueError, ledger.LedgerError)):
+        validate_rows.canonical_finalized_row_at_commit(tmp_path, commit, **_producer_selector_args(source))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("repository", "https://github.com/somewhere/else.git"),
+    ("commit", "f" * 40), ("blob_oid", "f" * 40),
+    ("event_line_sha256", "f" * 64), ("shard", "ledger/../outside.jsonl"),
+    ("shard", "ledger/hermit/hosta/not-a-shard.txt"),
+])
+def test_committed_namespace_original_provenance_is_not_a_boolean(tmp_path: Path, field, value):
+    source = _producer_selector_row(tmp_path)
+    write_events(tmp_path, _producer_selector_event(source, tmp_path))
+    commit = _commit_namespace(tmp_path)
+    with validate_rows.capture_committed_validation_namespace(tmp_path, commit) as ns:
+        selected = ns.select(**_producer_selector_args(source))
+        ns.verify_origin(selected["parent"], selected["terminal"])
+        with pytest.raises(ValueError):
+            ns.verify_origin({**selected["parent"], field: value}, selected["terminal"])
+        with pytest.raises(ValueError, match="unknown or missing"):
+            ns.verify_origin({**selected["parent"], "qualified": True}, selected["terminal"])
+
+
+def test_committed_namespace_source_identity_and_hostile_git_environment(tmp_path: Path, monkeypatch):
+    source = _producer_selector_row(tmp_path)
+    write_events(tmp_path, _producer_selector_event(source, tmp_path))
+    commit = _commit_namespace(tmp_path)
+    alternate = tmp_path / "other-repository"
+    replacement = repository(alternate)
+    git(alternate, "remote", "add", "origin", "https://github.com/wrong/repo.git")
+    monkeypatch.setenv("GIT_DIR", str(alternate / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(alternate))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "remote.origin.url")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "https://github.com/wrong/repo.git")
+    selected = validate_rows.canonical_finalized_row_at_commit(tmp_path, commit, **_producer_selector_args(source))
+    assert selected["row"] == source
+    with pytest.raises(ValueError, match="exact lowercase digest"):
+        validate_rows.capture_committed_validation_namespace(tmp_path, commit[:12])
+    with pytest.raises(ValueError, match="exact Git root"):
+        validate_rows.capture_committed_validation_namespace(tmp_path / "ledger", commit)
+    with pytest.raises(ValueError, match="canonical parent"):
+        validate_rows.capture_committed_validation_namespace(alternate, replacement)
+
+
+def test_committed_namespace_refuses_nonancestor_origin_and_ignores_replacements(tmp_path: Path):
+    source = _producer_selector_row(tmp_path)
+    write_events(tmp_path, _producer_selector_event(source, tmp_path))
+    commit = _commit_namespace(tmp_path)
+    selected = validate_rows.canonical_finalized_row_at_commit(tmp_path, commit, **_producer_selector_args(source))
+    tree = git(tmp_path, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
+    disconnected = git(tmp_path, "commit-tree", tree, "-m", "unrelated identical tree").stdout.strip()
+    with validate_rows.capture_committed_validation_namespace(tmp_path, commit) as ns:
+        with pytest.raises(ValueError, match="Git read refused"):
+            ns.verify_origin({**selected["parent"], "commit": disconnected}, selected["terminal"])
+    empty_tree = subprocess.run(
+        ["git", "-C", str(tmp_path), "hash-object", "-t", "tree", "-w", "--stdin"],
+        input=b"", capture_output=True, check=True,
+    ).stdout.decode().strip()
+    replacement = git(tmp_path, "commit-tree", empty_tree, "-m", "replacement hides all events").stdout.strip()
+    git(tmp_path, "replace", commit, replacement)
+    assert git(tmp_path, "ls-tree", "-r", commit).stdout == ""
+    assert validate_rows.canonical_finalized_row_at_commit(
+        tmp_path, commit, **_producer_selector_args(source)) == selected
+
+
+def test_committed_namespace_git_output_has_an_enforced_capacity(tmp_path: Path):
+    repository(tmp_path)
+    with pytest.raises(ValueError, match="exceeds capacity"):
+        validate_rows._committed_git(tmp_path, "rev-parse", "HEAD", limit=3)
+
+
+def test_committed_namespace_ssh_origin_and_unpublished_source_refusal(tmp_path: Path):
+    source = _producer_selector_row(tmp_path)
+    event = _producer_selector_event(source, tmp_path)
+    path = write_events(tmp_path, event)
+    original = _commit_namespace(tmp_path)
+    git(tmp_path, "remote", "set-url", "origin", "git@github.com:rrnewton/dev-hermit.git")
+    selected = validate_rows.canonical_finalized_row_at_commit(
+        tmp_path, original, **_producer_selector_args(source))
+    assert selected["parent"]["repository"] == validate_rows.CANONICAL_PARENT_REPOSITORY
+    event["legacy_row"]["result"] = "no_result"
+    path.write_bytes((json.dumps(event) + "\n").encode())
+    git(tmp_path, "add", "ledger")
+    git(tmp_path, "commit", "-qm", "unpublished synthetic change")
+    unpublished = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+    with pytest.raises(ValueError, match="Git read refused"):
+        validate_rows.capture_committed_validation_namespace(tmp_path, unpublished)
+    assert validate_rows.canonical_finalized_row_at_commit(
+        tmp_path, original, **_producer_selector_args(source)) == selected
+    git(tmp_path, "remote", "set-url", "origin", "git@not-github.example:rrnewton/dev-hermit.git")
+    with pytest.raises(ValueError, match="canonical parent"):
+        validate_rows.capture_committed_validation_namespace(tmp_path, original)
+
+
+def test_committed_terminals_keep_complete_cross_schema_groups_and_failures(tmp_path: Path):
+    first = _producer_selector_row(tmp_path, record_id="old", schema_version=6)
+    modern = _producer_selector_row(tmp_path, record_id="modern", schema_version=10, corrects="old")
+    latest = _producer_selector_row(tmp_path, record_id="latest", schema_version=6, corrects="modern", result="no_result")
+    failed = _producer_selector_row(tmp_path, run_id="second-run", record_id="failed", schema_version=10)
+    write_events(tmp_path, *[_producer_selector_event(row, tmp_path) for row in (first, modern, latest, failed)])
+    commit = _commit_namespace(tmp_path)
+    with validate_rows.capture_committed_validation_namespace(tmp_path, commit) as ns:
+        selections = ns.terminals(repo="rrnewton/hermit", schema_version=10)
+        assert [item["row"] for item in selections] == [latest, failed]
+        assert [item["row"]["result"] for item in selections] == ["no_result", "fail"]
+        assert all(item["row"]["executed_tests"] is None for item in selections)
+        assert "cell_results" not in selections[1]["row"]  # selection is not admission
+        selections[0]["row"]["result"] = "pass"
+        assert ns.terminals(repo="hermit", schema_version=10)[0]["row"] == latest
+
+
+@pytest.mark.parametrize("opponent", ["missing", "branched", "disconnected"])
+def test_committed_terminals_schema_filter_cannot_hide_opposing_chain(tmp_path: Path, opponent):
+    first = _producer_selector_row(tmp_path, record_id="old", schema_version=6)
+    modern = _producer_selector_row(tmp_path, record_id="modern", schema_version=10, corrects="old")
+    records = [first, modern]
+    if opponent == "missing":
+        records = [modern]
+    else:
+        records.append(_producer_selector_row(tmp_path, record_id="opposing", schema_version=6,
+                       **({"corrects": "old"} if opponent == "branched" else {})))
+    write_events(tmp_path, *[_producer_selector_event(row, tmp_path) for row in records])
+    commit = _commit_namespace(tmp_path)
+    with validate_rows.capture_committed_validation_namespace(tmp_path, commit) as ns:
+        with pytest.raises(ValueError, match="canonical producer run"):
+            ns.terminals(repo="hermit", schema_version=10)
+
+
+def test_committed_git_refuses_implicit_fetch_at_real_transport(tmp_path: Path, monkeypatch):
+    commit = repository(tmp_path)
+    real_popen = subprocess.Popen
+    observed = []
+    def checked_popen(argv, **kwargs):
+        observed.append(kwargs["env"])
+        assert kwargs["env"]["GIT_NO_LAZY_FETCH"] == "1"
+        assert "GIT_DIR" not in kwargs["env"]
+        return real_popen(argv, **kwargs)
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "missing"))
+    monkeypatch.setenv("GIT_NO_LAZY_FETCH", "0")
+    monkeypatch.setattr(subprocess, "Popen", checked_popen)
+    assert validate_rows._committed_git(tmp_path, "rev-parse", "HEAD").decode().strip() == commit
+    assert len(observed) == 1
 
 
 @pytest.mark.parametrize("result", ["pass", "fail", "no_result"])
@@ -1683,6 +2043,8 @@ def test_linked_worktree_cli_filters_exact_source_row_and_refuses_ambiguity(
         # has to carry it or the copied script dies on import instead of
         # exercising the behaviour under test.
         Path("ci-hub/lib/bounded_capture.py"),
+        # series.py resolves its checker compiler through this existing helper.
+        Path("ci-hub/lib/rust_toolchain.py"),
         Path("ci-hub/qualifying_receipt.py"),
         Path("ci-hub/admission_paths.py"),
         Path("ci-hub/series/series.py"),
@@ -2075,12 +2437,16 @@ def count_handoff_fixture(root: Path) -> tuple[Path, dict, dict, dict]:
                                               original["started_at"], root=root)
     source = source_reply["event"]
     assert source["event_id"] == raw_receipt["event_id"]
+    # Keep the transport fixture's real owner-proof shape when binding it to
+    # this temporary Git object. A holder-only stub is not admission authority.
+    authority = copy.deepcopy(template["canonical"]["row"]["validate_lock_authority"])
+    authority["holder"]["target"] = target
     final = {**source_reply["row"], "schema_version": 5, "producer": "ci-hub-reverie-validate-run",
              "repo": "rrnewton/reverie", "tree": tree, "raw_result": "fail", "gates_run": 8,
              "gates_expected": 8, "reverie_validation_policy": "reverie-local-validation/v5",
              "coverage": template["canonical"]["row"]["coverage"],
-             "validate_lock_authority": {"holder": {
-                 key: handle[key] for key in ("unit", "target", "started_at", "process_identity")}}}
+             "safe_ci": copy.deepcopy(template["canonical"]["row"]["safe_ci"]),
+             "validate_lock_authority": authority}
     receipt = validate_rows.record_reverie_finalization(source, final, root=root)
     canonical = validate_rows.reverie_finalization(source["event_id"], receipt["event_id"], receipt["run_id"], root=root)
     assert canonical["row"]["cwd"] == str(alias)
@@ -2088,6 +2454,7 @@ def count_handoff_fixture(root: Path) -> tuple[Path, dict, dict, dict]:
     binding = {**template, "context": reverie_node.count_context(handle, path),
                "source_id": source["event_id"], "final_id": receipt["event_id"], "run_id": receipt["run_id"],
                "canonical": canonical, "canonical_sha256": hashlib.sha256(reverie_node.count_json(canonical)).hexdigest()}
+    binding["execution"]["authority"] = copy.deepcopy(authority)
     run_registry.create_record(path, handle)
     reverie_node.publish_count_sidecar(reverie_node.count_sidecar_path(path), binding)
     return path, handle, binding, receipt

@@ -29,8 +29,10 @@ RENDER_TEST = REPOSITORY / "ci-hub/tests/test_compatibility_website_render_page.
 DOCUMENTED_COMMANDS = REPOSITORY / "ci-hub/tests/documented_commands.py"
 CAPTURED_READER_ALIASES = (
     "bounded_capture",
+    "rust_toolchain",
     "ledger",
     "series",
+    "finalized_proof",
     "flaky_cells",
     "flake_class",
     "gate_completeness",
@@ -60,6 +62,41 @@ renderer_test = load_module("compatibility_website_combined_fixture", RENDER_TES
 documented_commands = load_module(
     "compatibility_website_combined_documented_commands", DOCUMENTED_COMMANDS
 )
+
+
+def test_live_builder_keeps_tool_identity_and_explicit_state_separate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    data = SimpleNamespace(build_data=lambda *args, **kwargs: calls.append((args, kwargs)) or {"fixture": True}, BuildRefused=RuntimeError)
+    monkeypatch.setattr(website, "_modules", lambda: SimpleNamespace(build_data=data))
+    monkeypatch.setattr(website, "_git_oid", lambda *_: "a" * 40)
+    state = tmp_path / "state"
+    assert website._live_data(series_ref="b" * 40, published_only=True, state_root=state) == {"fixture": True}
+    assert calls[0][0][0] == website.REPOSITORY
+    assert calls[0][1] == {"series_ref": "b" * 40, "published_only": True, "state_root": state}
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_source_overlapping_destination_refuses_before_source_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, historical: bool,
+) -> None:
+    modules = website._modules()
+    home = tmp_path / "git-managed-home"
+    checkout = home / "work/parent"
+    checkout.mkdir(parents=True)
+    (home / ".git").mkdir()
+    monkeypatch.setattr(website, "REPOSITORY", checkout)
+    monkeypatch.setattr(website, "_live_data", lambda **_: pytest.fail("must refuse before live export"))
+    monkeypatch.setattr(modules.build_data, "build_historical_data",
+                        lambda *_: pytest.fail("must refuse before historical export"))
+    # Even a sibling of the parent checkout remains inside its Git-managed home.
+    output = home / "work/parent-compatibility-website"
+    with pytest.raises(website.WebsiteRefused, match="overlaps a source directory"):
+        if historical:
+            website.build_historical(checkout, "a" * 40, "record", "run",
+                                     checkout / "hermit", "b" * 40, output)
+        else:
+            website.build(output)
+    assert not output.exists()
 
 
 def build_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
@@ -254,7 +291,8 @@ def test_compose_is_deterministic_and_exactly_binds_fixture_tree(
     html = "\n".join(
         value.decode() for path, value in first.items() if path.endswith(".html")
     )
-    assert ("Recorded data — source commits are on Overview") in html
+    assert "Recorded data — source commits are on Overview" not in html
+    assert "Hermit is a reproducible container for Linux programs" in html
     assert "Build provenance" in html
     assert "Fixture data — not current Hermit main" not in html
     assert first_manifest["freshness_sha256"] == website._digest(
@@ -1016,6 +1054,8 @@ def test_captured_stage1_reader_chain_uses_the_real_captured_modules() -> None:
     before_path = list(sys.path)
     readers = website._captured_reader_modules(website._capture_generator_bytes())
 
+    assert readers["rust_toolchain"].capture is readers["bounded_capture"].capture
+    assert readers["series"].rust_toolchain is readers["rust_toolchain"]
     assert readers["flake_class"].flaky_registry is readers["flaky_cells"]
     assert (
         readers["gate_completeness"].gate_counts is readers["flake_class"].gate_counts
@@ -1061,14 +1101,16 @@ def test_captured_reader_graph_uses_one_full_qualifying_receipt_module() -> None
             assert sys.modules[name] is before_modules[name]
 
 
+@pytest.mark.parametrize("relative", [
+    "ci-hub/compatibility-website/build_data.py", "ci-hub/lib/rust_toolchain.py",
+])
 def test_preloaded_generator_refuses_a_later_dependency_replacement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative: str,
 ) -> None:
     data = build_data(tmp_path, monkeypatch)
     website._modules.cache_clear()
     website._modules()
     changed = website._capture_generator_bytes()
-    relative = "ci-hub/compatibility-website/build_data.py"
     changed[relative] += b"\n# replaced after module load\n"
     monkeypatch.setattr(website, "_capture_generator_bytes", lambda: changed)
 
@@ -1316,6 +1358,114 @@ def test_publish_reuses_only_the_exact_valid_tree_without_touching_it(
     validated = website.validate_website(path)
     assert validated.manifest["freshness_sha256"] == path.name
     validated.close()
+
+
+def test_semantic_reproduction_is_reused_only_within_one_validation_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = build_data(tmp_path, monkeypatch)
+    original = website._reproduce_expected_bytes
+    calls = []
+
+    def reproduce(manifest: Any, files: Any) -> None:
+        calls.append(manifest["freshness_sha256"])
+        original(manifest, files)
+
+    monkeypatch.setattr(website, "_reproduce_expected_bytes", reproduce)
+    built = website.publish(data, tmp_path / "published")
+    try:
+        built.recheck()
+        assert calls == [built.path.name]
+        # A separate validation is not allowed to inherit this invocation's proof.
+        separate = website.validate_website(built.path)
+        try:
+            separate.recheck()
+            assert calls == [built.path.name, built.path.name]
+        finally:
+            separate.close()
+    finally:
+        built.close()
+
+
+def test_semantic_reuse_rejects_same_path_changed_bytes_with_restored_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = website.publish(build_data(tmp_path, monkeypatch), tmp_path / "published")
+    try:
+        artifact = built.path / "index.html"
+        before = artifact.stat()
+        original = artifact.read_bytes()
+        artifact.chmod(0o644)
+        artifact.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+        artifact.chmod(0o444)
+        os.utime(artifact, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = artifact.stat()
+        assert (before.st_ino, before.st_size, before.st_mtime_ns) == (
+            after.st_ino, after.st_size, after.st_mtime_ns
+        )
+        with pytest.raises(website.WebsiteRefused, match="artifact bytes disagree"):
+            built.recheck()
+    finally:
+        built.close()
+
+
+def test_semantic_reuse_does_not_admit_rehashed_changed_content_or_cache_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = website.publish(build_data(tmp_path, monkeypatch), tmp_path / "published")
+    try:
+        manifest = built.manifest
+        files = {row["path"]: (built.path / row["path"]).read_bytes()
+                 for row in manifest["artifacts"]}
+        files["index.html"] += b"\nchanged despite self-consistent artifact hashes\n"
+        stage = manifest["inputs"]["stage_1_build_json"]
+        changed = website._manifest(
+            stage, website._json_bytes(stage) + b"\n", files,
+            manifest["generator"]["files"], wording=manifest["generator"]["wording"],
+        )
+        assert website._validate_manifest(changed) == changed
+        for name, value in (("index.html", files["index.html"]),
+                            ("build.json", website._json_bytes(changed) + b"\n")):
+            path = built.path / name
+            path.chmod(0o644)
+            path.write_bytes(value)
+            path.chmod(0o444)
+        original = website._reproduce_expected_bytes
+        attempts = []
+
+        def reproduce(manifest: Any, files: Any) -> None:
+            attempts.append(manifest["freshness_sha256"])
+            original(manifest, files)
+
+        monkeypatch.setattr(website, "_reproduce_expected_bytes", reproduce)
+        for _ in range(2):
+            # Ignore only the directory name to reach the exact semantic boundary;
+            # all canonical manifest, file content and inventory checks still run.
+            with pytest.raises(website.WebsiteRefused, match="fresh exact reproduction"):
+                website._read_open_tree(
+                    built.descriptor, built.path, require_name=False,
+                    semantic_validation=built.semantic_validation,
+                )
+        assert attempts == [changed["freshness_sha256"]] * 2
+    finally:
+        built.close()
+
+
+def test_semantic_reuse_refuses_a_changed_generator_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = website.publish(build_data(tmp_path, monkeypatch), tmp_path / "published")
+    captured = website._capture_generator_bytes()
+    captured["ci-hub/compatibility-website/assets/favicon.svg"] += b"\n"
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(website, "_capture_generator_bytes", lambda: captured)
+            website._modules.cache_clear()
+            with pytest.raises(website.WebsiteRefused, match="generator capture changed"):
+                built.recheck()
+    finally:
+        website._modules.cache_clear()
+        built.close()
 
 
 def test_published_tree_has_read_only_files_and_directories(
@@ -3185,3 +3335,82 @@ def test_website_parser_rejects_missing_values_and_misspelled_options(
     assert "error:" in result.stderr
     assert "ci-hub compatibility-website" in result.stderr
     assert "build_and_serve.py" not in result.stderr
+
+
+def test_presentation_record_is_reproducible_and_content_bound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    data = build_data(tmp_path, monkeypatch)
+    record = renderer_test._presentation(data)
+    manifest, files = website.compose(data, presentation=record)
+    assert website.compose(data, presentation=record) == (manifest, files)
+    assert manifest["generator"]["presentation"] == record
+    assert website._validate_manifest(manifest) == manifest
+    website._reproduce_expected_bytes(manifest, {path: raw for path, raw in files.items() if path != "build.json"})
+    changed = copy.deepcopy(manifest)
+    changed["generator"]["presentation"]["commits"][0]["committed_at"] = "2026-08-19T12:00:00Z"
+    with pytest.raises(website.WebsiteRefused, match="freshness digest"):
+        website._validate_manifest(changed)
+    assert files["data/runs.json.gz"] == website.compose(data)[1]["data/runs.json.gz"]
+    record["build_started_at"] = "2026-09-22T20:00:00Z"
+    later, _ = website.compose(data, presentation=record)
+    assert later["freshness_sha256"] != manifest["freshness_sha256"]
+
+
+def test_capture_presentation_reads_exact_commit_objects_not_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    data = build_data(tmp_path, monkeypatch)
+    repo = tmp_path / "commit-dates"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid", "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid", "GIT_AUTHOR_DATE": "2026-08-20T12:00:00Z", "GIT_COMMITTER_DATE": "2026-08-20T12:00:00Z"}
+    subprocess.run(["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-qm", "dated fixture"], env=env, check=True)
+    commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    data["provenance"]["parent_commit"] = commit
+    result = website.capture_presentation(data, "2026-09-21T20:00:00Z", parent=repo, hermit=repo)
+    actual = next(row for row in result["commits"] if row["repository"] == "dev-hermit")
+    assert actual == {"repository": "dev-hermit", "commit": commit, "committed_at": "2026-08-20T12:00:00+00:00"}
+    assert all(row["committed_at"] is None for row in result["commits"] if row["repository"] == "hermit")
+    assert result["build_started_at"] == "2026-09-21T20:00:00Z"
+
+
+def test_presentation_cell_ledger_date_uses_explicit_state_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    data = build_data(tmp_path, monkeypatch)
+    parent = tmp_path / "tool-parent"
+    state = tmp_path / "operational-state"
+    ledger = state / "hermit_test_ledger"
+    for path in (parent, state, ledger):
+        path.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+    (state / ".gitmodules").write_text('[submodule "hermit_test_ledger"]\n path = hermit_test_ledger\n url = https://github.com/rrnewton/hermit_test_ledger.git\n')
+    subprocess.run(["git", "-C", str(ledger), "remote", "add", "origin", "https://github.com/rrnewton/hermit_test_ledger.git"], check=True)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid", "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid", "GIT_AUTHOR_DATE": "2026-09-16T12:00:00Z", "GIT_COMMITTER_DATE": "2026-09-16T12:00:00Z"}
+    subprocess.run(["git", "-C", str(ledger), "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-qm", "ledger date fixture"], env=env, check=True)
+    commit = subprocess.check_output(["git", "-C", str(ledger), "rev-parse", "HEAD"], text=True).strip()
+    data["provenance"]["canonical_input_provenance"].update(series_commit=commit, series_repository="https://github.com/rrnewton/hermit_test_ledger.git")
+    monkeypatch.delenv("DEV_HERMIT_TEST_LEDGER_ROOT", raising=False)
+    result = website.capture_presentation(data, "2026-09-21T20:00:00Z", parent=parent, hermit=parent, state_root=state)
+    row = next(row for row in result["commits"] if row["repository"] == "hermit_test_ledger")
+    assert row == {"repository": "hermit_test_ledger", "commit": commit, "committed_at": "2026-09-16T12:00:00+00:00"}
+    with pytest.raises(website.WebsiteRefused, match="cannot resolve recorded cell ledger"):
+        website.capture_presentation(data, "2026-09-21T20:00:00Z", parent=parent, hermit=parent, state_root=parent)
+
+
+def test_live_builder_keeps_pinned_reader_and_fresh_history_commit_separate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    data = SimpleNamespace(build_data=lambda *args, **kwargs: calls.append((args, kwargs)) or {"fixture": True}, BuildRefused=RuntimeError)
+    monkeypatch.setattr(website, "_modules", lambda: SimpleNamespace(build_data=data))
+    monkeypatch.setattr(website, "_git_oid", lambda *_: "a" * 40)
+    state = tmp_path / "actual-canonical-state"
+    assert website._live_data(series_ref="b" * 40, published_only=True,
+        state_root=state, validation_history_commit="c" * 40) == {"fixture": True}
+    args, options = calls[0]
+    assert args[0] == website.REPOSITORY and args[1] == "a" * 40
+    assert options == {"series_ref": "b" * 40, "published_only": True,
+                       "state_root": state, "validation_history_commit": "c" * 40}
+
+
+def test_finalized_proof_reader_is_captured_and_bound_not_ambient():
+    modules = website._modules()
+    proof = modules.export_inputs._proof_reader()
+    assert Path(proof.__file__) == website.REPOSITORY / "ci-hub/series/finalized_proof.py"
+    assert proof is modules.export_inputs.finalized_proof
+    assert "ci-hub/series/finalized_proof.py" in website.STAGE_1_READER_PATHS
+    assert "ci-hub/series/finalized_proof.py" in website.GENERATOR_PATHS

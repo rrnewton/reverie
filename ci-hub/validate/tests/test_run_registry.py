@@ -487,6 +487,38 @@ class RunRegistryContractTests(unittest.TestCase):
                 )
             )
 
+    def test_direct_publication_binds_storage_and_preserves_partial_failure(self) -> None:
+        repository = "https://github.com/rrnewton/hermit_test_ledger.git"
+        publication = {
+            "state": "published", "recorded_at": "2026-09-21T12:00:00Z",
+            "repository": repository, "source_repository": repository,
+            "commit": "b" * 40, "source_commit": "c" * 40,
+            "source_tree": "d" * 40, "series_commit": "c" * 40, "rows": 2,
+            "raw_publication": {"published": 2},
+            "scorecard": {"state": "published", "hermit_commit": SHA,
+                         "tool_hermit_commit": "e" * 40,
+                         "files": {"scorecard/SCORECARD.md": "f" * 64,
+                                   "scorecard/cells.json": "0" * 64}},
+        }
+        accepted = run_registry.parse_current_record(validation_handle(ledger_mirror=publication))
+        self.assertEqual(publication, accepted.raw["ledger_mirror"])
+        for field, bad in (("repository", "https://example.invalid/other"),
+                           ("source_repository", "https://github.com/rrnewton/dev-hermit.git"),
+                           ("series_commit", "a" * 40)):
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                run_registry.parse_current_record(validation_handle(ledger_mirror={**publication, field: bad}))
+        for scorecard in ({"state": "published"},
+                          {**publication["scorecard"], "hermit_commit": "unknown"},
+                          {**publication["scorecard"], "files": {}},
+                          {**publication["scorecard"], "tool_hermit_commit": "unknown"}):
+            with self.subTest(scorecard=scorecard), self.assertRaises(RuntimeError):
+                run_registry.parse_current_record(validation_handle(ledger_mirror={**publication, "scorecard": scorecard}))
+        partial = {**publication, "state": "derived-failed", "detail": "renderer failed",
+                   "scorecard": {"state": "failed", "error": "renderer failed"}}
+        accepted = run_registry.parse_current_record(validation_handle(ledger_mirror=partial))
+        self.assertEqual("c" * 40, accepted.raw["ledger_mirror"]["series_commit"])
+        self.assertEqual("derived-failed", accepted.raw["ledger_mirror"]["state"])
+
     def test_refused_admission_requires_reason_and_exit_by_name(self) -> None:
         with self.assertRaisesRegex(
             RuntimeError,

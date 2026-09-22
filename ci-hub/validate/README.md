@@ -65,6 +65,16 @@ SHA observed before launch, set `measured_against_superseded_tip=true`, and set
 `qualifying_receipt=false`. It is repeatability evidence for that exact tree,
 never a claim that the current tip passed.
 
+Hermit validation services start with a two-CPU quota, 8 GiB memory limit,
+disabled swap, and 4,096-task limit. These cover immutable-tool preparation and
+parent/driver compilation before Hermit enters its separate delegated DAG
+scope. The DAG scope and its test nodes retain their own resource budgets.
+The service wall backstop is the admission wait plus the effective child
+deadline plus 600 seconds for startup; its existing 600-second stop timeout
+covers finalization separately. An enclosing caller must leave room for both
+service phases and its own setup/status work. Hitting any backstop is a failed
+run, not successful qualification.
+
 ## Per-run output that survives the fresh checkout
 
 Disposable checkouts are created under `worktrees/validate/`. Private Cargo
@@ -115,28 +125,23 @@ and the digest of every source file so a quoted result can be checked against
 the exact bytes it used.
 
 After a canonical Hermit receipt is readable, the waiting `validate-run`
-invocation merges that run's durable per-cell results into the source
-checkout's `SCORECARD.md` and `ci/compat-envelope/cells.json`, then prints the
-exact `git diff` command for review. It does this for passing and failing
-receipts and reports an empty per-cell result set as unchanged. The write is
-refused if the source checkout moved away from the validated commit or acquired
-tracked changes while the detached service was running. That refusal does not
-change the receipt's verdict, but a green `validate-run` exits nonzero so the
-missing update cannot read as overall success. An interrupted caller leaves the
-systemd service running; `validate-run --attach <unit>` performs the same update
-when it later returns the completed run to an invoker.
+requests a combined scorecard projection and current-run observation transaction
+in `hermit_test_ledger`. The source checkout's catalogue and scorecard are not
+rewritten. The publisher queries the canonical row by run ID and verifies its
+retained proof operands and complete raw-result census before derived
+publication. Passing and failing validation rows use the same proof contract;
+a selected run with zero cells still needs a real finalized producer and an
+authenticated empty census. A pre-DAG refusal supplies neither.
 
-The next combined scorecard writer has an additive parent-side helper for
-Hermit's exact `target/validation/validate-invocation.lock` domain. It waits only
-for an explicit bounded interval, holds the lock across the future snapshot and
-two-file replacement, and refuses on contention or an unusable lock path. The
-yielded held-lock object provides `.path` and `.verify()`. It checks the named
-directory and regular lock inode before entering and when leaving normally;
-the future writer must also call `.verify()` immediately before publication.
-The exit check detects replacement but cannot undo published output. The
-existing `observe-results` caller is deliberately unchanged until the Hermit
-command can update `SCORECARD.md` and `ci/compat-envelope/cells.json` together;
-this helper alone does not change write-back authority or tracked-file lifetime.
+The combined writer holds the ledger lock across its immutable snapshot,
+catalogue reconciliation, current-run observations, and atomic derived-file
+replacement. Publication also verifies the selected tool source and measured
+checkout bindings. A publication refusal preserves the native validation
+verdict, retained results, and checkout, and is reported as incomplete delivery.
+Pending raw publication batches remain in the existing spool for the hourly
+backlog sweep; a later user validation is not required to retry them. The
+service finalizer and `validate-run --attach <unit>` use the same run-bound
+publication path.
 
 Current run handles retain wire schema 1 so already-deployed readers can
 continue observing a run started by newer code. Their complete contract is

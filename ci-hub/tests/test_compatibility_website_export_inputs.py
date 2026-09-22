@@ -205,6 +205,30 @@ def repository(
         git(repo, "commit", "-qm", "fixture inputs")
     else:
         git(repo, "commit", "--allow-empty", "-qm", "empty fixture")
+    # Current series authority is a distinct repository. Keep original parent
+    # bytes for historical readers while current export selects only the ledger.
+    ledger = repo / "hermit_test_ledger"
+    ledger.mkdir()
+    git(ledger, "init", "-q")
+    git(ledger, "config", "user.email", "ledger@example.invalid")
+    git(ledger, "config", "user.name", "ledger fixture")
+    git(ledger, "remote", "add", "origin", export_inputs.series_store.LEDGER_REPOSITORY)
+    (ledger / "series").mkdir()
+    (ledger / "series/.gitkeep").write_text("")
+    for relative, data in (files or {}).items():
+        if relative.startswith("series/"):
+            path = ledger / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+    git(ledger, "add", "series")
+    git(ledger, "commit", "-qm", "ledger fixture inputs")
+    git(ledger, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (repo / ".gitmodules").write_text(
+        '[submodule "hermit_test_ledger"]\n path = hermit_test_ledger\n'
+        f' url = {export_inputs.series_store.LEDGER_REPOSITORY}\n')
+    (repo / ".gitignore").write_text("hermit_test_ledger/\nignored/\n")
+    git(repo, "add", ".gitmodules", ".gitignore")
+    git(repo, "commit", "-qm", "declare existing ledger repository")
     return repo, git(repo, "rev-parse", "HEAD")
 
 
@@ -522,7 +546,7 @@ def install_authority_fixtures(
         lambda *, root: [event],
     )
 
-    def history_rows(*, root: Path) -> list[dict]:
+    def history_rows(*, root: Path, committed_source=None) -> list[dict]:
         return [
             {
                 "schema_version": 7,
@@ -558,10 +582,10 @@ def install_authority_fixtures(
     projection_calls: list[list[dict[str, Any]]] = []
     union_calls: list[list[Path]] = []
 
-    def published_snapshot_at(parent: Path, reference: str):
+    def published_snapshot_at(parent: Path, reference: str, **kwargs):
         published_calls.append((parent, reference))
         return export_inputs.series_store.PublishedSnapshot(
-            commit=commit,
+            commit=reference,
             rows=[published_series],
         )
 
@@ -661,6 +685,69 @@ def test_empty_inputs_stay_empty_without_a_stored_measurement_state(tmp_path: Pa
     assert "state" not in first
     assert "state" not in first["series"]
     assert "state" not in first["validation_ledger"]
+
+
+def test_published_only_export_never_discovers_local_spools(tmp_path, monkeypatch):
+    repo, commit = repository(tmp_path)
+    write_spool(repo, "ignored/ci-hub/series-spool/incomplete.jsonl", b"not-json")
+    monkeypatch.setattr(export_inputs, "_capture_mutable_sources",
+                        lambda *_: pytest.fail("published-only export inspected a local spool"))
+    result = export_inputs.build_export(repo, commit, published_only=True)
+    assert result["provenance"]["published_only"] is True
+    assert result["provenance"]["series_commit"] == git(repo / "hermit_test_ledger", "rev-parse", "HEAD")
+    assert result["series"]["row_count"] == 0
+    assert result["provenance"]["sources"] == []
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_export_binds_historical_exception_through_real_non_git_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, historical: bool,
+):
+    shards = export_inputs.validation_ledger.HISTORICAL_REPOSITORY_MISMATCH_SHARDS
+    event = next(json.loads(line) for line in (REPOSITORY / shards[0]).read_text().splitlines()
+                 if json.loads(line).get("event_id") == "legacy-000246-000")
+    body = (json.dumps(event, sort_keys=True) + "\n").encode()
+    repo, commit = repository(tmp_path, {**{str(path): body for path in shards},
+                                        "series/.gitkeep": b""})
+    monkeypatch.setattr(export_inputs, "_historical_reader_state", lambda: TEST_READER_STATE)
+    seen = []
+    real_export = export_inputs._validation_export
+
+    def observe_snapshot(root, *, committed_source=None):
+        assert not (root / ".git").exists()
+        assert committed_source == (repo.resolve(), commit)
+        seen.append(root)
+        return real_export(root, committed_source=committed_source)
+
+    monkeypatch.setattr(export_inputs, "_validation_export", observe_snapshot)
+    if historical:
+        result = export_inputs.build_historical_export(repo, commit, "historical-record", event["run_id"])
+    else:
+        result = export_inputs.build_export(repo, commit, published_only=True)
+    assert len(seen) == 1
+    rows = jsonl_rows(result["validation_ledger"]["history_rows_jsonl"])
+    assert result["validation_ledger"]["event_count"] == 1
+    assert len(rows) == 1 and rows[0]["repo"] == "reverie"
+    assert rows[0]["commit"] == event["commit"]
+    assert result["provenance"]["parent_commit"] == commit
+
+
+def test_published_export_keeps_tool_commit_separate_from_ledger_state(tmp_path):
+    state, _ = repository(tmp_path)
+    tool = tmp_path / "tool"
+    tool.mkdir()
+    git(tool, "init", "-q")
+    git(tool, "config", "user.name", "tool fixture")
+    git(tool, "config", "user.email", "tool@example.invalid")
+    git(tool, "commit", "--allow-empty", "-qm", "immutable tool fixture")
+    tool_commit = git(tool, "rev-parse", "HEAD")
+    ledger_commit = git(state / "hermit_test_ledger", "rev-parse", "HEAD")
+    assert not (tool / "hermit_test_ledger").exists()
+    result = export_inputs.build_export(tool, tool_commit, ledger_commit,
+                                        published_only=True, state_root=state)
+    assert result["provenance"]["parent_commit"] == tool_commit
+    assert result["provenance"]["series_commit"] == ledger_commit
+    assert result["series"]["row_count"] == 0
 
 
 def test_export_includes_valid_rows_from_a_partially_rejected_pressure_campaign(
@@ -778,7 +865,12 @@ def test_export_delegates_to_authorities_and_records_all_source_locations(
 
     output = build_export(repo, commit)
 
-    assert fixtures["published_calls"] == [(repo.resolve(), commit)]
+    ledger_commit = git(repo / "hermit_test_ledger", "rev-parse", "HEAD")
+    assert fixtures["published_calls"] == [(repo.resolve(), ledger_commit)]
+    assert output["provenance"]["parent_commit"] == commit
+    assert output["provenance"]["series_commit"] == ledger_commit
+    assert output["provenance"]["series_repository"] == export_inputs.series_store.LEDGER_REPOSITORY
+    assert ledger_commit != commit
     assert len(fixtures["union_calls"]) == 2
     assert all("/series/" in path.as_posix() for path in fixtures["union_calls"][0])
     assert any("/series/" in path.as_posix() for path in fixtures["union_calls"][1])
@@ -910,7 +1002,7 @@ def test_exact_august_17_rows_stay_in_opaque_history(
 ):
     rows = august_17_pre_comparison_field_rows()
     monkeypatch.setattr(export_inputs.validation_ledger, "events", lambda *, root: [])
-    monkeypatch.setattr(export_inputs.validation_ledger, "rows", lambda *, root: rows)
+    monkeypatch.setattr(export_inputs.validation_ledger, "rows", lambda *, root, committed_source=None: rows)
 
     validation = export_inputs._validation_export(tmp_path)
     exported_rows = [
@@ -1075,11 +1167,7 @@ def test_authority_returned_unknown_series_source_refuses(
 
 
 def test_tracked_symlink_at_a_ledger_path_refuses(tmp_path: Path):
-    repo = tmp_path / "parent"
-    repo.mkdir()
-    git(repo, "init", "-q")
-    git(repo, "config", "user.email", "compatibility-website@example.invalid")
-    git(repo, "config", "user.name", "compatibility website test")
+    repo, _ = repository(tmp_path)
     payload = repo / "payload.jsonl"
     payload.write_text("{}\n")
     shard = repo / "ledger/hermit/hosta/2026-08.jsonl"
@@ -1180,13 +1268,13 @@ def test_owner_path_in_authority_row_refuses(
     monkeypatch.setattr(
         export_inputs.validation_ledger,
         "rows",
-        lambda *, root: [{"cwd": "/" + "home" + "/person/private/hermit"}],
+        lambda *, root, committed_source=None: [{"cwd": "/" + "home" + "/person/private/hermit"}],
     )
     monkeypatch.setattr(
         export_inputs.series_store,
         "published_snapshot_at",
-        lambda parent, reference: export_inputs.series_store.PublishedSnapshot(
-            commit=commit,
+        lambda parent, reference, **kwargs: export_inputs.series_store.PublishedSnapshot(
+            commit=reference,
             rows=[],
         ),
     )
@@ -1226,7 +1314,7 @@ def test_historical_export_reads_only_published_bytes_and_binds_one_row(
         export_inputs, "_historical_reader_state", lambda: TEST_READER_STATE
     )
     monkeypatch.setattr(export_inputs.validation_ledger, "events", lambda *, root: [])
-    monkeypatch.setattr(export_inputs.validation_ledger, "rows", lambda *, root: [row])
+    monkeypatch.setattr(export_inputs.validation_ledger, "rows", lambda *, root, committed_source=None: [row])
     monkeypatch.setattr(
         export_inputs,
         "_discover_mutable_sources",
@@ -1240,7 +1328,7 @@ def test_historical_export_reads_only_published_bytes_and_binds_one_row(
     monkeypatch.setattr(
         export_inputs.series_store,
         "published_snapshot_at",
-        lambda _parent, reference: export_inputs.series_store.PublishedSnapshot(
+        lambda _parent, reference, **kwargs: export_inputs.series_store.PublishedSnapshot(
             commit=reference, rows=[]
         ),
     )
@@ -1417,7 +1505,7 @@ def test_main_emits_exact_valid_json_on_success(
     capsys: pytest.CaptureFixture[str],
 ):
     output = {"z": 0, "schema_version": 1}
-    monkeypatch.setattr(export_inputs, "build_export", lambda *_args: output)
+    monkeypatch.setattr(export_inputs, "build_export", lambda *_args, **_kwargs: output)
 
     result = export_inputs.main(
         ["--parent", "/does/not/matter", "--published-ref", "HEAD"]
@@ -1428,3 +1516,178 @@ def test_main_emits_exact_valid_json_on_success(
     assert captured.err == ""
     assert captured.out == '{"schema_version":1,"z":0}\n'
     assert json.loads(captured.out) == output
+
+
+# These transport cases use real immutable Git carriers and retained operand
+# bytes. The namespace double tests caller ordering only; the canonical query
+# and native schema-10 admission are exercised independently.
+def portable_capture_fixture(tmp_path: Path):
+    proof = export_inputs._proof_reader()
+    fixtures = REPOSITORY / "ci-hub/validate/tests/fixtures/schema10"
+    row = json.loads((fixtures / "ordinary-only-row.json").read_bytes())
+    row.update(repo="hermit", record_id="fixture-record")
+    state, ledger = tmp_path / "state", tmp_path / "ledger"
+    state.mkdir()
+    ledger.mkdir()
+    git(ledger, "init", "-q")
+    git(ledger, "config", "user.name", "Fixture")
+    git(ledger, "config", "user.email", "fixture@example.invalid")
+    git(ledger, "remote", "add", "origin", proof.LEDGER_REPOSITORY)
+    for role, reference in proof.row_references(row).items():
+        path = state / reference["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        suffix = "plan.json" if role == "plan" else role + ".jsonl"
+        path.write_bytes((fixtures / ("ordinary-only-" + suffix)).read_bytes())
+    artifacts, objects = proof.capture_artifacts(state, row)
+    selected = {"row": row,
+        "terminal": {"repository": "rrnewton/hermit", "run_id": row["run_id"],
+            "record_id": row["record_id"], "event_id": "fixture-event", "event_sha256": "1" * 64,
+            "hermit_commit": row["commit"]},
+        "parent": {"repository": proof.PARENT_REPOSITORY, "commit": "2" * 40,
+            "shard": "ledger/hermit/fixture/2026-09.jsonl", "blob_oid": "3" * 40,
+            "event_line_sha256": "4" * 64}}
+    manifest = proof.make_manifest(selected, artifacts, parent_commit="5" * 40,
+        hermit_tool_commit="6" * 40,
+        snapshot={"source": {"commit": "7" * 40, "tree": "8" * 40}, "rows_sha256": "9" * 64})
+    proof.stage_carrier(ledger, manifest, objects)
+    git(ledger, "add", "--", "scorecard")
+    git(ledger, "commit", "-qm", "Retained public fixture operands")
+    original_paths = {artifacts[role]["path"]: objects[proof.object_path(artifacts[role]["sha256"])]
+                      for role in proof.ROLES}
+    return proof, ledger, git(ledger, "rev-parse", "HEAD"), selected, manifest, original_paths
+
+
+class TransportNamespace:
+    def __init__(self, selection):
+        self.selection = selection
+        self.verified = []
+
+    def terminals(self, *, repo, schema_version):
+        assert (repo, schema_version) == ("hermit", 10)
+        return [self.selection]
+
+    def verify_origin(self, parent, terminal):
+        assert parent == self.selection["parent"] and terminal == self.selection["terminal"]
+        self.verified.append(terminal["event_id"])
+
+
+def test_portable_capture_restores_exact_git_bytes_and_deduplicates(tmp_path: Path):
+    proof, ledger, commit, selected, manifest, objects = portable_capture_fixture(tmp_path)
+    namespace = TransportNamespace(selected)
+    captured = export_inputs._capture_finalized_proof(namespace, ledger, commit)
+    assert namespace.verified == ["fixture-event"]
+    assert captured["manifests"] == [manifest]
+    assert captured["missing_current_terminals"] == []
+    assert set(captured["objects"]) == {hashlib.sha256(data).hexdigest() for data in objects.values()}
+    output = tmp_path / "projection-only-state"
+    output.mkdir()
+    export_inputs.stage_captured_proof(output, captured)
+    assert not (output / ".git").exists()
+    assert {path: (output / path).read_bytes() for path in objects} == objects
+    other = json.loads(json.dumps(manifest))
+    other["terminal"].update(event_id="second-event", event_sha256="a" * 64, record_id="second-record")
+    captured["manifests"] = sorted([manifest, other], key=proof.carrier_path)
+    assert export_inputs.captured_proof_objects(captured) == objects
+    assert len(captured["objects"]) == len(set(hashlib.sha256(data).hexdigest() for data in objects.values()))
+
+
+def test_portable_capture_current_correction_never_stages_old_carrier(tmp_path: Path):
+    _proof, ledger, commit, selected, _manifest, _objects = portable_capture_fixture(tmp_path)
+    selected["terminal"].update(event_id="current-correction", event_sha256="a" * 64)
+    namespace = TransportNamespace(selected)
+    captured = export_inputs._capture_finalized_proof(namespace, ledger, commit)
+    assert captured["manifests"] == [] and captured["objects"] == {}
+    assert captured["missing_current_terminals"] == [selected["terminal"]]
+    assert namespace.verified == []
+    assert export_inputs.captured_proof_objects(captured) == {}
+
+
+def test_portable_capture_present_object_tampering_refuses(tmp_path: Path):
+    proof, ledger, _commit, selected, manifest, _objects = portable_capture_fixture(tmp_path)
+    path = ledger / proof.object_path(manifest["artifacts"]["cells"]["sha256"])
+    path.write_bytes(path.read_bytes() + b" ")
+    git(ledger, "add", "--", "scorecard")
+    git(ledger, "commit", "-qm", "Tampered fixture object")
+    with pytest.raises(proof.ProofRefused, match="length"):
+        export_inputs._capture_finalized_proof(TransportNamespace(selected), ledger, git(ledger, "rev-parse", "HEAD"))
+
+
+@pytest.mark.parametrize("mutation", ["unknown", "boolean", "length", "unicode", "unused", "path"])
+def test_portable_capture_closed_exact_byte_opponents(tmp_path: Path, mutation: str):
+    proof, ledger, commit, selected, _manifest, _objects = portable_capture_fixture(tmp_path)
+    captured = export_inputs._capture_finalized_proof(TransportNamespace(selected), ledger, commit)
+    descriptor = captured["manifests"][0]["artifacts"]["plan"]
+    if mutation == "unknown":
+        captured["qualified"] = True
+    elif mutation == "boolean":
+        captured["schema"] = True
+    elif mutation == "length":
+        descriptor["bytes"] += 1
+    elif mutation == "unicode":
+        captured["objects"][descriptor["sha256"]] += "é"
+    elif mutation == "unused":
+        captured["objects"][hashlib.sha256(b"{}\n").hexdigest()] = "{}\n"
+    else:
+        descriptor["path"] = "ignored/validate/artifacts/../outside"
+    with pytest.raises((export_inputs.ExportRefused, proof.ProofRefused)):
+        export_inputs.captured_proof_objects(captured)
+
+
+def test_portable_capture_original_destination_collision_refuses(tmp_path: Path):
+    proof, ledger, commit, selected, manifest, _objects = portable_capture_fixture(tmp_path)
+    captured = export_inputs._capture_finalized_proof(TransportNamespace(selected), ledger, commit)
+    other = json.loads(json.dumps(manifest))
+    other["terminal"].update(event_id="second-event", event_sha256="a" * 64, record_id="second-record")
+    descriptor = other["artifacts"]["plan"]
+    changed = captured["objects"][descriptor["sha256"]] + "\n"
+    descriptor.update(sha256=hashlib.sha256(changed.encode()).hexdigest(), bytes=len(changed.encode()))
+    captured["objects"][descriptor["sha256"]] = changed
+    captured["manifests"] = sorted([manifest, other], key=proof.carrier_path)
+    with pytest.raises(export_inputs.ExportRefused, match="conflicting captured bytes"):
+        export_inputs.captured_proof_objects(captured)
+
+
+def test_fresh_history_capture_uses_real_state_after_public_ledger(tmp_path, monkeypatch):
+    # Reader identity is the module's existing source-guard fixture. Both data
+    # roots and the complete empty canonical namespace below are real Git.
+    monkeypatch.delenv("CI_HUB_LEDGER_EVENT_CHECKER", raising=False)
+    state, data_commit = repository(tmp_path)
+    git(state, "remote", "add", "origin", export_inputs.validation_ledger.CANONICAL_PARENT_REPOSITORY)
+    git(state, "update-ref", "refs/remotes/origin/main", data_commit)
+    tool = tmp_path / "tool"
+    tool.mkdir()
+    git(tool, "init", "-q")
+    git(tool, "config", "user.name", "tool fixture")
+    git(tool, "config", "user.email", "tool@example.invalid")
+    git(tool, "commit", "--allow-empty", "-qm", "separate reader source")
+    tool_commit = git(tool, "rev-parse", "HEAD")
+    ledger = state / "hermit_test_ledger"
+    ledger_commit = git(ledger, "rev-parse", "HEAD")
+    order = []
+    real_files = export_inputs._git_input_files
+    real_namespace = export_inputs.validation_ledger.capture_committed_validation_namespace
+
+    def capture_public(root, commit, prefixes):
+        assert root == ledger and commit == ledger_commit and prefixes == ("series",)
+        order.append("public-ledger")
+        return real_files(root, commit, prefixes)
+
+    def capture_namespace(root, commit, *, state_root):
+        assert order == ["public-ledger"]
+        assert root == state and commit == data_commit
+        assert state_root != state and not (state_root / ".git").exists()
+        order.append("canonical-parent")
+        return real_namespace(root, commit, state_root=state_root)
+
+    monkeypatch.setattr(export_inputs, "_git_input_files", capture_public)
+    monkeypatch.setattr(export_inputs.validation_ledger, "capture_committed_validation_namespace", capture_namespace)
+    output = export_inputs.build_export(tool, tool_commit, ledger_commit,
+        published_only=True, state_root=state, validation_history_commit=data_commit)
+    assert order == ["public-ledger", "canonical-parent"]
+    assert output["provenance"]["reader_commit"] == TEST_READER_STATE["commit"]
+    assert output["provenance"]["parent_commit"] == output["provenance"]["published_ref"] == data_commit
+    assert output["provenance"]["series_commit"] == ledger_commit
+    assert output["provenance"]["finalized_proof"] == {
+        "schema": 1, "manifests": [], "objects": {}, "missing_current_terminals": []}
+    assert output["validation_ledger"]["history_row_count"] == 0
+    assert not (tool / "hermit_test_ledger").exists()

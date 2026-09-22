@@ -191,6 +191,7 @@ class CapturedJson:
 class Modules:
     export_inputs: Any
     reducer: Any
+    rust_toolchain: Any
 
 
 _LOADED_MODULES: Modules | None = None
@@ -217,11 +218,20 @@ def _load_module(name: str, path: Path) -> Any:
 def _modules() -> Modules:
     global _LOADED_MODULES
     if _LOADED_MODULES is None:
+        previous_path = list(sys.path)
+        try:
+            sys.path.insert(0, str(CI_HUB / "lib"))
+            rust_toolchain = _load_module(
+                "compatibility_website_rust_toolchain", CI_HUB / "lib/rust_toolchain.py"
+            )
+        finally:
+            sys.path[:] = previous_path
         _LOADED_MODULES = Modules(
             export_inputs=_load_module(
                 "compatibility_website_export_inputs", EXPORT_INPUTS_PATH
             ),
             reducer=_load_module("compatibility_website_reduce", REDUCE_PATH),
+            rust_toolchain=rust_toolchain,
         )
     return _LOADED_MODULES
 
@@ -467,10 +477,16 @@ def _require_main_target(checkout: Path, expected_commit: str) -> None:
         )
 
 
-def _capture_canonical_input(parent: Path, parent_commit: str) -> CapturedJson:
+def _capture_canonical_input(parent: Path, parent_commit: str, *, series_ref: str | None = None, published_only: bool = False, state_root: Path | None = None, validation_history_commit: str | None = None) -> CapturedJson:
     export_inputs = _modules().export_inputs
     try:
-        value = export_inputs.build_export(parent, parent_commit)
+        options = {"published_only": published_only}
+        if state_root is not None:
+            options["state_root"] = state_root
+        if validation_history_commit is not None:
+            options["validation_history_commit"] = validation_history_commit
+        value = (export_inputs.build_export(parent, parent_commit) if series_ref is None and not published_only and state_root is None and validation_history_commit is None
+                 else export_inputs.build_export(parent, parent_commit, series_ref or "refs/remotes/origin/main", **options))
         encoded = export_inputs.render_export(value)
     except (export_inputs.ExportRefused, OSError, ValueError) as error:
         raise BuildRefused(f"canonical input export refused: {error}") from error
@@ -528,13 +544,16 @@ def _run_manifest_metadata(hermit: Path) -> CapturedJson:
     ]
     export_inputs = _modules().export_inputs
     try:
+        environment = _git_environment()
+        environment["RUSTUP_TOOLCHAIN"] = _hermit_toolchain(hermit, environment)
+        environment["RUSTUP_AUTO_INSTALL"] = "0"
         result = _capture(
             command,
             cwd=hermit,
             timeout=_MANIFEST_TIMEOUT_SECONDS,
             stdout_limit=_MAX_MANIFEST_STDOUT_BYTES,
             stderr_limit=_MAX_MANIFEST_STDERR_BYTES,
-            env=_git_environment(),
+            env=environment,
         )
     except (
         OSError,
@@ -632,6 +651,14 @@ def _bounded_projection_process(
         stderr_limit=_MAX_PROJECTION_STDERR_BYTES,
         env=environment,
     )
+
+
+def _hermit_toolchain(hermit: Path, environment: Mapping[str, str]) -> str:
+    resolver = _modules().rust_toolchain
+    try:
+        return resolver.selected_toolchain(hermit, environment=environment)
+    except resolver.ToolchainRefused as error:
+        raise BuildRefused(str(error)) from error
 
 
 def _one_json_line(encoded: bytes, label: str) -> Any:
@@ -784,6 +811,7 @@ def _run_projection(
     hermit: Path,
     hermit_main_commit: str,
     historical_identity: tuple[str, str] | None,
+    *, state_root: Path | None = None,
 ) -> dict[str, Any]:
     history, series = _opaque_projection_inputs(canonical.value)
     with tempfile.TemporaryDirectory(prefix="compatibility-website-projection-") as raw:
@@ -819,8 +847,23 @@ def _run_projection(
             )
         export_inputs = _modules().export_inputs
         try:
+            environment = _git_environment()
+            toolchain = _hermit_toolchain(hermit, environment)
+            environment["RUSTUP_TOOLCHAIN"] = toolchain
+            environment["RUSTUP_AUTO_INSTALL"] = "0"
+            command = ["rust-script", "--force", "--toolchain", toolchain, *command]
+            proof = canonical.value["provenance"].get("finalized_proof")
+            if proof is not None:
+                # This root is only the original retained-file transport. Git
+                # authority was already captured from the real canonical P root.
+                projection_state = root / "state"
+                projection_state.mkdir()
+                export_inputs.stage_captured_proof(projection_state, proof)
+                environment["DEV_HERMIT_PARENT"] = str(projection_state)
+            elif state_root is not None:
+                environment["DEV_HERMIT_PARENT"] = str(state_root.resolve())
             result = _bounded_projection_process(
-                command, cwd=REPOSITORY, environment=_git_environment()
+                command, cwd=hermit, environment=environment
             )
         except (
             OSError,
@@ -841,13 +884,39 @@ def _run_projection(
             + _process_detail(result.stderr, b"")
         )
     value = _one_json_line(result.stdout, "compatibility website projection")
-    return _validate_projection_envelope(
-        value,
-        manifest.encoded,
-        history,
-        series,
-        historical_identity,
+    projection = _validate_projection_envelope(
+        value, manifest.encoded, history, series, historical_identity,
     )
+    _require_current_carriers(canonical.value["provenance"], projection["current_validation_run_rows"])
+    return projection
+
+
+def _require_current_carriers(canonical: Mapping[str, Any], current_rows: Sequence[Any]) -> None:
+    """Check public row/operand consistency, including retained replay.
+
+    Live capture also authenticates terminal events and original Git occurrences;
+    public rows do not expose those fields for independent offline authentication.
+    """
+    proof = canonical.get("finalized_proof")
+    if proof is None:
+        return
+    captured = {
+        (item["terminal"]["run_id"], item["terminal"]["record_id"], item["terminal"]["hermit_commit"]): item
+        for item in proof["manifests"]
+    }
+    for row in current_rows:
+        if row.get("schema_version") != 10:
+            continue
+        carrier = captured.get((
+            row.get("run_id"), row.get("record_id"), row.get("commit")
+        ))
+        if carrier is None:
+            raise BuildRefused("native projection admitted schema-10 history without its current carrier")
+        evidence = _object(row.get("cell_results"), "current row cell_results")
+        recorded = _object(evidence.get("recorded"), "current row recorded cell_results")
+        artifact = _object(recorded.get("artifact"), "current row recorded cells artifact")
+        if artifact.get("sha256") != carrier["artifacts"]["cells"]["sha256"]:
+            raise BuildRefused("current row cells artifact differs from its captured carrier")
 
 
 def _historical_source(value: Any, label: str) -> dict[str, Any]:
@@ -896,7 +965,8 @@ def _historical_source(value: Any, label: str) -> dict[str, Any]:
 
 
 def _canonical_provenance(
-    value: Any, expected_parent_commit: str, *, historical: bool
+    value: Any, expected_parent_commit: str, *, historical: bool,
+    validation_history_commit: str | None = None,
 ) -> dict[str, Any]:
     base = frozenset(
         "parent_commit published_ref reader_ci_hub_tree reader_commit reader_files "
@@ -916,11 +986,22 @@ def _canonical_provenance(
         value,
         "canonical input provenance",
         required=base | (historical_fields if historical else frozenset()),
+        optional=frozenset({"series_repository", "series_commit", "series_tree", "published_only", "finalized_proof"}),
     )
+    series_fields = {"series_repository", "series_commit", "series_tree"}
+    if series_fields.intersection(provenance):
+        if not series_fields.issubset(provenance):
+            raise BuildRefused("series provenance must include repository, commit and tree together")
+        _string(provenance["series_repository"], "provenance.series_repository")
+        _sha(provenance["series_commit"], "provenance.series_commit")
+        _object_id(provenance["series_tree"], "provenance.series_tree")
     parent = _sha(provenance.get("parent_commit"), "provenance.parent_commit")
     published = _sha(provenance.get("published_ref"), "provenance.published_ref")
     reader_commit = _sha(provenance.get("reader_commit"), "provenance.reader_commit")
-    if parent != expected_parent_commit or published != expected_parent_commit:
+    data_commit = expected_parent_commit if validation_history_commit is None else _sha(validation_history_commit, "validation history commit")
+    if historical and validation_history_commit is not None:
+        raise BuildRefused("historical reproduction does not accept a live validation history commit")
+    if parent != data_commit or published != data_commit:
         raise BuildRefused(
             "canonical input provenance parent_commit and published_ref must equal the requested parent commit"
         )
@@ -928,6 +1009,15 @@ def _canonical_provenance(
         raise BuildRefused(
             "live canonical input reader commit must equal the requested parent commit"
         )
+    if ("finalized_proof" in provenance) != (validation_history_commit is not None):
+        raise BuildRefused("fresh validation history requires its captured finalized proof operands")
+    if validation_history_commit is not None:
+        if provenance.get("published_only") is not True:
+            raise BuildRefused("fresh validation history requires published-only inputs")
+        try:
+            _modules().export_inputs.captured_proof_objects(provenance["finalized_proof"])
+        except (ValueError, _modules().export_inputs.ExportRefused) as error:
+            raise BuildRefused(f"captured finalized proof refused: {error}") from error
     _object_id(provenance.get("reader_ci_hub_tree"), "provenance.reader_ci_hub_tree")
     reader = _exact_object(
         provenance.get("reader_hermit"),
@@ -1348,6 +1438,11 @@ def _build_provenance(
     canonical_provenance = dict(canonical_provenance)
     if "historical" in projection:
         canonical_provenance["historical"] = projection["historical"]
+    metadata_schema = _integer(
+        manifest_document.value.get("schema"), "manifest metadata schema", minimum=1
+    )
+    if metadata_schema != 2:
+        raise BuildRefused("new manifest metadata must use schema 2 with separate CPU and wall limits")
     provenance = {
         "build_data_schema_version": SCHEMA_VERSION,
         "canonical_input_bytes_sha256": hashlib.sha256(
@@ -1364,7 +1459,7 @@ def _build_provenance(
             manifest_document.encoded
         ).hexdigest(),
         "manifest_metadata_projection_sha256": _digest(manifest),
-        "manifest_metadata_schema": 1,
+        "manifest_metadata_schema": metadata_schema,
         "manifest_schema": manifest["manifest_schema"],
         "manifest_sha256": manifest["manifest_sha256"],
         "parent_commit": commits["parent"],
@@ -1388,6 +1483,8 @@ def _build_provenance(
         "validation_history_rows_projection_sha256": _digest(history),
         "validation_history_rows_sha256": history_input["sha256"],
     }
+    if "validation_history" in commits:
+        provenance["validation_history_commit"] = commits["validation_history"]
     if "historical" in projection:
         source = _historical_source(projection["historical"], "projection.historical")
         provenance["historical"] = {
@@ -1724,7 +1821,7 @@ def _validate_stage_provenance(
         provenance,
         "provenance",
         required=_PROVENANCE_FIELDS,
-        optional=frozenset({"historical"}),
+        optional=frozenset({"historical", "validation_history_commit"}),
     )
     for field in ("hermit_commit", "hermit_main_commit", "parent_commit"):
         _sha(item.get(field), f"provenance.{field}")
@@ -1745,7 +1842,9 @@ def _validate_stage_provenance(
         _integer(item.get(field), f"provenance.{field}")
     if item["build_data_schema_version"] != SCHEMA_VERSION:
         raise BuildRefused("provenance build-data schema version is unsupported")
-    if item["manifest_metadata_schema"] != 1:
+    # Schema 1 remains readable only as an already-normalized legacy artifact.
+    # New raw metadata goes through the Rust projector's strict schema-2 gate.
+    if item["manifest_metadata_schema"] not in {1, 2}:
         raise BuildRefused("provenance manifest metadata schema is unsupported")
     if item["reducer_schema_version"] != _modules().reducer.SCHEMA_VERSION:
         raise BuildRefused("provenance reducer schema version is unsupported")
@@ -1795,13 +1894,15 @@ def _validate_stage_provenance(
             field: historical_source[field] for field in ("record_id", "run_id")
         }
     canonical_value = _canonical_provenance(
-        canonical_request, item["parent_commit"], historical=historical
+        canonical_request, item["parent_commit"], historical=historical,
+        validation_history_commit=item.get("validation_history_commit"),
     )
     comparable_canonical = dict(canonical)
     if historical:
         comparable_canonical["historical"] = canonical_request["historical"]
     if canonical_value != comparable_canonical:
         raise BuildRefused("canonical input provenance is not canonical")
+    _require_current_carriers(canonical_value, runs["current_validation_run_rows"])
     if historical:
         source = _exact_object(
             item.get("historical"),
@@ -2047,12 +2148,14 @@ def _build_from_captured(
     hermit: Path,
     commits: Mapping[str, str],
     historical_identity: tuple[str, str] | None,
+    *, state_root: Path | None = None,
 ) -> dict[str, Any]:
     historical = historical_identity is not None
     canonical_provenance = _canonical_provenance(
         canonical_document.value.get("provenance"),
         commits["parent"],
         historical=historical,
+        validation_history_commit=commits.get("validation_history"),
     )
     if historical:
         request = _object(canonical_provenance["historical"], "historical request")
@@ -2085,6 +2188,7 @@ def _build_from_captured(
         hermit,
         commits["hermit_main"],
         historical_identity,
+        **({"state_root": state_root} if state_root is not None else {}),
     )
     reduced = _reduce_projection(projection)
     provenance = _build_provenance(
@@ -2103,6 +2207,11 @@ def build_data(
     hermit_value: Path,
     hermit_commit_value: str,
     hermit_main_commit_value: str,
+    *,
+    series_ref: str | None = None,
+    published_only: bool = False,
+    state_root: Path | None = None,
+    validation_history_commit: str | None = None,
 ) -> dict[str, Any]:
     """Build one deterministic reduction from exact current authorities."""
     _modules()
@@ -2114,7 +2223,14 @@ def build_data(
     )
     hermit = _require_checkout(hermit_value, hermit_commit, label="Hermit", clean=True)
     _require_main_target(hermit, main)
-    canonical = _capture_canonical_input(parent, parent_commit)
+    options = {}
+    if series_ref is not None or published_only:
+        options.update(series_ref=series_ref, published_only=published_only)
+    if state_root is not None:
+        options["state_root"] = state_root
+    if validation_history_commit is not None:
+        options["validation_history_commit"] = _sha(validation_history_commit, "validation history commit")
+    canonical = _capture_canonical_input(parent, parent_commit, **options)
     manifest = _run_manifest_metadata(hermit)
     _require_checkout(parent, parent_commit, label="dev-hermit", clean=True)
     _require_checkout(hermit, hermit_commit, label="Hermit", clean=True)
@@ -2123,8 +2239,10 @@ def build_data(
         canonical,
         manifest,
         hermit,
-        {"hermit": hermit_commit, "hermit_main": main, "parent": parent_commit},
+        {"hermit": hermit_commit, "hermit_main": main, "parent": parent_commit,
+         **({"validation_history": validation_history_commit} if validation_history_commit is not None else {})},
         None,
+        **({"state_root": state_root} if state_root is not None else {}),
     )
     _require_checkout(parent, parent_commit, label="dev-hermit", clean=True)
     _require_checkout(hermit, hermit_commit, label="Hermit", clean=True)

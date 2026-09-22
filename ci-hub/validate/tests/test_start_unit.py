@@ -43,6 +43,20 @@ def wrkslots_action(command: list[str], action: str) -> bool:
 
 
 
+def publication_report(target: str) -> dict:
+    return {
+        "state": "published", "commit": "d" * 40,
+        "source_commit": "e" * 40, "source_tree": "f" * 40, "rows": 17,
+        "repository": start_unit.CELL_LEDGER_REPOSITORY,
+        "source_repository": start_unit.CELL_LEDGER_REPOSITORY,
+        "series_commit": "e" * 40, "raw_publication": {"published": 17},
+        "scorecard": {
+            "state": "published", "hermit_commit": target,
+            "files": {"scorecard/SCORECARD.md": "1" * 64, "scorecard/cells.json": "2" * 64},
+        },
+    }
+
+
 class FakeRun:
     def __init__(self, checkout: Path) -> None:
         self.checkout = checkout
@@ -304,6 +318,7 @@ class FakeRun:
             if self.scorecard_tamper_on_status is not None and status_checkout is not None:
                 tampered = status_checkout / self.scorecard_tamper_on_status
                 tampered.write_text(tampered.read_text() + "tampered after writeback\n")
+                self.fresh_authored_work = (1, 0)
             active = (
                 []
                 if self.wrkslots_status_active is False
@@ -868,23 +883,18 @@ class FakeRun:
                 stderr=self.scorecard_stderr,
             )
         if len(command) > 1 and command[1].endswith("ci-hub/series/mirror.py"):
+            report = publication_report(self.target)
+            native = self.ledger_mirror_rc
+            if self.scorecard_head_after_write is not None:
+                self.fresh_head = self.scorecard_head_after_write
+            if self.scorecard_rc or self.scorecard_head_after_write is not None:
+                report["state"] = "derived-failed"
+                detail = self.scorecard_stderr or "scorecard source checkout HEAD changed"
+                report["scorecard"] = {"state": "failed", "error": detail}
+                native = 1
             return completed(
-                command,
-                rc=self.ledger_mirror_rc,
-                stdout=(
-                    json.dumps(
-                        {
-                            "state": "published",
-                            "commit": "d" * 40,
-                            "source_commit": "e" * 40,
-                            "source_tree": "f" * 40,
-                            "rows": 17,
-                        }
-                    )
-                    + "\n"
-                    if self.ledger_mirror_rc == 0
-                    else ""
-                ),
+                command, rc=native,
+                stdout=json.dumps(report) + "\n" if self.ledger_mirror_rc == 0 else "",
                 stderr=self.ledger_mirror_stderr,
             )
         if command[0].endswith("preflight_validate.py"):
@@ -976,7 +986,8 @@ class FakeRun:
                 "# ci-hub/validate-lock tool COST ACTUAL wall=1.0s cpu=0.1s "
                 f"cpu_user=0.1s cpu_system=0.0s exit={self.actual_exit}"
             )
-            Path(output).write_text("\n".join(lines) + "\n")
+            with Path(output).open("a") as log:
+                log.write("\n".join(lines) + "\n")
             environment: dict[str, str] = {}
             for flag, value in zip(command, command[1:]):
                 if flag == "--setenv" and "=" in value:
@@ -1123,6 +1134,70 @@ class RetainedStepProfilesTest(unittest.TestCase):
         self.assertFalse(any(item.startswith("CARGO_BUILD_JOBS=") for item in command))
 
 
+class HermitServiceResourcesTest(unittest.TestCase):
+    def command(self, **overrides: object) -> list[str]:
+        arguments = dict(
+            root=Path("/immutable/tool"), state_root=Path("/canonical/state"),
+            checkout=Path("/measured/hermit"), target=SHA, agent="fixture",
+            unit="validate-startup-fixture", record=Path("/state/run.json"),
+            log=Path("/state/run.log"), pr=None, validate_args=["quick"],
+            wait=120, hold=1200, child_deadline=4800,
+            environment={"HOME": "/home/test", "PATH": "/usr/bin:/bin"},
+        )
+        arguments.update(overrides)
+        return start_unit.build_systemd_command(**arguments)
+
+    def properties(self, command: list[str]) -> dict[str, str]:
+        return dict(command[index + 1].split("=", 1)
+                    for index, value in enumerate(command[:-1]) if value == "--property")
+
+    def test_limits_are_initial_service_properties_before_any_tool_execution(self) -> None:
+        command = self.command()
+        properties = self.properties(command)
+        self.assertEqual("200%", properties["CPUQuota"])
+        self.assertEqual("8589934592", properties["MemoryMax"])
+        self.assertEqual("0", properties["MemorySwapMax"])
+        self.assertEqual("4096", properties["TasksMax"])
+        self.assertEqual("5520", properties["RuntimeMaxSec"])
+        self.assertEqual("600", properties["TimeoutStopSec"])
+        tool_index = command.index("/immutable/tool/ci-hub/ci-hub")
+        for key in ("CPUQuota", "MemoryMax", "MemorySwapMax", "TasksMax", "RuntimeMaxSec"):
+            self.assertLess(command.index(f"{key}={properties[key]}"), tool_index)
+        self.assertEqual("4800", command[command.index("--child-deadline") + 1])
+        self.assertIn("HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS=4200", command)
+        self.assertFalse(any("DAGRUN_OUTER_MEMORY_MAX_BYTES" in value for value in command))
+
+    def test_wall_encloses_effective_child_and_requested_queue_wait(self) -> None:
+        for wait, requested_child, effective_child in [(1, 120, 120), (7200, 3600, 3600), (120, 7200, 4800)]:
+            with self.subTest(wait=wait, child=requested_child):
+                command = self.command(wait=wait, child_deadline=requested_child)
+                properties = self.properties(command)
+                self.assertEqual(effective_child, int(command[command.index("--child-deadline") + 1]))
+                self.assertEqual(wait + effective_child + 600, int(properties["RuntimeMaxSec"]))
+                self.assertGreater(int(properties["RuntimeMaxSec"]), wait + effective_child)
+                self.assertEqual("600", properties["TimeoutStopSec"])
+
+    def test_frozen_and_detached_current_tool_transports_keep_the_same_limits(self) -> None:
+        ordinary = self.properties(self.command())
+        for extra in [
+            {"frozen_validate": True, "frozen_result": Path("/state/frozen.jsonl"),
+             "driver_rust_toolchain": "nightly-2026-07-12-x86_64-unknown-linux-gnu"},
+            {"unit_tool_prefix": ["/installed/bootstrap", "--run-current-tool"]},
+        ]:
+            with self.subTest(extra=extra):
+                actual = self.properties(self.command(**extra))
+                for key in ("CPUQuota", "MemoryMax", "MemorySwapMax", "TasksMax", "RuntimeMaxSec", "TimeoutStopSec"):
+                    self.assertEqual(ordinary[key], actual[key])
+
+    def test_reverie_keeps_its_existing_service_and_payload_bounds(self) -> None:
+        command = self.command(repo="rrnewton/reverie", child_deadline=3600)
+        properties = self.properties(command)
+        for key in ("CPUQuota", "MemoryMax", "MemorySwapMax", "TasksMax", "RuntimeMaxSec"):
+            self.assertNotIn(key, properties)
+        self.assertEqual("600", properties["TimeoutStopSec"])
+        self.assertEqual("3600", command[command.index("--child-deadline") + 1])
+
+
 class StartUnitTest(unittest.TestCase):
     def test_run_handle_kind_is_the_validate_lock_kind(self) -> None:
         self.assertEqual(
@@ -1157,6 +1232,14 @@ class StartUnitTest(unittest.TestCase):
         (compat / "cells.json").write_text("{}\n")
         (self.root / "ci-hub/validate").mkdir(parents=True)
         self.fake = FakeRun(self.checkout)
+        # These launcher fixtures model subprocesses and source trees. Rustup
+        # resolution has separate real-context controls in test_rust_toolchain.
+        toolchain_patch = mock.patch.object(
+            start_unit.rust_toolchain, "selected_toolchain",
+            return_value="nightly-2026-07-12-x86_64-unknown-linux-gnu",
+        )
+        self.toolchain = toolchain_patch.start()
+        self.addCleanup(toolchain_patch.stop)
         self.environment = {
             "HOME": "/home/test",
             "PATH": "/usr/bin:/bin",
@@ -1201,6 +1284,74 @@ class StartUnitTest(unittest.TestCase):
                 sleep=lambda _seconds: None,
             )
         return rc, out.getvalue(), err.getvalue()
+
+    @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
+    def test_measured_toolchain_reaches_unit_and_retained_log(self, _pane) -> None:
+        environment = {**self.environment, "RUSTUP_TOOLCHAIN": "stable"}
+        rc, _output, error = self.invoke(
+            ["--in-place", "--", "quick"], environment=environment
+        )
+        self.assertEqual(0, rc, error)
+        self.assertEqual(self.checkout, self.toolchain.call_args.args[0])
+        selected = self.toolchain.return_value
+        commands = [c for c in self.fake.commands if c[0] == "systemd-run"]
+        self.assertEqual(1, len(commands))
+        self.assertIn(f"RUSTUP_TOOLCHAIN={selected}", commands[0])
+        self.assertNotIn("RUSTUP_TOOLCHAIN=stable", commands[0])
+        self.assertIn("RUSTUP_AUTO_INSTALL=0", commands[0])
+        record = run_registry.read_record(run_registry.record_path(self.root, "validate-test"))
+        log = Path(record["log"]).read_text()
+        self.assertIn(selected, log)
+        self.assertIn(str(self.checkout / "rust-toolchain.toml"), log)
+
+    def test_toolchain_refusal_precedes_runtime_cache_and_unit(self) -> None:
+        self.toolchain.side_effect = start_unit.rust_toolchain.ToolchainRefused(
+            "configured Hermit toolchain is unavailable"
+        )
+        rc, _output, error = self.invoke(["--in-place", "--", "quick"])
+        self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
+        self.assertIn("configured Hermit toolchain is unavailable", error)
+        self.assertFalse(any(c[0] in {"mktemp", "systemd-run"} for c in self.fake.commands))
+        self.assertFalse(run_registry.record_path(self.root, "validate-test").exists())
+
+    @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
+    def test_frozen_driver_uses_current_tool_hermit_toolchain(self, _pane) -> None:
+        measured = "nightly-2026-06-01-x86_64-unknown-linux-gnu"
+        driver = "nightly-2026-07-12-x86_64-unknown-linux-gnu"
+        self.toolchain.side_effect = [measured, driver]
+        rc, _output, error = self.invoke(["--frozen-validate", "--", "quick"])
+        self.assertEqual(0, rc, error)
+        self.assertIsNotNone(self.fake.fresh)
+        self.assertNotEqual(self.checkout, self.fake.fresh)
+        self.assertEqual(self.fake.fresh, self.toolchain.call_args_list[0].args[0])
+        self.assertEqual(self.root / "hermit", self.toolchain.call_args.args[0])
+        command = next(c for c in self.fake.commands if c[0] == "systemd-run")
+        self.assertIn(f"RUSTUP_TOOLCHAIN={measured}", command)
+        self.assertNotIn(f"RUSTUP_TOOLCHAIN={driver}", command)
+        rust_script = command.index("rust-script")
+        self.assertEqual(
+            ["--force", "--toolchain", driver], command[rust_script + 1:rust_script + 4]
+        )
+        record = run_registry.read_record(run_registry.record_path(self.root, "validate-test"))
+        self.assertFalse(record["qualifying_receipt"])
+        log = Path(record["log"]).read_text()
+        self.assertIn(f"Rust toolchain {driver} selected from {self.root / 'hermit/rust-toolchain.toml'}", log)
+        self.assertIn(f"measured Rust toolchain {measured} selected from {self.fake.fresh / 'rust-toolchain.toml'}", log)
+
+    @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
+    def test_default_deadline_encloses_committed_quick_nodes_and_cleanup(self, _pane) -> None:
+        rc, _output, error = self.invoke(["--in-place", "--", "quick"])
+        self.assertEqual(0, rc, error)
+        record = run_registry.read_record(run_registry.record_path(self.root, "validate-test"))
+        whole = record["hermit_run_timeout_seconds"]
+        child = record["validate_lock_child_deadline_seconds"]
+        dag = json.loads((start_unit.ROOT / "hermit/ci/dag/validate.json").read_text())
+        quick = [s for s in dag["steps"] if "quick" in s.get("labels", [])]
+        self.assertTrue(quick)
+        self.assertLess(max(s["timeout"] for s in quick), whole)
+        self.assertLess(whole + max(60, whole // 10), child)
+        self.assertLessEqual(whole, start_unit.HERMIT_MAX_RUN_TIMEOUT_SECONDS)
+        self.assertLessEqual(child, start_unit.HERMIT_MAX_CHILD_DEADLINE_SECONDS)
 
     def write_validation_service_schema(self, version: int) -> None:
         schema_path = self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
@@ -1801,7 +1952,7 @@ class StartUnitTest(unittest.TestCase):
             ],
             systemd[-8:],
         )
-        self.assertIn("HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS=3239", systemd)
+        self.assertIn("HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS=4200", systemd)
         pane_run = next(command for command in self.fake.commands if "pane_watch.py" in " ".join(command))
         self.assertIn("herdr", pane_run)
         self.assertNotIn("scripts/validate.rs", pane_run)
@@ -1820,8 +1971,8 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(55, record["executed_nodes"])
         self.assertEqual("observer-only", record["pane_role"])
         self.assertEqual("codex/fixture-branch", record["branch"])
-        self.assertEqual(3600, record["validate_lock_child_deadline_seconds"])
-        self.assertEqual(3239, record["hermit_run_timeout_seconds"])
+        self.assertEqual(4800, record["validate_lock_child_deadline_seconds"])
+        self.assertEqual(4200, record["hermit_run_timeout_seconds"])
 
     def test_materialized_profile_artifact_survives_checkout_cleanup(self) -> None:
         profile = (
@@ -3457,48 +3608,24 @@ class StartUnitTest(unittest.TestCase):
             )
         )
 
-    def test_completed_validate_updates_scorecard_after_receipt_before_cleanup(self) -> None:
+    def test_completed_validate_publishes_ledger_after_receipt_before_cleanup(self) -> None:
         self.plant_per_cell_results()
-        self.fake.scorecard_update = True
-
+        before = self.worktree_bytes(self.checkout)
         rc, output, error = self.invoke()
-
         self.assertEqual(0, rc, error)
-        self.assertIn("compatibility scorecard: generated files changed", output)
-        self.assertIn(
-            f"git -C {self.checkout} diff -- SCORECARD.md ci/compat-envelope/cells.json",
-            output,
-        )
-        self.assertTrue((self.checkout / "SCORECARD.md").read_text().endswith("updated\n"))
-        self.assertTrue(
-            (self.checkout / "ci/compat-envelope/cells.json")
-            .read_text()
-            .endswith("updated\n")
-        )
-        receipt_index = next(
-            index
-            for index, command in enumerate(self.fake.commands)
-            if command[0].endswith("ci-hub")
-            and command[1:3] == ["validate-status", "--sha"]
-        )
-        scorecard_index = next(
-            index
-            for index, command in enumerate(self.fake.commands)
-            if command[0].endswith("scorecard.rs")
-        )
-        cleanup_index = next(
-            index
-            for index, command in enumerate(self.fake.commands)
-            if wrkslots_action(command, "remove")
-        )
-        publish_index = next(
-            index
-            for index, command in enumerate(self.fake.commands)
-            if len(command) > 1 and command[1] == "publish-commit-status"
-        )
-        self.assertLess(receipt_index, scorecard_index)
-        self.assertLess(scorecard_index, publish_index)
-        self.assertLess(publish_index, cleanup_index)
+        self.assertEqual(before, self.worktree_bytes(self.checkout))
+        self.assertIn("CELL LEDGER PUBLISHED", error)
+        receipt_index = next(i for i, c in enumerate(self.fake.commands)
+                             if c[0].endswith("ci-hub") and c[1:3] == ["validate-status", "--sha"])
+        ledger_index = next(i for i, c in enumerate(self.fake.commands)
+                            if len(c) > 1 and c[1].endswith("ci-hub/series/mirror.py"))
+        status_index = next(i for i, c in enumerate(self.fake.commands)
+                            if len(c) > 1 and c[1] == "publish-commit-status")
+        cleanup_index = next(i for i, c in enumerate(self.fake.commands) if wrkslots_action(c, "remove"))
+        self.assertLess(receipt_index, ledger_index)
+        self.assertLess(ledger_index, status_index)
+        self.assertLess(status_index, cleanup_index)
+        self.assertFalse(any(c[0].endswith("scorecard.rs") for c in self.fake.commands))
 
     def test_green_validate_publishes_exact_sha_from_canonical_state_root_once(self) -> None:
         rc, _output, error = self.invoke()
@@ -3586,7 +3713,7 @@ class StartUnitTest(unittest.TestCase):
         rc, _output, error = self.invoke()
 
         self.assertEqual(0, rc, error)
-        self.assertIn("LEDGER MIRROR PUBLISHED", error)
+        self.assertIn("CELL LEDGER PUBLISHED", error)
         record = start_unit.run_registry.read_record(
             self.root / "ignored/validate/runs/validate-test.json"
         )
@@ -3601,9 +3728,15 @@ class StartUnitTest(unittest.TestCase):
             {
                 key: value
                 for key, value in record["ledger_mirror"].items()
-                if key != "recorded_at"
+                if key in {"state", "commit", "source_commit", "source_tree", "rows"}
             },
         )
+        self.assertTrue(start_unit.cell_ledger_published(record))
+        self.assertFalse(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
+        publication = next(command for command in self.fake.commands
+                           if len(command) > 1 and command[1].endswith("ci-hub/series/mirror.py"))
+        self.assertIn("--results", publication)
+        self.assertEqual("validate-test.service", publication[publication.index("--finalized-run-id") + 1])
 
     def test_ledger_mirror_failure_is_loud_without_changing_green_verdict(self) -> None:
         self.fake.ledger_mirror_rc = 1
@@ -3612,7 +3745,7 @@ class StartUnitTest(unittest.TestCase):
         rc, _output, error = self.invoke()
 
         self.assertEqual(0, rc)
-        self.assertIn("LEDGER MIRROR FAILED", error)
+        self.assertIn("CELL LEDGER PUBLICATION INCOMPLETE", error)
         self.assertIn("remote push refused", error)
         self.assertIn("canonical validation verdict is unchanged", error)
         record = start_unit.run_registry.read_record(
@@ -3633,10 +3766,7 @@ class StartUnitTest(unittest.TestCase):
         # production finalize_ledger_mirror -> run_command boundary.
         mirror = self.root / "ci-hub/series/mirror.py"
         mirror.parent.mkdir(parents=True)
-        report = {
-            "state": "published", "commit": "d" * 40,
-            "source_commit": "e" * 40, "source_tree": "f" * 40, "rows": 17,
-        }
+        report = publication_report(SHA)
         mirror.write_text(
             "import json, sys\n"
             f"print(json.dumps({report!r}))\n"
@@ -3676,12 +3806,12 @@ class StartUnitTest(unittest.TestCase):
         if exit_code == 0:
             self.assertEqual("published", record["ledger_mirror"]["state"])
             self.assertEqual(17, record["ledger_mirror"]["rows"])
-            self.assertIn("LEDGER MIRROR PUBLISHED", error)
+            self.assertIn("CELL LEDGER PUBLISHED", error)
         else:
             self.assertEqual("failed", record["ledger_mirror"]["state"])
             self.assertIn("exit 7", record["ledger_mirror"]["detail"])
             self.assertIn("synthetic mirror diagnostic", record["ledger_mirror"]["detail"])
-            self.assertIn("LEDGER MIRROR FAILED", error)
+            self.assertIn("CELL LEDGER PUBLICATION INCOMPLETE", error)
 
     def test_successful_publication_is_not_repeated_on_reentry(self) -> None:
         rc, _output, error = self.invoke()
@@ -3711,76 +3841,66 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertEqual(before, after)
 
-    def test_no_per_cell_results_is_an_explicit_unchanged_success(self) -> None:
+    def test_completion_without_local_cell_files_still_calls_ledger_publisher(self) -> None:
         rc, output, error = self.invoke()
-
         self.assertEqual(0, rc, error)
-        self.assertIn("compatibility scorecard: generated files unchanged", output)
-        self.assertTrue(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
+        self.assertIn("CELL LEDGER PUBLISHED", error)
+        self.assertFalse(any(c[0].endswith("scorecard.rs") for c in self.fake.commands))
+        self.assertTrue(any(len(c) > 1 and c[1].endswith("ci-hub/series/mirror.py") for c in self.fake.commands))
 
-    def test_scorecard_refuses_a_moved_source_checkout(self) -> None:
+    def test_retired_writeback_helper_never_invokes_a_hermit_writer(self) -> None:
         results = self.plant_per_cell_results()
         self.fake.source_head = "b" * 40
         out, error = io.StringIO(), io.StringIO()
-
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(error):
             updated = start_unit.write_scorecard_from_results(
-                self.checkout, SHA, results, run=self.fake, json_output=False
-            )
+                self.checkout, SHA, results, run=self.fake, json_output=False)
+        self.assertIsNone(updated)
+        self.assertIn("local scorecard writeback is retired", error.getvalue())
+        self.assertIn("canonical validation verdict is unchanged", error.getvalue())
+        self.assertEqual([], self.fake.commands)
 
-        self.assertFalse(updated)
-        self.assertIn("compatibility scorecard NOT UPDATED", error.getvalue())
-        self.assertIn("established validate verdict is unchanged", error.getvalue())
-        self.assertFalse(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
-
-    def test_generated_file_changes_are_left_to_the_scorecard_writer(self) -> None:
+    def test_pending_hermit_scorecard_edits_are_preserved_by_publication(self) -> None:
         self.plant_per_cell_results()
         (self.checkout / "SCORECARD.md").write_text("pending review\n")
-
+        before = self.worktree_bytes(self.checkout)
         rc, _output, error = self.invoke()
-
         self.assertEqual(0, rc, error)
-        self.assertTrue(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
+        self.assertEqual(before, self.worktree_bytes(self.checkout))
+        self.assertIn("CELL LEDGER PUBLISHED", error)
+        self.assertFalse(any(c[0].endswith("scorecard.rs") for c in self.fake.commands))
 
-    def test_red_validate_still_updates_scorecard(self) -> None:
+    def test_red_validate_still_publishes_ledger_without_rewriting_verdict(self) -> None:
         self.plant_per_cell_results()
         self.fake.canonical_verdict = "FAILED"
         self.fake.canonical_status_rc = start_unit.EXIT_FAILED
-        self.fake.scorecard_update = True
-
+        before = self.worktree_bytes(self.checkout)
         rc, output, error = self.invoke()
-
         self.assertEqual(start_unit.EXIT_FAILED, rc, error)
         self.assertIn("verdict=FAILED exit=3", output)
-        self.assertIn("compatibility scorecard: generated files changed", output)
-        self.assertTrue(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
+        self.assertIn("CELL LEDGER PUBLISHED", error)
+        self.assertEqual(before, self.worktree_bytes(self.checkout))
+        self.assertFalse(any(c[0].endswith("scorecard.rs") for c in self.fake.commands))
 
-    def test_scorecard_failure_makes_green_command_nonzero_after_printing_verdict(self) -> None:
-        self.plant_per_cell_results()
+    def test_derived_failure_preserves_green_verdict_and_retains_inputs(self) -> None:
+        results = self.plant_per_cell_results()
         self.fake.scorecard_rc = 2
         self.fake.scorecard_stderr = "observe-results refuses unrelated tracked changes\n"
-
         rc, output, error = self.invoke()
-
-        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
         self.assertIn("RECEIPT-CANONICAL", output)
         self.assertIn("verdict=VALIDATED exit=0", output)
         self.assertIn("refuses unrelated tracked changes", error)
-        self.assertIn("compatibility scorecard NOT UPDATED", error)
-        self.assertIn("established validate verdict is unchanged", error)
-        self.assertFalse(
-            any(
-                len(command) > 1 and command[1] == "publish-commit-status"
-                for command in self.fake.commands
-            )
-        )
-        record = start_unit.run_registry.read_record(
-            self.root / "ignored/validate/runs/validate-test.json"
-        )
-        self.assertEqual(
-            "scorecard write-back did not complete",
-            record["commit_status_publication"]["reason"],
-        )
+        self.assertIn("CELL LEDGER PUBLICATION INCOMPLETE", error)
+        self.assertIn("canonical validation verdict is unchanged", error)
+        self.assertFalse(any(len(c) > 1 and c[1] == "publish-commit-status" for c in self.fake.commands))
+        self.assertEqual([], self.fake.removed)
+        self.assertTrue(results.exists())
+        record = run_registry.read_record(self.root / "ignored/validate/runs/validate-test.json")
+        self.assertEqual("derived-failed", record["ledger_mirror"]["state"])
+        self.assertEqual("e" * 40, record["ledger_mirror"]["series_commit"])
+        self.assertFalse(start_unit.cell_ledger_published(record))
+        self.assertEqual("scorecard write-back did not complete", record["commit_status_publication"]["reason"])
 
     @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
     def test_linked_parent_uses_shared_state_and_exact_tooling(
@@ -5024,32 +5144,17 @@ class StartUnitTest(unittest.TestCase):
             )
         return rc, err.getvalue()
 
-    def test_retire_unit_attempts_no_removal_unless_the_handoff_published(
-        self,
-    ) -> None:
-        """The ordering the directive requires: evidence out first, tree second.
-
-        ⚠️ ASSERTS THAT NO REMOVAL WAS ATTEMPTED, not merely that the tree
-        survived. An earlier version checked the exit code and `fresh.exists()`;
-        both were true with the writeback SUCCEEDING too, because this path also
-        refuses at the later handoff step, so it passed whatever happened
-        upstream and proved nothing. The absence of the removal command is the
-        observable that only this guard produces.
-
-        These fixtures cannot reach the SUCCESS path -- the writeback needs a
-        real checkout at the producing commit -- so this covers the refusal
-        direction only, and says so rather than implying coverage it lacks.
-        """
-
-        fresh, _record_path = self.retire_record("noremove")
+    def test_retire_unit_attempts_no_removal_unless_ledger_published(self) -> None:
+        fresh, record_path = self.retire_record("noremove")
+        self.fake.ledger_mirror_rc = 1
+        self.fake.ledger_mirror_stderr = "remote push refused"
         rc, err = self.retire("noremove")
         self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("RETIRE-REFUSED", err)
-        removals = [
-            c for c in self.fake.commands if c and "remove-validate-batch" in c
-        ]
-        self.assertEqual([], removals)
+        self.assertIn("remote push refused", err)
+        self.assertFalse(any("remove-validate-batch" in c for c in self.fake.commands))
         self.assertTrue(fresh.exists())
+        self.assertEqual("failed", run_registry.read_record(record_path)["ledger_mirror"]["state"])
 
     def test_retire_unit_skips_a_record_it_does_not_own(self) -> None:
         """Returning 0 without acting beats half-handling an unfamiliar shape."""
@@ -8178,10 +8283,8 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(0, rc, err.getvalue())
         self.assertIn("ATTACHED", out.getvalue())
         self.assertIn("FINISHED", out.getvalue())
-        self.assertIn(
-            "compatibility scorecard: generated files changed", out.getvalue()
-        )
-        self.assertTrue(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
+        self.assertIn("CELL LEDGER PUBLISHED", err.getvalue())
+        self.assertFalse(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
         self.assertEqual(
             1,
             sum(
@@ -8191,7 +8294,7 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
 
-    def test_attach_terminal_materialized_scorecard_is_handed_off_then_cleaned(self) -> None:
+    def test_attach_terminal_materialized_ledger_is_published_once_then_cleaned(self) -> None:
         record, fresh = self.materialized_attach_record()
         self.fake.scorecard_update = True
         out = io.StringIO()
@@ -8209,16 +8312,9 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(start_unit.EXIT_PASSED, rc, err.getvalue())
         self.assertFalse(fresh.exists())
         self.assertEqual([str(fresh)], self.fake.removed)
-        handoff = start_unit.scorecard_handoff_path(self.root, "validate-test")
-        self.assertTrue((handoff / "SCORECARD.md").read_text().endswith("updated\n"))
-        self.assertEqual(
-            str(handoff),
-            start_unit.run_registry.read_record(record)["scorecard_handoff"],
-        )
-        self.assertIn(str(handoff), err.getvalue())
-        writer_count = sum(
-            command[0].endswith("scorecard.rs") for command in self.fake.commands
-        )
+        self.assertTrue(start_unit.cell_ledger_published(run_registry.read_record(record)))
+        self.assertFalse(start_unit.scorecard_handoff_path(self.root, "validate-test").exists())
+        writer_count = sum(len(c) > 1 and c[1].endswith("ci-hub/series/mirror.py") for c in self.fake.commands)
 
         second_out = io.StringIO()
         second_err = io.StringIO()
@@ -8236,9 +8332,9 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(start_unit.EXIT_PASSED, second_rc, second_err.getvalue())
         self.assertEqual(
             writer_count,
-            sum(command[0].endswith("scorecard.rs") for command in self.fake.commands),
+            sum(len(c) > 1 and c[1].endswith("ci-hub/series/mirror.py") for c in self.fake.commands),
         )
-        self.assertIn("already-published output", second_err.getvalue())
+        self.assertTrue(start_unit.cell_ledger_published(run_registry.read_record(record)))
 
     def test_historical_schema_three_failure_attach_then_sweep_retires_checkout(
         self,
@@ -8498,7 +8594,7 @@ class StartUnitTest(unittest.TestCase):
             report["retained"],
         )
 
-    def test_attach_after_inactive_sweep_copies_writeback_then_hands_off(self) -> None:
+    def test_attach_after_inactive_sweep_retains_completion_then_publishes_ledger(self) -> None:
         record, fresh = self.materialized_attach_record()
         self.plant_completed_materialized_service_result(record)
         self.fake.scorecard_update = True
@@ -8526,11 +8622,10 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(
             {"status": "completed"}, durable["scorecard_writeback"]
         )
-        handoff = start_unit.scorecard_handoff_path(self.root, "validate-test")
-        self.assertEqual(str(handoff), durable["scorecard_handoff"])
-        self.assertTrue(
-            json.loads((handoff / "handoff.json").read_text())["writeback_completed"]
-        )
+        self.assertTrue(start_unit.cell_ledger_published(durable))
+        self.assertNotIn("scorecard_handoff", durable)
+        self.assertFalse(start_unit.scorecard_handoff_path(self.root, "validate-test").exists())
+
 
     def test_attach_error_cleans_materialized_checkout_after_archiving_receipt(self) -> None:
         _record, fresh = self.materialized_attach_record()
@@ -8716,12 +8811,9 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(target, self.fake.systemd_checkout_head)
         self.assertFalse(exact_checkout.exists())
         self.assertEqual([str(exact_checkout)], self.fake.removed)
-        self.assertTrue(
-            (
-                start_unit.scorecard_handoff_path(self.root, "validate-test")
-                / "handoff.json"
-            ).is_file()
-        )
+        self.assertTrue(start_unit.cell_ledger_published(run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json")))
+        self.assertFalse(start_unit.scorecard_handoff_path(self.root, "validate-test").exists())
         self.assertEqual(
             "caller head\n", (self.checkout / "materialized-version").read_text()
         )
@@ -8855,81 +8947,40 @@ class StartUnitTest(unittest.TestCase):
         self.assertNotIn("branch", record)
         self.assertEqual([str(exact_checkout)], self.fake.removed)
         self.assertFalse(exact_checkout.exists())
-        self.assertTrue(
-            (
-                start_unit.scorecard_handoff_path(self.root, "validate-test")
-                / "handoff.json"
-            ).is_file()
-        )
+        self.assertTrue(start_unit.cell_ledger_published(run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json")))
+        self.assertFalse(start_unit.scorecard_handoff_path(self.root, "validate-test").exists())
 
-    def test_materialized_scorecard_writeback_is_handed_off_before_cleanup(self) -> None:
+    def test_materialized_ledger_commit_is_recorded_before_cleanup(self) -> None:
         self.fake.source_head = "d" * 40
-        self.fake.scorecard_update = True
         before = self.worktree_bytes(self.checkout)
-
         rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
-
         self.assertEqual(start_unit.EXIT_PASSED, rc, error)
         exact_checkout = self.fake.fresh
         self.assertIsNotNone(exact_checkout)
-        assert exact_checkout is not None
         self.assertEqual(before, self.worktree_bytes(self.checkout))
         self.assertEqual([str(exact_checkout)], self.fake.removed)
         self.assertFalse(exact_checkout.exists())
-        handoff = start_unit.scorecard_handoff_path(self.root, "validate-test")
-        self.assertTrue((handoff / "SCORECARD.md").read_text().endswith("updated\n"))
-        self.assertTrue(
-            (handoff / "ci/compat-envelope/cells.json")
-            .read_text()
-            .endswith("updated\n")
-        )
-        manifest = json.loads((handoff / "handoff.json").read_text())
-        self.assertEqual(SHA, manifest["target"])
-        self.assertEqual("validate-test", manifest["unit"])
-        self.assertTrue(manifest["writeback_completed"])
-        rows = {row["path"]: row for row in manifest["files"]}
-        self.assertEqual(set(start_unit.SCORECARD_PATHS), set(rows))
-        for relative in start_unit.SCORECARD_PATHS:
-            payload = (handoff / relative).read_bytes()
-            self.assertEqual(len(payload), rows[relative]["size"])
-            self.assertEqual(
-                hashlib.sha256(payload).hexdigest(), rows[relative]["sha256"]
-            )
-        record = start_unit.run_registry.read_record(
-            self.root / "ignored/validate/runs/validate-test.json"
-        )
-        self.assertEqual(str(handoff), record["scorecard_handoff"])
-        self.assertIn(str(handoff), error)
-        sweep = start_unit.sweep_completed_checkouts(
-            self.root, run=self.fake, tool_root=self.root
-        )
+        self.assertFalse(start_unit.scorecard_handoff_path(self.root, "validate-test").exists())
+        record = run_registry.read_record(self.root / "ignored/validate/runs/validate-test.json")
+        self.assertTrue(start_unit.cell_ledger_published(record))
+        self.assertEqual(SHA, record["ledger_mirror"]["scorecard"]["hermit_commit"])
+        self.assertNotIn("scorecard_handoff", record)
+        self.assertIn("CELL LEDGER PUBLISHED", error)
+        sweep = start_unit.sweep_completed_checkouts(self.root, run=self.fake, tool_root=self.root)
         self.assertEqual([], sweep["removed"])
-        self.assertTrue((handoff / "handoff.json").is_file())
 
-    def test_materialized_scorecard_tamper_after_writeback_refuses_and_retains(self) -> None:
+    def test_materialized_source_edit_after_publication_refuses_cleanup(self) -> None:
         self.fake.source_head = "d" * 40
-        self.fake.scorecard_update = True
         self.fake.scorecard_tamper_on_status = "SCORECARD.md"
-
         rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
-
-        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
-        exact_checkout = self.fake.fresh
-        self.assertIsNotNone(exact_checkout)
-        assert exact_checkout is not None
-        self.assertTrue(exact_checkout.is_dir())
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertTrue(self.fake.fresh.is_dir())
         self.assertEqual([], self.fake.removed)
-        self.assertFalse(
-            start_unit.scorecard_handoff_path(self.root, "validate-test").exists()
-        )
-        self.assertIn("differ from the writer-recorded identities", error)
-        record = start_unit.run_registry.read_record(
-            self.root / "ignored/validate/runs/validate-test.json"
-        )
-        self.assertEqual(
-            set(start_unit.SCORECARD_PATHS),
-            {row["path"] for row in record["scorecard_writeback_files"]},
-        )
+        self.assertIn("authored work", error)
+        record = run_registry.read_record(self.root / "ignored/validate/runs/validate-test.json")
+        self.assertTrue(start_unit.cell_ledger_published(record))
+        self.assertNotIn("scorecard_writeback_files", record)
 
     def test_materialized_scorecard_reused_generation_refuses_and_retains(self) -> None:
         self.fake.source_head = "d" * 40
@@ -8938,7 +8989,7 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
 
-        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
         exact_checkout = self.fake.fresh
         self.assertIsNotNone(exact_checkout)
         assert exact_checkout is not None
@@ -8956,7 +9007,7 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
 
-        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
         exact_checkout = self.fake.fresh
         self.assertIsNotNone(exact_checkout)
         assert exact_checkout is not None
@@ -8971,7 +9022,7 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
 
-        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
         exact_checkout = self.fake.fresh
         self.assertIsNotNone(exact_checkout)
         assert exact_checkout is not None
@@ -8980,7 +9031,8 @@ class StartUnitTest(unittest.TestCase):
         self.assertFalse(
             any(wrkslots_action(command, "status") for command in self.fake.commands)
         )
-        self.assertIn("checkout HEAD is", error)
+        self.assertIn("source checkout HEAD changed", error)
+        self.assertIn("CELL LEDGER PUBLICATION INCOMPLETE", error)
 
     def test_scorecard_handoff_refuses_a_missing_pair_member(self) -> None:
         fresh, _record = self.managed_cleanup_record("pair")
@@ -9033,23 +9085,18 @@ class StartUnitTest(unittest.TestCase):
                 self.root, str(handoff), SHA, unit
             )
 
-    def test_materialized_scorecard_handoff_failure_is_no_result_and_retains(self) -> None:
+    def test_old_handoff_file_is_preserved_without_overriding_ledger_delivery(self) -> None:
         self.fake.source_head = "d" * 40
-        self.fake.scorecard_update = True
         handoff = start_unit.scorecard_handoff_path(self.root, "validate-test")
         handoff.parent.mkdir(parents=True)
-        handoff.write_text("conflicting handoff\n")
-
+        handoff.write_text("old handoff evidence\n")
         rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
-
-        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
-        exact_checkout = self.fake.fresh
-        self.assertIsNotNone(exact_checkout)
-        assert exact_checkout is not None
-        self.assertTrue(exact_checkout.is_dir())
-        self.assertEqual([], self.fake.removed)
-        self.assertIn("SCORECARD HANDOFF NOT PUBLISHED", error)
-        self.assertIn("retained for recovery", error)
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertEqual("old handoff evidence\n", handoff.read_text())
+        self.assertFalse(self.fake.fresh.exists())
+        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assertTrue(start_unit.cell_ledger_published(run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json")))
 
     def test_sweep_registry_read_waits_for_a_contended_state_lock(self) -> None:
         """Preserve the original PR lock-wait behavioral control."""
@@ -9549,7 +9596,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
 
-    def test_two_materialized_writebacks_need_no_source_cleanup_between_runs(
+    def test_two_materialized_publications_preserve_caller_work_and_distinct_targets(
         self,
     ) -> None:
         self.fake.source_head = "d" * 40
@@ -9565,7 +9612,10 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertEqual(start_unit.EXIT_PASSED, rc, error)
         first_handoff = start_unit.scorecard_handoff_path(self.root, first_unit)
-        first_bytes = self.tree_bytes(first_handoff)
+        self.assertFalse(first_handoff.exists())
+        first_record_path = self.root / "ignored/validate/runs" / f"{first_unit}.json"
+        first_record = run_registry.read_record(first_record_path)
+        self.assertTrue(start_unit.cell_ledger_published(first_record))
         self.assertEqual(before, self.worktree_bytes(self.checkout))
         self.fake.fresh = None
 
@@ -9583,12 +9633,15 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(start_unit.EXIT_PASSED, rc, error)
         self.assertEqual(second_target, self.fake.fresh_head)
         self.assertEqual(before, self.worktree_bytes(self.checkout))
-        self.assertEqual(first_bytes, self.tree_bytes(first_handoff))
+        self.assertEqual(first_record, run_registry.read_record(first_record_path))
         second_handoff = start_unit.scorecard_handoff_path(self.root, second_unit)
-        second_manifest = json.loads((second_handoff / "handoff.json").read_text())
-        self.assertEqual(second_target, second_manifest["target"])
-        self.assertEqual(second_unit, second_manifest["unit"])
-        self.assertNotEqual(first_handoff, second_handoff)
+        second_record = run_registry.read_record(self.root / "ignored/validate/runs" / f"{second_unit}.json")
+        self.assertTrue(start_unit.cell_ledger_published(second_record))
+        self.assertEqual(second_target, second_record["ledger_mirror"]["scorecard"]["hermit_commit"])
+        self.assertEqual(SHA, first_record["ledger_mirror"]["scorecard"]["hermit_commit"])
+        self.assertFalse(second_handoff.exists())
+        self.assertFalse(first_handoff.exists())
+
 
     def test_materialize_target_launcher_refusal_cleans_exact_checkout_not_source(self) -> None:
         self.fake.source_head = "d" * 40

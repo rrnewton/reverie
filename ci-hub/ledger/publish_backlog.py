@@ -23,15 +23,11 @@ publish is strictly heavier than a rescue. So the tick LAUNCHES this detached
 and does not await it; observation keeps its budget and the mutation gets its
 own. Detection (`ledger_spool_backlog.py`) stays read-only and separate.
 
-SAFETY. This adds no new authority. It schedules the existing publisher, whose
-guarantees are unchanged: it writes through a dedicated clone, never the shared
-producer parent; it goes out through `scripts/parent-main-write`, which is the
-machine-wide serialized writer with a fresh-origin CAS boundary; it appends only
-and refuses any content that is not a line-for-line extension of what is
-published; and it drops a batch only after the commit carrying it is confirmed
-an ancestor of the freshly-fetched remote. Concurrency is safe by construction:
-two publishers collide at the serialized writer, and a non-fast-forward is
-resolved by re-reading and re-appending, never by overwriting.
+SAFETY. Both routes use the existing append-aware publisher and retain batches
+until a fresh remote commit proves publication. Validation receipts retain the
+serialized parent-main writer. Cell series instead use the existing test-ledger
+repository and its locked, persistent linked writer; they do not create another
+parent clone or commit cell history to parent main.
 """
 
 from __future__ import annotations
@@ -113,19 +109,21 @@ def pending_stores(parent: Path) -> dict[str, Path]:
 
 
 def publish_parent(parent: Path, clone: Path, *, store: str, spool: Path,
-                   timeout: float, attribution: str) -> dict:
+                   timeout: float, attribution: str, net_wrapper: str = "with-proxy") -> dict:
+    if store == "series":
+        command = [
+            sys.executable, str(TOOL_ROOT / "ci-hub/series/mirror.py"),
+            "--parent", str(parent), "--publish-only", "--net-wrapper", net_wrapper,
+        ]
+    else:
+        command = [
+            sys.executable, str(TOOL_ROOT / "ci-hub/ledger/publisher.py"), "publish",
+            "--source-root", str(parent), "--repo", str(clone), "--spool-dir", str(spool),
+            "--writer", str(TOOL_ROOT / "scripts/parent-main-write"),
+            "--attribution", attribution, "--store", store,
+        ]
     result = subprocess.run(
-        [
-            sys.executable,
-            str(TOOL_ROOT / "ci-hub" / "ledger" / "publisher.py"),
-            "publish",
-            "--source-root", str(parent),
-            "--repo", str(clone),
-            "--spool-dir", str(spool),
-            "--writer", str(TOOL_ROOT / "scripts" / "parent-main-write"),
-            "--attribution", attribution,
-            "--store", store,
-        ],
+        command,
         capture_output=True,
         text=True,
         check=False,
@@ -189,8 +187,9 @@ def main(argv: list[str] | None = None) -> int:
     # Fail CLOSED on an underivable machine. Publishing under a guessed or blank
     # token would be refused by the writer anyway, and a wrong token that did
     # pass would misattribute the row.
+    needs_parent_writer = any("ledger" in stores for stores in work.values())
     try:
-        attribution = publishing_attribution()
+        attribution = publishing_attribution() if needs_parent_writer else ""
     except AttributionError as error:
         print(json.dumps(
             {"error": f"cannot derive the publishing machine: {error}"},
@@ -199,7 +198,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        ensure_clone(clone, net_wrapper=args.net_wrapper)
+        if needs_parent_writer:
+            ensure_clone(clone, net_wrapper=args.net_wrapper)
     except subprocess.CalledProcessError as error:
         print(json.dumps(
             {"error": f"cannot provision publisher clone: {error.stderr[-300:]}"},
@@ -219,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
                     spool=spool,
                     timeout=args.timeout_seconds,
                     attribution=attribution,
+                    net_wrapper=args.net_wrapper,
                 )
             except subprocess.TimeoutExpired:
                 report = {

@@ -366,6 +366,17 @@ fn validated_evidence<'a>(
     schema_min: u32,
     schema_max: u32,
 ) -> Result<Option<Cow<'a, CellResultsEvidence>>, String> {
+    validated_summary(row, schema_min, schema_max, &[6, 7, 8])
+}
+
+// Summary shape and consumer authority are separate. In particular, reading
+// schema 9 on the website must not grant it failure-obligation repair credit.
+fn validated_summary<'a>(
+    row: &'a HistoryRow,
+    schema_min: u32,
+    schema_max: u32,
+    admitted_schemas: &[u32],
+) -> Result<Option<Cow<'a, CellResultsEvidence>>, String> {
     let schema = row.schema_version.unwrap_or(0);
     let evidence = row.cell_results.as_ref();
     if schema < schema_min {
@@ -375,7 +386,7 @@ fn validated_evidence<'a>(
             Err("legacy row illegally claims cell_results".into())
         };
     }
-    if schema > schema_max || !matches!(schema, 6 | 7 | 8) {
+    if schema > schema_max || !admitted_schemas.contains(&schema) {
         return Ok(None);
     }
     evidence.ok_or_else(|| format!("schema-{schema} row omits cell_results"))?;
@@ -413,7 +424,7 @@ fn validated_evidence<'a>(
     if schema < 8 && (selected_count == 0 || recorded_count == 0) {
         return Err("cell_results counts or artifact identity are malformed".into());
     }
-    if schema == 8
+    if schema >= 8
         && (row.cell_results_validate_path().map(|path| path.as_str()) != row.profile.as_deref()
             || row.selection_mode.as_deref() != Some("full"))
     {
@@ -431,7 +442,7 @@ fn validated_evidence<'a>(
     let selected_set = selected_keys.iter().collect::<BTreeSet<_>>();
     let cell_set = cell_keys.iter().collect::<BTreeSet<_>>();
     if (schema < 8 && selected_set != cell_set)
-        || (schema == 8 && !cell_set.is_subset(&selected_set))
+        || (schema >= 8 && !cell_set.is_subset(&selected_set))
     {
         return Err("cell_results selected population differs from recorded cells".into());
     }
@@ -584,23 +595,68 @@ fn validated_observation_evidence<'a>(
 /// absence must not be filled in or treated as a canonical observation.
 pub(crate) enum CellResultsForWebsite<'a> {
     Absent,
-    Complete(Cow<'a, CellResultsEvidence>),
+    Complete(WebsiteCellEvidence<'a>),
     Schema6WithoutLaterComparisonFields,
     UnsupportedSchema(u32),
+    Unavailable(String),
+}
+
+pub(crate) struct WebsiteCellEvidence<'a> {
+    ordinary: Cow<'a, CellResultsEvidence>,
+    pub modern: Option<Box<VerifiedValidationEvidenceV10>>,
+}
+
+impl AsRef<CellResultsEvidence> for WebsiteCellEvidence<'_> {
+    fn as_ref(&self) -> &CellResultsEvidence {
+        self.ordinary.as_ref()
+    }
+}
+
+impl std::ops::Deref for WebsiteCellEvidence<'_> {
+    type Target = CellResultsEvidence;
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
 }
 
 pub(crate) fn cell_results_for_website(
     row: &HistoryRow,
 ) -> Result<CellResultsForWebsite<'_>, String> {
+    cell_results_for_website_with(row, crate::validation_evidence::verify_current_store)
+}
+
+pub(crate) fn cell_results_for_website_with<'a>(
+    row: &'a HistoryRow,
+    verify: impl FnOnce(&HistoryRow) -> crate::validation_evidence::EvidenceOutcome,
+) -> Result<CellResultsForWebsite<'a>, String> {
     const SCHEMA_MIN: u32 = 6;
-    const SCHEMA_MAX: u32 = 8;
+    const SCHEMA_MAX: u32 = 9;
     let schema_min = SCHEMA_MIN;
     let schema_max = SCHEMA_MAX;
     let schema = row.schema_version.unwrap_or(0);
+    if schema == 10 {
+        return Ok(match verify(row) {
+            crate::validation_evidence::EvidenceOutcome::Verified { evidence, .. } => {
+                CellResultsForWebsite::Complete(WebsiteCellEvidence {
+                    ordinary: Cow::Owned(evidence.cell_results.ordinary_evidence()),
+                    modern: Some(evidence),
+                })
+            }
+            crate::validation_evidence::EvidenceOutcome::LegacyUnbound { .. } => {
+                CellResultsForWebsite::Unavailable(
+                    "schema-10 selected-attempt binding is unavailable".into(),
+                )
+            }
+            crate::validation_evidence::EvidenceOutcome::Refused { reason }
+            | crate::validation_evidence::EvidenceOutcome::ReaderFault { reason } => {
+                CellResultsForWebsite::Unavailable(reason)
+            }
+        });
+    }
     if schema > schema_max && row.cell_results.is_some() {
         return Ok(CellResultsForWebsite::UnsupportedSchema(schema));
     }
-    let Some(evidence) = validated_evidence(row, schema_min, schema_max)? else {
+    let Some(evidence) = validated_summary(row, schema_min, schema_max, &[6, 7, 8, 9])? else {
         return Ok(CellResultsForWebsite::Absent);
     };
     let lacks_later_comparison_fields = row.schema_version == Some(schema_min)
@@ -611,7 +667,10 @@ pub(crate) fn cell_results_for_website(
     if lacks_later_comparison_fields {
         Ok(CellResultsForWebsite::Schema6WithoutLaterComparisonFields)
     } else {
-        Ok(CellResultsForWebsite::Complete(evidence))
+        Ok(CellResultsForWebsite::Complete(WebsiteCellEvidence {
+            ordinary: evidence,
+            modern: None,
+        }))
     }
 }
 

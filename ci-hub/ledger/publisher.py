@@ -517,6 +517,7 @@ def publish(
     attribution: str | None = None,
     source_root: str | os.PathLike[str] | None = None,
     store: str = "ledger",
+    network_wrapper: str | None = None,
 ) -> dict:
     """Publish one store's spool; drain only once ancestry proves it.
 
@@ -524,6 +525,13 @@ def publish(
     push needed, and the ancestry check that authorised draining the spool.
     """
     repo = Path(repo).resolve()
+
+    def network(*args: str, check: bool = True):
+        if network_wrapper is None:
+            return _git(repo, *args, check=check)
+        return bounded_capture.capture(
+            [network_wrapper, "git", *args], cwd=repo, check=check,
+        )
     if source_root is not None:
         source_root = Path(source_root).resolve()
         if repo == source_root:
@@ -580,9 +588,14 @@ def publish(
 
     last_error = ""
     for attempt in range(1, attempts + 1):
-        if fetch:
-            _git(repo, "fetch", remote, branch, check=False)
-        _git(repo, "checkout", "--detach", f"{remote}/{branch}", check=False)
+        try:
+            if fetch:
+                network("fetch", remote, branch)
+            _git(repo, "checkout", "--detach", f"{remote}/{branch}")
+        except subprocess.CalledProcessError as error:
+            raise PublishRefused(
+                f"cannot prepare published branch; spool retained: {_failure_detail(error)}"
+            ) from error
 
         written: list[str] = []
         for (team, host, month), events in sorted(pending.items()):
@@ -624,7 +637,7 @@ def publish(
         commit = _git(repo, "rev-parse", "HEAD").stdout.strip()
 
         if serialized_writer is None:
-            pushed = _git(repo, "push", remote, f"HEAD:refs/heads/{branch}", check=False)
+            pushed = network("push", remote, f"HEAD:refs/heads/{branch}", check=False)
         else:
             pushed = bounded_capture.capture(
                 [str(serialized_writer), "publish", commit], cwd=repo,
@@ -633,7 +646,12 @@ def publish(
             # Push exit status is not publication. Confirm the commit is an
             # ancestor of the freshly-fetched branch before dropping anything.
             if fetch:
-                _git(repo, "fetch", remote, branch, check=False)
+                try:
+                    network("fetch", remote, branch)
+                except subprocess.CalledProcessError as error:
+                    raise PublishRefused(
+                        f"cannot confirm publication; spool retained: {_failure_detail(error)}"
+                    ) from error
             ancestry = _git(repo, "merge-base", "--is-ancestor", commit,
                             f"{remote}/{branch}", check=False)
             if ancestry.returncode == 0:
@@ -708,11 +726,26 @@ def reap_retained(
     directory = retained_dir(spool_dir)
     if not directory.is_dir():
         return 0
-    durable = _source_root_event_ids(Path(source_root), store=store)
+    if store == "series":
+        # The pinned submodule worktree may lag its fetched history. Only full
+        # matching bodies at a named published commit justify dropping a copy.
+        module = _series_store()
+        published = module._published_snapshot_at_repo(
+            Path(source_root), "refs/remotes/origin/main",
+            repository=module.LEDGER_REPOSITORY,
+        )
+        durable_rows = {row["event_id"]: row for row in published.rows}
+    else:
+        durable = _source_root_event_ids(Path(source_root), store=store)
     reaped = 0
     for path in sorted(directory.glob("*.jsonl")):
         reader = read_event_shard if store == "ledger" else read_shard
         events = reader(path)
+        if store == "series":
+            if events and all(durable_rows.get(event.get("event_id")) == event for event in events):
+                path.unlink()
+                reaped += 1
+            continue
         identifiers = {
             event.get("event_id")
             for event in events
@@ -739,8 +772,8 @@ def main(argv: list[str] | None = None) -> int:
     send.add_argument("--source-root", type=Path, required=True)
     send.add_argument("--repo", type=Path, required=True)
     send.add_argument("--spool-dir", type=Path, required=True)
-    send.add_argument("--writer", type=Path, required=True)
-    send.add_argument("--attribution", required=True)
+    send.add_argument("--writer", type=Path)
+    send.add_argument("--attribution")
     send.add_argument("--attempts", type=int, default=DEFAULT_ATTEMPTS)
     send.add_argument("--store", choices=STORES, default="ledger")
     split = commands.add_parser(
@@ -758,6 +791,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "stage-tracked":
             report = stage_tracked(args.source_root, args.spool_dir)
         elif args.command == "publish":
+            if args.store == "ledger" and (args.writer is None or not args.attribution):
+                raise PublishRefused("parent validation publication requires --writer and --attribution")
             report = publish(
                 args.repo,
                 args.spool_dir,

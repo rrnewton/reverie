@@ -63,6 +63,45 @@ class StartUnitEnvTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.base_env = {"HOME": "/home/test", "PATH": "/usr/bin"}
 
+    def test_frozen_private_tool_compiler_does_not_replace_measured_environment(self) -> None:
+        measured = "nightly-2026-06-01-x86_64-unknown-linux-gnu"
+        driver = "nightly-2026-07-12-x86_64-unknown-linux-gnu"
+        command = su.build_systemd_command(
+            root=self.root / "launcher-tool",
+            checkout=self.root / "historical-hermit",
+            target=TARGET, agent="test-agent", unit="validate-test.service",
+            record=self.root / "record.json", log=self.root / "out.log", pr=None,
+            validate_args=["quick", "--ignore-cache"], wait=1, hold=1,
+            child_deadline=4800, environment=self.base_env,
+            frozen_validate=True, frozen_result=self.root / "frozen.jsonl",
+            unit_tool_prefix=["private-tool-bootstrap"],
+            driver_rust_toolchain=driver, measured_rust_toolchain=measured,
+        )
+        shell = next(
+            i for i, value in enumerate(command)
+            if value == "/bin/sh" and "exec with-proxy rust-script" in command[i + 2]
+        )
+        proxy = self.root / "with-proxy"
+        proxy.write_text(
+            f"#!{sys.executable}\nimport json,os,sys\n"
+            "print(json.dumps([sys.argv[1:], os.environ['RUSTUP_TOOLCHAIN']]))\n"
+        )
+        proxy.chmod(0o755)
+        actual_tool = self.root / "unit-private-tool"
+        result = subprocess.run(
+            command[shell:], check=True, capture_output=True, text=True,
+            env={**os.environ, **setenvs(command), "PATH": str(self.root),
+                 "DEV_HERMIT_TOOL_ROOT": str(actual_tool)}, timeout=5,
+        )
+        argv, inherited = json.loads(result.stdout)
+        self.assertEqual(
+            ["rust-script", "--force", "--toolchain", driver,
+             str(actual_tool / "hermit/scripts/validate.rs"), "quick", "--ignore-cache"],
+            argv,
+        )
+        self.assertEqual(measured, inherited)
+        self.assertEqual("0", setenvs(command)["RUSTUP_AUTO_INSTALL"])
+
     def test_parent_libunwind_copy_is_not_injected(self) -> None:
         """Validation must build against the product's documented host dependency.
 
