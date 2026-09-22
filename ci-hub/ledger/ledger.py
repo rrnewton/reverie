@@ -608,14 +608,53 @@ def read_shard(path: Any, *, object_pairs_hook=None) -> list[dict]:
             for line in text.splitlines() if line.strip()]
 
 
-def _shared_type_codes(events: Sequence[dict], *, serializer=None) -> list[list[str]]:
-    """Check envelope shape and closed values with the producer-owned type."""
-    if not events:
-        return []
+def _run_shared_type_checker(payload: str, arguments: Sequence[str] = ()):
+    """Use one source and authority boundary for preparation and real checks."""
     # The override is a fixture seam for isolated linked-worktree tests whose
     # deliberately minimal repository copy does not include this checker. An
     # immutable operational run has the complete source tree and must never let
     # inherited health.env content replace the producer-owned type.
+    def run(checker: Path):
+        return subprocess.run(
+            [str(checker), *arguments],
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+
+    configured_checker = os.environ.get("CI_HUB_LEDGER_EVENT_CHECKER")
+    if configured_checker:
+        if os.environ.get("DEV_HERMIT_TOOL_AUTHORITY"):
+            raise SharedTypeCheckerUnavailable(
+                "fixture checker override is forbidden in immutable tool runs"
+            )
+        return run(Path(configured_checker))
+    with _locked_materialized_shared_type_checker() as checker:
+        return run(checker)
+
+
+def prepare_shared_checker() -> None:
+    """Prepare the unchanged native checker before checkout write authority.
+
+    Its --help branch returns before reading stdin. Empty validation remains an
+    empty operation; it cannot stand in for actually preparing the compiler.
+    Real checks still use the same source-bound --force entrypoint afterwards.
+    """
+    try:
+        result = _run_shared_type_checker("", ("--help",))
+    except (OSError, SharedTypeCheckerUnavailable, subprocess.TimeoutExpired) as error:
+        raise SharedTypeCheckerUnavailable(f"cannot prepare ledger checker: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no output"
+        raise SharedTypeCheckerUnavailable(f"cannot prepare ledger checker: {detail}")
+
+
+def _shared_type_codes(events: Sequence[dict], *, serializer=None) -> list[list[str]]:
+    """Check envelope shape and closed values with the producer-owned type."""
+    if not events:
+        return []
     payload = "".join(
         (
             serializer(event)
@@ -625,28 +664,8 @@ def _shared_type_codes(events: Sequence[dict], *, serializer=None) -> list[list[
         + "\n"
         for event in events
     )
-
-    def run(checker: Path):
-        return subprocess.run(
-            [str(checker)],
-            input=payload,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=False,
-        )
-
     try:
-        configured_checker = os.environ.get("CI_HUB_LEDGER_EVENT_CHECKER")
-        if configured_checker:
-            if os.environ.get("DEV_HERMIT_TOOL_AUTHORITY"):
-                raise SharedTypeCheckerUnavailable(
-                    "fixture checker override is forbidden in immutable tool runs"
-                )
-            result = run(Path(configured_checker))
-        else:
-            with _locked_materialized_shared_type_checker() as checker:
-                result = run(checker)
+        result = _run_shared_type_checker(payload)
     except (OSError, SharedTypeCheckerUnavailable, subprocess.TimeoutExpired) as error:
         return [[f"shared-ledger-event-check-unavailable: {error}"]] + [
             [] for _ in events[1:]

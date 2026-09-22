@@ -171,6 +171,18 @@ Three properties, in the order they matter:
    with an **append-aware merge** — re-read the remote shard, keep every remote
    line in place, re-append only what is not already there. Never
    `checkout --theirs`, never a whole-file replacement.
+   Publishers sharing one parent checkout also serialize its complete mutation
+   transaction, including fresh fetch, checkout, candidate construction, guarded
+   push, readback and spool retention. The migration-only split uses the same
+   lock in that checkout's Git directory. Acquisition waits at most 60 seconds;
+   timeout refuses without draining pending events. The descriptor closes on
+   exec and is released on success or failure.
+   Native checker preparation runs before this checkout lock. Real event
+   validation still runs inside the transaction using the same source-bound
+   checker. The checkout lock precedes the existing machine-wide
+   `parent-main-write` lock; both are released before cell-ledger publication.
+   The cell ledger retains its existing separate writer lock. This does not
+   widen retries or relax the freshly fetched main ancestry requirement.
 3. **Normal publication never rewrites a row.** `verify_append_only` runs
    against the remote content before each push; a non-extension is refused.
    The migration-only split is distinct: it retains the prior shard bytes

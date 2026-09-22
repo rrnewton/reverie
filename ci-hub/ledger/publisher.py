@@ -29,21 +29,27 @@ extension of what is published, the publish is refused rather than forced.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Sequence
 
 from ledger import (  # noqa: F401 - re-exported for callers
     MalformedEvent,
+    SharedTypeCheckerUnavailable,
     append_events,
     parse_line,
     read_event_shard,
     read_shard,
+    prepare_shared_checker,
     shard_path,
     union_events,
     validate_events,
@@ -59,6 +65,7 @@ DEFAULT_BRANCH = "main"
 #: intact, instead of spinning forever and looking healthy.
 DEFAULT_ATTEMPTS = 5
 STORES = ("ledger", "series")
+CHECKOUT_LOCK_TIMEOUT_SECONDS = 60.0
 
 
 class PublishRefused(Exception):
@@ -83,6 +90,43 @@ def _series_store():
 
 def _git(repo: Path, *args: str, check: bool = True) -> bounded_capture.CapturedProcess:
     return bounded_capture.git(args, cwd=repo, check=check)
+
+
+@contextlib.contextmanager
+def _checkout_transaction(repo: Path):
+    """Serialize this checkout's index/HEAD, separately from the main push lock.
+
+    Callers prepare native tools first. The existing parent-main writer is then
+    acquired only inside this transaction; neither lock spans cell publication.
+    A per-worktree Git directory also makes aliases of one checkout agree.
+    """
+    git_dir = Path(_git(repo, "rev-parse", "--absolute-git-dir").stdout.strip()).resolve()
+    path = git_dir / "ci-hub-ledger-publisher.lock"
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    try:
+        metadata = os.fstat(fd)
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid()
+                or metadata.st_nlink != 1):
+            raise PublishRefused("publisher checkout lock is not an owned regular file")
+        deadline = time.monotonic() + CHECKOUT_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise PublishRefused("publisher checkout transaction lock timed out; spool retained")
+                time.sleep(0.1)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _prepare_parent_checker() -> None:
+    try:
+        prepare_shared_checker()
+    except SharedTypeCheckerUnavailable as error:
+        raise PublishRefused(f"parent publisher checker preparation failed: {error}") from error
 
 
 def _failure_detail(result: subprocess.CompletedProcess) -> str:
@@ -123,6 +167,29 @@ def _root_commits(repo: Path, *refs: str) -> set[str]:
         if found.returncode == 0 and found.stdout.split():
             return set(found.stdout.split())
     return set()
+
+
+def _require_source_repository(repo: Path, source_root, remote: str, branch: str) -> None:
+    """Check identity before creating a lock, and again after waiting for it."""
+    if source_root is None:
+        return
+    source_root = Path(source_root).resolve()
+    if repo == source_root:
+        raise PublishRefused(
+            "publisher checkout is the shared producer parent; use a dedicated clone or slot"
+        )
+    # Identity is shared history, not a directory name. Passing the Hermit
+    # product checkout once detached it and committed ledger shards there.
+    theirs = _root_commits(repo, f"{remote}/{branch}", "HEAD")
+    ours = _root_commits(source_root, "HEAD", f"{remote}/{branch}")
+    if not ours or not theirs or not (ours & theirs):
+        raise PublishRefused(
+            f"publisher checkout {repo} shares no root commit with the ledger source "
+            f"{source_root}, so it is a DIFFERENT repository: publishing would commit "
+            "ledger/ shards into history that does not own them, and would detach that "
+            "checkout to do it. Pass a dedicated clean clone of the ledger repository "
+            "(ci-hub/ledger/README.md), never a product submodule or a bare directory name."
+        )
 
 
 # --------------------------------------------------------------------------- spool
@@ -377,7 +444,7 @@ def _events_from_text(text: str, label: str) -> list[dict]:
     return events
 
 
-def split_published_to_match_source(
+def _split_published_to_match_source(
     repo: str | os.PathLike[str],
     source_root: str | os.PathLike[str],
     shards: Sequence[str],
@@ -502,10 +569,65 @@ def split_published_to_match_source(
     }
 
 
+def split_published_to_match_source(
+    repo: str | os.PathLike[str],
+    source_root: str | os.PathLike[str],
+    shards: Sequence[str],
+    *,
+    remote: str = DEFAULT_REMOTE,
+    branch: str = DEFAULT_BRANCH,
+    serialized_writer: str | os.PathLike[str] | None = None,
+    attribution: str,
+) -> dict:
+    """Keep migration and ordinary publication on the same checkout lock."""
+    repo = Path(repo).resolve()
+    if repo == Path(source_root).resolve():
+        raise PublishRefused("split checkout is the shared producer parent; use a dedicated clone")
+    _prepare_parent_checker()
+    with _checkout_transaction(repo):
+        return _split_published_to_match_source(
+            repo, source_root, shards, remote=remote, branch=branch,
+            serialized_writer=serialized_writer, attribution=attribution,
+        )
+
+
 # --------------------------------------------------------------------------- publish
 
 
 def publish(
+    repo: str | os.PathLike[str],
+    spool_dir: str | os.PathLike[str],
+    *,
+    remote: str = DEFAULT_REMOTE,
+    branch: str = DEFAULT_BRANCH,
+    attempts: int = DEFAULT_ATTEMPTS,
+    fetch: bool = True,
+    serialized_writer: str | os.PathLike[str] | None = None,
+    attribution: str | None = None,
+    source_root: str | os.PathLike[str] | None = None,
+    store: str = "ledger",
+    network_wrapper: str | None = None,
+) -> dict:
+    """Publish with exclusive parent-checkout mutation and unchanged push guards.
+
+    Series publication already holds its own cell-ledger writer lock. Parent
+    publication takes this checkout lock before the machine-wide main writer,
+    and releases both before its caller can acquire cell-ledger authority.
+    """
+    repo = Path(repo).resolve()
+    _require_source_repository(repo, source_root, remote, branch)
+    if store == "ledger":
+        _prepare_parent_checker()
+    transaction = _checkout_transaction(repo) if store == "ledger" else contextlib.nullcontext()
+    with transaction:
+        return _publish(
+            repo, spool_dir, remote=remote, branch=branch, attempts=attempts,
+            fetch=fetch, serialized_writer=serialized_writer, attribution=attribution,
+            source_root=source_root, store=store, network_wrapper=network_wrapper,
+        )
+
+
+def _publish(
     repo: str | os.PathLike[str],
     spool_dir: str | os.PathLike[str],
     *,
@@ -532,31 +654,7 @@ def publish(
         return bounded_capture.capture(
             [network_wrapper, "git", *args], cwd=repo, check=check,
         )
-    if source_root is not None:
-        source_root = Path(source_root).resolve()
-        if repo == source_root:
-            raise PublishRefused(
-                "publisher checkout is the shared producer parent; use a dedicated clone or slot"
-            )
-        # WHICH REPOSITORY IS THIS? Asked before a single byte is written.
-        #
-        # Measured 2026-08-09: `--repo hermit` resolved, relative to the parent,
-        # to the Hermit PRODUCT submodule. The publisher accepted it, detached
-        # that primary checkout at ITS origin/main, and wrote five
-        # `ledger: append 1 event(s)` commits into a product repository — one
-        # per retry — before the serialized writer, which exists only in the
-        # parent, refused for an unrelated reason. Nothing here asked the one
-        # question that mattered. Identity is shared history, not a name.
-        theirs = _root_commits(repo, f"{remote}/{branch}", "HEAD")
-        ours = _root_commits(source_root, "HEAD", f"{remote}/{branch}")
-        if not ours or not theirs or not (ours & theirs):
-            raise PublishRefused(
-                f"publisher checkout {repo} shares no root commit with the ledger source "
-                f"{source_root}, so it is a DIFFERENT repository: publishing would commit "
-                "ledger/ shards into history that does not own them, and would detach that "
-                "checkout to do it. Pass a dedicated clean clone of the ledger repository "
-                "(ci-hub/ledger/README.md), never a product submodule or a bare directory name."
-            )
+    _require_source_repository(repo, source_root, remote, branch)
     if serialized_writer is not None:
         if remote != "origin" or branch != "main":
             raise PublishRefused("serialized parent publication requires origin/main")

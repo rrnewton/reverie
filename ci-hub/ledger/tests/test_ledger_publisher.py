@@ -12,8 +12,11 @@ Run: python3 -m pytest ci-hub/ledger/tests/test_ledger_publisher.py -q
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -42,6 +45,215 @@ def ev(event_id: str, outcome: str = "pass", **kw) -> dict:
     }
     e.update(kw)
     return e
+
+
+def _wait_path(path: Path, process=None) -> None:
+    deadline = time.monotonic() + 20
+    while not path.exists():
+        if process is not None and process.poll() is not None:
+            raise AssertionError(f"child exited before {path}: {process.communicate()}")
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"child never reached {path}")
+        time.sleep(0.02)
+
+
+def _publisher_child(tmp_path, name, clone, spool, *, writer=None, split_source=None,
+                     prepare_release=None):
+    """A new interpreter: it cannot inherit a parent's flock descriptor."""
+    ready = tmp_path / f"{name}-prepared"
+    config = dict(module=str(Path(publisher.__file__).parent), repo=str(clone),
+                  spool=str(spool), ready=str(ready), writer=str(writer) if writer else None,
+                  split_source=str(split_source) if split_source else None,
+                  prepare_release=str(prepare_release) if prepare_release else None)
+    code = r'''
+import json, sys, time
+from pathlib import Path
+c=json.loads(sys.argv[1]); sys.path.insert(0,c['module'])
+import publisher
+prepare=publisher.prepare_shared_checker
+def observed_prepare():
+    prepare()
+    Path(c['ready']).touch()
+    deadline=time.monotonic()+20
+    while c['prepare_release'] and not Path(c['prepare_release']).exists():
+        if time.monotonic()>deadline: raise RuntimeError('preparation barrier timed out')
+        time.sleep(.02)
+publisher.prepare_shared_checker=observed_prepare
+try:
+    if c['split_source']:
+        report=publisher.split_published_to_match_source(
+            c['repo'],c['split_source'],['ledger/hermit/hosta/2026-08.jsonl'],
+            attribution='publisher split test')
+    else:
+        report=publisher.publish(c['repo'],c['spool'],attempts=1,
+            serialized_writer=c['writer'],attribution='publisher concurrency test')
+    print(json.dumps(report))
+except Exception as error:
+    print(type(error).__name__+': '+str(error),file=sys.stderr)
+    sys.exit(2)
+'''
+    process = subprocess.Popen([sys.executable, "-c", code, json.dumps(config)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, start_new_session=True)
+    return process, ready
+
+
+def _stop_children(*children):
+    for child in children:
+        if child is not None and child.poll() is None:
+            os.killpg(child.pid, signal.SIGKILL)
+            child.communicate(timeout=5)
+
+
+@pytest.mark.parametrize("same_spool", [False, True])
+def test_shared_checkout_publishers_serialize_complete_guarded_transactions(
+    tmp_path, remote_and_clone, same_spool
+):
+    """Hold the first real Git push while the second wants the same index."""
+    bare, clone = remote_and_clone
+    first_spool, second_spool = tmp_path / "one", tmp_path / "two"
+    publisher.spool(first_spool, TEAM, HOST, [ev("01A")])
+    if same_spool:
+        second_spool = first_spool
+    else:
+        publisher.spool(second_spool, TEAM, HOST, [ev("01B")])
+    entered, release = tmp_path / "writer-entered", tmp_path / "writer-release"
+    writer = tmp_path / "guarded-writer"
+    writer.write_text(f'''#!{sys.executable}
+import subprocess,sys,time
+from pathlib import Path
+assert sys.argv[1]=='publish'
+Path({str(entered)!r}).touch()
+deadline=time.monotonic()+20
+while not Path({str(release)!r}).exists():
+    if time.monotonic()>deadline: sys.exit(2)
+    time.sleep(.02)
+def git(*args): return subprocess.run(['git',*args],check=True,capture_output=True,text=True).stdout.strip()
+git('fetch','origin','main')
+git('merge-base','--is-ancestor','origin/main',sys.argv[2])
+git('push','origin',sys.argv[2]+':refs/heads/main')
+git('fetch','origin','main')
+git('merge-base','--is-ancestor',sys.argv[2],'origin/main')
+''')
+    writer.chmod(0o755)
+    first = second = None
+    try:
+        first, _ = _publisher_child(tmp_path, "first", clone, first_spool, writer=writer)
+        _wait_path(entered, first)
+        candidate = git(clone, "rev-parse", "HEAD").stdout
+        second, ready = _publisher_child(tmp_path, "second", clone, second_spool, writer=writer)
+        _wait_path(ready, second)
+        with pytest.raises(subprocess.TimeoutExpired):
+            second.wait(timeout=0.5)
+        assert git(clone, "rev-parse", "HEAD").stdout == candidate
+        assert git(clone, "status", "--porcelain").stdout == ""
+        release.touch()
+        for child in (first, second):
+            out, err = child.communicate(timeout=20)
+            assert child.returncode == 0, (out, err)
+        rel = f"ledger/{TEAM}/{HOST}/2026-08.jsonl"
+        rows = [json.loads(line) for line in git(bare, "show", f"main:{rel}").stdout.splitlines()]
+        assert [row["event_id"] for row in rows] == (["01A"] if same_spool else ["01A", "01B"])
+        assert not publisher.spooled(first_spool) and not publisher.spooled(second_spool)
+        assert git(clone, "merge-base", "--is-ancestor", "HEAD", "origin/main").returncode == 0
+    finally:
+        _stop_children(first, second)
+
+
+def test_split_waits_for_the_same_checkout_lock(tmp_path, remote_and_clone):
+    _, clone = remote_and_clone
+    spool = tmp_path / "spool"
+    publisher.spool(spool, TEAM, HOST, [ev("01A"), ev("01B")])
+    publisher.publish(clone, spool)
+    source = tmp_path / "source"
+    rel = f"ledger/{TEAM}/{HOST}/2026-08.jsonl"
+    (source / rel).parent.mkdir(parents=True)
+    (source / rel).write_text(json.dumps(ev("01A"), sort_keys=True) + "\n")
+    before = git(clone, "rev-parse", "HEAD").stdout
+    child = None
+    try:
+        with publisher._checkout_transaction(clone):
+            child, ready = _publisher_child(tmp_path, "split", clone, spool, split_source=source)
+            _wait_path(ready, child)
+            with pytest.raises(subprocess.TimeoutExpired):
+                child.wait(timeout=0.5)
+            assert git(clone, "rev-parse", "HEAD").stdout == before
+        out, err = child.communicate(timeout=20)
+        assert child.returncode == 0, (out, err)
+        assert json.loads(out)["event_union_preserved"] is True
+    finally:
+        _stop_children(child)
+
+
+def test_checkout_timeout_retains_spool_and_exception_releases_lock(
+    tmp_path, remote_and_clone, monkeypatch
+):
+    bare, clone = remote_and_clone
+    spool = tmp_path / "spool"
+    publisher.spool(spool, TEAM, HOST, [ev("01A")])
+    before = git(bare, "rev-parse", "main").stdout
+    monkeypatch.setattr(publisher, "CHECKOUT_LOCK_TIMEOUT_SECONDS", 0.1)
+    with publisher._checkout_transaction(clone):
+        with pytest.raises(publisher.PublishRefused, match="transaction lock timed out"):
+            publisher.publish(clone, spool)
+    assert git(bare, "rev-parse", "main").stdout == before
+    assert git(clone, "status", "--porcelain").stdout == ""
+    assert publisher.spooled(spool)
+    with pytest.raises(ValueError):
+        with publisher._checkout_transaction(clone):
+            raise ValueError("test refusal inside transaction")
+    publisher.publish(clone, spool)
+    assert not publisher.spooled(spool)
+
+
+def test_cold_preparation_holds_no_checkout_authority(tmp_path, remote_and_clone):
+    _, clone = remote_and_clone
+    spool, release = tmp_path / "spool", tmp_path / "prepare-release"
+    publisher.spool(spool, TEAM, HOST, [ev("01A")])
+    child = None
+    try:
+        child, ready = _publisher_child(tmp_path, "cold", clone, spool, prepare_release=release)
+        _wait_path(ready, child)
+        # The child is still in preparation, so another real writer may finish.
+        publisher.publish(clone, spool)
+        release.touch()
+        out, err = child.communicate(timeout=20)
+        assert child.returncode == 0, (out, err)
+        assert json.loads(out)["published"] == 0
+    finally:
+        _stop_children(child)
+
+
+def test_preparation_executes_help_but_empty_validation_stays_empty(monkeypatch):
+    calls = []
+    def run(payload, arguments=()):
+        calls.append((payload, arguments))
+        return subprocess.CompletedProcess([], 0, "Usage", "")
+    monkeypatch.setattr(ledger, "_run_shared_type_checker", run)
+    assert ledger.validate_events([]) == [] and calls == []
+    ledger.prepare_shared_checker()
+    assert calls == [("", ("--help",))]
+
+
+def test_preparation_refuses_override_under_immutable_authority(monkeypatch):
+    monkeypatch.setenv("CI_HUB_LEDGER_EVENT_CHECKER", "/not-an-authorized-checker")
+    monkeypatch.setenv("DEV_HERMIT_TOOL_AUTHORITY", "1")
+    with pytest.raises(ledger.SharedTypeCheckerUnavailable, match="override is forbidden"):
+        ledger.prepare_shared_checker()
+
+
+def test_checkout_lock_does_not_escape_to_exec_children(tmp_path, remote_and_clone):
+    _, clone = remote_and_clone
+    lock = Path(git(clone, "rev-parse", "--absolute-git-dir").stdout.strip()) / "ci-hub-ledger-publisher.lock"
+    with publisher._checkout_transaction(clone):
+        held = [int(p.name) for p in Path("/proc/self/fd").iterdir()
+                if p.exists() and p.resolve() == lock]
+        assert len(held) == 1 and not os.get_inheritable(held[0])
+        code = """import os,sys
+from pathlib import Path
+assert not any(p.exists() and str(p.resolve())==sys.argv[1] for p in Path('/proc/self/fd').iterdir())
+"""
+        subprocess.run([sys.executable, "-c", code, str(lock)], close_fds=False, check=True)
 
 
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
