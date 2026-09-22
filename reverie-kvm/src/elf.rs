@@ -868,6 +868,13 @@ pub(crate) struct LoadedStaticElf {
     pub proc_mounts: std::sync::Arc<crate::proc_mounts::ProcMountSnapshot>,
     pub fdinfo_files:
         std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::FdinfoDescription>>,
+    /// Authenticated O_PATH anchors for the guest's synthetic `/proc/self/fd`
+    /// directory. Each description retains the exact opener task and file
+    /// table rather than resolving relative operations in the reader's table.
+    pub proc_fd_directories: std::collections::BTreeMap<
+        i32,
+        std::sync::Arc<crate::executor::ProcFdDirectoryDescription>,
+    >,
     pub fdinfo_table: std::sync::Weak<std::sync::Mutex<crate::executor::FileTableState>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Preserve deterministic file-object identity.
     // TODO-HUMAN-REVIEW(PR-136): Review descriptor identity and fork inheritance.
@@ -1021,6 +1028,7 @@ impl LoadedStaticElf {
             regular_create_directory_policy: self.regular_create_directory_policy,
             proc_mounts: self.proc_mounts.clone(),
             fdinfo_files: self.fdinfo_files.clone(),
+            proc_fd_directories: self.proc_fd_directories.clone(),
             fdinfo_table: self.fdinfo_table.clone(),
             fd_object_inodes: self.fd_object_inodes.clone(),
             file_identity_table: self.file_identity_table.clone(),
@@ -1105,6 +1113,11 @@ impl LoadedStaticElf {
             .collect();
         let fdinfo_files = previous
             .fdinfo_files
+            .into_iter()
+            .filter(|(fd, _)| files.contains_key(fd))
+            .collect();
+        let proc_fd_directories = previous
+            .proc_fd_directories
             .into_iter()
             .filter(|(fd, _)| files.contains_key(fd))
             .collect();
@@ -1213,6 +1226,7 @@ impl LoadedStaticElf {
         self.regular_create_directory_policy = regular_create_directory_policy;
         self.proc_mounts = previous.proc_mounts;
         self.fdinfo_files = fdinfo_files;
+        self.proc_fd_directories = proc_fd_directories;
         self.fdinfo_table = previous.fdinfo_table;
         self.fd_object_inodes = fd_object_inodes;
         self.file_identity_table = file_identity_table;
@@ -1655,6 +1669,7 @@ fn load_executable(
         regular_create_directory_policy: initialize_regular_create_directory_policy()?,
         proc_mounts: std::sync::Arc::new(crate::proc_mounts::ProcMountSnapshot::capture()?),
         fdinfo_files: std::collections::BTreeMap::new(),
+        proc_fd_directories: std::collections::BTreeMap::new(),
         fdinfo_table: std::sync::Weak::new(),
         fd_object_inodes: std::collections::BTreeMap::new(),
         file_identity_table: std::sync::Arc::new(std::sync::Mutex::new(GuestFileIdentityTable {
