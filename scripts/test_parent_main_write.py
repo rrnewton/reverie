@@ -3555,6 +3555,7 @@ print(json.dumps({
             "is_wrapper_network = (\n"
             "    '--no-replace-objects' in args\n"
             "    and any(command in args for command in network_commands)\n"
+            "    and os.environ.get('DEV_HERMIT_LOCAL_OBJECT_CLONE') != '1'\n"
             ")\n"
             "if is_wrapper_network:\n"
             "    configs = [args[index + 1] for index, value in enumerate(args[:-1]) if value == '-c']\n"
@@ -3606,6 +3607,176 @@ print(json.dumps({
         self.assertIn("ls-remote", observed)
         self.assertIn("clone", observed)
         self.assertIn("submodule", observed)
+
+    def test_current_tool_local_clone_is_self_contained_after_mirror_unlink(
+        self,
+    ) -> None:
+        bootstrap = self.installed_bootstrap()
+        target = self.advance_remote(
+            extra_executables={
+                "scripts/owner-probe": "#!/usr/bin/env bash\nprintf 'local clone works\\n'\n"
+            }
+        )
+
+        first = self.run_current_tool(bootstrap, "scripts/owner-probe")
+
+        self.assertEqual(0, first.returncode, first.stdout + first.stderr)
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        cached = cache / "trees" / target
+        mirror = cache / "canonical-objects.git"
+        self.assertEqual(
+            str(self.remote),
+            git(cached, "remote", "get-url", "origin").stdout.strip(),
+        )
+        self.assertEqual(
+            [],
+            list((cached / ".git").rglob("alternates")),
+            "the parent or either initialized submodule must not borrow an object store",
+        )
+        mirror_objects = {
+            path.relative_to(mirror / "objects"): path
+            for path in (mirror / "objects").rglob("*")
+            if path.is_file()
+        }
+        shared_objects = [
+            path
+            for relative, path in mirror_objects.items()
+            if (cached / ".git" / "objects" / relative).is_file()
+            and path.stat().st_ino
+            == (cached / ".git" / "objects" / relative).stat().st_ino
+        ]
+        self.assertTrue(shared_objects, "local clone must use hardlinked objects")
+
+        shutil.rmtree(mirror)
+        self.assertFalse(mirror.exists())
+        self.assertEqual(
+            0,
+            git(cached, "fsck", "--full", "--no-dangling", check=False).returncode,
+        )
+        second = self.run_current_tool(bootstrap, "scripts/owner-probe")
+        self.assertEqual(0, second.returncode, second.stdout + second.stderr)
+        self.assertIn("local clone works", second.stdout)
+
+    def test_current_tool_refuses_repointed_object_mirror_before_fetch(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        first_target = self.advance_remote()
+        first = self.run_current_tool(bootstrap, "ci-hub/bin/health-tick")
+        self.assertEqual(0, first.returncode, first.stdout + first.stderr)
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        mirror = cache / "canonical-objects.git"
+        malicious = self.base / "malicious-mirror-origin.git"
+        git(self.base, "init", "--bare", "--initial-branch=main", str(malicious))
+        git(mirror, "remote", "set-url", "origin", str(malicious))
+        target = self.advance_remote_version(2)
+
+        refused = self.run_current_tool(bootstrap, "ci-hub/bin/health-tick")
+
+        self.assertEqual(1, refused.returncode, refused.stdout + refused.stderr)
+        self.assertIn("object mirror origin is", refused.stderr)
+        self.assertIn("expected canonical", refused.stderr)
+        self.assertFalse((cache / "trees" / target).exists())
+        self.assertTrue((cache / "trees" / first_target).exists())
+
+    def test_current_tool_refuses_in_place_mirror_ref_change_during_clone(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        first_target = self.advance_remote_version(1)
+        first = self.run_current_tool(bootstrap, "ci-hub/bin/health-tick")
+        self.assertEqual(0, first.returncode, first.stdout + first.stderr)
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        mirror = cache / "canonical-objects.git"
+        mirror_inode = mirror.stat().st_ino
+        target = self.advance_remote_version(2)
+        shim_dir = self.base / "mirror-ref-race-bin"
+        shim_dir.mkdir()
+        git_shim = shim_dir / "git"
+        git_shim.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os\n"
+            "import subprocess\n"
+            "import sys\n"
+            f"real_git = {str(REAL_GIT)!r}\n"
+            "args = sys.argv[1:]\n"
+            "result = subprocess.run([real_git, *args], close_fds=False)\n"
+            "if (result.returncode == 0 and 'clone' in args "
+            "and os.environ.get('DEV_HERMIT_LOCAL_OBJECT_CLONE') == '1'):\n"
+            "    subprocess.run([real_git, '-C', os.environ['RACE_MIRROR'], "
+            "'update-ref', 'refs/heads/main', os.environ['RACE_SHA']], check=True)\n"
+            "raise SystemExit(result.returncode)\n"
+        )
+        git_shim.chmod(0o755)
+
+        refused = run(
+            str(bootstrap),
+            "--run-current-tool",
+            "--state-root",
+            str(self.repo),
+            "--tool-relative",
+            "ci-hub/bin/health-tick",
+            cwd=self.home,
+            env=dict(
+                self.env,
+                PATH=f"{shim_dir}:{self.env['PATH']}",
+                RACE_MIRROR=str(mirror),
+                RACE_SHA=first_target,
+            ),
+        )
+
+        self.assertEqual(1, refused.returncode, refused.stdout + refused.stderr)
+        self.assertEqual(mirror_inode, mirror.stat().st_ino)
+        self.assertNotEqual(
+            target,
+            git(mirror, "rev-parse", "refs/heads/main").stdout.strip(),
+            "negative control must change the fetched main ref in place: "
+            + refused.stderr,
+        )
+        self.assertIn("object mirror changed during local clone", refused.stderr)
+        self.assertFalse((cache / "trees" / target).exists())
+
+    def test_current_tool_bounds_a_stalled_local_clone(self) -> None:
+        self.advance_remote_version(1)
+        wrapper = self.repo / "scripts/hermit-health-tick.sh"
+        wrapper.write_text(
+            wrapper.read_text().replace(
+                "TOOL_LOCAL_CLONE_TIMEOUT_SECS=60",
+                "TOOL_LOCAL_CLONE_TIMEOUT_SECS=1",
+            )
+        )
+        bootstrap = self.installed_bootstrap()
+        shim_dir = self.base / "stalled-local-clone-bin"
+        shim_dir.mkdir()
+        git_shim = shim_dir / "git"
+        git_shim.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os\n"
+            "import sys\n"
+            "import time\n"
+            f"real_git = {str(REAL_GIT)!r}\n"
+            "args = sys.argv[1:]\n"
+            "if ('clone' in args "
+            "and os.environ.get('DEV_HERMIT_LOCAL_OBJECT_CLONE') == '1'):\n"
+            "    time.sleep(60)\n"
+            "os.execv(real_git, [real_git, *args])\n"
+        )
+        git_shim.chmod(0o755)
+        started = time.monotonic()
+
+        refused = run(
+            str(bootstrap),
+            "--run-current-tool",
+            "--state-root",
+            str(self.repo),
+            "--tool-relative",
+            "ci-hub/bin/health-tick",
+            cwd=self.home,
+            env=dict(self.env, PATH=f"{shim_dir}:{self.env['PATH']}"),
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(1, refused.returncode, refused.stdout + refused.stderr)
+        self.assertGreaterEqual(elapsed, 1.0)
+        self.assertLess(elapsed, 6.0)
+        self.assertIn("bounded local clone", refused.stderr)
+        self.assertEqual(set(), self.cached_tool_roots())
 
     def test_current_tool_refuses_when_fixed_github_auth_helper_is_missing(
         self,

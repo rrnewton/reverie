@@ -253,32 +253,73 @@ ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 #     git clone --bare --no-tags <canonical>   (mirror, once)    33.9s
 #     git -C mirror fetch --no-tags origin main                   0.6s
 #     git clone --reference-if-able <mirror> --dissociate ...     11.3s
-#     per tick: 36.9s -> 11.9s
+#     plain local clone from <mirror>                              6.0s
 #
 # ⚠️ THE AUTHORITY BOUNDARY IS THE POINT AND IT IS UNTOUCHED. The mirror lives
 # under the TOOL CACHE, which is immutable tooling, not under the mutable parent.
 # Its only remote is $CANONICAL_REMOTE_URL and nothing else ever writes to it, so
 # every object still comes from the canonical remote and the mutable parent is
-# still never consulted for a byte. The clone's URL argument is unchanged, so the
-# staging tree's `origin` is the canonical remote as before, and
-# tool_root_is_complete verifies the result exactly as before.
+# still never consulted for a byte. The staging clone is local only after a
+# canonical fetch and two exact origin/identity checks. Its origin is then
+# normalized back to $CANONICAL_REMOTE_URL before any checkout is accepted.
 #
-# --dissociate, deliberately, and it is 11.3 of the 11.9: it copies the borrowed
-# objects in so the published tool root is SELF-CONTAINED with no
-# objects/info/alternates. Dropping it would be much faster and would leave
-# immutable tooling depending on an object store outside itself.
+# A plain local clone uses hardlinks for immutable objects on this filesystem.
+# It remains self-contained: unlike `--shared`, it writes no alternates file,
+# and unlinking the mirror leaves the clone's object links alive. Do NOT add
+# `--dissociate`: its implicit full `git repack` needs about 700 MiB RSS for this
+# 3.2 GiB mirror. Under the disk publisher's 512M-high/768M-max/128M-swap cgroup,
+# two measured invocations stopped after ~10 CPU-seconds and 29 MiB of output,
+# then remained in full memory pressure until the 540-second service deadline.
 #
-# --reference-if-able rather than --reference: a missing or damaged mirror
-# degrades to exactly the previous full clone. The cache's failure mode is
-# slower, never wrong.
+# The local clone has a separate 60-second bound. It normally completes in about
+# six seconds; exceeding the bound is unavailable tooling, not permission to
+# publish a partial root or silently switch authority.
 TOOL_OBJECT_MIRROR=""
 TOOL_OBJECT_MIRROR_NAME="canonical-objects.git"
+TOOL_LOCAL_CLONE_TIMEOUT_SECS=60
+
+canonical_object_mirror_identity() {
+    local mirror=$1 required_sha=${2:-} origin identity mirror_sha
+    if [[ -L $mirror || ! -d $mirror ]]; then
+        printf 'operational-tool: object mirror is not one real directory: %s\n' \
+            "$mirror" >&2
+        return 1
+    fi
+    origin=$(run_git -C "$mirror" config --get remote.origin.url 2>/dev/null) || {
+        printf 'operational-tool: object mirror has no readable origin\n' >&2
+        return 1
+    }
+    if [[ $origin != "$CANONICAL_REMOTE_URL" ]]; then
+        printf 'operational-tool: object mirror origin is %s, expected canonical %s; refusing it\n' \
+            "$origin" "$CANONICAL_REMOTE_URL" >&2
+        return 1
+    fi
+    mirror_sha=$(run_git -C "$mirror" rev-parse --verify refs/heads/main 2>/dev/null) \
+        || {
+            printf 'operational-tool: object mirror has no readable main ref\n' >&2
+            return 1
+        }
+    if [[ -n $required_sha ]] && \
+       ! run_git -C "$mirror" cat-file -e "$required_sha^{commit}" 2>/dev/null; then
+        printf 'operational-tool: object mirror lacks canonical commit %s\n' \
+            "$required_sha" >&2
+        return 1
+    fi
+    identity=$(stat -Lc '%d:%i' -- "$mirror") || {
+        printf 'operational-tool: cannot inspect object mirror identity\n' >&2
+        return 1
+    }
+    [[ $identity =~ ^[0-9]+:[0-9]+$ ]] || return 1
+    printf '%s %s\n' "$identity" "$mirror_sha"
+}
 
 refresh_canonical_object_mirror() {
-    local cache_anchor=$1 mirror
+    local cache_anchor=$1 expected_sha=$2 mirror mirror_identity mirror_state
     TOOL_OBJECT_MIRROR=""
     mirror="$cache_anchor/$TOOL_OBJECT_MIRROR_NAME"
-    if [[ -d $mirror ]]; then
+    if [[ -e $mirror || -L $mirror ]]; then
+        mirror_state=$(canonical_object_mirror_identity "$mirror") || return 1
+        mirror_identity=${mirror_state%% *}
         # Incremental: only what landed since the last tick crosses the network.
         if ! run_git --network -C "$mirror" fetch --quiet --no-tags origin \
             '+refs/heads/main:refs/heads/main'; then
@@ -292,17 +333,17 @@ refresh_canonical_object_mirror() {
             rm -rf "$mirror" 2>/dev/null || true
             return 0
         fi
+        mirror_state=$(canonical_object_mirror_identity "$mirror" "$expected_sha") \
+            || return 1
+        mirror_identity=${mirror_state%% *}
     fi
-    # The mirror is a cache OF the canonical remote and nothing else. Verify that
-    # every time rather than trusting the directory's history: a mirror whose
-    # origin has been repointed would be a second authority, which is exactly
-    # what this whole materialization exists to prevent.
-    local mirror_origin
-    mirror_origin=$(run_git -C "$mirror" config --get remote.origin.url 2>/dev/null) || return 0
-    if [[ $mirror_origin != "$CANONICAL_REMOTE_URL" ]]; then
-        printf 'operational-tool: object mirror origin is %s, not the canonical remote; ignoring it\n' \
-            "$mirror_origin" >&2
-        return 0
+    # Recheck after the network mutation. A pathname or origin changed while
+    # fetch ran is not the canonical cache we inspected before it.
+    mirror_state=$(canonical_object_mirror_identity "$mirror" "$expected_sha") \
+        || return 1
+    if [[ ${mirror_state%% *} != "$mirror_identity" ]]; then
+        printf 'operational-tool: object mirror changed during canonical refresh\n' >&2
+        return 1
     fi
     TOOL_OBJECT_MIRROR=$mirror
 }
@@ -2260,7 +2301,7 @@ PY
 }
 
 run_git() {
-    local network=0 name
+    local network=0 local_clone=0 timeout_seconds="" name allowed_protocol
     # These are command-line configuration, not inherited GIT_* environment.
     # The latter is deliberately scrubbed below because it can redirect Git's
     # executable authority. Pinning pack concurrency here keeps cold immutable
@@ -2271,9 +2312,28 @@ run_git() {
         -c pack.windowMemory=64m
         -c pack.deltaCacheSize=64m
     )
-    if [[ ${1:-} == --network ]]; then
-        network=1
-        shift
+    while :; do
+        case ${1:-} in
+            --network) network=1; shift ;;
+            --local-clone) local_clone=1; shift ;;
+            --timeout)
+                if [[ ! ${2:-} =~ ^[1-9][0-9]*$ ]]; then
+                    printf 'operational-tool: internal Git timeout must be a positive integer\n' >&2
+                    return 2
+                fi
+                timeout_seconds=$2
+                shift 2
+                ;;
+            *) break ;;
+        esac
+    done
+    if [[ $network -eq 1 && $local_clone -eq 1 ]]; then
+        printf 'operational-tool: internal Git call cannot be network and local-clone\n' >&2
+        return 2
+    fi
+    allowed_protocol=$GIT_TRANSPORT_ALLOWLIST
+    if [[ $local_clone -eq 1 ]]; then
+        allowed_protocol='file'
     fi
     if [[ ${1:-} != -C || $# -lt 3 ]]; then
         printf 'operational-tool: internal Git call lacks an explicit working directory\n' >&2
@@ -2288,12 +2348,14 @@ run_git() {
         [[ $name == GIT_* ]] && clean_env+=(-u "$name")
     done < <(compgen -e)
     clean_env+=(
-        GIT_ALLOW_PROTOCOL="$GIT_TRANSPORT_ALLOWLIST"
+        GIT_ALLOW_PROTOCOL="$allowed_protocol"
         GIT_CONFIG_NOSYSTEM=1
         GIT_CONFIG_GLOBAL=/dev/null
         GIT_CEILING_DIRECTORIES="$TOOL_CACHE"
         GIT_TERMINAL_PROMPT=0
     )
+    clean_env+=(DEV_HERMIT_LOCAL_OBJECT_CLONE="$local_clone")
+    local -a command=("${clean_env[@]}")
     if [[ $network -eq 1 ]]; then
         if [[ -L $GITHUB_CREDENTIAL_HELPER || \
               ! -f $GITHUB_CREDENTIAL_HELPER || \
@@ -2310,9 +2372,14 @@ run_git() {
             -c credential.https://github.com.helper=
             -c "credential.https://github.com.helper=!$GITHUB_CREDENTIAL_HELPER auth git-credential"
         )
-        "${clean_env[@]}" with-proxy "${git_command[@]}" "$@"
+        command+=(with-proxy "${git_command[@]}" "$@")
     else
-        "${clean_env[@]}" "${git_command[@]}" "$@"
+        command+=("${git_command[@]}" "$@")
+    fi
+    if [[ -n $timeout_seconds ]]; then
+        /usr/bin/timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" "${command[@]}"
+    else
+        "${command[@]}"
     fi
 }
 
@@ -2329,11 +2396,37 @@ normalize_github_remote() {
     printf '%s\n' "$path"
 }
 
+staging_tool_root_has_canonical_git_state() {
+    local root=$1 repo git_dir origin
+    origin=$(run_git -C "$root" remote get-url origin 2>/dev/null) || {
+        printf 'operational-tool: materialized origin is unreadable\n' >&2
+        return 1
+    }
+    if [[ $origin != "$CANONICAL_REMOTE_URL" ]]; then
+        printf 'operational-tool: materialized origin is not the canonical remote\n' >&2
+        return 1
+    fi
+    for repo in "$root" "$root/hermit" "$root/hermit/agent-utils"; do
+        git_dir=$(run_git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null) || {
+            printf 'operational-tool: cannot resolve materialized Git directory at %s\n' \
+                "$repo" >&2
+            return 1
+        }
+        if [[ -e $git_dir/objects/info/alternates || \
+              -L $git_dir/objects/info/alternates ]]; then
+            printf 'operational-tool: materialized tool root depends on an alternate object store at %s\n' \
+                "$repo" >&2
+            return 1
+        fi
+    done
+}
+
 materialize_current_tool_root() {
     local requested_sha=${1:-}
     local expected_state_identity=${2:-}
     local expected_target_identity=${3:-}
     local configured_remote configured_repository remote_listing sha target hermit_pin agent_utils_pin
+    local mirror_identity
     local bootstrap_sha
     local cache_anchor trees_anchor staging_anchor
     local target_identity="" publish_rc
@@ -2388,13 +2481,24 @@ materialize_current_tool_root() {
     elif [[ ! -e $target ]]; then
         start_staging_root_holder || return 1
         staging_anchor=$TOOL_STAGING_ROOT
-        refresh_canonical_object_mirror "$cache_anchor"
-        mirror_reference=()
+        refresh_canonical_object_mirror "$cache_anchor" "$sha" || return 1
         if [[ -n $TOOL_OBJECT_MIRROR ]]; then
-            mirror_reference=(--reference-if-able "$TOOL_OBJECT_MIRROR" --dissociate)
-        fi
-        if ! run_git --network -C "$cache_anchor" clone --quiet --no-checkout \
-            "${mirror_reference[@]}" "$CANONICAL_REMOTE_URL" "$staging_anchor"; then
+            mirror_identity=$(canonical_object_mirror_identity "$TOOL_OBJECT_MIRROR" "$sha") \
+                || return 1
+            if ! run_git --local-clone --timeout "$TOOL_LOCAL_CLONE_TIMEOUT_SECS" \
+                -C "$cache_anchor" clone --quiet --no-checkout --no-tags \
+                "$TOOL_OBJECT_MIRROR" "$staging_anchor"; then
+                printf 'health-tick: bounded local clone of canonical object mirror failed\n' >&2
+                return 1
+            fi
+            if [[ $(canonical_object_mirror_identity "$TOOL_OBJECT_MIRROR" "$sha") != "$mirror_identity" ]]; then
+                printf 'operational-tool: object mirror changed during local clone\n' >&2
+                return 1
+            fi
+            run_git -C "$staging_anchor" remote set-url origin \
+                "$CANONICAL_REMOTE_URL" || return 1
+        elif ! run_git --network -C "$cache_anchor" clone --quiet --no-checkout \
+            --no-tags "$CANONICAL_REMOTE_URL" "$staging_anchor"; then
             printf 'health-tick: could not clone current parent tooling\n' >&2
             return 1
         fi
@@ -2428,6 +2532,7 @@ materialize_current_tool_root() {
         run_git --network -C "$staging_anchor/hermit" submodule update \
             --init --checkout --depth 1 -- agent-utils \
             || return 1
+        staging_tool_root_has_canonical_git_state "$staging_anchor" || return 1
         tool_root_is_complete "$staging_anchor" "$sha" || {
             printf 'health-tick: materialized tool root failed pin or cleanliness verification\n' >&2
             return 1
@@ -2437,6 +2542,7 @@ materialize_current_tool_root() {
         # Recheck bytes afterward so publication cannot separate the checked
         # tree from the tree whose permissions were frozen.
         mark_held_tree_read_only "$staging_anchor" "$TOOL_STAGING_IDENTITY" || return 1
+        staging_tool_root_has_canonical_git_state "$staging_anchor" || return 1
         tool_root_is_complete "$staging_anchor" "$sha" || {
             printf 'health-tick: read-only staging root failed final byte verification\n' >&2
             return 1
