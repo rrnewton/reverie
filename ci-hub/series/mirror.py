@@ -60,6 +60,7 @@ def _environment(extra: Mapping[str, str] | None = None) -> dict[str, str]:
     environment.setdefault("GIT_COMMITTER_EMAIL", environment["GIT_AUTHOR_EMAIL"])
     # Only the locked scorecard invocation receives write authority.
     environment.pop(LOCK_FD_ENV, None)
+    environment.pop(series.LEDGER_ROOT_ENV, None)
     if extra:
         environment.update(extra)
     return environment
@@ -359,13 +360,10 @@ def finish_portable_proof(prepared: Mapping[str, Any], parent: Path, writer: Pat
         return finalized_proof.stage_carrier(writer, manifest, prepared["objects"], existing=existing)
 
 
-def build_scorecard(
-    source_checkout: Path, target: str, snapshot: Mapping[str, Any], writer: Path,
-    *, lock_fd: int, net_wrapper: str, results: Path | None = None,
-    scorecard_command: str | None = None, scorecard_args: Sequence[str] = (),
-    tool_checkout: Path | None = None, finalized_run_id: str | None = None,
-    state_root: Path | None = None, prepared_finalized_row: bytes | None = None,
-) -> tuple[dict[str, str], str]:
+def _scorecard_execution(
+    source_checkout: Path, target: str, tool_checkout: Path | None,
+    state_root: Path | None,
+) -> tuple[Path, str, str, dict[str, str]]:
     if _git(source_checkout, "rev-parse", "HEAD^{commit}") != target:
         raise MirrorRefused("scorecard source HEAD no longer matches the validation target")
     # The measured checkout is input, not a new compiler cache namespace.
@@ -379,13 +377,59 @@ def build_scorecard(
     except rust_toolchain.ToolchainRefused as error:
         raise MirrorRefused(f"cannot select scorecard tool compiler: {error}") from error
     environment = {
-        series.LEDGER_ROOT_ENV: str(writer), LOCK_FD_ENV: str(lock_fd),
         "RUSTUP_TOOLCHAIN": compiler, "RUSTUP_AUTO_INSTALL": "0",
     }
     if state_root is not None:
         # The immutable tool owns code; the existing state target owns mutable
         # Cargo output, shared by recurring publications rather than each run.
         environment["CARGO_TARGET_DIR"] = str(state_root.resolve() / "target")
+    return tool, tool_commit, compiler, environment
+
+
+def prepare_scorecard(
+    source_checkout: Path, target: str, *, tool_checkout: Path | None,
+    state_root: Path, net_wrapper: str,
+) -> tuple[str, str]:
+    """Prepare the real compiler before taking the shared publication lock.
+
+    The scorecard's help returns before repository/history access. It receives
+    neither the ledger root nor its lock descriptor. The actual transaction
+    still uses --force and rechecks these source identities under the lock.
+    """
+    tool, commit, compiler, environment = _scorecard_execution(
+        source_checkout, target, tool_checkout, state_root)
+    # derive() invokes this distinct Cargo binary, not the rust-script body.
+    # Use its exact package/manifest/target prefix with its read-only help path.
+    _network(
+        ["cargo", "run", "--quiet", "-p", "hermit-manifest-plan",
+         "--manifest-path", str(tool.parents[2] / "Cargo.toml"),
+         "--target-dir", environment["CARGO_TARGET_DIR"], "--", "--help"],
+        cwd=source_checkout, wrapper=net_wrapper, environment=environment,
+    )
+    _network(
+        ["rust-script", "--force", "--toolchain", compiler, str(tool), "--help"],
+        cwd=source_checkout, wrapper=net_wrapper, environment=environment,
+    )
+    prepared = _scorecard_execution(source_checkout, target, tool_checkout, state_root)
+    if prepared[1:3] != (commit, compiler):
+        raise MirrorRefused("scorecard tool changed during compiler preparation")
+    return commit, compiler
+
+
+def build_scorecard(
+    source_checkout: Path, target: str, snapshot: Mapping[str, Any], writer: Path,
+    *, lock_fd: int, net_wrapper: str, results: Path | None = None,
+    scorecard_command: str | None = None, scorecard_args: Sequence[str] = (),
+    tool_checkout: Path | None = None, finalized_run_id: str | None = None,
+    state_root: Path | None = None, prepared_finalized_row: bytes | None = None,
+    prepared_tool: tuple[str, str] | None = None,
+) -> tuple[dict[str, str], str]:
+    tool_checkout = (tool_checkout or TOOL_ROOT / "hermit").resolve()
+    tool, tool_commit, compiler, environment = _scorecard_execution(
+        source_checkout, target, tool_checkout, state_root)
+    if prepared_tool is not None and prepared_tool != (tool_commit, compiler):
+        raise MirrorRefused("scorecard tool changed after compiler preparation")
+    environment.update({series.LEDGER_ROOT_ENV: str(writer), LOCK_FD_ENV: str(lock_fd)})
     print(
         f"ledger publication: scorecard tool {tool_commit} uses Rust {compiler}; "
         f"measured source {target}", file=sys.stderr,
@@ -475,9 +519,16 @@ def mirror(
     if remote_url != REMOTE_URL:
         raise MirrorRefused("unexpected ledger repository")
     legacy_export = scorecard_command == "export-legacy"
+    if not legacy_export:
+        # Raw publication and snapshots use a different native package from
+        # the scorecard. Prepare it in its own actual caller environment; the
+        # real rows are still validated again inside the writer transaction.
+        series.prepare_shared_checker()
     finalized_row = None
     portable = None
     preparation_error = None
+    prepared_tool = None
+    tool_preparation_error = None
     if finalized_run_id is not None and not publish_only:
         try:
             if source_checkout is None or target is None:
@@ -488,6 +539,18 @@ def mirror(
                 publisher.PublishRefused, subprocess.SubprocessError) as error:
             # Raw cell rows still publish through the normal transaction below.
             preparation_error = error
+    if not publish_only and preparation_error is None:
+        try:
+            if source_checkout is None or target is None:
+                raise MirrorRefused("scorecard preparation requires source checkout and target")
+            prepared_tool = prepare_scorecard(
+                source_checkout, target, tool_checkout=tool_checkout,
+                state_root=parent, net_wrapper=net_wrapper,
+            )
+        except (MirrorRefused, OSError, ValueError) as error:
+            # Compilation cannot acquire publication authority or prevent the
+            # independent, durable raw-row append below.
+            tool_preparation_error = error
     with publication_writer(parent, net_wrapper=net_wrapper) as (ledger, writer, lock_fd):
         if legacy_export:
             # Preserving legacy bytes must neither drain unrelated pending rows
@@ -518,6 +581,8 @@ def mirror(
         try:
             if preparation_error is not None:
                 raise MirrorRefused(f"finalized proof preparation failed: {preparation_error}")
+            if tool_preparation_error is not None:
+                raise MirrorRefused(f"scorecard tool preparation failed: {tool_preparation_error}")
             if source_checkout is None or target is None:
                 raise MirrorRefused("scorecard generation requires source checkout and target")
             hashes, tool_commit = build_scorecard(
@@ -526,6 +591,7 @@ def mirror(
                 scorecard_command=scorecard_command, scorecard_args=scorecard_args,
                 tool_checkout=tool_checkout, finalized_run_id=finalized_run_id,
                 state_root=parent, prepared_finalized_row=finalized_row,
+                prepared_tool=prepared_tool,
             )
             if portable is not None:
                 hashes.update(finish_portable_proof(

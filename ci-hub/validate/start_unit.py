@@ -6074,14 +6074,14 @@ def finalize_ledger_mirror(
             "--target",
             str(target),
         ]
-        if isinstance(results, str) and results:
-            command.extend(["--results", results])
-            # The launcher sets E2E_RUN_ID to this exact unit. The publisher
-            # resolves the canonical row; the run record supplies no proof JSON.
-            command.extend(["--finalized-run-id", unit])
         try:
+            if isinstance(results, str) and results:
+                command.extend(["--results", results])
+                # E2E_RUN_ID uses the launcher's suffix-free identity; the
+                # durable handle names the corresponding systemd .service.
+                command.extend(["--finalized-run-id", sanitize_unit(unit)])
             result = run(command, cwd=root, check=False, timeout=1800)
-        except (OSError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
             outcome = {
                 "state": "failed",
                 "recorded_at": recorded_at,

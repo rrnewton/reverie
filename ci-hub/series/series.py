@@ -481,6 +481,14 @@ def _checker_input(rows: Iterable[dict]) -> str:
     return "".join(_canonical_row_json(row) + "\n" for row in rows)
 
 
+def prepare_shared_checker() -> None:
+    """Prepare the same read-only checker before taking publication authority."""
+    result = _run_shared_checker("", ["--help"])
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no output"
+        raise SeriesError(f"cannot prepare the shared SeriesRow checker: {detail}")
+
+
 def _run_shared_checker(
     checker_input: str, arguments: Sequence[str],
 ) -> subprocess.CompletedProcess[str]:
@@ -490,6 +498,9 @@ def _run_shared_checker(
     # a different channel from an inherited historical measurement environment.
     tool_hermit = checker.parents[2] / "hermit"
     environment = dict(os.environ)
+    # This compiler/checker reads stdin only; it never needs ledger authority.
+    environment.pop(LEDGER_ROOT_ENV, None)
+    environment.pop("DEV_HERMIT_TEST_LEDGER_PUBLISH_LOCK_FD", None)
     try:
         selected = rust_toolchain.selected_toolchain(tool_hermit, environment=environment)
         environment["RUSTUP_TOOLCHAIN"] = selected

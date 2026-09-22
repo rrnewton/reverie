@@ -30,6 +30,12 @@ assert SPEC is not None and SPEC.loader is not None
 mirror = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(mirror)
 series = mirror.series
+HELP_FIXTURE = (
+    "if sys.argv[1:] == ['--help']:\n"
+    " assert 'DEV_HERMIT_TEST_LEDGER_PUBLISH_LOCK_FD' not in os.environ\n"
+    " assert 'DEV_HERMIT_TEST_LEDGER_ROOT' not in os.environ\n"
+    " raise SystemExit(0)\n"
+)
 
 
 def row(identifier: str, outcome: str = "passed") -> dict:
@@ -121,6 +127,16 @@ class DirectLedgerFixture(unittest.TestCase):
             "os.execv(sys.argv[4], sys.argv[4:])\n"
         )
         compiler.chmod(0o755)
+        cargo = compiler.with_name("cargo")
+        cargo.write_text(
+            "#!/usr/bin/python3\nimport os, sys\n"
+            f"assert sys.argv[1:] == {['run', '--quiet', '-p', 'hermit-manifest-plan', '--manifest-path', str(self.tool / 'Cargo.toml'), '--target-dir', str(self.parent / 'target'), '--', '--help']!r}\n"
+            "assert os.environ['RUSTUP_TOOLCHAIN'] == 'nightly-2026-07-12-x86_64-unknown-linux-gnu'\n"
+            "assert os.environ['RUSTUP_AUTO_INSTALL'] == '0'\n"
+            "assert 'DEV_HERMIT_TEST_LEDGER_ROOT' not in os.environ\n"
+            "assert 'DEV_HERMIT_TEST_LEDGER_PUBLISH_LOCK_FD' not in os.environ\n"
+        )
+        cargo.chmod(0o755)
         self.enterContext(mock.patch.dict(os.environ, {
             "PATH": str(compiler.parent) + os.pathsep + os.environ["PATH"],
             "RUSTUP_TOOLCHAIN": "nightly-2025-01-01",
@@ -128,6 +144,7 @@ class DirectLedgerFixture(unittest.TestCase):
         }))
         # A Python fixture child exercises inherited authority and output routing.
         tool.write_text("#!/usr/bin/python3\nimport os, pathlib, sys\n"
+                        + HELP_FIXTURE +
                         "fd=int(os.environ['DEV_HERMIT_TEST_LEDGER_PUBLISH_LOCK_FD'])\n"
                         "os.fstat(fd)\n"
                         "p=pathlib.Path(os.environ['DEV_HERMIT_TEST_LEDGER_ROOT'])/'scorecard'\n"
@@ -221,6 +238,70 @@ class DirectLedgerFixture(unittest.TestCase):
             git(self.remote, "merge-base", "--is-ancestor", report["commit"], "main")
         self.assertEqual(self.parent_commit, git(self.parent, "rev-parse", "HEAD"))
 
+    def test_slow_concurrent_compiler_preparation_does_not_hold_publication_lock(self):
+        ready = threading.Barrier(3)
+        release = threading.Event()
+        original = mirror._network
+
+        def slow_prepare(command, **kwargs):
+            if command[0] == "rust-script" and command[-1] == "--help":
+                self.assertNotIn(mirror.LOCK_FD_ENV, kwargs["environment"])
+                self.assertNotIn(series.LEDGER_ROOT_ENV, kwargs["environment"])
+                self.assertEqual(kwargs.get("pass_fds", ()), ())
+                ready.wait(15)
+                self.assertTrue(release.wait(15), "compiler preparation was not released")
+            return original(command, **kwargs)
+
+        for name in ("prepared-a", "prepared-b"):
+            self.append(name)
+        with mock.patch.object(mirror, "_network", side_effect=slow_prepare), \
+                ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(self.publish) for _ in range(2)]
+            try:
+                ready.wait(15)
+                # Both genuine fixture child preparations are still blocked.
+                # The real writer lock must remain available to another owner.
+                with mirror.publication_writer(self.parent, net_wrapper="/usr/bin/env"):
+                    self.assertTrue(all(not future.done() for future in futures))
+                    self.assertEqual([], self.remote_rows())
+            finally:
+                release.set()
+            reports = [future.result(timeout=30) for future in futures]
+        self.assertTrue(all(report["state"] == "published" for report in reports), reports)
+        self.assertEqual([row("prepared-a"), row("prepared-b")], self.remote_rows())
+
+    def test_compiler_preparation_failure_preserves_raw_publication_and_retry(self):
+        self.append("prepare-refused")
+        original = mirror._network
+
+        def refuse_prepare(command, **kwargs):
+            if command[-1] == "--help":
+                raise mirror.MirrorRefused("actual compiler preparation failed")
+            return original(command, **kwargs)
+
+        with mock.patch.object(mirror, "_network", side_effect=refuse_prepare):
+            report = self.publish()
+        self.assertEqual("derived-failed", report["state"])
+        self.assertIn("compiler preparation failed", report["scorecard"]["error"])
+        self.assertEqual([row("prepare-refused")], self.remote_rows())
+        self.assertEqual("legacy scorecard", git(self.remote, "show", "main:scorecard/SCORECARD.md"))
+        self.assertEqual("published", self.publish()["state"])
+        self.assertEqual([row("prepare-refused")], self.remote_rows())
+
+    def test_checker_preparation_failure_keeps_spool_without_taking_writer_lock(self):
+        spool = self.append("checker-prepare-refused")
+        original = spool.read_bytes()
+        with mock.patch.object(series, "_run_shared_checker", return_value=
+                               subprocess.CompletedProcess(["checker-fixture"], 2, "", "compile failed")), \
+                mock.patch.object(mirror, "publication_writer",
+                                  side_effect=AssertionError("failed preparation took writer lock")):
+            with self.assertRaisesRegex(series.SeriesError, "cannot prepare.*compile failed"):
+                self.publish()
+        self.assertEqual(original, spool.read_bytes())
+        self.assertEqual([], self.remote_rows())
+        self.assertEqual("published", self.publish()["state"])
+        self.assertEqual([row("checker-prepare-refused")], self.remote_rows())
+
     def test_legacy_export_does_not_relabel_or_rewrite_the_existing_scorecard(self):
         pending = self.append("unrelated-pending-result")
         pending_bytes = pending.read_bytes()
@@ -239,6 +320,7 @@ class DirectLedgerFixture(unittest.TestCase):
         blob = git(self.source, "rev-parse", "HEAD:ci/compat-envelope/cells.json")
         tool = self.tool / "ci/compat-envelope/scorecard.rs"
         tool.write_text("#!/usr/bin/python3\nimport os, pathlib, sys\n"
+                        + HELP_FIXTURE +
                         "assert sys.argv[1:] == ['export-legacy']\n"
                         "os.fstat(int(os.environ['DEV_HERMIT_TEST_LEDGER_PUBLISH_LOCK_FD']))\n"
                         "p=pathlib.Path(os.environ['DEV_HERMIT_TEST_LEDGER_ROOT'])/'scorecard/legacy'\n"
@@ -359,7 +441,7 @@ class DirectLedgerFixture(unittest.TestCase):
 
         def move_after_scorecard(command, **kwargs):
             result = network(command, **kwargs)
-            if str(self.tool / "ci/compat-envelope/scorecard.rs") in command:
+            if str(self.tool / "ci/compat-envelope/scorecard.rs") in command and command[-1] != "--help":
                 git(self.source, "commit", "--allow-empty", "-qm", "concurrent source change")
             return result
 
@@ -422,11 +504,12 @@ class DirectLedgerFixture(unittest.TestCase):
         # doubles; this verifies Git delivery, not finalized proof validity.
         bootstrap = (
             "import runpy,sys,subprocess;"
+            "expected_run_id=sys.argv.pop(1);"
             f"sys.path[:0]=[{str(MODULE.parent)!r},{str(mirror.TOOL_ROOT / 'ci-hub/ledger')!r}];"
             "import series,publisher,validate_rows;"
             "series._run_shared_checker=lambda *a: subprocess.CompletedProcess(a,0,'','');"
             "publisher._series_store=lambda:series;"
-            "r={'repo':'hermit','run_id':sys.argv[sys.argv.index('--finalized-run-id')+1],"
+            "r={'repo':'hermit','run_id':expected_run_id,"
             "'record_id':'fixture-final','commit':sys.argv[sys.argv.index('--target')+1],"
             "'cwd':sys.argv[sys.argv.index('--source-checkout')+1],'started_at':'2026-09-21T12:00:00Z'};"
             "validate_rows.rows=lambda **k:[r];"
@@ -438,13 +521,14 @@ class DirectLedgerFixture(unittest.TestCase):
         def native_run(command, **kwargs):
             calls.append(command)
             return subprocess.run(
-                [sys.executable, "-B", "-c", bootstrap, *command[1:],
+                [sys.executable, "-B", "-c", bootstrap, expected_run_id, *command[1:],
                  "--tool-checkout", str(self.tool)],
                 cwd=kwargs.get("cwd"), capture_output=True, text=True, timeout=30,
             )
 
         for code, verdict in [(0, "VALIDATED"), (start_unit.EXIT_FAILED, "FAILED")]:
             with self.subTest(verdict=verdict):
+                expected_run_id = "validate-" + verdict.lower()
                 self.append(verdict)
                 record_path = self.parent / f"{verdict}.json"
                 record = {
@@ -452,7 +536,7 @@ class DirectLedgerFixture(unittest.TestCase):
                     "producer": "normal-completion-publication-fixture",
                     "repo": "rrnewton/hermit", "checkout": str(self.source),
                     "target": self.target, "canonical_verdict": verdict,
-                    "unit": verdict.lower() + ".service",
+                    "unit": expected_run_id + ".service",
                     "wrapper_exit_code": code, "e2e_result_root": str(self.root / "results"),
                 }
                 run_registry.write_record(record_path, record)
@@ -466,6 +550,8 @@ class DirectLedgerFixture(unittest.TestCase):
                 git(self.remote, "merge-base", "--is-ancestor", commit, "main")
                 self.assertEqual(result, run_registry.read_record(record_path))
                 self.assertIn("--results", calls[-1])
+                self.assertEqual(expected_run_id,
+                                 calls[-1][calls[-1].index("--finalized-run-id") + 1])
         self.assertEqual({"VALIDATED", "FAILED"}, {row["event_id"] for row in self.remote_rows()})
         self.assertEqual("", git(self.source, "status", "--porcelain"))
 
@@ -503,7 +589,7 @@ class DirectLedgerFixture(unittest.TestCase):
         original = mirror._network
 
         def inspect(command, **kwargs):
-            if str(self.tool / "ci/compat-envelope/scorecard.rs") in command:
+            if str(self.tool / "ci/compat-envelope/scorecard.rs") in command and command[-1] != "--help":
                 calls.append(command)
                 self.assertEqual(command[:5], [
                     "rust-script", "--force", "--toolchain",
@@ -856,6 +942,9 @@ def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
                 f"mapping = {script_map!r}\n"
                 f"assert sys.argv[1:4] == ['--force', '--toolchain', {provider['toolchain']!r}]\n"
                 "assert os.environ['RUSTUP_AUTO_INSTALL'] == '0'\n"
+                "if sys.argv[5:] == ['--help']:\n"
+                " assert 'DEV_HERMIT_TEST_LEDGER_ROOT' not in os.environ\n"
+                " assert 'DEV_HERMIT_TEST_LEDGER_PUBLISH_LOCK_FD' not in os.environ\n"
                 "binary = mapping[sys.argv[4]]\n"
                 "os.execv('/usr/bin/timeout', ['timeout', '--kill-after=5s', '45s', binary, *sys.argv[5:]])\n")
             compiler.chmod(0o755)
@@ -865,7 +954,10 @@ def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
                         "--", "--root", str(self.source), "--format", "matrix-json"]
             cargo.write_text(
                 "#!/usr/bin/python3\nimport os, sys\n"
-                f"assert sys.argv[1:] == {expected!r}, sys.argv\n"
+                f"assert sys.argv[1:] in [{expected!r}, {expected[:9] + ['--help']!r}], sys.argv\n"
+                "if sys.argv[10:] == ['--help']:\n"
+                " assert 'DEV_HERMIT_TEST_LEDGER_ROOT' not in os.environ\n"
+                " assert 'DEV_HERMIT_TEST_LEDGER_PUBLISH_LOCK_FD' not in os.environ\n"
                 f"binary = {provider['executables']['manifest']['path']!r}\n"
                 "os.execv('/usr/bin/timeout', ['timeout', '--kill-after=5s', '45s', binary, *sys.argv[10:]])\n")
             cargo.chmod(0o755)
@@ -1028,6 +1120,8 @@ def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
         def test_contended_finalized_transactions_preserve_raw_rows_and_derived_history(self):
             a_at_writer = threading.Event()
             b_contended = threading.Event()
+            preparations_ready = threading.Barrier(3)
+            release_preparations = threading.Event()
             local = threading.local()
             real_flock, real_network = mirror.fcntl.flock, mirror._network
             lock_path = self.ledger / ".git" / mirror.PUBLICATION_LOCK
@@ -1052,6 +1146,20 @@ def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
                 return value
 
             def observed_network(command, **kwargs):
+                if (command[0] == "rust-script" and command[-1] == "--help"
+                        and not getattr(local, "prepared", False)):
+                    local.prepared = True
+                    self.assertNotIn(mirror.LOCK_FD_ENV, kwargs["environment"])
+                    self.assertNotIn(series.LEDGER_ROOT_ENV, kwargs["environment"])
+                    self.assertEqual(kwargs.get("pass_fds", ()), ())
+                    preparations_ready.wait(15)
+                    self.assertTrue(release_preparations.wait(15))
+                    result = real_network(command, **kwargs)
+                    # Keep the existing A-writer/B-contention opponent after
+                    # both real native preparations have run outside the lock.
+                    if local.name == "finalized-b":
+                        self.assertTrue(a_at_writer.wait(15), "A did not reach the real writer")
+                    return result
                 if command[0] == "git" and any(part in ("fetch", "push") for part in command):
                     self.assertEqual(git(kwargs["cwd"], "remote", "get-url", "--push", "origin"), str(self.remote))
                     self.assertEqual(os.environ["GIT_ALLOW_PROTOCOL"], "file")
@@ -1068,8 +1176,6 @@ def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
 
             def publish(name):
                 local.name = name
-                if name == "finalized-b":
-                    self.assertTrue(a_at_writer.wait(15), "A did not reach the real writer")
                 self.append(name)
                 return self.publish(name)
 
@@ -1077,6 +1183,15 @@ def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:
                     mock.patch.object(mirror, "_network", side_effect=observed_network), \
                     ThreadPoolExecutor(max_workers=2) as pool:
                 futures = [pool.submit(publish, name) for name in self.inputs]
+                try:
+                    preparations_ready.wait(15)
+                    with mirror.publication_writer(self.parent, net_wrapper="/usr/bin/env"):
+                        self.assertTrue(all(not future.done() for future in futures))
+                        self.trace.append({"run": "preparation-observer",
+                                           "event": "lock_available_during_both_preparations",
+                                           "time": time.monotonic_ns()})
+                finally:
+                    release_preparations.set()
                 self.reports = [future.result(timeout=90) for future in futures]
             for report in self.reports:
                 self.assertEqual(report["state"], "published", report)
