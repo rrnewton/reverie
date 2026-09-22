@@ -202,9 +202,17 @@ const AT_SYSINFO_EHDR: u64 = 33;
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Share deterministic file identities across fork.
 // TODO-HUMAN-REVIEW(PR-136): Review linked and anonymous object identity lifetimes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuestFileIdentityKind {
+    Ordinary,
+    Pipe,
+    Socket,
+}
+
 #[derive(Debug)]
 pub(crate) struct GuestFileIdentity {
     pub inode: u64,
+    pub kind: GuestFileIdentityKind,
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review the identity entry lifetime API.

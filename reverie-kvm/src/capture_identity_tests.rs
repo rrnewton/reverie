@@ -24,9 +24,14 @@ fn captured_output_identity_matches_pipefs_and_preserves_proc_symlinks() {
     let native_pipe = capture_native_stat(state.files[&pipe[0]].as_raw_fd());
     let ordinary =
         assert_descriptor_stat_routes(&mut memory, &mut state, pipe[0], Some(&mut output));
+    let ordinary_identity = &state.fd_object_inodes[&pipe[0]];
+    assert_eq!(ordinary_identity.kind, GuestFileIdentityKind::Pipe);
     assert_eq!(
         (ordinary.st_dev, ordinary.st_ino),
-        (native_pipe.st_dev, native_pipe.st_ino)
+        (
+            synthetic_dev(SYNTHETIC_PIPE_DEV_MINOR),
+            ordinary_identity.inode
+        )
     );
     let mut captured_inodes = Vec::new();
     for (fd, keeper) in [1, 2].into_iter().zip(output.identities.descriptors()) {
@@ -38,12 +43,16 @@ fn captured_output_identity_matches_pipefs_and_preserves_proc_symlinks() {
         let captured =
             assert_descriptor_stat_routes(&mut memory, &mut state, fd, Some(&mut output));
         assert_eq!(
-            captured.st_dev, native_pipe.st_dev,
-            "capture and guest pipe must share pipefs"
+            native_capture.st_dev, native_pipe.st_dev,
+            "capture and guest pipe carriers must share host pipefs"
         );
         assert_eq!(
             (captured.st_dev, captured.st_ino),
             (native_capture.st_dev, native_capture.st_ino)
+        );
+        assert_ne!(
+            captured.st_dev, ordinary.st_dev,
+            "captured output keeps its existing host-backed CaptureIdentity domain"
         );
         assert_ne!(
             captured.st_ino, native_pipe.st_ino,

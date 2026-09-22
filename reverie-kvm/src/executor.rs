@@ -34,6 +34,7 @@ use crate::bootstrap::SegmentBase;
 use crate::elf::GUEST_CAPABILITY_MASK;
 use crate::elf::GuestFileIdentity;
 use crate::elf::GuestFileIdentityEntry;
+use crate::elf::GuestFileIdentityKind;
 use crate::elf::LoadedStaticElf;
 use crate::elf::RegularCreateDirectoryPolicy;
 use crate::elf::STACK_LIMIT;
@@ -139,6 +140,9 @@ const SYNTHETIC_PROC_PRESERVED_STATUS_FLAGS: libc::c_int = libc::O_APPEND
 const ANON_INODE_FS_MAGIC: libc::c_long = 0x0904_1934;
 const PIPEFS_MAGIC: libc::c_long = 0x5049_5045;
 const SOCKFS_MAGIC: libc::c_long = 0x534f_434b;
+// Linux 6.8 added a never-reused mount ID alongside the legacy reusable ID.
+// Keep the UAPI bit local until every supported libc exposes it.
+const STATX_MNT_ID_UNIQUE: libc::c_uint = 0x0000_4000;
 const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
 // Linux UAPI value from <linux/sockios.h>; libc does not expose it.
 const SIOCETHTOOL: libc::c_ulong = 0x8946;
@@ -1868,7 +1872,7 @@ impl FdinfoDescription {
             .table
             .upgrade()
             .ok_or_else(|| negative_errno(libc::ENOENT))?;
-        let (file, flags) = {
+        let (file, flags, object_identity) = {
             // Order: description seq -> ONE file table -> lifecycle. Mutation
             // paths only propagate/drop description Arcs; they never lock seq.
             let table = table.lock().expect("KVM file-table lock poisoned");
@@ -1916,6 +1920,11 @@ impl FdinfoDescription {
                 } else {
                     0
                 };
+            let object_identity = table
+                .fd_object_inodes
+                .get(&self.target_fd)
+                .filter(|identity| identity.kind != GuestFileIdentityKind::Ordinary)
+                .cloned();
             // SAFETY: the table owns host (or it is an open inherited standard
             // descriptor); fcntl validates the fd and returns a new owned fd.
             let pinned = unsafe { libc::fcntl(host, libc::F_DUPFD_CLOEXEC, 0) };
@@ -1923,14 +1932,35 @@ impl FdinfoDescription {
                 return Err(io_error(std::io::Error::last_os_error()));
             }
             // SAFETY: successful F_DUPFD_CLOEXEC transfers ownership.
-            (unsafe { std::fs::File::from_raw_fd(pinned) }, flags)
+            (
+                unsafe { std::fs::File::from_raw_fd(pinned) },
+                flags,
+                object_identity,
+            )
         };
         // Neither table nor lifecycle is held across procfs I/O. Private
         // anonymous carriers (epoll/inotify/eventfd/timerfd/pidfd, etc.) have no
         // ordinary file type and must not expose their supervisor identities.
         ensure_fdinfo_object(file.as_raw_fd())?;
+        let object_identity = match object_identity {
+            Some(identity) => {
+                let inspected = inspect_file_identity(&file)?;
+                if inspected.kind != identity.kind {
+                    return Err(negative_errno(libc::EIO));
+                }
+                Some(FdinfoObjectIdentity {
+                    inode: identity.inode,
+                    device: synthetic_anonymous_device(identity.kind)
+                        .ok_or_else(|| negative_errno(libc::EIO))?,
+                    mount_id: synthetic_anonymous_mount_id(identity.kind, false)
+                        .ok_or_else(|| negative_errno(libc::EIO))?,
+                    host_key: inspected.key,
+                })
+            }
+            None => None,
+        };
         let bytes = read_owned_fdinfo(&file)?;
-        replace_fdinfo_flags(&bytes, flags)
+        replace_fdinfo_fields(&bytes, flags, object_identity)
     }
 
     fn read(&self, memory: &mut GuestMemory, args: &[u64; 6], positioned: bool) -> i64 {
@@ -2045,12 +2075,96 @@ fn read_fdinfo_bytes(source: impl std::io::Read, limit: u64) -> Result<Vec<u8>, 
     Ok(bytes)
 }
 
+#[cfg(test)]
 fn replace_fdinfo_flags(bytes: &[u8], flags: libc::c_int) -> Result<Vec<u8>, i64> {
+    replace_fdinfo_fields(bytes, flags, None)
+}
+
+#[derive(Clone, Copy)]
+struct FdinfoObjectIdentity {
+    inode: u64,
+    device: libc::dev_t,
+    mount_id: u64,
+    host_key: (libc::dev_t, libc::ino_t),
+}
+
+fn replace_fdinfo_lock_identity(line: &[u8], object: FdinfoObjectIdentity) -> Result<Vec<u8>, i64> {
+    if !line.ends_with(b"\n") {
+        return Err(negative_errno(libc::EIO));
+    }
+    let mut fields = Vec::new();
+    let mut cursor = b"lock:".len();
+    while cursor < line.len() {
+        while cursor < line.len() && line[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        let start = cursor;
+        while cursor < line.len() && !line[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if start == cursor {
+            continue;
+        }
+        let token = &line[start..cursor];
+        let mut parts = token.split(|byte| *byte == b':');
+        let (Some(major), Some(minor), Some(inode), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let major = std::str::from_utf8(major)
+            .ok()
+            .and_then(|value| u32::from_str_radix(value, 16).ok());
+        let minor = std::str::from_utf8(minor)
+            .ok()
+            .and_then(|value| u32::from_str_radix(value, 16).ok());
+        let inode = std::str::from_utf8(inode)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok());
+        let Some((major, minor, inode)) = major.zip(minor).zip(inode).map(|((a, b), c)| (a, b, c))
+        else {
+            continue;
+        };
+        if major != libc::major(object.host_key.0)
+            || minor != libc::minor(object.host_key.0)
+            || inode != object.host_key.1
+        {
+            return Err(negative_errno(libc::EIO));
+        }
+        fields.push((start, cursor));
+    }
+    if fields.is_empty() {
+        return Err(negative_errno(libc::EIO));
+    }
+    let replacement = format!(
+        "{:02x}:{:02x}:{}",
+        libc::major(object.device),
+        libc::minor(object.device),
+        object.inode
+    );
+    let mut result = Vec::with_capacity(line.len());
+    let mut copied = 0;
+    for (start, end) in fields {
+        result.extend_from_slice(&line[copied..start]);
+        result.extend_from_slice(replacement.as_bytes());
+        copied = end;
+    }
+    result.extend_from_slice(&line[copied..]);
+    Ok(result)
+}
+
+fn replace_fdinfo_fields(
+    bytes: &[u8],
+    flags: libc::c_int,
+    object: Option<FdinfoObjectIdentity>,
+) -> Result<Vec<u8>, i64> {
     let mut result = Vec::with_capacity(bytes.len());
-    let mut found = false;
+    let mut found_flags = false;
+    let mut found_inode = false;
+    let mut found_mount = false;
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
         if line.starts_with(b"flags:") {
-            if found || !line.ends_with(b"\n") {
+            if found_flags || !line.ends_with(b"\n") {
                 return Err(negative_errno(libc::EIO));
             }
             let value = std::str::from_utf8(&line[b"flags:".len()..])
@@ -2058,12 +2172,47 @@ fn replace_fdinfo_flags(bytes: &[u8], flags: libc::c_int) -> Result<Vec<u8>, i64
                 .trim();
             u64::from_str_radix(value, 8).map_err(|_| negative_errno(libc::EIO))?;
             result.extend_from_slice(format!("flags:\t0{flags:o}\n").as_bytes());
-            found = true;
+            found_flags = true;
+        } else if let Some(object) = object
+            && line.starts_with(b"ino:")
+        {
+            if found_inode || !line.ends_with(b"\n") {
+                return Err(negative_errno(libc::EIO));
+            }
+            let value = std::str::from_utf8(&line[b"ino:".len()..])
+                .map_err(|_| negative_errno(libc::EIO))?
+                .trim();
+            let host_inode = value
+                .parse::<u64>()
+                .map_err(|_| negative_errno(libc::EIO))?;
+            if host_inode != object.host_key.1 {
+                return Err(negative_errno(libc::EIO));
+            }
+            result.extend_from_slice(format!("ino:\t{}\n", object.inode).as_bytes());
+            found_inode = true;
+        } else if let Some(object) = object
+            && line.starts_with(b"mnt_id:")
+        {
+            if found_mount || !line.ends_with(b"\n") {
+                return Err(negative_errno(libc::EIO));
+            }
+            let value = std::str::from_utf8(&line[b"mnt_id:".len()..])
+                .map_err(|_| negative_errno(libc::EIO))?
+                .trim();
+            value
+                .parse::<u64>()
+                .map_err(|_| negative_errno(libc::EIO))?;
+            result.extend_from_slice(format!("mnt_id:\t{}\n", object.mount_id).as_bytes());
+            found_mount = true;
+        } else if let Some(object) = object
+            && line.starts_with(b"lock:")
+        {
+            result.extend_from_slice(&replace_fdinfo_lock_identity(line, object)?);
         } else {
             result.extend_from_slice(line);
         }
     }
-    if !found {
+    if !found_flags || object.is_some() && (!found_inode || !found_mount) {
         return Err(negative_errno(libc::EIO));
     }
     Ok(result)
@@ -7935,26 +8084,49 @@ fn guest_fd_link_target(
         return Ok(path.to_vec());
     }
     let target = canonical_fd_path(host_fd)?;
-    let target = target.as_os_str().as_bytes();
-
-    // A followed proc-fd path names the same object as fstat. Keep anonymous
-    // link targets consistent with that object's identity as well.
-    for kind in ["pipe", "socket"] {
-        let prefix = format!("{kind}:[");
-        if target.starts_with(prefix.as_bytes()) && target.ends_with(b"]") {
-            return Ok(format!(
-                "{kind}:[{}]",
-                guest_object_stat(state, guest_fd, capture)?.st_ino
-            )
-            .into_bytes());
-        }
-    }
-    Ok(target.to_vec())
+    sanitize_anonymous_link_target(
+        target.as_os_str().as_bytes(),
+        state.fd_object_inodes.get(&guest_fd).map(Arc::as_ref),
+    )
 }
 
 enum ProcFdLinkSnapshot {
     Fixed(Vec<u8>),
-    Host(std::fs::File),
+    Host {
+        file: std::fs::File,
+        identity: Option<Arc<GuestFileIdentity>>,
+    },
+}
+
+fn sanitize_anonymous_link_target(
+    target: &[u8],
+    identity: Option<&GuestFileIdentity>,
+) -> Result<Vec<u8>, i64> {
+    let Some(identity) = identity else {
+        return Ok(target.to_vec());
+    };
+    let label = match identity.kind {
+        GuestFileIdentityKind::Ordinary => return Ok(target.to_vec()),
+        GuestFileIdentityKind::Pipe => "pipe",
+        GuestFileIdentityKind::Socket => "socket",
+    };
+    let prefix = format!("{label}:[");
+    let Some(host_inode) = target
+        .strip_prefix(prefix.as_bytes())
+        .and_then(|suffix| suffix.strip_suffix(b"]"))
+    else {
+        return Err(negative_errno(libc::EIO));
+    };
+    if host_inode.is_empty()
+        || !host_inode.iter().all(u8::is_ascii_digit)
+        || std::str::from_utf8(host_inode)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .is_none()
+    {
+        return Err(negative_errno(libc::EIO));
+    }
+    Ok(format!("{label}:[{}]", identity.inode).into_bytes())
 }
 
 fn file_table_open_standard(table: &FileTableState, guest_fd: libc::c_int) -> bool {
@@ -8035,10 +8207,11 @@ fn proc_fd_link_snapshot(
     if pinned < 0 {
         return Err(io_error(std::io::Error::last_os_error()));
     }
-    Ok(ProcFdLinkSnapshot::Host(
+    Ok(ProcFdLinkSnapshot::Host {
         // SAFETY: successful F_DUPFD_CLOEXEC transfers ownership.
-        unsafe { std::fs::File::from_raw_fd(pinned) },
-    ))
+        file: unsafe { std::fs::File::from_raw_fd(pinned) },
+        identity: table.fd_object_inodes.get(&guest_fd).cloned(),
+    })
 }
 
 fn proc_fd_directory_link_target(
@@ -8076,13 +8249,12 @@ fn proc_fd_directory_link_target(
     };
     match snapshot {
         ProcFdLinkSnapshot::Fixed(target) => Ok(target),
-        ProcFdLinkSnapshot::Host(file) => {
+        ProcFdLinkSnapshot::Host { file, identity } => {
             let target = canonical_fd_path(file.as_raw_fd())?;
-            // Keep anonymous-object link text byte-identical to the direct
-            // `/proc/self/fd/N` path, which likewise reports the host object's
-            // inode after guest metadata sanitization. The pinned duplicate
-            // names the same open file description after the table lock drops.
-            Ok(target.as_os_str().as_bytes().to_vec())
+            // The pinned duplicate names the same open file description after
+            // the table lock drops. Retaining the same identity Arc makes this
+            // route byte-identical to direct `/proc/self/fd/N` observation.
+            sanitize_anonymous_link_target(target.as_os_str().as_bytes(), identity.as_deref())
         }
     }
 }
@@ -8658,6 +8830,7 @@ fn downgrade_file_identity(state: &LoadedStaticElf, key: (libc::dev_t, libc::ino
 struct PreparedFileIdentity {
     key: (libc::dev_t, libc::ino_t),
     persistent: bool,
+    kind: GuestFileIdentityKind,
 }
 
 fn inspect_file_identity(file: &std::fs::File) -> Result<PreparedFileIdentity, i64> {
@@ -8675,6 +8848,11 @@ fn inspect_file_identity(file: &std::fs::File) -> Result<PreparedFileIdentity, i
     }
     // SAFETY: fstatfs initialized filesystem on success.
     let filesystem = unsafe { filesystem.assume_init() };
+    let kind = match filesystem.f_type {
+        PIPEFS_MAGIC => GuestFileIdentityKind::Pipe,
+        SOCKFS_MAGIC => GuestFileIdentityKind::Socket,
+        _ => GuestFileIdentityKind::Ordinary,
+    };
     Ok(PreparedFileIdentity {
         key: (stat.st_dev, stat.st_ino),
         persistent: stat.st_nlink > 0
@@ -8682,7 +8860,18 @@ fn inspect_file_identity(file: &std::fs::File) -> Result<PreparedFileIdentity, i
                 filesystem.f_type,
                 ANON_INODE_FS_MAGIC | PIPEFS_MAGIC | SOCKFS_MAGIC
             ),
+        kind,
     })
+}
+
+fn reuse_file_identity(
+    identity: Arc<GuestFileIdentity>,
+    expected_kind: GuestFileIdentityKind,
+) -> Result<Arc<GuestFileIdentity>, i64> {
+    if identity.kind != expected_kind {
+        return Err(negative_errno(libc::EIO));
+    }
+    Ok(identity)
 }
 
 fn allocate_fd_object_inode(
@@ -8700,14 +8889,17 @@ fn allocate_fd_object_inode(
         .get(&prepared.key)
         .and_then(GuestFileIdentityEntry::identity)
     {
-        return Ok(identity);
+        return reuse_file_identity(identity, prepared.kind);
     }
 
     let inode = table.next_inode;
     table.next_inode = inode
         .checked_add(1)
         .ok_or_else(|| negative_errno(libc::EOVERFLOW))?;
-    let identity = Arc::new(GuestFileIdentity { inode });
+    let identity = Arc::new(GuestFileIdentity {
+        inode,
+        kind: prepared.kind,
+    });
     // Linked filesystem objects keep Linux inode identity across close/reopen.
     // Anonymous or deleted objects cannot be reopened by path, so retain them
     // only while a descriptor in any forked state holds a strong identity.
@@ -11600,19 +11792,22 @@ fn prepare_received_identities(
     let mut rights = Vec::with_capacity(staged.rights.len());
     for staged in staged.rights {
         let object_identity = if let Some(identity) = by_key.get(&staged.identity.key) {
-            identity.clone()
+            reuse_file_identity(identity.clone(), staged.identity.kind)?
         } else if let Some(identity) = table
             .objects
             .get(&staged.identity.key)
             .and_then(GuestFileIdentityEntry::identity)
         {
-            identity
+            reuse_file_identity(identity, staged.identity.kind)?
         } else {
             let inode = cursor;
             cursor = cursor
                 .checked_add(1)
                 .ok_or_else(|| negative_errno(libc::EOVERFLOW))?;
-            Arc::new(GuestFileIdentity { inode })
+            Arc::new(GuestFileIdentity {
+                inode,
+                kind: staged.identity.kind,
+            })
         };
         by_key.insert(staged.identity.key, object_identity.clone());
         rights.push(PreparedReceivedRight {
@@ -13111,17 +13306,10 @@ fn fstatat_impl(
     let mut stat = unsafe { stat.assume_init() };
     if let Some(metadata) = guest_path {
         sanitize_guest_fd_stat(state, metadata.guest_fd, &mut stat);
+    } else if path.is_empty() && guest_dirfd != libc::AT_FDCWD {
+        sanitize_guest_fd_stat(state, guest_dirfd, &mut stat);
     } else {
-        // AT_EMPTY_PATH stat of a synthetic /proc descriptor.
-        let empty_path_proc_inode = path
-            .is_empty()
-            .then(|| state.proc_files.get(&guest_dirfd).copied())
-            .flatten();
-        if empty_path_proc_inode.is_some() {
-            sanitize_guest_fd_stat(state, guest_dirfd, &mut stat);
-        } else {
-            sanitize_stat_timestamps(&mut stat);
-        }
+        sanitize_stat_timestamps(&mut stat);
     }
     if executable.is_some() {
         let bytes = unsafe {
@@ -13312,6 +13500,8 @@ fn statx(
     let mut stat = unsafe { stat.assume_init() };
     if let Some(metadata) = guest_path {
         sanitize_guest_fd_statx(state, metadata.guest_fd, &mut stat);
+    } else if path.is_empty() && args[0] as libc::c_int != libc::AT_FDCWD {
+        sanitize_guest_fd_statx(state, args[0] as libc::c_int, &mut stat);
     } else {
         sanitize_statx_timestamps(&mut stat);
     }
@@ -14221,6 +14411,12 @@ fn canonical_fd_path(fd: RawFd) -> Result<std::path::PathBuf, i64> {
 const SYNTHETIC_DEV_MAJOR: u32 = 0;
 const SYNTHETIC_PROC_DEV_MINOR: u32 = 0xff01;
 const SYNTHETIC_GUEST_FD_DEV_MINOR: u32 = 0xff02;
+const SYNTHETIC_PIPE_DEV_MINOR: u32 = 0xff03;
+const SYNTHETIC_SOCKET_DEV_MINOR: u32 = 0xff04;
+const SYNTHETIC_PIPE_MNT_ID: u64 = 0x7fff_ff03;
+const SYNTHETIC_SOCKET_MNT_ID: u64 = 0x7fff_ff04;
+const SYNTHETIC_PIPE_UNIQUE_MNT_ID: u64 = 0xffff_ffff_ffff_ff03;
+const SYNTHETIC_SOCKET_UNIQUE_MNT_ID: u64 = 0xffff_ffff_ffff_ff04;
 const SYNTHETIC_PROC_ROOT_PATH: &[u8] = b"/proc";
 const SYNTHETIC_PROC_FD_DIRECTORY_PATH: &[u8] = b"/proc/self/fd";
 const SYNTHETIC_PROC_THREAD_FD_DIRECTORY_PATH: &[u8] = b"/proc/thread-self/fd";
@@ -15325,6 +15521,7 @@ fn guest_fd_object_identity(
         .unwrap_or_else(|| {
             Arc::new(GuestFileIdentity {
                 inode: synthetic_guest_fd_inode(guest_fd, false),
+                kind: GuestFileIdentityKind::Ordinary,
             })
         })
 }
@@ -15342,6 +15539,12 @@ fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: 
         }
         return;
     }
+    if let Some(identity) = state.fd_object_inodes.get(&guest_fd)
+        && let Some(device) = synthetic_anonymous_device(identity.kind)
+    {
+        stat.st_dev = device;
+        stat.st_ino = identity.inode;
+    }
     sanitize_stat_timestamps(stat);
 }
 
@@ -15353,7 +15556,39 @@ fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat:
         }
         return;
     }
+    if let Some(identity) = state.fd_object_inodes.get(&guest_fd)
+        && let Some(device) = synthetic_anonymous_device(identity.kind)
+    {
+        stat.stx_dev_major = libc::major(device);
+        stat.stx_dev_minor = libc::minor(device);
+        stat.stx_ino = identity.inode;
+        stat.stx_mnt_id = if stat.stx_mask & STATX_MNT_ID_UNIQUE != 0 {
+            synthetic_anonymous_mount_id(identity.kind, true).unwrap_or(0)
+        } else if stat.stx_mask & libc::STATX_MNT_ID != 0 {
+            synthetic_anonymous_mount_id(identity.kind, false).unwrap_or(0)
+        } else {
+            0
+        };
+    }
     sanitize_statx_timestamps(stat);
+}
+
+fn synthetic_anonymous_device(kind: GuestFileIdentityKind) -> Option<libc::dev_t> {
+    match kind {
+        GuestFileIdentityKind::Ordinary => None,
+        GuestFileIdentityKind::Pipe => Some(synthetic_dev(SYNTHETIC_PIPE_DEV_MINOR)),
+        GuestFileIdentityKind::Socket => Some(synthetic_dev(SYNTHETIC_SOCKET_DEV_MINOR)),
+    }
+}
+
+fn synthetic_anonymous_mount_id(kind: GuestFileIdentityKind, unique: bool) -> Option<u64> {
+    match (kind, unique) {
+        (GuestFileIdentityKind::Ordinary, _) => None,
+        (GuestFileIdentityKind::Pipe, false) => Some(SYNTHETIC_PIPE_MNT_ID),
+        (GuestFileIdentityKind::Socket, false) => Some(SYNTHETIC_SOCKET_MNT_ID),
+        (GuestFileIdentityKind::Pipe, true) => Some(SYNTHETIC_PIPE_UNIQUE_MNT_ID),
+        (GuestFileIdentityKind::Socket, true) => Some(SYNTHETIC_SOCKET_UNIQUE_MNT_ID),
+    }
 }
 
 fn synthetic_guest_fd_symlink_stat(guest_fd: libc::c_int) -> libc::stat {
@@ -33659,8 +33894,8 @@ mod tests {
             negative_errno(libc::ENOENT)
         );
 
-        // Ordinary pipe links report the owned kernel object, matching direct
-        // fstat. Keep private object bookkeeping separate from visible inodes.
+        // Pipe links and every followed-stat route report the deterministic
+        // process-tree identity, while retaining the host's FIFO shape.
         fn assert_pipe_stat_identity(
             memory: &mut GuestMemory,
             state: &mut LoadedStaticElf,
@@ -33683,6 +33918,8 @@ mod tests {
             );
             let direct: libc::stat = read_struct(memory, STAT);
             assert_eq!(native.st_mode & libc::S_IFMT, libc::S_IFIFO);
+            let identity = &state.fd_object_inodes[&fd];
+            assert_eq!(identity.kind, GuestFileIdentityKind::Pipe);
             for observed in [followed, &direct] {
                 assert_eq!(
                     (
@@ -33690,7 +33927,11 @@ mod tests {
                         observed.st_ino,
                         observed.st_mode & libc::S_IFMT
                     ),
-                    (native.st_dev, native.st_ino, native.st_mode & libc::S_IFMT)
+                    (
+                        synthetic_dev(SYNTHETIC_PIPE_DEV_MINOR),
+                        identity.inode,
+                        native.st_mode & libc::S_IFMT
+                    )
                 );
             }
         }
@@ -35931,6 +36172,73 @@ mod tests {
         direct
     }
 
+    fn assert_anonymous_statx_mount_masks(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        fd: libc::c_int,
+    ) {
+        const PATH: u64 = 0x100;
+        const STATX: u64 = 0x3000;
+        let identity = state.fd_object_inodes[&fd].clone();
+        assert_ne!(identity.kind, GuestFileIdentityKind::Ordinary);
+        let host = host_fd(state, fd).unwrap();
+        for mask in [
+            libc::STATX_BASIC_STATS,
+            STATX_MNT_ID_UNIQUE,
+            libc::STATX_BASIC_STATS | libc::STATX_MNT_ID,
+            libc::STATX_BASIC_STATS | STATX_MNT_ID_UNIQUE,
+        ] {
+            let mut native = std::mem::MaybeUninit::<libc::statx>::zeroed();
+            assert_eq!(
+                unsafe {
+                    libc::statx(
+                        host,
+                        c"".as_ptr(),
+                        libc::AT_EMPTY_PATH,
+                        mask,
+                        native.as_mut_ptr(),
+                    )
+                },
+                0
+            );
+            let native = unsafe { native.assume_init() };
+            let proc_path = format!("/proc/self/fd/{fd}");
+            for (dirfd, path, flags) in [
+                (fd, "", libc::AT_EMPTY_PATH),
+                (libc::AT_FDCWD, proc_path.as_str(), 0),
+            ] {
+                write_c_string(memory, PATH, path);
+                assert_eq!(
+                    syscall_result(
+                        memory,
+                        state,
+                        libc::SYS_statx,
+                        [dirfd as u64, PATH, flags as u64, mask as u64, STATX, 0,],
+                    ),
+                    0
+                );
+                let observed: libc::statx = read_struct(memory, STATX);
+                assert_eq!(observed.stx_mask, native.stx_mask);
+                let expected_mount = if observed.stx_mask & STATX_MNT_ID_UNIQUE != 0 {
+                    synthetic_anonymous_mount_id(identity.kind, true).unwrap()
+                } else if observed.stx_mask & libc::STATX_MNT_ID != 0 {
+                    synthetic_anonymous_mount_id(identity.kind, false).unwrap()
+                } else {
+                    0
+                };
+                assert_eq!(observed.stx_mnt_id, expected_mount);
+                assert_eq!(observed.stx_ino, identity.inode);
+                assert_eq!(
+                    (observed.stx_dev_major, observed.stx_dev_minor),
+                    (
+                        SYNTHETIC_DEV_MAJOR,
+                        libc::minor(synthetic_anonymous_device(identity.kind).unwrap())
+                    )
+                );
+            }
+        }
+    }
+
     #[test]
     fn fdinfo_record_capacity_and_flags_validation_preserve_other_raw_fields() {
         let raw = b"pos:\t23\nflags:\t02100002\nmnt_id:\t865\nino:\t91\nlock:\t1: FLOCK ADVISORY READ 123 00:00:91 0 EOF\n";
@@ -35948,6 +36256,22 @@ mod tests {
             actual, expected,
             "only guest status/CLOEXEC flags are replaced"
         );
+        let object = FdinfoObjectIdentity {
+            inode: 0x2100_0000,
+            device: synthetic_dev(SYNTHETIC_PIPE_DEV_MINOR),
+            mount_id: SYNTHETIC_PIPE_MNT_ID,
+            host_key: (libc::makedev(0, 0), 91),
+        };
+        let actual = replace_fdinfo_fields(raw, libc::O_RDWR, Some(object)).unwrap();
+        let expected = format!(
+            "pos:\t23\nflags:\t02\nmnt_id:\t{}\nino:\t553648128\nlock:\t1: FLOCK ADVISORY READ 123 00:ff03:553648128 0 EOF\n",
+            SYNTHETIC_PIPE_MNT_ID
+        );
+        assert_eq!(
+            actual,
+            expected.as_bytes(),
+            "anonymous replacements preserve record order and unrelated fields"
+        );
         for malformed in [
             b"pos:\t1\n".as_slice(),
             b"flags:\txyz\n",
@@ -35956,6 +36280,22 @@ mod tests {
         ] {
             assert_eq!(
                 replace_fdinfo_flags(malformed, 0),
+                Err(negative_errno(libc::EIO))
+            );
+        }
+        for malformed in [
+            b"flags:\t0\n".as_slice(),
+            b"flags:\t0\nmnt_id:\t1\nino:\tnan\n",
+            b"flags:\t0\nmnt_id:\t1\nino:\t91\nino:\t91\n",
+            b"flags:\t0\nmnt_id:\t1\nino:\t91",
+            b"flags:\t0\nmnt_id:\tnan\nino:\t91\n",
+            b"flags:\t0\nmnt_id:\t1\nmnt_id:\t2\nino:\t91\n",
+            b"flags:\t0\nmnt_id:\t1\nino:\t92\n",
+            b"flags:\t0\nmnt_id:\t1\nino:\t91\nlock:\tmalformed\n",
+            b"flags:\t0\nmnt_id:\t1\nino:\t91\nlock:\t1: FLOCK ADVISORY READ 1 00:00:92 0 EOF\n",
+        ] {
+            assert_eq!(
+                replace_fdinfo_fields(malformed, 0, Some(object)),
                 Err(negative_errno(libc::EIO))
             );
         }
@@ -36026,8 +36366,22 @@ mod tests {
             let file = &self.executor.state.files[&(fd as i32)];
             let raw = std::fs::read(format!("/proc/self/fdinfo/{}", file.as_raw_fd())).unwrap();
             assert_eq!(Self::field(bytes, "pos:", 10), position);
-            for field in ["ino:", "mnt_id:"] {
-                assert_eq!(Self::field(bytes, field, 10), Self::field(&raw, field, 10));
+            let identity = &self.executor.state.fd_object_inodes[&(fd as i32)];
+            if identity.kind == GuestFileIdentityKind::Ordinary {
+                assert_eq!(
+                    Self::field(bytes, "ino:", 10),
+                    Self::field(&raw, "ino:", 10)
+                );
+                assert_eq!(
+                    Self::field(bytes, "mnt_id:", 10),
+                    Self::field(&raw, "mnt_id:", 10)
+                );
+            } else {
+                assert_eq!(Self::field(bytes, "ino:", 10), identity.inode);
+                assert_eq!(
+                    Self::field(bytes, "mnt_id:", 10),
+                    synthetic_anonymous_mount_id(identity.kind, false).unwrap()
+                );
             }
         }
     }
@@ -38513,11 +38867,60 @@ mod tests {
             let info = f.info(target as i64);
             let bytes = f.read(info, 4096);
             f.check_object(&bytes, target as i64, 0);
-            // Pipefs may be absent from mountinfo. Preserve its real nonzero ID;
-            // the Tool's existing unlisted-order algorithm owns normalization.
-            assert_ne!(FdinfoFixture::field(&bytes, "mnt_id:", 10), 0);
+            // Pipefs may be absent from mountinfo, but the fdinfo record must
+            // still use the same deterministic legacy mount identity as statx.
+            assert_eq!(
+                FdinfoFixture::field(&bytes, "mnt_id:", 10),
+                SYNTHETIC_PIPE_MNT_ID
+            );
             assert_eq!(f.call(libc::SYS_close, [info as u64, 0, 0, 0, 0, 0]), 0);
         }
+    }
+
+    #[test]
+    fn fdinfo_socket_ofd_lock_uses_synthetic_object_and_mount_identity() {
+        let mut f = FdinfoFixture::new(false);
+        assert_eq!(
+            f.call(
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_STREAM as u64,
+                    0,
+                    0x200,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let sockets: [libc::c_int; 2] = read_struct(&f.memory, 0x200);
+        let host = f.executor.state.files[&sockets[0]].as_raw_fd();
+        let lock = libc::flock {
+            l_type: libc::F_WRLCK as libc::c_short,
+            l_whence: libc::SEEK_SET as libc::c_short,
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+        };
+        assert_eq!(unsafe { libc::fcntl(host, libc::F_OFD_SETLK, &lock) }, 0);
+
+        let info = f.info(i64::from(sockets[0]));
+        let bytes = f.read(info, 4096);
+        f.check_object(&bytes, i64::from(sockets[0]), 0);
+        let identity = &f.executor.state.fd_object_inodes[&sockets[0]];
+        assert_eq!(identity.kind, GuestFileIdentityKind::Socket);
+        let expected = format!(
+            "{:02x}:{:02x}:{}",
+            SYNTHETIC_DEV_MAJOR, SYNTHETIC_SOCKET_DEV_MINOR, identity.inode
+        );
+        let text = std::str::from_utf8(&bytes).unwrap();
+        let locks = text
+            .lines()
+            .filter(|line| line.starts_with("lock:"))
+            .collect::<Vec<_>>();
+        assert_eq!(locks.len(), 1, "{text}");
+        assert!(locks[0].contains(&expected), "{text}");
     }
 
     #[test]
@@ -38879,12 +39282,82 @@ mod tests {
     }
 
     #[test]
+    fn anonymous_link_sanitization_fails_closed_on_host_shape_mismatch() {
+        let pipe = GuestFileIdentity {
+            inode: 0x2100_0000,
+            kind: GuestFileIdentityKind::Pipe,
+        };
+        let socket = GuestFileIdentity {
+            inode: 0x2100_0001,
+            kind: GuestFileIdentityKind::Socket,
+        };
+        let ordinary = GuestFileIdentity {
+            inode: 0x2100_0002,
+            kind: GuestFileIdentityKind::Ordinary,
+        };
+
+        assert_eq!(
+            sanitize_anonymous_link_target(b"pipe:[987654]", Some(&pipe)).unwrap(),
+            b"pipe:[553648128]"
+        );
+        assert_eq!(
+            sanitize_anonymous_link_target(b"socket:[987654]", Some(&socket)).unwrap(),
+            b"socket:[553648129]"
+        );
+        assert_eq!(
+            sanitize_anonymous_link_target(b"/tmp/ordinary", Some(&ordinary)).unwrap(),
+            b"/tmp/ordinary"
+        );
+        assert_eq!(
+            sanitize_anonymous_link_target(b"socket:[987654]", Some(&pipe)),
+            Err(negative_errno(libc::EIO)),
+            "a tracked pipe must not expose a host socket identity"
+        );
+        for malformed in [
+            b"pipe:[987654".as_slice(),
+            b"pipe:[not-an-inode]".as_slice(),
+            b"pipe:[]".as_slice(),
+            b"pipe:[987654]]".as_slice(),
+            b"pipe:[18446744073709551616]".as_slice(),
+        ] {
+            assert_eq!(
+                sanitize_anonymous_link_target(malformed, Some(&pipe)),
+                Err(negative_errno(libc::EIO)),
+                "malformed anonymous link leaked through: {}",
+                String::from_utf8_lossy(malformed)
+            );
+        }
+    }
+
+    #[test]
+    fn reused_file_identity_kind_must_match_fresh_classification() {
+        let identity = Arc::new(GuestFileIdentity {
+            inode: 0x2100_0000,
+            kind: GuestFileIdentityKind::Pipe,
+        });
+        assert!(Arc::ptr_eq(
+            &reuse_file_identity(identity.clone(), GuestFileIdentityKind::Pipe).unwrap(),
+            &identity
+        ));
+        assert_eq!(
+            reuse_file_identity(identity, GuestFileIdentityKind::Socket).unwrap_err(),
+            negative_errno(libc::EIO)
+        );
+    }
+
+    #[test]
     fn anonymous_proc_fd_links_match_direct_owned_object_stat() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
-        for (number, args, kind) in [
-            (libc::SYS_pipe2, [0x1800, 0, 0, 0, 0, 0], "pipe"),
+        for (number, args, label, kind, device) in [
+            (
+                libc::SYS_pipe2,
+                [0x1800, 0, 0, 0, 0, 0],
+                "pipe",
+                GuestFileIdentityKind::Pipe,
+                synthetic_dev(SYNTHETIC_PIPE_DEV_MINOR),
+            ),
             (
                 libc::SYS_socketpair,
                 [
@@ -38896,15 +39369,21 @@ mod tests {
                     0,
                 ],
                 "socket",
+                GuestFileIdentityKind::Socket,
+                synthetic_dev(SYNTHETIC_SOCKET_DEV_MINOR),
             ),
         ] {
             assert_eq!(syscall_result(&mut memory, &mut state, number, args), 0);
             let fds: [i32; 2] = read_struct(&memory, 0x1800);
             for fd in fds {
                 let stat = assert_descriptor_stat_routes(&mut memory, &mut state, fd, None);
+                assert_anonymous_statx_mount_masks(&mut memory, &mut state, fd);
                 let native = file_identity_stat(state.files.get(&fd).unwrap()).unwrap();
-                assert_eq!((stat.st_dev, stat.st_ino), (native.st_dev, native.st_ino));
-                let expected = format!("{kind}:[{}]", native.st_ino).into_bytes();
+                let identity = &state.fd_object_inodes[&fd];
+                assert_eq!(identity.kind, kind);
+                assert_eq!((stat.st_dev, stat.st_ino), (device, identity.inode));
+                assert_eq!(stat.st_mode & libc::S_IFMT, native.st_mode & libc::S_IFMT);
+                let expected = format!("{label}:[{}]", identity.inode).into_bytes();
                 write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
                 for capacity in [3, 256] {
                     let count = syscall_result(
@@ -38920,6 +39399,69 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn anonymous_statx_mount_id_selection_preserves_the_returned_mask() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [0x100, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_STREAM as u64,
+                    0,
+                    0x200,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let pipe: [libc::c_int; 2] = read_struct(&memory, 0x100);
+        let sockets: [libc::c_int; 2] = read_struct(&memory, 0x200);
+        for fd in [pipe[0], sockets[0]] {
+            let identity = state.fd_object_inodes[&fd].clone();
+            for (mask, expected_mount) in [
+                (
+                    libc::STATX_BASIC_STATS | libc::STATX_MNT_ID | STATX_MNT_ID_UNIQUE,
+                    synthetic_anonymous_mount_id(identity.kind, true).unwrap(),
+                ),
+                (
+                    libc::STATX_BASIC_STATS | libc::STATX_MNT_ID,
+                    synthetic_anonymous_mount_id(identity.kind, false).unwrap(),
+                ),
+                (libc::STATX_BASIC_STATS, 0),
+            ] {
+                let mut stat = unsafe { std::mem::zeroed::<libc::statx>() };
+                stat.stx_mask = mask;
+                stat.stx_mnt_id = u64::MAX;
+                sanitize_guest_fd_statx(&state, fd, &mut stat);
+                assert_eq!(stat.stx_mask, mask);
+                assert_eq!(stat.stx_mnt_id, expected_mount);
+            }
+        }
+        assert_ne!(
+            synthetic_anonymous_mount_id(GuestFileIdentityKind::Pipe, false),
+            synthetic_anonymous_mount_id(GuestFileIdentityKind::Socket, false)
+        );
+        assert_ne!(
+            synthetic_anonymous_mount_id(GuestFileIdentityKind::Pipe, true),
+            synthetic_anonymous_mount_id(GuestFileIdentityKind::Socket, true)
+        );
     }
 
     #[test]
@@ -39128,14 +39670,17 @@ mod tests {
             );
             let direct: libc::stat = read_struct(&memory, STAT);
             let native = file_identity_stat(state.files.get(&3).unwrap()).unwrap();
+            let identity = &state.fd_object_inodes[&3];
+            assert_eq!(identity.kind, GuestFileIdentityKind::Pipe);
             assert_eq!(
                 (followed.st_dev, followed.st_ino),
                 (direct.st_dev, direct.st_ino)
             );
             assert_eq!(
                 (direct.st_dev, direct.st_ino),
-                (native.st_dev, native.st_ino)
+                (synthetic_dev(SYNTHETIC_PIPE_DEV_MINOR), identity.inode)
             );
+            assert_eq!(direct.st_mode & libc::S_IFMT, native.st_mode & libc::S_IFMT);
             assert_eq!(followed.st_mode & libc::S_IFMT, libc::S_IFIFO);
 
             assert_eq!(

@@ -10616,6 +10616,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "proc_fd_link_aliases_run_on_kvm",
         "kvm_direct_and_tool_match_prctl_identity_cell",
         "kvm_direct_and_tool_match_thp_disable_cell",
+        "anonymous_pipe_socket_identities_are_repeatable_on_kvm",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
@@ -14099,6 +14100,328 @@ int main(void) {
         run_host_program_with_tool_captured(executable, &[executable], &directory.0);
     assert_eq!(tool_stdout, native.stdout);
     assert_eq!(tool_stderr, native.stderr);
+}
+
+// Anonymous pipe/socket object numbers are intentionally compared only among
+// fresh KVM runs. Native Linux is the relationship oracle, but its allocator
+// is host-global and therefore cannot supply the deterministic numeric values.
+// This test makes no L2-exit, syscall-log, or record/replay-parity claim.
+// SCM coverage keeps one source alias for each sent object live through recv.
+// Queued send -> close every guest reference -> receive can remint and is not
+// claimed by this slice.
+#[test]
+fn anonymous_pipe_socket_identities_are_repeatable_on_kvm() {
+    const TEST: &str = "anonymous_pipe_socket_identities_are_repeatable_on_kvm";
+    if !kvm_available(TEST) {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "anonymous-object-identities",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#ifndef SO_COOKIE
+#define SO_COOKIE 57
+#endif
+
+struct identity {
+  unsigned long long device;
+  unsigned long long inode;
+  unsigned long long cookie;
+  unsigned long long legacy_mount;
+  unsigned long long unique_mount;
+};
+
+static int same_identity(struct identity left, struct identity right,
+                         int socket) {
+  return left.device == right.device && left.inode == right.inode &&
+         left.legacy_mount == right.legacy_mount &&
+         left.unique_mount == right.unique_mount &&
+         (!socket || left.cookie == right.cookie);
+}
+
+static int fdinfo_identity(int fd, unsigned long long *inode,
+                           unsigned long long *mount) {
+  char path[64], bytes[4096];
+  int length = snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd);
+  if (length <= 0 || length >= (int)sizeof(path)) return -1;
+  int info = open(path, O_RDONLY | O_CLOEXEC);
+  if (info < 0) return -2;
+  ssize_t count = read(info, bytes, sizeof(bytes) - 1);
+  int saved = errno;
+  if (close(info) != 0 || count <= 0) return -3;
+  errno = saved;
+  bytes[count] = 0;
+  int found_inode = 0, found_mount = 0;
+  char *line = bytes;
+  while (line && *line) {
+    const char *value = 0;
+    unsigned long long *output = 0;
+    if (!strncmp(line, "ino:", 4)) {
+      value = line + 4;
+      output = inode;
+      if (found_inode++) return -4;
+    } else if (!strncmp(line, "mnt_id:", 7)) {
+      value = line + 7;
+      output = mount;
+      if (found_mount++) return -4;
+    }
+    if (value) {
+      char *end = 0;
+      errno = 0;
+      unsigned long long parsed = strtoull(value, &end, 10);
+      if (errno || end == value || (*end != '\n' && *end != 0)) return -5;
+      *output = parsed;
+    }
+    line = strchr(line, '\n');
+    if (line) ++line;
+  }
+  return found_inode == 1 && found_mount == 1 ? 0 : -6;
+}
+
+static int observe(int fd, int anchor, const char *kind, int socket,
+                   int deterministic, struct identity *identity, int base) {
+  struct stat direct, path_stat;
+  struct statx path_statx, empty_statx, legacy_statx, unique_statx;
+  char path[64], name[32], direct_link[128], anchored_link[128], expected[128];
+  if (fstat(fd, &direct) != 0) return base + 1;
+  if ((direct.st_mode & S_IFMT) != (socket ? S_IFSOCK : S_IFIFO)) return base + 2;
+  int length = snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+  if (length <= 0 || length >= (int)sizeof(path)) return base + 3;
+  if (fstatat(AT_FDCWD, path, &path_stat, 0) != 0) return base + 4;
+  if (path_stat.st_dev != direct.st_dev || path_stat.st_ino != direct.st_ino)
+    return base + 5;
+  memset(&path_statx, 0, sizeof(path_statx));
+  if (statx(AT_FDCWD, path, 0, STATX_BASIC_STATS, &path_statx) != 0)
+    return base + 6;
+  if (path_statx.stx_ino != (unsigned long long)direct.st_ino ||
+      path_statx.stx_dev_major != major(direct.st_dev) ||
+      path_statx.stx_dev_minor != minor(direct.st_dev)) return base + 7;
+  memset(&empty_statx, 0, sizeof(empty_statx));
+  if (statx(fd, "", AT_EMPTY_PATH, STATX_BASIC_STATS, &empty_statx) != 0)
+    return base + 8;
+  if (empty_statx.stx_ino != path_statx.stx_ino ||
+      empty_statx.stx_dev_major != path_statx.stx_dev_major ||
+      empty_statx.stx_dev_minor != path_statx.stx_dev_minor) return base + 9;
+  memset(&legacy_statx, 0, sizeof(legacy_statx));
+  if (statx(AT_FDCWD, path, 0, STATX_BASIC_STATS | STATX_MNT_ID,
+            &legacy_statx) != 0 || !(legacy_statx.stx_mask & STATX_MNT_ID) ||
+      legacy_statx.stx_mnt_id == 0) return base + 16;
+#ifndef STATX_MNT_ID_UNIQUE
+#define STATX_MNT_ID_UNIQUE 0x00004000U
+#endif
+  memset(&unique_statx, 0, sizeof(unique_statx));
+  if (statx(fd, "", AT_EMPTY_PATH, STATX_MNT_ID_UNIQUE,
+            &unique_statx) != 0 ||
+      !(unique_statx.stx_mask & STATX_MNT_ID_UNIQUE) ||
+      unique_statx.stx_mnt_id == 0) return base + 17;
+  if (((path_statx.stx_mask & STATX_MNT_ID) &&
+       path_statx.stx_mnt_id != legacy_statx.stx_mnt_id) ||
+      ((empty_statx.stx_mask & STATX_MNT_ID) &&
+       empty_statx.stx_mnt_id != legacy_statx.stx_mnt_id)) return base + 18;
+
+  ssize_t direct_count = readlink(path, direct_link, sizeof(direct_link));
+  length = snprintf(name, sizeof(name), "%d", fd);
+  if (direct_count <= 0 || length <= 0 || length >= (int)sizeof(name))
+    return base + 10;
+  ssize_t anchored_count =
+      readlinkat(anchor, name, anchored_link, sizeof(anchored_link));
+  if (anchored_count != direct_count ||
+      memcmp(anchored_link, direct_link, direct_count)) return base + 11;
+  length = snprintf(expected, sizeof(expected), "%s:[%llu]", kind,
+                    (unsigned long long)direct.st_ino);
+  if (length != direct_count || memcmp(direct_link, expected, length))
+    return base + 12;
+
+  unsigned long long info_inode = 0, info_mount = 0;
+  if (fdinfo_identity(fd, &info_inode, &info_mount) != 0 ||
+      info_inode != (unsigned long long)direct.st_ino ||
+      info_mount != legacy_statx.stx_mnt_id) return base + 13;
+  unsigned long long cookie = 0;
+  if (socket) {
+    socklen_t cookie_length = sizeof(cookie);
+    if (getsockopt(fd, SOL_SOCKET, SO_COOKIE, &cookie, &cookie_length) != 0 ||
+        cookie_length != sizeof(cookie) || cookie == 0) return base + 14;
+    if (deterministic && cookie != (unsigned long long)direct.st_ino)
+      return base + 15;
+  }
+  identity->device = (unsigned long long)direct.st_dev;
+  identity->inode = (unsigned long long)direct.st_ino;
+  identity->cookie = cookie;
+  identity->legacy_mount = legacy_statx.stx_mnt_id;
+  identity->unique_mount = unique_statx.stx_mnt_id;
+  return 0;
+}
+
+static int send_rights(int socket, const int *fds, size_t count) {
+  char payload = 'x';
+  struct iovec iov = {.iov_base = &payload, .iov_len = 1};
+  char control[CMSG_SPACE(3 * sizeof(int))] = {0};
+  struct msghdr message = {0};
+  message.msg_iov = &iov;
+  message.msg_iovlen = 1;
+  message.msg_control = control;
+  message.msg_controllen = CMSG_SPACE(count * sizeof(int));
+  struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+  header->cmsg_level = SOL_SOCKET;
+  header->cmsg_type = SCM_RIGHTS;
+  header->cmsg_len = CMSG_LEN(count * sizeof(int));
+  memcpy(CMSG_DATA(header), fds, count * sizeof(int));
+  return sendmsg(socket, &message, 0) == 1 ? 0 : -1;
+}
+
+static int receive_rights(int socket, int *fds, size_t count) {
+  char payload = 0;
+  struct iovec iov = {.iov_base = &payload, .iov_len = 1};
+  char control[CMSG_SPACE(3 * sizeof(int))] = {0};
+  struct msghdr message = {0};
+  message.msg_iov = &iov;
+  message.msg_iovlen = 1;
+  message.msg_control = control;
+  message.msg_controllen = sizeof(control);
+  if (recvmsg(socket, &message, 0) != 1 || payload != 'x' ||
+      (message.msg_flags & MSG_CTRUNC)) return -1;
+  struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+  if (!header || header->cmsg_level != SOL_SOCKET ||
+      header->cmsg_type != SCM_RIGHTS ||
+      header->cmsg_len != CMSG_LEN(count * sizeof(int))) return -2;
+  memcpy(fds, CMSG_DATA(header), count * sizeof(int));
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 1;
+  int deterministic = !strcmp(argv[1], "kvm");
+  if (!deterministic && strcmp(argv[1], "native")) return 2;
+  int anchor = open("/proc/self/fd", O_PATH | O_DIRECTORY | O_CLOEXEC);
+  int channel[2], pipes[2], sockets[2];
+  if (anchor < 0 || socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0, channel) ||
+      pipe2(pipes, O_CLOEXEC) ||
+      socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets)) return 10;
+
+  struct identity pipe_id[2], socket_id[2], alias;
+  int result = observe(pipes[0], anchor, "pipe", 0, deterministic, &pipe_id[0], 20);
+  if (!result) result = observe(pipes[1], anchor, "pipe", 0, deterministic,
+                                &pipe_id[1], 40);
+  if (result || !same_identity(pipe_id[0], pipe_id[1], 0)) return result ? result : 59;
+  result = observe(sockets[0], anchor, "socket", 1, deterministic, &socket_id[0], 60);
+  if (!result) result = observe(sockets[1], anchor, "socket", 1, deterministic,
+                                &socket_id[1], 80);
+  if (result || same_identity(socket_id[0], socket_id[1], 1)) return result ? result : 99;
+
+  int pipe_alias = dup(pipes[0]);
+  int socket_alias = dup(sockets[0]);
+  if (pipe_alias < 0 || socket_alias < 0) return 100;
+  if ((result = observe(pipe_alias, anchor, "pipe", 0, deterministic, &alias, 101)) ||
+      !same_identity(alias, pipe_id[0], 0)) return result ? result : 120;
+  if ((result = observe(socket_alias, anchor, "socket", 1, deterministic, &alias, 121)) ||
+      !same_identity(alias, socket_id[0], 1)) return result ? result : 140;
+
+  pid_t child = fork();
+  if (child < 0) return 141;
+  if (child == 0) {
+    struct identity inherited;
+    int child_result = observe(pipe_alias, anchor, "pipe", 0, deterministic,
+                               &inherited, 142);
+    if (!child_result && !same_identity(inherited, pipe_id[0], 0)) child_result = 161;
+    if (!child_result)
+      child_result = observe(socket_alias, anchor, "socket", 1, deterministic,
+                             &inherited, 162);
+    if (!child_result && !same_identity(inherited, socket_id[0], 1)) child_result = 181;
+    _exit(child_result);
+  }
+  int status = 0;
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 0) return 182;
+
+  int sent[3] = {pipes[0], pipes[1], sockets[0]};
+  int reused_pipe_slot = pipes[0];
+  int reused_socket_slot = sockets[0];
+  if (send_rights(channel[0], sent, 3) != 0) return 183;
+  /* pipe_alias and socket_alias keep the synthetic identities live while the
+     queued rights cross the host socket. */
+  if (close(pipes[0]) || close(pipes[1]) || close(sockets[0])) return 184;
+  int received[3] = {-1, -1, -1};
+  if (receive_rights(channel[1], received, 3) != 0) return 185;
+  /* Once installed, the received aliases own the identities independently. */
+  if (close(pipe_alias) || close(socket_alias)) return 186;
+  if ((result = observe(received[0], anchor, "pipe", 0, deterministic, &alias, 186)) ||
+      !same_identity(alias, pipe_id[0], 0)) return result ? result : 205;
+  if ((result = observe(received[1], anchor, "pipe", 0, deterministic, &alias, 206)) ||
+      !same_identity(alias, pipe_id[0], 0)) return result ? result : 225;
+  if ((result = observe(received[2], anchor, "socket", 1, deterministic, &alias, 226)) ||
+      !same_identity(alias, socket_id[0], 1)) return result ? result : 245;
+  if (close(received[0]) || close(received[1]) || close(received[2])) return 246;
+
+  int new_pipes[2], new_sockets[2];
+  if (pipe2(new_pipes, O_CLOEXEC) ||
+      socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, new_sockets)) return 247;
+  if (new_pipes[0] != reused_pipe_slot || new_sockets[0] != reused_socket_slot)
+    return 248;
+  struct identity new_pipe, new_socket;
+  if ((result = observe(new_pipes[0], anchor, "pipe", 0, deterministic,
+                        &new_pipe, 249)) ||
+      same_identity(new_pipe, pipe_id[0], 0)) return result ? result : 268;
+  if ((result = observe(new_sockets[0], anchor, "socket", 1, deterministic,
+                        &new_socket, 269)) ||
+      same_identity(new_socket, socket_id[0], 1)) return result ? result : 288;
+
+  if (deterministic) {
+    printf("pipe=%llu:%llu:%llu:%llu socket0=%llu:%llu:%llu:%llu:%llu "
+           "socket1=%llu:%llu:%llu:%llu:%llu reused-pipe=%llu:%llu:%llu:%llu "
+           "reused-socket=%llu:%llu:%llu:%llu:%llu\n",
+           pipe_id[0].device, pipe_id[0].inode, pipe_id[0].legacy_mount,
+           pipe_id[0].unique_mount, socket_id[0].device, socket_id[0].inode,
+           socket_id[0].cookie, socket_id[0].legacy_mount,
+           socket_id[0].unique_mount, socket_id[1].device, socket_id[1].inode,
+           socket_id[1].cookie, socket_id[1].legacy_mount,
+           socket_id[1].unique_mount, new_pipe.device, new_pipe.inode,
+           new_pipe.legacy_mount, new_pipe.unique_mount, new_socket.device,
+           new_socket.inode, new_socket.cookie, new_socket.legacy_mount,
+           new_socket.unique_mount);
+  } else {
+    puts("native anonymous-object relationships ok");
+  }
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable)
+        .arg("native")
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert_eq!(native.stdout, b"native anonymous-object relationships ok\n");
+    assert!(native.stderr.is_empty(), "native: {native:?}");
+
+    let executable = executable.to_str().unwrap();
+    let direct = run_host_program_captured(executable, &[executable, "kvm"], &directory.0);
+    let direct_repeat = run_host_program_captured(executable, &[executable, "kvm"], &directory.0);
+    assert!(direct.0.starts_with(b"pipe="), "direct stdout: {direct:?}");
+    assert!(direct.1.is_empty(), "direct stderr: {direct:?}");
+    assert_eq!(direct_repeat, direct, "fresh direct KVM identities changed");
+
+    let tool = run_host_program_with_tool_captured(executable, &[executable, "kvm"], &directory.0);
+    let tool_repeat =
+        run_host_program_with_tool_captured(executable, &[executable, "kvm"], &directory.0);
+    assert_eq!(tool, direct, "Tool and direct KVM identities differ");
+    assert_eq!(tool_repeat, tool, "fresh Tool KVM identities changed");
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
