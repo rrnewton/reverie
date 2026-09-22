@@ -9,6 +9,7 @@ import datetime as dt
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -252,7 +253,7 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
             )
             return rc, result, launched
 
-    def test_launch_inherits_the_canonical_full_validation_deadline(self) -> None:
+    def test_launch_pins_child_deadline_and_outer_service_bounds_every_phase(self) -> None:
         _rc, _result, launched = self._run(
             returncode=2,
             canonical=unvalidated_status,
@@ -263,13 +264,46 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
         launched.assert_called_once()
         argv = [str(item) for item in launched.call_args.args[0]]
         # The former 1800s override derived a 1619s run bound and could not
-        # admit the committed 2400s lint node. The launcher owns this budget.
-        self.assertFalse(any(arg.startswith("--child-deadline") for arg in argv))
+        # admit the committed 2400s lint node. Keep 3600s explicit so a broader
+        # interactive validate-run default cannot silently escape this outer
+        # service's deadline.
+        child_deadline = int(argv[argv.index("--child-deadline") + 1])
+        self.assertEqual(watch.OWNER_VALIDATION_CHILD_DEADLINE_SECONDS, child_deadline)
         self.assertIn("--materialize-target", argv)
         self.assertNotIn("--in-place", argv)
         self.assertNotIn("--make-validate", argv)
         self.assertEqual(argv[-2:], ["--", "full"])
-        self.assertEqual("1", argv[argv.index("--wait") + 1])
+        queue_wait = int(argv[argv.index("--wait") + 1])
+        self.assertEqual(1, queue_wait)
+
+        start_unit_source = (ROOT / "ci-hub/validate/start_unit.py").read_text()
+        def constant(name: str) -> float:
+            matched = re.search(rf"^{name} = ([0-9.]+)$", start_unit_source, re.MULTILINE)
+            self.assertIsNotNone(matched, name)
+            assert matched is not None
+            return float(matched.group(1))
+
+        service_source = (
+            ROOT / "scripts/systemd/hermit-owner-checkout-validate.service"
+        ).read_text()
+        service_timeout_match = re.search(
+            r"^TimeoutStartSec=(\d+)$", service_source, re.MULTILINE
+        )
+        self.assertIsNotNone(service_timeout_match)
+        assert service_timeout_match is not None
+        service_timeout = int(service_timeout_match.group(1))
+        complete_inner_bound = (
+            constant("WRKSLOTS_CREATE_LOCK_WAIT_SECONDS")
+            + queue_wait
+            + child_deadline
+            + constant("HERMIT_SERVICE_STARTUP_RESERVE_SECONDS")
+            + constant("VALIDATE_TEARDOWN_TIMEOUT_SECONDS")
+        )
+        self.assertGreater(
+            service_timeout,
+            complete_inner_bound,
+            "outer watcher must outlive admission, transient service, and teardown",
+        )
 
     def test_unchanged_already_green_sha_reports_green_citing_the_prior_receipt(self) -> None:
         rc, result, launched = self._run(

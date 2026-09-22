@@ -93,10 +93,9 @@ class InstallOwnerCheckoutValidateWatchTests(unittest.TestCase):
             "ExecStart=%h/work/dev-hermit/scripts/owner-checkout-validate-watch.py",
             installed_service,
         )
-        # The detached validation child has the canonical 3600s deadline;
-        # preserve the watcher's existing 600s preflight/reporting allowance.
-        # This is not a measured upper bound for every external reporting call.
-        self.assertIn("TimeoutStartSec=4200\n", installed_service)
+        # 600s checkout admission + the launcher's 1s queue, 3600s child, 600s
+        # startup and 600s teardown bounds leave 599s for watcher overhead.
+        self.assertIn("TimeoutStartSec=6000\n", installed_service)
         self.assertIn("SuccessExitStatus=0 1 2 3 4 6\n", installed_service)
         calls = self.log.read_text().splitlines()
         self.assertEqual(

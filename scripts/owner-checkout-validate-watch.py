@@ -94,6 +94,10 @@ def report_reached_its_reader(code: int) -> bool:
     """Whether the run's report was delivered. Never inferred from the verdict."""
     return code < UNDELIVERED_OFFSET
 ADMISSION_STATUS_UNKNOWN = 2
+# Keep the scheduled watcher's child bound explicit. validate-run's broader
+# interactive default may change independently, while the outer systemd unit
+# must continue to bound this exact child plus admission and teardown.
+OWNER_VALIDATION_CHILD_DEADLINE_SECONDS = 3600
 KNOWN_EXCEPTION_PATH = "validate"
 KNOWN_EXCEPTION_TARGET = "scripts/validate.rs"
 ADMISSION_CURSOR_SCHEMA = 1
@@ -1857,6 +1861,8 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
             validate_log,
             "--wait",
             "1",
+            "--child-deadline",
+            str(OWNER_VALIDATION_CHILD_DEADLINE_SECONDS),
             "--caller-poll-seconds",
             "5",
             "--",

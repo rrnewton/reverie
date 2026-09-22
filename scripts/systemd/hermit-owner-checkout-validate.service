@@ -11,10 +11,13 @@ Environment=PATH=%h/bin:%h/.local/bin:%h/.cargo/bin:%h/orc-bin:/usr/local/bin:/u
 # private copy of that exact tree. The mutable primary is state only.
 WorkingDirectory=%h
 ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative scripts/owner-checkout-validate-watch.py -- --checkout %h/work/dev-hermit/hermit --state-dir %h/.local/state/hermit-owner-validate
-# The launcher owns the canonical 3600s Hermit child deadline. Retain the
-# existing 600s allowance for watcher preflight, cleanup and result reporting;
-# these external operations do not each have a separately measured upper bound.
-TimeoutStartSec=4200
+# The watcher explicitly gives the launcher a 3600s Hermit child deadline.
+# Validation checkout admission may first wait up to 600s for the state-root
+# lifecycle lock (the disk publisher alone has a 540s complete-run bound). The
+# transient validation service then permits a 1s queue wait, 600s startup
+# reserve, and 600s teardown. 6000s leaves another 599s for watcher preflight
+# and result reporting; those external operations have no separate wall bound.
+TimeoutStartSec=6000
 # Every delivered typed outcome is an observed watch result, not a dead
 # service. A report that reached nobody, internal crashes, and signals remain
 # unit failures so a missing report is itself visible in systemd.

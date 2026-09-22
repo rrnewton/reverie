@@ -10102,6 +10102,27 @@ class StartUnitTest(unittest.TestCase):
             for command in self.fake.commands
             if wrkslots_action(command, "create")
         )
+        self.assertIn("--wait-lock", create)
+        self.assertEqual(
+            str(start_unit.WRKSLOTS_CREATE_LOCK_WAIT_SECONDS),
+            create[create.index("--wait-lock") + 1],
+        )
+        disk_service = (
+            Path(__file__).resolve().parents[3]
+            / "scripts/systemd/hermit-disk-snapshot.service"
+        ).read_text()
+        disk_timeout = int(
+            next(
+                line.removeprefix("TimeoutStartSec=")
+                for line in disk_service.splitlines()
+                if line.startswith("TimeoutStartSec=")
+            )
+        )
+        self.assertGreater(
+            start_unit.WRKSLOTS_CREATE_LOCK_WAIT_SECONDS,
+            disk_timeout,
+            "validation admission must outwait the complete disk service bound",
+        )
         slot = create[create.index("create") + 1]
         self.assertEqual(
             f"checkout=wrkslots/validate/{slot}/checkout",

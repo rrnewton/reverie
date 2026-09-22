@@ -591,6 +591,13 @@ HERMIT_SERVICE_TASKS_MAX = 4096
 # acquisition; the separate removal census keeps its existing budget.
 WRKSLOTS_STATUS_LOCK_WAIT_SECONDS = 30.0
 
+# A scheduled disk snapshot holds the same state-root lifecycle lock while its
+# bounded population scan runs.  The complete disk service has a 540s wall
+# bound, so validation admission must wait past that bound instead of turning a
+# predictable timer overlap into a false NO_RESULT.  The wait remains bounded;
+# an actually stuck or foreign lock holder still fails closed.
+WRKSLOTS_CREATE_LOCK_WAIT_SECONDS = 600.0
+
 
 def systemd_exec_value(argv: Sequence[str]) -> str:
     """Render one argv as a systemd `ExecStopPost=` value, losing nothing.
@@ -1553,6 +1560,8 @@ def prepare_fresh_checkout(
                     "--project-root",
                     str(state_root),
                     "--allow-existing-unregistered-worktrees",
+                    "--wait-lock",
+                    str(WRKSLOTS_CREATE_LOCK_WAIT_SECONDS),
                     "create",
                     slot,
                     "--slot-type",
