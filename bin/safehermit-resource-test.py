@@ -731,25 +731,38 @@ def test_background_descendants_are_accounted_until_quiescent() -> None:
         assert marker.read_text(encoding="ascii") == "done"
         assert _fields(report)["wall_time_limit_hit"] == "0"
 
-    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
-        temporary = Path(raw)
-        report = temporary / "resource.txt"
-        descendant_pid_file = temporary / "descendant-pid"
-        completed = _run(
-            temporary,
-            report,
-            metrics_mode="wall-timeout",
-            deadline=1,
-            command=(
-                f"(trap '' TERM; exec sleep 30) </dev/null >/dev/null 2>/dev/null & "
-                f"printf '%s' $! >'{descendant_pid_file}'; exit 23"
-            ),
+    startup_misses: list[str] = []
+    for attempt in range(3):
+        with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+            temporary = Path(raw)
+            report = temporary / "resource.txt"
+            descendant_pid_file = temporary / "descendant-pid"
+            completed = _run(
+                temporary,
+                report,
+                metrics_mode="wall-timeout",
+                deadline=1,
+                command=(
+                    f"(trap '' TERM; exec sleep 30) </dev/null >/dev/null 2>/dev/null & "
+                    f"printf '%s' $! >'{descendant_pid_file}'; exit 23"
+                ),
+            )
+            assert completed.returncode == 124, (attempt, completed)
+            fields = _fields(report)
+            assert fields["wall_time_limit_hit"] == "1", (attempt, fields)
+            if not descendant_pid_file.is_file():
+                startup_misses.append(
+                    f"attempt={attempt + 1} stderr={completed.stderr!r} report={report.read_text()!r}"
+                )
+                continue
+            descendant_pid = int(descendant_pid_file.read_text(encoding="ascii"))
+            assert not Path(f"/proc/{descendant_pid}").exists()
+            break
+    else:
+        raise AssertionError(
+            "strict 1s wall fixture never scheduled its payload in three clean units: "
+            + " | ".join(startup_misses)
         )
-        assert completed.returncode == 124, completed
-        descendant_pid = int(descendant_pid_file.read_text(encoding="ascii"))
-        assert not Path(f"/proc/{descendant_pid}").exists()
-        fields = _fields(report)
-        assert fields["wall_time_limit_hit"] == "1"
 
 
 def test_term_reaps_owned_unit_and_retains_incomplete_stub() -> None:
