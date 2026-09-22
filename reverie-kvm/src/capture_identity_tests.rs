@@ -551,6 +551,806 @@ fn captured_output_status_ignores_ambient_and_closed_supervisor_stdout() {
 }
 
 #[test]
+fn captured_alias_creation_ignores_closed_and_reused_supervisor_stdio() {
+    const TEST: &str =
+        "executor::tests::captured_alias_creation_ignores_closed_and_reused_supervisor_stdio";
+    const COMPLETE: &str = "capture descriptor carrier control completed";
+    if !capture_test_child(TEST, COMPLETE) {
+        return;
+    }
+
+    fn assert_physical_standard_closed() {
+        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            let target = std::fs::read_link(format!("/proc/self/fd/{fd}"));
+            assert_eq!(
+                unsafe { libc::fcntl(fd, libc::F_GETFD) },
+                -1,
+                "physical supervisor fd {fd} was reopened as {target:?}"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EBADF)
+            );
+        }
+    }
+
+    fn next_private_fd(anchor: libc::c_int) -> libc::c_int {
+        let next = unsafe { libc::fcntl(anchor, libc::F_DUPFD_CLOEXEC, 3) };
+        assert!(next >= 3);
+        assert_eq!(unsafe { libc::close(next) }, 0);
+        next
+    }
+
+    let saved = [libc::STDOUT_FILENO, libc::STDERR_FILENO].map(|fd| {
+        let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+        assert!(duplicate >= 3, "captured dup returned {duplicate}");
+        unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) }
+    });
+    let closed_root = TestDir::new();
+    let closed_state = test_state(&closed_root.0);
+    let reused_root = TestDir::new();
+    let reused_state = test_state(&reused_root.0);
+    let plain_root = TestDir::new();
+    let plain_state = test_state(&plain_root.0);
+    let live_plain_root = TestDir::new();
+    let live_plain_state = test_state(&live_plain_root.0);
+    let mut memory = GuestMemory::new(0, 0x8000).unwrap();
+    memory.write(0x3000, b"xy").unwrap();
+    let one_byte = libc::iovec {
+        iov_base: 0x3000_usize as *mut libc::c_void,
+        iov_len: 1,
+    };
+    assert_eq!(write_struct(&mut memory, 0x3100, &one_byte), 0);
+    write_c_string(&mut memory, 0x100, "/proc/self/fd/1");
+    let mut live_plain = ElfExecutor::new(live_plain_state, false);
+    for access in [libc::O_RDONLY, libc::O_RDWR] {
+        let reopened = live_plain.execute(
+            &SyscallRequest::new(
+                libc::SYS_openat as u64,
+                [
+                    libc::AT_FDCWD as u64,
+                    0x100,
+                    (access | libc::O_NONBLOCK | libc::O_CLOEXEC) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            &memory,
+        );
+        assert!(reopened >= 3, "noncapture proc reopen returned {reopened}");
+        assert_eq!(
+            live_plain.execute(
+                &SyscallRequest::new(
+                    libc::SYS_close as u64,
+                    [reopened as u64, 0, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0
+        );
+    }
+    drop(live_plain);
+    let epoll_host_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+    assert!(epoll_host_fd >= 3);
+    let epoll_host = unsafe { std::fs::File::from_raw_fd(epoll_host_fd) };
+    for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        assert_eq!(unsafe { libc::close(fd) }, 0);
+    }
+
+    let mut plain = ElfExecutor::new(plain_state, false);
+    assert_eq!(
+        plain.execute(
+            &SyscallRequest::new(libc::SYS_dup as u64, [1, 0, 0, 0, 0, 0]),
+            &memory,
+        ),
+        negative_errno(libc::EBADF)
+    );
+    write_c_string(&mut memory, 0x100, "/proc/self/fd/1");
+    for access in [
+        libc::O_RDONLY,
+        libc::O_WRONLY,
+        libc::O_RDWR,
+        libc::O_ACCMODE,
+    ] {
+        assert_eq!(
+            plain.execute(
+                &SyscallRequest::new(
+                    libc::SYS_openat as u64,
+                    [
+                        libc::AT_FDCWD as u64,
+                        0x100,
+                        (access | libc::O_NONBLOCK) as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::ENOENT)
+        );
+    }
+    drop(plain);
+    assert_physical_standard_closed();
+
+    let mut executor = ElfExecutor::new(closed_state, true);
+    assert_physical_standard_closed();
+    let epoll_fd = insert_file_with_flags(&mut executor.state, epoll_host, true, None) as i32;
+    assert!(epoll_fd >= 3);
+    executor
+        .file_table
+        .lock()
+        .unwrap()
+        .update_from_elf(&executor.state)
+        .unwrap();
+    let carriers = executor.output.as_ref().unwrap().identities.descriptors();
+    assert!(carriers.into_iter().all(|fd| fd >= 3));
+    let carrier_capacities = [carriers[1], carriers[3]].map(|fd| {
+        let capacity = unsafe { libc::fcntl(fd, libc::F_GETPIPE_SZ) };
+        assert!(capacity > 0);
+        capacity
+    });
+
+    let mut survivors = Vec::new();
+    for (index, source) in [libc::STDOUT_FILENO, libc::STDERR_FILENO]
+        .into_iter()
+        .enumerate()
+    {
+        let identity = capture_executor_stat(&mut executor, &memory, source);
+        for command in [libc::F_GETPIPE_SZ, libc::F_SETPIPE_SZ] {
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_fcntl as u64,
+                        [source as u64, command as u64, PAGE_SIZE, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                negative_errno(libc::ENOSYS)
+            );
+        }
+        assert_eq!(
+            unsafe { libc::fcntl(carriers[index * 2 + 1], libc::F_GETPIPE_SZ) },
+            carrier_capacities[index],
+            "capture capacity refusal mutated the private carrier"
+        );
+        let requested = libc::pollfd {
+            fd: source,
+            events: libc::POLLIN | libc::POLLOUT,
+            revents: libc::POLLERR,
+        };
+        assert_eq!(write_struct(&mut memory, 0x4000, &requested), 0);
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_poll as u64, [0x4000, 1, 0, 0, 0, 0]),
+                &memory,
+            ),
+            1
+        );
+        let observed: libc::pollfd = read_struct(&memory, 0x4000);
+        assert_eq!(observed.fd, source);
+        assert_eq!(observed.events, requested.events);
+        assert_eq!(observed.revents, libc::POLLOUT);
+        assert_eq!(write_struct(&mut memory, 0x4000, &requested), 0);
+        let zero_timespec = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, 0x4380, &zero_timespec), 0);
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_ppoll as u64, [0x4000, 1, 0x4380, 0, 0, 0]),
+                &memory,
+            ),
+            1
+        );
+        assert_eq!(read_struct::<libc::pollfd>(&memory, 0x4000).revents, libc::POLLOUT);
+
+        let source_bit = 1_u64 << source;
+        memory.write(0x4100, &source_bit.to_ne_bytes()).unwrap();
+        memory.write(0x4200, &source_bit.to_ne_bytes()).unwrap();
+        let timeout = libc::timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        };
+        assert_eq!(write_struct(&mut memory, 0x4300, &timeout), 0);
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_select as u64,
+                    [source as u64 + 1, 0x4100, 0x4200, 0, 0x4300, 0],
+                ),
+                &memory,
+            ),
+            1
+        );
+        assert_eq!(read_struct::<u64>(&memory, 0x4100), 0);
+        assert_eq!(read_struct::<u64>(&memory, 0x4200), source_bit);
+        assert_eq!(read_struct::<libc::timeval>(&memory, 0x4300).tv_sec, 0);
+        assert_eq!(read_struct::<libc::timeval>(&memory, 0x4300).tv_usec, 0);
+
+        let event = libc::epoll_event {
+            events: (libc::EPOLLIN | libc::EPOLLOUT) as u32,
+            u64: 0x1357_9bdf_2468_ace0,
+        };
+        assert_eq!(write_struct(&mut memory, 0x4400, &event), 0);
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_epoll_ctl as u64,
+                    [
+                        epoll_fd as u64,
+                        libc::EPOLL_CTL_ADD as u64,
+                        source as u64,
+                        0x4400,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::ENOSYS)
+        );
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_epoll_wait as u64,
+                    [epoll_fd as u64, 0x4500, 1, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0,
+            "refused capture registration mutated the host epoll set"
+        );
+        assert_physical_standard_closed();
+
+        let target = 100 + index as i32 * 20;
+        let duplicate = executor.execute(
+            &SyscallRequest::new(libc::SYS_dup as u64, [source as u64, 0, 0, 0, 0, 0]),
+            &memory,
+        ) as i32;
+        assert!(duplicate >= 0, "source={source} captured dup returned {duplicate}");
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_dup2 as u64,
+                    [source as u64, target as u64, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            i64::from(target)
+        );
+        let dup3_target = target + 1;
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_dup3 as u64,
+                    [
+                        source as u64,
+                        dup3_target as u64,
+                        libc::O_CLOEXEC as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            i64::from(dup3_target)
+        );
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_dup2 as u64,
+                    [source as u64, source as u64, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            i64::from(source)
+        );
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_dup3 as u64,
+                    [source as u64, source as u64, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        let fcntl_duplicate = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_fcntl as u64,
+                [
+                    source as u64,
+                    libc::F_DUPFD as u64,
+                    (target + 5) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            &memory,
+        ) as i32;
+        let fcntl_cloexec = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_fcntl as u64,
+                [
+                    source as u64,
+                    libc::F_DUPFD_CLOEXEC as u64,
+                    (target + 10) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            &memory,
+        ) as i32;
+        assert!(fcntl_duplicate >= target + 5 && fcntl_cloexec >= target + 10);
+
+        write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{source}"));
+        let files_before = executor.state.files.len();
+        let identities_before = executor.state.fd_entry_ids.len();
+        let object_inodes_before = executor.state.fd_object_inodes.len();
+        let next_inode_before = executor
+            .state
+            .file_identity_table
+            .lock()
+            .unwrap()
+            .next_inode;
+        // Captured bytes are not queued in the identity pipe, so read-capable
+        // reopens deliberately fail closed rather than expose false EOF/EAGAIN.
+        // The host validation probe rejects access mode 3 for this FIFO with
+        // Linux's EINVAL before the capture-specific ENOSYS boundary.
+        for access in [libc::O_RDONLY, libc::O_RDWR] {
+            let next_host_fd_before = next_private_fd(saved[0].as_raw_fd());
+            let probe = open_host_fd_path(
+                carriers[index * 2 + 1],
+                (access | libc::O_NONBLOCK | libc::O_CLOEXEC) as u64,
+            )
+            .unwrap();
+            drop(probe);
+            assert_eq!(
+                next_private_fd(saved[0].as_raw_fd()),
+                next_host_fd_before,
+                "capture reopen helper retained a host descriptor"
+            );
+        }
+        for (access, expected) in [
+            (libc::O_RDONLY, libc::ENOSYS),
+            (libc::O_RDWR, libc::ENOSYS),
+            (libc::O_ACCMODE, libc::EINVAL),
+        ] {
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_openat as u64,
+                        [
+                            libc::AT_FDCWD as u64,
+                            0x100,
+                            (access | libc::O_NONBLOCK | libc::O_CLOEXEC) as u64,
+                            0,
+                            0,
+                            0,
+                        ],
+                    ),
+                    &memory,
+                ),
+                negative_errno(expected)
+            );
+            assert_eq!(executor.state.files.len(), files_before);
+            assert_eq!(executor.state.fd_entry_ids.len(), identities_before);
+            assert_eq!(executor.state.fd_object_inodes.len(), object_inodes_before);
+            assert_eq!(
+                executor
+                    .state
+                    .file_identity_table
+                    .lock()
+                    .unwrap()
+                    .next_inode,
+                next_inode_before
+            );
+            assert_physical_standard_closed();
+        }
+        for (flags, expected) in [
+            (libc::O_RDONLY | libc::O_DIRECTORY, libc::ENOTDIR),
+            (libc::O_RDONLY | libc::O_NOFOLLOW, libc::ELOOP),
+        ] {
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_openat as u64,
+                        [libc::AT_FDCWD as u64, 0x100, flags as u64, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                negative_errno(expected)
+            );
+            assert_eq!(executor.state.files.len(), files_before);
+            assert_eq!(executor.state.fd_entry_ids.len(), identities_before);
+            assert_eq!(executor.state.fd_object_inodes.len(), object_inodes_before);
+            assert_physical_standard_closed();
+        }
+        let reopened = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_openat as u64,
+                [
+                    libc::AT_FDCWD as u64,
+                    0x100,
+                    (libc::O_WRONLY | libc::O_CLOEXEC) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            &memory,
+        ) as i32;
+        let path_only = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_openat as u64,
+                [
+                    libc::AT_FDCWD as u64,
+                    0x100,
+                    (libc::O_PATH | libc::O_CLOEXEC) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            &memory,
+        ) as i32;
+        assert!(reopened >= 3 && path_only >= 3);
+
+        let shared_status = executor.state.capture_status_flags[&source].clone();
+        for (fd, cloexec) in [
+            (duplicate, false),
+            (target, false),
+            (dup3_target, true),
+            (fcntl_duplicate, false),
+            (fcntl_cloexec, true),
+        ] {
+            assert_eq!(capture_executor_stat(&mut executor, &memory, fd), identity);
+            assert!(Arc::ptr_eq(
+                &executor.state.capture_status_flags[&fd],
+                &shared_status
+            ));
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_fcntl as u64,
+                        [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                if cloexec {
+                    i64::from(libc::FD_CLOEXEC)
+                } else {
+                    0
+                }
+            );
+            let host = executor.state.files[&fd].as_raw_fd();
+            assert!(host >= 3);
+            assert_eq!(
+                unsafe { libc::fcntl(host, libc::F_GETFL) } & libc::O_ACCMODE,
+                libc::O_WRONLY
+            );
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_read as u64,
+                        [fd as u64, 0x3000, 1, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                negative_errno(libc::EBADF)
+            );
+            for command in [libc::F_GETPIPE_SZ, libc::F_SETPIPE_SZ] {
+                assert_eq!(
+                    executor.execute(
+                        &SyscallRequest::new(
+                            libc::SYS_fcntl as u64,
+                            [fd as u64, command as u64, PAGE_SIZE, 0, 0, 0],
+                        ),
+                        &memory,
+                    ),
+                    negative_errno(libc::ENOSYS)
+                );
+            }
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(libc::SYS_lseek as u64, [fd as u64, 0, 0, 0, 0, 0]),
+                    &memory,
+                ),
+                negative_errno(libc::ESPIPE)
+            );
+            assert_physical_standard_closed();
+        }
+        assert!(!Arc::ptr_eq(
+            &executor.state.capture_status_flags[&reopened],
+            &shared_status
+        ));
+        assert_eq!(
+            executor.state.capture_status_flags[&reopened].load(Ordering::SeqCst)
+                & libc::O_ACCMODE,
+            libc::O_WRONLY
+        );
+        assert_eq!(
+            executor.state.capture_status_flags[&path_only].load(Ordering::SeqCst),
+            libc::O_PATH
+        );
+        for command in [libc::F_GETPIPE_SZ, libc::F_SETPIPE_SZ] {
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_fcntl as u64,
+                        [reopened as u64, command as u64, PAGE_SIZE, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                negative_errno(libc::ENOSYS)
+            );
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_fcntl as u64,
+                        [path_only as u64, command as u64, PAGE_SIZE, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                negative_errno(libc::EBADF)
+            );
+        }
+        for fd in [reopened, path_only] {
+            assert_eq!(capture_executor_stat(&mut executor, &memory, fd), identity);
+            assert!(executor.state.files[&fd].as_raw_fd() >= 3);
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_read as u64,
+                        [fd as u64, 0x3000, 1, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                negative_errno(libc::EBADF)
+            );
+            assert_physical_standard_closed();
+        }
+        for number in [libc::SYS_writev, libc::SYS_pwritev2] {
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        number as u64,
+                        [path_only as u64, 0x3100, 1, u64::MAX, 0, 0],
+                    ),
+                    &memory,
+                ),
+                negative_errno(libc::EBADF)
+            );
+        }
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_lseek as u64,
+                    [path_only as u64, 0, libc::SEEK_SET as u64, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_physical_standard_closed();
+
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [source as u64, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            0
+        );
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_dup as u64, [source as u64, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fcntl as u64,
+                    [source as u64, libc::F_DUPFD as u64, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_openat as u64,
+                    [
+                        libc::AT_FDCWD as u64,
+                        0x100,
+                        libc::O_WRONLY as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        assert_eq!(capture_executor_stat(&mut executor, &memory, duplicate), identity);
+        survivors.push((duplicate, source));
+        assert_physical_standard_closed();
+    }
+    assert_eq!(
+        executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_close as u64,
+                [epoll_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            &memory,
+        ),
+        0
+    );
+    let snapshot = FileTableState::try_from_elf(&executor.state).unwrap();
+    assert!(snapshot.files.values().all(|file| file.as_raw_fd() >= 3));
+    assert_physical_standard_closed();
+    drop(snapshot);
+    for (fd, source) in survivors {
+        for command in [libc::F_GETPIPE_SZ, libc::F_SETPIPE_SZ] {
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_fcntl as u64,
+                        [fd as u64, command as u64, PAGE_SIZE, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                negative_errno(libc::ENOSYS),
+                "capture capacity became host-backed after closing its source"
+            );
+        }
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_write as u64, [fd as u64, 0x3000, 1, 0, 0, 0]),
+                &memory,
+            ),
+            1
+        );
+        assert_physical_standard_closed();
+        assert!(matches!(source, libc::STDOUT_FILENO | libc::STDERR_FILENO));
+    }
+    assert_eq!(executor.take_output(), (b"x".to_vec(), b"x".to_vec()));
+    drop(executor);
+    assert_physical_standard_closed();
+
+    let sentinel_bytes = [b"stdout-sentinel", b"stderr-sentinel"];
+    let mut sentinels = Vec::new();
+    let mut snapshots = Vec::new();
+    for (index, expected_fd) in [libc::STDOUT_FILENO, libc::STDERR_FILENO]
+        .into_iter()
+        .enumerate()
+    {
+        let raw = unsafe { libc::memfd_create(c"capture-sentinel".as_ptr(), libc::MFD_CLOEXEC) };
+        assert_eq!(raw, expected_fd);
+        assert_eq!(
+            unsafe {
+                libc::write(
+                    raw,
+                    sentinel_bytes[index].as_ptr().cast(),
+                    sentinel_bytes[index].len(),
+                )
+            },
+            sentinel_bytes[index].len() as isize
+        );
+        assert_eq!(unsafe { libc::lseek(raw, 1, libc::SEEK_SET) }, 1);
+        let flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
+        assert!(flags >= 0);
+        assert_eq!(
+            unsafe { libc::fcntl(raw, libc::F_SETFL, flags | libc::O_APPEND | libc::O_NONBLOCK) },
+            0
+        );
+        let metadata = capture_native_stat(raw);
+        snapshots.push((metadata.st_dev, metadata.st_ino, flags | libc::O_APPEND | libc::O_NONBLOCK));
+        sentinels.push(unsafe { std::fs::File::from_raw_fd(raw) });
+    }
+
+    let mut reused = ElfExecutor::new(reused_state, true);
+    let mut reused_aliases = Vec::new();
+    for (index, source) in [libc::STDOUT_FILENO, libc::STDERR_FILENO]
+        .into_iter()
+        .enumerate()
+    {
+        let duplicate = reused.execute(
+            &SyscallRequest::new(libc::SYS_dup as u64, [source as u64, 0, 0, 0, 0, 0]),
+            &memory,
+        ) as i32;
+        assert!(duplicate >= 3);
+        write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{source}"));
+        let reopened = reused.execute(
+            &SyscallRequest::new(
+                libc::SYS_openat as u64,
+                [
+                    libc::AT_FDCWD as u64,
+                    0x100,
+                    libc::O_WRONLY as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            &memory,
+        ) as i32;
+        assert!(reopened >= 3);
+        for fd in [duplicate, reopened] {
+            let host = reused.state.files[&fd].as_raw_fd();
+            assert!(host >= 3);
+            assert_eq!(
+                unsafe { libc::fcntl(host, libc::F_GETFL) } & libc::O_ACCMODE,
+                libc::O_WRONLY
+            );
+            let backing = capture_native_stat(host);
+            assert_ne!((backing.st_dev, backing.st_ino), (snapshots[index].0, snapshots[index].1));
+            assert_eq!(
+                reused.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_read as u64,
+                        [fd as u64, 0x3000, 1, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                negative_errno(libc::EBADF)
+            );
+        }
+        let mut bytes = vec![0; sentinel_bytes[index].len()];
+        assert_eq!(
+            unsafe {
+                libc::pread(
+                    source,
+                    bytes.as_mut_ptr().cast(),
+                    bytes.len(),
+                    0,
+                )
+            },
+            bytes.len() as isize
+        );
+        assert_eq!(bytes, sentinel_bytes[index]);
+        assert_eq!(unsafe { libc::lseek(source, 0, libc::SEEK_CUR) }, 1);
+        assert_eq!(unsafe { libc::fcntl(source, libc::F_GETFL) }, snapshots[index].2);
+        let metadata = capture_native_stat(source);
+        assert_eq!((metadata.st_dev, metadata.st_ino), (snapshots[index].0, snapshots[index].1));
+        reused_aliases.push((duplicate, source));
+    }
+    memory.write(0x3000, b"yz").unwrap();
+    for (index, (fd, source)) in reused_aliases.into_iter().enumerate() {
+        assert_eq!(
+            reused.execute(
+                &SyscallRequest::new(
+                    libc::SYS_write as u64,
+                    [fd as u64, 0x3000 + index as u64, 1, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            1
+        );
+        assert!(matches!(source, libc::STDOUT_FILENO | libc::STDERR_FILENO));
+    }
+    assert_eq!(reused.take_output(), (b"y".to_vec(), b"z".to_vec()));
+    drop(reused);
+    drop(sentinels);
+    for (fd, saved) in [libc::STDOUT_FILENO, libc::STDERR_FILENO]
+        .into_iter()
+        .zip(&saved)
+    {
+        assert_eq!(unsafe { libc::dup2(saved.as_raw_fd(), fd) }, fd);
+    }
+    eprintln!("{COMPLETE}");
+}
+
+#[test]
 fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
     let root = TestDir::new();
     let owner = CapturedOutput::try_new().unwrap();
@@ -791,13 +1591,42 @@ fn capture_identity_keeps_closed_standard_descriptors_closed() {
     }
     let owner = prepared.unwrap();
     assert_eq!(closed, [true; 3]);
-    for fd in owner.identities.descriptors() {
+    let descriptors = owner.identities.descriptors();
+    for (index, fd) in descriptors.into_iter().enumerate() {
         assert!(fd >= 3);
         assert_eq!(
             capture_native_stat(fd).st_mode & libc::S_IFMT,
             libc::S_IFIFO
         );
         assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, libc::FD_CLOEXEC);
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_ACCMODE,
+            if index % 2 == 0 {
+                libc::O_RDONLY
+            } else {
+                libc::O_WRONLY
+            }
+        );
+    }
+    let metadata = descriptors.map(capture_native_stat);
+    for pair in metadata.as_chunks::<2>().0 {
+        assert_eq!(
+            (pair[0].st_dev, pair[0].st_ino),
+            (pair[1].st_dev, pair[1].st_ino)
+        );
+    }
+    assert_ne!(
+        (metadata[0].st_dev, metadata[0].st_ino),
+        (metadata[2].st_dev, metadata[2].st_ino)
+    );
+    for fd in [descriptors[1], descriptors[3]] {
+        let mut poll = libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut poll, 1, 0) }, 1);
+        assert_eq!(poll.revents, libc::POLLOUT);
     }
     eprintln!("{COMPLETE}");
 }
@@ -995,7 +1824,7 @@ fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
         }
     }
     // Only closed standard-number slots remain available. pipe2 succeeds in
-    // 0/1, its unused end closes, but F_DUPFD_CLOEXEC(min=3) must fail.
+    // 0/1, but relocating its first retained endpoint above 2 must fail.
     let saved = [0, 1].map(|fd| {
         let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
         assert!(copy >= 3);

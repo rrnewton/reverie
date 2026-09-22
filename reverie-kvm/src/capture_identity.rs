@@ -33,7 +33,7 @@ pub(super) fn relocation_failures() -> usize {
 }
 
 #[cfg(test)]
-pub(super) type CaptureDropProbe = Box<dyn FnOnce([std::os::fd::RawFd; 2]) + Send>;
+pub(super) type CaptureDropProbe = Box<dyn FnOnce([std::os::fd::RawFd; 4]) + Send>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CaptureObjectIdentity {
@@ -52,13 +52,33 @@ impl CaptureObjectIdentity {
 }
 
 struct CapturePipe {
-    // Never installed in a guest file table, used for I/O, or exported. The
-    // keeper preserves the existing fallible setup and root-owner lifecycle;
-    // guest-visible identity comes exclusively from the fixed metadata above.
-    _keeper: OwnedFd,
+    // Neither endpoint is installed directly in a guest file table, used for
+    // captured I/O, or exported. The read keeper prevents a private writer
+    // from reporting POLLERR; descriptor-creation paths duplicate or reopen
+    // only the O_WRONLY carrier. Guest-visible identity still comes exclusively
+    // from the fixed metadata above.
+    _read_keeper: OwnedFd,
+    write_carrier: OwnedFd,
 }
 
 impl CapturePipe {
+    fn relocate_private(descriptor: OwnedFd) -> std::io::Result<OwnedFd> {
+        if descriptor.as_raw_fd() >= 3 {
+            return Ok(descriptor);
+        }
+        // SAFETY: descriptor is live; the returned descriptor is newly owned.
+        let private = unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if private < 0 {
+            let error = std::io::Error::last_os_error();
+            #[cfg(test)]
+            RELOCATION_FAILURES.set(RELOCATION_FAILURES.get() + 1);
+            return Err(error);
+        }
+        // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor. Dropping the
+        // original closes the temporary standard-number slot.
+        Ok(unsafe { OwnedFd::from_raw_fd(private) })
+    }
+
     fn try_new() -> std::io::Result<Self> {
         let mut descriptors = [-1; 2];
         // SAFETY: descriptors has room for both newly owned endpoints.
@@ -66,40 +86,53 @@ impl CapturePipe {
             return Err(std::io::Error::last_os_error());
         }
         // SAFETY: a successful pipe2 created both descriptors exclusively here.
-        let keeper = unsafe { OwnedFd::from_raw_fd(descriptors[0]) };
-        let unused = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
+        let read_keeper = unsafe { OwnedFd::from_raw_fd(descriptors[0]) };
+        let write_carrier = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
         // A caller may have closed fd 0, 1 or 2. Never retain a private pipe in
-        // the executor's implicit host-standard-descriptor namespace. Closing
-        // the unused endpoint first bounds this relocation's descriptor peak.
-        drop(unused);
-        let keeper = if keeper.as_raw_fd() < 3 {
-            // SAFETY: keeper is live; the returned descriptor is newly owned.
-            let private = unsafe { libc::fcntl(keeper.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
-            if private < 0 {
-                let error = std::io::Error::last_os_error();
-                #[cfg(test)]
-                RELOCATION_FAILURES.set(RELOCATION_FAILURES.get() + 1);
-                return Err(error);
-            }
-            let private = unsafe { OwnedFd::from_raw_fd(private) };
-            drop(keeper);
-            private
-        } else {
-            keeper
-        };
-        let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
-        // SAFETY: keeper is live and stat is writable storage.
-        if unsafe { libc::fstat(keeper.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        // SAFETY: fstat initialized stat on success.
-        let stat = unsafe { stat.assume_init() };
-        if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
+        // the executor's implicit host-standard-descriptor namespace.
+        let read_keeper = Self::relocate_private(read_keeper)?;
+        let write_carrier = Self::relocate_private(write_carrier)?;
+        let read_stat = capture_pipe_stat(read_keeper.as_raw_fd())?;
+        let write_stat = capture_pipe_stat(write_carrier.as_raw_fd())?;
+        if read_stat.st_mode & libc::S_IFMT != libc::S_IFIFO
+            || write_stat.st_mode & libc::S_IFMT != libc::S_IFIFO
+            || (read_stat.st_dev, read_stat.st_ino) != (write_stat.st_dev, write_stat.st_ino)
+        {
             return Err(std::io::Error::other("capture identity is not a pipe"));
+        }
+        if capture_pipe_status(read_keeper.as_raw_fd())? & libc::O_ACCMODE != libc::O_RDONLY
+            || capture_pipe_status(write_carrier.as_raw_fd())? & libc::O_ACCMODE != libc::O_WRONLY
+        {
+            return Err(std::io::Error::other(
+                "capture pipe endpoints have invalid access modes",
+            ));
         }
         #[cfg(test)]
         PIPES_PREPARED.set(PIPES_PREPARED.get() + 1);
-        Ok(Self { _keeper: keeper })
+        Ok(Self {
+            _read_keeper: read_keeper,
+            write_carrier,
+        })
+    }
+}
+
+fn capture_pipe_stat(fd: RawFd) -> std::io::Result<libc::stat> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: fd is live and stat is writable storage.
+    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fstat initialized stat on success.
+    Ok(unsafe { stat.assume_init() })
+}
+
+fn capture_pipe_status(fd: RawFd) -> std::io::Result<libc::c_int> {
+    // SAFETY: fd is live and F_GETFL takes no variadic argument.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(flags)
     }
 }
 
@@ -129,20 +162,24 @@ impl CapturedPipeIdentities {
             // after the original standard slot is replaced or closed.
             stdout: CaptureObjectIdentity::for_alias(OutputAlias::Stdout),
             stderr: CaptureObjectIdentity::for_alias(OutputAlias::Stderr),
-            // These descriptors are private lifetime anchors, not guest file
-            // table entries.  Metadata-only syscalls may use them as stable
-            // pipefs carriers instead of consulting inherited supervisor
-            // stdout or stderr.
-            stdout_statfs_carrier: self._stdout._keeper.as_raw_fd(),
-            stderr_statfs_carrier: self._stderr._keeper.as_raw_fd(),
+            // These descriptors remain private lifetime anchors, not guest
+            // file-table entries. Metadata queries use the read keepers and
+            // descriptor-creation paths duplicate/reopen the write carriers;
+            // neither path consults inherited supervisor stdout or stderr.
+            stdout_statfs_carrier: self._stdout._read_keeper.as_raw_fd(),
+            stderr_statfs_carrier: self._stderr._read_keeper.as_raw_fd(),
+            stdout_descriptor_carrier: self._stdout.write_carrier.as_raw_fd(),
+            stderr_descriptor_carrier: self._stderr.write_carrier.as_raw_fd(),
         }
     }
 
     #[cfg(test)]
-    pub(super) fn descriptors(&self) -> [std::os::fd::RawFd; 2] {
+    pub(super) fn descriptors(&self) -> [std::os::fd::RawFd; 4] {
         [
-            self._stdout._keeper.as_raw_fd(),
-            self._stderr._keeper.as_raw_fd(),
+            self._stdout._read_keeper.as_raw_fd(),
+            self._stdout.write_carrier.as_raw_fd(),
+            self._stderr._read_keeper.as_raw_fd(),
+            self._stderr.write_carrier.as_raw_fd(),
         ]
     }
 }
@@ -164,6 +201,8 @@ pub(super) struct CaptureMetadata {
     stderr: CaptureObjectIdentity,
     stdout_statfs_carrier: RawFd,
     stderr_statfs_carrier: RawFd,
+    stdout_descriptor_carrier: RawFd,
+    stderr_descriptor_carrier: RawFd,
 }
 
 impl CaptureMetadata {
@@ -181,6 +220,16 @@ impl CaptureMetadata {
         match alias {
             OutputAlias::Stdout => self.stdout_statfs_carrier,
             OutputAlias::Stderr => self.stderr_statfs_carrier,
+        }
+    }
+
+    /// Private O_WRONLY pipe endpoint for creating a host file description
+    /// that backs a captured guest alias. The paired read keeper remains owned
+    /// by CapturedPipeIdentities, so readiness does not report a missing peer.
+    pub(super) fn descriptor_carrier(self, alias: OutputAlias) -> RawFd {
+        match alias {
+            OutputAlias::Stdout => self.stdout_descriptor_carrier,
+            OutputAlias::Stderr => self.stderr_descriptor_carrier,
         }
     }
 }

@@ -10618,6 +10618,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "kvm_direct_and_tool_match_thp_disable_cell",
         "anonymous_pipe_socket_identities_are_repeatable_on_kvm",
         "captured_output_statfs_matches_native_and_is_repeatable_on_kvm",
+        "captured_aliases_ignore_reused_supervisor_stdio_on_kvm",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
@@ -14372,6 +14373,394 @@ int main(int argc, char **argv) {
         let direct_repeat = run(false);
         let tool = run(true);
         let tool_repeat = run(true);
+        drop(restore);
+        (direct, direct_repeat, tool, tool_repeat)
+    };
+
+    for (label, result) in [
+        ("direct", &results.0),
+        ("direct-repeat", &results.1),
+        ("tool", &results.2),
+        ("tool-repeat", &results.3),
+    ] {
+        assert_eq!(
+            result.0,
+            0,
+            "{label}: stdout={} stderr={}",
+            String::from_utf8_lossy(&result.1),
+            String::from_utf8_lossy(&result.2)
+        );
+        assert_eq!(result.1, native.stdout, "{label}");
+        assert_eq!(result.2, native.stderr, "{label}");
+    }
+    assert_eq!(results.1, results.0, "direct KVM result changed");
+    assert_eq!(results.2, results.0, "Tool and direct KVM results differ");
+    assert_eq!(results.3, results.2, "Tool KVM result changed");
+}
+
+// Descriptor creation for a captured stream must use a private write-capable
+// pipe, not the object occupying the supervisor's same-numbered fd. This cell
+// uses readable O_RDONLY files with mutable offsets as adversarial carriers, then
+// requires native output/exit parity and direct/Tool repeat equality. It makes
+// no L2-log or record/replay claim. Read-capable proc-fd opens, captured epoll
+// registration, and captured pipe-capacity fcntls are checked as explicit KVM
+// ENOSYS fail-closed divergences; matching final output and status do not claim
+// syscall-result parity for those operations.
+#[test]
+fn captured_aliases_ignore_reused_supervisor_stdio_on_kvm() {
+    const TEST: &str = "captured_aliases_ignore_reused_supervisor_stdio_on_kvm";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "captured-alias-carrier",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/epoll.h>
+#include <sys/stat.h>
+#include <sys/select.h>
+#include <sys/syscall.h>
+#include <sys/uio.h>
+#include <time.h>
+#include <unistd.h>
+
+static int same_object(int left, int right) {
+  struct stat a, b;
+  return fstat(left, &a) == 0 && fstat(right, &b) == 0 &&
+      a.st_dev == b.st_dev && a.st_ino == b.st_ino &&
+      (a.st_mode & S_IFMT) == S_IFIFO && (b.st_mode & S_IFMT) == S_IFIFO;
+}
+
+static int read_fails(int fd) {
+  unsigned char byte = 0xa5;
+  errno = 0;
+  return read(fd, &byte, 1) == -1 && errno == EBADF && byte == 0xa5;
+}
+
+static int readv_fails(int fd) {
+  unsigned char byte = 0xa5;
+  struct iovec vector = {.iov_base = &byte, .iov_len = 1};
+  errno = 0;
+  return readv(fd, &vector, 1) == -1 && errno == EBADF && byte == 0xa5;
+}
+
+static int cloexec_is(int fd, int expected) {
+  int flags = fcntl(fd, F_GETFD);
+  return flags >= 0 && !!(flags & FD_CLOEXEC) == expected;
+}
+
+static int readiness_error(int fd) {
+  struct pollfd requested = {
+      .fd = fd, .events = POLLIN | POLLOUT, .revents = POLLERR};
+  if (poll(&requested, 1, 0) != 1 || requested.events != (POLLIN | POLLOUT) ||
+      requested.revents != POLLOUT) return 1;
+  requested.revents = POLLERR;
+  struct timespec zero_timespec = {.tv_sec = 0, .tv_nsec = 0};
+  if (ppoll(&requested, 1, &zero_timespec, NULL) != 1 ||
+      requested.events != (POLLIN | POLLOUT) || requested.revents != POLLOUT)
+    return 2;
+
+  fd_set reads, writes;
+  FD_ZERO(&reads);
+  FD_ZERO(&writes);
+  FD_SET(fd, &reads);
+  FD_SET(fd, &writes);
+  struct timeval timeout = {.tv_sec = 0, .tv_usec = 0};
+  int selected = syscall(SYS_select, fd + 1, &reads, &writes, NULL, &timeout);
+  if (selected != 1) return 3;
+  if (FD_ISSET(fd, &reads)) return 4;
+  if (!FD_ISSET(fd, &writes)) return 5;
+  if (timeout.tv_sec != 0 || timeout.tv_usec != 0) return 6;
+  return 0;
+}
+
+static int epoll_capture_boundary(int fd, int kvm) {
+  int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+  if (epoll_fd < 0) return 0;
+  struct epoll_event requested = {
+      .events = EPOLLIN | EPOLLOUT, .data.u64 = 0x13579bdf2468ace0ULL};
+  struct epoll_event observed = {.events = 0, .data.u64 = 0};
+  int ok;
+  if (kvm) {
+    errno = 0;
+    ok = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &requested) == -1 &&
+        errno == ENOSYS && epoll_wait(epoll_fd, &observed, 1, 0) == 0;
+  } else {
+    ok = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &requested) == 0 &&
+        epoll_wait(epoll_fd, &observed, 1, 0) == 1 &&
+        observed.events == EPOLLOUT && observed.data.u64 == requested.data.u64;
+  }
+  return close(epoll_fd) == 0 && ok;
+}
+
+static int check_stream(int source, int base, const char *first,
+                        const char *second, int kvm, int *survivor) {
+  if ((fcntl(source, F_GETFL) & O_ACCMODE) != O_WRONLY) return base;
+  int readiness = readiness_error(source);
+  if (readiness) return base + 24 + readiness;
+  if (!epoll_capture_boundary(source, kvm)) return base + 30;
+  if (kvm) {
+    errno = 0;
+    if (fcntl(source, F_GETPIPE_SZ) != -1 || errno != ENOSYS)
+      return base + 31;
+    errno = 0;
+    if (fcntl(source, F_SETPIPE_SZ, 4096) != -1 || errno != ENOSYS)
+      return base + 32;
+  } else if (fcntl(source, F_GETPIPE_SZ) <= 0) {
+    return base + 33;
+  }
+  int duplicate = dup(source);
+  int dup2_target = base + 100;
+  int dup3_target = base + 101;
+  int fcntl_duplicate = fcntl(source, F_DUPFD, base + 110);
+  int fcntl_cloexec = fcntl(source, F_DUPFD_CLOEXEC, base + 120);
+  if (duplicate < 0 || dup2(source, dup2_target) != dup2_target ||
+      dup3(source, dup3_target, O_CLOEXEC) != dup3_target ||
+      fcntl_duplicate < base + 110 || fcntl_cloexec < base + 120)
+    return base + 1;
+  errno = 0;
+  if (dup3(source, source, 0) != -1 || errno != EINVAL ||
+      dup2(source, source) != source) return base + 2;
+
+  char path[64];
+  if (snprintf(path, sizeof(path), "/proc/self/fd/%d", source) >=
+      (int)sizeof(path)) return base + 3;
+  const int read_modes[] = {O_RDONLY, O_RDWR};
+  for (unsigned index = 0;
+       index < sizeof(read_modes) / sizeof(read_modes[0]); ++index) {
+    errno = 0;
+    int read_capable = open(path, read_modes[index] | O_NONBLOCK | O_CLOEXEC);
+    if (kvm) {
+      if (read_capable != -1 || errno != ENOSYS) return base + 25;
+    } else if (read_capable < 0 || close(read_capable) != 0) {
+      return base + 26;
+    }
+  }
+  errno = 0;
+  if (open(path, O_ACCMODE | O_NONBLOCK | O_CLOEXEC) != -1 || errno != EINVAL)
+    return base + 34;
+  int reopened = open(path, O_WRONLY | O_CLOEXEC);
+  int path_only = open(path, O_PATH | O_CLOEXEC);
+  if (reopened < 0 || path_only < 0) return base + 4;
+
+  int shared[] = {source, duplicate, dup2_target, dup3_target,
+                  fcntl_duplicate, fcntl_cloexec};
+  for (unsigned index = 0; index < sizeof(shared) / sizeof(shared[0]); ++index) {
+    if (!same_object(source, shared[index]) || !read_fails(shared[index]) ||
+        !readv_fails(shared[index])) return base + 5;
+    errno = 0;
+    if (lseek(shared[index], 0, SEEK_SET) != -1 || errno != ESPIPE)
+      return base + 6;
+  }
+  if (!same_object(source, reopened) || !same_object(source, path_only) ||
+      !read_fails(reopened) || !read_fails(path_only)) return base + 7;
+  struct iovec path_vector = {.iov_base = (void *)"x", .iov_len = 1};
+  errno = 0;
+  if (write(path_only, "x", 1) != -1 || errno != EBADF) return base + 8;
+  errno = 0;
+  if (writev(path_only, &path_vector, 1) != -1 || errno != EBADF)
+    return base + 27;
+  errno = 0;
+  if (syscall(SYS_pwritev2, path_only, &path_vector, 1, -1L, 0L, 0) != -1 ||
+      errno != EBADF) return base + 28;
+  errno = 0;
+  if (lseek(path_only, 0, SEEK_SET) != -1 || errno != EBADF)
+    return base + 29;
+
+  if (!cloexec_is(duplicate, 0) || !cloexec_is(dup2_target, 0) ||
+      !cloexec_is(dup3_target, 1) || !cloexec_is(fcntl_duplicate, 0) ||
+      !cloexec_is(fcntl_cloexec, 1) || !cloexec_is(reopened, 1) ||
+      !cloexec_is(path_only, 1)) return base + 9;
+  if ((fcntl(reopened, F_GETFL) & O_ACCMODE) != O_WRONLY ||
+      fcntl(path_only, F_GETFL) != O_PATH) return base + 10;
+
+  if (fcntl(duplicate, F_SETFL, O_NONBLOCK) != 0) return base + 11;
+  for (unsigned index = 0; index < sizeof(shared) / sizeof(shared[0]); ++index)
+    if (!(fcntl(shared[index], F_GETFL) & O_NONBLOCK)) return base + 12;
+  if (fcntl(reopened, F_GETFL) & O_NONBLOCK) return base + 13;
+  if (fcntl(source, F_SETFL, 0) != 0) return base + 14;
+  for (unsigned index = 0; index < sizeof(shared) / sizeof(shared[0]); ++index)
+    if (fcntl(shared[index], F_GETFL) & O_NONBLOCK) return base + 15;
+
+  if (write(duplicate, first, strlen(first)) != (ssize_t)strlen(first))
+    return base + 16;
+  struct iovec vectors[2] = {
+      {.iov_base = (void *)second, .iov_len = strlen(second) / 2},
+      {.iov_base = (void *)(second + strlen(second) / 2),
+       .iov_len = strlen(second) - strlen(second) / 2},
+  };
+  if (writev(reopened, vectors, 2) != (ssize_t)strlen(second))
+    return base + 17;
+
+  if (close(source) != 0) return base + 18;
+  errno = 0;
+  if (dup(source) != -1 || errno != EBADF) return base + 19;
+  errno = 0;
+  if (fcntl(source, F_DUPFD, 0) != -1 || errno != EBADF) return base + 20;
+  errno = 0;
+  if (open(path, O_WRONLY) != -1 || errno != ENOENT) return base + 21;
+  if (!same_object(duplicate, dup2_target)) return base + 22;
+  *survivor = duplicate;
+
+  if (close(dup2_target) || close(dup3_target) || close(fcntl_duplicate) ||
+      close(fcntl_cloexec) || close(reopened) || close(path_only))
+    return base + 23;
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 72;
+  int kvm = !strcmp(argv[1], "kvm");
+  if (!kvm && strcmp(argv[1], "native")) return 73;
+  int stdout_survivor = -1, stderr_survivor = -1;
+  int result = check_stream(STDOUT_FILENO, 10, "stdout-dup\n",
+                            "stdout-reopen\n", kvm, &stdout_survivor);
+  if (result) return result;
+  result = check_stream(STDERR_FILENO, 40, "stderr-dup\n",
+                        "stderr-reopen\n", kvm, &stderr_survivor);
+  if (result) return result;
+  if (write(stdout_survivor, "stdout-survivor\n", 16) != 16 ||
+      write(stderr_survivor, "stderr-survivor\n", 16) != 16)
+    return 70;
+  if (close(stdout_survivor) || close(stderr_survivor)) return 71;
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable)
+        .arg("native")
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert_eq!(
+        native.stdout,
+        b"stdout-dup\nstdout-reopen\nstdout-survivor\n"
+    );
+    assert_eq!(
+        native.stderr,
+        b"stderr-dup\nstderr-reopen\nstderr-survivor\n"
+    );
+
+    let executable = executable.to_str().unwrap();
+    let run = |with_tool: bool| {
+        let image = std::fs::read(executable).unwrap();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, "kvm"],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        if with_tool {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        }
+    };
+
+    struct RestoreStandardDescriptors {
+        stdout: std::fs::File,
+        stderr: std::fs::File,
+    }
+    impl Drop for RestoreStandardDescriptors {
+        fn drop(&mut self) {
+            use std::os::fd::AsRawFd;
+            assert_eq!(unsafe { libc::dup2(self.stdout.as_raw_fd(), 1) }, 1);
+            assert_eq!(unsafe { libc::dup2(self.stderr.as_raw_fd(), 2) }, 2);
+        }
+    }
+
+    let results = {
+        use std::os::fd::AsRawFd;
+        use std::os::fd::FromRawFd;
+
+        let saved_stdout = unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) };
+        let saved_stderr = unsafe { libc::fcntl(2, libc::F_DUPFD_CLOEXEC, 3) };
+        assert!(saved_stdout >= 3 && saved_stderr >= 3);
+        let restore = RestoreStandardDescriptors {
+            stdout: unsafe { std::fs::File::from_raw_fd(saved_stdout) },
+            stderr: unsafe { std::fs::File::from_raw_fd(saved_stderr) },
+        };
+        let ambient_stdout_path = directory.0.join("carrier-ambient-stdout");
+        let ambient_stderr_path = directory.0.join("carrier-ambient-stderr");
+        std::fs::write(&ambient_stdout_path, b"host-stdout").unwrap();
+        std::fs::write(&ambient_stderr_path, b"host-stderr").unwrap();
+        let ambient_stdout = std::fs::File::open(&ambient_stdout_path).unwrap();
+        let ambient_stderr = std::fs::File::open(&ambient_stderr_path).unwrap();
+        for file in [&ambient_stdout, &ambient_stderr] {
+            assert_eq!(
+                unsafe { libc::lseek(file.as_raw_fd(), 1, libc::SEEK_SET) },
+                1
+            );
+            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+            assert!(flags >= 0);
+            assert_eq!(
+                unsafe {
+                    libc::fcntl(
+                        file.as_raw_fd(),
+                        libc::F_SETFL,
+                        flags | libc::O_APPEND | libc::O_NONBLOCK,
+                    )
+                },
+                0
+            );
+        }
+        let expected_flags = [
+            unsafe { libc::fcntl(ambient_stdout.as_raw_fd(), libc::F_GETFL) },
+            unsafe { libc::fcntl(ambient_stderr.as_raw_fd(), libc::F_GETFL) },
+        ];
+        assert_eq!(unsafe { libc::dup2(ambient_stdout.as_raw_fd(), 1) }, 1);
+        assert_eq!(unsafe { libc::dup2(ambient_stderr.as_raw_fd(), 2) }, 2);
+
+        let direct = run(false);
+        let direct_repeat = run(false);
+        let tool = run(true);
+        let tool_repeat = run(true);
+
+        for (index, (fd, file, path, expected)) in [
+            (
+                1,
+                &ambient_stdout,
+                &ambient_stdout_path,
+                b"host-stdout".as_slice(),
+            ),
+            (
+                2,
+                &ambient_stderr,
+                &ambient_stderr_path,
+                b"host-stderr".as_slice(),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(unsafe { libc::lseek(fd, 0, libc::SEEK_CUR) }, 1);
+            assert_eq!(
+                unsafe { libc::fcntl(fd, libc::F_GETFL) },
+                expected_flags[index]
+            );
+            assert_eq!(std::fs::read(path).unwrap(), expected);
+            assert_eq!(
+                unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR) },
+                1
+            );
+        }
         drop(restore);
         (direct, direct_repeat, tool, tool_repeat)
     };

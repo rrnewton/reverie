@@ -705,7 +705,16 @@ impl FileRetirement {
                 *remaining -= 1;
             }
         }
-        file.try_clone().map(|file| self.stage(file))
+        // File::try_clone may allocate host fd 0/1/2 when the embedding
+        // process has closed one. File-table snapshots are private backend
+        // objects and must never repopulate the supervisor's standard slots.
+        // SAFETY: file is live; F_DUPFD_CLOEXEC returns a new owned descriptor.
+        let duplicate = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if duplicate < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+        Ok(self.stage(unsafe { File::from_raw_fd(duplicate) }))
     }
 
     #[cfg(test)]

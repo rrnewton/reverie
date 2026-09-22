@@ -578,27 +578,27 @@ fn execute_basic_syscall_inner(
         pipe2(memory, state, args[0], args[1])
     } else if number == libc::SYS_select as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        select(memory, state, args)
+        select(memory, state, args, capture_metadata)
     } else if number == libc::SYS_pselect6 as u64 {
         pselect6_validation_preflight(memory, args)
     } else if number == libc::SYS_poll as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        poll(memory, state, args)
+        poll(memory, state, args, capture_metadata)
     } else if number == libc::SYS_ppoll as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        ppoll(memory, state, args)
+        ppoll(memory, state, args, capture_metadata)
     } else if number == libc::SYS_epoll_create1 as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         epoll_create1(state, args[0])
     } else if number == libc::SYS_epoll_ctl as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        epoll_ctl(memory, state, args)
+        epoll_ctl(memory, state, args, capture_metadata)
     } else if number == libc::SYS_epoll_wait as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        epoll_wait(memory, state, args, false)
+        epoll_wait(memory, state, args, false, capture_metadata)
     } else if number == libc::SYS_epoll_pwait as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        epoll_wait(memory, state, args, true)
+        epoll_wait(memory, state, args, true, capture_metadata)
     } else if number == libc::SYS_eventfd as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         eventfd2(state, args[0], 0)
@@ -675,21 +675,28 @@ fn execute_basic_syscall_inner(
         // AUTONOMOUS-BOT-IMPLEMENTED
         ioctl(memory, state, args, capture_output)
     } else if number == libc::SYS_dup as u64 {
-        duplicate_fd(state, args[0], None, 0, false)
+        duplicate_fd(state, args[0], None, 0, false, capture_metadata)
     } else if number == libc::SYS_dup2 as u64 {
-        duplicate_fd(state, args[0], Some(args[1]), 0, false)
+        duplicate_fd(state, args[0], Some(args[1]), 0, false, capture_metadata)
     } else if number == libc::SYS_dup3 as u64 {
-        duplicate_fd(state, args[0], Some(args[1]), args[2], true)
+        duplicate_fd(
+            state,
+            args[0],
+            Some(args[1]),
+            args[2],
+            true,
+            capture_metadata,
+        )
     } else if number == libc::SYS_fcntl as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        fcntl(memory, state, args)
+        fcntl(memory, state, args, capture_metadata)
     } else if number == libc::SYS_open as u64 {
-        open(memory, state, args, capture_output)
+        open(memory, state, args, capture_metadata)
     } else if number == libc::SYS_openat as u64 {
-        openat(memory, state, args, capture_output)
+        openat(memory, state, args, capture_metadata)
     } else if number == libc::SYS_creat as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        creat(memory, state, args, capture_output)
+        creat(memory, state, args, capture_metadata)
     } else if number == libc::SYS_memfd_create as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         memfd_create(memory, state, args)
@@ -6667,6 +6674,11 @@ fn vectored_io(
     let guest_fd = args[0] as libc::c_int;
     let output_destination = output_alias(state, guest_fd);
     let captured_output = output.is_some() && output_destination.is_some();
+    let captured_status = captured_output
+        .then(|| state.capture_status_flags.get(&guest_fd))
+        .flatten()
+        .map(|status| status.load(Ordering::SeqCst));
+    let captured_path_only = captured_status.is_some_and(|flags| flags & libc::O_PATH != 0);
     // Synthetic procfs descriptors have backend-owned content and must not be
     // forwarded to the supervisor's procfs.
     if state.proc_files.contains_key(&guest_fd) {
@@ -6683,6 +6695,9 @@ fn vectored_io(
         || matches!(number, libc::SYS_preadv2 | libc::SYS_pwritev2) && args[3] as i64 == -1;
     if !current_position {
         if captured_output {
+            if captured_path_only {
+                return negative_errno(libc::EBADF);
+            }
             return negative_errno(libc::ESPIPE);
         }
         let host_fd = descriptor.expect("validated guest descriptor disappeared");
@@ -6721,7 +6736,10 @@ fn vectored_io(
         // and dup aliases retain their separate descriptor/capture routing.
         Err(negative_errno(libc::EBADF))
     } else if captured_output {
-        if reading {
+        if reading
+            || captured_path_only
+            || captured_status.is_some_and(|flags| flags & libc::O_ACCMODE == libc::O_RDONLY)
+        {
             Err(negative_errno(libc::EBADF))
         } else {
             Ok(())
@@ -7136,6 +7154,13 @@ fn lseek(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64 
         return description.seek(args);
     }
     if capture_output && output_alias(state, fd).is_some() {
+        if state
+            .capture_status_flags
+            .get(&fd)
+            .is_some_and(|status| status.load(Ordering::SeqCst) & libc::O_PATH != 0)
+        {
+            return negative_errno(libc::EBADF);
+        }
         // Captured stdout/stderr are modeled as pipes: writes go to the
         // in-memory capture sink, and fstat exposes S_IFIFO. Do not leak the
         // unrelated file position of the supervisor's inherited descriptor.
@@ -7481,7 +7506,7 @@ fn open(
     memory: &GuestMemory,
     state: &mut LoadedStaticElf,
     args: &[u64; 6],
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     open_file(
         memory,
@@ -7490,7 +7515,7 @@ fn open(
         args[0],
         args[1],
         args[2],
-        capture_output,
+        capture,
     )
 }
 
@@ -7498,7 +7523,7 @@ fn openat(
     memory: &GuestMemory,
     state: &mut LoadedStaticElf,
     args: &[u64; 6],
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     open_file(
         memory,
@@ -7507,7 +7532,7 @@ fn openat(
         args[1],
         args[2],
         args[3],
-        capture_output,
+        capture,
     )
 }
 
@@ -7523,7 +7548,7 @@ fn creat(
     memory: &GuestMemory,
     state: &mut LoadedStaticElf,
     args: &[u64; 6],
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     let flags = (libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC) as u64;
     open_file(
@@ -7533,7 +7558,7 @@ fn creat(
         args[0],
         flags,
         args[1],
-        capture_output,
+        capture,
     )
 }
 
@@ -7544,8 +7569,9 @@ fn open_file(
     path_address: u64,
     raw_flags: u64,
     raw_mode: u64,
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
+    let capture_output = capture.is_some();
     let flags = u64::from(raw_flags as libc::c_int as u32) & LEGACY_OPEN_FLAGS;
     let path_only = flags & libc::O_PATH as u64 != 0;
     // Legacy open/openat validates every non-O_PATH __O_TMPFILE spelling before
@@ -7691,7 +7717,7 @@ fn open_file(
         Ok(path) => path,
         Err(error) => return error,
     } {
-        return open_guest_fd_path(state, guest_fd, flags, guest_cloexec);
+        return open_guest_fd_path(state, guest_fd, flags, guest_cloexec, capture);
     }
     if path == b"/dev/random" || path == b"/dev/urandom" {
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -8374,11 +8400,36 @@ fn open_host_fd_path(source_host_fd: RawFd, flags: u64) -> Result<std::fs::File,
         )
     };
     if reopened < 0 {
-        Err(io_error(std::io::Error::last_os_error()))
-    } else {
-        // SAFETY: openat returned a new owned descriptor.
-        Ok(unsafe { std::fs::File::from_raw_fd(reopened as RawFd) })
+        return Err(io_error(std::io::Error::last_os_error()));
     }
+    // SAFETY: openat returned a new owned descriptor.
+    let file = unsafe { std::fs::File::from_raw_fd(reopened as RawFd) };
+    relocate_owned_host_fd(file)
+}
+
+fn relocate_owned_host_fd(file: std::fs::File) -> Result<std::fs::File, i64> {
+    if file.as_raw_fd() >= 3 {
+        return Ok(file);
+    }
+    // Never let a private guest-table carrier occupy the supervisor's standard
+    // descriptor namespace. The original low descriptor closes on every path.
+    // SAFETY: file is live; F_DUPFD_CLOEXEC returns a new owned descriptor.
+    let duplicate = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+    if duplicate < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(duplicate) })
+}
+
+fn duplicate_owned_host_fd(source: RawFd) -> Result<std::fs::File, i64> {
+    // Internal descriptors must not claim a closed supervisor fd 0/1/2.
+    // SAFETY: source is live; F_DUPFD_CLOEXEC returns a new owned descriptor.
+    let duplicate = unsafe { libc::fcntl(source, libc::F_DUPFD_CLOEXEC, 3) };
+    if duplicate < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+    Ok(unsafe { std::fs::File::from_raw_fd(duplicate) })
 }
 
 fn ensure_proc_carrier_readonly_or_path(file: &std::fs::File) -> Result<(), i64> {
@@ -8452,8 +8503,9 @@ fn open_guest_fd_path(
     guest_fd: libc::c_int,
     flags: u64,
     close_on_exec: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
-    let Some(source_host_fd) = host_fd(state, guest_fd) else {
+    let Some(source_host_fd) = descriptor_creation_host_fd(state, guest_fd, capture) else {
         return negative_errno(libc::ENOENT);
     };
     if let Some(description) = state.proc_fd_directories.get(&guest_fd).cloned() {
@@ -8516,6 +8568,27 @@ fn open_guest_fd_path(
         return negative_errno(libc::ENOSYS);
     }
     let source_alias = output_alias(state, guest_fd);
+    let access_mode = flags & libc::O_ACCMODE as u64;
+    if capture.is_some()
+        && source_alias.is_some()
+        && !path_only
+        && access_mode != libc::O_WRONLY as u64
+    {
+        // Captured bytes live in the bounded in-memory output buffer; they are
+        // never written into the private pipe that supplies descriptor identity.
+        // A read-capable reopen of that pipe would therefore expose an empty
+        // queue and a permanently retained writer, producing EAGAIN or an
+        // unbounded wait instead of captured data/EOF. Linux access mode 3 is
+        // likewise unusable for I/O and must not become a writable capture
+        // alias. Let the host validate target/flag precedence without
+        // publishing the temporary descriptor, then fail closed until capture
+        // queue and last-writer lifetime are modeled together.
+        match open_host_fd_path(source_host_fd, flags) {
+            Ok(probe) => drop(probe),
+            Err(error) => return error,
+        }
+        return negative_errno(libc::ENOSYS);
+    }
     if regular_proc && !path_only {
         if flags & libc::O_TRUNC as u64 != 0
             || flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64
@@ -9191,14 +9264,12 @@ fn duplicate_fd_at_or_above(
         return negative_errno(libc::EMFILE);
     };
 
-    // SAFETY: old_host_fd is live. F_DUPFD_CLOEXEC returns an owned
-    // descriptor; guest CLOEXEC is modeled independently in cloexec_fds.
-    let duplicated = unsafe { libc::fcntl(old_host_fd, libc::F_DUPFD_CLOEXEC, 0) };
-    if duplicated < 0 {
-        return io_error(std::io::Error::last_os_error());
-    }
-    // SAFETY: fcntl returned a new owned descriptor.
-    let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+    // Guest CLOEXEC is modeled independently in cloexec_fds. The host copy is
+    // always CLOEXEC and private to descriptors 3 and above.
+    let file = match duplicate_owned_host_fd(old_host_fd) {
+        Ok(file) => file,
+        Err(error) => return error,
+    };
     let retired = state.insert_file(fd, file);
     state.fd_object_inodes.insert(fd, source.object_inode);
     if source.is_random {
@@ -9257,6 +9328,7 @@ fn duplicate_fd(
     raw_new_fd: Option<u64>,
     raw_flags: u64,
     is_dup3: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     let _retirement = state.file_retirement.hold();
     let transaction = state.signal_transaction.clone();
@@ -9278,7 +9350,7 @@ fn duplicate_fd(
     let source_is_loginuid = state.loginuid_fds.contains(&old_fd);
     let source_signalfd_mask = signalfd_mask(state, old_fd);
     let source_capture_status = state.capture_status_flags.get(&old_fd).cloned();
-    let Some(old_host_fd) = host_fd(state, old_fd) else {
+    let Some(old_host_fd) = descriptor_creation_host_fd(state, old_fd, capture) else {
         return negative_errno(libc::EBADF);
     };
     let source_object_inode = guest_fd_object_identity(state, old_fd);
@@ -9302,14 +9374,10 @@ fn duplicate_fd(
         None => None,
     };
 
-    // SAFETY: old_host_fd names a live descriptor. F_DUPFD_CLOEXEC returns a
-    // new owned descriptor and prevents it leaking through a supervisor exec.
-    let duplicated = unsafe { libc::fcntl(old_host_fd, libc::F_DUPFD_CLOEXEC, 0) };
-    if duplicated < 0 {
-        return io_error(std::io::Error::last_os_error());
-    }
-    // SAFETY: fcntl returned a new owned descriptor.
-    let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+    let file = match duplicate_owned_host_fd(old_host_fd) {
+        Ok(file) => file,
+        Err(error) => return error,
+    };
     if let Some(new_fd) = new_fd {
         let retired = state.insert_file(new_fd, file);
         state.fd_object_inodes.insert(new_fd, source_object_inode);
@@ -9559,7 +9627,12 @@ fn pselect6_validation_preflight(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-205): Review deterministic select readiness and timeout semantics.
-fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn select(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
     let Ok(nfds) = libc::c_int::try_from(args[0]) else {
         return negative_errno(libc::EINVAL);
     };
@@ -9604,7 +9677,7 @@ fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
         if !membership.into_iter().any(|present| present) {
             continue;
         }
-        let Some(host_fd) = host_fd(state, guest_fd) else {
+        let Some(host_fd) = descriptor_creation_host_fd(state, guest_fd, capture) else {
             return negative_errno(libc::EBADF);
         };
         let virtual_signalfd = signalfd_mask(state, guest_fd).is_some();
@@ -9697,12 +9770,22 @@ fn fd_set_insert(set: &mut [u64], fd: libc::c_int) {
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-92): Review guest descriptor translation and deterministic nonblocking poll semantics.
-fn poll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    poll_with_timeout(memory, state, args, 0)
+fn poll(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    poll_with_timeout(memory, state, args, 0, capture)
 }
 
 // TODO-HUMAN-REVIEW(PR-172): Review host-blocking KVM ppoll timeout and signal-mask semantics.
-fn ppoll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn ppoll(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
     // Validate the timeout up front for every ppoll, mirroring detcore's
     // handle_ppoll (hermit detcore/src/syscalls/io.rs:824-828): the kernel
     // rejects a malformed timeout (bad pointer or out-of-range nanoseconds)
@@ -9747,13 +9830,13 @@ fn ppoll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
         // instantaneous poll, so a plain non-blocking poll reproduces the kernel
         // result: a ready descriptor returns its count exactly as the unmasked
         // path would, and a poll/read error propagates unchanged.
-        let ready = poll_with_timeout(memory, state, args, 0);
+        let ready = poll_with_timeout(memory, state, args, 0, capture);
         if ready == 0 {
             return negative_errno(libc::ENOSYS);
         }
         return ready;
     }
-    poll_with_timeout(memory, state, args, timeout)
+    poll_with_timeout(memory, state, args, timeout, capture)
 }
 
 fn poll_with_timeout(
@@ -9761,6 +9844,7 @@ fn poll_with_timeout(
     state: &LoadedStaticElf,
     args: &[u64; 6],
     timeout: libc::c_int,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     let Ok(count) = usize::try_from(args[1]) else {
         return negative_errno(libc::EINVAL);
@@ -9817,7 +9901,7 @@ fn poll_with_timeout(
             // A signalfd exposes only the carrier's synthetic readable state.
             poll_fd.events &= libc::POLLIN;
         }
-        match host_fd(state, poll_fd.fd) {
+        match descriptor_creation_host_fd(state, poll_fd.fd, capture) {
             Some(host_fd) => poll_fd.fd = host_fd,
             None => {
                 poll_fd.fd = -1;
@@ -9886,11 +9970,17 @@ fn epoll_create1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
-fn epoll_ctl(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Some(epoll_fd) = host_fd(state, args[0] as libc::c_int) else {
+fn epoll_ctl(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    let Some(epoll_fd) = descriptor_creation_host_fd(state, args[0] as libc::c_int, capture) else {
         return negative_errno(libc::EBADF);
     };
-    let Some(target_fd) = host_fd(state, args[2] as libc::c_int) else {
+    let target_guest_fd = args[2] as libc::c_int;
+    let Some(target_fd) = descriptor_creation_host_fd(state, target_guest_fd, capture) else {
         return negative_errno(libc::EBADF);
     };
     let operation = args[1] as libc::c_int;
@@ -9903,10 +9993,23 @@ fn epoll_ctl(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
         }
     };
     if matches!(operation, libc::EPOLL_CTL_ADD | libc::EPOLL_CTL_MOD)
-        && signalfd_mask(state, args[2] as libc::c_int).is_some()
+        && signalfd_mask(state, target_guest_fd).is_some()
     {
         // Otherwise a blocking ppoll of this epoll descriptor could wait on
         // virtual signal readiness without carrying signalfd metadata itself.
+        return negative_errno(libc::ENOSYS);
+    }
+    if capture.is_some()
+        && output_alias(state, target_guest_fd).is_some()
+        && matches!(
+            operation,
+            libc::EPOLL_CTL_ADD | libc::EPOLL_CTL_MOD | libc::EPOLL_CTL_DEL
+        )
+    {
+        // A persistent registration on the root-owned identity carrier would
+        // survive guest close/replacement of the last capture alias and keep
+        // reporting stale POLLOUT. Refuse before mutating the host epoll set
+        // until registrations are tied to guest-description lifetime.
         return negative_errno(libc::ENOSYS);
     }
     // SAFETY: both descriptors were translated from live guest descriptors;
@@ -9920,6 +10023,7 @@ fn epoll_wait(
     state: &LoadedStaticElf,
     args: &[u64; 6],
     pwait: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     if pwait && args[4] != 0 {
         if args[5] != KERNEL_SIGSET_SIZE as u64 {
@@ -9930,7 +10034,7 @@ fn epoll_wait(
             return negative_errno(libc::EFAULT);
         }
     }
-    let Some(epoll_fd) = host_fd(state, args[0] as libc::c_int) else {
+    let Some(epoll_fd) = descriptor_creation_host_fd(state, args[0] as libc::c_int, capture) else {
         return negative_errno(libc::EBADF);
     };
     let Ok(max_events) = libc::c_int::try_from(args[2]) else {
@@ -15885,8 +15989,32 @@ fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<RawFd> {
         })
 }
 
+fn descriptor_creation_host_fd(
+    state: &LoadedStaticElf,
+    guest_fd: libc::c_int,
+    capture: Option<CaptureMetadata>,
+) -> Option<RawFd> {
+    if let Some(file) = state.files.get(&guest_fd) {
+        return Some(file.as_raw_fd());
+    }
+    if is_open_standard(state, guest_fd)
+        && let (Some(capture), Some(alias)) = (capture, output_alias(state, guest_fd))
+    {
+        // Captured implicit stdout/stderr are virtual descriptions. Never use
+        // or validate the supervisor's same-numbered object: it may be closed
+        // or may have been reused for an unrelated file after setup.
+        return Some(capture.descriptor_carrier(alias));
+    }
+    host_fd(state, guest_fd)
+}
+
 // TODO-HUMAN-REVIEW(PR-52): Review KVM guest fcntl compatibility boundaries.
-fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn fcntl(
+    memory: &GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
     let guest_fd = args[0] as libc::c_int;
     let source_alias = output_alias(state, guest_fd);
     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
@@ -15897,7 +16025,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
     let source_is_loginuid = state.loginuid_fds.contains(&guest_fd);
     let source_signalfd_mask = signalfd_mask(state, guest_fd);
     let source_capture_status = state.capture_status_flags.get(&guest_fd).cloned();
-    let host_fd = host_fd(state, guest_fd);
+    let host_fd = descriptor_creation_host_fd(state, guest_fd, capture);
     let command = args[1] as libc::c_int;
     if host_fd.is_none()
         && !(source_capture_status.is_some()
@@ -15907,6 +16035,19 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
             ))
     {
         return negative_errno(libc::EBADF);
+    }
+    if matches!(command, libc::F_GETPIPE_SZ | libc::F_SETPIPE_SZ)
+        && let Some(status) = source_capture_status.as_ref()
+    {
+        if status.load(Ordering::SeqCst) & libc::O_PATH != 0 {
+            return negative_errno(libc::EBADF);
+        }
+        // Captured writes bypass the private identity pipe and append to a
+        // bounded in-memory sink. Reporting or changing the carrier's real
+        // capacity would expose host defaults/per-user quotas without modeling
+        // either capture backpressure or queue occupancy. Refuse before a host
+        // fcntl can observe or mutate that private pipe.
+        return negative_errno(libc::ENOSYS);
     }
     let source_object_inode = guest_fd_object_identity(state, guest_fd);
     match command {
@@ -23908,6 +24049,7 @@ mod tests {
                 Some(duplicated as u64),
                 0,
                 false,
+                None,
             ),
             i64::from(duplicated)
         );
@@ -23916,7 +24058,14 @@ mod tests {
             "replacement by an ordinary description retained trusted identity"
         );
         assert_eq!(
-            duplicate_fd(&mut state, direct as u64, Some(ordinary as u64), 0, false,),
+            duplicate_fd(
+                &mut state,
+                direct as u64,
+                Some(ordinary as u64),
+                0,
+                false,
+                None,
+            ),
             i64::from(ordinary)
         );
         assert!(state.loginuid_fds.contains(&ordinary));
@@ -23928,6 +24077,7 @@ mod tests {
                 Some(dup3_target as u64),
                 libc::O_CLOEXEC as u64,
                 true,
+                None,
             ),
             i64::from(dup3_target)
         );
@@ -24058,7 +24208,9 @@ mod tests {
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(rrnewton/reverie#318): regression for the F_GETPIPE_SZ /
     // F_SETPIPE_SZ fcntl arms (were ENOSYS). They forward to the backing host
-    // pipe, so the guest observes the real, deterministic pipe capacity.
+    // pipe, so an ordinary guest-created pipe observes the real host capacity.
+    // Captured-output descriptions fail closed instead because their private
+    // identity pipe does not carry captured bytes or model backpressure.
     #[test]
     fn fcntl_pipe_capacity_get_and_set_forward_to_host() {
         let root = TestDir::new();
@@ -32754,7 +32906,8 @@ mod tests {
         // Active output capture makes both standard slots and every duplicate
         // private. Exercise the real sendmsg translation with capture enabled;
         // the ordinary syscall helper intentionally passes false.
-        let stdout_alias = duplicate_fd(&mut state, libc::STDOUT_FILENO as u64, None, 0, false);
+        let stdout_alias =
+            duplicate_fd(&mut state, libc::STDOUT_FILENO as u64, None, 0, false, None);
         assert!(stdout_alias >= 0);
         for donated in [libc::STDOUT_FILENO as i64, stdout_alias] {
             let control = rights_control(&[donated as libc::c_int]);
@@ -44946,7 +45099,7 @@ mod tests {
             ) as libc::c_int;
             assert!(source >= 0);
             assert_eq!(
-                duplicate_fd(&mut state, source as u64, Some(fd as u64), 0, false),
+                duplicate_fd(&mut state, source as u64, Some(fd as u64), 0, false, None,),
                 i64::from(fd)
             );
             assert!(!is_open_standard(&state, fd));
@@ -44998,7 +45151,7 @@ mod tests {
             let source = insert_file_with_flags(&mut state, path_file, false, None) as libc::c_int;
             assert!(source >= 0);
             assert_eq!(
-                duplicate_fd(&mut state, source as u64, Some(fd as u64), 0, false),
+                duplicate_fd(&mut state, source as u64, Some(fd as u64), 0, false, None,),
                 i64::from(fd)
             );
             assert!(!is_open_standard(&state, fd));
