@@ -137,8 +137,7 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
             [
                 "--user daemon-reload",
                 "--user enable hermit-wrkslots-audit.timer hermit-health-tick.timer",
-                "--user start hermit-wrkslots-audit.timer",
-                "--user restart hermit-health-tick.timer",
+                "--user restart hermit-wrkslots-audit.timer hermit-health-tick.timer",
                 "--user status --no-pager hermit-wrkslots-audit.timer hermit-health-tick.timer",
             ],
             self.log.read_text().splitlines(),

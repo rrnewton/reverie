@@ -42,7 +42,7 @@ It passes tick-hub's admission test (CAN ORC OBSERVE THIS DIRECTLY? No -- this i
 gh-pages content and GitHub release state, exactly the external surface the
 coordinator cannot see).
 
-FAIL CLOSED. Any side that cannot be read is `unknown` and exits 2. "I could not
+FAIL CLOSED. Any side that cannot be read is `unknown` and exits 75. "I could not
 measure the lag" must never read as "the lag is zero" -- the absence-reads-as-
 success shape this repo has removed elsewhere. A nine-day stale site that reports
 CURRENT because a fetch failed is worse than no gate at all.
@@ -72,7 +72,10 @@ ROOT = Path(os.environ.get("DEV_HERMIT_PARENT", TOOL_ROOT)).resolve()
 
 CURRENT = 0
 LAGGING = 1
-UNKNOWN = 2
+# tick-hub reserves EX_TEMPFAIL for a gate that ran but could not determine its
+# condition. Using an ordinary nonzero status would fire `when: failure` and
+# consume the reminder's daily cadence as though UNKNOWN were a lag verdict.
+UNKNOWN = 75
 
 SITE_URL = "https://rrnewton.github.io/hermit/compatibility/latest/"
 DEFAULT_REPO = "rrnewton/hermit"
@@ -285,6 +288,12 @@ def render(m: dict) -> str:
     return "site-publication-lag: LAGGING -- " + " | ".join(parts)
 
 
+def captured_summary(m: dict) -> str:
+    """Return one inert line suitable for tick-hub's key=value parser."""
+    summary = " ".join(render(m).split())
+    return summary.replace("{", "(").replace("}", ")")[:500]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", default=DEFAULT_REPO)
@@ -303,8 +312,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(m, indent=2, sort_keys=True))
     else:
-        print(render(m))
-        # key=value lines for tick-hub `capture: true`; prose alone captures nothing.
+        summary = captured_summary(m)
+        # Emit only key=value lines: tick-hub treats every stdout line containing
+        # '=' as captured data, including an '=' embedded in free-form prose.
+        print(f"state={m['state']}")
+        print(f"summary={summary}")
         if m["state"] != "unknown":
             print(f"pin_lag={m['pin_lag']}")
             print(f"deploy_lag={m['deploy_lag']}")

@@ -274,6 +274,8 @@ def _classify(
             return "NO_RESULT", "cgroup containment was unavailable", None
         if "authoritative cgroup CPU unavailable" in stderr:
             return "NO_RESULT", "cgroup CPU measurement was unavailable", None
+        if "configuration lock is busy" in stderr:
+            return "NO_RESULT", "wrkslots configuration lock was busy", None
         return "NO_RESULT", "wrkslots audit refused or exited 3", None
     if returncode not in (0, 1, 2):
         return "NO_RESULT", f"audit execution exited {returncode}", None

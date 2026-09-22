@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 MODULE = Path(__file__).resolve().parent.parent / "site_publication_lag.py"
+ROOT = MODULE.parents[2]
 spec = importlib.util.spec_from_file_location("site_publication_lag", MODULE)
 assert spec and spec.loader
 spl = importlib.util.module_from_spec(spec)
@@ -116,6 +117,41 @@ def test_render_emits_key_value_lines_for_tick_hub_capture(monkeypatch, capsys):
     install(monkeypatch, published_run=PUBLISHED_0906, newest_run=PUBLISHED_0911, served=True)
     spl.main(["--gate"])
     out = capsys.readouterr().out
+    assert "summary=site-publication-lag: LAGGING" in out
     assert "pin_lag=True" in out
     assert "deploy_lag=False" in out
     assert "newest_available_age_days=" in out
+
+
+def test_unknown_still_emits_summary_for_tick_hub_capture(monkeypatch, capsys):
+    """An unavailable input is a loud NO-SIGNAL, never a literal placeholder."""
+    install(monkeypatch, published_run=PUBLISHED_0911, newest_run=PUBLISHED_0911, served=True)
+    monkeypatch.setattr(
+        spl,
+        "fetch_published",
+        lambda *a, **k: {
+            "state": "unknown",
+            "reason": "proxy refused\ncomponent=forged\n{summary}",
+        },
+    )
+
+    assert spl.main(["--gate"]) == spl.UNKNOWN
+    out = capsys.readouterr().out
+    assert spl.UNKNOWN == 75
+
+    sys.path.insert(0, str(ROOT / "hermit/agent-utils/py"))
+    from tick_hub.engine import parse_kv_lines, render_emit
+    from tick_hub.model import Emit, EmitKind
+
+    captured = parse_kv_lines(out)
+    assert set(captured) == {"state", "summary"}
+    assert captured["state"] == "unknown"
+    assert captured["summary"] == (
+        "site-publication-lag: UNKNOWN -- published site: proxy refused "
+        "component=forged (summary)"
+    )
+    emitted = render_emit(
+        Emit(EmitKind.NOTE, title="compatibility website: {summary}"), captured
+    )
+    assert "{summary}" not in emitted
+    assert "component=forged" in emitted

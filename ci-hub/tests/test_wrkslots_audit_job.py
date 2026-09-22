@@ -380,6 +380,18 @@ class WrkslotsAuditJobTests(unittest.TestCase):
         self.assertIn("cgroup CPU measurement", receipt["summary"])
         self.assertNotIn("containment", receipt["summary"])
 
+        lock_busy = self.run_job(
+            AUDIT_RC="3",
+            AUDIT_DIAGNOSTIC=(
+                "wrkslots: REFUSED: configuration lock is busy for /state; "
+                "retry after the other wrkslots mutation exits"
+            ),
+        )
+        self.assertEqual(1, lock_busy.returncode)
+        receipt = json.loads(self.result.read_text())
+        self.assertEqual("NO_RESULT", receipt["verdict"])
+        self.assertEqual("wrkslots configuration lock was busy", receipt["summary"])
+
         refused = self.run_job(
             AUDIT_RC="3",
             AUDIT_DIAGNOSTIC="wrkslots: REFUSED: inconsistent registry",

@@ -185,7 +185,7 @@ def test_lock_contention_refuses_without_publishing(tmp_path: Path) -> None:
     finally:
         os.close(root_fd)
     assert result.returncode == 75
-    assert "another disk snapshot publication is active" in result.stderr
+    assert "state-root lifecycle lock is busy" in result.stderr
     assert not (state / "disk.json").exists()
 
 
@@ -227,7 +227,7 @@ def test_post_entry_ops_state_replacement_cannot_rotate_lock_authority(
         state.mkdir()
         with pytest.raises(
             publish_disk_snapshots.LockBusyError,
-            match="another disk snapshot publication is active",
+            match="state-root lifecycle lock is busy",
         ):
             publish_disk_snapshots.publish(
                 state_root=state_root,

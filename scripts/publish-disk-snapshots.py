@@ -86,7 +86,7 @@ def stable_root_lock(path: Path) -> Iterator[None]:
             fcntl.flock(held_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise LockBusyError(
-                "another disk snapshot publication is active"
+                "the state-root lifecycle lock is busy"
             ) from error
         _verify_root_path(path, held_fd)
         yield

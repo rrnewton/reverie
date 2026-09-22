@@ -153,10 +153,12 @@ printf 'wrkslots-audit install: source_parent_sha=%s bootstrap_sha256=%s bootstr
     "$github_helper_sha" "$github_helper"
 
 if [[ $start -eq 1 ]]; then
-    systemctl --user start "$timer"
-    # Restart, rather than start, so an already-active timer recalculates its
-    # next firing from the newly installed 30-minute interval immediately.
-    systemctl --user restart "$health_timer"
+    # Restart both timers so an already-active installation recalculates its
+    # next firing from the newly installed calendar/interval definitions.
+    # `start` is a no-op for an active timer: after the hourly wrkslots timer was
+    # changed from OnActiveSec to OnCalendar, it stayed active with Trigger=n/a
+    # until explicitly restarted.
+    systemctl --user restart "$timer" "$health_timer"
     systemctl --user status --no-pager "$timer" "$health_timer"
 else
     printf 'wrkslots-audit install: timers enabled but not started; rerun with --start after verifying the installed units\n'
