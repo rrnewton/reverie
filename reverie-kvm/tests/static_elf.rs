@@ -13632,6 +13632,147 @@ int main(void) {
 }
 
 #[test]
+fn stable_socket_metadata_queries_match_native_linux_on_kvm() {
+    if !kvm_available("KVM stable socket metadata queries") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "socket-metadata-parity",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+static int expect_option(int fd, int option, int expected, int code) {
+  int value = -1;
+  socklen_t length = sizeof(value);
+  if (getsockopt(fd, SOL_SOCKET, option, &value, &length) != 0 ||
+      length != sizeof(value) || value != expected) return code;
+  return 0;
+}
+
+static int expect_mutable_options(int fd, int reuse, int keepalive,
+                                  int broadcast, int code) {
+  if (expect_option(fd, SO_REUSEADDR, reuse, code) ||
+      expect_option(fd, SO_KEEPALIVE, keepalive, code + 1) ||
+      expect_option(fd, SO_BROADCAST, broadcast, code + 2)) return code + 3;
+  return 0;
+}
+
+int main(void) {
+  int inet = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (inet < 0) return 10;
+  if (expect_option(inet, SO_TYPE, SOCK_STREAM, 11) ||
+      expect_option(inet, SO_DOMAIN, AF_INET, 12) ||
+      expect_option(inet, SO_ACCEPTCONN, 0, 13)) return 14;
+
+  int zero = 0;
+  int one = 1;
+  int code = expect_mutable_options(inet, 0, 0, 0, 20);
+  if (code) return code;
+  if (setsockopt(inet, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0)
+    return 24;
+  if ((code = expect_mutable_options(inet, 1, 0, 0, 25))) return code;
+  if (setsockopt(inet, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one)) != 0)
+    return 29;
+  if ((code = expect_mutable_options(inet, 1, 1, 0, 30))) return code;
+  if (setsockopt(inet, SOL_SOCKET, SO_REUSEADDR, &zero, sizeof(zero)) != 0)
+    return 34;
+  if ((code = expect_mutable_options(inet, 0, 1, 0, 35))) return code;
+  if (setsockopt(inet, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one)) != 0)
+    return 39;
+  if ((code = expect_mutable_options(inet, 0, 1, 1, 40))) return code;
+  if (setsockopt(inet, SOL_SOCKET, SO_KEEPALIVE, &zero, sizeof(zero)) != 0)
+    return 60;
+  if ((code = expect_mutable_options(inet, 0, 0, 1, 61))) return code;
+  if (setsockopt(inet, SOL_SOCKET, SO_BROADCAST, &zero, sizeof(zero)) != 0)
+    return 65;
+  if ((code = expect_mutable_options(inet, 0, 0, 0, 66))) return code;
+  if (listen(inet, 1) != 0 || expect_option(inet, SO_ACCEPTCONN, 1, 44))
+    return 45;
+
+  int pair[2];
+  if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                 0, pair) != 0) return 40;
+  for (int index = 0; index < 2; ++index) {
+    if ((fcntl(pair[index], F_GETFD) & FD_CLOEXEC) == 0) return 41 + index;
+    if ((fcntl(pair[index], F_GETFL) & O_NONBLOCK) == 0) return 43 + index;
+  }
+  if (expect_option(pair[0], SO_TYPE, SOCK_STREAM, 45) ||
+      expect_option(pair[0], SO_DOMAIN, AF_UNIX, 46) ||
+      expect_option(pair[0], SO_ACCEPTCONN, 0, 47)) return 48;
+
+  int plain[2];
+  if (socketpair(AF_UNIX, SOCK_DGRAM, 0, plain) != 0) return 49;
+  for (int index = 0; index < 2; ++index) {
+    if ((fcntl(plain[index], F_GETFD) & FD_CLOEXEC) != 0) return 50 + index;
+    if ((fcntl(plain[index], F_GETFL) & O_NONBLOCK) != 0) return 52 + index;
+  }
+  if (expect_option(plain[0], SO_TYPE, SOCK_DGRAM, 54) ||
+      expect_option(plain[0], SO_DOMAIN, AF_UNIX, 55) ||
+      expect_option(plain[0], SO_ACCEPTCONN, 0, 56)) return 57;
+
+  int nonblocking[2];
+  if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, nonblocking) != 0)
+    return 70;
+  for (int index = 0; index < 2; ++index) {
+    if ((fcntl(nonblocking[index], F_GETFD) & FD_CLOEXEC) != 0)
+      return 71 + index;
+    if ((fcntl(nonblocking[index], F_GETFL) & O_NONBLOCK) == 0)
+      return 73 + index;
+  }
+
+  struct sockaddr_storage local = {0};
+  struct sockaddr_storage peer = {0};
+  socklen_t local_length = sizeof(local);
+  socklen_t peer_length = sizeof(peer);
+  if (getsockname(pair[0], (struct sockaddr *)&local, &local_length) != 0 ||
+      getpeername(pair[0], (struct sockaddr *)&peer, &peer_length) != 0)
+    return 50;
+  if (local_length != sizeof(sa_family_t) ||
+      peer_length != sizeof(sa_family_t) ||
+      local.ss_family != AF_UNIX || peer.ss_family != AF_UNIX) return 51;
+  errno = 0;
+  if (getpeername(-1, (struct sockaddr *)&peer, &peer_length) != -1 ||
+      errno != EBADF) return 52;
+
+  close(pair[0]);
+  close(pair[1]);
+  close(plain[0]);
+  close(plain[1]);
+  close(nonblocking[0]);
+  close(nonblocking[1]);
+  close(inet);
+  puts("stable socket metadata queries ok");
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable).output().unwrap();
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert_eq!(native.stdout, b"stable socket metadata queries ok\n");
+    assert!(native.stderr.is_empty(), "native: {native:?}");
+
+    let executable = executable.to_str().unwrap();
+    let (direct_stdout, direct_stderr) =
+        run_host_program_captured(executable, &[executable], &directory.0);
+    assert_eq!(direct_stdout, native.stdout);
+    assert_eq!(direct_stderr, native.stderr);
+
+    let (tool_stdout, tool_stderr) =
+        run_host_program_with_tool_captured(executable, &[executable], &directory.0);
+    assert_eq!(tool_stdout, native.stdout);
+    assert_eq!(tool_stderr, native.stderr);
+}
+
+#[test]
 fn vectored_fault_shape_matches_native_linux_on_kvm() {
     if !kvm_available("KVM vectored fault-shape test") {
         return;
