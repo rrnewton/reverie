@@ -1852,6 +1852,141 @@
     }
   }
 
+  function historyPointValues(marker) {
+    let values;
+    try {
+      values = JSON.parse(marker.dataset.historyPointValues || '[]');
+    } catch (_error) {
+      return [];
+    }
+    if (!Array.isArray(values)) {
+      return [];
+    }
+    return values.filter(
+      value =>
+        value &&
+        typeof value === 'object' &&
+        typeof value.series === 'string' &&
+        typeof value.label === 'string',
+    );
+  }
+
+  function initializeHistoryCharts() {
+    for (const section of document.querySelectorAll('[data-history-chart]')) {
+      if (section.dataset.historyChartInitialized === 'true') {
+        continue;
+      }
+      section.dataset.historyChartInitialized = 'true';
+      const toggles = Array.from(
+        section.querySelectorAll('[data-history-series-toggle]'),
+      );
+      const series = Array.from(section.querySelectorAll('[data-history-series]'));
+      const markers = Array.from(section.querySelectorAll('[data-history-point]'));
+      const tooltip = section.querySelector('[data-history-tooltip]');
+      if (!(tooltip instanceof HTMLElement)) {
+        continue;
+      }
+      const prompt = tooltip.textContent;
+      let focusedMarker = null;
+      let hoveredMarker = null;
+
+      const enabled = () =>
+        new Set(
+          toggles
+            .filter(toggle => toggle.checked)
+            .map(toggle => toggle.dataset.historySeriesToggle),
+        );
+      const visibleValues = marker => {
+        const visible = enabled();
+        return historyPointValues(marker).filter(value => visible.has(value.series));
+      };
+      const showTooltip = marker => {
+        const values = visibleValues(marker);
+        if (!values.length) {
+          return false;
+        }
+        tooltip.textContent = values.map(value => value.label).join('; ');
+        return true;
+      };
+      const refreshTooltip = () => {
+        if (
+          (hoveredMarker !== null && showTooltip(hoveredMarker)) ||
+          (focusedMarker !== null && showTooltip(focusedMarker))
+        ) {
+          return;
+        }
+        tooltip.textContent = prompt;
+      };
+      const updateMarker = marker => {
+        const values = visibleValues(marker);
+        marker.toggleAttribute('hidden', !values.length);
+        marker.tabIndex = values.length ? 0 : -1;
+        const label = values.map(value => value.label).join('; ');
+        if (label) {
+          marker.setAttribute('aria-label', label);
+        } else {
+          marker.removeAttribute('aria-label');
+        }
+        const title = marker.querySelector('title');
+        if (title !== null) {
+          title.textContent = label;
+        }
+      };
+
+      for (const marker of markers) {
+        marker.addEventListener('mouseenter', () => {
+          hoveredMarker = marker;
+          refreshTooltip();
+        });
+        marker.addEventListener('focus', () => {
+          focusedMarker = marker;
+          refreshTooltip();
+        });
+        marker.addEventListener('mouseleave', () => {
+          if (hoveredMarker === marker) {
+            hoveredMarker = null;
+          }
+          refreshTooltip();
+        });
+        marker.addEventListener('blur', () => {
+          if (focusedMarker === marker) {
+            focusedMarker = null;
+          }
+          refreshTooltip();
+        });
+      }
+      for (const toggle of toggles) {
+        toggle.disabled = false;
+        toggle.addEventListener('change', () => {
+          const seriesId = toggle.dataset.historySeriesToggle;
+          for (const element of series) {
+            if (element.dataset.historySeries === seriesId) {
+              element.toggleAttribute('hidden', !toggle.checked);
+            }
+          }
+          const label = toggle.closest('label');
+          if (label !== null) {
+            label.classList.toggle('history-series-disabled', !toggle.checked);
+          }
+          for (const marker of markers) {
+            updateMarker(marker);
+          }
+          if (hoveredMarker !== null && hoveredMarker.hasAttribute('hidden')) {
+            hoveredMarker = null;
+          }
+          if (focusedMarker !== null && focusedMarker.hasAttribute('hidden')) {
+            focusedMarker = null;
+            toggle.focus();
+          }
+          refreshTooltip();
+        });
+      }
+      for (const marker of markers) {
+        updateMarker(marker);
+      }
+    }
+  }
+
   function initializeGeneric() {
     labelResponsiveTables();
     const forms = Array.from(document.querySelectorAll('[data-list-controls]'));
@@ -3394,6 +3529,7 @@
       kind === 'test-detail' ||
       kind === 'cell-list' ||
       kind === 'never-list';
+    initializeHistoryCharts();
     if (dynamic && root.location.protocol === 'file:') {
       showFileProtocolHelp();
       return;

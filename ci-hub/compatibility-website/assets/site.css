@@ -14,6 +14,9 @@
   --never-bg: #eef0f2;
   --unavailable: #785a00;
   --unavailable-bg: #fff5cf;
+  --chart-hover: #925400;
+  --chart-focus-inner: #ffffff;
+  --chart-focus-outer: #17202a;
 }
 
 * {
@@ -842,6 +845,9 @@ footer {
     --never-bg: #343b43;
     --unavailable: #ffe08a;
     --unavailable-bg: #463b17;
+    --chart-hover: #ffd166;
+    --chart-focus-inner: #17202a;
+    --chart-focus-outer: #ffffff;
   }
 
   thead th,
@@ -1017,10 +1023,48 @@ footer {
 .history-chart { width: 100%; min-width: 720px; height: auto; }
 .history-chart text { fill: currentColor; font-size: 16px; }
 .history-chart path { pointer-events: none; }
-.history-legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; }
-.history-legend span { white-space: nowrap; }
+.history-chart [hidden] { display: none; }
+.history-point {
+  cursor: crosshair;
+  fill: var(--accent);
+  stroke: var(--surface);
+  stroke-width: 2px;
+}
+.history-point:hover {
+  outline: none;
+  stroke: var(--chart-hover);
+  stroke-width: 4px;
+}
+.history-point:focus-visible {
+  outline: 3px solid var(--chart-focus-outer);
+  outline-offset: 2px;
+  stroke: var(--chart-focus-inner);
+  stroke-width: 4px;
+}
+.history-legend {
+  border: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem 1rem;
+  margin: .75rem 0;
+  padding: .5rem .75rem .65rem;
+}
+.history-legend legend { font-weight: 700; padding: 0 .3rem; }
+.history-series-toggle,
+.history-series-unavailable { align-items: center; display: inline-flex; gap: .35rem; white-space: nowrap; }
+.history-series-toggle input { margin: 0; }
+.history-series-toggle input:focus-visible { outline-color: var(--chart-focus-outer); }
+.history-series-disabled { opacity: .55; }
+.history-series-unavailable { color: var(--muted); }
+.history-tooltip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  display: block;
+  min-height: 2.6rem;
+  padding: .45rem .65rem;
+}
 
-/* Keep date/count labels readable on phones without widening the page. */
+/* Keep chart labels readable on phones without widening the page. */
 .chart-scroll { overflow-x: auto; }
 .backend-leaderboard td:last-child { white-space: normal; min-width: 16rem; max-width: 28rem; }
 

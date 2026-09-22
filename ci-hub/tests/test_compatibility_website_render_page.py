@@ -3066,9 +3066,69 @@ def test_backend_history_preserves_regression_then_explicit_gap() -> None:
     assert all(point["parity"]["green_cells"] is None for point in points.values())
     assert all(point["reference_cells"] == 1 for point in points.values())
     chart = render_page._backend_history_chart(model)
-    assert "kvm determinism" in chart and "kvm parity" in chart
+    assert 'aria-label="Show kvm determinism line"' in chart
+    assert "<code>kvm</code> parity (no data)" in chart
     assert 'stroke-dasharray="7 4"' in chart
-    assert "Green cells" in chart and "UTC" in chart
+    assert "Green percentage" in chart and "UTC" in chart
+    assert "2026-09-01: 100.0% (1 / 1 green cells)" in chart
+    assert "Determinism percentage" in chart and "Parity percentage" in chart
+    assert "data-history-series-toggle" in chart
+    assert "The chart remains visible without JavaScript" in chart
+
+
+def test_backend_history_chart_plots_percentages_when_denominator_changes() -> None:
+    model = SimpleNamespace(
+        backend_history=[
+            {
+                "date": "2026-09-01",
+                "backend": "kvm",
+                "reference_cells": 4,
+                "determinism": {"green_cells": 1, "unavailable_cells": 0},
+                "parity": {"green_cells": None, "unavailable_cells": 4},
+            },
+            {
+                "date": "2026-09-02",
+                "backend": "kvm",
+                "reference_cells": 8,
+                "determinism": {"green_cells": 4, "unavailable_cells": 0},
+                "parity": {"green_cells": None, "unavailable_cells": 8},
+            },
+        ],
+        data={"provenance": {"parent_commit": "1" * 40}},
+    )
+
+    chart = render_page._backend_history_chart(model)
+
+    assert 'd="M 65.00 205.00 H 865.00 V 145.00"' in chart
+    assert "2026-09-01: 25.0% (1 / 4 green cells)" in chart
+    assert "2026-09-02: 50.0% (4 / 8 green cells)" in chart
+
+
+def _rgb(value: str) -> tuple[int, int, int]:
+    if value.startswith("#"):
+        return tuple(int(value[index : index + 2], 16) for index in (1, 3, 5))
+    channels = [int(value) for value in re.findall(r"\d+", value)[:3]]
+    assert len(channels) == 3, value
+    return tuple(channels)
+
+
+def _relative_luminance(color: str) -> float:
+    channels = []
+    for channel in _rgb(color):
+        value = channel / 255
+        channels.append(
+            value / 12.92
+            if value <= 0.04045
+            else ((value + 0.055) / 1.055) ** 2.4
+        )
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def _contrast(left: str, right: str) -> float:
+    brighter, darker = sorted(
+        (_relative_luminance(left), _relative_luminance(right)), reverse=True
+    )
+    return (brighter + 0.05) / (darker + 0.05)
 
 
 @pytest.mark.parametrize("width", [1280, 390])
@@ -3077,6 +3137,7 @@ def test_backend_history_hover_preserves_overlapping_observations(
 ) -> None:
     model = _model_with_backend_history()
     css = render_page.SITE_CSS_PATH.read_text()
+    javascript = render_page.SITE_JS_PATH.read_text()
     page = chromium_browser.new_page(viewport={"width": width, "height": 1000})
     try:
         page.set_content(
@@ -3084,12 +3145,60 @@ def test_backend_history_hover_preserves_overlapping_observations(
             + render_page._backend_history_chart(model)
             + "</main>"
         )
+        page.add_script_tag(content=javascript)
+        page.wait_for_function(
+            "document.querySelector('[data-history-chart]').dataset.historyChartInitialized === 'true'"
+        )
         marker = page.locator('.history-chart circle[aria-label*="kvm determinism"]').first
         marker.evaluate("element => element.addEventListener('mouseover', () => window.markerHovered = true)")
         marker.hover()
-        assert "kvm determinism" in marker.locator("title").text_content()
+        marker_label = marker.locator("title").text_content()
+        assert "kvm determinism" in marker_label
+        assert "ptrace determinism" in marker_label
+        assert "2026-09-01" in marker_label
+        assert "100.0% (1 / 1 green cells)" in marker_label
+        tooltip = page.locator("[data-history-tooltip]")
+        assert marker_label in tooltip.inner_text()
         assert page.evaluate("window.markerHovered")
         assert marker.evaluate("element => { const r = element.getBoundingClientRect(); return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === element; }")
+        marker.focus()
+        assert "2026-09-01" in tooltip.inner_text()
+
+        point_id = marker.get_attribute("data-history-point")
+        shared_marker = page.locator(f'[data-history-point="{point_id}"]')
+        kvm_toggle = page.get_by_label("Show kvm determinism line")
+        ptrace_toggle = page.get_by_label("Show ptrace determinism line")
+        assert kvm_toggle.is_enabled() and kvm_toggle.is_checked()
+        assert ptrace_toggle.is_enabled() and ptrace_toggle.is_checked()
+        kvm_series_id = kvm_toggle.get_attribute("data-history-series-toggle")
+        ptrace_series_id = ptrace_toggle.get_attribute("data-history-series-toggle")
+        kvm_series = page.locator(f'[data-history-series="{kvm_series_id}"]')
+        ptrace_series = page.locator(f'[data-history-series="{ptrace_series_id}"]')
+        is_shown = "element => !element.hasAttribute('hidden') && getComputedStyle(element).display !== 'none'"
+        assert kvm_series.evaluate(is_shown) and ptrace_series.evaluate(is_shown)
+
+        kvm_toggle.uncheck()
+        assert not kvm_series.evaluate(is_shown)
+        assert ptrace_series.evaluate(is_shown)
+        assert shared_marker.is_visible()
+        shared_marker.hover()
+        assert "ptrace determinism" in tooltip.inner_text()
+        assert "kvm determinism" not in tooltip.inner_text()
+        assert page.locator(
+            '.history-chart circle[aria-label*="kvm determinism"]'
+        ).count() == 0
+
+        kvm_toggle.check()
+        ptrace_toggle.uncheck()
+        assert kvm_series.evaluate(is_shown)
+        assert not ptrace_series.evaluate(is_shown)
+        assert shared_marker.is_visible()
+        shared_marker.hover()
+        assert "kvm determinism" in tooltip.inner_text()
+        assert "ptrace determinism" not in tooltip.inner_text()
+
+        ptrace_toggle.check()
+        assert kvm_series.evaluate(is_shown) and ptrace_series.evaluate(is_shown)
         assert page.locator(".history-legend").inner_text().count("kvm") == 2
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         chart = page.locator(".history-chart")
@@ -3098,6 +3207,163 @@ def test_backend_history_hover_preserves_overlapping_observations(
         if width < 640:
             scroll = page.locator(".chart-scroll")
             assert scroll.evaluate("element => element.scrollWidth > element.clientWidth")
+    finally:
+        page.close()
+
+
+def test_backend_history_points_are_named_images_in_chromium_accessibility_tree(
+    chromium_browser: Any,
+) -> None:
+    model = _model_with_backend_history()
+    page = chromium_browser.new_page()
+    try:
+        page.set_content(
+            "<main>" + render_page._backend_history_chart(model) + "</main>"
+        )
+        label = (
+            "kvm determinism, 2026-09-02: 0.0% "
+            "(0 / 1 green cells)"
+        )
+        marker = page.get_by_role("img", name=label, exact=True)
+        assert marker.count() == 1
+        accessibility = marker.aria_snapshot()
+        assert accessibility == f'- \'img "{label}"\''
+    finally:
+        page.close()
+
+
+def test_backend_history_hover_leave_restores_focused_point(
+    chromium_browser: Any,
+) -> None:
+    model = _model_with_backend_history()
+    javascript = render_page.SITE_JS_PATH.read_text()
+    page = chromium_browser.new_page(viewport={"width": 900, "height": 700})
+    try:
+        page.set_content(
+            "<main>" + render_page._backend_history_chart(model) + "</main>"
+        )
+        page.add_script_tag(content=javascript)
+        page.wait_for_function(
+            "document.querySelector('[data-history-chart]').dataset.historyChartInitialized === 'true'"
+        )
+        focused = page.locator(
+            '.history-chart circle[aria-label*="kvm determinism, 2026-09-01"]'
+        )
+        hovered = page.locator(
+            '.history-chart circle[aria-label="kvm determinism, 2026-09-02: 0.0% (0 / 1 green cells)"]'
+        )
+        tooltip = page.locator("[data-history-tooltip]")
+
+        focused.focus()
+        focused_label = focused.get_attribute("aria-label")
+        assert focused_label is not None
+        assert tooltip.inner_text() == focused_label
+
+        hovered.hover()
+        assert tooltip.inner_text() == hovered.get_attribute("aria-label")
+        assert focused.evaluate("element => document.activeElement === element")
+
+        page.locator("#backend-history h2").hover()
+        assert focused.evaluate("element => document.activeElement === element")
+        assert tooltip.inner_text() == focused_label
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_backend_history_palette_contrasts_with_chart_surface(
+    chromium_browser: Any, scheme: str
+) -> None:
+    css = render_page.SITE_CSS_PATH.read_text()
+    page = chromium_browser.new_page()
+    page.emulate_media(color_scheme=scheme)
+    try:
+        page.set_content(f"<style>{css}</style><main></main>")
+        surface = page.locator("main").evaluate(
+            "element => getComputedStyle(element).getPropertyValue('--surface').trim()"
+        )
+        assert surface
+        assert len(render_page.BACKEND_HISTORY_COLORS) == 6
+        for color in render_page.BACKEND_HISTORY_COLORS:
+            assert _contrast(color, surface) >= 3, (scheme, color, surface)
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_backend_history_keyboard_focus_has_contrasting_two_color_indicator(
+    chromium_browser: Any, scheme: str
+) -> None:
+    model = _model_with_backend_history()
+    css = render_page.SITE_CSS_PATH.read_text()
+    page = chromium_browser.new_page(viewport={"width": 900, "height": 700})
+    page.emulate_media(color_scheme=scheme)
+    try:
+        page.set_content(
+            f"<style>{css}</style><main>"
+            + render_page._backend_history_chart(model)
+            + "</main>"
+        )
+        marker = page.locator('.history-chart circle[aria-label*="kvm determinism"]').first
+        styles = marker.evaluate(
+            """element => {
+              element.focus();
+              const point = getComputedStyle(element);
+              const root = getComputedStyle(document.documentElement);
+              return {
+                focusVisible: element.matches(':focus-visible'),
+                inner: point.stroke,
+                outer: point.outlineColor,
+                outlineStyle: point.outlineStyle,
+                outlineWidth: point.outlineWidth,
+                surface: root.getPropertyValue('--surface').trim(),
+              };
+            }"""
+        )
+
+        assert styles["focusVisible"]
+        assert styles["outlineStyle"] == "solid"
+        assert float(styles["outlineWidth"].removesuffix("px")) >= 3
+        assert _contrast(styles["outer"], styles["surface"]) >= 3
+        assert _contrast(styles["inner"], styles["outer"]) >= 3
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_backend_history_hover_indicator_contrasts_with_chart_surface(
+    chromium_browser: Any, scheme: str
+) -> None:
+    model = _model_with_backend_history()
+    css = render_page.SITE_CSS_PATH.read_text()
+    page = chromium_browser.new_page(viewport={"width": 900, "height": 700})
+    page.emulate_media(color_scheme=scheme)
+    try:
+        page.set_content(
+            f"<style>{css}</style><main>{render_page._backend_history_chart(model)}</main>"
+        )
+        # Markers are deliberately co-located when observations share an exact
+        # coordinate. Use the last painted marker so another hit target cannot
+        # receive the pointer and make this a test of the non-hover style.
+        marker = page.locator(".history-point").last
+        marker.hover()
+        styles = marker.evaluate(
+            """element => {
+              const root = getComputedStyle(document.documentElement);
+              return {
+                hover: getComputedStyle(element).stroke,
+                hoverToken: root.getPropertyValue('--chart-hover').trim(),
+                surface: root.getPropertyValue('--surface').trim(),
+              };
+            }"""
+        )
+
+        assert _rgb(styles["hover"]) == _rgb(styles["hoverToken"])
+        assert _contrast(styles["hover"], styles["surface"]) >= 3, (
+            scheme,
+            styles["hover"],
+            styles["surface"],
+        )
     finally:
         page.close()
 

@@ -1567,6 +1567,16 @@ def _backend_history(model: SiteModel) -> list[dict[str, Any]]:
     return model.backend_history
 
 
+BACKEND_HISTORY_COLORS = (
+    "#2277aa",
+    "#c45c00",
+    "#8a63b8",
+    "#008275",
+    "#bd4f4f",
+    "#777777",
+)
+
+
 def _compute_backend_history(model: SiteModel) -> list[dict[str, Any]]:
     """Replay the existing reducer as of each recorded UTC date, not ever-green."""
     reducer = _writer()._build_data_module()._modules().reducer
@@ -1626,58 +1636,111 @@ def _backend_history_chart(model: SiteModel) -> str:
         return '<section id="backend-history"><h2>Backend history</h2><p>No recorded comparison history is available.</p></section>'
     times = {day: datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp() for day in days}
     first, last = times[days[0]], times[days[-1]]
-    maximum = max((point[name]["green_cells"] or 0 for point in history for name in ("determinism", "parity")), default=0)
-    ymax = max(1, maximum)
     width, height, left, top = 900, 320, 65, 25
+
     def x(day: str) -> float:
         return left + (times[day] - first) * 800 / max(86400, last - first)
-    def y(count: int) -> float:
-        return top + 240 * (1 - count / ymax)
-    colors = ("#1769aa", "#a23c16", "#6c43a5", "#087b69", "#864b14", "#555555")
+
+    def percentage(point: Mapping[str, Any], name: str) -> Fraction | None:
+        count = point[name]["green_cells"]
+        reference = point["reference_cells"]
+        if count is None or reference == 0:
+            return None
+        return Fraction(count, reference)
+
+    def y(value: Fraction) -> float:
+        return top + 240 * (1 - float(value))
+
     lines, legend = [], []
-    markers: dict[tuple[float, float], dict[str, Any]] = {}
+    markers: dict[tuple[float, float], list[dict[str, str]]] = {}
     for index, backend in enumerate(sorted({point["backend"] for point in history})):
         points = [point for point in history if point["backend"] == backend]
-        color = colors[index % len(colors)]
+        color = BACKEND_HISTORY_COLORS[index % len(BACKEND_HISTORY_COLORS)]
         for name in ("determinism", "parity"):
             commands = []
             connected = False
             for point in points:
                 count = point[name]["green_cells"]
-                if count is None:
+                value = percentage(point, name)
+                if value is None:
                     connected = False
                     continue
-                px, py = x(point["date"]), y(count)
+                px, py = x(point["date"]), y(value)
                 commands.append(f'H {px:.2f} V {py:.2f}' if connected else f'M {px:.2f} {py:.2f}')
-                marker = markers.setdefault((px, py), {"color": color, "labels": []})
-                marker["labels"].append(f'{backend} {name}, {point["date"]}: {count} green cells; reference {point["reference_cells"]}')
+                series_id = f"history-{index}-{name}"
+                markers.setdefault((px, py), []).append({
+                    "series": series_id,
+                    "label": (
+                        f'{backend} {name}, {point["date"]}: {_percentage(value)} '
+                        f'({count} / {point["reference_cells"]} green cells)'
+                    ),
+                })
                 connected = True
             dash = ' stroke-dasharray="7 4"' if name == "parity" else ''
+            series_id = f"history-{index}-{name}"
             if commands:
-                lines.append(f'<path d="{" ".join(commands)}" fill="none" stroke="{color}" stroke-width="2"{dash}/>' )
-            legend.append(f'<span><svg width="26" height="12" aria-hidden="true"><path d="M 0 6 H 26" stroke="{color}" stroke-width="2"{dash}/></svg> {_escape(backend)} {name}</span>')
+                lines.append(
+                    f'<path data-history-series="{series_id}" d="{" ".join(commands)}" '
+                    f'fill="none" stroke="{color}" stroke-width="2"{dash}/>'
+                )
+                legend.append(
+                    '<label class="history-series-toggle">'
+                    f'<input type="checkbox" checked disabled data-history-series-toggle="{series_id}" '
+                    f'aria-label="Show {_escape(backend)} {name} line">'
+                    f'<svg width="26" height="12" aria-hidden="true"><path d="M 0 6 H 26" '
+                    f'stroke="{color}" stroke-width="2"{dash}/></svg> '
+                    f'<span><code>{_escape(backend)}</code> {name}</span></label>'
+                )
+            else:
+                legend.append(
+                    '<span class="history-series-unavailable">'
+                    f'<svg width="26" height="12" aria-hidden="true"><path d="M 0 6 H 26" '
+                    f'stroke="{color}" stroke-width="2"{dash}/></svg> '
+                    f'<span><code>{_escape(backend)}</code> {name} (no data)</span></span>'
+                )
     # Draw hit targets after every line. Co-located observations share a title,
-    # so one backend's stroke or dot cannot hide another backend's tooltip.
-    for (px, py), marker in markers.items():
-        label = _escape('; '.join(marker["labels"]))
-        lines.append(f'<circle cx="{px:.2f}" cy="{py:.2f}" r="4" fill="{marker["color"]}" tabindex="0" aria-label="{label}"><title>{label}</title></circle>')
+    # so one backend's stroke or dot cannot hide another backend's details.
+    for marker_index, ((px, py), values) in enumerate(markers.items()):
+        label = '; '.join(value["label"] for value in values)
+        lines.append(
+            f'<circle class="history-point" data-history-point="{marker_index}" '
+            f'data-history-point-values="{_escape(_canonical(values))}" '
+            f'cx="{px:.2f}" cy="{py:.2f}" r="5" tabindex="0" role="img" '
+            f'aria-label="{_escape(label)}"><title>{_escape(label)}</title></circle>'
+        )
     anchor = model.data["provenance"].get("canonical_input_provenance", {})
     commit = anchor.get("series_commit", anchor.get("parent_commit", model.data["provenance"].get("parent_commit")))
-    table = ''.join(f'<tr><td>{point["date"]}</td><td>{_escape(point["backend"])}</td><td>{point["determinism"]["green_cells"] if point["determinism"]["green_cells"] is not None else "Not available"}</td><td>{point["parity"]["green_cells"] if point["parity"]["green_cells"] is not None else "Not available"}</td><td>{point["reference_cells"]}</td></tr>' for point in history)
+    table_rows = []
+    for point in history:
+        values = []
+        for name in ("determinism", "parity"):
+            count = point[name]["green_cells"]
+            value = percentage(point, name)
+            values.extend((
+                "Not available" if count is None else str(count),
+                "Not available" if value is None else _percentage(value),
+            ))
+        table_rows.append(
+            f'<tr><td>{point["date"]}</td><td>{_escape(point["backend"])}</td>'
+            + ''.join(f'<td>{value}</td>' for value in values)
+            + f'<td>{point["reference_cells"]}</td></tr>'
+        )
     return (
-        '<section id="backend-history"><h2>Backend history</h2>'
+        '<section id="backend-history" data-history-chart><h2>Backend history</h2>'
         '<p>Latest recorded state at each UTC date for the current catalogue and current main ancestry, within that date’s ptrace-Green population. '
-        'Counts can fall after regressions. Steps carry recorded state; they are not interpolated measurements. '
+        'Percentages and counts can fall after regressions. Steps carry recorded state; they are not interpolated measurements. '
         'Gaps mean no supported comparison evidence, including legacy periods. Dashed lines are parity against ptrace.</p>'
-        f'<div class="chart-scroll"><svg class="history-chart" viewBox="0 0 {width} {height}" role="img" aria-label="Recorded green-cell counts over time, by backend and comparison">'
+        f'<div class="chart-scroll"><svg class="history-chart" viewBox="0 0 {width} {height}" role="group" aria-label="Recorded green-cell percentages over time, by backend and comparison">'
         f'<path d="M {left} {top} V 265 H 875" fill="none" stroke="currentColor"/>'
-        f'<text x="{left}" y="18">Green cells</text><text x="30" y="{top + 5}">{ymax}</text><text x="42" y="270">0</text>'
+        f'<text x="{left}" y="18">Green percentage</text><text x="20" y="{top + 5}">100%</text><text x="35" y="270">0%</text>'
         f'<text x="{left}" y="294">{days[0]}</text><text x="875" y="294" text-anchor="end">{days[-1]} UTC</text>'
-        + ''.join(lines) + '</svg></div><div class="history-legend">' + ''.join(legend) + '</div>'
+        + ''.join(lines) + '</svg></div><fieldset class="history-legend"><legend>Visible lines</legend>' + ''.join(legend) + '</fieldset>'
+        '<output class="history-tooltip" data-history-tooltip role="status" aria-live="polite">Hover over or focus a point to see its exact date and percentage.</output>'
+        '<noscript><p>The chart remains visible without JavaScript; exact values are also listed in the table below.</p></noscript>'
         f'<p>Ledger anchor: <code>{_escape(commit)}</code>. Latest recorded date: {days[-1]}. '
         '<a href="data/site-summary.json.gz">Machine-readable history and source provenance</a>.</p>'
-        '<details><summary>Recorded counts by date</summary><div class="table-scroll"><table><thead><tr><th>Date (UTC)</th><th>Backend</th><th>Determinism</th><th>Parity</th><th>Ptrace reference</th></tr></thead><tbody>'
-        + table + '</tbody></table></div></details></section>'
+        '<details><summary>Recorded values by date</summary><div class="table-scroll"><table><thead><tr><th>Date (UTC)</th><th>Backend</th><th>Determinism green</th><th>Determinism percentage</th><th>Parity green</th><th>Parity percentage</th><th>Ptrace reference</th></tr></thead><tbody>'
+        + ''.join(table_rows) + '</tbody></table></div></details></section>'
     )
 
 
