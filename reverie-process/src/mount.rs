@@ -242,6 +242,7 @@ impl Mount {
         self
     }
 
+    // TODO-HUMAN-REVIEW(PR-615)
     /// Allows a writable proc mount that fails with `EPERM` to retry read-only.
     ///
     /// This explicitly permits the resulting mount to be less capable than
