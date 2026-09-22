@@ -1862,7 +1862,7 @@ fn fdinfo_private_carrier_error(
             && is_fdinfo(args[4]))
         || (matches!(number, n if n == libc::SYS_ioctl as u64
             || n == libc::SYS_fstatfs as u64 || n == libc::SYS_fsync as u64
-            || n == libc::SYS_fdatasync as u64 || n == libc::SYS_syncfs as u64
+            || n == libc::SYS_fdatasync as u64
             || n == libc::SYS_readahead as u64
             || n == libc::SYS_sync_file_range as u64 || n == libc::SYS_fchmod as u64
             || n == libc::SYS_fchown as u64)
@@ -6955,16 +6955,62 @@ fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(kvm-syncfs-auth): Review translated host syncfs semantics.
 fn sync_filesystem(state: &LoadedStaticElf, raw_fd: u64, capture_output: bool) -> i64 {
-    sync_filesystem_with_host(state, raw_fd, capture_output, |host_fd| {
-        // SAFETY: host_fd names the guest's live translated descriptor. syncfs
-        // has no guest pointers, and the host kernel validates the descriptor.
-        let result = unsafe { libc::syncfs(host_fd) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
-        }
-    })
+    sync_filesystem_with_host(state, raw_fd, capture_output, invoke_host_syncfs)
+}
+
+#[cfg(test)]
+type SyncfsTestHook = Box<dyn FnMut(RawFd) -> libc::c_int>;
+
+#[cfg(test)]
+std::thread_local! {
+    static SYNCFS_TEST_HOOK: std::cell::RefCell<Option<SyncfsTestHook>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+struct SyncfsTestHookGuard;
+
+#[cfg(test)]
+impl Drop for SyncfsTestHookGuard {
+    fn drop(&mut self) {
+        SYNCFS_TEST_HOOK.with(|slot| {
+            let previous = slot.borrow_mut().take();
+            assert!(previous.is_some(), "syncfs test hook was already cleared");
+        });
+    }
+}
+
+#[cfg(test)]
+fn install_syncfs_test_hook(
+    hook: impl FnMut(RawFd) -> libc::c_int + 'static,
+) -> SyncfsTestHookGuard {
+    SYNCFS_TEST_HOOK.with(|slot| {
+        assert!(slot.borrow().is_none(), "nested syncfs test hook");
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+    SyncfsTestHookGuard
+}
+
+fn raw_host_syncfs(host_fd: RawFd) -> libc::c_int {
+    #[cfg(test)]
+    if let Some(result) =
+        SYNCFS_TEST_HOOK.with(|slot| slot.borrow_mut().as_mut().map(|hook| hook(host_fd)))
+    {
+        return result;
+    }
+
+    // SAFETY: host_fd names the guest's live translated descriptor. syncfs
+    // has no guest pointers, and the host kernel validates the descriptor.
+    unsafe { libc::syncfs(host_fd) }
+}
+
+fn invoke_host_syncfs(host_fd: RawFd) -> std::io::Result<()> {
+    if raw_host_syncfs(host_fd) == 0 {
+        Ok(())
+    } else {
+        // Capture errno immediately after the raw syscall boundary.
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 fn sync_filesystem_with_host(
@@ -7024,6 +7070,7 @@ fn sync_filesystem_with_operations(
 
     if state.proc_files.contains_key(&fd)
         || state.loginuid_fds.contains(&fd)
+        || state.fdinfo_files.contains_key(&fd)
         || (capture_output && output_alias(state, fd).is_some())
     {
         // These are the backend-trusted proc description markers. Fixed proc
@@ -34473,6 +34520,15 @@ mod tests {
         let info = f.info(target);
         let alias = f.call(libc::SYS_dup, [info as u64, 0, 0, 0, 0, 0]);
         assert!(alias >= 0);
+        let syncfs_host_calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed_calls = std::rc::Rc::clone(&syncfs_host_calls);
+        let _syncfs_hook = install_syncfs_test_hook(move |host_fd| {
+            observed_calls.borrow_mut().push(host_fd);
+            // SAFETY: errno is thread-local and this hook runs synchronously
+            // immediately before invoke_host_syncfs reads it.
+            unsafe { *libc::__errno_location() = libc::EIO };
+            -1
+        });
         for fd in [info, alias] {
             f.memory
                 .write(0x100, format!("/proc/self/fd/{fd}\0").as_bytes())
@@ -34506,7 +34562,7 @@ mod tests {
             );
             assert_eq!(
                 f.call(libc::SYS_syncfs, [fd as u64, 0, 0, 0, 0, 0]),
-                negative_errno(libc::ENOSYS),
+                0,
                 "fdinfo syncfs must not reach its private backing carrier"
             );
             assert_eq!(
@@ -34552,6 +34608,11 @@ mod tests {
         assert_eq!(
             stat.st_ino,
             synthetic_proc_inode(format!("/proc/1/fdinfo/{target}").as_bytes())
+        );
+        assert!(
+            syncfs_host_calls.borrow().is_empty(),
+            "fdinfo syncfs reached host descriptors: {:?}",
+            *syncfs_host_calls.borrow()
         );
     }
 
@@ -39179,6 +39240,105 @@ mod tests {
                 negative_errno(libc::EBADF)
             );
         }
+    }
+
+    #[test]
+    fn syncfs_dispatch_calls_the_raw_host_boundary_once_and_preserves_errno() {
+        let root = TestDir::new();
+        let first_path = root.0.join("syncfs-first");
+        let second_path = root.0.join("syncfs-second");
+        std::fs::write(&first_path, b"first").unwrap();
+        std::fs::write(&second_path, b"second").unwrap();
+
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let first = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(first_path).unwrap(),
+            false,
+            None,
+        ) as i32;
+        let second = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(second_path).unwrap(),
+            false,
+            None,
+        ) as i32;
+        let expected_hosts = [
+            host_fd(&state, first).unwrap(),
+            host_fd(&state, second).unwrap(),
+        ];
+
+        let observed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let remaining =
+            std::rc::Rc::new(std::cell::RefCell::new(std::collections::VecDeque::from([
+                Ok(()),
+                Err(libc::ENOSPC),
+            ])));
+        let hook_observed = std::rc::Rc::clone(&observed);
+        let hook_remaining = std::rc::Rc::clone(&remaining);
+        let _hook = install_syncfs_test_hook(move |host_fd| {
+            hook_observed.borrow_mut().push(host_fd);
+            match hook_remaining
+                .borrow_mut()
+                .pop_front()
+                .expect("unexpected extra host syncfs call")
+            {
+                Ok(()) => 0,
+                Err(errno) => {
+                    // SAFETY: errno is thread-local and invoke_host_syncfs
+                    // reads it immediately after this raw boundary returns.
+                    unsafe { *libc::__errno_location() = errno };
+                    -1
+                }
+            }
+        });
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_syncfs,
+                [
+                    (0xa5a5_5a5a_u64 << 32) | u64::from(first as u32),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_syncfs,
+                [second as u64, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOSPC)
+        );
+
+        let path_only = open_with_flags(
+            &mut memory,
+            &mut state,
+            "/proc/uptime",
+            libc::O_PATH | libc::O_NOFOLLOW,
+        );
+        assert!(path_only >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_syncfs,
+                [path_only as u64, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+
+        assert_eq!(observed.borrow().as_slice(), expected_hosts.as_slice());
+        assert!(remaining.borrow().is_empty());
     }
 
     #[test]

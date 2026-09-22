@@ -5802,6 +5802,27 @@ static int receive_two(int result[2]) {
   return 0;
 }
 
+static int validate_fdinfo_syncfs(void) {
+  const char *target_path = "syncfs-fdinfo-target";
+  int target = open(target_path, O_CREAT | O_RDWR | O_TRUNC | O_CLOEXEC, 0600);
+  if (target < 0) return 60;
+
+  char fdinfo_path[64];
+  int length = snprintf(fdinfo_path, sizeof(fdinfo_path),
+                        "/proc/self/fdinfo/%d", target);
+  if (length <= 0 || length >= (int)sizeof(fdinfo_path)) return 61;
+  int info = open(fdinfo_path, O_RDONLY | O_CLOEXEC);
+  if (info < 0) return 62;
+
+  unsigned long noisy_info = (0x5a5aa5a5UL << 32) | (uint32_t)info;
+  if (syscall(SYS_syncfs, noisy_info) != 0) return 63;
+  int alias = dup(info);
+  if (alias < 0 || syscall(SYS_syncfs, alias) != 0) return 64;
+
+  if (close(alias) || close(info) || close(target) || unlink(target_path)) return 65;
+  return 0;
+}
+
 static int validate_carriers(int readable, int path_only) {
   static const char expected[] = "0.00 0.00\n";
   int readable_flags = fcntl(readable, F_GETFL);
@@ -5864,12 +5885,21 @@ static int validate_carriers(int readable, int path_only) {
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && !strcmp(argv[1], "fdinfo-only")) {
+    int result = validate_fdinfo_syncfs();
+    if (result) return result;
+    puts("fdinfo syncfs parity ok");
+    return 0;
+  }
   if (argc == 4 && !strcmp(argv[1], "after-exec")) {
     int result = validate_carriers(atoi(argv[2]), atoi(argv[3]));
     if (result) return result;
     puts("authenticated proc carrier syncfs ok");
     return 0;
   }
+
+  int fdinfo_result = validate_fdinfo_syncfs();
+  if (fdinfo_result) return fdinfo_result;
 
   int ordinary = syscall(SYS_memfd_create, "syncfs-ordinary", 0);
   if (ordinary < 0 || syscall(SYS_syncfs, ordinary) != 0) return 5;
@@ -5917,6 +5947,24 @@ int main(int argc, char **argv) {
 "#,
     );
     let executable = executable.to_str().unwrap();
+
+    let native_fdinfo = std::process::Command::new(executable)
+        .arg("fdinfo-only")
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert_eq!(native_fdinfo.status.code(), Some(0));
+    assert_eq!(native_fdinfo.stdout, b"fdinfo syncfs parity ok\n");
+    assert!(
+        native_fdinfo.stderr.is_empty(),
+        "native stderr={}",
+        String::from_utf8_lossy(&native_fdinfo.stderr)
+    );
+    let (kvm_fdinfo_stdout, kvm_fdinfo_stderr) =
+        run_host_program_with_tool_captured(executable, &[executable, "fdinfo-only"], &directory.0);
+    assert_eq!(kvm_fdinfo_stdout, native_fdinfo.stdout);
+    assert_eq!(kvm_fdinfo_stderr, native_fdinfo.stderr);
+
     let (stdout, stderr) =
         run_host_program_with_tool_captured(executable, &[executable], &directory.0);
     assert_eq!(stdout, b"authenticated proc carrier syncfs ok\n");
