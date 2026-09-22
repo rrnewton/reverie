@@ -103,22 +103,74 @@ class HermitBoxRunTests(unittest.TestCase):
         runner.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
         runner.chmod(0o755)
 
-    def test_inherited_deadline_keeps_exact_status_and_rejects_cpu_conflict(self) -> None:
-        for status in (0, 7):
-            with self.subTest(status=status):
+    def test_inherited_deadline_keeps_exact_status_with_optional_cpu(self) -> None:
+        for cpu_arguments in ([], ['--cpu-budget', '2']):
+            for status in (0, 7, 126, 127):
+                with self.subTest(status=status, cpu_arguments=cpu_arguments):
+                    completed = subprocess.run([
+                        str(self.box), '--passthrough', '--inherited-deadline-ns',
+                        str(time.monotonic_ns()+8_000_000_000), *cpu_arguments, '--', sys.executable,
+                        '-c', f"import sys; print('out'); print('err', file=sys.stderr); sys.exit({status})"],
+                        capture_output=True, text=True, timeout=10)
+                    self.assertEqual(status, completed.returncode, completed.stderr)
+                    self.assertEqual('out\n', completed.stdout)
+                    self.assertEqual('err\n', completed.stderr)
+
+    def test_inherited_deadline_rejects_independent_resource_options(self) -> None:
+        for arguments in (['--wall', '8'], ['--mem', '2Gi'], ['--cores', '1'],
+                          ['--actual-json', str(self.base / 'actual.json')],
+                          ['--perf-dir', str(self.base / 'perf')], ['--allow-cgroup-failure']):
+            with self.subTest(arguments=arguments):
                 completed = subprocess.run([
                     str(self.box), '--passthrough', '--inherited-deadline-ns',
-                    str(time.monotonic_ns()+8_000_000_000), '--', sys.executable,
-                    '-c', f"import sys; print('out'); print('err', file=sys.stderr); sys.exit({status})"],
+                    str(time.monotonic_ns()+8_000_000_000), *arguments, '--', '/bin/true'],
                     capture_output=True, text=True, timeout=10)
-                self.assertEqual(status, completed.returncode, completed.stderr)
-                self.assertEqual('out\n', completed.stdout)
-                self.assertEqual('err\n', completed.stderr)
-        refused = subprocess.run([str(self.box), '--passthrough', '--inherited-deadline-ns',
-            str(time.monotonic_ns()+8_000_000_000), '--cpu-budget', '1', '--', '/bin/true'],
+                self.assertEqual(2, completed.returncode)
+                self.assertIn('preserves caller resources', completed.stderr)
+
+    def test_inherited_cpu_reaps_setsid_descendant_in_caller_envelope(self) -> None:
+        parent = Path('/sys/fs/cgroup' + Path('/proc/self/cgroup').read_text().strip().split('::', 1)[1])
+        names = ('cpu.max', 'memory.max', 'memory.swap.max', 'pids.max', 'cpuset.cpus.effective')
+        before = {name: (parent / name).read_text() for name in names if (parent / name).exists()}
+        diag = self.base / 'inherited-cpu.diag'
+        deadline = time.monotonic_ns() + 8_000_000_000
+        completed = subprocess.run([
+            str(self.box), '--passthrough', '--inherited-deadline-ns', str(deadline),
+            '--cpu-budget', '1', '--diag-log', str(diag), '--', sys.executable, '-c',
+            "import json,os,pathlib,signal; child=os.fork(); "
+            "os.setsid() if child==0 else None; "
+            "print(json.dumps({'pid':os.getpid(),'cgroup':pathlib.Path('/proc/self/cgroup').read_text(),"
+            "'deadline':os.environ['HERMIT_BOX_LIFECYCLE_DEADLINE_NS']}),flush=True) if child==0 else None; "
+            "signal.pause() if child else exec('while True: pass')"],
             capture_output=True, text=True, timeout=10)
-        self.assertEqual(2, refused.returncode)
-        self.assertIn('preserves caller resources', refused.stderr)
+        self.assertEqual(137, completed.returncode, completed.stderr + (diag.read_text() if diag.exists() else ''))
+        record = json.loads(completed.stdout)
+        group = Path('/sys/fs/cgroup' + record['cgroup'].strip().split('::', 1)[1])
+        self.assertEqual(parent, group.parent)
+        self.assertEqual(str(deadline), record['deadline'])
+        self.assertFalse(group.exists())
+        self.assertFalse(process_active(record['pid']))
+        self.assertEqual(before, {name: (parent / name).read_text() for name in before})
+        self.assertIn('CPU-TIMEOUT:', diag.read_text())
+        self.assertIn('termination=cpu_budget exit=137', diag.read_text())
+        self.assertNotIn('WALL-TIMEOUT:', diag.read_text())
+
+    def test_inherited_cpu_keeps_absolute_wall_deadline_for_sleep(self) -> None:
+        deadline = time.monotonic_ns() + 5_000_000_000
+        diag = self.base / 'inherited-sleep.diag'
+        completed = subprocess.run([
+            str(self.box), '--passthrough', '--inherited-deadline-ns', str(deadline),
+            '--cpu-budget=1', '--diag-log', str(diag), '--', sys.executable, '-c',
+            "import json,os,pathlib,time; print(json.dumps({'cgroup':pathlib.Path('/proc/self/cgroup').read_text(),"
+            "'deadline':os.environ['HERMIT_BOX_LIFECYCLE_DEADLINE_NS']}),flush=True); time.sleep(60)"],
+            capture_output=True, text=True, timeout=7)
+        self.assertEqual(124, completed.returncode, completed.stderr + (diag.read_text() if diag.exists() else ''))
+        record = json.loads(completed.stdout)
+        self.assertEqual(str(deadline), record['deadline'])
+        self.assertFalse(Path('/sys/fs/cgroup' + record['cgroup'].strip().split('::', 1)[1]).exists())
+        self.assertLess(time.monotonic_ns(), deadline)
+        self.assertIn('termination=wall_backstop exit=124', diag.read_text())
+        self.assertNotIn('CPU-TIMEOUT:', diag.read_text())
 
     def test_inherited_deadline_charges_setup_before_payload(self) -> None:
         adapters = self.base / 'setup-bin'
@@ -1431,6 +1483,68 @@ with open(sys.argv[1], 'a+b') as lock:
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
+
+    def test_completed_cpu_burst_is_checked_with_and_without_receipt(self) -> None:
+        # Delay only the first scope lookup until the real payload has exited.
+        # This deterministically exercises completion before the monitor polls;
+        # all CPU values still come from the real cgroup/systemd counters.
+        adapters = self.base / 'completed-burst-bin'
+        adapters.mkdir()
+        systemctl = adapters / 'systemctl'
+        systemctl.write_text(textwrap.dedent('''\
+            #!/usr/bin/env python3
+            import os, pathlib, sys, time
+            if 'ControlGroup' in sys.argv:
+                deadline = time.monotonic() + 6
+                marker = pathlib.Path(os.environ['BURST_COMPLETED'])
+                while not marker.exists():
+                    if time.monotonic() >= deadline:
+                        raise SystemExit('completed burst did not finish')
+                    time.sleep(.01)
+                time.sleep(.05)
+            os.execv('/usr/bin/systemctl', ['/usr/bin/systemctl', *sys.argv[1:]])
+        '''))
+        systemctl.chmod(0o755)
+        payload = self.base / 'completed-burst.py'
+        payload.write_text(textwrap.dedent('''\
+            import json, pathlib, subprocess, sys
+            burn = 'import time; end=time.process_time()+.65\\nwhile time.process_time()<end: pass'
+            for _ in range(2):
+                subprocess.run([sys.executable, '-c', burn], check=True)
+            pathlib.Path(sys.argv[1]).write_text(json.dumps({'completed_children': 2}))
+            print('out')
+            print('err', file=sys.stderr)
+            raise SystemExit(int(sys.argv[2]))
+        '''))
+        for receipt, native_exit in ((False, 0), (True, 7)):
+            with self.subTest(receipt=receipt, native_exit=native_exit):
+                marker = self.base / f'completed-{receipt}.json'
+                actual = self.base / f'burst-{receipt}.json'
+                diag = self.base / f'burst-{receipt}.diag'
+                arguments = [str(self.box), '--passthrough', '--cpu-budget', '1', '--wall', '10',
+                             '--diag-log', str(diag)]
+                if receipt:
+                    arguments.extend(['--actual-json', str(actual)])
+                arguments.extend(['--', sys.executable, str(payload), str(marker), str(native_exit)])
+                completed = subprocess.run(
+                    arguments, capture_output=True, text=True, timeout=9,
+                    env={**os.environ, 'PATH': str(adapters) + os.pathsep + os.environ['PATH'],
+                         'BURST_COMPLETED': str(marker)})
+                self.assertEqual({'completed_children': 2}, json.loads(marker.read_text()))
+                self.assertEqual('out\n', completed.stdout)
+                self.assertEqual('err\n', completed.stderr)
+                self.assertEqual(137, completed.returncode, completed.stderr + diag.read_text())
+                self.assertIn('CPU-TIMEOUT:', diag.read_text())
+                self.assertIn('termination=cpu_budget exit=137', diag.read_text())
+                group = re.search(r'(?m)^\[hermit-box-run\] cgroup=(.+)$', diag.read_text())
+                self.assertIsNotNone(group)
+                self.assertFalse(Path(group[1]).exists())
+                if receipt:
+                    boxed = json.loads(actual.read_text())
+                    self.assertGreater(boxed['cgroup_usage_usec'], 1_000_000)
+                    self.assertEqual('cpu_budget', boxed['termination'])
+                    self.assertEqual(137, boxed['exit_code'])
+                    self.assertFalse(boxed['reaped'], 'completed payload was refused, not killed')
 
     def test_cpu_limit_publishes_typed_actual_and_removes_scope(self) -> None:
         actual = self.base / "cpu-limit-actual.json"

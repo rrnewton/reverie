@@ -30,6 +30,8 @@
 #   hermit-box-run [--cpu-budget SECS] [--wall SECS] [--mem SIZE] [--cores K]
 #                  [--label NAME] [--perf-dir DIR] [--actual-json FILE]
 #                  [--allow-cgroup-failure] -- CMD [ARGS...]
+#   hermit-box-run --passthrough --inherited-deadline-ns N [--cpu-budget SECS]
+#                  [--diag-log FILE | --diag-fd N] -- CMD [ARGS...]
 #
 #   THREE INDEPENDENT CGROUP LIMITS (set any combination; each fires its own clean kill):
 #   --cpu-budget SECS  whole-subtree CPU-TIME budget (user+system CPU-s, cgroup cpu.stat);
@@ -60,8 +62,10 @@
 #   --inherited-deadline-ns N  passthrough-only absolute CLOCK_MONOTONIC deadline.
 #                      Own a child cgroup under the current caller; preserve all
 #                      inherited CPU/memory/task limits. Includes setup and cleanup,
-#                      adds no CPU-time cap, and refuses without child-cgroup support.
-#                      Cannot be combined with independent resource/receipt options.
+#                      and refuses without child-cgroup support. No CPU-time cap unless
+#                      --cpu-budget is explicit; that cap charges the entire child subtree
+#                      without resetting the absolute deadline. Cannot be combined with
+#                      --wall, --mem, --cores, --actual-json, --perf-dir or unboxed fallback.
 #   --passthrough      (alias --exec) TRANSPARENT-PASSTHROUGH mode. Stream the child's fd1/fd2
 #                      VERBATIM (byte-identical: no `[box.<tag>]` banner/prefix, no scope id on
 #                      the consumed streams) and propagate the child's REAL exit status (a
@@ -87,8 +91,11 @@
 #     2  bad usage
 #     3  cgroup boxing required but unavailable (pass --allow-cgroup-failure to run unboxed)
 #   --passthrough mode — the child's REAL exit status is propagated verbatim (0 on success, the
-#     real nonzero on failure, 137 for a SIGKILL/cgroup.kill reap; a CPU-TIMEOUT is announced on
-#     the diag stream). 2 = bad usage, 3 = cgroup boxing unavailable (unless --allow-cgroup-failure).
+#     real nonzero on failure within limits). 137 = SIGKILL/cgroup.kill reap or CPU budget
+#     exceeded, including a completed payload whose final CPU total exceeds its budget.
+#     CPU-TIMEOUT is announced on the diag stream; a completed payload is not reported as
+#     reaped. 124 = inherited deadline expired; 2 = bad usage; 3 = boxing/accounting unavailable
+#     (unless --allow-cgroup-failure explicitly permits an unboxed run).
 set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -158,11 +165,11 @@ case "$cpu_budget" in ''|*[!0-9]*) die "--cpu-budget must be a positive integer 
 if [ -n "$inherited_deadline_ns" ]; then
   [[ $inherited_deadline_ns =~ ^[1-9][0-9]{0,17}$ ]] || die "invalid absolute monotonic deadline"
   [ "$passthrough" -eq 1 ] || die "--inherited-deadline-ns requires --passthrough"
-  [ -z "$wall$mem$cores$actual_json$perf_dir" ] && [ "$allow_cgroup_failure" -eq 0 ] && [ "$cpu_budget_explicit" -eq 0 ] ||
-    die "inherited deadline mode preserves caller resources and requires boxing"
-  # Publication already belongs to the caller's CPU/memory/task envelope.
-  # This opt-in mode adds only its caller's absolute lifecycle deadline.
-  cpu_budget=0
+  [ -z "$wall$mem$cores$actual_json$perf_dir" ] && [ "$allow_cgroup_failure" -eq 0 ] ||
+    die "inherited deadline mode preserves caller resources; omit --wall, --mem, --cores, --actual-json, --perf-dir and --allow-cgroup-failure"
+  # Keep the caller's absolute lifecycle deadline and ancestor resource caps.
+  # Existing wall-only callers acquire no implicit default CPU-time budget.
+  if [ "$cpu_budget_explicit" -eq 0 ]; then cpu_budget=0; fi
 fi
 if [ -n "$wall" ]; then
   case "$wall" in ''|*[!0-9]*) die "--wall must be a positive integer (seconds)";; esac
@@ -1214,6 +1221,18 @@ raise SystemExit(completed.returncode)
     else
       diag "ERROR: completed scope CPU is missing or below an earlier observation."
     fi
+  fi
+  # A payload can finish between polls, or before the first scope lookup.
+  # Enforce the same CPU limit against its final authoritative total, including
+  # completed systemd accounting when requested. Do not claim the finished
+  # payload was killed, and do not overwrite an earlier wall/CPU termination.
+  # Later accounting/cleanup refusals still take precedence over this verdict.
+  if [ "$termination" = completed ] && [ "$teardown_exhausted" -eq 0 ] && \
+     [ "$final_usage_observed" -eq 1 ] && \
+     [ "$cpu_budget" -gt 0 ] && [ "$last_usage" -gt "$budget_usec" ]; then
+    diag "CPU-TIMEOUT: final usage_usec=$last_usage exceeded budget=${budget_usec} (${cpu_budget}s) after payload completion"
+    termination="cpu_budget"
+    status=137
   fi
   # cgroup.kill-FIRST teardown: systemd-run returns when the MAIN scope process exits, but a
   # setsid/double-fork escapee it reparented can still linger in the scope cgroup — the exact
