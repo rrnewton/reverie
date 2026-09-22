@@ -46,6 +46,32 @@ it discoverable from the repository. **Promoting a handful would not change the 
 
 Indexed 445 finding-bearing files across 29 groups.
 
+## DURABILITY UPDATE — 2026-09-22
+
+Three dirty product checkouts named by this index were preserved on rescue
+branches without rebasing their historical bases. The commit URLs below are the
+content-addressed authority; the branch URLs are the human-readable entry
+points. The old `ignored/` checkout paths are no longer the durable reference.
+
+### SaBRe stack-ownership diagnostic
+
+- Rescue branch: <https://github.com/rrnewton/hermit/tree/rescue/stackowner-52f75645-20260922>
+- Exact commit: <https://github.com/rrnewton/hermit/commit/fc400e293af5a4ad1fa3673c0284ad89f0cf6f47>
+- Preserved source: [`hermit-cli/src/lib.rs`](https://github.com/rrnewton/hermit/blob/fc400e293af5a4ad1fa3673c0284ad89f0cf6f47/hermit-cli/src/lib.rs), [`hermit-cli/src/sabre_ptrace.rs`](https://github.com/rrnewton/hermit/blob/fc400e293af5a4ad1fa3673c0284ad89f0cf6f47/hermit-cli/src/sabre_ptrace.rs), and [`hermit-cli/src/sabre_stack_capture.rs`](https://github.com/rrnewton/hermit/blob/fc400e293af5a4ad1fa3673c0284ad89f0cf6f47/hermit-cli/src/sabre_stack_capture.rs)
+- The uncommitted diagnostic executable at `target-diag/debug/hermit` had SHA-256 `4e7f8b4c658a89c3d18c2d9c4194ac35f1d462a8937f666e74b674214a2da3a7`. The binary is identified here but deliberately not committed.
+- Scope boundary: `instr_on/dumps/manifest.tsv` and `probe/dumps/manifest.tsv` are outside the rescued Git checkout. They remain host-local evidence and have no rescue-commit URL.
+
+### Detcore deterministic-hash-seed experiment
+
+- Rescue branch: <https://github.com/rrnewton/hermit/tree/rescue/detcore-hashseed-52f75645-20260922>
+- Exact commit (the authoritative 13-path file list and diff): <https://github.com/rrnewton/hermit/commit/13ac7f4ccd43a8de93b202254428804de09fd54e>
+
+### Reverie deterministic-hash-seed experiment
+
+- Rescue branch: <https://github.com/rrnewton/reverie/tree/rescue/reverie-hashseed-c261050c-20260922>
+- Exact commit: <https://github.com/rrnewton/reverie/commit/8d561fc6da9210170ee8ea794fcccc4525db1452>
+- Preserved source: [`experimental/reverie-sabre/src/reverie_adapter.rs`](https://github.com/rrnewton/reverie/blob/8d561fc6da9210170ee8ea794fcccc4525db1452/experimental/reverie-sabre/src/reverie_adapter.rs) and [`reverie/src/backtrace/cache.rs`](https://github.com/rrnewton/reverie/blob/8d561fc6da9210170ee8ea794fcccc4525db1452/reverie/src/backtrace/cache.rs)
+
 ### `ignored/scratch/` — 107 files, newest 08-14 22:04
 - `scratch/hermit-2265-teardown-arm-3641632a/docs/ARCHITECTURE.md` — 868 lines, 08-14 20:51
 - `scratch/hermit-2265-two-gaps-3641632a/docs/ARCHITECTURE.md` — 868 lines, 08-14 21:17
@@ -92,11 +118,11 @@ Indexed 445 finding-bearing files across 29 groups.
 - …and 35 more in this group
 
 ### `ignored/stackowner-52f75645/` — 28 files, newest 08-14 15:22
-- `stackowner-52f75645/hermit-diag/docs/ARCHITECTURE.md` — 868 lines, 08-14 15:14
+- [`docs/ARCHITECTURE.md`](https://github.com/rrnewton/hermit/blob/fc400e293af5a4ad1fa3673c0284ad89f0cf6f47/docs/ARCHITECTURE.md) — 868 lines, 08-14 15:14
 - `stackowner-52f75645/instr_on/dumps/manifest.tsv` — 770 lines, 08-14 15:22
-- `stackowner-52f75645/hermit-diag/docs/USER_GUIDE.md` — 693 lines, 08-14 15:14
-- `stackowner-52f75645/hermit-diag/WHATS_WORKING.md` — 640 lines, 08-14 15:14
-- `stackowner-52f75645/hermit-diag/docs/OCI_RUNTIME_DESIGN.md` — 519 lines, 08-14 15:14
+- [`docs/USER_GUIDE.md`](https://github.com/rrnewton/hermit/blob/fc400e293af5a4ad1fa3673c0284ad89f0cf6f47/docs/USER_GUIDE.md) — 693 lines, 08-14 15:14
+- [`WHATS_WORKING.md`](https://github.com/rrnewton/hermit/blob/fc400e293af5a4ad1fa3673c0284ad89f0cf6f47/WHATS_WORKING.md) — 640 lines, 08-14 15:14
+- [`docs/OCI_RUNTIME_DESIGN.md`](https://github.com/rrnewton/hermit/blob/fc400e293af5a4ad1fa3673c0284ad89f0cf6f47/docs/OCI_RUNTIME_DESIGN.md) — 519 lines, 08-14 15:14
 - `stackowner-52f75645/probe/dumps/manifest.tsv` — 365 lines, 08-14 15:19
 - …and 22 more in this group
 
@@ -128,12 +154,12 @@ Indexed 445 finding-bearing files across 29 groups.
 - …and 1 more in this group
 
 ### `ignored/reverie-hashseed-c261050c/` — 6 files, newest 08-14 16:16
-- `reverie-hashseed-c261050c/reverie/BACKENDS.md` — 245 lines, 08-14 16:16
-- `reverie-hashseed-c261050c/reverie/docs/BACKEND_SOURCES.md` — 116 lines, 08-14 16:16
-- `reverie-hashseed-c261050c/reverie/experimental/dbt-strace-vs-ptrace.md` — 89 lines, 08-14 16:16
-- `reverie-hashseed-c261050c/reverie/CODE_OF_CONDUCT.md` — 80 lines, 08-14 16:16
-- `reverie-hashseed-c261050c/reverie/docs/MERGE_QUEUE.md` — 52 lines, 08-14 16:16
-- `reverie-hashseed-c261050c/reverie/CONTRIBUTING.md` — 46 lines, 08-14 16:16
+- [`BACKENDS.md`](https://github.com/rrnewton/reverie/blob/8d561fc6da9210170ee8ea794fcccc4525db1452/BACKENDS.md) — 245 lines, 08-14 16:16
+- [`docs/BACKEND_SOURCES.md`](https://github.com/rrnewton/reverie/blob/8d561fc6da9210170ee8ea794fcccc4525db1452/docs/BACKEND_SOURCES.md) — 116 lines, 08-14 16:16
+- [`experimental/dbt-strace-vs-ptrace.md`](https://github.com/rrnewton/reverie/blob/8d561fc6da9210170ee8ea794fcccc4525db1452/experimental/dbt-strace-vs-ptrace.md) — 89 lines, 08-14 16:16
+- [`CODE_OF_CONDUCT.md`](https://github.com/rrnewton/reverie/blob/8d561fc6da9210170ee8ea794fcccc4525db1452/CODE_OF_CONDUCT.md) — 80 lines, 08-14 16:16
+- [`docs/MERGE_QUEUE.md`](https://github.com/rrnewton/reverie/blob/8d561fc6da9210170ee8ea794fcccc4525db1452/docs/MERGE_QUEUE.md) — 52 lines, 08-14 16:16
+- [`CONTRIBUTING.md`](https://github.com/rrnewton/reverie/blob/8d561fc6da9210170ee8ea794fcccc4525db1452/CONTRIBUTING.md) — 46 lines, 08-14 16:16
 
 ### `ignored/drain-triage-20260812/` — 5 files, newest 08-12 10:44
 - `drain-triage-20260812/note-2188.md` — 23 lines, 08-12 10:44
