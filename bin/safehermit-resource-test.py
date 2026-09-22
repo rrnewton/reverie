@@ -11,15 +11,32 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 
 
 ROOT = Path(__file__).resolve().parent.parent
 SAFEHERMIT = ROOT / "bin" / "safehermit"
+CASE_TIMEOUT_SECONDS = 20.0
+PROCESS_TIMEOUT_SECONDS = 15.0
+CLEANUP_RESERVE_SECONDS = 3.0
+_ACTIVE_RUNS: dict[int, Path] = {}
+
+
+def _handle_suite_signal(signum: int, _frame: object) -> None:
+    cleanup_deadline = time.monotonic() + 4.5
+    for process_id, report in tuple(_ACTIVE_RUNS.items()):
+        try:
+            os.killpg(process_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        _cleanup_owned_unit(report, cleanup_deadline)
+    raise SystemExit(128 + signum)
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -47,6 +64,10 @@ def _fake_tools(directory: Path) -> Path:
         unit = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--unit=")), "")
         if unit.startswith("safehermit-probe-"):
             raise SystemExit(0)
+        replacement_source = os.environ.get("FAKE_REPLACEMENT_SOURCE")
+        replacement_target = os.environ.get("FAKE_REPLACEMENT_TARGET")
+        if replacement_source and replacement_target:
+            os.replace(replacement_source, replacement_target)
         report = Path(os.environ["EXPECT_RESOURCE_REPORT"])
         initial = report.read_text(encoding="utf-8")
         if initial.count("safehermit: unit=") != 1 or "memory_peak_bytes" in initial:
@@ -55,13 +76,16 @@ def _fake_tools(directory: Path) -> Path:
             raise SystemExit(91)
         Path(os.environ["INITIAL_REPORT_SEEN"]).write_text(initial, encoding="utf-8")
         applied_args = list(args)
-        if os.environ.get("FAKE_APPLIED_MISMATCH") == "memory":
-            applied_args = [
-                "--property=MemoryMax=134217728"
-                if arg.startswith("--property=MemoryMax=")
-                else arg
-                for arg in applied_args
-            ]
+        mismatch = os.environ.get("FAKE_APPLIED_MISMATCH")
+        replacements = {
+            "memory": ("--property=MemoryMax=", "--property=MemoryMax=134217728"),
+            "swap": ("--property=MemorySwapMax=", "--property=MemorySwapMax=4096"),
+            "tasks": ("--property=TasksMax=", "--property=TasksMax=63"),
+            "cpu": ("--property=CPUQuota=", "--property=CPUQuota=200%"),
+        }
+        if mismatch in replacements:
+            prefix, replacement = replacements[mismatch]
+            applied_args = [replacement if arg.startswith(prefix) else arg for arg in applied_args]
         completed = subprocess.run(["/usr/bin/systemd-run", *applied_args], check=False)
         time.sleep(float(os.environ.get("FAKE_POST_RUN_SLEEP", "0")))
         Path(os.environ["FAKE_RUNNER_RC"]).write_text(str(completed.returncode), encoding="ascii")
@@ -132,6 +156,8 @@ def _fake_tools(directory: Path) -> Path:
             values.pop("CPUUsageNSec")
         elif os.environ.get("FAKE_METRICS_MODE") == "cpu-hit":
             values["CPUUsageNSec"] = "1100000000"
+        elif os.environ.get("FAKE_METRICS_MODE") == "oom-hit":
+            values["Result"] = "oom-kill"
         elif os.environ.get("FAKE_METRICS_MODE") == "wall-timeout":
             values["Result"] = "timeout"
         for key in requested:
@@ -144,16 +170,28 @@ def _fake_tools(directory: Path) -> Path:
         r"""
         #!/bin/bash
         set -u
-        if [ "${FAKE_SAMPLE_FAILURE:-}" = after-preflight ] && [ "${1:-}" = - ]; then
+        if [ "${1:-}" = - ]; then
             script=$(command cat)
-            if [[ "$script" == *'cpu.stat'* ]]; then
+            if [ "${FAKE_SAMPLE_FAILURE:-}" = after-preflight ] \
+                && [[ "$script" == *'cpu.stat'* ]]; then
                 if [ -e "$FAKE_SAMPLE_STATE" ]; then
                     exit 88
                 fi
                 : >"$FAKE_SAMPLE_STATE"
             fi
-            printf '%s\n' "$script" | /usr/local/bin/python3 - "${@:2}"
-            exit $?
+            output=$(printf '%s\n' "$script" | /usr/local/bin/python3 - "${@:2}")
+            rc=$?
+            if [ "$rc" -eq 0 ] && [[ "$output" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
+                read -r usage oom_hits pids_hits tasks_peak <<<"$output"
+                case "${FAKE_SAMPLE_COUNTER:-}" in
+                    oom-hit) oom_hits=1 ;;
+                    pids-hit) pids_hits=1 ;;
+                esac
+                printf '%s %s %s %s\n' "$usage" "$oom_hits" "$pids_hits" "$tasks_peak"
+            else
+                [ -z "$output" ] || printf '%s\n' "$output"
+            fi
+            exit "$rc"
         fi
         exec /usr/local/bin/python3 "$@"
         """,
@@ -173,8 +211,13 @@ def _run(
     cpu_timeout: int = 30,
     max_log_bytes: int | None = None,
     sample_failure: str = "",
+    sample_counter: str = "",
     post_run_sleep: float = 0,
+    replacement_source: Path | None = None,
+    replacement_target: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    overall_deadline = time.monotonic() + CASE_TIMEOUT_SECONDS
+    operation_deadline = overall_deadline - CLEANUP_RESERVE_SECONDS
     tools = _fake_tools(temporary)
     env = os.environ.copy()
     env.update(
@@ -190,7 +233,10 @@ def _run(
             "FAKE_APPLIED_MISMATCH": applied_mismatch,
             "FAKE_SAMPLE_FAILURE": sample_failure,
             "FAKE_SAMPLE_STATE": str(temporary / "sample-state"),
+            "FAKE_SAMPLE_COUNTER": sample_counter,
             "FAKE_POST_RUN_SLEEP": str(post_run_sleep),
+            "FAKE_REPLACEMENT_SOURCE": str(replacement_source or ""),
+            "FAKE_REPLACEMENT_TARGET": str(replacement_target or ""),
         }
     )
     argv = [
@@ -213,7 +259,36 @@ def _run(
     if sh_report is not None:
         argv.extend(("--sh-report", str(sh_report)))
     argv.extend(("/bin/sh", "-c", command))
-    return subprocess.run(argv, check=False, text=True, capture_output=True, env=env)
+    process = subprocess.Popen(
+        argv,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        start_new_session=True,
+    )
+    _ACTIVE_RUNS[process.pid] = report
+    try:
+        try:
+            stdout, stderr = process.communicate(
+                timeout=min(PROCESS_TIMEOUT_SECONDS, _remaining(operation_deadline))
+            )
+        except subprocess.TimeoutExpired as error:
+            os.killpg(process.pid, signal.SIGKILL)
+            _cleanup_owned_unit(report, overall_deadline)
+            stdout, stderr = process.communicate(timeout=_remaining(overall_deadline))
+            raise AssertionError(
+                f"safehermit resource fixture exceeded independent 15s test bound: {argv}"
+            ) from error
+        completed = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+        try:
+            _assert_owned_unit_gone(report, operation_deadline)
+        except BaseException:
+            _cleanup_owned_unit(report, overall_deadline)
+            raise
+        return completed
+    finally:
+        _ACTIVE_RUNS.pop(process.pid, None)
 
 
 def _fields(path: Path) -> dict[str, str]:
@@ -225,6 +300,104 @@ def _fields(path: Path) -> dict[str, str]:
             assert key not in result, f"duplicate {key} in {path}"
             result[key] = value
     return result
+
+
+def _owned_unit(report: Path) -> str | None:
+    if not report.is_file():
+        return None
+    fields = _fields(report)
+    run_id = fields.get("run_id", "")
+    unit = fields.get("unit", "")
+    if unit != f"safehermit-{run_id}" or not unit.startswith("safehermit-"):
+        return None
+    if any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-" for character in unit):
+        return None
+    return unit
+
+
+def _remaining(deadline: float, ceiling: float | None = None) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("safehermit resource test exhausted its overall deadline")
+    return remaining if ceiling is None else min(remaining, ceiling)
+
+
+def _cleanup_owned_unit(report: Path, deadline: float | None = None) -> None:
+    unit = _owned_unit(report)
+    if unit is None:
+        return
+    if deadline is None:
+        deadline = time.monotonic() + 3.0
+    service = unit + ".service"
+    actions = (
+        ("kill", "--kill-whom=all", "--signal=KILL", service),
+        ("stop", service),
+        ("reset-failed", service),
+    )
+    for index, arguments in enumerate(actions):
+        remaining_actions = len(actions) - index
+        try:
+            action_timeout = _remaining(deadline) / remaining_actions
+            subprocess.run(
+                ["/usr/bin/systemctl", "--user", *arguments],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=action_timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired, TimeoutError):
+            # Each exact-unit action is independent. A hung kill must not skip
+            # stop/reset-failed; the remaining deadline is divided among them.
+            continue
+
+
+def _owned_unit_state(report: Path, deadline: float) -> tuple[str, str, str]:
+    unit = _owned_unit(report)
+    if unit is None:
+        return "not-found", "inactive", ""
+    completed = subprocess.run(
+        [
+            "/usr/bin/systemctl",
+            "--user",
+            "show",
+            unit + ".service",
+            "-p",
+            "LoadState",
+            "-p",
+            "ActiveState",
+            "-p",
+            "ControlGroup",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=_remaining(deadline, 0.25),
+    )
+    values = {}
+    for line in completed.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key] = value
+    return (
+        values.get("LoadState", ""),
+        values.get("ActiveState", ""),
+        values.get("ControlGroup", ""),
+    )
+
+
+def _assert_owned_unit_gone(report: Path, deadline: float) -> None:
+    unit = _owned_unit(report)
+    if unit is None:
+        return
+    final = ("", "", "")
+    while time.monotonic() < deadline:
+        final = _owned_unit_state(report, deadline)
+        load, active, control_group = final
+        group_exists = bool(control_group) and Path("/sys/fs/cgroup" + control_group).exists()
+        if load == "not-found" and active != "active" and not group_exists:
+            return
+        time.sleep(min(0.02, _remaining(deadline)))
+    raise AssertionError(f"owned unit {unit} was not reaped: state={final}")
 
 
 def _calls(path: Path) -> list[list[str]]:
@@ -298,6 +471,7 @@ def test_complete_report_is_published_before_cleanup() -> None:
         assert "--property=MemorySwapMax=0" in main
         assert "--property=TasksMax=64" in main
         assert "--property=CPUQuota=100%" in main
+        assert "--property=KillSignal=SIGKILL" in main
         assert "--property=RuntimeMaxSec=91" in main
         cleanup_units = [
             arg
@@ -309,13 +483,116 @@ def test_complete_report_is_published_before_cleanup() -> None:
             )
             for arg in call[3:]
         ]
-        assert cleanup_units
+        assert len(cleanup_units) == 2, cleanup_units
         assert all(arg == fields["unit"] + ".service" for arg in cleanup_units)
-        assert set(
-            (temporary / "cleanup-observations.txt")
+        assert (
+            temporary.joinpath("cleanup-observations.txt")
             .read_text(encoding="ascii")
             .splitlines()
-        ) == {"complete"}
+            == ["complete", "complete"]
+        )
+
+
+def test_pinned_binary_preserves_argv0_and_reports_executed_inode() -> None:
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        completed = _run(
+            temporary,
+            report,
+            command='printf "%s\\n" "$0"',
+        )
+        assert completed.returncode == 0, completed
+        assert completed.stdout == "/bin/sh\n"
+
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        selected = temporary / "selected"
+        replacement = temporary / "replacement"
+        _write_executable(selected, "#!/bin/sh\nprintf 'old\\n'\n")
+        replacement_bytes = b"#!/bin/sh\nprintf 'new\\n'\n"
+        replacement.write_bytes(replacement_bytes)
+        replacement.chmod(0o755)
+        tools = _fake_tools(temporary)
+        env = {
+            **os.environ,
+            "PATH": f"{tools}:{os.environ['PATH']}",
+            "SAFEHERMIT_LOG_ROOT": str(temporary / "logs"),
+            "EXPECT_RESOURCE_REPORT": str(report),
+            "INITIAL_REPORT_SEEN": str(temporary / "initial.txt"),
+            "FAKE_RUNNER_RC": str(temporary / "runner-rc.txt"),
+            "FAKE_CALL_LOG": str(temporary / "calls.jsonl"),
+            "CLEANUP_OBSERVATIONS": str(temporary / "cleanup-observations.txt"),
+            "FAKE_METRICS_MODE": "complete",
+            "FAKE_APPLIED_MISMATCH": "",
+            "FAKE_SAMPLE_FAILURE": "",
+            "FAKE_SAMPLE_STATE": str(temporary / "sample-state"),
+            "FAKE_SAMPLE_COUNTER": "",
+            "FAKE_POST_RUN_SLEEP": "0",
+            "FAKE_REPLACEMENT_SOURCE": str(replacement),
+            "FAKE_REPLACEMENT_TARGET": str(selected),
+        }
+        argv = [
+            str(SAFEHERMIT),
+            "--sh-resource-report",
+            str(report),
+            "--sh-deadline",
+            "10",
+            "--sh-memory-max-bytes",
+            str(256 * 1024 * 1024),
+            "--sh-tasks-max",
+            "64",
+            "--sh-cpu-cores",
+            "1",
+            "--sh-cpu-timeout",
+            "5",
+            str(selected),
+        ]
+        overall_deadline = time.monotonic() + CASE_TIMEOUT_SECONDS
+        operation_deadline = overall_deadline - CLEANUP_RESERVE_SECONDS
+        process = subprocess.Popen(
+            argv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+        _ACTIVE_RUNS[process.pid] = report
+        try:
+            stdout, stderr = process.communicate(timeout=_remaining(operation_deadline))
+            completed = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+            assert completed.returncode == 0, completed
+            assert completed.stdout == "new\n"
+            assert _fields(report)["binary_sha256"] == hashlib.sha256(
+                replacement_bytes
+            ).hexdigest()
+            _assert_owned_unit_gone(report, operation_deadline)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate(timeout=_remaining(overall_deadline))
+            _cleanup_owned_unit(report, overall_deadline)
+            _ACTIVE_RUNS.pop(process.pid, None)
+
+
+def test_payload_cannot_forge_executed_binary_digest() -> None:
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        completed = _run(
+            temporary,
+            report,
+            command=(
+                'directory=$(dirname "$(find "$SAFEHERMIT_LOG_ROOT" '
+                '-name .resource-payload-start -print -quit)"); '
+                'printf "%064d\\n" 0 >"$directory/.resource-binary-sha256"'
+            ),
+        )
+        assert completed.returncode == 0, completed
+        expected = hashlib.sha256(Path("/bin/sh").read_bytes()).hexdigest()
+        assert _fields(report)["binary_sha256"] == expected
 
 
 def test_missing_property_fails_closed_and_keeps_owned_unit_stub() -> None:
@@ -338,22 +615,23 @@ def test_missing_property_fails_closed_and_keeps_owned_unit_stub() -> None:
 
 
 def test_limit_mismatch_is_refused_before_payload_launch() -> None:
-    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
-        temporary = Path(raw)
-        report = temporary / "resource.txt"
-        marker = temporary / "payload-ran"
-        completed = _run(
-            temporary,
-            report,
-            applied_mismatch="memory",
-            command=f'printf ran >"{marker}"',
-        )
-        assert completed.returncode == 2, completed
-        assert not marker.exists()
-        assert "limit was not applied exactly" in completed.stderr
-        fields = _fields(report)
-        assert fields["limit_memory_bytes"] == str(256 * 1024 * 1024)
-        assert "memory_peak_bytes" not in fields
+    for mismatch in ("memory", "swap", "tasks", "cpu"):
+        with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+            temporary = Path(raw)
+            report = temporary / "resource.txt"
+            marker = temporary / "payload-ran"
+            completed = _run(
+                temporary,
+                report,
+                applied_mismatch=mismatch,
+                command=f'printf ran >"{marker}"',
+            )
+            assert completed.returncode == 2, (mismatch, completed)
+            assert not marker.exists(), mismatch
+            assert "limit was not applied exactly" in completed.stderr, mismatch
+            fields = _fields(report)
+            assert fields["limit_memory_bytes"] == str(256 * 1024 * 1024)
+            assert "memory_peak_bytes" not in fields
 
 
 def test_live_cpu_counter_failure_kills_and_refuses_sample() -> None:
@@ -402,26 +680,163 @@ def test_cpu_and_wall_limits_are_authoritative_reported_breaches() -> None:
             assert fields["tasks_limit_hits"] == "0"
 
 
-def test_lethal_log_cap_keeps_complete_detached_measurement() -> None:
+def test_finite_payload_crossing_cpu_budget_is_not_missed() -> None:
     with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
         temporary = Path(raw)
         report = temporary / "resource.txt"
         completed = _run(
             temporary,
             report,
-            max_log_bytes=64,
+            metrics_mode="cpu-hit",
+            cpu_timeout=1,
+            command="exit 0",
+        )
+        assert completed.returncode == 126, completed
+        fields = _fields(report)
+        assert fields["cpu_time_limit_hit"] == "1"
+        assert fields["cpu_usage_nsec"] == "1100000000"
+
+
+def test_oom_and_pid_limit_events_are_not_hardcoded_zero() -> None:
+    cases = (
+        ("oom-hit", "", "memory_oom_kills"),
+        ("complete", "pids-hit", "tasks_limit_hits"),
+    )
+    for metrics_mode, sample_counter, field in cases:
+        with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+            temporary = Path(raw)
+            report = temporary / "resource.txt"
+            completed = _run(
+                temporary,
+                report,
+                metrics_mode=metrics_mode,
+                sample_counter=sample_counter,
+                command="exit 0",
+            )
+            assert completed.returncode == 0, (field, completed)
+            assert int(_fields(report)[field]) >= 1
+
+
+def test_background_descendants_are_accounted_until_quiescent() -> None:
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        marker = temporary / "background-finished"
+        completed = _run(
+            temporary,
+            report,
+            command=f"(sleep 0.3; printf done >'{marker}') & exit 23",
+        )
+        assert completed.returncode == 23, completed
+        assert marker.read_text(encoding="ascii") == "done"
+        assert _fields(report)["wall_time_limit_hit"] == "0"
+
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        descendant_pid_file = temporary / "descendant-pid"
+        completed = _run(
+            temporary,
+            report,
+            metrics_mode="wall-timeout",
+            deadline=1,
             command=(
-                "python3 -c 'import os; "
-                '[os.write(2,b"x"*1024) for _ in range(128)]\''
+                f"(trap '' TERM; exec sleep 30) </dev/null >/dev/null 2>/dev/null & "
+                f"printf '%s' $! >'{descendant_pid_file}'; exit 23"
             ),
         )
-        assert completed.returncode == 125, completed
+        assert completed.returncode == 124, completed
+        descendant_pid = int(descendant_pid_file.read_text(encoding="ascii"))
+        assert not Path(f"/proc/{descendant_pid}").exists()
         fields = _fields(report)
-        assert fields["cpu_time_limit_hit"] == "0"
-        assert fields["wall_time_limit_hit"] == "0"
-        assert fields["log_cap_hit"] == "1"
-        assert "resource_report_state=COMPLETE" in completed.stderr
-        assert "killed_at_cap=cgroup-killed" in completed.stderr
+        assert fields["wall_time_limit_hit"] == "1"
+
+
+def test_term_reaps_owned_unit_and_retains_incomplete_stub() -> None:
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        overall_deadline = time.monotonic() + CASE_TIMEOUT_SECONDS
+        operation_deadline = overall_deadline - CLEANUP_RESERVE_SECONDS
+        process = subprocess.Popen(
+            [
+                str(SAFEHERMIT),
+                "--sh-resource-report",
+                str(report),
+                "--sh-deadline",
+                "30",
+                "--sh-memory-max-bytes",
+                str(256 * 1024 * 1024),
+                "--sh-tasks-max",
+                "64",
+                "--sh-cpu-cores",
+                "1",
+                "--sh-cpu-timeout",
+                "20",
+                "/bin/sh",
+                "-c",
+                "exec sleep 30",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "SAFEHERMIT_LOG_ROOT": str(temporary / "logs")},
+            start_new_session=True,
+        )
+        _ACTIVE_RUNS[process.pid] = report
+        try:
+            readiness_deadline = min(operation_deadline, time.monotonic() + 5.0)
+            while time.monotonic() < readiness_deadline:
+                if (
+                    _owned_unit(report) is not None
+                    and _owned_unit_state(report, readiness_deadline)[1] == "active"
+                ):
+                    break
+                assert process.poll() is None
+                time.sleep(min(0.02, _remaining(readiness_deadline)))
+            else:
+                raise AssertionError("resource unit did not become active before TERM probe")
+            process.send_signal(signal.SIGTERM)
+            stdout, stderr = process.communicate(timeout=_remaining(operation_deadline))
+            assert process.returncode == 143, (process.returncode, stdout, stderr)
+            _assert_owned_unit_gone(report, operation_deadline)
+            fields = _fields(report)
+            assert fields["unit"].startswith("safehermit-")
+            assert "memory_peak_bytes" not in fields
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate(timeout=_remaining(overall_deadline))
+            _cleanup_owned_unit(report, overall_deadline)
+            _ACTIVE_RUNS.pop(process.pid, None)
+
+
+def test_lethal_log_cap_keeps_complete_detached_measurement() -> None:
+    commands = (
+        ("immediate-small-overflow", "printf '%0100d' 0 >&2"),
+        (
+            "large-overflow",
+            "python3 -c 'import os; "
+            '[os.write(2,b"x"*1024) for _ in range(128)]\'',
+        ),
+    )
+    for label, command in commands:
+        with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+            temporary = Path(raw)
+            report = temporary / "resource.txt"
+            completed = _run(
+                temporary,
+                report,
+                max_log_bytes=64,
+                command=command,
+            )
+            assert completed.returncode == 125, (label, completed)
+            fields = _fields(report)
+            assert fields["cpu_time_limit_hit"] == "0"
+            assert fields["wall_time_limit_hit"] == "0"
+            assert fields["log_cap_hit"] == "1"
+            assert "resource_report_state=COMPLETE" in completed.stderr
+            assert "killed_at_cap=parent-cgroup-killed" in completed.stderr
 
 
 def test_preexisting_and_symlink_paths_are_refused_before_payload() -> None:
@@ -503,12 +918,20 @@ def test_detached_mode_requires_every_explicit_limit() -> None:
 
 
 def main() -> int:
+    for handled_signal in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(handled_signal, _handle_suite_signal)
     tests = (
         test_complete_report_is_published_before_cleanup,
+        test_pinned_binary_preserves_argv0_and_reports_executed_inode,
+        test_payload_cannot_forge_executed_binary_digest,
         test_missing_property_fails_closed_and_keeps_owned_unit_stub,
         test_limit_mismatch_is_refused_before_payload_launch,
         test_live_cpu_counter_failure_kills_and_refuses_sample,
         test_cpu_and_wall_limits_are_authoritative_reported_breaches,
+        test_finite_payload_crossing_cpu_budget_is_not_missed,
+        test_oom_and_pid_limit_events_are_not_hardcoded_zero,
+        test_background_descendants_are_accounted_until_quiescent,
+        test_term_reaps_owned_unit_and_retains_incomplete_stub,
         test_lethal_log_cap_keeps_complete_detached_measurement,
         test_preexisting_and_symlink_paths_are_refused_before_payload,
         test_resource_and_diagnostic_report_cannot_alias,

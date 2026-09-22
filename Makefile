@@ -27,7 +27,7 @@ SHELLCHECK_TARGETS = $$(scripts/list-shell-scripts.sh)
 RUSTFMT_TARGETS    = $$(scripts/list-rust-sources.sh)
 PYTHON_TARGETS     = $$(scripts/list-python-files.sh)
 
-.PHONY: build build-full build-hermit check-agent-utils-pin check-hermit-agent-utils-pin check-claude-md-size check-codex-setup check-compat-envelope-tests check-deps check-harness-help check-portability check-primary-freshness check-rust-error-string-proxies clean \
+.PHONY: build build-full build-hermit check-agent-utils-pin check-hermit-agent-utils-pin check-claude-md-size check-codex-setup check-compat-envelope-tests check-deps check-harness-help check-portability check-primary-freshness check-rust-error-string-proxies check-safehermit-tests clean \
 	restore-primary-freshness \
 	check-submodules checkout-all checkout-e9patch checkout-fresh checkout-optional-submodules checkout-sabre submodules \
 	compat-envelope compat-envelope-full compat-envelope-fullcorpus \
@@ -376,6 +376,20 @@ compat-envelope-fullcorpus: init-hermit
 # 235-cell cross-backend envelope (both lanes' union); the portable/privileged
 # split is CI-only. Extend as other workspace-level checks are added.
 validate: compat-envelope-fullcorpus
+	@$(MAKE) --no-print-directory check-safehermit-tests
+
+# Required focused acceptance gate for the wrapper that boxes every ad-hoc
+# Hermit invocation. The definition-of-done build above supplies the exact
+# release binary needed by the legacy end-to-end suite; the detached-resource
+# suite supplies its own bounded fixtures and refuses leaked transient units.
+check-safehermit-tests:
+	@test -x hermit/target/release/hermit || { \
+		echo 'ERROR: make validate must build hermit/target/release/hermit before safehermit tests.' >&2; \
+		exit 1; \
+	}
+	@timeout --signal=TERM --kill-after=5s 300s \
+		env SAFEHERMIT_TEST_BIN="$(CURDIR)/hermit/target/release/hermit" bin/safehermit-test.sh
+	@timeout --signal=TERM --kill-after=5s 300s python3 bin/safehermit-resource-test.py
 
 doctor:
 	@scripts/doctor.sh all
@@ -430,6 +444,7 @@ help:
 	@echo "make compat-envelope    Cross-backend compat regression gate (ptrace+DBI, portable CI lane)"
 	@echo "make compat-envelope-full  Privileged superset (adds SaBRe + KVM/reverie, privileged CI lane)"
 	@echo "make compat-envelope-fullcorpus  LOCAL full 235-cell union across all runnable backends"
+	@echo "make check-safehermit-tests  Run legacy and detached-resource safehermit acceptance suites"
 	@echo "make validate           Outer-repo definition-of-done gate (local = full-corpus envelope)"
 	@echo "make submodules         Safe init/update; keeps primaries ATTACHED (no detach)"
 	@echo "make checkout-all       Recursive submodule init (WARNING: detaches primaries)"

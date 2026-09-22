@@ -287,6 +287,8 @@ detached_cpu_time_limit_hit=0
 detached_wall_time_limit_hit=0
 detached_log_cap_hit=0
 detached_log_cap_killed=0
+detached_cleanup_armed=0
+detached_binary_identity_accepted=0
 detached_limit_cpu_cores_micros=""
 detached_limit_cpu_time_nsec=""
 detached_limit_wall_time_usec=""
@@ -422,6 +424,8 @@ for label, value in (
 ):
     if not value.isascii() or not value.isdecimal():
         raise SystemExit(f"{label} is not an unsigned decimal")
+if len(binary) != 64 or any(char not in "0123456789abcdef" for char in binary):
+    raise SystemExit("binary_sha256 is not a lowercase SHA-256 digest")
 path = pathlib.Path(raw)
 current = os.lstat(path)
 identity = f"{current.st_dev}:{current.st_ino}"
@@ -574,7 +578,8 @@ if [ "$systemd_ok" = 1 ]; then
     # Guest arguments can contain shell expressions intended for the guest.
     # systemd-run otherwise expands $VAR/${VAR} and collapses $$ before exec.
     runner=(systemd-run --user "--unit=$unit" --quiet --expand-environment=no
-            "--property=MemoryMax=$mem_max" "--property=MemorySwapMax=0")
+            "--property=MemoryMax=$mem_max" "--property=MemorySwapMax=0"
+            "--property=KillSignal=SIGKILL")
     if [ -n "$detached_report_file" ]; then
         runner+=("--property=TasksMax=$detached_tasks_max"
                  "--property=CPUQuota=$((detached_cpu_cores * 100))%")
@@ -618,8 +623,6 @@ print(group)
 PY
 )" || return 1
     [ -n "$detached_cgroup_path" ] || return 1
-    printf '%s\n' "$detached_cgroup_path" >"$log_dir/.resource-cgroup-path.tmp" \
-        && mv -- "$log_dir/.resource-cgroup-path.tmp" "$log_dir/.resource-cgroup-path"
 }
 
 verify_detached_limits() {
@@ -701,12 +704,91 @@ kill_detached_unit() {
     return 1
 }
 
+detached_unit_is_quiescent() {
+    if [ -n "$detached_cgroup_path" ] \
+        && [ -d "/sys/fs/cgroup${detached_cgroup_path}" ]; then
+        local populated
+        populated="$(sed -n 's/^populated //p' \
+            "/sys/fs/cgroup${detached_cgroup_path}/cgroup.events" 2>/dev/null)"
+        [ "$populated" = 0 ] || return 1
+    fi
+    local active
+    active="$(systemctl --user show "$unit.service" -p ActiveState --value 2>/dev/null)"
+    [ "$active" != active ] && [ "$active" != activating ] && [ "$active" != deactivating ]
+}
+
+terminate_detached_unit() {
+    local attempt
+    if detached_unit_is_quiescent; then
+        return 0
+    fi
+    kill_detached_unit || true
+    for attempt in $(seq 1 100); do
+        detached_unit_is_quiescent && return 0
+        sleep 0.02
+    done
+    timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+    for attempt in $(seq 1 100); do
+        detached_unit_is_quiescent && return 0
+        sleep 0.02
+    done
+    return 1
+}
+
+reap_detached_helper() {
+    local helper_pid=$1
+    [ -n "$helper_pid" ] || return 0
+    local attempt
+    for attempt in $(seq 1 100); do
+        kill -0 "$helper_pid" 2>/dev/null || break
+        sleep 0.02
+    done
+    if kill -0 "$helper_pid" 2>/dev/null; then
+        kill -KILL "$helper_pid" 2>/dev/null || true
+    fi
+    wait "$helper_pid" 2>/dev/null || true
+}
+
+cleanup_detached_on_exit() {
+    local original_rc=$?
+    trap - EXIT INT TERM HUP
+    if [ "$detached_cleanup_armed" -eq 1 ]; then
+        terminate_detached_unit >/dev/null 2>&1 || true
+        reap_detached_helper "${runner_pid:-}"
+        reap_detached_helper "${capper_pid:-}"
+        timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+        systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
+    fi
+    exit "$original_rc"
+}
+
 signal_detached_fifo() {
     # A cancellation may kill the service after the unit stub is published but
     # before its gate reader opens. A plain shell redirection would then block
     # forever in open(2), so every one-byte handoff has its own real-clock bound.
     # shellcheck disable=SC2016
     timeout 5 bash -c 'printf "\n" >"$1"' bash "$1"
+}
+
+accept_detached_binary_identity() {
+    [ -f "$payload_binary_identity_file" ] || return 1
+    local executed_binary_sha256
+    executed_binary_sha256="$(sed -n '1p' "$payload_binary_identity_file")"
+    [[ "$executed_binary_sha256" =~ ^[0-9a-f]{64}$ ]] || return 1
+    binary_sha256="$executed_binary_sha256"
+    detached_binary_identity_accepted=1
+    rm -f "$payload_binary_identity_file" "$payload_binary_identity_file.tmp"
+}
+
+unsigned_decimal_gt() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+
+left, right = sys.argv[1:]
+if not all(value.isascii() and value.isdecimal() for value in (left, right)):
+    raise SystemExit(2)
+raise SystemExit(0 if int(left) > int(right) else 1)
+PY
 }
 
 collect_detached_metrics() {
@@ -773,6 +855,11 @@ if [ -n "$detached_report_file" ]; then
     if ! prepare_detached_report; then
         die "--sh-resource-report refused unsafe, pre-existing, or unwritable path: $detached_report_file"
     fi
+    detached_cleanup_armed=1
+    trap cleanup_detached_on_exit EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 fi
 
 # ---------------------------------------------------------------- (4) log filter
@@ -850,6 +937,7 @@ capper() {
     python3 -u -c '
 import sys, os, subprocess, time
 cap = int(sys.argv[1]); path = sys.argv[2]; unit = sys.argv[3]
+parent_monitors = sys.argv[4] == "yes"
 written = 0; truncated = False; killed = "n/a"
 out = open(path, "wb")
 src = sys.stdin.buffer; dst = sys.stdout.buffer
@@ -874,41 +962,35 @@ while True:
                 cap_marker.write("1\n")
             os.replace(marker + ".tmp", marker)
             if unit and unit != "none":
-                # Prefer the authenticated cgroup path published by detached
-                # preflight. Ordinary runs have no marker, so retain the bounded
-                # exact-unit fallback.
-                rc = 1
-                kill_error = b""
-                direct_error = b""
-                for _ in range(100):
-                    marker = os.path.join(os.path.dirname(path), ".resource-cgroup-path")
-                    try:
-                        group = open(marker, encoding="ascii").read().strip()
-                        if group.startswith("/") and ".." not in group.split("/"):
-                            with open("/sys/fs/cgroup" + group + "/cgroup.kill", "w") as kill:
-                                kill.write("1\n")
-                            rc = 0
-                    except (OSError, UnicodeError) as error:
-                        direct_error = repr(error).encode()[-512:]
-                    if rc == 0:
-                        break
-                    attempt = subprocess.run(
-                        ["/usr/bin/systemctl", "--user", "kill", "--kill-whom=all", "--signal=KILL", unit],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.PIPE,
-                        check=False,
-                    )
-                    rc = attempt.returncode
-                    kill_error = attempt.stderr[-512:]
-                    if rc == 0:
-                        break
-                    time.sleep(0.05)
-                killed = "cgroup-killed" if rc == 0 else "kill-failed-rc%d" % rc
-                out.write(b"[safehermit] the run was killed at the cap (%s).\n" % killed.encode())
+                if parent_monitors:
+                    # The detached parent owns the cgroup path in memory and
+                    # polls this marker. Do not trust a same-UID, payload-writable
+                    # sidecar as kill authority.
+                    rc = 0
+                    killed = "parent-monitor"
+                    kill_error = b""
+                else:
+                    rc = 1
+                    kill_error = b""
+                    for _ in range(100):
+                        attempt = subprocess.run(
+                            ["/usr/bin/systemctl", "--user", "kill", "--kill-whom=all", "--signal=KILL", unit],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,
+                            check=False,
+                        )
+                        rc = attempt.returncode
+                        kill_error = attempt.stderr[-512:]
+                        if rc == 0:
+                            break
+                        time.sleep(0.05)
+                    killed = "cgroup-killed" if rc == 0 else "kill-failed-rc%d" % rc
+                if parent_monitors:
+                    out.write(b"[safehermit] the detached parent was notified to kill the owned cgroup.\n")
+                else:
+                    out.write(b"[safehermit] the run was killed at the cap (%s).\n" % killed.encode())
                 if rc != 0 and kill_error:
                     out.write(b"[safehermit] final systemctl kill error: %s\n" % kill_error.rstrip())
-                if rc != 0 and direct_error:
-                    out.write(b"[safehermit] final cgroup.kill error: %s\n" % direct_error)
             else:
                 killed = "no-cgroup-available"
                 out.write(b"[safehermit] NOT killed: no systemd cgroup was available, so the cap could only truncate.\n")
@@ -916,7 +998,7 @@ while True:
 out.flush(); out.close()
 with open(path + ".meta", "w") as m:
     m.write("bytes_written=%d\ntruncated=%s\ncap=%d\nkilled=%s\n" % (written, str(truncated).lower(), cap, killed))
-' "$1" "$2" "$3"
+' "$1" "$2" "$3" "$4"
 }
 
 # ---------------------------------------------------------------- run
@@ -932,7 +1014,12 @@ else
     fifo="$log_dir/.stderr.fifo"
 fi
 rm -f "$fifo"; mkfifo "$fifo" 2>/dev/null || die "cannot create fifo $fifo"
-capper "$max_log_bytes" "$log_file" "$unit" < "$fifo" >&2 &
+if [ -n "$detached_report_file" ]; then
+    capper_parent_monitors=yes
+else
+    capper_parent_monitors=no
+fi
+capper "$max_log_bytes" "$log_file" "$unit" "$capper_parent_monitors" < "$fifo" >&2 &
 capper_pid=$!
 capper_waited=0
 
@@ -946,14 +1033,18 @@ if [ "$runner_state" = APPLIED ] && [ -n "$detached_report_file" ]; then
     # publish the complete report. RuntimeMaxSec and the lethal log cap still
     # kill the whole cgroup, including this holder.
     payload_status_file="$log_dir/.resource-payload-status"
+    payload_binary_identity_file="$log_dir/.resource-binary-sha256"
     payload_release_fifo="$log_dir/.resource-payload-release"
     payload_start_fifo="$log_dir/.resource-payload-start"
     mkfifo "$payload_start_fifo" "$payload_release_fifo" 2>/dev/null \
         || die "cannot create resource-accounting gate fifos"
     resource_wrapper=(python3 -c '
+import ctypes
+import hashlib
 import os
 import pathlib
 import signal
+import stat
 import subprocess
 import sys
 
@@ -961,6 +1052,35 @@ status_file = pathlib.Path(sys.argv[1])
 release_fifo = pathlib.Path(sys.argv[2])
 start_fifo = pathlib.Path(sys.argv[3])
 stderr_fifo = pathlib.Path(sys.argv[4])
+binary_identity_file = pathlib.Path(sys.argv[5])
+binary_path = sys.argv[6]
+
+# A direct child may leave double-forked descendants behind. Become their
+# subreaper before launch, then do not publish payload status until every
+# adopted descendant is gone. This keeps the outer cgroup sampler authoritative
+# for the entire payload tree, including daemons that close stderr.
+PR_SET_CHILD_SUBREAPER = 36
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+    raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER")
+
+# Pin the executable inode that is hashed. Executing /proc/self/fd/N with the
+# descriptor inherited closes the pathname-replacement race between identity
+# measurement and exec, including for arbitrary binaries under /tmp.
+binary_fd = os.open(binary_path, os.O_RDONLY | os.O_CLOEXEC)
+identity = os.fstat(binary_fd)
+if not stat.S_ISREG(identity.st_mode):
+    raise SystemExit(126)
+digest = hashlib.sha256()
+while True:
+    chunk = os.read(binary_fd, 1024 * 1024)
+    if not chunk:
+        break
+    digest.update(chunk)
+os.lseek(binary_fd, 0, os.SEEK_SET)
+identity_temporary = binary_identity_file.with_name(binary_identity_file.name + ".tmp")
+identity_temporary.write_text(digest.hexdigest() + "\n", encoding="ascii")
+identity_temporary.replace(binary_identity_file)
 with stderr_fifo.open("wb", buffering=0) as payload_stderr:
     # Open the payload-only writer before waiting at the launch gate. If
     # preflight refuses the service, killing this wrapper then gives the capper
@@ -968,7 +1088,19 @@ with stderr_fifo.open("wb", buffering=0) as payload_stderr:
     with start_fifo.open("rb") as stream:
         if not stream.read(1):
             raise SystemExit(126)
-    completed = subprocess.run(sys.argv[5:], check=False, stderr=payload_stderr)
+    completed = subprocess.run(
+        [binary_path, *sys.argv[7:]],
+        check=False,
+        executable=f"/proc/self/fd/{binary_fd}",
+        stderr=payload_stderr,
+        pass_fds=(binary_fd,),
+    )
+    while True:
+        try:
+            os.waitpid(-1, 0)
+        except ChildProcessError:
+            break
+os.close(binary_fd)
 caller_status = 128 - completed.returncode if completed.returncode < 0 else completed.returncode
 temporary = status_file.with_name(status_file.name + ".tmp")
 temporary.write_text(str(caller_status) + "\n", encoding="ascii")
@@ -982,7 +1114,8 @@ if completed.returncode < 0:
     os.kill(os.getpid(), signum)
     raise SystemExit(128 + signum)
 raise SystemExit(completed.returncode)
-' "$payload_status_file" "$payload_release_fifo" "$payload_start_fifo" "$fifo" "$hermit_bin" "$@")
+' "$payload_status_file" "$payload_release_fifo" "$payload_start_fifo" "$fifo" \
+        "$payload_binary_identity_file" "$hermit_bin" "$@")
     "${runner[@]}" "${resource_wrapper[@]}" &
     runner_pid=$!
 
@@ -998,9 +1131,19 @@ raise SystemExit(completed.returncode)
         if ! sample_detached_cgroup; then
             detached_metrics_error="could not sample verified cgroup before payload launch"
             kill_detached_unit || true
-        elif ! signal_detached_fifo "$payload_start_fifo"; then
-            detached_metrics_error="could not release verified payload gate"
-            kill_detached_unit || true
+        else
+            for _ in $(seq 1 100); do
+                accept_detached_binary_identity && break
+                kill -0 "$runner_pid" 2>/dev/null || break
+                sleep 0.02
+            done
+            if [ "$detached_binary_identity_accepted" -ne 1 ]; then
+                detached_metrics_error="could not authenticate the pinned executable before payload launch"
+                kill_detached_unit || true
+            elif ! signal_detached_fifo "$payload_start_fifo"; then
+                detached_metrics_error="could not release verified payload gate"
+                kill_detached_unit || true
+            fi
         fi
     else
         detached_metrics_error="declared memory, task, or CPU-core limit was not applied exactly"
@@ -1034,12 +1177,18 @@ raise SystemExit(completed.returncode)
         fi
         if [ -f "$log_file.cap-fired" ]; then
             detached_log_cap_hit=1
-            kill_detached_unit && detached_log_cap_killed=1
+            if terminate_detached_unit; then
+                detached_log_cap_killed=1
+            else
+                detached_metrics_error="log cap fired but the owned cgroup could not be terminated"
+            fi
             break
         fi
         if [ "$detached_cpu_usage_usec" -gt $((detached_cpu_timeout_secs * 1000000)) ]; then
             detached_cpu_time_limit_hit=1
-            kill_detached_unit || true
+            if ! terminate_detached_unit; then
+                detached_metrics_error="CPU-time budget fired but the owned cgroup could not be terminated"
+            fi
             break
         fi
         if ! kill -0 "$runner_pid" 2>/dev/null; then
@@ -1056,46 +1205,55 @@ raise SystemExit(completed.returncode)
     done
     sample_detached_cgroup || true
     [ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
+    if [ "$detached_cpu_usage_usec" -gt $((detached_cpu_timeout_secs * 1000000)) ]; then
+        detached_cpu_time_limit_hit=1
+        if ! terminate_detached_unit; then
+            detached_metrics_error="final CPU-time sample exceeded the budget but the owned cgroup could not be terminated"
+        fi
+    fi
 
+    payload_rc=""
     if [ -f "$payload_status_file" ]; then
         payload_rc="$(sed -n '1p' "$payload_status_file")"
         if ! [[ "$payload_rc" =~ ^[0-9]+$ ]] || [ "$payload_rc" -gt 255 ]; then
             detached_metrics_error="payload status is missing or malformed"
+            payload_rc=""
         fi
+        # Status is published only after the payload tree has closed its stderr
+        # writer. Drain the capper before releasing the holder so a short final
+        # burst cannot publish its marker after the parent has already decided
+        # the run completed normally.
         wait "$capper_pid" 2>/dev/null
         capper_waited=1
-        [ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
-        if [ -z "$detached_metrics_error" ]; then
-            detached_metrics="$(collect_detached_metrics)"
-            metrics_rc=$?
-            if [ "$metrics_rc" -eq 0 ]; then
-                read -r detached_memory_peak detached_cpu_usage detached_tasks_peak \
-                    detached_result_oom detached_result_timeout <<<"$detached_metrics"
-                [ "$detached_result_oom" -le "$detached_memory_oom_kills" ] \
-                    || detached_memory_oom_kills="$detached_result_oom"
-                [ "$detached_result_timeout" -le "$detached_wall_time_limit_hit" ] \
-                    || detached_wall_time_limit_hit="$detached_result_timeout"
-                if finish_detached_report "$detached_memory_peak" "$detached_cpu_usage" "$detached_tasks_peak"; then
-                    detached_metrics_written=1
-                else
-                    detached_metrics_error="atomic resource report completion failed"
-                fi
+        capper_pid=""
+        if [ -f "$log_file.cap-fired" ]; then
+            detached_log_cap_hit=1
+            if terminate_detached_unit; then
+                detached_log_cap_killed=1
             else
-                detached_metrics_error="required systemd/cgroup resource property is missing or malformed"
+                detached_metrics_error="log cap fired at payload completion but the owned cgroup could not be terminated"
             fi
         fi
-        # The complete report is durable before this release lets the service
-        # finish and before any unit reset/cleanup can occur.
-        if ! signal_detached_fifo "$payload_release_fifo"; then
-            kill_detached_unit || true
+        # Status is written only after the subreaper has reaped every payload
+        # descendant. Release the sole holder and wait for the unit to terminate
+        # before taking the authoritative final counters.
+        if ! detached_unit_is_quiescent && ! signal_detached_fifo "$payload_release_fifo"; then
+            detached_metrics_error="could not release the quiescent resource-accounting holder"
+            terminate_detached_unit || true
         fi
     fi
     runner_rc=0
     wait "$runner_pid" 2>/dev/null || runner_rc=$?
+    runner_pid=""
+    wait "$capper_pid" 2>/dev/null
+    capper_waited=1
+    capper_pid=""
+    [ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
 
-    # A deadline, lethal log cap, or external cgroup kill bypasses the holder's
-    # status file. The failed unit remains queryable until reset-failed below;
-    # use the last exact pids.peak sample and publish before that cleanup.
+    # A deadline, lethal log cap, or external cgroup kill bypasses payload
+    # status, but the retained unit properties remain queryable until cleanup.
+    # For ordinary completion, status proves the subreaper had no descendants
+    # before the holder exited. In both cases publication happens only now.
     if [ "$detached_metrics_written" -eq 0 ] && [ -z "$detached_metrics_error" ]; then
         detached_metrics="$(collect_detached_metrics)"
         metrics_rc=$?
@@ -1106,6 +1264,9 @@ raise SystemExit(completed.returncode)
                 || detached_memory_oom_kills="$detached_result_oom"
             [ "$detached_result_timeout" -le "$detached_wall_time_limit_hit" ] \
                 || detached_wall_time_limit_hit="$detached_result_timeout"
+            if unsigned_decimal_gt "$detached_cpu_usage" "$detached_limit_cpu_time_nsec"; then
+                detached_cpu_time_limit_hit=1
+            fi
             if finish_detached_report "$detached_memory_peak" "$detached_cpu_usage" "$detached_tasks_peak"; then
                 detached_metrics_written=1
             else
@@ -1115,7 +1276,11 @@ raise SystemExit(completed.returncode)
             detached_metrics_error="required post-termination resource property is missing or malformed"
         fi
     fi
-    rc=$runner_rc
+    if [ -n "$payload_rc" ]; then
+        rc=$payload_rc
+    else
+        rc=$runner_rc
+    fi
 elif [ "$runner_state" = APPLIED ]; then
     "${runner[@]}" "$hermit_bin" "$@" 2>"$fifo"
     rc=$?
@@ -1127,13 +1292,14 @@ else
 fi
 if [ "$capper_waited" -eq 0 ]; then
     wait "$capper_pid" 2>/dev/null
+    capper_pid=""
 fi
 [ ! -f "$log_file.cap-fired" ] || detached_log_cap_hit=1
 rm -f "$fifo"
 if [ -n "${payload_release_fifo:-}" ]; then
     rm -f "$payload_start_fifo" "$payload_release_fifo" "$payload_status_file" "$payload_status_file.tmp" \
-        "$log_dir/.resource-unit-location" "$log_dir/.resource-unit-properties" \
-        "$log_dir/.resource-cgroup-path" "$log_dir/.resource-cgroup-path.tmp"
+        "$payload_binary_identity_file" "$payload_binary_identity_file.tmp" \
+        "$log_dir/.resource-unit-location" "$log_dir/.resource-unit-properties"
 fi
 rm -f "$log_file.cap-fired" "$log_file.cap-fired.tmp"
 elapsed=$(( $(date +%s) - started ))
@@ -1162,7 +1328,7 @@ if [ "$trunc" = true ]; then
     fi
     field killed_at_cap "${killed:-unknown}"
     # A distinct code, because "255" tells a caller nothing about WHY.
-    if [ "${killed:-}" = "cgroup-killed" ] || [ "$detached_log_cap_hit" -eq 1 ]; then
+    if [ "${killed:-}" = "cgroup-killed" ] || [ "$detached_log_cap_killed" -eq 1 ]; then
         rc=125
     fi
     say "LOG CAP: the run hit the ${max_log_bytes}-byte cap (${killed:-unknown}). The log is INCOMPLETE by design; the kept bytes are the evidence."
@@ -1247,8 +1413,12 @@ if [ "$runner_state" = APPLIED ] && [ "$unit" != none ]; then
     esac
     # Clean up explicitly, since --collect is deliberately not used. A timed-out unit
     # is left in the failed state otherwise, and its name stays taken.
-    systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
     systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
+    systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
+    if [ -n "$detached_report_file" ] && detached_unit_is_quiescent; then
+        detached_cleanup_armed=0
+        trap - EXIT INT TERM HUP
+    fi
 fi
 if [ "$unit_result" = timeout ]; then
     say "DEADLINE: the run reached ${deadline} and was killed by its cgroup (systemd Result=timeout, child exit $rc)."
