@@ -6856,9 +6856,8 @@ fn truncate(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
 
 // TODO-HUMAN-REVIEW(PR-136): Review host fallocate delegation and flag bounds.
 fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux consumes only the low int descriptor word from the syscall register.
+    let fd = args[0] as libc::c_int;
     let Some(host_fd) = host_fd(state, fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -6884,9 +6883,8 @@ fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
 }
 
 fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
-    let Ok(fd) = i32::try_from(raw_fd) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux consumes only the low unsigned-int descriptor word.
+    let fd = raw_fd as libc::c_int;
     let Some(host_fd) = host_fd(state, fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -6908,9 +6906,8 @@ fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-227): Review translated host readahead semantics.
 fn readahead(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux consumes only the low int descriptor word from the syscall register.
+    let fd = args[0] as libc::c_int;
     let Some(host_fd) = host_fd(state, fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -6934,9 +6931,8 @@ fn readahead(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-227): Review translated host range-sync semantics.
 fn sync_file_range(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux consumes only the low int descriptor word from the syscall register.
+    let fd = args[0] as libc::c_int;
     let Some(host_fd) = host_fd(state, fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -36726,6 +36722,8 @@ mod tests {
 
     #[test]
     fn positioned_write_seek_truncate_and_sync_round_trip() {
+        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
+        const SIGNED_LOW_WORD: u64 = HIGH_WORD | (1 << 31);
         const PATH_ADDRESS: u64 = 0x100;
         const PAYLOAD_ADDRESS: u64 = 0x200;
         const PATCH_ADDRESS: u64 = 0x300;
@@ -36803,8 +36801,23 @@ mod tests {
         assert_eq!(&actual, b"abXYef");
         for syscall in [libc::SYS_fdatasync, libc::SYS_fsync] {
             assert_eq!(
-                syscall_result(&mut memory, &mut state, syscall, [fd as u64, 0, 0, 0, 0, 0],),
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    syscall,
+                    [HIGH_WORD | fd as u64, 0, 0, 0, 0, 0],
+                ),
                 0
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    syscall,
+                    [SIGNED_LOW_WORD | fd as u64, 0, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::EBADF),
+                "a set low-word sign bit must not alias a live descriptor"
             );
         }
         assert_eq!(
@@ -36812,7 +36825,7 @@ mod tests {
                 &mut memory,
                 &mut state,
                 libc::SYS_readahead,
-                [fd as u64, 0, 4096, 0, 0, 0],
+                [HIGH_WORD | fd as u64, 0, 4096, 0, 0, 0],
             ),
             0
         );
@@ -36820,8 +36833,34 @@ mod tests {
             syscall_result(
                 &mut memory,
                 &mut state,
+                libc::SYS_readahead,
+                [HIGH_WORD | fd as u64, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+            "offset validation follows low-word descriptor decoding"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readahead,
+                [SIGNED_LOW_WORD | fd as u64, 0, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
                 libc::SYS_sync_file_range,
-                [fd as u64, 0, 4096, libc::SYNC_FILE_RANGE_WRITE as u64, 0, 0,],
+                [
+                    HIGH_WORD | fd as u64,
+                    0,
+                    4096,
+                    libc::SYNC_FILE_RANGE_WRITE as u64,
+                    0,
+                    0,
+                ],
             ),
             0
         );
@@ -36840,7 +36879,7 @@ mod tests {
                 &mut state,
                 libc::SYS_sync_file_range,
                 [
-                    fd as u64,
+                    HIGH_WORD | fd as u64,
                     0,
                     1,
                     (libc::SYNC_FILE_RANGE_WAIT_BEFORE
@@ -36857,6 +36896,22 @@ mod tests {
             syscall_result(
                 &mut memory,
                 &mut state,
+                libc::SYS_sync_file_range,
+                [
+                    SIGNED_LOW_WORD | fd as u64,
+                    0,
+                    1,
+                    libc::SYNC_FILE_RANGE_WRITE as u64,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
                 libc::SYS_ftruncate,
                 [fd as u64, 4, 0, 0, 0, 0],
             ),
@@ -36868,7 +36923,7 @@ mod tests {
             &mut memory,
             &mut state,
             libc::SYS_fallocate,
-            [fd as u64, 0, 0, 8192, 0, 0],
+            [HIGH_WORD | fd as u64, 0, 0, 8192, 0, 0],
         );
         assert!(
             fallocate_result == 0 || fallocate_result == negative_errno(libc::EOPNOTSUPP),
@@ -36904,7 +36959,7 @@ mod tests {
                 &mut memory,
                 &mut state,
                 libc::SYS_fallocate,
-                [9, 0, 0, 0, 0, 0],
+                [HIGH_WORD | 9, 0, 0, 0, 0, 0],
             ),
             negative_errno(libc::EINVAL),
             "range validation precedes writable-access validation"
@@ -36920,7 +36975,7 @@ mod tests {
                     &mut memory,
                     &mut state,
                     libc::SYS_fallocate,
-                    [9, mode as u64, 0, 1, 0, 0],
+                    [HIGH_WORD | 9, mode as u64, 0, 1, 0, 0],
                 ),
                 negative_errno(libc::EOPNOTSUPP),
                 "invalid mode combination validation precedes writable access"
@@ -36931,7 +36986,7 @@ mod tests {
                 &mut memory,
                 &mut state,
                 libc::SYS_fallocate,
-                [9, FALLOC_FL_WRITE_ZEROES as u64, 0, 1, 0, 0],
+                [HIGH_WORD | 9, FALLOC_FL_WRITE_ZEROES as u64, 0, 1, 0, 0],
             ),
             negative_errno(libc::EBADF),
             "valid write-zeroes mode reaches writable-access validation"
@@ -36942,12 +36997,22 @@ mod tests {
                 &mut memory,
                 &mut state,
                 libc::SYS_fallocate,
-                [9, 1_u64 << 30, 0, 1, 0, 0],
+                [HIGH_WORD | 9, 1_u64 << 30, 0, 1, 0, 0],
             ),
             negative_errno(libc::EOPNOTSUPP),
             "unknown mode validation precedes writable-access validation"
         );
         state.files.remove(&9);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fallocate,
+                [SIGNED_LOW_WORD | fd as u64, 0, 0, 1, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
 
         assert_eq!(
             syscall_result(
