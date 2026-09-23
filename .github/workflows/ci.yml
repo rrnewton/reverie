@@ -19,6 +19,7 @@ jobs:
     - name: Dependencies
       run: sudo apt-get install -y libunwind-dev liblzma-dev cmake zlib1g-dev
     - name: Rust toolchain
+      id: toolchain
       uses: dtolnay/rust-toolchain@nightly
       with:
         components: clippy, rustfmt
@@ -36,6 +37,20 @@ jobs:
         key: dynamorio-${{ runner.os }}-${{ hashFiles('reverie-dbt/vendor/dynamorio/**', 'reverie-dbt/build.rs') }}
     - name: Build
       run: cargo build --workspace --all-features
+    - name: Cache constructor-disabled LiteInst conformance artifacts
+      uses: actions/cache@v4
+      with:
+        # Keep release/no-default artifacts separate from all-features builds.
+        # Cargo still verifies source, dependency and compiler fingerprints.
+        path: target/liteinst-conformance
+        key: liteinst-conformance-release-no-default-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}-${{ github.sha }}
+        restore-keys: |
+          liteinst-conformance-release-no-default-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}-
+    - name: LiteInst real target-loader conformance
+      # Uses ptrace and native loader oracles; no PMU or self-hosted runner needed.
+      # The bounded runner builds the release DSO, binds its digest and requires
+      # exactly one executed test, including the new-namespace refusal control.
+      run: reverie-liteinst/tests/run_target_loader_conformance.sh
     - name: DBT virtual identity and pidfd_open policy
       run: reverie-dbt/scripts/test-identity-policy.sh
     - name: Test regular workspace cases
