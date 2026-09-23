@@ -13439,7 +13439,7 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
-    let mut length = requested_length.min(MAX_HOST_IO);
+    let length = requested_length.min(MAX_HOST_IO);
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -13453,39 +13453,61 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     {
         return 0;
     }
-    if length >= 24 && !range_is_valid(memory, args[1], length as u64) {
+    // Preserve the original buffer length and page offset while making its
+    // non-writable suffix fault in the host. The kernel must decide how many
+    // complete records fit: their padding is not written, an incomplete record
+    // can modify a prefix before EFAULT, and EOF never touches the buffer.
+    // Calling once also preserves opaque directory cookies shared by dup aliases.
+    let writable = memory
+        .user()
+        .user_writable_prefix(args[1], length)
+        .unwrap_or(0);
+    let mut staged = match StagedIoVector::new(
+        GuestIoVec {
+            base: args[1],
+            length,
+        },
+        writable,
+        PAGE_SIZE as usize,
+    ) {
+        Ok(staged) => staged,
+        Err(error) => return error,
+    };
+    // Prefill so bytes that Linux leaves untouched (including record padding)
+    // remain unchanged when copying back after either success or a partial fault.
+    if writable != 0
+        && memory
+            .user()
+            .read(args[1], staged.accessible_slice_mut(writable))
+            .is_err()
+    {
         return negative_errno(libc::EFAULT);
     }
-    if length >= 24 {
-        let Ok(writable) = memory.user().user_accessible_prefix(args[1], length) else {
-            return negative_errno(libc::EFAULT);
-        };
-        if writable < 24 {
-            return negative_errno(libc::EFAULT);
-        }
-        length = writable;
-    }
-    let mut bytes = vec![0; length];
-    // SAFETY: file owns a live descriptor and bytes is writable for length bytes.
+    let output = staged.host_iovec();
+    // SAFETY: file owns a live descriptor; output points into the live staging
+    // arena, whose protected suffix is intentionally faultable by the kernel.
     let count = unsafe {
         libc::syscall(
             libc::SYS_getdents64,
             file.as_raw_fd(),
-            bytes.as_mut_ptr().cast::<libc::c_void>(),
-            bytes.len(),
+            output.iov_base,
+            output.iov_len,
         )
     };
-    if count < 0 {
-        return io_error(std::io::Error::last_os_error());
+    let result = if count < 0 {
+        io_error(std::io::Error::last_os_error())
+    } else {
+        count as i64
+    };
+    if writable != 0
+        && memory
+            .user()
+            .copy_to_user(args[1], staged.accessible_slice(writable))
+            .is_err()
+    {
+        return negative_errno(libc::EFAULT);
     }
-    let count = count as usize;
-    if count == 0 {
-        return 0;
-    }
-    match memory.user().write(args[1], &bytes[..count]) {
-        Ok(()) => count as i64,
-        Err(_) => negative_errno(libc::EFAULT),
-    }
+    result
 }
 
 fn is_open_standard(state: &LoadedStaticElf, guest_fd: libc::c_int) -> bool {

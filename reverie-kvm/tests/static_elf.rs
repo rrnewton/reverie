@@ -75,6 +75,201 @@ use reverie_kvm::StraceTool;
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 
 #[test]
+fn getdents64_copyout_matches_native_direct() {
+    getdents64_copyout_case("getdents64_copyout_matches_native_direct", false);
+}
+
+#[test]
+fn getdents64_copyout_matches_native_tool() {
+    getdents64_copyout_case("getdents64_copyout_matches_native_tool", true);
+}
+
+fn getdents64_copyout_case(test: &str, with_tool: bool) {
+    if !leader_self_exec_bounded(test) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let input = directory.0.join("input");
+    std::fs::create_dir(&input).unwrap();
+    std::fs::write(input.join("a-long-directory-entry-for-copyout"), b"x").unwrap();
+    let program = compile_c_program(&directory.0, "getdents-copyout", GETDENTS_COPYOUT_PROGRAM);
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(&program)
+        .arg("native")
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert!(native.stderr.is_empty(), "{native:?}");
+    eprintln!(
+        "native copyout oracle passed: {} bytes",
+        native.stdout.len()
+    );
+    for repetition in 0..2 {
+        let mut backend = KvmBackend::new(64 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_file_with_context(
+                std::fs::File::open(&program).unwrap(),
+                &[program.to_str().unwrap(), "guest"],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if with_tool {
+            let (log, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            let callbacks = log
+                .syscalls()
+                .iter()
+                .filter(|name| name.as_str() == "getdents64")
+                .count();
+            assert!(callbacks > 0, "typed getdents64 callback was bypassed");
+            eprintln!("typed getdents64 callbacks={callbacks}");
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&stdout));
+        assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(
+            std::str::from_utf8(&stdout).unwrap(),
+            std::str::from_utf8(&native.stdout).unwrap(),
+            "with_tool={with_tool} repetition={repetition}"
+        );
+        eprintln!("copyout parity passed: with_tool={with_tool} repetition={repetition}");
+    }
+}
+
+const GETDENTS_COPYOUT_PROGRAM: &str = r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define CHECK(expression) do { if (!(expression)) { printf("failure line=%d errno=%d\n", __LINE__, errno); return 93; } } while (0)
+struct entry { uint64_t ino; int64_t off; unsigned short len; unsigned char type; char name[]; };
+
+static void bytes(const unsigned char *buffer, size_t count) {
+    for (size_t i = 0; i < count; ++i) printf("%02x", buffer[i]);
+}
+
+int main(int argc, char **argv) {
+    CHECK(argc == 2);
+    int guest = !strcmp(argv[1], "guest");
+    CHECK(close(0) == 0);
+    int fd = open("input", O_RDONLY | O_DIRECTORY);
+    CHECK(fd == 0);
+    unsigned char reference[256];
+    long size = syscall(SYS_getdents64, fd, reference, sizeof(reference));
+    CHECK(size > 48 && size <= sizeof(reference));
+    off_t long_start = -1, previous = 0;
+    int entries = 0;
+    for (long offset = 0; offset < size;) {
+        struct entry *entry = (struct entry *)(reference + offset);
+        CHECK(entry->len >= 24 && offset + entry->len <= size);
+        if (!strcmp(entry->name, "a-long-directory-entry-for-copyout")) long_start = previous;
+        previous = entry->off;
+        offset += entry->len;
+        ++entries;
+    }
+    CHECK(entries == 3 && long_start >= 0);
+    off_t starts[] = {0, long_start, previous};
+    CHECK(close(fd) == 0);
+    unsigned char *mapping = mmap(0, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(mapping != MAP_FAILED);
+    const int prefixes[] = {0, 16, 21, 23, 24, 40, 48, 128};
+    const int counts[] = {0, 23, 24, 128};
+    for (int protection = 0; protection < 2; ++protection) {
+        for (int start = 0; start < 3; ++start) {
+            for (unsigned pi = 0; pi < sizeof(prefixes) / sizeof(prefixes[0]); ++pi) {
+                for (unsigned ci = 0; ci < sizeof(counts) / sizeof(counts[0]); ++ci) {
+                    CHECK(mprotect(mapping, 8192, PROT_READ | PROT_WRITE) == 0);
+                    memset(mapping, 0xa5, 8192);
+                    CHECK(mprotect(mapping + 4096, 4096, protection ? PROT_READ : PROT_NONE) == 0);
+                    fd = open("input", O_RDONLY | O_DIRECTORY);
+                    CHECK(fd == 0);
+                    int alias = dup(fd);
+                    CHECK(alias >= 3);
+                    CHECK(lseek(fd, starts[start], SEEK_SET) == starts[start]);
+                    unsigned char *output = mapping + 4096 - prefixes[pi];
+                    errno = 0;
+                    long result = syscall(SYS_getdents64, fd, output, counts[ci]);
+                    int error = errno;
+                    off_t position = lseek(alias, 0, SEEK_CUR);
+                    CHECK(position >= 0);
+                    CHECK(mprotect(mapping, 8192, PROT_READ | PROT_WRITE) == 0);
+                    printf("protect=%d start=%d prefix=%d count=%d result=%ld errno=%d cursor=%ld bytes=",
+                           protection, start, prefixes[pi], counts[ci], result, error, position);
+                    bytes(output - 8, 144);
+                    unsigned char retry[256];
+                    memset(retry, 0xa5, sizeof(retry));
+                    errno = 0;
+                    long retry_size = syscall(SYS_getdents64, alias, retry, sizeof(retry));
+                    CHECK(retry_size >= 0 && retry_size <= sizeof(retry));
+                    printf(" retry=%ld errno=%d bytes=", retry_size, errno);
+                    bytes(retry, sizeof(retry));
+                    printf(" cursor=%ld\n", lseek(fd, 0, SEEK_CUR));
+                    CHECK(close(alias) == 0 && close(fd) == 0);
+                }
+            }
+        }
+    }
+    const uintptr_t invalid[] = {0, UINTPTR_MAX - 15};
+    for (int start = 0; start < 3; ++start) {
+        for (unsigned pointer = 0; pointer < sizeof(invalid) / sizeof(invalid[0]); ++pointer) {
+            for (unsigned ci = 0; ci < sizeof(counts) / sizeof(counts[0]); ++ci) {
+                fd = open("input", O_RDONLY | O_DIRECTORY);
+                CHECK(fd == 0);
+                CHECK(lseek(fd, starts[start], SEEK_SET) == starts[start]);
+                errno = 0;
+                long result = syscall(SYS_getdents64, fd, (void *)invalid[pointer], counts[ci]);
+                int error = errno;
+                printf("invalid=%u start=%d count=%d result=%ld errno=%d cursor=%ld\n",
+                       pointer, start, counts[ci], result, error, lseek(fd, 0, SEEK_CUR));
+                CHECK(close(fd) == 0);
+            }
+        }
+    }
+    // Descriptor/type checks precede copyout, including zero and undersized counts.
+    int path = open("input", O_PATH | O_DIRECTORY);
+    int regular = open("input/a-long-directory-entry-for-copyout", O_RDONLY);
+    CHECK(path == 0 && regular >= 3);
+    int descriptors[] = {-1, path, regular};
+    int errors[] = {EBADF, EBADF, ENOTDIR};
+    CHECK(mprotect(mapping, 8192, PROT_READ) == 0);
+    for (int descriptor = 0; descriptor < 3; ++descriptor) {
+        for (unsigned ci = 0; ci < sizeof(counts) / sizeof(counts[0]); ++ci) {
+            errno = 0;
+            CHECK(syscall(SYS_getdents64, descriptors[descriptor], mapping, counts[ci]) == -1);
+            CHECK(errno == errors[descriptor]);
+        }
+    }
+    CHECK(close(path) == 0 && close(regular) == 0);
+    if (guest) {
+        // The backend deliberately exposes synthetic proc directories as empty.
+        fd = open("/proc", O_RDONLY | O_DIRECTORY);
+        CHECK(fd == 0);
+        CHECK(syscall(SYS_getdents64, fd, mapping, 128) == 0);
+        CHECK(syscall(SYS_getdents64, fd, (void *)-1, 0) == 0);
+        CHECK(close(fd) == 0);
+    }
+    for (int i = 0; i < 8192; ++i) CHECK(mapping[i] == 0xa5);
+    CHECK(munmap(mapping, 8192) == 0);
+    puts("copyout errors and synthetic proc policy PASS");
+    return 0;
+}
+"#;
+
+#[test]
 fn file_script_exec_plain() {
     file_script_exec_control("file_script_exec_plain", "plain");
 }
