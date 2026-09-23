@@ -65,9 +65,21 @@ impl PartialEq for ImageRevision {
 
 impl Eq for ImageRevision {}
 
+#[derive(Clone, Debug)]
+struct FileTableRevision(Arc<()>);
+
+impl PartialEq for FileTableRevision {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for FileTableRevision {}
+
 #[derive(Clone)]
 struct CurrentImage {
     revision: ImageRevision,
+    files_revision: FileTableRevision,
     files: Weak<Mutex<FileTableState>>,
     signals: Weak<Mutex<ProcessSignalState>>,
 }
@@ -83,10 +95,26 @@ pub(super) struct ProcessBinding {
 }
 
 impl ProcessBinding {
+    /// Caller holds the process signal transaction, so a publisher either
+    /// validates the previous table epoch before this change or observes the
+    /// new table and epoch together.
+    pub(super) fn rebind_files_locked(&self, files: &Arc<Mutex<FileTableState>>) {
+        let mut image = self.image.lock().unwrap_or_else(|p| p.into_inner());
+        let unchanged = image
+            .files
+            .upgrade()
+            .is_some_and(|current| Arc::ptr_eq(&current, files));
+        if !unchanged {
+            image.files = Arc::downgrade(files);
+            image.files_revision = FileTableRevision(Arc::new(()));
+        }
+    }
+
     pub(super) fn rebind(&self, state: &LoadedStaticElf, files: &Arc<Mutex<FileTableState>>) {
         // Caller holds the authoritative file table and process transaction.
         *self.image.lock().unwrap_or_else(|p| p.into_inner()) = CurrentImage {
             revision: ImageRevision(Arc::new(())),
+            files_revision: FileTableRevision(Arc::new(())),
             files: Arc::downgrade(files),
             signals: Arc::downgrade(&state.process_signals),
         };
@@ -231,6 +259,7 @@ impl ProcessSignalRegistry {
             lifecycle: Arc::downgrade(&state.task_lifecycle),
             image: Mutex::new(CurrentImage {
                 revision: ImageRevision(Arc::new(())),
+                files_revision: FileTableRevision(Arc::new(())),
                 files: Arc::downgrade(files),
                 signals: Arc::downgrade(&state.process_signals),
             }),
@@ -538,6 +567,7 @@ pub(super) enum PublicationRejection {
     Closed,
     StaleProcess,
     ChangedImage,
+    ChangedFileTable,
     InvalidEvent,
     InvalidCompletion,
     Backend(Errno),
@@ -708,30 +738,27 @@ impl ProcessSignalControl {
         // even dropping its final Arc could close an unrelated blocking socket
         // while the Tool holds its scheduler mutex. Only the inactive private
         // endpoint retains its historical table preflight and corruption checks.
-        let files_owner = if independent_carriers {
-            None
-        } else {
-            let Some(files) = image.files.upgrade() else {
-                return Rejected(StaleProcess);
-            };
-            Some(files)
-        };
-        let files = match files_owner.as_ref() {
+        let files_owner = (!independent_carriers)
+            .then(|| image.files.upgrade())
+            .flatten();
+        let (files, files_poisoned) = match files_owner.as_ref() {
             Some(files) => match files.lock() {
-                Ok(files) => Some(files),
-                Err(_) => return Rejected(Backend(Errno::EIO)),
+                Ok(files) => (Some(files), false),
+                Err(_) => (None, true),
             },
-            None => None,
+            None => (None, false),
         };
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-        if binding
-            .image
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .revision
-            != image.revision
-        {
+        let current_image = binding.image.lock().unwrap_or_else(|p| p.into_inner());
+        if current_image.revision != image.revision {
             return Rejected(ChangedImage);
+        }
+        if !independent_carriers && current_image.files_revision != image.files_revision {
+            return Rejected(ChangedFileTable);
+        }
+        drop(current_image);
+        if files_poisoned {
+            return Rejected(Backend(Errno::EIO));
         }
         let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
         if binding.identity != target
@@ -861,14 +888,13 @@ impl ProcessSignalControl {
             };
             carriers
         } else {
-            if matching.iter().any(|fd| {
-                !files
-                    .as_ref()
-                    .expect("private endpoint owns table")
-                    .files
-                    .contains_key(fd)
-            }) {
-                return Rejected(Backend(Errno::EBADF));
+            if !matching.is_empty() {
+                let Some(files) = files.as_ref() else {
+                    return Rejected(StaleProcess);
+                };
+                if matching.iter().any(|fd| !files.files.contains_key(fd)) {
+                    return Rejected(Backend(Errno::EBADF));
+                }
             }
             Vec::new()
         };
@@ -1097,7 +1123,9 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
             ProcessPublication::Rejected(reason) => Outcome::RejectedBeforeCommit(match reason {
                 PublicationRejection::Backend(errno) => errno,
                 PublicationRejection::Closed | PublicationRejection::StaleProcess => Errno::ESRCH,
-                PublicationRejection::ChangedImage => Errno::EAGAIN,
+                PublicationRejection::ChangedImage | PublicationRejection::ChangedFileTable => {
+                    Errno::EAGAIN
+                }
                 PublicationRejection::InvalidEvent | PublicationRejection::InvalidCompletion => {
                     Errno::EINVAL
                 }
@@ -1122,7 +1150,9 @@ impl reverie::ProcessSignalControl for ProcessSignalControl {
             ProcessPublication::Rejected(reason) => Outcome::RejectedBeforeCommit(match reason {
                 PublicationRejection::Backend(errno) => errno,
                 PublicationRejection::Closed | PublicationRejection::StaleProcess => Errno::ESRCH,
-                PublicationRejection::ChangedImage => Errno::EAGAIN,
+                PublicationRejection::ChangedImage | PublicationRejection::ChangedFileTable => {
+                    Errno::EAGAIN
+                }
                 PublicationRejection::InvalidEvent | PublicationRejection::InvalidCompletion => {
                     Errno::EINVAL
                 }
@@ -1987,6 +2017,112 @@ mod tests {
         );
         assert!(executor.signal_registry.failure.lock().unwrap().is_none());
         assert!(executor.file_table.is_poisoned());
+    }
+
+    #[test]
+    fn inactive_publication_retries_after_signalfd_rebinds_an_unshared_table() {
+        let mut leader = executor();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let old_fd = call(
+            &mut leader,
+            &memory,
+            libc::SYS_eventfd2,
+            [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
+        );
+        assert_eq!(old_fd, 3);
+        let mut worker = leader.thread_child(2).unwrap();
+        let old_table = leader.file_table.clone();
+        assert_eq!(
+            call(
+                &mut leader,
+                &memory,
+                libc::SYS_close_range,
+                [
+                    u32::MAX as u64,
+                    u32::MAX as u64,
+                    super::super::CLOSE_RANGE_UNSHARE as u64,
+                    0,
+                    0,
+                    0
+                ],
+            ),
+            0
+        );
+        assert!(!Arc::ptr_eq(&old_table, &leader.file_table));
+        assert_eq!(
+            call(
+                &mut leader,
+                &memory,
+                libc::SYS_close,
+                [old_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+
+        worker.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        worker.release_files_on_exit();
+        drop(worker);
+
+        let id = identity(&leader);
+        let publish_control = leader.signal_registry.control();
+        let old_guard = old_table.lock().unwrap();
+        let baseline_owners = Arc::strong_count(&old_table);
+        let publisher = std::thread::spawn(move || publish_control.publish_alarm(id, alarm(id)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while Arc::strong_count(&old_table) == baseline_owners {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "publisher did not pin the sampled old file table"
+            );
+            std::thread::yield_now();
+        }
+
+        let signal_fd = signalfd(&mut leader, &mut memory);
+        assert_eq!(
+            signal_fd, old_fd as i32,
+            "signalfd must reuse fd 3 in the detached table"
+        );
+        drop(old_guard);
+        assert_eq!(
+            publisher.join().unwrap(),
+            ProcessPublication::Rejected(PublicationRejection::ChangedFileTable)
+        );
+        assert!(!ready(&leader, signal_fd));
+        {
+            let old = old_table.lock().unwrap();
+            let mut poll = libc::pollfd {
+                fd: old.files[&(old_fd as i32)].as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert!(unsafe { libc::poll(&mut poll, 1, 0) } >= 0);
+            assert_eq!(poll.revents & libc::POLLIN, 0);
+        }
+        let process = leader.state.process_signals.lock().unwrap();
+        assert_eq!(
+            process
+                .shared_pending
+                .pending_mask(&process.pending_generations)
+                .to_bytes(),
+            KernelSigset::default().to_bytes()
+        );
+        drop(process);
+
+        receipt(
+            leader
+                .signal_registry
+                .control()
+                .publish_alarm(id, alarm(id)),
+        );
+        assert!(ready(&leader, signal_fd));
+        let old = old_table.lock().unwrap();
+        let mut poll = libc::pollfd {
+            fd: old.files[&(old_fd as i32)].as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert!(unsafe { libc::poll(&mut poll, 1, 0) } >= 0);
+        assert_eq!(poll.revents & libc::POLLIN, 0);
     }
 
     #[test]

@@ -260,6 +260,15 @@ pub(crate) struct TaskLifecycleState {
     pub capability_permitted: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TaskRegistration {
+    pub tid: i32,
+    pub tgid: i32,
+    pub pgid: i32,
+    pub dumpable: bool,
+    pub capability_permitted: u64,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct TaskLifecycleTable {
     next_generation: u64,
@@ -267,6 +276,13 @@ pub(crate) struct TaskLifecycleTable {
     signal_targets: std::collections::BTreeMap<
         i32,
         std::sync::Weak<std::sync::Mutex<crate::signal::ThreadSignalState>>,
+    >,
+    file_tables: std::collections::BTreeMap<
+        i32,
+        (
+            u64,
+            std::sync::Weak<std::sync::Mutex<crate::executor::FileTableState>>,
+        ),
     >,
     process_exits: std::collections::BTreeMap<(i32, u64), ProcessExitState>,
 }
@@ -324,37 +340,55 @@ impl TaskLifecycleTable {
                 capability_permitted,
             },
         );
-        // A reused numeric TID never inherits the old task's signal endpoint.
+        // A reused numeric TID never inherits the old task's signal endpoint
+        // or descriptor-table binding.
         self.signal_targets.remove(&tid);
+        self.file_tables.remove(&tid);
         generation
     }
 
-    pub(crate) fn register_with_signals(
+    pub(crate) fn register_with_bindings(
         &mut self,
-        tid: i32,
-        tgid: i32,
-        pgid: i32,
-        dumpable: bool,
-        capability_permitted: u64,
+        registration: TaskRegistration,
         signals: &SharedThreadSignalState,
-    ) -> u64 {
-        let generation = self.register(tid, tgid, pgid, dumpable, capability_permitted);
-        self.signal_targets.insert(tid, signals.downgrade());
-        generation
+        file_table: &std::sync::Arc<std::sync::Mutex<crate::executor::FileTableState>>,
+    ) -> TaskLifecycleState {
+        let generation = self.register(
+            registration.tid,
+            registration.tgid,
+            registration.pgid,
+            registration.dumpable,
+            registration.capability_permitted,
+        );
+        self.signal_targets
+            .insert(registration.tid, signals.downgrade());
+        self.file_tables.insert(
+            registration.tid,
+            (generation, std::sync::Arc::downgrade(file_table)),
+        );
+        self.tasks[&registration.tid]
     }
 
-    pub(crate) fn ensure_registered_with_signals(
+    pub(crate) fn ensure_registered_with_bindings(
         &mut self,
-        tid: i32,
-        tgid: i32,
-        pgid: i32,
-        dumpable: bool,
-        capability_permitted: u64,
+        registration: TaskRegistration,
         signals: &SharedThreadSignalState,
-    ) -> u64 {
-        let generation = self.ensure_registered(tid, tgid, pgid, dumpable, capability_permitted);
-        self.signal_targets.insert(tid, signals.downgrade());
-        generation
+        file_table: &std::sync::Arc<std::sync::Mutex<crate::executor::FileTableState>>,
+    ) -> TaskLifecycleState {
+        let generation = self.ensure_registered(
+            registration.tid,
+            registration.tgid,
+            registration.pgid,
+            registration.dumpable,
+            registration.capability_permitted,
+        );
+        self.signal_targets
+            .insert(registration.tid, signals.downgrade());
+        self.file_tables.insert(
+            registration.tid,
+            (generation, std::sync::Arc::downgrade(file_table)),
+        );
+        self.tasks[&registration.tid]
     }
 
     /// The caller keeps the lifecycle lock through queue publication, so an
@@ -364,6 +398,47 @@ impl TaskLifecycleTable {
         self.signal_targets
             .get(&tid)
             .and_then(SharedThreadSignalState::upgrade)
+    }
+
+    /// Bind one exact task incarnation to its current descriptor table.
+    ///
+    /// Threads initially point at the same table. `close_range(UNSHARE)` moves
+    /// only the caller's binding, so already-open proc task descriptions can
+    /// resolve the target's current table without freezing the opener's view.
+    pub(crate) fn rebind_file_table(
+        &mut self,
+        tid: i32,
+        generation: u64,
+        table: &std::sync::Arc<std::sync::Mutex<crate::executor::FileTableState>>,
+    ) -> bool {
+        if !self
+            .tasks
+            .get(&tid)
+            .is_some_and(|task| task.generation == generation)
+            || !self
+                .file_tables
+                .get(&tid)
+                .is_some_and(|(bound_generation, _)| *bound_generation == generation)
+        {
+            return false;
+        }
+        self.file_tables
+            .insert(tid, (generation, std::sync::Arc::downgrade(table)));
+        true
+    }
+
+    /// Resolve the descriptor table for one live task incarnation.
+    pub(crate) fn file_table(
+        &self,
+        tid: i32,
+        generation: u64,
+    ) -> Option<std::sync::Arc<std::sync::Mutex<crate::executor::FileTableState>>> {
+        self.tasks
+            .get(&tid)
+            .filter(|task| task.generation == generation)
+            .and_then(|_| self.file_tables.get(&tid))
+            .filter(|(bound_generation, _)| *bound_generation == generation)
+            .and_then(|(_, table)| table.upgrade())
     }
 
     pub(crate) fn ensure_registered(
@@ -388,6 +463,7 @@ impl TaskLifecycleTable {
         {
             self.tasks.remove(&tid);
             self.signal_targets.remove(&tid);
+            self.file_tables.remove(&tid);
         }
     }
 
@@ -2188,6 +2264,47 @@ mod tests {
     const TEST_MEMORY_SIZE: usize = 16 * 1024 * 1024;
     const TEST_LOAD_ADDRESS: u64 = 0x20_0000;
     const TEST_CODE_OFFSET: usize = 0x1000;
+
+    #[test]
+    fn task_registration_publishes_generation_signals_and_file_table_atomically() {
+        let signals = SharedThreadSignalState::default();
+        let first_table = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::executor::FileTableState::default(),
+        ));
+        let mut lifecycle = TaskLifecycleTable::default();
+        let registration = TaskRegistration {
+            tid: 7,
+            tgid: 7,
+            pgid: 7,
+            dumpable: true,
+            capability_permitted: 0,
+        };
+        let first = lifecycle.register_with_bindings(registration, &signals, &first_table);
+        assert!(lifecycle.signal_target(7).is_some());
+        assert!(std::sync::Arc::ptr_eq(
+            &lifecycle.file_table(7, first.generation).unwrap(),
+            &first_table,
+        ));
+
+        lifecycle.remove(7, first.generation);
+        let replacement_signals = SharedThreadSignalState::default();
+        let replacement_table = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::executor::FileTableState::default(),
+        ));
+        let replacement = lifecycle.register_with_bindings(
+            registration,
+            &replacement_signals,
+            &replacement_table,
+        );
+        assert!(replacement.generation > first.generation);
+        assert!(lifecycle.file_table(7, first.generation).is_none());
+        assert!(!lifecycle.rebind_file_table(7, first.generation, &first_table));
+        lifecycle.remove(7, first.generation);
+        assert!(std::sync::Arc::ptr_eq(
+            &lifecycle.file_table(7, replacement.generation).unwrap(),
+            &replacement_table,
+        ));
+    }
 
     fn test_static_elf(code: &[u8]) -> Vec<u8> {
         let mut image = vec![0; TEST_CODE_OFFSET + code.len()];

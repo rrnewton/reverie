@@ -459,7 +459,6 @@ fn captured_output_status_ignores_ambient_and_closed_supervisor_stdout() {
         target_tid: executor.state.tid,
         target_generation: generation,
         target_fd: libc::STDOUT_FILENO,
-        table: Arc::downgrade(&executor.file_table),
         lifecycle: executor.state.task_lifecycle.clone(),
         capture_output: true,
         path: b"/proc/1/fdinfo/1".to_vec(),

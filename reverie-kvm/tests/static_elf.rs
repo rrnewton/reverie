@@ -10625,6 +10625,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "captured_output_statfs_matches_native_and_is_repeatable_on_kvm",
         "fchdir_opath_matches_native_and_is_repeatable_on_kvm",
         "captured_aliases_ignore_reused_supervisor_stdio_on_kvm",
+        "close_range_unshare_is_per_caller_on_kvm",
         "captured_dirfds_reject_reused_supervisor_directories_on_kvm",
         "captured_file_operations_ignore_reused_supervisor_files_on_kvm",
         "captured_timerfd_controls_ignore_reused_supervisor_timerfds_on_kvm",
@@ -14816,6 +14817,184 @@ int main(int argc, char **argv) {
         (direct, direct_repeat, tool, tool_repeat)
     };
 
+    for (label, result) in [
+        ("direct", &results.0),
+        ("direct-repeat", &results.1),
+        ("tool", &results.2),
+        ("tool-repeat", &results.3),
+    ] {
+        assert_eq!(
+            result.0,
+            0,
+            "{label}: stdout={} stderr={}",
+            String::from_utf8_lossy(&result.1),
+            String::from_utf8_lossy(&result.2)
+        );
+        assert_eq!(result.1, native.stdout, "{label}");
+        assert_eq!(result.2, native.stderr, "{label}");
+    }
+    assert_eq!(results.1, results.0, "direct KVM result changed");
+    assert_eq!(results.2, results.0, "Tool and direct KVM results differ");
+    assert_eq!(results.3, results.2, "Tool KVM result changed");
+}
+
+// CLOSE_RANGE_UNSHARE must split one caller away from live CLONE_FILES
+// siblings. This synchronized cell distinguishes ordinary shared close and
+// CLOEXEC effects from caller-private close, CLOEXEC, and even an empty-range
+// detach. Retained entries still share OFD status flags. Direct KVM and Tool
+// runs must repeat native stdout/stderr/exit status exactly; this makes no L2
+// log or record/replay claim.
+#[test]
+fn close_range_unshare_is_per_caller_on_kvm() {
+    const TEST: &str = "close_range_unshare_is_per_caller_on_kvm";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "close-range-unshare",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define TEST_UNSHARE (1U << 1)
+#define TEST_CLOEXEC (1U << 2)
+
+enum { WORKERS = 3 };
+static int ready_pipe[WORKERS][2];
+static int go_pipe[WORKERS][2];
+static int ack_pipe[WORKERS][2];
+
+static int fd_open(int fd) {
+  return fcntl(fd, F_GETFD) >= 0;
+}
+
+static int cloexec_is(int fd, int expected) {
+  int flags = fcntl(fd, F_GETFD);
+  return flags >= 0 && !!(flags & FD_CLOEXEC) == expected;
+}
+
+static void *worker(void *opaque) {
+  int kind = (int)(intptr_t)opaque;
+  char byte;
+  if (write(ready_pipe[kind][1], "R", 1) != 1 ||
+      read(go_pipe[kind][0], &byte, 1) != 1)
+    return (void *)(intptr_t)(10 + kind);
+
+  if (!cloexec_is(103, 1)) return (void *)(intptr_t)(20 + kind);
+  errno = 0;
+  if (fcntl(104, F_GETFD) != -1 || errno != EBADF)
+    return (void *)(intptr_t)(30 + kind);
+
+  if (kind == 0) {
+    if (syscall(SYS_close_range, 100U, 100U, TEST_UNSHARE) != 0)
+      return (void *)(intptr_t)40;
+    errno = 0;
+    if (fcntl(100, F_GETFD) != -1 || errno != EBADF || !fd_open(101))
+      return (void *)(intptr_t)41;
+    if (fcntl(102, F_SETFL, O_NONBLOCK) != 0)
+      return (void *)(intptr_t)42;
+  } else if (kind == 1) {
+    if (syscall(SYS_close_range, 101U, 101U,
+                TEST_UNSHARE | TEST_CLOEXEC) != 0 ||
+        !cloexec_is(101, 1) || !fd_open(100))
+      return (void *)(intptr_t)50;
+  } else {
+    if (syscall(SYS_close_range, UINT32_MAX, UINT32_MAX,
+                TEST_UNSHARE) != 0 ||
+        close(102) != 0 || close(STDOUT_FILENO) != 0)
+      return (void *)(intptr_t)60;
+    errno = 0;
+    if (fcntl(102, F_GETFD) != -1 || errno != EBADF)
+      return (void *)(intptr_t)61;
+    errno = 0;
+    if (write(STDOUT_FILENO, "x", 1) != -1 || errno != EBADF)
+      return (void *)(intptr_t)62;
+  }
+
+  if (write(ack_pipe[kind][1], "A", 1) != 1)
+    return (void *)(intptr_t)(70 + kind);
+  return NULL;
+}
+
+int main(void) {
+  int source = open("/dev/null", O_RDWR | O_CLOEXEC);
+  if (source < 0) return 1;
+  for (int fd = 100; fd <= 104; ++fd)
+    if (dup2(source, fd) != fd) return 2;
+  if (close(source) != 0) return 3;
+
+  pthread_t threads[WORKERS];
+  for (int i = 0; i < WORKERS; ++i) {
+    if (pipe(ready_pipe[i]) || pipe(go_pipe[i]) || pipe(ack_pipe[i]) ||
+        pthread_create(&threads[i], NULL, worker, (void *)(intptr_t)i) != 0)
+      return 4;
+  }
+  char byte;
+  for (int i = 0; i < WORKERS; ++i)
+    if (read(ready_pipe[i][0], &byte, 1) != 1) return 5;
+
+  if (syscall(SYS_close_range, 103U, 103U, TEST_CLOEXEC) != 0 ||
+      syscall(SYS_close_range, 104U, 104U, 0) != 0)
+    return 6;
+  for (int i = 0; i < WORKERS; ++i)
+    if (write(go_pipe[i][1], "G", 1) != 1) return 7;
+  for (int i = 0; i < WORKERS; ++i)
+    if (read(ack_pipe[i][0], &byte, 1) != 1) return 8;
+  for (int i = 0; i < WORKERS; ++i) {
+    void *result = NULL;
+    if (pthread_join(threads[i], &result) != 0 || result != NULL)
+      return result == NULL ? 9 : (int)(intptr_t)result;
+  }
+
+  if (!fd_open(100) || !cloexec_is(101, 0) || !fd_open(102) ||
+      !(fcntl(102, F_GETFL) & O_NONBLOCK) || !cloexec_is(103, 1))
+    return 80;
+  errno = 0;
+  if (fcntl(104, F_GETFD) != -1 || errno != EBADF) return 81;
+  if (write(STDOUT_FILENO, "close-range-unshare-ok\n", 23) != 23) return 82;
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable).output().unwrap();
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert_eq!(native.stdout, b"close-range-unshare-ok\n");
+    assert!(native.stderr.is_empty());
+
+    let executable = executable.to_str().unwrap();
+    let run = |with_tool: bool| {
+        let image = std::fs::read(executable).unwrap();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        if with_tool {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        }
+    };
+
+    let results = (run(false), run(false), run(true), run(true));
     for (label, result) in [
         ("direct", &results.0),
         ("direct-repeat", &results.1),

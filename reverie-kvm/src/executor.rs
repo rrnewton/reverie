@@ -41,6 +41,7 @@ use crate::elf::LoadedStaticElf;
 use crate::elf::RegularCreateDirectoryPolicy;
 use crate::elf::STACK_LIMIT;
 use crate::elf::TASK_COMM_LEN;
+use crate::elf::TaskRegistration;
 #[cfg(any(test, feature = "native-test-support"))]
 use crate::elf::initialize_regular_create_directory_policy;
 use crate::elf::load_static_elf_with_authority;
@@ -86,6 +87,8 @@ const PAGE_SIZE: u64 = 4096;
 const MAX_RW_COUNT: usize = (i32::MAX as usize) & !(PAGE_SIZE as usize - 1);
 const X86_64_GUEST_USER_LIMIT: u64 = (1_u64 << 47) - PAGE_SIZE;
 const GUEST_NOFILE_LIMIT: libc::c_int = 1 << 20;
+const CLOSE_RANGE_UNSHARE: u32 = 1 << 1;
+const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-235): Review the single virtual network namespace identity.
 const GUEST_NETNS_COOKIE: u64 = 1;
@@ -442,7 +445,7 @@ pub(crate) fn execute_basic_syscall(
             segment: None,
         };
     }
-    execute_basic_syscall_with_output(memory, state, request, None, None)
+    execute_basic_syscall_with_output(memory, state, request, None, None, None)
 }
 
 #[cfg(test)]
@@ -462,6 +465,7 @@ fn execute_basic_syscall_with_output(
     request: &SyscallRequest,
     current_user_stack_pointer: Option<u64>,
     output: Option<&mut CapturedOutput>,
+    signal_file_binding: Option<(&ProcessBinding, &Arc<Mutex<FileTableState>>)>,
 ) -> SyscallAction {
     let mutates_layout = matches!(request.number(), number if
         number == libc::SYS_brk as u64 || number == libc::SYS_mmap as u64
@@ -474,6 +478,7 @@ fn execute_basic_syscall_with_output(
             request,
             current_user_stack_pointer,
             output,
+            signal_file_binding,
         );
     }
     let owner = memory.clone();
@@ -489,8 +494,14 @@ fn execute_basic_syscall_with_output(
     state.mmap_base = cursors.mmap_base;
     state.mmap_next = cursors.mmap_next;
     state.mmap_limit = cursors.mmap_limit;
-    let action =
-        execute_basic_syscall_inner(memory, state, request, current_user_stack_pointer, output);
+    let action = execute_basic_syscall_inner(
+        memory,
+        state,
+        request,
+        current_user_stack_pointer,
+        output,
+        signal_file_binding,
+    );
     owner.set_allocation_cursors(AllocationCursors::from_elf(state));
     action
 }
@@ -501,6 +512,7 @@ fn execute_basic_syscall_inner(
     request: &SyscallRequest,
     current_user_stack_pointer: Option<u64>,
     output: Option<&mut CapturedOutput>,
+    signal_file_binding: Option<(&ProcessBinding, &Arc<Mutex<FileTableState>>)>,
 ) -> SyscallAction {
     let args = request.args();
     let number = request.number();
@@ -552,7 +564,7 @@ fn execute_basic_syscall_inner(
         ftruncate(state, args, capture_metadata)
     } else if number == libc::SYS_truncate as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        truncate(memory, state, args)
+        truncate(memory, state, args, capture_metadata)
     } else if number == libc::SYS_fallocate as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         fallocate(state, args, capture_metadata)
@@ -607,10 +619,10 @@ fn execute_basic_syscall_inner(
         eventfd2(state, args[0], args[1])
     } else if number == libc::SYS_signalfd as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        signalfd(memory, state, args, 0)
+        signalfd(memory, state, args, 0, signal_file_binding)
     } else if number == libc::SYS_signalfd4 as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        signalfd(memory, state, args, args[3])
+        signalfd(memory, state, args, args[3], signal_file_binding)
     } else if number == libc::SYS_timerfd_create as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         timerfd_create(state, args[0], args[1])
@@ -1352,6 +1364,9 @@ pub(crate) struct ElfExecutor {
     // Retained view only; allocation/policy authority lives in its one owner.
     address_space: Option<GuestMemory>,
     file_table: Arc<std::sync::Mutex<FileTableState>>,
+    /// Logical CLONE_FILES ownership. Only executors hold this token, so its
+    /// strong count is not perturbed by proc observers or in-flight syscalls.
+    file_table_owners: Arc<()>,
     output: Option<CapturedOutput>,
     owns_output: bool,
     next_pid: Arc<AtomicI32>,
@@ -1796,13 +1811,12 @@ pub(crate) struct FileTableState {
 
 /// A proc fdinfo open description refers to one task incarnation and descriptor
 /// number, not to a supervisor fd. Aliases share seq state; each observation
-/// resolves the current entry in the original task's table.
+/// resolves the current entry through that task's generation-bound table.
 #[derive(Debug)]
 pub(crate) struct FdinfoDescription {
     target_tid: i32,
     target_generation: u64,
     target_fd: i32,
-    table: std::sync::Weak<Mutex<FileTableState>>,
     lifecycle: Arc<Mutex<crate::elf::TaskLifecycleTable>>,
     capture_output: bool,
     path: Vec<u8>,
@@ -1811,17 +1825,15 @@ pub(crate) struct FdinfoDescription {
 }
 
 /// One authenticated process- or thread-scoped proc-fd directory description.
-/// The weak table binding is deliberately the opener's table: an inherited
-/// process child must keep observing that table after its own table diverges.
-/// The process/task generation prevents numeric identity reuse from reviving
-/// descendant lookup after the bound incarnation ends.
+/// The process/task generation selects the target's current table, so inherited
+/// anchors follow that target across `close_range(UNSHARE)` without following
+/// the reader's unrelated table or a reused numeric task identity.
 #[derive(Debug)]
 pub(crate) struct ProcFdDirectoryDescription {
     kind: ProcFdDirectoryKind,
     target_tid: i32,
     target_generation: u64,
     target_tgid: i32,
-    table: std::sync::Weak<Mutex<FileTableState>>,
     lifecycle: Arc<Mutex<crate::elf::TaskLifecycleTable>>,
     path: Vec<u8>,
     visible_inode: u64,
@@ -1884,7 +1896,6 @@ impl ProcFdDirectoryDescription {
             target_tid: self.target_tid,
             target_generation: self.target_generation,
             target_tgid: self.target_tgid,
-            table: self.table.clone(),
             lifecycle: self.lifecycle.clone(),
             path: self.path.clone(),
             visible_inode: self.visible_inode,
@@ -1893,22 +1904,66 @@ impl ProcFdDirectoryDescription {
     }
 }
 
+fn task_file_table(
+    lifecycle: &Mutex<crate::elf::TaskLifecycleTable>,
+    tid: i32,
+    generation: u64,
+) -> Result<Arc<Mutex<FileTableState>>, i64> {
+    lifecycle
+        .lock()
+        .expect("KVM lifecycle lock poisoned")
+        .file_table(tid, generation)
+        .ok_or_else(|| negative_errno(libc::ENOENT))
+}
+
+/// Observe exactly one task's current descriptor table and return only owned
+/// data from it. The pointer check closes the race with
+/// `close_range(CLOSE_RANGE_UNSHARE)`: a lookup that found the old shared table
+/// retries if the task moved before that table was locked. Callers must never
+/// return a borrowed host fd or a table guard from `snapshot`.
+fn with_task_file_table_snapshot<T>(
+    lifecycle: &Arc<Mutex<crate::elf::TaskLifecycleTable>>,
+    tid: i32,
+    generation: u64,
+    mut validate: impl FnMut(&FileTableState, &crate::elf::TaskLifecycleTable) -> Result<(), i64>,
+    snapshot: impl FnOnce(&FileTableState) -> Result<T, i64>,
+) -> Result<T, i64> {
+    let mut snapshot = Some(snapshot);
+    loop {
+        let table_owner = task_file_table(lifecycle, tid, generation)?;
+        let table = table_owner.lock().expect("KVM file-table lock poisoned");
+        let lifecycle_guard = lifecycle.lock().expect("KVM lifecycle lock poisoned");
+        let Some(current_table) = lifecycle_guard.file_table(tid, generation) else {
+            return Err(negative_errno(libc::ENOENT));
+        };
+        if !Arc::ptr_eq(&current_table, &table_owner) {
+            continue;
+        }
+        validate(&table, &lifecycle_guard)?;
+        drop(lifecycle_guard);
+        return snapshot
+            .take()
+            .expect("task-table snapshot callback was already consumed")(&table);
+    }
+}
+
 impl FdinfoDescription {
     fn observe(&self) -> Result<Vec<u8>, i64> {
-        let table = self
-            .table
-            .upgrade()
-            .ok_or_else(|| negative_errno(libc::ENOENT))?;
-        let (file, flags, object_identity) = {
+        let (file, flags, object_identity) = loop {
+            let table_owner =
+                task_file_table(&self.lifecycle, self.target_tid, self.target_generation)?;
             // Order: description seq -> ONE file table -> lifecycle. Mutation
             // paths only propagate/drop description Arcs; they never lock seq.
-            let table = table.lock().expect("KVM file-table lock poisoned");
+            let table = table_owner.lock().expect("KVM file-table lock poisoned");
             let lifecycle = self.lifecycle.lock().expect("KVM lifecycle lock poisoned");
-            if !lifecycle
-                .get(self.target_tid)
-                .is_some_and(|task| task.generation == self.target_generation)
-            {
+            let Some(current_table) = lifecycle.file_table(self.target_tid, self.target_generation)
+            else {
                 return Err(negative_errno(libc::ENOENT));
+            };
+            if !Arc::ptr_eq(&current_table, &table_owner) {
+                // The target detached after our first binding lookup. Drop the
+                // stale table guard and retry against the new binding.
+                continue;
             }
             if table.proc_files.contains_key(&self.target_fd)
                 || table.random_device_fds.contains(&self.target_fd)
@@ -1972,11 +2027,11 @@ impl FdinfoDescription {
                 return Err(io_error(std::io::Error::last_os_error()));
             }
             // SAFETY: successful F_DUPFD_CLOEXEC transfers ownership.
-            (
+            break (
                 unsafe { std::fs::File::from_raw_fd(pinned) },
                 flags,
                 object_identity,
-            )
+            );
         };
         // Neither table nor lifecycle is held across procfs I/O. Private
         // anonymous carriers (epoll/inotify/eventfd/timerfd/pidfd, etc.) have no
@@ -2323,7 +2378,20 @@ fn fdinfo_path_target(state: &LoadedStaticElf, path: &[u8]) -> Option<FdinfoPath
 /// so metadata and path/type errors do not depend on the private carrier kind.
 fn fdinfo_target_generation(state: &LoadedStaticElf, tid: i32, fd: i32) -> Result<u64, i64> {
     let generation = fdinfo_task_generation(state, tid)?;
-    host_fd(state, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
+    if tid == state.tid {
+        host_fd(state, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
+    } else {
+        with_task_file_table_snapshot(
+            &state.task_lifecycle,
+            tid,
+            generation,
+            |_, _| Ok(()),
+            |table| {
+                file_table_host_fd(table, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
+                Ok(())
+            },
+        )?;
+    }
     Ok(generation)
 }
 
@@ -2359,28 +2427,38 @@ fn ensure_fdinfo_content_supported(
     ensure_fdinfo_object(host)
 }
 
-fn open_fdinfo(
-    state: &mut LoadedStaticElf,
-    target: (i32, i32),
-    flags: u64,
+fn ensure_file_table_fdinfo_content_supported(
+    table: &FileTableState,
+    fd: i32,
     capture_output: bool,
-) -> i64 {
-    let generation = match fdinfo_target_generation(state, target.0, target.1) {
-        Ok(generation) => generation,
-        Err(error) => return error,
-    };
+) -> Result<(), i64> {
+    if table.proc_files.contains_key(&fd)
+        || table.random_device_fds.contains(&fd)
+        || table.loginuid_fds.contains(&fd)
+        || table.signalfd_fds.contains(&fd)
+    {
+        return Err(negative_errno(libc::ENOSYS));
+    }
+    if capture_output && file_table_is_captured_output_description(table, fd) {
+        return Ok(());
+    }
+    let host = file_table_host_fd(table, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
+    ensure_fdinfo_object(host)
+}
+
+fn validate_fdinfo_open_flags(state: &LoadedStaticElf, flags: u64) -> Result<(), i64> {
     let path_only = flags & libc::O_PATH as u64 != 0;
     if !path_only
         && flags & (libc::O_CREAT | libc::O_DIRECTORY) as u64
             == (libc::O_CREAT | libc::O_DIRECTORY) as u64
     {
-        return negative_errno(synthetic_proc_create_directory_errno(
+        return Err(negative_errno(synthetic_proc_create_directory_errno(
             state.regular_create_directory_policy,
             flags,
-        ));
+        )));
     }
     if flags & libc::O_DIRECTORY as u64 != 0 {
-        return negative_errno(libc::ENOTDIR);
+        return Err(negative_errno(libc::ENOTDIR));
     }
     if flags
         & (libc::O_PATH
@@ -2391,29 +2469,20 @@ fn open_fdinfo(
             | libc::O_ASYNC) as u64
         != 0
     {
-        return negative_errno(libc::ENOSYS);
+        return Err(negative_errno(libc::ENOSYS));
     }
     if flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64 {
-        return negative_errno(libc::EACCES);
+        return Err(negative_errno(libc::EACCES));
     }
-    if let Err(error) = ensure_fdinfo_content_supported(state, target.1, capture_output) {
-        return error;
-    }
-    if state.fdinfo_table.upgrade().is_none() {
-        return negative_errno(libc::ENOSYS);
-    }
-    let path = format!("/proc/{}/fdinfo/{}", target.0, target.1).into_bytes();
-    let description = Arc::new(FdinfoDescription {
-        target_tid: target.0,
-        target_generation: generation,
-        target_fd: target.1,
-        table: state.fdinfo_table.clone(),
-        lifecycle: state.task_lifecycle.clone(),
-        capture_output,
-        path: path.clone(),
-        nofollow_status: flags & libc::O_NOFOLLOW as u64 != 0,
-        sequence: Mutex::default(),
-    });
+    Ok(())
+}
+
+fn open_prepared_fdinfo(
+    state: &mut LoadedStaticElf,
+    description: Arc<FdinfoDescription>,
+    flags: u64,
+) -> i64 {
+    let path = description.path.clone();
     // The empty, read-only backing file supplies descriptor ownership and
     // synthetic proc metadata only. Reads/seeks must use the description.
     let result = open_private_fdinfo_carrier(
@@ -2450,6 +2519,73 @@ fn open_fdinfo(
     result
 }
 
+fn open_fdinfo(
+    state: &mut LoadedStaticElf,
+    target: (i32, i32),
+    flags: u64,
+    capture_output: bool,
+) -> i64 {
+    let generation = match fdinfo_target_generation(state, target.0, target.1) {
+        Ok(generation) => generation,
+        Err(error) => return error,
+    };
+    if let Err(error) = validate_fdinfo_open_flags(state, flags) {
+        return error;
+    }
+    if let Err(error) = ensure_fdinfo_content_supported(state, target.1, capture_output) {
+        return error;
+    }
+    if task_file_table(&state.task_lifecycle, target.0, generation).is_err() {
+        return negative_errno(libc::ENOSYS);
+    }
+    let path = format!("/proc/{}/fdinfo/{}", target.0, target.1).into_bytes();
+    let description = Arc::new(FdinfoDescription {
+        target_tid: target.0,
+        target_generation: generation,
+        target_fd: target.1,
+        lifecycle: state.task_lifecycle.clone(),
+        capture_output,
+        path: path.clone(),
+        nofollow_status: flags & libc::O_NOFOLLOW as u64 != 0,
+        sequence: Mutex::default(),
+    });
+    open_prepared_fdinfo(state, description, flags)
+}
+
+fn prepare_task_fdinfo_description(
+    state: &LoadedStaticElf,
+    target_tid: i32,
+    target_generation: u64,
+    target_fd: i32,
+    flags: u64,
+    capture_output: bool,
+) -> Result<Arc<FdinfoDescription>, i64> {
+    with_task_file_table_snapshot(
+        &state.task_lifecycle,
+        target_tid,
+        target_generation,
+        |_, _| Ok(()),
+        |table| {
+            // Linux establishes that the named descriptor exists before
+            // applying open-only fdinfo flag/content restrictions.
+            file_table_host_fd(table, target_fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
+            validate_fdinfo_open_flags(state, flags)?;
+            ensure_file_table_fdinfo_content_supported(table, target_fd, capture_output)?;
+            let path = format!("/proc/{target_tid}/fdinfo/{target_fd}").into_bytes();
+            Ok(Arc::new(FdinfoDescription {
+                target_tid,
+                target_generation,
+                target_fd,
+                lifecycle: state.task_lifecycle.clone(),
+                capture_output,
+                path,
+                nofollow_status: flags & libc::O_NOFOLLOW as u64 != 0,
+                sequence: Mutex::default(),
+            }))
+        },
+    )
+}
+
 impl FileTableState {
     fn retire(self, retirement: &crate::elf::FileRetirement) {
         retirement.retire(self.stdin.into_iter().chain(self.files.into_values()));
@@ -2457,6 +2593,14 @@ impl FileTableState {
 
     fn try_from_elf(state: &LoadedStaticElf) -> std::io::Result<Self> {
         Self::prepare_from_elf(state, false)
+    }
+
+    fn try_from_elf_after_close_range(
+        state: &LoadedStaticElf,
+        targets: &std::collections::BTreeSet<libc::c_int>,
+        close_on_exec: bool,
+    ) -> std::io::Result<Self> {
+        Self::prepare_from_elf_where(state, false, |fd| close_on_exec || !targets.contains(&fd))
     }
 
     fn same_stdin_entry(&self, state: &LoadedStaticElf) -> bool {
@@ -2478,7 +2622,15 @@ impl FileTableState {
     }
 
     fn prepare_from_elf(state: &LoadedStaticElf, preserve_stdin: bool) -> std::io::Result<Self> {
-        let stdin = if preserve_stdin {
+        Self::prepare_from_elf_where(state, preserve_stdin, |_| true)
+    }
+
+    fn prepare_from_elf_where(
+        state: &LoadedStaticElf,
+        preserve_stdin: bool,
+        keep: impl Fn(libc::c_int) -> bool,
+    ) -> std::io::Result<Self> {
+        let stdin = if preserve_stdin || !keep(libc::STDIN_FILENO) {
             None
         } else {
             state
@@ -2490,6 +2642,7 @@ impl FileTableState {
         let files = state
             .files
             .iter()
+            .filter(|(fd, _)| keep(**fd))
             .map(|(&fd, file)| Ok((fd, state.file_retirement.stage_clone(file)?)))
             .collect::<std::io::Result<std::collections::BTreeMap<_, _>>>()?;
         Ok(Self {
@@ -2521,6 +2674,57 @@ impl FileTableState {
                 .collect(),
             fd_object_inodes: state.fd_object_inodes.clone(),
         })
+    }
+
+    /// Commit an already-applied `close_range` without cloning a descriptor.
+    /// A detached table was staged with only survivors; an already-private
+    /// table may still contain targets, which are retired through the same
+    /// deferred-close mechanism as ordinary shared-table publication.
+    fn commit_after_close_range(&mut self, state: &LoadedStaticElf) {
+        debug_assert!(
+            state.files.keys().all(|fd| self.files.contains_key(fd)),
+            "close_range introduced a descriptor"
+        );
+        let retired_stdin = state.stdin.is_none().then(|| self.stdin.take()).flatten();
+        let previous_files = std::mem::take(&mut self.files);
+        let (retained_files, retired_files): (
+            std::collections::BTreeMap<_, _>,
+            std::collections::BTreeMap<_, _>,
+        ) = previous_files
+            .into_iter()
+            .partition(|(fd, _)| state.files.contains_key(fd));
+        self.files = retained_files;
+        debug_assert_eq!(self.stdin.is_some(), state.stdin.is_some());
+        debug_assert!(self.files.keys().eq(state.files.keys()));
+        self.stdin_entry_id.clone_from(&state.stdin_entry_id);
+        self.fd_entry_ids.clone_from(&state.fd_entry_ids);
+        self.random_device_fds.clone_from(&state.random_device_fds);
+        self.loginuid_fds.clone_from(&state.loginuid_fds);
+        self.stdout_alias_fds.clone_from(&state.stdout_alias_fds);
+        self.stderr_alias_fds.clone_from(&state.stderr_alias_fds);
+        self.capture_status_flags
+            .clone_from(&state.capture_status_flags);
+        self.cloexec_fds.clone_from(&state.cloexec_fds);
+        self.closed_standard_fds
+            .clone_from(&state.closed_standard_fds);
+        self.proc_files.clone_from(&state.proc_files);
+        self.synthetic_proc_nofollow_fds
+            .clone_from(&state.synthetic_proc_nofollow_fds);
+        self.fdinfo_files.clone_from(&state.fdinfo_files);
+        self.proc_fd_directories
+            .clone_from(&state.proc_fd_directories);
+        self.signalfd_fds = state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .signalfd_masks
+            .keys()
+            .copied()
+            .collect();
+        self.fd_object_inodes.clone_from(&state.fd_object_inodes);
+        state
+            .file_retirement
+            .retire(retired_stdin.into_iter().chain(retired_files.into_values()));
     }
 
     // TODO-HUMAN-REVIEW(PR-235): Review stable host-fd preservation during table sync.
@@ -2728,32 +2932,30 @@ impl ElfExecutor {
         let _retirement = state.file_retirement.hold();
         let transaction = state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-        let task_generation = state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .ensure_registered_with_signals(
-                state.tid,
-                state.pid,
-                state.pgid,
-                state.dumpable,
-                state.capability_permitted,
-                &state.thread_signals,
-            );
-        let process_generation = state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(state.tid)
-            .expect("registered KVM task exists")
-            .process_generation;
-        let next_pid = state.pid.saturating_add(1);
-        let sigchld_auto_reap = Arc::new(AtomicBool::new(sigchld_auto_reaps(&state)));
-        let address_space = None;
         file_table = Arc::new(std::sync::Mutex::new(
             FileTableState::try_from_elf(&state).expect("clone initial KVM file table"),
         ));
         state.fdinfo_table = Arc::downgrade(&file_table);
+        let lifecycle_state = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .ensure_registered_with_bindings(
+                TaskRegistration {
+                    tid: state.tid,
+                    tgid: state.pid,
+                    pgid: state.pgid,
+                    dumpable: state.dumpable,
+                    capability_permitted: state.capability_permitted,
+                },
+                &state.thread_signals,
+                &file_table,
+            );
+        let task_generation = lifecycle_state.generation;
+        let process_generation = lifecycle_state.process_generation;
+        let next_pid = state.pid.saturating_add(1);
+        let sigchld_auto_reap = Arc::new(AtomicBool::new(sigchld_auto_reaps(&state)));
+        let address_space = None;
         let signal_registry = Arc::new(ProcessSignalRegistry::default());
         let signal_binding = signal_registry
             .register(&state, &file_table, process_generation, None)
@@ -2771,6 +2973,7 @@ impl ElfExecutor {
             signal_effect_raw_result: None,
             address_space,
             file_table,
+            file_table_owners: Arc::new(()),
             output,
             owns_output: true,
             next_pid: Arc::new(AtomicI32::new(next_pid)),
@@ -3169,25 +3372,23 @@ impl ElfExecutor {
         let address_space = None;
         file_table = Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?));
         state.fdinfo_table = Arc::downgrade(&file_table);
-        let task_generation = state
+        let lifecycle_state = state
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .register_with_signals(
-                state.tid,
-                state.pid,
-                state.pgid,
-                state.dumpable,
-                state.capability_permitted,
+            .register_with_bindings(
+                TaskRegistration {
+                    tid: state.tid,
+                    tgid: state.pid,
+                    pgid: state.pgid,
+                    dumpable: state.dumpable,
+                    capability_permitted: state.capability_permitted,
+                },
                 &state.thread_signals,
+                &file_table,
             );
-        let process_generation = state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(state.tid)
-            .expect("registered KVM task exists")
-            .process_generation;
+        let task_generation = lifecycle_state.generation;
+        let process_generation = lifecycle_state.process_generation;
         let sigchld_auto_reap = sigchld_auto_reaps(&state);
         let signal_binding = match self.signal_registry.register(
             &state,
@@ -3226,6 +3427,7 @@ impl ElfExecutor {
             signal_effect_raw_result: None,
             address_space,
             file_table,
+            file_table_owners: Arc::new(()),
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
@@ -3259,6 +3461,7 @@ impl ElfExecutor {
     ) -> crate::Result<Self> {
         // Declare owned child state and its cleanup scope before either guard.
         let mut state;
+        let file_table = self.file_table.clone();
         let _child_retirement;
         let _retirement = self.state.file_retirement.hold();
         let transaction = self.state.signal_transaction.clone();
@@ -3295,25 +3498,24 @@ impl ElfExecutor {
         state.signal_transaction = self.state.signal_transaction.clone();
         state.thread_signals = self.state.thread_signals.for_clone_thread();
         state.thread_signals.lock().observe_ignored = observe_ignored;
-        let task_generation = state
+        state.fdinfo_table = Arc::downgrade(&file_table);
+        let lifecycle_state = state
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .register_with_signals(
-                state.tid,
-                state.pid,
-                state.pgid,
-                state.dumpable,
-                state.capability_permitted,
+            .register_with_bindings(
+                TaskRegistration {
+                    tid: state.tid,
+                    tgid: state.pid,
+                    pgid: state.pgid,
+                    dumpable: state.dumpable,
+                    capability_permitted: state.capability_permitted,
+                },
                 &state.thread_signals,
+                &file_table,
             );
-        let process_generation = state
-            .task_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(state.tid)
-            .expect("registered KVM task exists")
-            .process_generation;
+        let task_generation = lifecycle_state.generation;
+        let process_generation = lifecycle_state.process_generation;
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         let child = Self {
             state,
@@ -3326,7 +3528,8 @@ impl ElfExecutor {
             completed_signal_effects: Vec::new(),
             signal_effect_raw_result: None,
             address_space: self.address_space.clone(),
-            file_table: self.file_table.clone(),
+            file_table,
+            file_table_owners: self.file_table_owners.clone(),
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
@@ -3535,6 +3738,16 @@ impl ElfExecutor {
         let identities = std::mem::take(&mut self.state.fd_object_inodes);
         self.state.fd_entry_ids.clear();
         self.file_table = Arc::new(Mutex::new(FileTableState::default()));
+        self.file_table_owners = Arc::new(());
+        self.state.fdinfo_table = Arc::downgrade(&self.file_table);
+        // Some exit paths retire lifecycle identity before releasing executor
+        // handles. Rebind only while the exact task remains observable.
+        let _ = self
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .rebind_file_table(self.state.tid, self.task_generation, &self.file_table);
         let action = self.process_action.take();
         drop(_transaction);
         drop(_files);
@@ -5470,6 +5683,238 @@ impl Drop for ElfExecutor {
 }
 
 impl ElfExecutor {
+    /// Resolve proc-fd opens that name another task without ever holding the
+    /// caller and target descriptor-table locks together. Source preparation
+    /// pins or remints everything needed from the target; destination commit
+    /// then chooses a guest fd under the caller's current table lock.
+    fn execute_cross_table_proc_open(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+    ) -> crate::Result<Option<i64>> {
+        let (guest_dirfd, path_address, raw_flags) = match request.number() {
+            number if number == libc::SYS_open as u64 => {
+                (libc::AT_FDCWD, request.args()[0], request.args()[1])
+            }
+            number if number == libc::SYS_openat as u64 => (
+                request.args()[0] as libc::c_int,
+                request.args()[1],
+                request.args()[2],
+            ),
+            number if number == libc::SYS_creat as u64 => (
+                libc::AT_FDCWD,
+                request.args()[0],
+                (libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC) as u64,
+            ),
+            _ => return Ok(None),
+        };
+        let flags = u64::from(raw_flags as libc::c_int as u32) & LEGACY_OPEN_FLAGS;
+        // Let the ordinary path preserve its pre-pathname flag precedence.
+        if invalid_legacy_tmpfile_flags(flags)
+            || flags & libc::O_PATH as u64 == 0
+                && self.state.regular_create_directory_policy
+                    == RegularCreateDirectoryPolicy::EarlyEinval
+                && flags & (libc::O_CREAT | libc::O_DIRECTORY) as u64
+                    == (libc::O_CREAT | libc::O_DIRECTORY) as u64
+        {
+            return Ok(None);
+        }
+
+        // Refresh the caller snapshot so descriptor-relative anchors and
+        // capture aliases are classified from the authoritative table. Drop
+        // it before resolving a target task.
+        let caller_table = self.file_table.clone();
+        {
+            let caller = caller_table.lock().expect("KVM file-table lock poisoned");
+            if let Err(error) = caller.install(&mut self.state) {
+                return Ok(Some(io_error(error)));
+            }
+            if self.output.is_some()
+                && let Some(guest_fd) = missing_capture_status(&self.state)
+            {
+                return Err(crate::Error::CapturedOutputStatusMissing(guest_fd));
+            }
+        }
+
+        let path = match read_c_string(memory, path_address, 4096) {
+            Ok(path) => path,
+            Err(error) => return Ok(Some(read_c_string_errno(error))),
+        };
+        if path.is_empty() {
+            return Ok(Some(negative_errno(libc::ENOENT)));
+        }
+        if captured_relative_dirfd(&self.state, guest_dirfd, &path) {
+            return Ok(Some(negative_errno(libc::ENOTDIR)));
+        }
+        let relative_proc_path = synthetic_proc_relative_path(&self.state, guest_dirfd, &path);
+        let resolved_path = relative_proc_path.as_deref().unwrap_or(&path);
+        let capture = self.output.as_ref().map(CapturedOutput::metadata);
+        let capture_output = capture.is_some();
+
+        // The directory itself is created by the ordinary synthetic-proc path;
+        // only a child lookup needs a target table snapshot.
+        if synthetic_proc_fd_directory_target(&self.state, resolved_path).is_some() {
+            return Ok(None);
+        }
+
+        let prepared = if let Some(FdinfoPathTarget::Target { tid, fd }) =
+            fdinfo_path_target(&self.state, resolved_path)
+        {
+            if tid == self.state.tid {
+                return Ok(None);
+            }
+            let generation = match fdinfo_task_generation(&self.state, tid) {
+                Ok(generation) => generation,
+                Err(error) => return Ok(Some(error)),
+            };
+            match prepare_task_fdinfo_description(
+                &self.state,
+                tid,
+                generation,
+                fd,
+                flags,
+                capture_output,
+            ) {
+                Ok(description) => PreparedCrossTableOpen::Fdinfo(description),
+                Err(error) => return Ok(Some(error)),
+            }
+        } else {
+            let source = if !path.starts_with(b"/") {
+                if let Some(description) = self.state.proc_fd_directories.get(&guest_dirfd).cloned()
+                {
+                    match proc_fd_relative_path_suffix(&path) {
+                        Ok(ProcFdPathSuffix::Target(guest_fd)) => {
+                            Some(ProcFdOpenSource::Directory {
+                                description,
+                                guest_fd,
+                            })
+                        }
+                        Ok(ProcFdPathSuffix::Descendant {
+                            fd,
+                            trailing_slash_only,
+                        }) => {
+                            return Ok(Some(proc_fd_directory_descendant_error(
+                                &description,
+                                fd,
+                                trailing_slash_only,
+                                self.state.pid,
+                                self.state.capability_effective,
+                            )));
+                        }
+                        Err(error) => return Ok(Some(error)),
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let source = match source {
+                Some(source) => source,
+                None => {
+                    let target = match guest_fd_path(&self.state, resolved_path, libc::ENOENT) {
+                        Ok(Some(target)) if target.target_tid != self.state.tid => target,
+                        Ok(_) => return Ok(None),
+                        Err(error) => return Ok(Some(error)),
+                    };
+                    ProcFdOpenSource::Direct(target)
+                }
+            };
+            match prepare_proc_fd_open(&self.state, &source, flags, capture) {
+                Ok(prepared) => PreparedCrossTableOpen::ProcFd(prepared),
+                Err(error) => return Ok(Some(error)),
+            }
+        };
+
+        let mut caller = caller_table.lock().expect("KVM file-table lock poisoned");
+        if let Err(error) = caller.install(&mut self.state) {
+            return Ok(Some(io_error(error)));
+        }
+        if self.output.is_some()
+            && let Some(guest_fd) = missing_capture_status(&self.state)
+        {
+            return Err(crate::Error::CapturedOutputStatusMissing(guest_fd));
+        }
+        let result = match prepared {
+            PreparedCrossTableOpen::ProcFd(prepared) => {
+                commit_prepared_proc_fd_open(&mut self.state, prepared, flags)
+            }
+            PreparedCrossTableOpen::Fdinfo(description) => {
+                open_prepared_fdinfo(&mut self.state, description, flags)
+            }
+        };
+        caller
+            .update_from_elf(&self.state)
+            .expect("cross-table proc open updated KVM file table");
+        Ok(Some(result))
+    }
+
+    fn execute_close_range_unshare(&mut self, request: CloseRangeArguments) -> crate::Result<i64> {
+        debug_assert!(request.flags & CLOSE_RANGE_UNSHARE != 0);
+        let shared = Arc::strong_count(&self.file_table_owners) > 1;
+
+        // The old table stays locked from authoritative install through the
+        // caller-only binding swap. A sibling therefore observes either the
+        // complete shared table or the complete detached table, never a mix.
+        let old_table = self.file_table.clone();
+        let mut old_files = old_table.lock().expect("KVM file-table lock poisoned");
+        if let Err(error) = old_files.install(&mut self.state) {
+            return Ok(io_error(error));
+        }
+        if self.output.is_some()
+            && let Some(guest_fd) = missing_capture_status(&self.state)
+        {
+            return Err(crate::Error::CapturedOutputStatusMissing(guest_fd));
+        }
+
+        let targets = close_range_targets(&self.state, request);
+        let close_on_exec = request.flags & CLOSE_RANGE_CLOEXEC != 0;
+        if !shared {
+            let result = apply_close_range(&mut self.state, request, targets);
+            debug_assert_eq!(result, 0, "validated close_range became fallible");
+            old_files.commit_after_close_range(&self.state);
+            return Ok(result);
+        }
+
+        // The process-level virtual signalfd model intentionally refuses live
+        // siblings. Fail closed if a corrupted/pre-policy table reaches this
+        // transition instead of removing another task's fd-keyed mask.
+        if !old_files.signalfd_fds.is_empty() {
+            return Ok(negative_errno(libc::ENOSYS));
+        }
+
+        // Allocate every host descriptor the private table will need before
+        // changing local state. Closing mode clones only survivors, avoiding
+        // an artificial EMFILE while still making failure side-effect-free.
+        let mut detached = match FileTableState::try_from_elf_after_close_range(
+            &self.state,
+            &targets,
+            close_on_exec,
+        ) {
+            Ok(detached) => detached,
+            Err(error) => return Ok(io_error(error)),
+        };
+
+        let result = apply_close_range(&mut self.state, request, targets);
+        debug_assert_eq!(result, 0, "validated close_range became fallible");
+        detached.commit_after_close_range(&self.state);
+        let detached = Arc::new(Mutex::new(detached));
+        self.state.fdinfo_table = Arc::downgrade(&detached);
+        assert!(
+            self.state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .rebind_file_table(self.state.tid, self.task_generation, &detached),
+            "live KVM task disappeared during close_range unshare"
+        );
+        self.file_table = detached;
+        self.file_table_owners = Arc::new(());
+        drop(old_files);
+        drop(old_table);
+        Ok(result)
+    }
+
     /// Execute one static-ELF guest syscall. Backend invariants are typed run
     /// failures: callers must terminate the run rather than encode them as a
     /// Linux syscall errno.
@@ -5508,6 +5953,18 @@ impl ElfExecutor {
         }
         if let Some(result) = self.execute_accept(request, memory) {
             return Ok(result);
+        }
+        if let Some(result) = self.execute_cross_table_proc_open(request, memory)? {
+            return Ok(result);
+        }
+        if request.number() == libc::SYS_close_range as u64 {
+            let close_range = match decode_close_range(request.args()) {
+                Ok(close_range) => close_range,
+                Err(error) => return Ok(error),
+            };
+            if close_range.flags & CLOSE_RANGE_UNSHARE != 0 {
+                return self.execute_close_range_unshare(close_range);
+            }
         }
         // TODO-HUMAN-REVIEW(PR-172): Review CLONE_FILES descriptor-table sharing.
         // Thread children retain private executor state, but synchronize their
@@ -5600,6 +6057,7 @@ impl ElfExecutor {
                 request,
                 self.current_user_stack_pointer,
                 self.output.as_mut(),
+                Some((&self.signal_binding, &file_table)),
             )
         };
         if let Some(before) = sigchld_action_before {
@@ -7262,7 +7720,12 @@ fn ftruncate(state: &LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMe
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review held-descriptor path truncate delegation.
-fn truncate(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn truncate(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
     let length = args[1] as libc::off_t;
     if length < 0 {
         return negative_errno(libc::EINVAL);
@@ -7272,22 +7735,21 @@ fn truncate(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
         Ok(_) => return negative_errno(libc::ENOENT),
         Err(error) => return read_c_string_errno(error),
     };
-    let held_file;
-    let target_fd = if let Some(guest_fd) = match guest_fd_path(state, &path, libc::ENOENT) {
-        Ok(path) => path,
+    let guest_path = match guest_fd_metadata(state, libc::AT_FDCWD, &path, false, capture) {
+        Ok(metadata) => metadata,
         Err(error) => return error,
-    } {
-        if state.proc_files.contains_key(&guest_fd) {
+    };
+    let held_file;
+    let target_fd = if let Some(metadata) = guest_path.as_ref() {
+        if metadata.proc_inode.is_some() {
             return negative_errno(libc::EACCES);
         }
-        if is_captured_output_description(state, guest_fd) {
+        if metadata.captured_output {
             // The proc-fd path follows the guest's logical capture FIFO, not
             // the supervisor object currently occupying raw fd 1/2.
             return negative_errno(libc::EINVAL);
         }
-        let Some(host_fd) = host_fd(state, guest_fd) else {
-            return negative_errno(libc::ENOENT);
-        };
+        let host_fd = metadata.host_fd;
         if canonical_fd_path(host_fd).is_ok_and(|target| {
             target
                 .as_os_str()
@@ -7786,10 +8248,11 @@ fn open_file(
         return open_virtual_file(state, content, flags, close_on_exec);
     }
     let guest_cloexec = close_on_exec;
-    if let Some(guest_fd) = match guest_fd_path(state, path, libc::ENOENT) {
+    if let Some(target) = match guest_fd_path(state, path, libc::ENOENT) {
         Ok(path) => path,
         Err(error) => return error,
     } {
+        let guest_fd = target.guest_fd;
         return open_guest_fd_path(state, guest_fd, flags, guest_cloexec, capture);
     }
     if path == b"/dev/random" || path == b"/dev/urandom" {
@@ -8098,11 +8561,135 @@ fn guest_fd_descendant_error(
     }
 }
 
+fn file_table_guest_fd_descendant_error(
+    table: &FileTableState,
+    guest_fd: libc::c_int,
+    trailing_slash_errno: libc::c_int,
+    trailing_slash_only: bool,
+) -> i64 {
+    if file_table_is_captured_output_description(table, guest_fd) {
+        return negative_errno(libc::ENOTDIR);
+    }
+    let Some(host_fd) = file_table_host_fd(table, guest_fd) else {
+        return negative_errno(libc::ENOENT);
+    };
+    if table
+        .proc_files
+        .get(&guest_fd)
+        .copied()
+        .is_some_and(is_synthetic_proc_directory_inode)
+    {
+        return negative_errno(if trailing_slash_only {
+            trailing_slash_errno
+        } else {
+            libc::ENOENT
+        });
+    }
+    match fd_mode(host_fd) {
+        Ok(mode) if mode & libc::S_IFMT != libc::S_IFDIR => negative_errno(libc::ENOTDIR),
+        Ok(_) => negative_errno(if trailing_slash_only {
+            trailing_slash_errno
+        } else {
+            libc::ENOENT
+        }),
+        Err(error) => error,
+    }
+}
+
+fn task_fd_descendant_error(
+    state: &LoadedStaticElf,
+    target: GuestFdPath,
+    trailing_slash_errno: libc::c_int,
+    trailing_slash_only: bool,
+) -> i64 {
+    if target.target_tid == state.tid
+        && state
+            .task_lifecycle
+            .lock()
+            .expect("KVM lifecycle lock poisoned")
+            .get(state.tid)
+            .is_some_and(|task| task.generation == target.target_generation)
+    {
+        return guest_fd_descendant_error(
+            state,
+            target.guest_fd,
+            trailing_slash_errno,
+            trailing_slash_only,
+        );
+    }
+    with_task_file_table_snapshot(
+        &state.task_lifecycle,
+        target.target_tid,
+        target.target_generation,
+        |_, _| Ok(()),
+        |table| {
+            Ok(file_table_guest_fd_descendant_error(
+                table,
+                target.guest_fd,
+                trailing_slash_errno,
+                trailing_slash_only,
+            ))
+        },
+    )
+    .unwrap_or_else(|error| error)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GuestFdPath {
+    guest_fd: libc::c_int,
+    target_tid: i32,
+    target_generation: u64,
+}
+
+#[derive(Clone)]
+enum ProcFdOpenSource {
+    Direct(GuestFdPath),
+    Directory {
+        description: Arc<ProcFdDirectoryDescription>,
+        guest_fd: libc::c_int,
+    },
+}
+
+impl ProcFdOpenSource {
+    fn target(&self) -> GuestFdPath {
+        match self {
+            Self::Direct(target) => *target,
+            Self::Directory {
+                description,
+                guest_fd,
+            } => GuestFdPath {
+                guest_fd: *guest_fd,
+                target_tid: description.target_tid,
+                target_generation: description.target_generation,
+            },
+        }
+    }
+}
+
+enum PreparedProcFdOpen {
+    Ordinary {
+        file: std::fs::File,
+        output_alias: Option<OutputAlias>,
+        identity: Arc<GuestFileIdentity>,
+        capture_status: Option<Arc<AtomicI32>>,
+    },
+    ProcDirectory(Arc<ProcFdDirectoryDescription>),
+    SyntheticProc {
+        authenticated: crate::proc_carrier::AuthenticatedProcCarrier,
+        inode: u64,
+    },
+}
+
+enum PreparedCrossTableOpen {
+    ProcFd(PreparedProcFdOpen),
+    Fdinfo(Arc<FdinfoDescription>),
+}
+
 fn guest_fd_path(
     state: &LoadedStaticElf,
     path: &[u8],
     trailing_slash_errno: libc::c_int,
-) -> Result<Option<libc::c_int>, i64> {
+) -> Result<Option<GuestFdPath>, i64> {
     let normalized = normalize_proc_fd_alias_spelling(path);
     let path = normalized.as_deref().unwrap_or(path);
     let numeric_prefix = format!("/proc/{}/fd/", state.pid).into_bytes();
@@ -8138,17 +8725,35 @@ fn guest_fd_path(
     };
     let suffix = suffix.strip_prefix(b"../fd/").unwrap_or(suffix);
     let suffix = parse_proc_fd_path_suffix(suffix)?;
-    if !proc_fd_directory_child_lookup_is_live(state, target) {
+    let Ok((target_tid, target_generation)) = proc_fd_directory_target_identity(state, target)
+    else {
+        return Err(negative_errno(libc::ENOENT));
+    };
+    if !state
+        .task_lifecycle
+        .lock()
+        .expect("KVM lifecycle lock poisoned")
+        .get(target_tid)
+        .is_some_and(|task| task.generation == target_generation)
+    {
         return Err(negative_errno(libc::ENOENT));
     }
     match suffix {
-        ProcFdPathSuffix::Target(fd) => Ok(Some(fd)),
+        ProcFdPathSuffix::Target(fd) => Ok(Some(GuestFdPath {
+            guest_fd: fd,
+            target_tid,
+            target_generation,
+        })),
         ProcFdPathSuffix::Descendant {
             fd,
             trailing_slash_only,
-        } => Err(guest_fd_descendant_error(
+        } => Err(task_fd_descendant_error(
             state,
-            fd,
+            GuestFdPath {
+                guest_fd: fd,
+                target_tid,
+                target_generation,
+            },
             trailing_slash_errno,
             trailing_slash_only,
         )),
@@ -8156,38 +8761,134 @@ fn guest_fd_path(
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review guest-fd metadata translation.
-#[derive(Clone, Copy)]
 struct GuestFdMetadata {
     guest_fd: libc::c_int,
     host_fd: RawFd,
+    _pinned_file: Option<std::fs::File>,
     no_follow: bool,
+    proc_inode: Option<u64>,
+    proc_fd_directory: Option<Arc<ProcFdDirectoryDescription>>,
+    object_identity: Option<Arc<GuestFileIdentity>>,
+    output_alias: Option<OutputAlias>,
+    captured_output: bool,
 }
 
 fn guest_fd_metadata(
     state: &LoadedStaticElf,
+    guest_dirfd: libc::c_int,
     path: &[u8],
     no_follow: bool,
+    capture: Option<CaptureMetadata>,
 ) -> Result<Option<GuestFdMetadata>, i64> {
-    let Some(guest_fd) = guest_fd_path(state, path, libc::ENOENT)? else {
-        return Ok(None);
-    };
-    if !no_follow && let Some(description) = state.proc_fd_directories.get(&guest_fd) {
-        let lifecycle = description
-            .lifecycle
-            .lock()
-            .expect("KVM lifecycle lock poisoned");
-        if !description.target_binding_is_live(&lifecycle) {
-            return Err(negative_errno(libc::ENOENT));
+    let source = if !path.starts_with(b"/")
+        && let Some(description) = state.proc_fd_directories.get(&guest_dirfd).cloned()
+    {
+        match proc_fd_relative_path_suffix(path)? {
+            ProcFdPathSuffix::Target(guest_fd) => ProcFdOpenSource::Directory {
+                description,
+                guest_fd,
+            },
+            ProcFdPathSuffix::Descendant {
+                fd,
+                trailing_slash_only,
+            } => {
+                return Err(proc_fd_directory_descendant_error(
+                    &description,
+                    fd,
+                    trailing_slash_only,
+                    state.pid,
+                    state.capability_effective,
+                ));
+            }
         }
-    }
-    let Some(host_fd) = host_fd(state, guest_fd) else {
-        return Err(negative_errno(libc::ENOENT));
+    } else {
+        let Some(target) = guest_fd_path(state, path, libc::ENOENT)? else {
+            return Ok(None);
+        };
+        ProcFdOpenSource::Direct(target)
     };
-    Ok(Some(GuestFdMetadata {
-        guest_fd,
-        host_fd,
-        no_follow,
-    }))
+    let target = source.target();
+    let guest_fd = target.guest_fd;
+    if matches!(&source, ProcFdOpenSource::Direct(_))
+        && target.target_tid == state.tid
+        && state
+            .task_lifecycle
+            .lock()
+            .expect("KVM lifecycle lock poisoned")
+            .get(state.tid)
+            .is_some_and(|task| task.generation == target.target_generation)
+    {
+        if !no_follow && let Some(description) = state.proc_fd_directories.get(&guest_fd) {
+            let lifecycle = description
+                .lifecycle
+                .lock()
+                .expect("KVM lifecycle lock poisoned");
+            if !description.target_binding_is_live(&lifecycle) {
+                return Err(negative_errno(libc::ENOENT));
+            }
+        }
+        let host_fd = descriptor_creation_host_fd(state, guest_fd, capture)
+            .ok_or_else(|| negative_errno(libc::ENOENT))?;
+        return Ok(Some(GuestFdMetadata {
+            guest_fd,
+            host_fd,
+            _pinned_file: None,
+            no_follow,
+            proc_inode: state.proc_files.get(&guest_fd).copied(),
+            proc_fd_directory: state.proc_fd_directories.get(&guest_fd).cloned(),
+            object_identity: state.fd_object_inodes.get(&guest_fd).cloned(),
+            output_alias: output_alias(state, guest_fd),
+            captured_output: is_captured_output_description(state, guest_fd),
+        }));
+    }
+    with_task_file_table_snapshot(
+        &state.task_lifecycle,
+        target.target_tid,
+        target.target_generation,
+        |table, lifecycle| {
+            if let ProcFdOpenSource::Directory { description, .. } = &source {
+                if !description.target_lookup_is_live(lifecycle) {
+                    return Err(negative_errno(libc::ENOENT));
+                }
+                if !description.target_lookup_is_authorized(
+                    lifecycle,
+                    state.pid,
+                    state.capability_effective,
+                ) {
+                    return Err(negative_errno(libc::EACCES));
+                }
+            }
+            if !no_follow
+                && let Some(description) = table.proc_fd_directories.get(&guest_fd)
+                && !description.target_binding_is_live(lifecycle)
+            {
+                return Err(negative_errno(libc::ENOENT));
+            }
+            Ok(())
+        },
+        |table| {
+            let host_fd = file_table_descriptor_creation_host_fd(table, guest_fd, capture)
+                .ok_or_else(|| negative_errno(libc::ENOENT))?;
+            let pinned_file = duplicate_owned_host_fd(host_fd)?;
+            let host_fd = pinned_file.as_raw_fd();
+            Ok(Some(GuestFdMetadata {
+                guest_fd,
+                host_fd,
+                _pinned_file: Some(pinned_file),
+                no_follow,
+                proc_inode: table.proc_files.get(&guest_fd).copied(),
+                proc_fd_directory: table.proc_fd_directories.get(&guest_fd).cloned(),
+                object_identity: table.fd_object_inodes.get(&guest_fd).cloned(),
+                output_alias: output_alias_from_sets(
+                    guest_fd,
+                    &table.stdout_alias_fds,
+                    &table.stderr_alias_fds,
+                    file_table_open_standard(table, guest_fd),
+                ),
+                captured_output: file_table_is_captured_output_description(table, guest_fd),
+            }))
+        },
+    )
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review guest descriptor link-target sanitization.
@@ -8298,6 +8999,30 @@ fn file_table_host_fd(table: &FileTableState, guest_fd: libc::c_int) -> Option<R
         })
 }
 
+fn file_table_descriptor_creation_host_fd(
+    table: &FileTableState,
+    guest_fd: libc::c_int,
+    capture: Option<CaptureMetadata>,
+) -> Option<RawFd> {
+    if let Some(file) = table.files.get(&guest_fd) {
+        return Some(file.as_raw_fd());
+    }
+    if file_table_open_standard(table, guest_fd)
+        && let (Some(capture), Some(alias)) = (
+            capture,
+            output_alias_from_sets(
+                guest_fd,
+                &table.stdout_alias_fds,
+                &table.stderr_alias_fds,
+                true,
+            ),
+        )
+    {
+        return Some(capture.descriptor_carrier(alias));
+    }
+    file_table_host_fd(table, guest_fd)
+}
+
 fn file_table_is_captured_output_description(
     table: &FileTableState,
     guest_fd: libc::c_int,
@@ -8374,6 +9099,59 @@ fn proc_fd_link_snapshot(
     })
 }
 
+fn finish_proc_fd_link_snapshot(snapshot: ProcFdLinkSnapshot) -> Result<Vec<u8>, i64> {
+    match snapshot {
+        ProcFdLinkSnapshot::Fixed(target) => Ok(target),
+        ProcFdLinkSnapshot::Host { file, identity } => {
+            let target = canonical_fd_path(file.as_raw_fd())?;
+            // The pinned duplicate names the same open file description after
+            // the table lock drops. Retaining the same identity Arc makes this
+            // route byte-identical to direct `/proc/self/fd/N` observation.
+            sanitize_anonymous_link_target(target.as_os_str().as_bytes(), identity.as_deref())
+        }
+    }
+}
+
+fn task_fd_link_target(
+    state: &LoadedStaticElf,
+    target: GuestFdPath,
+    capture: Option<CaptureMetadata>,
+) -> Result<Vec<u8>, i64> {
+    if target.target_tid == state.tid
+        && state
+            .task_lifecycle
+            .lock()
+            .expect("KVM lifecycle lock poisoned")
+            .get(state.tid)
+            .is_some_and(|task| task.generation == target.target_generation)
+    {
+        return guest_fd_link_target(state, target.guest_fd, capture);
+    }
+    loop {
+        let table_owner = task_file_table(
+            &state.task_lifecycle,
+            target.target_tid,
+            target.target_generation,
+        )?;
+        let table = table_owner.lock().expect("KVM file-table lock poisoned");
+        let lifecycle = state
+            .task_lifecycle
+            .lock()
+            .expect("KVM lifecycle lock poisoned");
+        let Some(current_table) = lifecycle.file_table(target.target_tid, target.target_generation)
+        else {
+            return Err(negative_errno(libc::ENOENT));
+        };
+        if !Arc::ptr_eq(&current_table, &table_owner) {
+            continue;
+        }
+        let snapshot = proc_fd_link_snapshot(&table, state.pid, target.guest_fd, capture)?;
+        drop(lifecycle);
+        drop(table);
+        return finish_proc_fd_link_snapshot(snapshot);
+    }
+}
+
 fn proc_fd_directory_link_target(
     description: &ProcFdDirectoryDescription,
     guest_fd: libc::c_int,
@@ -8381,17 +9159,26 @@ fn proc_fd_directory_link_target(
     caller_tgid: i32,
     caller_capability_effective: u64,
 ) -> Result<Vec<u8>, i64> {
-    let table = description
-        .table
-        .upgrade()
-        .ok_or_else(|| negative_errno(libc::ENOENT))?;
-    let snapshot = {
+    let snapshot = loop {
+        let table_owner = task_file_table(
+            &description.lifecycle,
+            description.target_tid,
+            description.target_generation,
+        )?;
         // Lock order matches fdinfo observation: one file table, lifecycle.
-        let table = table.lock().expect("KVM file-table lock poisoned");
+        let table = table_owner.lock().expect("KVM file-table lock poisoned");
         let lifecycle = description
             .lifecycle
             .lock()
             .expect("KVM lifecycle lock poisoned");
+        let Some(current_table) =
+            lifecycle.file_table(description.target_tid, description.target_generation)
+        else {
+            return Err(negative_errno(libc::ENOENT));
+        };
+        if !Arc::ptr_eq(&current_table, &table_owner) {
+            continue;
+        }
         if !description.target_lookup_is_live(&lifecycle) {
             return Err(negative_errno(libc::ENOENT));
         }
@@ -8405,18 +9192,9 @@ fn proc_fd_directory_link_target(
         ) {
             return Err(negative_errno(libc::EACCES));
         }
-        proc_fd_link_snapshot(&table, description.target_tgid, guest_fd, capture)?
+        break proc_fd_link_snapshot(&table, description.target_tgid, guest_fd, capture)?;
     };
-    match snapshot {
-        ProcFdLinkSnapshot::Fixed(target) => Ok(target),
-        ProcFdLinkSnapshot::Host { file, identity } => {
-            let target = canonical_fd_path(file.as_raw_fd())?;
-            // The pinned duplicate names the same open file description after
-            // the table lock drops. Retaining the same identity Arc makes this
-            // route byte-identical to direct `/proc/self/fd/N` observation.
-            sanitize_anonymous_link_target(target.as_os_str().as_bytes(), identity.as_deref())
-        }
-    }
+    finish_proc_fd_link_snapshot(snapshot)
 }
 
 fn proc_fd_directory_descendant_error(
@@ -8426,53 +9204,68 @@ fn proc_fd_directory_descendant_error(
     caller_tgid: i32,
     caller_capability_effective: u64,
 ) -> i64 {
-    let Some(table) = description.table.upgrade() else {
-        return negative_errno(libc::ENOENT);
-    };
-    let table = table.lock().expect("KVM file-table lock poisoned");
-    let lifecycle = description
-        .lifecycle
-        .lock()
-        .expect("KVM lifecycle lock poisoned");
-    if !description.target_lookup_is_live(&lifecycle) {
-        return negative_errno(libc::ENOENT);
-    }
-    let captured_output = file_table_is_captured_output_description(&table, guest_fd);
-    let host_fd = file_table_host_fd(&table, guest_fd);
-    if host_fd.is_none() && !captured_output {
-        return negative_errno(libc::ENOENT);
-    }
-    if !description.target_lookup_is_authorized(
-        &lifecycle,
-        caller_tgid,
-        caller_capability_effective,
-    ) {
-        return negative_errno(libc::EACCES);
-    }
-    if captured_output {
-        return negative_errno(libc::ENOTDIR);
-    }
-    let host_fd = host_fd.expect("non-captured live descriptor has a host fd");
-    if table
-        .proc_files
-        .get(&guest_fd)
-        .copied()
-        .is_some_and(is_synthetic_proc_directory_inode)
-    {
-        return negative_errno(if trailing_slash_only {
-            libc::EINVAL
-        } else {
-            libc::ENOENT
-        });
-    }
-    match fd_mode(host_fd) {
-        Ok(mode) if mode & libc::S_IFMT != libc::S_IFDIR => negative_errno(libc::ENOTDIR),
-        Ok(_) => negative_errno(if trailing_slash_only {
-            libc::EINVAL
-        } else {
-            libc::ENOENT
-        }),
-        Err(error) => error,
+    loop {
+        let table_owner = match task_file_table(
+            &description.lifecycle,
+            description.target_tid,
+            description.target_generation,
+        ) {
+            Ok(table) => table,
+            Err(error) => return error,
+        };
+        let table = table_owner.lock().expect("KVM file-table lock poisoned");
+        let lifecycle = description
+            .lifecycle
+            .lock()
+            .expect("KVM lifecycle lock poisoned");
+        let Some(current_table) =
+            lifecycle.file_table(description.target_tid, description.target_generation)
+        else {
+            return negative_errno(libc::ENOENT);
+        };
+        if !Arc::ptr_eq(&current_table, &table_owner) {
+            continue;
+        }
+        if !description.target_lookup_is_live(&lifecycle) {
+            return negative_errno(libc::ENOENT);
+        }
+        let captured_output = file_table_is_captured_output_description(&table, guest_fd);
+        let host_fd = file_table_host_fd(&table, guest_fd);
+        if host_fd.is_none() && !captured_output {
+            return negative_errno(libc::ENOENT);
+        }
+        if !description.target_lookup_is_authorized(
+            &lifecycle,
+            caller_tgid,
+            caller_capability_effective,
+        ) {
+            return negative_errno(libc::EACCES);
+        }
+        if captured_output {
+            return negative_errno(libc::ENOTDIR);
+        }
+        let host_fd = host_fd.expect("non-captured live descriptor has a host fd");
+        if table
+            .proc_files
+            .get(&guest_fd)
+            .copied()
+            .is_some_and(is_synthetic_proc_directory_inode)
+        {
+            return negative_errno(if trailing_slash_only {
+                libc::EINVAL
+            } else {
+                libc::ENOENT
+            });
+        }
+        return match fd_mode(host_fd) {
+            Ok(mode) if mode & libc::S_IFMT != libc::S_IFDIR => negative_errno(libc::ENOTDIR),
+            Ok(_) => negative_errno(if trailing_slash_only {
+                libc::EINVAL
+            } else {
+                libc::ENOENT
+            }),
+            Err(error) => error,
+        };
     }
 }
 
@@ -8501,6 +9294,259 @@ fn open_host_fd_path(source_host_fd: RawFd, flags: u64) -> Result<std::fs::File,
     // SAFETY: openat returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(reopened as RawFd) };
     relocate_owned_host_fd(file)
+}
+
+fn prepare_proc_fd_open(
+    state: &LoadedStaticElf,
+    source: &ProcFdOpenSource,
+    flags: u64,
+    capture: Option<CaptureMetadata>,
+) -> Result<PreparedProcFdOpen, i64> {
+    let target = source.target();
+    with_task_file_table_snapshot(
+        &state.task_lifecycle,
+        target.target_tid,
+        target.target_generation,
+        |_, lifecycle| {
+            if let ProcFdOpenSource::Directory { description, .. } = source {
+                if !description.target_lookup_is_live(lifecycle) {
+                    return Err(negative_errno(libc::ENOENT));
+                }
+                if !description.target_lookup_is_authorized(
+                    lifecycle,
+                    state.pid,
+                    state.capability_effective,
+                ) {
+                    return Err(negative_errno(libc::EACCES));
+                }
+            }
+            Ok(())
+        },
+        |table| prepare_proc_fd_open_from_table(state, table, target.guest_fd, flags, capture),
+    )
+}
+
+fn prepare_proc_fd_open_from_table(
+    state: &LoadedStaticElf,
+    table: &FileTableState,
+    guest_fd: libc::c_int,
+    flags: u64,
+    capture: Option<CaptureMetadata>,
+) -> Result<PreparedProcFdOpen, i64> {
+    let source_host_fd = file_table_descriptor_creation_host_fd(table, guest_fd, capture)
+        .ok_or_else(|| negative_errno(libc::ENOENT))?;
+    if let Some(description) = table.proc_fd_directories.get(&guest_fd).cloned() {
+        return Ok(PreparedProcFdOpen::ProcDirectory(description));
+    }
+    let source_proc_inode = table.proc_files.get(&guest_fd).copied();
+    if source_proc_inode.is_some_and(is_synthetic_proc_fd_directory_inode) {
+        return Err(negative_errno(libc::EBADMSG));
+    }
+    let regular_proc =
+        source_proc_inode.is_some_and(|inode| !is_synthetic_proc_directory_inode(inode));
+    let path_only = flags & libc::O_PATH as u64 != 0;
+    let create_exclusive = !path_only
+        && flags & (libc::O_CREAT | libc::O_EXCL) as u64 == (libc::O_CREAT | libc::O_EXCL) as u64;
+    if regular_proc
+        && (flags & (libc::O_DIRECTORY | libc::O_NOFOLLOW) as u64 != 0 || create_exclusive)
+    {
+        let probe = open_host_fd_path(source_host_fd, flags)?;
+        drop(probe);
+        if flags & libc::O_DIRECTORY as u64 != 0 {
+            return Err(negative_errno(libc::ENOTDIR));
+        }
+        if flags & libc::O_NOFOLLOW as u64 != 0 {
+            return Err(negative_errno(libc::ELOOP));
+        }
+        return Err(negative_errno(libc::EEXIST));
+    }
+    if table.fdinfo_files.contains_key(&guest_fd)
+        || table.loginuid_fds.contains(&guest_fd)
+        || table.random_device_fds.contains(&guest_fd)
+    {
+        return Err(negative_errno(libc::ENOSYS));
+    }
+    if flags & libc::O_TMPFILE as u64 == libc::O_TMPFILE as u64 {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    if flags & (libc::O_PATH | libc::O_NOFOLLOW) as u64 == (libc::O_PATH | libc::O_NOFOLLOW) as u64
+    {
+        return Err(negative_errno(libc::ELOOP));
+    }
+    if flags & libc::O_PATH as u64 != 0 && table.signalfd_fds.contains(&guest_fd) {
+        return Err(negative_errno(libc::ENOSYS));
+    }
+    let source_alias = output_alias_from_sets(
+        guest_fd,
+        &table.stdout_alias_fds,
+        &table.stderr_alias_fds,
+        file_table_open_standard(table, guest_fd),
+    );
+    let access_mode = flags & libc::O_ACCMODE as u64;
+    if capture.is_some()
+        && source_alias.is_some()
+        && !path_only
+        && access_mode != libc::O_WRONLY as u64
+    {
+        let probe = open_host_fd_path(source_host_fd, flags)?;
+        drop(probe);
+        return Err(negative_errno(libc::ENOSYS));
+    }
+    if regular_proc && !path_only {
+        if flags & libc::O_TRUNC as u64 != 0
+            || flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64
+        {
+            return Err(negative_errno(libc::EACCES));
+        }
+        if flags & libc::O_DIRECT as u64 != 0 {
+            return Err(negative_errno(libc::EINVAL));
+        }
+    }
+
+    if let Some(source_proc_inode) = source_proc_inode.filter(|_| regular_proc) {
+        let source_file = table
+            .files
+            .get(&guest_fd)
+            .ok_or_else(|| negative_errno(libc::EBADMSG))?;
+        let candidate = state
+            .proc_carrier_authority
+            .candidate_kind(source_file)
+            .map_err(negative_errno)?;
+        if !matches!(
+            candidate,
+            crate::proc_carrier::ProcCarrierCandidate::Reserved
+        ) {
+            return Err(negative_errno(libc::EBADMSG));
+        }
+        ensure_proc_carrier_readonly_or_path(source_file)?;
+        let inspection = state
+            .proc_carrier_authority
+            .open_inspection_alias(source_file)
+            .map_err(negative_errno)?;
+        let mut budget = crate::proc_carrier::CarrierAuthBudget::new();
+        let mut cache = crate::proc_carrier::CarrierAuthCache::new();
+        let authenticated = state
+            .proc_carrier_authority
+            .authenticate_reserved(source_file, &inspection, &mut budget, &mut cache)
+            .map_err(negative_errno)?;
+        let expected_path = synthetic_proc_path_for_inode(source_proc_inode)
+            .ok_or_else(|| negative_errno(libc::EBADMSG))?;
+        if authenticated.canonical_path.as_slice() != expected_path
+            || authenticated.virtual_nofollow
+                != table.synthetic_proc_nofollow_fds.contains(&guest_fd)
+        {
+            return Err(negative_errno(libc::EBADMSG));
+        }
+        return Ok(PreparedProcFdOpen::SyntheticProc {
+            authenticated,
+            inode: source_proc_inode,
+        });
+    }
+
+    let identity = table
+        .fd_object_inodes
+        .get(&guest_fd)
+        .cloned()
+        .unwrap_or_else(|| {
+            Arc::new(GuestFileIdentity {
+                inode: synthetic_guest_fd_inode(guest_fd, false),
+                kind: GuestFileIdentityKind::Ordinary,
+            })
+        });
+    let source_capture_status = table.capture_status_flags.get(&guest_fd).cloned();
+    let file = open_host_fd_path(source_host_fd, flags)?;
+    let capture_status = if source_capture_status.is_some() {
+        Some(Arc::new(AtomicI32::new(fd_status_flags(file.as_raw_fd())?)))
+    } else {
+        None
+    };
+    Ok(PreparedProcFdOpen::Ordinary {
+        file,
+        output_alias: source_alias,
+        identity,
+        capture_status,
+    })
+}
+
+fn commit_prepared_proc_fd_open(
+    state: &mut LoadedStaticElf,
+    prepared: PreparedProcFdOpen,
+    flags: u64,
+) -> i64 {
+    let close_on_exec = flags & libc::O_CLOEXEC as u64 != 0;
+    match prepared {
+        PreparedProcFdOpen::Ordinary {
+            file,
+            output_alias,
+            identity,
+            capture_status,
+        } => insert_file_with_identity(
+            state,
+            file,
+            close_on_exec,
+            output_alias,
+            identity,
+            capture_status,
+        ),
+        PreparedProcFdOpen::ProcDirectory(description) => {
+            reopen_synthetic_proc_fd_directory(state, &description, flags, close_on_exec)
+        }
+        PreparedProcFdOpen::SyntheticProc {
+            authenticated,
+            inode,
+        } => {
+            let path_only = flags & libc::O_PATH as u64 != 0;
+            let virtual_nofollow = flags & libc::O_NOFOLLOW as u64 != 0;
+            let random_uuid =
+                authenticated.canonical_path == b"/proc/sys/kernel/random/uuid" && !path_only;
+            let dynamic_pty =
+                authenticated.canonical_path == b"/proc/sys/kernel/pty/nr" && !path_only;
+            let next_random_uuid_sequence = if random_uuid {
+                match state.proc_random_uuid_sequence.checked_add(1) {
+                    Some(sequence) => Some(sequence),
+                    None => return negative_errno(libc::EOVERFLOW),
+                }
+            } else {
+                None
+            };
+            let dynamic_content = if random_uuid {
+                Some(synthetic_random_uuid_content(
+                    state.random_seed,
+                    state.tid,
+                    state.proc_random_uuid_sequence,
+                ))
+            } else if dynamic_pty {
+                Some(format!("{}\n", synthetic_pty_count(state)).into_bytes())
+            } else {
+                None
+            };
+            let content = dynamic_content
+                .as_deref()
+                .unwrap_or(authenticated.content.as_ref());
+            let file = match state.proc_carrier_authority.mint(
+                &authenticated.canonical_path,
+                content,
+                virtual_nofollow,
+                path_only,
+                flags as libc::c_int,
+            ) {
+                Ok(file) => file,
+                Err(errno) => return negative_errno(errno),
+            };
+            let new_fd = insert_file_with_flags(state, file, close_on_exec, None);
+            if new_fd >= 0 {
+                let new_fd = new_fd as libc::c_int;
+                state.proc_files.insert(new_fd, inode);
+                if virtual_nofollow {
+                    state.synthetic_proc_nofollow_fds.insert(new_fd);
+                }
+                if let Some(sequence) = next_random_uuid_sequence {
+                    state.proc_random_uuid_sequence = sequence;
+                }
+            }
+            new_fd
+        }
+    }
 }
 
 fn relocate_owned_host_fd(file: std::fs::File) -> Result<std::fs::File, i64> {
@@ -10267,6 +11313,7 @@ fn signalfd(
     state: &mut LoadedStaticElf,
     args: &[u64; 6],
     raw_flags: u64,
+    signal_file_binding: Option<(&ProcessBinding, &Arc<Mutex<FileTableState>>)>,
 ) -> i64 {
     let _retirement = state.file_retirement.hold();
     let transaction = state.signal_transaction.clone();
@@ -10330,6 +11377,13 @@ fn signalfd(
         .has_live_sibling(state.tid, state.pid)
     {
         return negative_errno(libc::ENOSYS);
+    }
+
+    if let Some((binding, file_table)) = signal_file_binding {
+        // The transaction remains held from the sibling check through signal
+        // state publication. An inactive publisher therefore cannot validate
+        // an old table after observing a mask committed in this one.
+        binding.rebind_files_locked(file_table);
     }
 
     if let Some(alias_fds) = update_aliases {
@@ -13802,17 +14856,24 @@ fn fstatat_impl(
         return write_struct(memory, output_address, &stat);
     }
 
-    let guest_path = match guest_fd_metadata(state, &path, flags & libc::AT_SYMLINK_NOFOLLOW != 0) {
+    let guest_path = match guest_fd_metadata(
+        state,
+        guest_dirfd,
+        &path,
+        flags & libc::AT_SYMLINK_NOFOLLOW != 0,
+        capture,
+    ) {
         Ok(metadata) => metadata,
         Err(error) => return error,
     };
-    if let Some(metadata) = guest_path
+    if let Some(metadata) = guest_path.as_ref()
         && metadata.no_follow
     {
         let stat = synthetic_guest_fd_symlink_stat(metadata.guest_fd);
         return write_struct(memory, output_address, &stat);
     }
     let descriptor = guest_path
+        .as_ref()
         .map(|metadata| metadata.guest_fd)
         .or_else(|| (path.is_empty() && guest_dirfd != libc::AT_FDCWD).then_some(guest_dirfd));
     if path.is_empty()
@@ -13826,7 +14887,22 @@ fn fstatat_impl(
             return negative_errno(libc::ENOENT);
         }
     }
-    if let Some(fd) = descriptor
+    if let Some(metadata) = guest_path.as_ref()
+        && let Some(capture) = capture
+        && let Some(alias) = metadata.output_alias
+    {
+        let mode = match fd_mode(metadata.host_fd) {
+            Ok(mode) => mode,
+            Err(error) => return error,
+        };
+        return write_struct(
+            memory,
+            output_address,
+            &synthetic_captured_output_stat(capture.identity(alias), mode),
+        );
+    }
+    if guest_path.is_none()
+        && let Some(fd) = descriptor
         && let Some(capture) = capture
         && let Some(alias) = output_alias(state, fd)
     {
@@ -13853,7 +14929,7 @@ fn fstatat_impl(
         None
     };
     let opened_file;
-    let host_fd = if let Some(metadata) = guest_path {
+    let host_fd = if let Some(metadata) = guest_path.as_ref() {
         metadata.host_fd
     } else if let Some(descriptor) = executable {
         descriptor
@@ -13887,8 +14963,8 @@ fn fstatat_impl(
     }
     // SAFETY: fstat initialized stat on success.
     let mut stat = unsafe { stat.assume_init() };
-    if let Some(metadata) = guest_path {
-        sanitize_guest_fd_stat(state, metadata.guest_fd, &mut stat);
+    if let Some(metadata) = guest_path.as_ref() {
+        sanitize_guest_fd_metadata_stat(metadata, &mut stat);
     } else if path.is_empty() && guest_dirfd != libc::AT_FDCWD {
         sanitize_guest_fd_stat(state, guest_dirfd, &mut stat);
     } else {
@@ -14005,27 +15081,60 @@ fn statx(
         return write_struct(memory, args[4], &stx);
     }
 
-    let guest_path = match guest_fd_metadata(state, &path, flags & libc::AT_SYMLINK_NOFOLLOW != 0) {
+    let guest_path = match guest_fd_metadata(
+        state,
+        args[0] as libc::c_int,
+        &path,
+        flags & libc::AT_SYMLINK_NOFOLLOW != 0,
+        capture,
+    ) {
         Ok(metadata) => metadata,
         Err(error) => return error,
     };
-    if let Some(metadata) = guest_path
+    if let Some(metadata) = guest_path.as_ref()
         && metadata.no_follow
     {
         let stat = synthetic_guest_fd_symlink_statx(metadata.guest_fd);
         return write_struct(memory, args[4], &stat);
     }
-    let descriptor = guest_path.map(|metadata| metadata.guest_fd).or_else(|| {
-        (path.is_empty() && args[0] as libc::c_int != libc::AT_FDCWD)
-            .then_some(args[0] as libc::c_int)
-    });
-    if let Some(fd) = descriptor
+    let descriptor = guest_path
+        .as_ref()
+        .map(|metadata| metadata.guest_fd)
+        .or_else(|| {
+            (path.is_empty() && args[0] as libc::c_int != libc::AT_FDCWD)
+                .then_some(args[0] as libc::c_int)
+        });
+    if let Some(metadata) = guest_path.as_ref()
         && let Some(capture) = capture
-        && let Some(alias) = output_alias(state, fd)
+        && let Some(alias) = metadata.output_alias
     {
         // Ordinary objects continue through the native statx call below. The
         // capture sink synthesizes fields beyond its reserved identity; validate the kernel's
         // reserved mask bit and mutually exclusive synchronization flags here.
+        if args[3] as libc::c_uint & 0x8000_0000 != 0
+            || flags & libc::AT_STATX_SYNC_TYPE == libc::AT_STATX_SYNC_TYPE
+        {
+            return negative_errno(libc::EINVAL);
+        }
+        let mode = match fd_mode(metadata.host_fd) {
+            Ok(mode) => mode,
+            Err(error) => return error,
+        };
+        return write_struct(
+            memory,
+            args[4],
+            &synthetic_captured_output_statx(
+                capture.identity(alias),
+                mode,
+                args[3] as libc::c_uint,
+            ),
+        );
+    }
+    if guest_path.is_none()
+        && let Some(fd) = descriptor
+        && let Some(capture) = capture
+        && let Some(alias) = output_alias(state, fd)
+    {
         if args[3] as libc::c_uint & 0x8000_0000 != 0
             || flags & libc::AT_STATX_SYNC_TYPE == libc::AT_STATX_SYNC_TYPE
         {
@@ -14046,7 +15155,7 @@ fn statx(
         );
     }
     let opened_file;
-    let host_fd = if let Some(metadata) = guest_path {
+    let host_fd = if let Some(metadata) = guest_path.as_ref() {
         metadata.host_fd
     } else if path.is_empty() {
         let Ok((host_fd, _)) = host_dirfd_and_path(state, args[0] as libc::c_int, &path) else {
@@ -14089,8 +15198,8 @@ fn statx(
     }
     // SAFETY: statx initialized stat on success.
     let mut stat = unsafe { stat.assume_init() };
-    if let Some(metadata) = guest_path {
-        sanitize_guest_fd_statx(state, metadata.guest_fd, &mut stat);
+    if let Some(metadata) = guest_path.as_ref() {
+        sanitize_guest_fd_metadata_statx(metadata, &mut stat);
     } else if path.is_empty() && args[0] as libc::c_int != libc::AT_FDCWD {
         sanitize_guest_fd_statx(state, args[0] as libc::c_int, &mut stat);
     } else {
@@ -14134,19 +15243,19 @@ fn statfs(
         Ok(_) => return negative_errno(libc::ENOENT),
         Err(error) => return read_c_string_errno(error),
     };
-    let guest_path = match guest_fd_metadata(state, &path, false) {
+    let guest_path = match guest_fd_metadata(state, libc::AT_FDCWD, &path, false, capture) {
         Ok(metadata) => metadata,
         Err(error) => return error,
     };
-    if let (Some(metadata), Some(capture)) = (guest_path, capture)
-        && let Some(alias) = output_alias(state, metadata.guest_fd)
+    if let (Some(metadata), Some(capture)) = (guest_path.as_ref(), capture)
+        && let Some(alias) = metadata.output_alias
     {
         // The descriptor path names the virtual capture pipe, not whichever
         // object the invoking supervisor happened to place at host fd 1/2.
         return fstatfs_host(memory, capture.statfs_carrier(alias), args[1]);
     }
     let opened_file;
-    let host_fd = if let Some(metadata) = guest_path {
+    let host_fd = if let Some(metadata) = guest_path.as_ref() {
         metadata.host_fd
     } else {
         opened_file = match open_metadata_path(state, libc::AT_FDCWD, &path, false) {
@@ -14348,11 +15457,17 @@ fn faccessat_impl(
         }
         return 0;
     }
-    let guest_path = match guest_fd_metadata(state, &path, flags & libc::AT_SYMLINK_NOFOLLOW != 0) {
+    let guest_path = match guest_fd_metadata(
+        state,
+        guest_dirfd,
+        &path,
+        flags & libc::AT_SYMLINK_NOFOLLOW != 0,
+        capture,
+    ) {
         Ok(metadata) => metadata,
         Err(error) => return error,
     };
-    if let Some(metadata) = guest_path
+    if let Some(metadata) = guest_path.as_ref()
         && metadata.no_follow
     {
         // Linux symlinks are always treated as mode 0777. F_OK and every valid
@@ -14360,22 +15475,21 @@ fn faccessat_impl(
         // itself rather than its target.
         return 0;
     }
-    if let Some(metadata) = guest_path
-        && state.proc_fd_directories.contains_key(&metadata.guest_fd)
+    if let Some(metadata) = guest_path.as_ref()
+        && metadata.proc_fd_directory.is_some()
     {
         // guest_fd_metadata already authenticated the followed directory
         // description and validated its target lifecycle. Apply the same
         // procfs permission hook as the exact and AT_EMPTY_PATH spellings.
         return 0;
     }
-    if let Some(metadata) = guest_path
-        && capture.is_some()
-        && output_alias(state, metadata.guest_fd).is_some()
+    if let Some(metadata) = guest_path.as_ref()
+        && metadata.output_alias.is_some()
     {
-        return captured_fifo_access_result(state, metadata.guest_fd, mode, flags, capture);
+        return captured_fifo_access_result_host(metadata.host_fd, mode, flags);
     }
     let opened_file;
-    let host_fd = if let Some(metadata) = guest_path {
+    let host_fd = if let Some(metadata) = guest_path.as_ref() {
         metadata.host_fd
     } else {
         opened_file = match open_metadata_path(
@@ -14420,6 +15534,10 @@ fn captured_fifo_access_result(
     let Some(host_fd) = isolated_host_fd(state, guest_fd, capture) else {
         return negative_errno(libc::EBADF);
     };
+    captured_fifo_access_result_host(host_fd, mode, flags)
+}
+
+fn captured_fifo_access_result_host(host_fd: RawFd, mode: libc::c_int, flags: libc::c_int) -> i64 {
     let empty_path = b"\0";
     let host_flags = libc::AT_EMPTY_PATH | (flags & (libc::AT_EACCESS | libc::AT_SYMLINK_NOFOLLOW));
     // SAFETY: empty_path is terminated and host_fd is the private capture pipe
@@ -15365,23 +16483,6 @@ fn proc_fd_directory_target_identity(
     }
 }
 
-fn proc_fd_directory_child_lookup_is_live(
-    state: &LoadedStaticElf,
-    target: ProcFdDirectoryTarget,
-) -> bool {
-    let Ok((target_tid, target_generation)) = proc_fd_directory_target_identity(state, target)
-    else {
-        return false;
-    };
-    let lifecycle = state
-        .task_lifecycle
-        .lock()
-        .expect("KVM lifecycle lock poisoned");
-    lifecycle
-        .get(target_tid)
-        .is_some_and(|task| task.generation == target_generation)
-}
-
 // TODO-HUMAN-REVIEW(PR-202): Review descriptor-relative synthetic procfs
 // resolution and its fail-closed handling of unlisted children.
 fn synthetic_proc_relative_path(
@@ -16053,10 +17154,6 @@ fn open_synthetic_proc_fd_directory(
     if let Some(error) = proc_fd_directory_non_path_open_error(flags, terminal_slash) {
         return error;
     }
-    let table = state.fdinfo_table.clone();
-    if table.upgrade().is_none() {
-        return negative_errno(libc::ENOSYS);
-    }
     let kind = target.kind;
     let virtual_nofollow = flags & libc::O_NOFOLLOW as u64 != 0;
     let file = match state.proc_carrier_authority.mint(
@@ -16076,7 +17173,6 @@ fn open_synthetic_proc_fd_directory(
         target_tid,
         target_generation,
         target_tgid: state.pid,
-        table,
         lifecycle: state.task_lifecycle.clone(),
         path,
         visible_inode,
@@ -16294,6 +17390,48 @@ fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat:
         return;
     }
     if let Some(identity) = state.fd_object_inodes.get(&guest_fd)
+        && let Some(device) = synthetic_anonymous_device(identity.kind)
+    {
+        stat.stx_dev_major = libc::major(device);
+        stat.stx_dev_minor = libc::minor(device);
+        stat.stx_ino = identity.inode;
+        stat.stx_mnt_id = if stat.stx_mask & STATX_MNT_ID_UNIQUE != 0 {
+            synthetic_anonymous_mount_id(identity.kind, true).unwrap_or(0)
+        } else if stat.stx_mask & libc::STATX_MNT_ID != 0 {
+            synthetic_anonymous_mount_id(identity.kind, false).unwrap_or(0)
+        } else {
+            0
+        };
+    }
+    sanitize_statx_timestamps(stat);
+}
+
+fn sanitize_guest_fd_metadata_stat(metadata: &GuestFdMetadata, stat: &mut libc::stat) {
+    if let Some(inode) = metadata.proc_inode {
+        sanitize_proc_stat(stat, inode);
+        if let Some(description) = metadata.proc_fd_directory.as_deref() {
+            specialize_proc_fd_directory_stat(description, stat);
+        }
+        return;
+    }
+    if let Some(identity) = metadata.object_identity.as_deref()
+        && let Some(device) = synthetic_anonymous_device(identity.kind)
+    {
+        stat.st_dev = device;
+        stat.st_ino = identity.inode;
+    }
+    sanitize_stat_timestamps(stat);
+}
+
+fn sanitize_guest_fd_metadata_statx(metadata: &GuestFdMetadata, stat: &mut libc::statx) {
+    if let Some(inode) = metadata.proc_inode {
+        *stat = synthetic_proc_statx(inode, stat.stx_size);
+        if let Some(description) = metadata.proc_fd_directory.as_deref() {
+            specialize_proc_fd_directory_statx(description, stat);
+        }
+        return;
+    }
+    if let Some(identity) = metadata.object_identity.as_deref()
         && let Some(device) = synthetic_anonymous_device(identity.kind)
     {
         stat.stx_dev_major = libc::major(device);
@@ -16853,16 +17991,6 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
     negative_errno(libc::EBADF)
 }
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#340): close_range(2) closes every open guest
-// descriptor in the inclusive interval [first, last]. The KVM guest owns one
-// logical descriptor table per process. CLOSE_RANGE_UNSHARE is currently
-// accepted as a process-wide approximation, not Linux per-caller unsharing; a
-// live CLONE_FILES sibling therefore remains an explicit unsupported parity
-// case. CLOSE_RANGE_CLOEXEC marks the range close-on-exec instead of closing it.
-// The scan is bounded to the descriptors actually open (keys of `state.files`
-// plus any open standard fd), so a `last == U32::MAX` request never walks a
-// four-billion-wide interval.
 /// Deterministic `seccomp(2)` result, mirroring detcore's reviewed
 /// `seccomp_result` (hermit `detcore/src/syscalls/misc.rs`). Hermit cannot
 /// enforce a guest-installed BPF policy across every backend, so any operation
@@ -16904,27 +18032,44 @@ fn seccomp(args: &[u64; 6]) -> i64 {
     negative_errno(libc::EOPNOTSUPP)
 }
 
-fn close_range(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    const CLOSE_RANGE_UNSHARE: u32 = 1 << 1;
-    const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#340): close_range(2) closes every open guest descriptor in
+// the inclusive interval [first, last]. Shared tables publish ordinary close
+// and CLOEXEC effects to every CLONE_FILES task; CLOSE_RANGE_UNSHARE first
+// stages a private table and then moves only the caller's generation-bound
+// binding. The scan is bounded to descriptors actually open, so a
+// `last == U32::MAX` request never walks a four-billion-wide interval.
+#[derive(Clone, Copy, Debug)]
+struct CloseRangeArguments {
+    first: u32,
+    last: u32,
+    flags: u32,
+}
 
+fn decode_close_range(args: &[u64; 6]) -> Result<CloseRangeArguments, i64> {
     // All three syscall arguments are unsigned int on Linux. Ignore register
     // high bits before validating bounds and flags or selecting descriptors.
     let first = args[0] as u32;
     let last = args[1] as u32;
     let flags = args[2] as u32;
     if first > last {
-        return negative_errno(libc::EINVAL);
+        return Err(negative_errno(libc::EINVAL));
     }
     if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 {
-        return negative_errno(libc::EINVAL);
+        return Err(negative_errno(libc::EINVAL));
     }
+    Ok(CloseRangeArguments { first, last, flags })
+}
 
+fn close_range_targets(
+    state: &LoadedStaticElf,
+    request: CloseRangeArguments,
+) -> std::collections::BTreeSet<libc::c_int> {
     let in_range = |fd: libc::c_int| {
         let fd = fd as u32;
-        first <= fd && fd <= last
+        request.first <= fd && fd <= request.last
     };
-    let mut targets: Vec<libc::c_int> = state
+    let mut targets: std::collections::BTreeSet<libc::c_int> = state
         .files
         .keys()
         .copied()
@@ -16932,11 +18077,18 @@ fn close_range(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
         .collect();
     for standard in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
         if in_range(standard) && is_open_standard(state, standard) {
-            targets.push(standard);
+            targets.insert(standard);
         }
     }
+    targets
+}
 
-    if flags & CLOSE_RANGE_CLOEXEC != 0 {
+fn apply_close_range(
+    state: &mut LoadedStaticElf,
+    request: CloseRangeArguments,
+    targets: impl IntoIterator<Item = libc::c_int>,
+) -> i64 {
+    if request.flags & CLOSE_RANGE_CLOEXEC != 0 {
         for fd in targets {
             state.cloexec_fds.insert(fd);
         }
@@ -16949,6 +18101,15 @@ fn close_range(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
         close(state, u64::from(fd as u32));
     }
     0
+}
+
+fn close_range(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let request = match decode_close_range(args) {
+        Ok(request) => request,
+        Err(error) => return error,
+    };
+    let targets = close_range_targets(state, request);
+    apply_close_range(state, request, targets)
 }
 
 fn arch_prctl(
@@ -18434,11 +19595,11 @@ fn readlink_at_impl(
         return negative_errno(libc::EINVAL);
     }
 
-    if let Some(guest_fd) = match guest_fd_path(state, &path, libc::EINVAL) {
+    if let Some(target_fd) = match guest_fd_path(state, &path, libc::EINVAL) {
         Ok(path) => path,
         Err(error) => return error,
     } {
-        let target = match guest_fd_link_target(state, guest_fd, capture) {
+        let target = match task_fd_link_target(state, target_fd, capture) {
             Ok(target) => target,
             Err(error) => return error,
         };
@@ -20513,6 +21674,7 @@ mod tests {
             &SyscallRequest::new(number as u64, args),
             None,
             Some(output),
+            None,
         ) {
             SyscallAction::Continue {
                 result,
@@ -21140,6 +22302,719 @@ mod tests {
             state.cloexec_fds.contains(&(high as i32)),
             "an empty UINT_MAX range must not clear an existing CLOEXEC mark"
         );
+    }
+
+    #[test]
+    fn close_range_unshare_detaches_only_the_calling_file_table() {
+        const UNSHARE: u64 = CLOSE_RANGE_UNSHARE as u64;
+        const CLOEXEC: u64 = CLOSE_RANGE_CLOEXEC as u64;
+
+        let mut fixture = FdinfoFixture::new(false);
+        let target = fixture.open("a", libc::O_RDWR);
+        let survivor = fixture.open("b", libc::O_RDWR);
+        let info = fixture.info(target);
+        assert!(target >= 3 && survivor > target && info > survivor);
+
+        let original_table = fixture.executor.file_table.clone();
+        let original_owners = Arc::downgrade(&fixture.executor.file_table_owners);
+        let mut sibling = fixture.executor.thread_child(2).unwrap();
+        assert!(Arc::ptr_eq(&original_table, &sibling.file_table));
+        assert!(std::sync::Weak::ptr_eq(
+            &original_owners,
+            &Arc::downgrade(&sibling.file_table_owners)
+        ));
+
+        assert_eq!(
+            fixture.call(
+                libc::SYS_close_range,
+                [target as u64, target as u64, UNSHARE, 0, 0, 0]
+            ),
+            0
+        );
+        assert!(!Arc::ptr_eq(&original_table, &fixture.executor.file_table));
+        assert!(!std::sync::Weak::ptr_eq(
+            &original_owners,
+            &Arc::downgrade(&fixture.executor.file_table_owners)
+        ));
+        assert!(!fixture.executor.state.files.contains_key(&(target as i32)));
+        assert!(
+            original_table
+                .lock()
+                .unwrap()
+                .files
+                .contains_key(&(target as i32))
+        );
+        assert_eq!(
+            fixture.call(
+                libc::SYS_fcntl,
+                [target as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            sibling.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fcntl as u64,
+                    [target as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+                ),
+                &fixture.memory,
+            ),
+            0
+        );
+        assert_eq!(
+            sibling.execute(
+                &SyscallRequest::new(libc::SYS_read as u64, [info as u64, PAGE_SIZE, 64, 0, 0, 0]),
+                &fixture.memory,
+            ),
+            negative_errno(libc::ENOENT),
+            "pre-opened fdinfo must follow the target task's detached table"
+        );
+        for executor in [&mut fixture.executor, &mut sibling] {
+            assert!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_fcntl as u64,
+                        [survivor as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+                    ),
+                    &fixture.memory,
+                ) >= 0
+            );
+        }
+
+        // An operationally empty range still breaks CLONE_FILES sharing.
+        let mut empty_peer = sibling.thread_child(3).unwrap();
+        let before_empty = sibling.file_table.clone();
+        assert_eq!(
+            sibling.execute(
+                &SyscallRequest::new(
+                    libc::SYS_close_range as u64,
+                    [u32::MAX as u64, u32::MAX as u64, UNSHARE, 0, 0, 0]
+                ),
+                &fixture.memory,
+            ),
+            0
+        );
+        assert!(!Arc::ptr_eq(&before_empty, &sibling.file_table));
+        assert!(Arc::ptr_eq(&before_empty, &empty_peer.file_table));
+        for executor in [&mut sibling, &mut empty_peer] {
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_fcntl as u64,
+                        [target as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+                    ),
+                    &fixture.memory,
+                ),
+                0
+            );
+        }
+
+        // Combined CLOEXEC marks only the newly detached caller. The retained
+        // entries still share their open-file description and status flags.
+        let mut cloexec_peer = sibling.thread_child(4).unwrap();
+        assert_eq!(
+            sibling.execute(
+                &SyscallRequest::new(
+                    libc::SYS_close_range as u64,
+                    [target as u64, target as u64, UNSHARE | CLOEXEC, 0, 0, 0]
+                ),
+                &fixture.memory,
+            ),
+            0
+        );
+        assert_eq!(
+            sibling.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fcntl as u64,
+                    [target as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+                ),
+                &fixture.memory,
+            ),
+            i64::from(libc::FD_CLOEXEC)
+        );
+        assert_eq!(
+            cloexec_peer.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fcntl as u64,
+                    [target as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+                ),
+                &fixture.memory,
+            ),
+            0
+        );
+        assert_eq!(
+            sibling.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fcntl as u64,
+                    [
+                        target as u64,
+                        libc::F_SETFL as u64,
+                        libc::O_NONBLOCK as u64,
+                        0,
+                        0,
+                        0,
+                    ]
+                ),
+                &fixture.memory,
+            ),
+            0
+        );
+        assert_ne!(
+            cloexec_peer.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fcntl as u64,
+                    [target as u64, libc::F_GETFL as u64, 0, 0, 0, 0]
+                ),
+                &fixture.memory,
+            ) & i64::from(libc::O_NONBLOCK),
+            0
+        );
+    }
+
+    #[test]
+    fn close_range_unshare_proc_paths_follow_the_named_task() {
+        const TARGET_FD: libc::c_int = 80;
+        const OUTPUT: u64 = PAGE_SIZE;
+
+        let root = TestDir::new();
+        let target_path = root.0.join("unshare-target");
+        std::fs::write(&target_path, b"target").unwrap();
+        let expected = target_path.as_os_str().as_bytes().to_vec();
+        let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+        let mut leader = ElfExecutor::new(test_state(&root.0), false);
+        proc_fd_test_replace(&mut leader, &mut memory, "unshare-target", TARGET_FD);
+        let mut worker = leader.thread_child(2).unwrap();
+        let process_anchor = proc_fd_test_open(
+            &mut worker,
+            &mut memory,
+            "/proc/self/fd",
+            libc::O_PATH | libc::O_DIRECTORY,
+        ) as libc::c_int;
+        let thread_anchor = proc_fd_test_open(
+            &mut worker,
+            &mut memory,
+            "/proc/thread-self/fd",
+            libc::O_PATH | libc::O_DIRECTORY,
+        ) as libc::c_int;
+        assert!(process_anchor >= 0 && thread_anchor >= 0);
+
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_close_range as u64,
+                    [
+                        TARGET_FD as u64,
+                        TARGET_FD as u64,
+                        CLOSE_RANGE_UNSHARE as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            0
+        );
+
+        assert_eq!(
+            proc_fd_test_readlinkat(&mut worker, &mut memory, process_anchor, "80", OUTPUT, 4096,),
+            (expected.len() as i64, expected.clone()),
+            "/proc/self must continue to name the leader's table"
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(&mut worker, &mut memory, thread_anchor, "80", OUTPUT, 4096,).0,
+            negative_errno(libc::ENOENT),
+            "/proc/thread-self must follow the detached caller's table"
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut worker,
+                &mut memory,
+                libc::AT_FDCWD,
+                "/proc/self/fd/80",
+                OUTPUT,
+                4096,
+            ),
+            (expected.len() as i64, expected.clone()),
+            "direct /proc/self/fd lookup must use the leader table"
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut worker,
+                &mut memory,
+                libc::AT_FDCWD,
+                "/proc/thread-self/fd/80",
+                OUTPUT,
+                4096,
+            )
+            .0,
+            negative_errno(libc::ENOENT),
+            "direct /proc/thread-self/fd lookup must use the caller table"
+        );
+
+        let process_reopen = proc_fd_test_open(
+            &mut worker,
+            &mut memory,
+            "/proc/self/fd/80",
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        );
+        assert!(
+            process_reopen >= 0,
+            "direct /proc/self/fd open must use the leader table: {process_reopen}"
+        );
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_close as u64,
+                    [process_reopen as u64, 0, 0, 0, 0, 0]
+                ),
+                &memory,
+            ),
+            0
+        );
+        assert_eq!(
+            proc_fd_test_open(
+                &mut worker,
+                &mut memory,
+                "/proc/thread-self/fd/80",
+                libc::O_RDONLY | libc::O_CLOEXEC,
+            ),
+            negative_errno(libc::ENOENT)
+        );
+
+        let process_fdinfo = proc_fd_test_open(
+            &mut worker,
+            &mut memory,
+            "/proc/self/fdinfo/80",
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        );
+        assert!(
+            process_fdinfo >= 0,
+            "fdinfo open must use the named leader table: {process_fdinfo}"
+        );
+        let process_fdinfo_bytes = proc_fd_test_read(
+            &mut worker,
+            &mut memory,
+            process_fdinfo as libc::c_int,
+            OUTPUT,
+            256,
+        );
+        assert!(process_fdinfo_bytes.0 > 0);
+        assert!(
+            process_fdinfo_bytes
+                .1
+                .windows(b"ino:\t".len())
+                .any(|window| window == b"ino:\t"),
+            "the opened fdinfo description must read the leader fd"
+        );
+        assert_eq!(
+            proc_fd_test_open(
+                &mut worker,
+                &mut memory,
+                "/proc/thread-self/fdinfo/80",
+                libc::O_RDONLY | libc::O_CLOEXEC,
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        write_c_string(&mut memory, 0x100, "/proc/self/fdinfo/80");
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_newfstatat as u64,
+                    [libc::AT_FDCWD as u64, 0x100, 2 * PAGE_SIZE, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0
+        );
+        write_c_string(&mut memory, 0x100, "/proc/thread-self/fdinfo/80");
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_newfstatat as u64,
+                    [libc::AT_FDCWD as u64, 0x100, 2 * PAGE_SIZE, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::ENOENT)
+        );
+
+        // Reuse the same numeric fd in the detached worker for a different
+        // object. Every task-scoped lookup must now distinguish the two tables;
+        // a mere existence check cannot catch caller-table substitution.
+        let worker_path = root.0.join("worker-target");
+        std::fs::write(&worker_path, b"worker").unwrap();
+        let worker_expected = worker_path.as_os_str().as_bytes().to_vec();
+        proc_fd_test_replace(&mut worker, &mut memory, "worker-target", TARGET_FD);
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut worker,
+                &mut memory,
+                libc::AT_FDCWD,
+                "/proc/self/fd/80",
+                OUTPUT,
+                4096,
+            ),
+            (expected.len() as i64, expected.clone())
+        );
+        assert_eq!(
+            proc_fd_test_readlinkat(
+                &mut worker,
+                &mut memory,
+                libc::AT_FDCWD,
+                "/proc/thread-self/fd/80",
+                OUTPUT,
+                4096,
+            ),
+            (worker_expected.len() as i64, worker_expected.clone())
+        );
+
+        let process_reopen = proc_fd_test_open(
+            &mut worker,
+            &mut memory,
+            "/proc/self/fd/80",
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        );
+        let thread_reopen = proc_fd_test_open(
+            &mut worker,
+            &mut memory,
+            "/proc/thread-self/fd/80",
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        );
+        let process_anchor_reopen = proc_fd_test_openat(
+            &mut worker,
+            &mut memory,
+            process_anchor,
+            "80",
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        );
+        let thread_anchor_reopen = proc_fd_test_openat(
+            &mut worker,
+            &mut memory,
+            thread_anchor,
+            "80",
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        );
+        for (fd, content) in [
+            (process_reopen, b"target".as_slice()),
+            (process_anchor_reopen, b"target".as_slice()),
+            (thread_reopen, b"worker".as_slice()),
+            (thread_anchor_reopen, b"worker".as_slice()),
+        ] {
+            assert!(fd >= 0, "task-scoped proc-fd reopen failed: {fd}");
+            assert_eq!(
+                proc_fd_test_read(&mut worker, &mut memory, fd as libc::c_int, OUTPUT, 16),
+                (content.len() as i64, content.to_vec())
+            );
+        }
+
+        const STAT: u64 = 2 * PAGE_SIZE;
+        write_c_string(&mut memory, 0x100, "/proc/self/fd/80");
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_newfstatat as u64,
+                    [libc::AT_FDCWD as u64, 0x100, STAT, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0
+        );
+        let process_stat: libc::stat = read_struct(&memory, STAT);
+        write_c_string(&mut memory, 0x100, "/proc/thread-self/fd/80");
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_newfstatat as u64,
+                    [libc::AT_FDCWD as u64, 0x100, STAT, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0
+        );
+        let thread_stat: libc::stat = read_struct(&memory, STAT);
+        assert_ne!(process_stat.st_ino, thread_stat.st_ino);
+
+        write_c_string(&mut memory, 0x100, "80");
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_newfstatat as u64,
+                    [process_anchor as u64, 0x100, STAT, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0
+        );
+        let anchored_process_stat: libc::stat = read_struct(&memory, STAT);
+        assert_eq!(anchored_process_stat.st_ino, process_stat.st_ino);
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_newfstatat as u64,
+                    [thread_anchor as u64, 0x100, STAT, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0
+        );
+        let anchored_thread_stat: libc::stat = read_struct(&memory, STAT);
+        assert_eq!(anchored_thread_stat.st_ino, thread_stat.st_ino);
+
+        write_c_string(&mut memory, 0x100, "/proc/self/fd/80");
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_statx as u64,
+                    [
+                        libc::AT_FDCWD as u64,
+                        0x100,
+                        0,
+                        libc::STATX_BASIC_STATS as u64,
+                        STAT,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            0
+        );
+        let process_statx: libc::statx = read_struct(&memory, STAT);
+        write_c_string(&mut memory, 0x100, "/proc/thread-self/fd/80");
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(
+                    libc::SYS_statx as u64,
+                    [
+                        libc::AT_FDCWD as u64,
+                        0x100,
+                        0,
+                        libc::STATX_BASIC_STATS as u64,
+                        STAT,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            0
+        );
+        let thread_statx: libc::statx = read_struct(&memory, STAT);
+        assert_eq!(process_statx.stx_ino, process_stat.st_ino);
+        assert_eq!(thread_statx.stx_ino, thread_stat.st_ino);
+
+        for path in ["/proc/self/fd/80", "/proc/thread-self/fd/80"] {
+            write_c_string(&mut memory, 0x100, path);
+            assert_eq!(
+                worker.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_faccessat2 as u64,
+                        [libc::AT_FDCWD as u64, 0x100, libc::F_OK as u64, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                0
+            );
+            assert_eq!(
+                worker.execute(
+                    &SyscallRequest::new(libc::SYS_statfs as u64, [0x100, STAT, 0, 0, 0, 0],),
+                    &memory,
+                ),
+                0
+            );
+        }
+
+        write_c_string(&mut memory, 0x100, "/proc/self/fd/80");
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(libc::SYS_truncate as u64, [0x100, 3, 0, 0, 0, 0]),
+                &memory,
+            ),
+            0
+        );
+        assert_eq!(std::fs::metadata(&target_path).unwrap().len(), 3);
+        assert_eq!(std::fs::metadata(&worker_path).unwrap().len(), 6);
+        write_c_string(&mut memory, 0x100, "/proc/thread-self/fd/80");
+        assert_eq!(
+            worker.execute(
+                &SyscallRequest::new(libc::SYS_truncate as u64, [0x100, 2, 0, 0, 0, 0]),
+                &memory,
+            ),
+            0
+        );
+        assert_eq!(std::fs::metadata(&target_path).unwrap().len(), 3);
+        assert_eq!(std::fs::metadata(&worker_path).unwrap().len(), 2);
+
+        let thread_fdinfo = proc_fd_test_open(
+            &mut worker,
+            &mut memory,
+            "/proc/thread-self/fdinfo/80",
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        );
+        assert!(thread_fdinfo >= 0);
+        let thread_fdinfo_bytes = proc_fd_test_read(
+            &mut worker,
+            &mut memory,
+            thread_fdinfo as libc::c_int,
+            OUTPUT,
+            256,
+        );
+        assert!(thread_fdinfo_bytes.0 > 0);
+        assert_ne!(process_fdinfo_bytes.1, thread_fdinfo_bytes.1);
+    }
+
+    #[test]
+    fn close_range_shared_and_unshare_failure_boundaries_are_atomic() {
+        let mut fixture = FdinfoFixture::new(false);
+        let target = fixture.open("a", libc::O_RDWR);
+        let survivor = fixture.open("b", libc::O_RDWR);
+        let retained = fixture.open("c", libc::O_RDWR);
+        let mut sibling = fixture.executor.thread_child(2).unwrap();
+
+        // Without UNSHARE, both CLOEXEC and close remain shared-table effects.
+        assert_eq!(
+            fixture.call(
+                libc::SYS_close_range,
+                [
+                    target as u64,
+                    target as u64,
+                    CLOSE_RANGE_CLOEXEC as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_eq!(
+            sibling.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fcntl as u64,
+                    [target as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+                ),
+                &fixture.memory,
+            ),
+            i64::from(libc::FD_CLOEXEC)
+        );
+        assert_eq!(
+            fixture.call(
+                libc::SYS_close_range,
+                [target as u64, target as u64, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            sibling.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fcntl as u64,
+                    [target as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+                ),
+                &fixture.memory,
+            ),
+            negative_errno(libc::EBADF)
+        );
+
+        let table_before = fixture.executor.file_table.clone();
+        let owners_before = Arc::downgrade(&fixture.executor.file_table_owners);
+        fixture
+            .executor
+            .state
+            .file_retirement
+            .fail_clone_after(Some(0));
+
+        // Validation wins over every internal clone and cannot detach.
+        assert_eq!(
+            fixture.call(
+                libc::SYS_close_range,
+                [
+                    survivor as u64,
+                    survivor as u64,
+                    (CLOSE_RANGE_UNSHARE | 1) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert!(Arc::ptr_eq(&table_before, &fixture.executor.file_table));
+        assert!(std::sync::Weak::ptr_eq(
+            &owners_before,
+            &Arc::downgrade(&fixture.executor.file_table_owners)
+        ));
+
+        // A valid shared-table detach stages its survivor first. Injected
+        // failure leaves local, authoritative, token, and sibling state intact.
+        assert_eq!(
+            fixture.call(
+                libc::SYS_close_range,
+                [
+                    survivor as u64,
+                    survivor as u64,
+                    CLOSE_RANGE_UNSHARE as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EMFILE)
+        );
+        assert!(Arc::ptr_eq(&table_before, &fixture.executor.file_table));
+        assert!(std::sync::Weak::ptr_eq(
+            &owners_before,
+            &Arc::downgrade(&fixture.executor.file_table_owners)
+        ));
+        assert!(
+            fixture
+                .executor
+                .state
+                .files
+                .contains_key(&(survivor as i32))
+        );
+        assert!(
+            fixture
+                .executor
+                .state
+                .files
+                .contains_key(&(retained as i32))
+        );
+        assert!(
+            table_before
+                .lock()
+                .unwrap()
+                .files
+                .contains_key(&(survivor as i32))
+        );
+
+        // Once the last sibling is gone, UNSHARE is a no-op and must not clone.
+        drop(sibling);
+        assert_eq!(Arc::strong_count(&fixture.executor.file_table_owners), 1);
+        assert_eq!(
+            fixture.call(
+                libc::SYS_close_range,
+                [
+                    u32::MAX as u64,
+                    u32::MAX as u64,
+                    CLOSE_RANGE_UNSHARE as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert!(Arc::ptr_eq(&table_before, &fixture.executor.file_table));
+        assert!(
+            fixture
+                .executor
+                .state
+                .files
+                .contains_key(&(survivor as i32))
+        );
+        fixture
+            .executor
+            .state
+            .file_retirement
+            .fail_clone_after(None);
     }
 
     #[test]
@@ -24189,6 +26064,7 @@ mod tests {
                 &SyscallRequest::new(libc::SYS_fstat as u64, [fd as u64, address, 0, 0, 0, 0]),
                 None,
                 Some(&mut output),
+                None,
             );
             assert!(matches!(
                 action,
@@ -24244,7 +26120,7 @@ mod tests {
         // is disabled. This is the control that prevents an inherited pipe from
         // making the captured-output assertion pass through the host fallback.
         assert!(matches!(
-            execute_basic_syscall_with_output(&mut memory, &mut state, &request, None, None),
+            execute_basic_syscall_with_output(&mut memory, &mut state, &request, None, None, None),
             SyscallAction::Continue {
                 result: 4,
                 segment: None
@@ -24257,6 +26133,7 @@ mod tests {
             &request,
             None,
             Some(&mut output),
+            None,
         );
         assert!(matches!(
             action,
@@ -33999,7 +35876,6 @@ mod tests {
                 target_tid: 1,
                 target_generation,
                 target_fd: socket_fds[0],
-                table: std::sync::Weak::new(),
                 lifecycle: state.task_lifecycle.clone(),
                 capture_output: false,
                 path: b"/proc/1/fdinfo/private".to_vec(),
@@ -35275,15 +37151,18 @@ mod tests {
             negative_errno(libc::ENOENT)
         );
         assert_eq!(
-            guest_fd_path(&state, b"/proc/self/fd/3", libc::ENOENT),
+            guest_fd_path(&state, b"/proc/self/fd/3", libc::ENOENT)
+                .map(|target| target.map(|target| target.guest_fd)),
             Ok(Some(3))
         );
         assert_eq!(
-            guest_fd_path(&state, b"/proc/thread-self/fd/3", libc::ENOENT),
+            guest_fd_path(&state, b"/proc/thread-self/fd/3", libc::ENOENT)
+                .map(|target| target.map(|target| target.guest_fd)),
             Ok(Some(3))
         );
         assert_eq!(
-            guest_fd_path(&state, b"/proc/1/fd/3", libc::ENOENT),
+            guest_fd_path(&state, b"/proc/1/fd/3", libc::ENOENT)
+                .map(|target| target.map(|target| target.guest_fd)),
             Ok(Some(3))
         );
         assert_eq!(
@@ -35700,12 +37579,22 @@ mod tests {
         path: &str,
         flags: libc::c_int,
     ) -> i64 {
+        proc_fd_test_openat(executor, memory, libc::AT_FDCWD, path, flags)
+    }
+
+    fn proc_fd_test_openat(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        dirfd: libc::c_int,
+        path: &str,
+        flags: libc::c_int,
+    ) -> i64 {
         const PATH: u64 = 0x100;
         write_c_string(memory, PATH, path);
         executor.execute(
             &SyscallRequest::new(
                 libc::SYS_openat as u64,
-                [libc::AT_FDCWD as u64, PATH, flags as u64, 0, 0, 0],
+                [dirfd as u64, PATH, flags as u64, 0, 0, 0],
             ),
             memory,
         )
@@ -35752,6 +37641,29 @@ mod tests {
             &SyscallRequest::new(
                 libc::SYS_readlinkat as u64,
                 [dirfd as u64, PATH, output, capacity as u64, 0, 0],
+            ),
+            memory,
+        );
+        if result < 0 {
+            (result, Vec::new())
+        } else {
+            let mut bytes = vec![0; result as usize];
+            memory.read(output, &mut bytes).unwrap();
+            (result, bytes)
+        }
+    }
+
+    fn proc_fd_test_read(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        fd: libc::c_int,
+        output: u64,
+        capacity: usize,
+    ) -> (i64, Vec<u8>) {
+        let result = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_read as u64,
+                [fd as u64, output, capacity as u64, 0, 0, 0],
             ),
             memory,
         );
