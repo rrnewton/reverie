@@ -34,6 +34,7 @@
 #include "drreg.h"
 #include "drwrap.h"
 #include "drx.h"
+#include "runtime_lineage.h"
 
 #ifndef X86_64
 #error "The Reverie DynamoRIO prototype currently requires x86-64"
@@ -84,6 +85,8 @@ typedef struct {
   // client-only so identity handoff state can retain its existing CLONE_VM
   // lifetime without causing a later syscall to repeat the callback.
   uint64_t pending_process_clone_result;
+  // Child clear-TID address captured before an original process clone.
+  uint64_t pending_process_clone_ctid;
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review safe-point preemption thread state.
   // Client-only safe-point preemption state, appended AFTER the fields the Rust
@@ -117,6 +120,7 @@ typedef struct {
 typedef struct {
   int32_t host;
   int32_t virtual_id;
+  bool copied_native_only;
 } virtual_identity_t;
 
 typedef struct {
@@ -194,7 +198,7 @@ static const cpuid_result_t extended_cpuid[] = {
 // exit, and app-level writes re-enter the syscall interception path.
 typedef void (*reverie_emit_fn_t)(const char *buf, size_t len);
 typedef void (*reverie_idle_fn_t)(void);
-#define REVERIE_DBT_RUNTIME_ABI_VERSION 3u
+#define REVERIE_DBT_RUNTIME_ABI_VERSION 4u
 // TODO-HUMAN-REVIEW(PR-162): Review the additive stdout-emit runtime callback ABI.
 typedef struct {
   reverie_emit_fn_t emit;
@@ -256,7 +260,9 @@ extern uint64_t reverie_dbt_runtime_image_init(void);
 extern void reverie_dbt_runtime_exec_failed(prototype_counters_t *counters,
                                             int32_t pid);
 extern void reverie_dbt_runtime_process_clone_result(
-    prototype_counters_t *counters, int64_t sysnum, int64_t result);
+    prototype_counters_t *counters, int64_t sysnum, int64_t result,
+    int32_t child_tid, int32_t virtual_child_tid, uint64_t child_tid_addr,
+    uint64_t flags);
 extern void reverie_dbt_runtime_background_init_v2(void *argument);
 extern int32_t reverie_dbt_runtime_ready(uint64_t image_generation);
 extern void reverie_dbt_runtime_process_exit(void);
@@ -334,7 +340,7 @@ static _Atomic uint64_t virtual_tsc __attribute__((aligned(64)));
 #define VIRTUAL_TSC_STRIDE UINT64_C(100)
 static process_id_t runtime_owner_pid;
 static bool has_copied_runtime(void);
-static bool is_copied_vfork_process(void);
+static bool copied_process_must_stay_native(void);
 static void finalize_runtime_process(void);
 static void complete_runtime_thread_exit(prototype_counters_t *counters,
                                          void *drcontext,
@@ -940,9 +946,6 @@ static atomic_flag pending_clone_lock = ATOMIC_FLAG_INIT;
 static _Atomic int32_t pending_clone_virtual_child;
 static _Atomic int32_t pending_clone_creator_pid;
 static _Atomic uint64_t pending_clone_flags;
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-262): Review copied-vfork native-gate lifetime.
-static _Atomic int32_t copied_vfork_pid;
 /* A copied child initializes its inherited Rust runtime on its first syscall.
  * Track the process that completed that handoff rather than a boolean: nested
  * fork children inherit the parent's globals and must rebase again. */
@@ -1056,7 +1059,7 @@ static int32_t ensure_virtual_identity(int32_t host) {
   virtual_id = atomic_fetch_add_explicit(
       &virtual_identity_state->next_virtual_id, 1, memory_order_relaxed);
   virtual_identity_state->identities[virtual_identity_state->count++] =
-      (virtual_identity_t){host, virtual_id};
+      (virtual_identity_t){host, virtual_id, 0};
   virtual_identity_unlock();
   return virtual_id;
 }
@@ -1070,15 +1073,60 @@ static void remember_virtual_identity(int32_t host, int32_t virtual_id) {
   for (i = 0; i < virtual_identity_state->count; ++i) {
     if (virtual_identity_state->identities[i].host == host ||
         virtual_identity_state->identities[i].virtual_id == virtual_id) {
-      virtual_identity_state->identities[i] =
-          (virtual_identity_t){host, virtual_id};
+      virtual_identity_state->identities[i].host = host;
+      virtual_identity_state->identities[i].virtual_id = virtual_id;
       virtual_identity_unlock();
       return;
     }
   }
   DR_ASSERT(virtual_identity_state->count < MAX_VIRTUAL_IDENTITIES);
   virtual_identity_state->identities[virtual_identity_state->count++] =
-      (virtual_identity_t){host, virtual_id};
+      (virtual_identity_t){host, virtual_id, 0};
+  virtual_identity_unlock();
+}
+
+static bool identity_requires_copied_native_path(int32_t host) {
+  bool result = false;
+  size_t i;
+  if (host <= 0)
+    return false;
+
+  virtual_identity_lock();
+  for (i = 0; i < virtual_identity_state->count; ++i) {
+    virtual_identity_t identity = virtual_identity_state->identities[i];
+    if (identity.host == host) {
+      result = identity.copied_native_only;
+      break;
+    }
+  }
+  virtual_identity_unlock();
+  return result;
+}
+
+static void remember_clone_identity(int32_t host, int32_t virtual_id,
+                                    uint64_t clone_flags,
+                                    int32_t creator_host) {
+  bool copied_native_only = reverie_dbt_child_requires_native_path(
+      identity_requires_copied_native_path(creator_host), clone_flags);
+  size_t i;
+  if (host <= 0 || virtual_id <= 0)
+    return;
+
+  virtual_identity_lock();
+  for (i = 0; i < virtual_identity_state->count; ++i) {
+    if (virtual_identity_state->identities[i].host == host ||
+        virtual_identity_state->identities[i].virtual_id == virtual_id) {
+      virtual_identity_state->identities[i].host = host;
+      virtual_identity_state->identities[i].virtual_id = virtual_id;
+      virtual_identity_state->identities[i].copied_native_only |=
+          copied_native_only;
+      virtual_identity_unlock();
+      return;
+    }
+  }
+  DR_ASSERT(virtual_identity_state->count < MAX_VIRTUAL_IDENTITIES);
+  virtual_identity_state->identities[virtual_identity_state->count++] =
+      (virtual_identity_t){host, virtual_id, copied_native_only};
   virtual_identity_unlock();
 }
 
@@ -1639,8 +1687,10 @@ static void virtualize_waitid_info(const uint64_t *args) {
   }
 }
 
-static bool clone_identity_flags(int sysnum, const uint64_t *args,
-                                 uint64_t *flags) {
+static bool clone_identity_metadata(int sysnum, const uint64_t *args,
+                                    uint64_t *flags,
+                                    uint64_t *child_tid_addr) {
+  *child_tid_addr = 0;
   switch (sysnum) {
   case SYS_fork:
     *flags = 0;
@@ -1650,11 +1700,18 @@ static bool clone_identity_flags(int sysnum, const uint64_t *args,
     return true;
   case SYS_clone:
     *flags = args[0];
+    *child_tid_addr = args[3];
     return true;
   case SYS_clone3:
     *flags = 0;
-    return args[0] != 0 && args[1] >= sizeof(*flags) &&
-           read_app((const void *)(uintptr_t)args[0], flags, sizeof(*flags));
+    if (args[0] == 0 || args[1] < sizeof(*flags) ||
+        !read_app((const void *)(uintptr_t)args[0], flags, sizeof(*flags)))
+      return false;
+    if (args[1] >= 3 * sizeof(uint64_t) &&
+        !read_app((const void *)(uintptr_t)(args[0] + 2 * sizeof(uint64_t)),
+                  child_tid_addr, sizeof(*child_tid_addr)))
+      return false;
+    return true;
   default:
     return false;
   }
@@ -1707,17 +1764,20 @@ static bool prepare_clone_identity(prototype_counters_t *counters, int sysnum,
                                    const uint64_t *args,
                                    clone_syscall_origin_t origin) {
   uint64_t flags;
+  uint64_t child_tid_addr;
   if (fail_if_process_clone_result_pending(counters, sysnum))
     return false;
-  if (!clone_identity_flags(sysnum, args, &flags))
+  if (!clone_identity_metadata(sysnum, args, &flags, &child_tid_addr))
     return false;
   DR_ASSERT(counters->pending_virtual_child == 0);
   if ((flags & CLONE_THREAD) == 0)
     acquire_clone_identity_handoff();
   counters->pending_virtual_child = allocate_virtual_identity();
   counters->pending_clone_flags = flags;
-  if (origin == CLONE_SYSCALL_ORIGINAL && (flags & CLONE_THREAD) == 0)
+  if (origin == CLONE_SYSCALL_ORIGINAL && (flags & CLONE_THREAD) == 0) {
     counters->pending_process_clone_result = 1;
+    counters->pending_process_clone_ctid = child_tid_addr;
+  }
   if ((flags & CLONE_THREAD) == 0) {
     atomic_store_explicit(&pending_clone_flags, flags, memory_order_relaxed);
     atomic_store_explicit(&pending_clone_creator_pid,
@@ -1749,7 +1809,8 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
         lookup_virtual_identity((int32_t)result, &mapped))
       virtual_child = mapped;
     else
-      remember_virtual_identity((int32_t)result, virtual_child);
+      remember_clone_identity((int32_t)result, virtual_child, flags,
+                              (int32_t)dr_get_process_id());
   } else if (result == 0) {
     int32_t host_tid = (int32_t)dr_get_thread_id(dr_get_current_drcontext());
     if ((flags & CLONE_THREAD) == 0)
@@ -1758,12 +1819,14 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
         lookup_virtual_identity(host_tid, &mapped))
       virtual_child = mapped;
     else
-      remember_virtual_identity(host_tid, virtual_child);
+      remember_clone_identity(host_tid, virtual_child, flags,
+                              (int32_t)dr_get_parent_id());
     if ((flags & CLONE_THREAD) != 0) {
       counters->virtual_tid = virtual_child;
     } else {
       int32_t parent = counters->virtual_pid;
-      remember_virtual_identity((int32_t)dr_get_process_id(), virtual_child);
+      remember_clone_identity((int32_t)dr_get_process_id(), virtual_child, flags,
+                              (int32_t)dr_get_parent_id());
       if ((flags & CLONE_VM) != 0)
         return virtual_child;
       counters->virtual_pid = virtual_child;
@@ -2854,11 +2917,24 @@ static void post_syscall(void *drcontext, int sysnum) {
   }
   if (is_clone_syscall(sysnum) &&
       counters->pending_process_clone_result != 0) {
-    if (!test_leave_process_clone_result_pending)
+    int32_t host_child_tid =
+        host_syscall_result > 0
+            ? (int32_t)host_syscall_result
+            : (host_syscall_result == 0
+                   ? (int32_t)dr_get_thread_id(drcontext)
+                   : 0);
+    int32_t virtual_child_tid =
+        host_syscall_result >= 0 ? counters->pending_virtual_child : 0;
+    uint64_t child_tid_addr = counters->pending_process_clone_ctid;
+    uint64_t clone_flags = counters->pending_clone_flags;
+    if (!test_leave_process_clone_result_pending) {
       counters->pending_process_clone_result = 0;
+      counters->pending_process_clone_ctid = 0;
+    }
     evidence_callback_enter();
-    reverie_dbt_runtime_process_clone_result(counters, (int64_t)sysnum,
-                                             host_syscall_result);
+    reverie_dbt_runtime_process_clone_result(
+        counters, (int64_t)sysnum, host_syscall_result, host_child_tid,
+        virtual_child_tid, child_tid_addr, clone_flags);
     evidence_callback_leave();
   }
 
@@ -2894,7 +2970,7 @@ static void post_syscall(void *drcontext, int sysnum) {
     require_evidence_flush(EVIDENCE_FRAME_EXEC_CANCEL);
 
   if (has_copied_runtime() &&
-      (!runtime_uses_external_global() || is_copied_vfork_process()))
+      (!runtime_uses_external_global() || copied_process_must_stay_native()))
     return;
 
   if (counters->pending_thread_clone != 0) {
@@ -2947,10 +3023,15 @@ static bool has_copied_runtime(void) {
   return runtime_owner_pid != 0 && dr_get_process_id() != runtime_owner_pid;
 }
 
-static bool is_copied_vfork_process(void) {
+static bool copied_process_must_stay_native(void) {
   return has_copied_runtime() &&
-         atomic_load_explicit(&copied_vfork_pid, memory_order_acquire) ==
-             (int32_t)dr_get_process_id();
+         identity_requires_copied_native_path((int32_t)dr_get_process_id());
+}
+
+static bool process_owns_runtime(void) {
+  return reverie_dbt_process_owns_runtime(
+      has_copied_runtime(), runtime_uses_external_global(),
+      copied_process_must_stay_native());
 }
 
 static void finalize_runtime_process(void) {
@@ -2972,8 +3053,7 @@ static void finalize_runtime_process(void) {
     sender->finalization_started = true;
     dr_mutex_unlock(evidence_lock);
   }
-  if (!has_copied_runtime() ||
-      (runtime_uses_external_global() && !is_copied_vfork_process())) {
+  if (process_owns_runtime()) {
     evidence_callback_enter();
     reverie_dbt_runtime_process_exit();
     evidence_callback_leave();
@@ -3086,13 +3166,13 @@ static void maybe_preempt(app_pc pc) {
   // Only preempt a thread that actually drives the Reverie tool this turn.
   // Mirror the guards used around the syscall dispatch: the runtime image must be
   // ready, and a copied child only runs the tool when it is an external-global
-  // (RPC-connected) non-vfork process. A copied child under a prototype runtime,
-  // or a vfork stand-in, runs no scheduler turn, so skip it.
+  // (RPC-connected) separate-VM process. A copied child under a prototype
+  // runtime, or a CLONE_VM/vfork stand-in, runs no scheduler turn, so skip it.
   if (!reverie_dbt_runtime_ready(
           atomic_load_explicit(&image_generation, memory_order_acquire)))
     return;
   if (has_copied_runtime() &&
-      (!runtime_uses_external_global() || is_copied_vfork_process()))
+      (!runtime_uses_external_global() || copied_process_must_stay_native()))
     return;
   uint64_t branches = atomic_load_explicit(&branch_count, memory_order_relaxed);
   if (branches - counters->last_yield_branch < preemption_quantum)
@@ -3447,7 +3527,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-255): Review copied-process Detcore state rebasing.
   if (has_copied_runtime() && runtime_uses_external_global() &&
-      !is_copied_vfork_process() &&
+      !copied_process_must_stay_native() &&
       copied_process_runtime_pid != dr_get_process_id()) {
     evidence_callback_enter();
     int32_t initialized = reverie_dbt_runtime_thread_init(
@@ -3466,7 +3546,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   }
 
   if (has_copied_runtime() &&
-      (!runtime_uses_external_global() || is_copied_vfork_process())) {
+      (!runtime_uses_external_global() || copied_process_must_stay_native())) {
     // Record this copied child's virtual identity before any refusal so the
     // shared host<->virtual map stays coherent even when the syscall is later
     // rejected by the fail-closed unsupported-syscall policy below.
@@ -3700,13 +3780,10 @@ static void thread_init(void *drcontext) {
     return;
   }
   if (pending_child != 0) {
-    if (!is_thread && (clone_flags & CLONE_VFORK) != 0)
-      atomic_store_explicit(&copied_vfork_pid,
-                            (int32_t)dr_get_process_id(),
-                            memory_order_release);
     if (!is_thread)
-      remember_virtual_identity((int32_t)dr_get_process_id(), pending_child);
-    remember_virtual_identity(host_tid, pending_child);
+      remember_clone_identity((int32_t)dr_get_process_id(), pending_child,
+                              clone_flags, clone_creator);
+    remember_clone_identity(host_tid, pending_child, clone_flags, clone_creator);
     release_clone_identity_handoff(pending_child);
   }
 
@@ -3722,29 +3799,22 @@ static void thread_init(void *drcontext) {
 static void complete_runtime_thread_exit(prototype_counters_t *counters,
                                          void *drcontext,
                                          bool explicit_exit) {
-  bool owns_runtime;
-  if (counters->runtime_thread_exit_called != 0)
+  if (!reverie_dbt_claim_runtime_thread_exit(
+          process_owns_runtime(), &counters->runtime_thread_exit_called))
     return;
-  counters->runtime_thread_exit_called = 1;
-  owns_runtime = !has_copied_runtime() ||
-                 (runtime_uses_external_global() &&
-                  !is_copied_vfork_process());
-  if (owns_runtime) {
+  evidence_callback_enter();
+  reverie_dbt_runtime_thread_exit(counters, drcontext,
+                                  dr_get_thread_id(drcontext), invoke_syscall);
+  evidence_callback_leave();
+  if (test_thread_exit_evidence && explicit_exit &&
+      evidence_is_enabled() &&
+      counters->evidence_thread_process == dr_get_process_id()) {
+    static const char record[] =
+        "1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: "
+        "explicit SYS_exit thread callback completed\n";
     evidence_callback_enter();
-    reverie_dbt_runtime_thread_exit(counters, drcontext,
-                                    dr_get_thread_id(drcontext),
-                                    invoke_syscall);
+    reverie_dbt_emit_evidence(record, sizeof(record) - 1);
     evidence_callback_leave();
-    if (test_thread_exit_evidence && explicit_exit &&
-        evidence_is_enabled() &&
-        counters->evidence_thread_process == dr_get_process_id()) {
-      static const char record[] =
-          "1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: "
-          "explicit SYS_exit thread callback completed\n";
-      evidence_callback_enter();
-      reverie_dbt_emit_evidence(record, sizeof(record) - 1);
-      evidence_callback_leave();
-    }
   }
 }
 
@@ -3752,9 +3822,7 @@ static void thread_exit(void *drcontext) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
   if (counters != NULL) {
-    bool owns_runtime =
-        !has_copied_runtime() ||
-        (runtime_uses_external_global() && !is_copied_vfork_process());
+    bool owns_runtime = process_owns_runtime();
     complete_runtime_thread_exit(counters, drcontext, false);
     evidence_thread_leave(counters);
     if (owns_runtime) {
@@ -3780,7 +3848,7 @@ static void stats_put_u64_le(unsigned char *out, uint64_t value) {
 }
 
 // Emits one fixed-size stats record for this runtime image to `stats_path`.
-// Called only for a real runtime owner (never a copied/vfork runtime), so the
+// Called only for a real runtime owner (never a copied/shared-VM runtime), so the
 // totals read here belong to exactly this process image. The file is opened
 // per-image in append mode and the whole record is written by a single
 // dr_write_file, so concurrent images append their 144-byte records atomically
@@ -3883,13 +3951,13 @@ static void event_exit(void) {
                reverie_dbt_runtime_name(), branches, syscalls, rewritten,
                stdin_reads, memory_hash);
   }
-  if (stats_path[0] != 0 && !has_copied_runtime())
+  if (stats_path[0] != 0 && process_owns_runtime())
     emit_stats_record();
   if (unsupported_report_file != INVALID_FILE) {
     dr_close_file(unsupported_report_file);
     unsupported_report_file = INVALID_FILE;
   }
-  if (evidence_is_enabled() && !is_copied_vfork_process() &&
+  if (evidence_is_enabled() && process_owns_runtime() &&
       evidence_current_process_finalized()) {
     dr_global_free(evidence_buffer, EVIDENCE_BUFFER_CAPACITY);
     evidence_buffer = NULL;

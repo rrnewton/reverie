@@ -1442,7 +1442,7 @@ mod tests {
             .unwrap();
         let cleanup_guard = event_exit
             .find(
-                "if (evidence_is_enabled() && !is_copied_vfork_process() &&\n      evidence_current_process_finalized()) {",
+                "if (evidence_is_enabled() && process_owns_runtime() &&\n      evidence_current_process_finalized()) {",
             )
             .unwrap();
         let first_free = event_exit.find("dr_global_free(evidence_buffer").unwrap();
@@ -1612,7 +1612,7 @@ mod tests {
             .find("counters->pending_process_clone_result = 0;")
             .unwrap();
         let callback = post
-            .find("reverie_dbt_runtime_process_clone_result(counters, (int64_t)sysnum,")
+            .find("reverie_dbt_runtime_process_clone_result(")
             .unwrap();
         let identity = post
             .find("complete_clone_identity(counters, syscall_result)")
@@ -1658,7 +1658,9 @@ mod tests {
         let defensive_stale = prepare
             .find("fail_if_process_clone_result_pending(counters, sysnum)")
             .unwrap();
-        let clone3_decode = prepare.find("clone_identity_flags(sysnum, args").unwrap();
+        let clone3_decode = prepare
+            .find("clone_identity_metadata(sysnum, args")
+            .unwrap();
         let original_origin = prepare.find("origin == CLONE_SYSCALL_ORIGINAL").unwrap();
         let arm = prepare.find("pending_process_clone_result = 1;").unwrap();
         assert!(defensive_stale < clone3_decode);

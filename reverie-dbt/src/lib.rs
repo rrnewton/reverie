@@ -112,7 +112,7 @@ pub type RuntimeIdler = unsafe extern "C" fn();
 /// `reverie_dbt_runtime_background_init_v2`. Advancing a consumer's Reverie
 /// revision without those matching exports is an incomplete cross-repository
 /// update and fails at link or at the pre-callback ABI check.
-pub const DBT_RUNTIME_ABI_VERSION: u32 = 3;
+pub const DBT_RUNTIME_ABI_VERSION: u32 = 4;
 
 #[repr(C)]
 struct DbtRuntimeCallbacksV1 {
@@ -1449,6 +1449,15 @@ fn current_ppid() -> Option<Pid> {
     }
 }
 
+/// Records the real in-tree parent for [`DbtGuest`] instances in this process.
+///
+/// External runtimes call this during process initialization, before invoking
+/// a Tool lifecycle hook. `None` identifies the traced root.
+// TODO-HUMAN-REVIEW(PR-TBD): Review the external-runtime process-parent handoff.
+pub fn set_current_process_parent(ppid: Option<Pid>) {
+    PROCESS_PPID.store(ppid.map_or(PPID_NONE, Pid::as_raw), Ordering::Relaxed);
+}
+
 #[cfg(feature = "prototype-runtime")]
 static PROTOTYPE_TOOL: PrototypeTool = PrototypeTool;
 #[cfg(feature = "prototype-runtime")]
@@ -1498,7 +1507,7 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_init(
     // Record this process's real in-tree parent (or `PPID_NONE` for the tree
     // root) so every `DbtGuest` built afterwards reports it through
     // `Guest::ppid`. A per-process constant; each thread writes the same value.
-    PROCESS_PPID.store(in_tree_ppid, Ordering::Relaxed);
+    set_current_process_parent((in_tree_ppid > 0).then_some(Pid::from_raw(in_tree_ppid)));
     // The native client publishes stable virtual identities in fields after
     // this public three-counter prefix before entering Rust. Reset only the
     // prototype-owned prefix: writing a fresh `PrototypeCounters` value is
@@ -1637,10 +1646,15 @@ pub unsafe extern "C" fn reverie_dbt_runtime_exec_failed(
 /// thread.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn reverie_dbt_runtime_process_clone_result(
     _counters: *mut PrototypeCounters,
     sysnum: i64,
     result: i64,
+    _child_tid: i32,
+    _virtual_child_tid: i32,
+    _child_tid_addr: u64,
+    _flags: u64,
 ) {
     if PROCESS_CLONE_RESULT_PROBE.load(Ordering::Acquire) {
         tools::emit_line(&format!(
@@ -2684,12 +2698,17 @@ mod tests {
     }
 
     #[test]
-    fn thread_init_records_process_ppid_for_current_ppid() {
+    fn public_setter_and_thread_init_record_process_ppid() {
         // This is the only test that touches the process-global `PROCESS_PPID`
         // (no other test calls `reverie_dbt_runtime_thread_init` or
         // `current_ppid`), so the store/load pairs below are not racy under
         // parallel test execution.
         let mut counters = PrototypeCounters::default();
+
+        set_current_process_parent(Some(Pid::from_raw(11)));
+        assert_eq!(current_ppid(), Some(Pid::from_raw(11)));
+        set_current_process_parent(None);
+        assert_eq!(current_ppid(), None);
 
         // A positive in-tree parent pid surfaces as a real parent.
         let init = unsafe {
