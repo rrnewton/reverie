@@ -23,7 +23,12 @@ sys.path.insert(0, str(HEALTH))
 import operational_health  # noqa: E402
 
 
-def binding(tmp_path: Path) -> producer.Bindings:
+def binding(
+    tmp_path: Path,
+    *,
+    current_task: str | None = "kvm_backend_emits_no",
+    agentctl_adapter: str = "herdr-foreign",
+) -> producer.Bindings:
     return producer.Bindings(
         "chat-bridge",
         (tmp_path / "agentctl").resolve(),
@@ -35,9 +40,10 @@ def binding(tmp_path: Path) -> producer.Bindings:
                 "wK:p3",
                 tmp_path.resolve(),
                 "codex",
-                "kvm_backend_emits_no",
+                current_task,
                 "worker",
                 "kvm",
+                agentctl_adapter,
                 "generation-token",
                 "native-session",
                 "Drive the KVM lane",
@@ -71,6 +77,51 @@ def herdr(tmp_path: Path, **agent_changes) -> dict:
 
 def owned() -> tuple[tuple[str, str], ...]:
     return (("kvm_backend_emits_no", "dev-hermit-14"),)
+
+
+def bindings_document(
+    tmp_path: Path,
+    *,
+    schema_version: int = 3,
+    worker_current_task: str | None = "kvm_backend_emits_no",
+    worker_adapter: str = "herdr-foreign",
+) -> dict:
+    worker: dict[str, object] = {
+        "herdr_name": "kvm",
+        "snapshot_name": "dev-hermit-14",
+        "pane_id": "wK:p3",
+        "cwd": str(tmp_path),
+        "harness": "codex",
+        "current_task": worker_current_task,
+        "role": "worker",
+        "agentctl_name": "kvm",
+        "agentctl_token": "generation-token",
+        "agentctl_session_id": "native-session",
+        "expected_goal": "Drive the KVM lane",
+    }
+    coordinator: dict[str, object] = {
+        "herdr_name": "hermit-coordinator",
+        "snapshot_name": "hermit-coordinator",
+        "pane_id": "wK:p1",
+        "cwd": str(tmp_path),
+        "harness": "codex",
+        "current_task": None,
+        "role": "coordinator",
+        "agentctl_name": "coordinator",
+        "agentctl_token": "coordinator-token",
+        "agentctl_session_id": "coordinator-session",
+        "expected_goal": None,
+    }
+    if schema_version == 3:
+        worker["agentctl_adapter"] = worker_adapter
+        coordinator["agentctl_adapter"] = "herdr-foreign"
+    return {
+        "schema_version": schema_version,
+        "workspace": "chat-bridge",
+        "agentctl_registry": str(tmp_path / "agentctl"),
+        "taskgraph_db": str(tmp_path / "taskgraph.db"),
+        "agents": [worker, coordinator],
+    }
 
 
 def test_exact_herdr_identity_becomes_a_schema_checked_claim_snapshot(
@@ -145,6 +196,7 @@ def test_binding_file_rejects_duplicate_delivery_and_claim_identities(
         "current_task": "kvm_backend_emits_no",
         "role": "worker",
         "agentctl_name": "kvm",
+        "agentctl_adapter": "herdr-foreign",
         "agentctl_token": "generation-token",
         "agentctl_session_id": "native-session",
         "expected_goal": "Drive the KVM lane",
@@ -152,7 +204,7 @@ def test_binding_file_rejects_duplicate_delivery_and_claim_identities(
     path.write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "workspace": "chat-bridge",
                 "agentctl_registry": str(tmp_path / "agentctl"),
                 "taskgraph_db": str(tmp_path / "taskgraph.db"),
@@ -164,6 +216,60 @@ def test_binding_file_rejects_duplicate_delivery_and_claim_identities(
         producer.load_bindings(path)
 
 
+def test_schema_v3_binds_managed_adapter_and_allows_taskless_worker(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bindings.json"
+    path.write_text(
+        json.dumps(
+            bindings_document(
+                tmp_path,
+                worker_current_task=None,
+                worker_adapter="herdr",
+            )
+        )
+    )
+
+    loaded = producer.load_bindings(path)
+    worker = next(binding for binding in loaded.agents if binding.role == "worker")
+    assert worker.agentctl_adapter == "herdr"
+    assert worker.current_task is None
+    assert worker.expected_goal == "Drive the KVM lane"
+
+
+def test_schema_v2_remains_foreign_only_and_requires_a_worker_task(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bindings.json"
+    document = bindings_document(tmp_path, schema_version=2)
+    path.write_text(json.dumps(document))
+    loaded = producer.load_bindings(path)
+    worker = next(binding for binding in loaded.agents if binding.role == "worker")
+    assert worker.agentctl_adapter == "herdr-foreign"
+
+    document["agents"][0]["current_task"] = None
+    path.write_text(json.dumps(document))
+    with pytest.raises(producer.SnapshotUnavailable, match="needs current_task"):
+        producer.load_bindings(path)
+
+
+def test_schema_v3_refuses_an_unbound_adapter_field(tmp_path: Path) -> None:
+    path = tmp_path / "bindings.json"
+    document = bindings_document(tmp_path)
+    del document["agents"][0]["agentctl_adapter"]
+    path.write_text(json.dumps(document))
+    with pytest.raises(producer.SnapshotUnavailable, match="must contain exactly"):
+        producer.load_bindings(path)
+
+
+def test_schema_v3_refuses_a_non_herdr_agentctl_adapter(tmp_path: Path) -> None:
+    path = tmp_path / "bindings.json"
+    document = bindings_document(tmp_path, worker_adapter="turn-runner")
+    path.write_text(json.dumps(document))
+    with pytest.raises(producer.SnapshotUnavailable, match="must be one of"):
+        producer.load_bindings(path)
+
+
 def test_failed_refresh_preserves_the_last_snapshot(
     tmp_path: Path, monkeypatch, capsys,
 ) -> None:
@@ -171,7 +277,7 @@ def test_failed_refresh_preserves_the_last_snapshot(
     bindings.write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "workspace": "chat-bridge",
                 "agentctl_registry": str(tmp_path / "agentctl"),
                 "taskgraph_db": str(tmp_path / "taskgraph.db"),
@@ -185,6 +291,7 @@ def test_failed_refresh_preserves_the_last_snapshot(
                         "current_task": "kvm_backend_emits_no",
                         "role": "worker",
                         "agentctl_name": "kvm",
+                        "agentctl_adapter": "herdr-foreign",
                         "agentctl_token": "generation-token",
                         "agentctl_session_id": "native-session",
                         "expected_goal": "Drive the KVM lane",
@@ -198,6 +305,7 @@ def test_failed_refresh_preserves_the_last_snapshot(
                         "current_task": None,
                         "role": "coordinator",
                         "agentctl_name": "coordinator",
+                        "agentctl_adapter": "herdr-foreign",
                         "agentctl_token": "coordinator-token",
                         "agentctl_session_id": "coordinator-session",
                         "expected_goal": None,
@@ -416,6 +524,7 @@ def test_producer_roles_keep_taskless_coordinator_out_of_worker_drift(
         None,
         "coordinator",
         "coordinator",
+        "herdr-foreign",
         "coordinator-token",
         "coordinator-session",
         None,
@@ -460,27 +569,38 @@ def test_producer_roles_keep_taskless_coordinator_out_of_worker_drift(
     assert report.misrouted == ()
 
 
-def taskgraph(tmp_path: Path, *, owner: str = "dev-hermit-14") -> Path:
+def taskgraph(
+    tmp_path: Path,
+    *,
+    owner: str = "dev-hermit-14",
+    include_task: bool = True,
+) -> Path:
     path = tmp_path / "taskgraph.db"
     connection = sqlite3.connect(path)
     connection.execute(
         "CREATE TABLE tasks (local_id TEXT PRIMARY KEY, status TEXT, owner TEXT)"
     )
-    connection.execute(
-        "INSERT INTO tasks VALUES (?, ?, ?)",
-        ("kvm_backend_emits_no", "IN_PROGRESS", owner),
-    )
+    if include_task:
+        connection.execute(
+            "INSERT INTO tasks VALUES (?, ?, ?)",
+            ("kvm_backend_emits_no", "IN_PROGRESS", owner),
+        )
     connection.commit()
     connection.close()
     return path
 
 
-def agentctl_list(tmp_path: Path, *, token: str = "generation-token") -> list[dict]:
+def agentctl_list(
+    tmp_path: Path,
+    *,
+    token: str = "generation-token",
+    adapter: str = "herdr-foreign",
+) -> list[dict]:
     return [
         {
             "name": "kvm",
             "token": token,
-            "adapter": "herdr-foreign",
+            "adapter": adapter,
             "lifecycle": "running",
             "harness": "codex",
             "cwd": str(tmp_path.resolve()),
@@ -511,6 +631,7 @@ def coordinator_binding(tmp_path: Path) -> producer.Bindings:
                 None,
                 "coordinator",
                 "coordinator",
+                "herdr-foreign",
                 "coordinator-token",
                 "coordinator-session",
                 None,
@@ -613,6 +734,76 @@ def test_worker_paused_goal_does_not_retain_claim_authority(
         producer.verify_agentctl_goals(binding(tmp_path), Path("agentctl"))
 
 
+def test_agentctl_adapter_drift_refuses_the_bound_generation(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        producer,
+        "read_agentctl",
+        lambda *_args: agentctl_list(tmp_path, adapter="herdr-foreign"),
+    )
+    with pytest.raises(producer.SnapshotUnavailable, match="adapter"):
+        producer.verify_agentctl(
+            binding(tmp_path, current_task=None, agentctl_adapter="herdr"),
+            Path("agentctl"),
+        )
+
+
+@pytest.mark.parametrize("agent_status", ("idle", "needs-input", "needs-permission"))
+def test_taskless_managed_waiting_worker_is_parsed_as_off_book(
+    tmp_path: Path, monkeypatch, agent_status: str,
+) -> None:
+    taskgraph(tmp_path, include_task=False)
+    bindings = binding(
+        tmp_path,
+        current_task=None,
+        agentctl_adapter="herdr",
+    )
+
+    def read(_bin, _registry, *arguments):
+        if arguments == ("list",):
+            return agentctl_list(tmp_path, adapter="herdr")
+        assert arguments == ("goal", "kvm")
+        return {
+            "source": "native",
+            "native_status": "active",
+            "goal": "Drive the KVM lane",
+            "native": {
+                "threadId": "native-session",
+                "status": "active",
+                "objective": "Drive the KVM lane",
+            },
+        }
+
+    monkeypatch.setattr(producer, "read_agentctl", read)
+    monkeypatch.setattr(
+        producer,
+        "read_herdr",
+        lambda _bin: herdr(tmp_path, agent_status=agent_status),
+    )
+    result = producer.collect_snapshot(
+        bindings,
+        agentctl_bin=Path("agentctl"),
+        herdr_bin=Path("herdr"),
+        captured_at=10,
+    )
+
+    assert "current_task" not in result["agents"][0]
+    assert result["authority"]["owned_in_progress"] == []
+    report = operational_health.reconcile_active_work(
+        (), operational_health._parse_agents(result["agents"])
+    )
+    assert report.claimed == ()
+    assert [agent.name for agent in report.off_book] == ["dev-hermit-14"]
+
+    legacy_row = dict(result["agents"][0])
+    legacy_row.pop("source")
+    legacy_report = operational_health.reconcile_active_work(
+        (), operational_health._parse_agents([legacy_row])
+    )
+    assert legacy_report.off_book == ()
+
+
 def test_generation_goal_and_taskgraph_owner_are_reproved_on_every_refresh(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -659,6 +850,40 @@ def test_owned_nested_worker_outside_bound_fleet_refuses_publication(
         ),
     ):
         producer.verify_taskgraph(binding(tmp_path))
+
+
+def test_claimed_task_with_another_bound_owner_refuses_publication(
+    tmp_path: Path,
+) -> None:
+    taskgraph(tmp_path, owner="other-worker")
+    first = binding(tmp_path)
+    other = producer.Binding(
+        "other",
+        "other-worker",
+        "wK:p4",
+        tmp_path.resolve(),
+        "codex",
+        None,
+        "worker",
+        "other",
+        "herdr",
+        "other-generation",
+        "other-session",
+        "Drive another native lane",
+    )
+    bindings = producer.Bindings(
+        first.workspace,
+        first.agentctl_registry,
+        first.taskgraph_db,
+        (*first.agents, other),
+        first.binding_sha256,
+    )
+
+    with pytest.raises(
+        producer.SnapshotUnavailable,
+        match="not exactly one IN_PROGRESS row owned by 'dev-hermit-14'",
+    ):
+        producer.verify_taskgraph(bindings)
 
 
 @pytest.mark.parametrize(

@@ -20,7 +20,7 @@
 //! ```
 // rust-script does not track #[path] dependencies in its cache key. Keep this
 // marker synchronized with agent_snapshot.rs status-contract changes.
-// agent-snapshot-schema-1-pane-identities-roles-authority-v6
+// agent-snapshot-schema-1-pane-identities-roles-authority-v7
 #[allow(dead_code)]
 #[path = "agent_snapshot.rs"]
 mod agent_snapshot;

@@ -648,6 +648,96 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual(len(report.misrouted), 2)
         self.assertGreater(report.actionable_count, 0)
 
+    def test_herdr_taskless_workers_include_waiting_states_as_off_book(self) -> None:
+        statuses = ("working", "idle", "needs-input", "needs-permission")
+        agents = [
+            operational_health.AgentRecord(
+                f"worker-{status}",
+                status,
+                None,
+                source=operational_health.HERDR_COMPOSITE_SOURCE,
+            )
+            for status in statuses
+        ]
+        agents.append(
+            operational_health.AgentRecord(
+                "coordinator",
+                "idle",
+                None,
+                role="coordinator",
+                source=operational_health.HERDR_COMPOSITE_SOURCE,
+            )
+        )
+
+        report = operational_health.reconcile_active_work((), agents)
+
+        self.assertEqual(
+            [agent.name for agent in report.off_book],
+            sorted(f"worker-{status}" for status in statuses),
+        )
+        self.assertEqual(
+            [agent.name for agent in report.busy_agents], ["worker-working"]
+        )
+        self.assertEqual(report.actually_active, ())
+        self.assertNotIn("coordinator", [agent.name for agent in report.off_book])
+
+    def test_legacy_nonbusy_taskless_workers_retain_prior_off_book_semantics(self) -> None:
+        statuses = ("idle", "needs-input", "needs-permission", "free", "managed")
+        agents = [
+            operational_health.AgentRecord(f"worker-{status}", status, None)
+            for status in statuses
+        ]
+
+        report = operational_health.reconcile_active_work((), agents)
+
+        self.assertEqual(report.off_book, ())
+        self.assertEqual(report.busy_agents, ())
+
+    def test_actually_active_remains_limited_to_busy_statuses(self) -> None:
+        task = operational_health.TaskRecord("claimed", "Claimed", "worker", ())
+        for status, expected_active in (
+            ("working", True),
+            ("idle", False),
+            ("needs-input", False),
+            ("needs-permission", False),
+        ):
+            with self.subTest(status=status):
+                report = operational_health.reconcile_active_work(
+                    (task,),
+                    (operational_health.AgentRecord("worker", status, "claimed"),),
+                )
+                self.assertEqual([item.id for item in report.claimed], ["claimed"])
+                self.assertEqual(
+                    [item.id for item in report.actually_active],
+                    ["claimed"] if expected_active else [],
+                )
+                self.assertEqual(report.off_book, ())
+
+    def test_non_live_taskless_workers_are_not_off_book(self) -> None:
+        broken_statuses = {
+            "crashed",
+            "disconnected",
+            "error",
+            "failed",
+            "stuck",
+            "unreachable",
+            "unresponsive",
+        }
+        terminal_statuses = {"closed", "dead", "exited", "retired", "terminated"}
+        agents = [
+            operational_health.AgentRecord(f"worker-{status}", status, None)
+            for status in sorted(broken_statuses | terminal_statuses)
+        ]
+
+        report = operational_health.reconcile_active_work((), agents)
+
+        self.assertEqual(report.live_agents, ())
+        self.assertEqual(report.busy_agents, ())
+        self.assertEqual(report.off_book, ())
+        self.assertEqual(
+            {agent.status for agent in agents if agent.broken}, broken_statuses
+        )
+
     def test_claim_survives_waiting_but_expires_when_assignment_moves(self) -> None:
         task = operational_health.TaskRecord
         agent = operational_health.AgentRecord
@@ -1061,7 +1151,7 @@ class OperationalHealthTest(unittest.TestCase):
             binding = root / ".tick-hub/herdr-agent-bindings.json"
             binding.parent.mkdir()
             binding_document = {
-                "schema_version": 2,
+                "schema_version": 3,
                 "workspace": "chat-bridge",
                 "taskgraph_db": str(taskgraph),
                 "agents": [
@@ -1072,6 +1162,7 @@ class OperationalHealthTest(unittest.TestCase):
                         "harness": "codex",
                         "role": "worker",
                         "current_task": "task",
+                        "agentctl_adapter": "herdr",
                         "agentctl_token": "generation-one",
                     }
                 ],
@@ -1107,6 +1198,11 @@ class OperationalHealthTest(unittest.TestCase):
                     }
                 )
             )
+            agents, captured_at = operational_health.load_agent_snapshot(
+                None, snapshot_file=path, now=1001
+            )
+            self.assertEqual([agent.name for agent in agents], ["worker"])
+            self.assertEqual(captured_at, 1000)
             binding_document["agents"][0]["agentctl_token"] = "generation-two"
             binding.write_text(json.dumps(binding_document))
             result, output = self.capture(
@@ -1120,6 +1216,39 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual(payload["state"], "unknown")
         self.assertNotIn("orphaned", payload)
         self.assertIn("fingerprint changed", payload["error"])
+
+    def test_schema_three_authority_refuses_unknown_agentctl_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "ignored/ci-hub/agent-snapshot.json"
+            path.parent.mkdir(parents=True)
+            binding = root / ".tick-hub/herdr-agent-bindings.json"
+            binding.parent.mkdir()
+            binding.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 3,
+                        "workspace": "chat-bridge",
+                        "taskgraph_db": str(root / "taskgraph.db"),
+                        "agents": [
+                            {
+                                "snapshot_name": "worker",
+                                "herdr_name": "worker-pane",
+                                "pane_id": "wK:p2",
+                                "harness": "codex",
+                                "role": "worker",
+                                "current_task": None,
+                                "agentctl_adapter": "turn-runner",
+                            }
+                        ],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                RuntimeError, "invalid versioned Herdr authority binding"
+            ):
+                operational_health._active_herdr_authority(path)
 
     def test_binding_change_during_taskgraph_read_makes_claims_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -95,7 +95,10 @@ def require_canonical_authority(document: dict[str, Any], snapshot_path: Path) -
         raise AgentSnapshotSchemaError(
             f"invalid Herdr authority binding {binding_path}: {error}"
         ) from error
-    if not isinstance(binding, dict) or binding.get("schema_version") != 2:
+    schema_version = (
+        binding.get("schema_version") if isinstance(binding, dict) else None
+    )
+    if type(schema_version) is not int or schema_version not in {2, 3}:
         raise AgentSnapshotSchemaError(
             "unsupported Herdr authority binding; legacy snapshot remains disabled"
         )

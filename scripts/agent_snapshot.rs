@@ -352,7 +352,10 @@ impl AgentSnapshot {
                 binding_path.display()
             )
         })?;
-        if binding.get("schema_version").and_then(Value::as_u64) != Some(2) {
+        if !matches!(
+            binding.get("schema_version").and_then(Value::as_u64),
+            Some(2 | 3)
+        ) {
             return Err(
                 "unsupported Herdr authority binding; legacy snapshot remains disabled".into(),
             );
@@ -575,33 +578,35 @@ mod tests {
         fs::create_dir_all(root.join(".tick-hub")).unwrap();
         fs::create_dir_all(root.join("state")).unwrap();
         fs::write(root.join("state/tasks.db"), b"fixture").unwrap();
-        let binding = format!(
-            "{{\"schema_version\":2,\"taskgraph_db\":\"{}/state/../state/tasks.db\"}}",
-            root.display()
-        );
-        fs::write(
-            root.join(".tick-hub/herdr-agent-bindings.json"),
-            binding.as_bytes(),
-        )
-        .unwrap();
-
-        let legacy = AgentSnapshot::from_value(&valid_snapshot()).unwrap();
-        assert!(legacy
-            .ensure_canonical_authority(&path)
-            .unwrap_err()
-            .contains("lacks composite authority"));
-
-        let mut composite = valid_snapshot();
-        composite["authority"] = json!({
-            "source": "herdr-agentctl-snapshot-v2",
-            "taskgraph_db": root.join("state/tasks.db").to_string_lossy(),
-            "binding_sha256": format!("{:x}", Sha256::digest(binding.as_bytes())),
-            "owned_in_progress": []
-        });
-        AgentSnapshot::from_value(&composite)
-            .unwrap()
-            .ensure_canonical_authority(&path)
+        for schema_version in [2, 3] {
+            let binding = format!(
+                "{{\"schema_version\":{schema_version},\"taskgraph_db\":\"{}/state/../state/tasks.db\"}}",
+                root.display()
+            );
+            fs::write(
+                root.join(".tick-hub/herdr-agent-bindings.json"),
+                binding.as_bytes(),
+            )
             .unwrap();
+
+            let legacy = AgentSnapshot::from_value(&valid_snapshot()).unwrap();
+            assert!(legacy
+                .ensure_canonical_authority(&path)
+                .unwrap_err()
+                .contains("lacks composite authority"));
+
+            let mut composite = valid_snapshot();
+            composite["authority"] = json!({
+                "source": "herdr-agentctl-snapshot-v2",
+                "taskgraph_db": root.join("state/tasks.db").to_string_lossy(),
+                "binding_sha256": format!("{:x}", Sha256::digest(binding.as_bytes())),
+                "owned_in_progress": []
+            });
+            AgentSnapshot::from_value(&composite)
+                .unwrap()
+                .ensure_canonical_authority(&path)
+                .unwrap();
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

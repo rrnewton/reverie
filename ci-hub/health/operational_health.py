@@ -123,6 +123,8 @@ MERGE_GATE_AUTHORITY_CHECKER = (
 )
 DEFAULT_AGENT_SNAPSHOT = STATE_ROOT / "ignored" / "ci-hub" / "agent-snapshot.json"
 HERDR_COMPOSITE_SOURCE = "herdr-agentctl-snapshot-v2"
+AGENTCTL_HERDR_ADAPTERS = frozenset({"herdr", "herdr-pane", "herdr-foreign"})
+HERDR_WAITING_STATUSES = frozenset({"idle", "needs-input", "needs-permission"})
 DEFAULT_DISK_STATE = STATE_ROOT / "ignored" / "ops-state" / "disk.json"
 DEFAULT_DISK_FILESYSTEM_PATH = STATE_ROOT
 DISK_FREE_INSTRUMENT = "btrfs filesystem usage -b"
@@ -238,6 +240,7 @@ class AgentRecord:
     herdr_pane_id: str | None = None
     last_activity: float | None = None
     role: str = "worker"
+    source: str | None = None
 
     @property
     def live(self) -> bool:
@@ -863,6 +866,11 @@ def _parse_agents(payload: object) -> tuple[AgentRecord, ...]:
                 herdr_pane_id=raw.get("herdr_pane_id"),
                 last_activity=_last_activity_seconds(raw.get("last_activity")),
                 role=str(raw.get("role", "worker")),
+                source=(
+                    str(raw["source"])
+                    if isinstance(raw.get("source"), str)
+                    else None
+                ),
             )
         )
     return tuple(sorted(agents, key=lambda agent: agent.name))
@@ -871,7 +879,7 @@ def _parse_agents(payload: object) -> tuple[AgentRecord, ...]:
 def _active_herdr_authority(
     snapshot_file: Path,
 ) -> tuple[str, Path, str, dict[str, dict[str, object]]] | None:
-    """Return schema-v2 binding expectations for the canonical state path."""
+    """Return versioned binding expectations for the canonical state path."""
     path = snapshot_file.absolute()
     if tuple(path.parts[-3:]) != ("ignored", "ci-hub", "agent-snapshot.json"):
         return None
@@ -888,7 +896,8 @@ def _active_herdr_authority(
         raise RuntimeError(f"invalid Herdr authority binding: {error}") from error
     if not isinstance(document, dict):
         raise RuntimeError("invalid Herdr authority binding: root is not an object")
-    if document.get("schema_version") != 2:
+    binding_schema = document.get("schema_version")
+    if type(binding_schema) is not int or binding_schema not in {2, 3}:
         raise RuntimeError(
             "unsupported Herdr authority binding schema; legacy writers remain disabled"
         )
@@ -902,12 +911,12 @@ def _active_herdr_authority(
         or not Path(taskgraph_db_path).is_absolute()
         or not isinstance(rows, list)
     ):
-        raise RuntimeError("invalid schema-v2 Herdr authority binding")
+        raise RuntimeError("invalid versioned Herdr authority binding")
     expected: dict[str, dict[str, object]] = {}
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise RuntimeError(
-                f"invalid schema-v2 Herdr authority binding agent {index}"
+                f"invalid versioned Herdr authority binding agent {index}"
             )
         name = row.get("snapshot_name")
         role = row.get("role")
@@ -925,21 +934,28 @@ def _active_herdr_authority(
             not isinstance(name, str)
             or not name
             or role not in {"coordinator", "worker"}
+            or (
+                binding_schema == 3
+                and (
+                    not isinstance(row.get("agentctl_adapter"), str)
+                    or row["agentctl_adapter"] not in AGENTCTL_HERDR_ADAPTERS
+                )
+            )
             or any(
                 not isinstance(fields[key], str) or not fields[key]
                 for key in ("herdr_pane_id", "herdr_name", "harness")
             )
         ):
             raise RuntimeError(
-                f"invalid schema-v2 Herdr authority binding agent {index}"
+                f"invalid versioned Herdr authority binding agent {index}"
             )
         if name in expected:
             raise RuntimeError(
-                f"invalid schema-v2 Herdr authority binding duplicate {name!r}"
+                f"invalid versioned Herdr authority binding duplicate {name!r}"
             )
         expected[name] = fields
     if not expected:
-        raise RuntimeError("invalid schema-v2 Herdr authority binding: no agents")
+        raise RuntimeError("invalid versioned Herdr authority binding: no agents")
     return (
         workspace,
         Path(taskgraph_db_path).resolve(),
@@ -988,7 +1004,7 @@ def _assert_herdr_composite_provenance(
     rows = {str(row.get("name")): row for row in payload}
     if len(rows) != len(payload) or set(rows) != set(expected):
         raise RuntimeError(
-            "canonical Herdr snapshot does not match the complete schema-v2 bound fleet"
+            "canonical Herdr snapshot does not match the complete versioned bound fleet"
         )
     for name, fields in expected.items():
         row = rows[name]
@@ -1012,7 +1028,7 @@ def _persist_agent_snapshot(
 ) -> None:
     if _active_herdr_authority(path) is not None:
         raise RuntimeError(
-            "legacy agent snapshot writer disabled while schema-v2 Herdr authority is active"
+            "legacy agent snapshot writer disabled while versioned Herdr authority is active"
         )
     document = {
         "schema_version": 1,
@@ -1107,7 +1123,7 @@ def load_agent_snapshot(
         _assert_plausible_agent_payload(payload, source="explicit")
         if _active_herdr_authority(snapshot_file) is not None:
             raise RuntimeError(
-                "bare explicit snapshot cannot replace schema-v2 composite authority"
+                "bare explicit snapshot cannot replace versioned composite authority"
             )
         if persist:
             _persist_agent_snapshot(snapshot_file, payload, captured_at=observed_at)
@@ -1904,11 +1920,15 @@ def reconcile_active_work(
         sorted((agent for agent in agents if agent.live), key=lambda a: a.name)
     )
     # Coordinators are required census members but intentionally have no
-    # current_task. Only workers participate in off-book/routing semantics.
+    # current_task. Busy taskless workers keep the legacy off-book semantics.
+    # The Herdr composite producer also treats its non-busy waiting states as
+    # off-book so an idle taskless managed worker cannot disappear from fleet
+    # health. Legacy ORC free/managed/waiting rows retain their old behavior.
+    worker_agents = tuple(
+        agent for agent in live_agents if agent.role != "coordinator"
+    )
     busy_agents = tuple(
-        agent
-        for agent in live_agents
-        if agent.role != "coordinator" and agent.busy
+        agent for agent in worker_agents if agent.busy
     )
     live_by_name = {agent.name: agent for agent in live_agents}
     task_by_id = {task.id: task for task in in_progress}
@@ -1948,7 +1968,18 @@ def reconcile_active_work(
             )
         )
 
-    off_book = tuple(agent for agent in busy_agents if not agent.current_task)
+    off_book = tuple(
+        agent
+        for agent in worker_agents
+        if not agent.current_task
+        and (
+            agent.busy
+            or (
+                agent.source == HERDR_COMPOSITE_SOURCE
+                and agent.status in HERDR_WAITING_STATUSES
+            )
+        )
+    )
     for agent in busy_agents:
         if not agent.current_task:
             continue
@@ -2095,7 +2126,7 @@ def active_work_gate(
                 raise RuntimeError(
                     "agent snapshot authority changed after its binding was read"
                 )
-            # The schema-v2 binding and its fingerprint are the authority.  An
+            # The versioned binding and its fingerprint are the authority.  An
             # interactive caller must not need to inherit TG_DB_PATH from the
             # health service, and an unrelated ambient value must not redirect
             # this read after the snapshot has named and proven an exact DB.

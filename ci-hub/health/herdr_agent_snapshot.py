@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Publish a schema-checked snapshot from Herdr, agentctl, and TaskGraph proof.
 
-The private binding pins each exact Herdr presentation, adopted agentctl
+The private binding pins each exact Herdr presentation, registered agentctl
 generation/native session/goal, and TaskGraph owner/current task. Every
 agent-bearing pane in the workspace must be bound, including the coordinator.
 Failure preserves the last snapshot so consumers see it age out rather than a
@@ -45,6 +45,7 @@ class Binding:
     current_task: str | None
     role: str
     agentctl_name: str
+    agentctl_adapter: str
     agentctl_token: str
     agentctl_session_id: str
     expected_goal: str | None
@@ -75,6 +76,8 @@ STATUS_MAP = {
     "stopped": "terminated",
     "working": "working",
 }
+
+AGENTCTL_HERDR_ADAPTERS = frozenset({"herdr", "herdr-pane", "herdr-foreign"})
 PANE = re.compile(r"w[A-Za-z0-9]+:p[A-Za-z0-9]+")
 WORKSPACE = re.compile(r"w[A-Za-z0-9]+")
 HARNESS = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
@@ -112,8 +115,9 @@ def load_bindings(path: Path) -> Bindings:
             "binding file must contain exactly schema_version, workspace, "
             "agentctl_registry, taskgraph_db, and agents"
         )
-    if document["schema_version"] != 2:
-        raise SnapshotUnavailable("binding schema_version must be 2")
+    schema_version = document["schema_version"]
+    if type(schema_version) is not int or schema_version not in {2, 3}:
+        raise SnapshotUnavailable("binding schema_version must be 2 or 3")
     workspace = _text(document["workspace"], "workspace")
     agentctl_registry = Path(
         _text(document["agentctl_registry"], "agentctl_registry")
@@ -143,6 +147,12 @@ def load_bindings(path: Path) -> Bindings:
         "agentctl_session_id",
         "expected_goal",
     }
+    # Version 2 remains readable for an atomic rollout, but its implicit
+    # adapter and mandatory worker task retain exactly the old semantics.
+    # Version 3 is the first form that can bind a managed adapter or a
+    # taskless worker explicitly.
+    if schema_version == 3:
+        required.add("agentctl_adapter")
     for index, raw_agent in enumerate(raw_agents):
         if not isinstance(raw_agent, dict) or set(raw_agent) != required:
             raise SnapshotUnavailable(
@@ -169,6 +179,19 @@ def load_bindings(path: Path) -> Bindings:
         if role not in {"coordinator", "worker"}:
             raise SnapshotUnavailable(f"binding {index} role must be coordinator or worker")
         agentctl_name = _text(raw_agent["agentctl_name"], f"binding {index} agentctl_name")
+        agentctl_adapter = (
+            "herdr-foreign"
+            if schema_version == 2
+            else _text(
+                raw_agent["agentctl_adapter"],
+                f"binding {index} agentctl_adapter",
+            )
+        )
+        if agentctl_adapter not in AGENTCTL_HERDR_ADAPTERS:
+            raise SnapshotUnavailable(
+                f"binding {index} agentctl_adapter must be one of "
+                f"{sorted(AGENTCTL_HERDR_ADAPTERS)}"
+            )
         agentctl_token = _text(raw_agent["agentctl_token"], f"binding {index} agentctl_token")
         agentctl_session_id = _text(
             raw_agent["agentctl_session_id"], f"binding {index} agentctl_session_id"
@@ -176,9 +199,13 @@ def load_bindings(path: Path) -> Bindings:
         expected_goal = raw_agent["expected_goal"]
         if expected_goal is not None:
             expected_goal = _text(expected_goal, f"binding {index} expected_goal")
-        if role == "worker" and (current is None or expected_goal is None):
+        if role == "worker" and expected_goal is None:
             raise SnapshotUnavailable(
-                f"binding {index} worker needs current_task and expected_goal"
+                f"binding {index} worker needs expected_goal"
+            )
+        if schema_version == 2 and role == "worker" and current is None:
+            raise SnapshotUnavailable(
+                f"binding {index} schema-version-2 worker needs current_task"
             )
         if role == "coordinator" and (current is not None or expected_goal is not None):
             raise SnapshotUnavailable(
@@ -204,6 +231,7 @@ def load_bindings(path: Path) -> Bindings:
                 current,
                 role,
                 agentctl_name,
+                agentctl_adapter,
                 agentctl_token,
                 agentctl_session_id,
                 expected_goal,
@@ -323,7 +351,7 @@ def verify_agentctl(
         row = records[binding.agentctl_name]
         expected = {
             "token": binding.agentctl_token,
-            "adapter": "herdr-foreign",
+            "adapter": binding.agentctl_adapter,
             "lifecycle": "running",
             "harness": binding.harness,
             "cwd": str(binding.cwd),
@@ -421,7 +449,7 @@ def collect_snapshot(
     herdr_bin: Path,
     captured_at: float | None = None,
 ) -> dict[str, Any]:
-    """Bracket the composite fleet observation with one adopted-generation read."""
+    """Bracket the composite fleet observation with one registered-generation read."""
     # Stamp the start, never the end: publication after a slow collection must
     # not make its earliest evidence look younger than it is.
     observed_at = time.time() if captured_at is None else captured_at
@@ -634,6 +662,8 @@ def build_snapshot(
         if binding.current_task is not None:
             agent["current_task"] = binding.current_task
         output.append(agent)
+    # Binding schema 3 changes private identity input only. The emitted
+    # composite snapshot contract and its source label remain version 2.
     built = {
         "schema_version": 1,
         "captured_at": captured_at,
