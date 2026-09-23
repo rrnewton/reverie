@@ -4709,6 +4709,8 @@ def build_systemd_command(
         f"ci-hub full validation {repo} {target[:12]} ({agent})",
         "--working-directory",
         str(checkout),
+        "--property",
+        "LimitCORE=0",
         *service_resource_properties,
         "--setenv",
         f"HOME={home}",

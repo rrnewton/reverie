@@ -1186,6 +1186,7 @@ class HermitServiceResourcesTest(unittest.TestCase):
     def test_limits_are_initial_service_properties_before_any_tool_execution(self) -> None:
         command = self.command()
         properties = self.properties(command)
+        self.assertEqual("0", properties["LimitCORE"])
         self.assertEqual("200%", properties["CPUQuota"])
         self.assertEqual("8589934592", properties["MemoryMax"])
         self.assertEqual("0", properties["MemorySwapMax"])
@@ -1193,7 +1194,7 @@ class HermitServiceResourcesTest(unittest.TestCase):
         self.assertEqual("5520", properties["RuntimeMaxSec"])
         self.assertEqual("600", properties["TimeoutStopSec"])
         tool_index = command.index("/immutable/tool/ci-hub/ci-hub")
-        for key in ("CPUQuota", "MemoryMax", "MemorySwapMax", "TasksMax", "RuntimeMaxSec"):
+        for key in ("LimitCORE", "CPUQuota", "MemoryMax", "MemorySwapMax", "TasksMax", "RuntimeMaxSec"):
             self.assertLess(command.index(f"{key}={properties[key]}"), tool_index)
         self.assertEqual("4800", command[command.index("--child-deadline") + 1])
         self.assertIn("HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS=4200", command)
@@ -1218,12 +1219,13 @@ class HermitServiceResourcesTest(unittest.TestCase):
         ]:
             with self.subTest(extra=extra):
                 actual = self.properties(self.command(**extra))
-                for key in ("CPUQuota", "MemoryMax", "MemorySwapMax", "TasksMax", "RuntimeMaxSec", "TimeoutStopSec"):
+                for key in ("LimitCORE", "CPUQuota", "MemoryMax", "MemorySwapMax", "TasksMax", "RuntimeMaxSec", "TimeoutStopSec"):
                     self.assertEqual(ordinary[key], actual[key])
 
     def test_reverie_keeps_its_existing_service_and_payload_bounds(self) -> None:
         command = self.command(repo="rrnewton/reverie", child_deadline=3600)
         properties = self.properties(command)
+        self.assertEqual("0", properties["LimitCORE"])
         for key in ("CPUQuota", "MemoryMax", "MemorySwapMax", "TasksMax", "RuntimeMaxSec"):
             self.assertNotIn(key, properties)
         self.assertEqual("600", properties["TimeoutStopSec"])
