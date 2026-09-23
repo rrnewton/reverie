@@ -5657,9 +5657,8 @@ fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -
 }
 
 fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux consumes only the low 32-bit descriptor word.
+    let fd = args[0] as libc::c_int;
     if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
         return description.read(memory, args, false);
     }
@@ -5705,9 +5704,8 @@ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
 }
 
 fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux consumes only the low 32-bit descriptor word.
+    let fd = args[0] as libc::c_int;
     if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
         return description.read(memory, args, true);
     }
@@ -33780,6 +33778,119 @@ mod tests {
         let mut unconsumed = [0; 4];
         memory.read(0x200, &mut unconsumed).unwrap();
         assert_eq!(&unconsumed, b"abcd");
+    }
+
+    #[test]
+    fn read_and_pread64_consume_low_descriptor_words() {
+        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
+        const BIT31_LOW_WORD: u64 = HIGH_WORD | (1 << 31);
+        const READ_ADDRESS: u64 = 0x100;
+        const PREAD_ADDRESS: u64 = 0x200;
+        const NEXT_READ_ADDRESS: u64 = 0x300;
+
+        let root = TestDir::new();
+        let path = root.0.join("input");
+        std::fs::write(&path, b"abcdef").unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(3, std::fs::File::open(&path).unwrap());
+        state.files.insert(4, std::fs::File::open(&path).unwrap());
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [HIGH_WORD | 3, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT),
+            "buffer validation follows low-word descriptor decoding"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [HIGH_WORD | 3, READ_ADDRESS, 2, 0, 0, 0],
+            ),
+            2
+        );
+        let mut bytes = [0; 2];
+        memory.read(READ_ADDRESS, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"ab");
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            2
+        );
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pread64,
+                [HIGH_WORD | 4, PREAD_ADDRESS, 2, 2, 0, 0],
+            ),
+            2
+        );
+        memory.read(PREAD_ADDRESS, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"cd");
+        assert_eq!(
+            state.files.get_mut(&4).unwrap().stream_position().unwrap(),
+            0,
+            "pread64 must not change the open-file position"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pread64,
+                [HIGH_WORD | 4, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT),
+            "buffer validation follows low-word descriptor decoding"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pread64,
+                [HIGH_WORD | 4, PREAD_ADDRESS, 1, u64::MAX, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+            "offset validation follows low-word descriptor decoding"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [HIGH_WORD | 4, NEXT_READ_ADDRESS, 2, 0, 0, 0],
+            ),
+            2
+        );
+        memory.read(NEXT_READ_ADDRESS, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"ab", "pread64 and failed reads preserve position");
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [BIT31_LOW_WORD | 3, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF),
+            "invalid low descriptor word precedes a bad read buffer"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pread64,
+                [BIT31_LOW_WORD | 3, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF),
+            "invalid low descriptor word precedes a bad pread64 buffer"
+        );
     }
 
     #[test]

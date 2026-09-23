@@ -16141,5 +16141,127 @@ int main(int argc, char **argv) {
     }
 }
 
+#[test]
+fn read_and_pread64_consume_low_descriptor_words_on_kvm() {
+    if !kvm_available("KVM read and pread64 fd low-word argument test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "read-pread-fd-low-word",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define HIGH_WORD UINT64_C(0x5a5a5a5a00000000)
+#define BIT31_LOW_WORD (HIGH_WORD | UINT64_C(0x80000000))
+
+static int failed_with(long result, int expected) {
+  return result == -1 && errno == expected;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 1;
+  int fd = open(argv[1], O_CREAT | O_TRUNC | O_RDWR, 0600);
+  if (fd < 0 || write(fd, "abcdef", 6) != 6 || lseek(fd, 0, SEEK_SET) != 0)
+    return 2;
+
+  char bytes[2];
+  if (syscall(SYS_read, HIGH_WORD | (uint32_t)fd, bytes, 2) != 2 ||
+      bytes[0] != 'a' || bytes[1] != 'b') return 3;
+  if (syscall(SYS_pread64, HIGH_WORD | (uint32_t)fd, bytes, 2, 2) != 2 ||
+      bytes[0] != 'c' || bytes[1] != 'd') return 4;
+  if (lseek(fd, 0, SEEK_CUR) != 2) return 5;
+
+  errno = 0;
+  if (!failed_with(syscall(SYS_read, HIGH_WORD | (uint32_t)fd,
+                           (void *)(uintptr_t)UINT64_MAX, 1), EFAULT)) return 6;
+  if (syscall(SYS_read, HIGH_WORD | (uint32_t)fd, bytes, 2) != 2 ||
+      bytes[0] != 'c' || bytes[1] != 'd') return 7;
+  errno = 0;
+  if (!failed_with(syscall(SYS_pread64, HIGH_WORD | (uint32_t)fd,
+                           (void *)(uintptr_t)UINT64_MAX, 1, 0), EFAULT)) return 8;
+  errno = 0;
+  if (!failed_with(syscall(SYS_pread64, HIGH_WORD | (uint32_t)fd,
+                           bytes, 1, (int64_t)-1), EINVAL)) return 9;
+
+  uint64_t invalid = BIT31_LOW_WORD | (uint32_t)fd;
+  errno = 0;
+  if (!failed_with(syscall(SYS_read, invalid,
+                           (void *)(uintptr_t)UINT64_MAX, 1), EBADF)) return 10;
+  errno = 0;
+  if (!failed_with(syscall(SYS_pread64, invalid,
+                           (void *)(uintptr_t)UINT64_MAX, 1, 0), EBADF)) return 11;
+
+  if (close(fd) != 0) return 12;
+  puts("read-pread-low-word-ok");
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable)
+        .arg(directory.0.join("native-read-pread-low-word"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "native stdout={} stderr={}",
+        String::from_utf8_lossy(&native.stdout),
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(native.stdout, b"read-pread-low-word-ok\n");
+    assert!(native.stderr.is_empty());
+
+    let image = std::fs::read(&executable).unwrap();
+    for (tool_owned, repetition) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
+        let executable = executable.to_str().unwrap();
+        let guest_path = directory.0.join(format!(
+            "guest-read-pread-low-word-{tool_owned}-{repetition}"
+        ));
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, guest_path.to_str().unwrap()],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if tool_owned {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(
+            code,
+            0,
+            "tool_owned={tool_owned} repetition={repetition} stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(
+            stdout, native.stdout,
+            "tool_owned={tool_owned} repetition={repetition}"
+        );
+        assert_eq!(
+            stderr, native.stderr,
+            "tool_owned={tool_owned} repetition={repetition}"
+        );
+    }
+}
+
 #[path = "support/natural_retirement.rs"]
 mod natural_retirement;
