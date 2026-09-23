@@ -616,10 +616,10 @@ fn execute_basic_syscall_inner(
         timerfd_create(state, args[0], args[1])
     } else if number == libc::SYS_timerfd_settime as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        timerfd_settime(memory, state, args)
+        timerfd_settime(memory, state, args, capture_metadata)
     } else if number == libc::SYS_timerfd_gettime as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        timerfd_gettime(memory, state, args)
+        timerfd_gettime(memory, state, args, capture_metadata)
     } else if number == libc::SYS_pidfd_open as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-235): Review self-only virtual pidfd translation.
@@ -6079,9 +6079,8 @@ fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -
 }
 
 fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux consumes the low 32-bit descriptor word from the syscall register.
+    let fd = args[0] as libc::c_int;
     if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
         return description.read(memory, args, false);
     }
@@ -10197,7 +10196,7 @@ fn epoll_wait(
 fn eventfd2(state: &mut LoadedStaticElf, initial: u64, raw_flags: u64) -> i64 {
     let flags = raw_flags as libc::c_int;
     let allowed = libc::EFD_CLOEXEC | libc::EFD_NONBLOCK | libc::EFD_SEMAPHORE;
-    if flags & !allowed != 0 || initial > u64::from(u32::MAX) {
+    if flags & !allowed != 0 {
         return negative_errno(libc::EINVAL);
     }
     let host_fd = unsafe { libc::eventfd(initial as libc::c_uint, flags | libc::EFD_CLOEXEC) };
@@ -10893,12 +10892,8 @@ fn signalfd_read(
 }
 // TODO-HUMAN-REVIEW(PR-235): Review host-backed KVM timerfd creation semantics.
 fn timerfd_create(state: &mut LoadedStaticElf, raw_clock_id: u64, raw_flags: u64) -> i64 {
-    let Ok(clock_id) = libc::c_int::try_from(raw_clock_id) else {
-        return negative_errno(libc::EINVAL);
-    };
-    let Ok(flags) = libc::c_int::try_from(raw_flags) else {
-        return negative_errno(libc::EINVAL);
-    };
+    let clock_id = raw_clock_id as libc::c_int;
+    let flags = raw_flags as libc::c_int;
     let allowed = libc::TFD_CLOEXEC | libc::TFD_NONBLOCK;
     if flags & !allowed != 0 {
         return negative_errno(libc::EINVAL);
@@ -10916,17 +10911,20 @@ fn timerfd_create(state: &mut LoadedStaticElf, raw_clock_id: u64, raw_flags: u64
 }
 
 // TODO-HUMAN-REVIEW(PR-235): Review host-backed KVM timerfd control semantics.
-fn timerfd_settime(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return negative_errno(libc::EBADF);
-    };
-    let Ok(flags) = libc::c_int::try_from(args[1]) else {
-        return negative_errno(libc::EINVAL);
-    };
+fn timerfd_settime(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
     let new_value = match read_guest_struct::<libc::itimerspec>(memory, args[2]) {
         Ok(value) => value,
         Err(error) => return error,
     };
+    let flags = args[1] as libc::c_int;
+    // Passing -1 lets the host kernel retain its argument-validation precedence
+    // for an unmapped guest descriptor after the guest value was copied in.
+    let host_fd = isolated_host_fd(state, args[0] as libc::c_int, capture).unwrap_or(-1);
     let mut old_value = libc::itimerspec {
         it_interval: libc::timespec {
             tv_sec: 0,
@@ -10942,7 +10940,8 @@ fn timerfd_settime(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u6
     } else {
         &mut old_value
     };
-    // SAFETY: host_fd is live, new_value is initialized, and old_value_ptr is
+    // SAFETY: host_fd is either a live translated descriptor or the deliberate
+    // -1 invalid-fd sentinel; new_value is initialized, and old_value_ptr is
     // either null or points to writable local storage.
     if unsafe { libc::timerfd_settime(host_fd, flags, &new_value, old_value_ptr) } != 0 {
         return io_error(std::io::Error::last_os_error());
@@ -10954,8 +10953,13 @@ fn timerfd_settime(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u6
 }
 
 // TODO-HUMAN-REVIEW(PR-235): Review host-backed KVM timerfd query semantics.
-fn timerfd_gettime(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
+fn timerfd_gettime(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    let Some(host_fd) = isolated_host_fd(state, args[0] as libc::c_int, capture) else {
         return negative_errno(libc::EBADF);
     };
     let mut current = libc::itimerspec {
@@ -42006,6 +42010,16 @@ mod tests {
         );
         let poll_fd: libc::pollfd = read_struct(&memory, POLL_FD);
         assert_eq!(poll_fd.revents, 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [(1_u64 << 32) | pidfd as u64, 0x180, 8, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+            "pidfd read must consume only the low descriptor word"
+        );
 
         assert_eq!(
             syscall_result(
@@ -42024,6 +42038,138 @@ mod tests {
                 [(pid + 1) as u64, 0, 0, 0, 0, 0],
             ),
             negative_errno(libc::ESRCH)
+        );
+    }
+
+    #[test]
+    fn eventfd_timerfd_and_read_consume_low_abi_words() {
+        const VALUE: u64 = 0x100;
+        const CURRENT: u64 = 0x180;
+        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        let event_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_eventfd2,
+            [
+                HIGH_WORD | 7,
+                HIGH_WORD | libc::EFD_NONBLOCK as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert!(event_fd >= 3);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [HIGH_WORD | event_fd as u64, VALUE, 8, 0, 0, 0],
+            ),
+            8
+        );
+        assert_eq!(read_struct::<u64>(&memory, VALUE), 7);
+
+        let timer_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_timerfd_create,
+            [
+                HIGH_WORD | libc::CLOCK_MONOTONIC as u64,
+                HIGH_WORD | libc::TFD_NONBLOCK as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert!(timer_fd >= 3);
+        let disarmed = libc::itimerspec {
+            it_interval: libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            },
+            it_value: libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            },
+        };
+        assert_eq!(write_struct(&mut memory, VALUE, &disarmed), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_timerfd_settime,
+                [HIGH_WORD | timer_fd as u64, HIGH_WORD, VALUE, 0, 0, 0,],
+            ),
+            0
+        );
+        let armed = libc::itimerspec {
+            it_interval: libc::timespec {
+                tv_sec: 3600,
+                tv_nsec: 0,
+            },
+            it_value: libc::timespec {
+                tv_sec: 3600,
+                tv_nsec: 0,
+            },
+        };
+        assert_eq!(write_struct(&mut memory, VALUE, &armed), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_timerfd_settime,
+                [timer_fd as u64, 0, VALUE, u64::MAX, 0, 0],
+            ),
+            negative_errno(libc::EFAULT),
+            "invalid old-value copyout follows successful timer mutation"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_timerfd_gettime,
+                [timer_fd as u64, CURRENT, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let current: libc::itimerspec = read_struct(&memory, CURRENT);
+        assert_eq!(current.it_interval.tv_sec, 3600);
+        assert!(current.it_value.tv_sec > 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_timerfd_gettime,
+                [HIGH_WORD | timer_fd as u64, CURRENT, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [HIGH_WORD | timer_fd as u64, CURRENT, 8, 0, 0, 0],
+            ),
+            negative_errno(libc::EAGAIN)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_timerfd_settime,
+                [u64::MAX, 0, u64::MAX, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT),
+            "timerfd_settime copies its input before descriptor lookup"
         );
     }
 
