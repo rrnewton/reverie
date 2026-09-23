@@ -6532,11 +6532,21 @@ fn sendfile(
 ) -> i64 {
     // Linux syscall `int` arguments consume only the low descriptor word.
     let out_fd = args[0] as libc::c_int;
-    // Linux rejects a negative output descriptor before sendfile's input
+    // Linux rejects an unusable output descriptor before sendfile's input
     // classification can route an otherwise-live unsupported input to ENOSYS.
     if out_fd < 0 {
         return negative_errno(libc::EBADF);
     }
+    let out_file = match state.files.get(&out_fd) {
+        Some(file) => {
+            if let Err(error) = ensure_writable(file) {
+                return error;
+            }
+            Some(file)
+        }
+        None if is_open_standard(state, out_fd) => None,
+        None => return negative_errno(libc::EBADF),
+    };
     let in_fd = args[1] as libc::c_int;
     // Resolve the input endpoint. sendfile(2) requires an mmap-able input, so a
     // valid-but-non-regular descriptor (a standard stream, pipe, or socket) must
@@ -6580,16 +6590,13 @@ fn sendfile(
     // Fast path: a regular/memfd output that lives in the guest file table can be
     // copied with the host's zero-copy sendfile directly, preserving kernel
     // offset semantics.
-    if let Some(out_file) = state.files.get(&out_fd) {
+    if let Some(out_file) = out_file {
         match is_regular_host_file(out_file) {
             Ok(true) => {}
             // A known-but-non-regular output (pipe/socket the guest opened) takes
             // the mediated fallback, exactly like detcore.
             Ok(false) => return negative_errno(libc::ENOSYS),
             Err(error) => return error,
-        }
-        if let Err(error) = ensure_writable(out_file) {
-            return error;
         }
         let out_host = out_file.as_raw_fd();
         if offset_ptr == 0 {
@@ -21220,6 +21227,184 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn sendfile_rejects_unusable_output_before_input_routing() {
+        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
+        const SIGN_EXTENDED_HIGH_WORD: u64 = 0xffff_ffff_0000_0000;
+        const INPUT_PIPE_FDS: u64 = 0x100;
+        const INPUT_SOCKET_FDS: u64 = 0x120;
+        const OUTPUT_PIPE_FDS: u64 = 0x140;
+        const PAYLOAD: u64 = 0x200;
+        const PIPE_PAYLOAD: &[u8] = b"pipe-input-preserved";
+        const SOCKET_PAYLOAD: &[u8] = b"socket-input-preserved";
+
+        let root = TestDir::new();
+        let read_only_path = root.0.join("read-only-output");
+        std::fs::write(&read_only_path, b"output").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 4 * PAGE_SIZE as usize).unwrap();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [INPUT_PIPE_FDS, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let input_pipe: [libc::c_int; 2] = read_struct(&memory, INPUT_PIPE_FDS);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_STREAM as u64,
+                    0,
+                    INPUT_SOCKET_FDS,
+                    0,
+                    0,
+                ]
+            ),
+            0
+        );
+        let input_socket: [libc::c_int; 2] = read_struct(&memory, INPUT_SOCKET_FDS);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [OUTPUT_PIPE_FDS, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let output_pipe: [libc::c_int; 2] = read_struct(&memory, OUTPUT_PIPE_FDS);
+
+        memory.write(PAYLOAD, PIPE_PAYLOAD).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [
+                    input_pipe[1] as u64,
+                    PAYLOAD,
+                    PIPE_PAYLOAD.len() as u64,
+                    0,
+                    0,
+                    0,
+                ]
+            ),
+            PIPE_PAYLOAD.len() as i64
+        );
+        memory.write(PAYLOAD, SOCKET_PAYLOAD).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [
+                    input_socket[1] as u64,
+                    PAYLOAD,
+                    SOCKET_PAYLOAD.len() as u64,
+                    0,
+                    0,
+                    0,
+                ]
+            ),
+            SOCKET_PAYLOAD.len() as i64
+        );
+        for fd in [input_pipe[1], input_socket[1]] {
+            assert_eq!(close(&mut state, fd as u64), 0);
+        }
+
+        state
+            .files
+            .insert(20, std::fs::File::open(&read_only_path).unwrap());
+        state
+            .files
+            .insert(21, std::fs::File::open(&root.0).unwrap());
+        state
+            .files
+            .insert(22, std::fs::File::open("/proc/self/status").unwrap());
+        state
+            .files
+            .insert(23, std::fs::File::open(&read_only_path).unwrap());
+        assert_eq!(close(&mut state, 23), 0);
+        let proc_position = state.files.get_mut(&22).unwrap().stream_position().unwrap();
+        let regular_position = state.files.get_mut(&20).unwrap().stream_position().unwrap();
+
+        for (high_word, encoding) in [
+            (HIGH_WORD, "nonzero high word"),
+            (SIGN_EXTENDED_HIGH_WORD, "sign-extended high word"),
+        ] {
+            for (out_fd, output_kind) in [
+                (23, "closed"),
+                (20, "read-only regular"),
+                (output_pipe[0], "pipe read end"),
+            ] {
+                for (in_fd, input_kind) in [
+                    (input_pipe[0], "pipe"),
+                    (input_socket[0], "socket"),
+                    (21, "directory"),
+                    (libc::STDOUT_FILENO, "standard stream"),
+                    (22, "procfs"),
+                ] {
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_sendfile,
+                            [
+                                high_word | u64::from(out_fd as u32),
+                                in_fd as u64,
+                                0,
+                                1,
+                                0,
+                                0,
+                            ]
+                        ),
+                        negative_errno(libc::EBADF),
+                        "{encoding} {output_kind} output must precede {input_kind} input routing"
+                    );
+                }
+            }
+        }
+
+        assert_eq!(
+            read_fd_to_end(&mut memory, &mut state, input_pipe[0] as i64),
+            PIPE_PAYLOAD
+        );
+        assert_eq!(
+            read_fd_to_end(&mut memory, &mut state, input_socket[0] as i64),
+            SOCKET_PAYLOAD
+        );
+        assert_eq!(
+            state.files.get_mut(&22).unwrap().stream_position().unwrap(),
+            proc_position,
+            "rejected outputs must not consume procfs input"
+        );
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendfile,
+                [HIGH_WORD | u64::from(output_pipe[1] as u32), 20, 0, 1, 0, 0,]
+            ),
+            negative_errno(libc::ENOSYS),
+            "a valid writable pipe output retains the mediated fallback"
+        );
+        assert_eq!(
+            state.files.get_mut(&20).unwrap().stream_position().unwrap(),
+            regular_position,
+            "the writable-pipe fallback must not consume its input"
+        );
+        assert_eq!(close(&mut state, output_pipe[1] as u64), 0);
     }
 
     #[test]

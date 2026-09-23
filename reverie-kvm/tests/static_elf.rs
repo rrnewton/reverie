@@ -16092,10 +16092,29 @@ fn sendfile_and_lseek_consume_low_descriptor_words_on_kvm() {
 
 #define HIGH_WORD UINT64_C(0x5a5a5a5a00000000)
 #define SIGNED_LOW_WORD (HIGH_WORD | UINT64_C(0x80000000))
+#define SIGN_EXTENDED_HIGH_WORD UINT64_C(0xffffffff00000000)
 #define PAYLOAD "sendfile-lseek-low-word-ok\n"
 
 static int failed_with(long result, int expected) {
   return result == -1 && errno == expected;
+}
+
+static int rejected_without_consuming(uint64_t out_fd, int in_fd,
+                                      int input_writer,
+                                      unsigned char sentinel) {
+  if (input_writer >= 0 && write(input_writer, &sentinel, 1) != 1) return 1;
+  errno = 0;
+  long result = syscall(SYS_sendfile, out_fd, (uint32_t)in_fd, NULL, 1);
+  int saved_errno = errno;
+  if (input_writer >= 0) {
+    unsigned char observed = 0;
+    ssize_t count;
+    do {
+      count = read(in_fd, &observed, 1);
+    } while (count < 0 && errno == EINTR);
+    if (count != 1 || observed != sentinel) return 2;
+  }
+  return result == -1 && saved_errno == EBADF ? 0 : 3;
 }
 
 int main(int argc, char **argv) {
@@ -16103,22 +16122,56 @@ int main(int argc, char **argv) {
   int fd = open(argv[1], O_RDONLY);
   if (fd < 0) return 2;
 
-  int pipe_fds[2], sockets[2];
-  if (pipe(pipe_fds) != 0) return 20;
-  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) return 21;
-  const uint64_t invalid_outputs[] = {
+  int pipe_fds[2], sockets[2], output_pipe[2];
+  if (pipe2(pipe_fds, O_NONBLOCK) != 0) return 20;
+  if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sockets) != 0)
+    return 21;
+  if (pipe(output_pipe) != 0) return 27;
+  int directory = open(".", O_RDONLY | O_DIRECTORY);
+  if (directory < 0) return 28;
+  int closed_output = dup(fd);
+  if (closed_output < 0) return 29;
+  if (close(closed_output) != 0) return 30;
+
+  const uint64_t negative_outputs[] = {
       SIGNED_LOW_WORD | UINT64_C(1), UINT64_MAX};
-  const int fallback_inputs[] = {pipe_fds[0], sockets[0]};
+  const int negative_inputs[] = {pipe_fds[0], sockets[0]};
+  const int negative_writers[] = {pipe_fds[1], sockets[1]};
   for (unsigned output = 0;
-       output < sizeof(invalid_outputs) / sizeof(invalid_outputs[0]);
+       output < sizeof(negative_outputs) / sizeof(negative_outputs[0]);
        ++output) {
     for (unsigned input = 0;
-         input < sizeof(fallback_inputs) / sizeof(fallback_inputs[0]);
+         input < sizeof(negative_inputs) / sizeof(negative_inputs[0]);
          ++input) {
-      errno = 0;
-      if (!failed_with(syscall(SYS_sendfile, invalid_outputs[output],
-                               (uint32_t)fallback_inputs[input], NULL, 1),
-                       EBADF)) return 22 + (int)(output * 2 + input);
+      int check = rejected_without_consuming(
+          negative_outputs[output], negative_inputs[input],
+          negative_writers[input], (unsigned char)(1 + output * 2 + input));
+      if (check != 0) return 31 + (int)((output * 2 + input) * 3) + check;
+    }
+  }
+
+  const int routing_inputs[] = {
+      pipe_fds[0], sockets[0], directory, STDOUT_FILENO};
+  const int routing_writers[] = {pipe_fds[1], sockets[1], -1, -1};
+  const uint64_t high_words[] = {HIGH_WORD, SIGN_EXTENDED_HIGH_WORD};
+  const int unusable_outputs[] = {closed_output, fd, output_pipe[0]};
+  unsigned row = 0;
+  for (unsigned encoding = 0;
+       encoding < sizeof(high_words) / sizeof(high_words[0]);
+       ++encoding) {
+    for (unsigned output = 0;
+         output < sizeof(unusable_outputs) / sizeof(unusable_outputs[0]);
+         ++output) {
+      for (unsigned input = 0;
+           input < sizeof(routing_inputs) / sizeof(routing_inputs[0]);
+           ++input) {
+        int check = rejected_without_consuming(
+            high_words[encoding] | (uint32_t)unusable_outputs[output],
+            routing_inputs[input], routing_writers[input],
+            (unsigned char)(16 + row));
+        if (check != 0) return 43 + (int)(row * 3) + check;
+        ++row;
+      }
     }
   }
 
@@ -16162,7 +16215,9 @@ int main(int argc, char **argv) {
       offset != (off_t)length || lseek(fd, 0, SEEK_CUR) != 3) return 9;
 
   if (close(pipe_fds[0]) != 0 || close(pipe_fds[1]) != 0 ||
-      close(sockets[0]) != 0 || close(sockets[1]) != 0) return 26;
+      close(sockets[0]) != 0 || close(sockets[1]) != 0 ||
+      close(output_pipe[0]) != 0 || close(output_pipe[1]) != 0 ||
+      close(directory) != 0) return 26;
   if (close(fd) != 0) return 10;
   return 0;
 }
