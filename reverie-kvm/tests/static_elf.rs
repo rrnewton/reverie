@@ -16002,5 +16002,144 @@ int main(void) {
     }
 }
 
+#[test]
+fn storage_fd_syscalls_consume_low_words_on_kvm() {
+    if !kvm_available("KVM storage fd low-word argument test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "storage-fd-low-word",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define HIGH_WORD UINT64_C(0x5a5a5a5a00000000)
+#define SIGNED_LOW_WORD (HIGH_WORD | UINT64_C(0x80000000))
+
+static int failed_with(long result, int expected) {
+  return result == -1 && errno == expected;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 1;
+  int fd = open(argv[1], O_CREAT | O_TRUNC | O_RDWR, 0600);
+  if (fd < 0 || write(fd, "data", 4) != 4) return 2;
+
+  if (syscall(SYS_fsync, HIGH_WORD | (uint32_t)fd) != 0) return 3;
+  if (syscall(SYS_fdatasync, HIGH_WORD | (uint32_t)fd) != 0) return 4;
+  if (syscall(SYS_readahead, HIGH_WORD | (uint32_t)fd, 0, 4096) != 0)
+    return 5;
+  if (syscall(SYS_sync_file_range, HIGH_WORD | (uint32_t)fd, 0, 4096,
+              SYNC_FILE_RANGE_WRITE) != 0) return 6;
+
+  errno = 0;
+  long allocated = syscall(SYS_fallocate, HIGH_WORD | (uint32_t)fd,
+                           0, 0, 4096);
+  if (allocated != 0 && !failed_with(allocated, EOPNOTSUPP)) return 7;
+  const char *allocation_result = allocated == 0 ? "ok" : "unsupported";
+
+  // These errors occur only after the high-word alias resolves to the live fd.
+  errno = 0;
+  if (!failed_with(syscall(SYS_fallocate, HIGH_WORD | (uint32_t)fd,
+                           0, 0, 0), EINVAL)) return 8;
+  errno = 0;
+  if (!failed_with(syscall(SYS_readahead, HIGH_WORD | (uint32_t)fd,
+                           (int64_t)-1, 1), EINVAL)) return 9;
+  errno = 0;
+  if (!failed_with(syscall(SYS_sync_file_range,
+                           HIGH_WORD | (uint32_t)fd, 0, 1,
+                           UINT64_C(1) << 30), EINVAL)) return 10;
+
+  // A set low-word sign bit denotes a negative/invalid int fd, even when
+  // unrelated higher bits are also present.
+  uint64_t invalid = SIGNED_LOW_WORD | (uint32_t)fd;
+  errno = 0;
+  if (!failed_with(syscall(SYS_fsync, invalid), EBADF)) return 11;
+  errno = 0;
+  if (!failed_with(syscall(SYS_fdatasync, invalid), EBADF)) return 12;
+  errno = 0;
+  if (!failed_with(syscall(SYS_readahead, invalid, 0, 1), EBADF)) return 13;
+  errno = 0;
+  if (!failed_with(syscall(SYS_sync_file_range, invalid, 0, 1,
+                           SYNC_FILE_RANGE_WRITE), EBADF)) return 14;
+  errno = 0;
+  if (!failed_with(syscall(SYS_fallocate, invalid, 0, 0, 1), EBADF)) return 15;
+
+  if (close(fd) != 0) return 16;
+  printf("storage-low-word-ok fallocate=%s\n", allocation_result);
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable)
+        .arg(directory.0.join("native-storage-low-word"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "native stdout={} stderr={}",
+        String::from_utf8_lossy(&native.stdout),
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert!(
+        native.stdout == b"storage-low-word-ok fallocate=ok\n"
+            || native.stdout == b"storage-low-word-ok fallocate=unsupported\n",
+        "unexpected native oracle: {:?}",
+        String::from_utf8_lossy(&native.stdout)
+    );
+    assert!(native.stderr.is_empty());
+
+    let image = std::fs::read(&executable).unwrap();
+    for (tool_owned, repetition) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
+        let executable = executable.to_str().unwrap();
+        let guest_path = directory
+            .0
+            .join(format!("guest-storage-low-word-{tool_owned}-{repetition}"));
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, guest_path.to_str().unwrap()],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if tool_owned {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(
+            code,
+            0,
+            "tool_owned={tool_owned} repetition={repetition} stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(
+            stdout, native.stdout,
+            "tool_owned={tool_owned} repetition={repetition}"
+        );
+        assert_eq!(
+            stderr, native.stderr,
+            "tool_owned={tool_owned} repetition={repetition}"
+        );
+    }
+}
+
 #[path = "support/natural_retirement.rs"]
 mod natural_retirement;
