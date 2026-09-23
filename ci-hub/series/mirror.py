@@ -424,8 +424,8 @@ def published_scorecard_binding(writer: Path, snapshot: Mapping[str, Any], targe
             or value.get("rows_sha256") != projected["rows_sha256"]
             or value.get("rows") != projected["rows_read"]):
         raise MirrorRefused("published scorecard metadata differs from its immutable raw source")
-    current_rows = {row["event_id"]: row for row in snapshot["rows"]}
-    if any(current_rows.get(row["event_id"]) != row for row in projected["rows"]):
+    current_rows = {row["event_id"]: series._canonical_row_json(row) for row in snapshot["rows"]}
+    if any(current_rows.get(row["event_id"]) != series._canonical_row_json(row) for row in projected["rows"]):
         raise MirrorRefused("published scorecard source events were changed or removed from current raw series")
     hashes = value.get("scorecard")
     if not isinstance(hashes, dict) or not all(path.as_posix() in hashes for path in MIRRORED_SCORECARD_PATHS):

@@ -1037,6 +1037,23 @@ class DirectLedgerFixture(unittest.TestCase):
                     self.assertRaisesRegex(mirror.MirrorRefused, "changed or removed"):
                 mirror.published_scorecard_binding(writer, mirror._published_snapshot(writer), self.target)
 
+    def test_historical_scorecard_preserves_json_types_in_original_events(self):
+        original = dict(row("original-cell"), extra={"flag": True, "count": 1})
+        series.append_cell_rows(self.parent, series.spool_dir(self.parent) / "original.jsonl", [original])
+        self.assertEqual("published", self.publish()["state"])
+        writer = self.parent / mirror.WRITER_RELATIVE
+        mirror.published_scorecard_binding(writer, mirror._published_snapshot(writer), self.target)
+        shard = writer / "series/hermit/fixture/2026-09.jsonl"
+        for extra in ({"flag": 1, "count": 1}, {"flag": True, "count": 1.0}):
+            changed = dict(original, extra=extra)
+            self.assertEqual(original, changed, "Python equality alone misses this mutation")
+            self.assertNotEqual(series._canonical_row_json(original), series._canonical_row_json(changed))
+            shard.write_text(json.dumps(changed) + "\n")
+            git(writer, "add", "series")
+            git(writer, "commit", "-qm", "invalid JSON type mutation of historical event")
+            with self.subTest(extra=extra), self.assertRaisesRegex(mirror.MirrorRefused, "changed or removed"):
+                mirror.published_scorecard_binding(writer, mirror._published_snapshot(writer), self.target)
+
     def test_scheduled_backlog_retries_failed_push_without_another_validation(self):
         sys.path.insert(0, str(mirror.TOOL_ROOT / "ci-hub/ledger"))
         import publish_backlog
