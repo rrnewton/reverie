@@ -10622,6 +10622,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "captured_dirfds_reject_reused_supervisor_directories_on_kvm",
         "captured_file_operations_ignore_reused_supervisor_files_on_kvm",
         "captured_timerfd_controls_ignore_reused_supervisor_timerfds_on_kvm",
+        "captured_socket_operations_ignore_reused_supervisor_sockets_on_kvm",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
@@ -15899,6 +15900,651 @@ int main(void) {
             "ambient timerfd state changed in run {run_index}"
         );
     }
+    for (index, result) in results.iter().enumerate() {
+        assert_eq!(
+            result.0,
+            0,
+            "run {index}: stdout={} stderr={}",
+            String::from_utf8_lossy(&result.1),
+            String::from_utf8_lossy(&result.2)
+        );
+        assert_eq!(result.1, native.stdout, "run {index}");
+        assert_eq!(result.2, native.stderr, "run {index}");
+    }
+    assert_eq!(results[1], results[0], "direct KVM result changed");
+    assert_eq!(results[2], results[0], "Tool and direct KVM results differ");
+    assert_eq!(results[3], results[2], "Tool KVM result changed");
+}
+
+// Captured stdout/stderr remain guest pipes even when the embedding process
+// has reused physical fd 1/2 for live sockets. This is output/exit/status
+// repeat parity only, not L2-log or record/replay parity.
+#[test]
+fn captured_socket_operations_ignore_reused_supervisor_sockets_on_kvm() {
+    const TEST: &str = "captured_socket_operations_ignore_reused_supervisor_sockets_on_kvm";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "captured-socket-operations",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/eventfd.h>
+#include <sys/socket.h>
+#include <sys/syscall.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#define HIGH_WORD 0x5a5a5a5a00000000ULL
+
+static void expect_errno(int *failure, int code, long result, int expected) {
+  int observed = errno;
+  if (*failure == 0 && (result != -1 || observed != expected)) *failure = code;
+}
+
+#define EXPECT_ERR(failure, code, expression, expected) do { \
+  errno = 0; \
+  expect_errno((failure), (code), (expression), (expected)); \
+} while (0)
+
+static int check_nonsocket(int fd, int base, int expected) {
+  int failure = 0;
+  unsigned long raw = HIGH_WORD | (unsigned int)fd;
+  int one = 1;
+  int option = 0x13572468;
+  socklen_t option_length = sizeof(option);
+  struct sockaddr_un address;
+  memset(&address, 0, sizeof(address));
+  address.sun_family = AF_UNIX;
+  unsigned long address_length = offsetof(struct sockaddr_un, sun_path);
+  char payload = 'q';
+  char received = 'z';
+  struct iovec iov = {.iov_base = &payload, .iov_len = 1};
+  struct msghdr message;
+  memset(&message, 0, sizeof(message));
+  message.msg_iov = &iov;
+  message.msg_iovlen = 1;
+  struct iovec receive_iov = {.iov_base = &received, .iov_len = 1};
+  struct msghdr receive_message;
+  memset(&receive_message, 0, sizeof(receive_message));
+  receive_message.msg_iov = &receive_iov;
+  receive_message.msg_iovlen = 1;
+  struct mmsghdr multiple;
+  memset(&multiple, 0, sizeof(multiple));
+  multiple.msg_hdr = receive_message;
+
+  /* This valid low-word mutation must run first: the unfixed backend reaches
+     a physical socket and changes SO_REUSEADDR before upper bits can mask it. */
+  EXPECT_ERR(&failure, base + 1,
+             syscall(SYS_setsockopt, fd, SOL_SOCKET, SO_REUSEADDR,
+                     &one, sizeof(one)), expected);
+  EXPECT_ERR(&failure, base + 2,
+             syscall(SYS_setsockopt, raw, HIGH_WORD | SOL_SOCKET,
+                     HIGH_WORD | SO_REUSEADDR, &one,
+                     HIGH_WORD | sizeof(one)), expected);
+  EXPECT_ERR(&failure, base + 3,
+             syscall(SYS_getsockopt, raw, HIGH_WORD | SOL_SOCKET,
+                     HIGH_WORD | SO_TYPE, &option, &option_length), expected);
+  if (!failure && (option != 0x13572468 || option_length != sizeof(option)))
+    failure = base + 4;
+  EXPECT_ERR(&failure, base + 5,
+             syscall(SYS_bind, raw, &address,
+                     HIGH_WORD | address_length), expected);
+  EXPECT_ERR(&failure, base + 6,
+             syscall(SYS_listen, raw, HIGH_WORD | 1), expected);
+
+  struct sockaddr_un output;
+  memset(&output, 0x6b, sizeof(output));
+  socklen_t output_length = sizeof(output);
+  EXPECT_ERR(&failure, base + 7,
+             syscall(SYS_getsockname, raw, &output, &output_length), expected);
+  if (!failure && (output_length != sizeof(output) ||
+                   ((unsigned char *)&output)[0] != 0x6b))
+    failure = base + 8;
+  memset(&output, 0x6b, sizeof(output));
+  output_length = sizeof(output);
+  EXPECT_ERR(&failure, base + 9,
+             syscall(SYS_getpeername, raw, &output, &output_length), expected);
+  if (!failure && (output_length != sizeof(output) ||
+                   ((unsigned char *)&output)[0] != 0x6b))
+    failure = base + 9;
+  EXPECT_ERR(&failure, base + 10,
+             syscall(SYS_connect, raw, &address,
+                     HIGH_WORD | address_length), expected);
+  EXPECT_ERR(&failure, base + 11,
+             syscall(SYS_shutdown, raw, HIGH_WORD | SHUT_RDWR), expected);
+  EXPECT_ERR(&failure, base + 12,
+             syscall(SYS_sendto, raw, &payload, 1,
+                     HIGH_WORD | MSG_DONTWAIT, NULL, HIGH_WORD), expected);
+  EXPECT_ERR(&failure, base + 13,
+             syscall(SYS_recvfrom, raw, &received, 1,
+                     HIGH_WORD | MSG_DONTWAIT, NULL, NULL), expected);
+  if (!failure && received != 'z') failure = base + 14;
+  EXPECT_ERR(&failure, base + 15,
+             syscall(SYS_sendmsg, raw, &message,
+                     HIGH_WORD | MSG_DONTWAIT), expected);
+  EXPECT_ERR(&failure, base + 16,
+             syscall(SYS_recvmsg, raw, &receive_message,
+                     HIGH_WORD | MSG_DONTWAIT), expected);
+  if (!failure && (received != 'z' || receive_message.msg_flags != 0 ||
+                   receive_message.msg_namelen != 0 ||
+                   receive_message.msg_controllen != 0))
+    failure = base + 16;
+  received = 'z';
+  EXPECT_ERR(&failure, base + 17,
+             syscall(SYS_recvmmsg, raw, &multiple, HIGH_WORD | 1,
+                     HIGH_WORD | MSG_DONTWAIT, NULL), expected);
+  if (!failure && (received != 'z' || multiple.msg_len != 0 ||
+                   multiple.msg_hdr.msg_flags != 0 ||
+                   multiple.msg_hdr.msg_namelen != 0 ||
+                   multiple.msg_hdr.msg_controllen != 0))
+    failure = base + 17;
+  EXPECT_ERR(&failure, base + 18,
+             syscall(SYS_accept, raw, NULL, NULL), expected);
+  EXPECT_ERR(&failure, base + 19,
+             syscall(SYS_accept4, raw, NULL, NULL,
+                     HIGH_WORD | SOCK_NONBLOCK), expected);
+  return failure;
+}
+
+static int send_right(int socket_fd, int donated) {
+  char byte = 'r';
+  struct iovec iov = {.iov_base = &byte, .iov_len = 1};
+  char control[CMSG_SPACE(sizeof(int))];
+  memset(control, 0, sizeof(control));
+  struct msghdr message;
+  memset(&message, 0, sizeof(message));
+  message.msg_iov = &iov;
+  message.msg_iovlen = 1;
+  message.msg_control = control;
+  message.msg_controllen = sizeof(control);
+  struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+  header->cmsg_level = SOL_SOCKET;
+  header->cmsg_type = SCM_RIGHTS;
+  header->cmsg_len = CMSG_LEN(sizeof(int));
+  memcpy(CMSG_DATA(header), &donated, sizeof(donated));
+  return syscall(SYS_sendmsg, HIGH_WORD | (unsigned int)socket_fd,
+                 &message, HIGH_WORD | MSG_DONTWAIT);
+}
+
+static int receive_right(int socket_fd) {
+  char byte = 0;
+  struct iovec iov = {.iov_base = &byte, .iov_len = 1};
+  char control[CMSG_SPACE(sizeof(int))];
+  memset(control, 0, sizeof(control));
+  struct msghdr message;
+  memset(&message, 0, sizeof(message));
+  message.msg_iov = &iov;
+  message.msg_iovlen = 1;
+  message.msg_control = control;
+  message.msg_controllen = sizeof(control);
+  int result = syscall(SYS_recvmsg, HIGH_WORD | (unsigned int)socket_fd,
+                       &message, HIGH_WORD | MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
+  if (result < 0) return -1;
+  struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+  if (result != 1 || byte != 'r' || header == NULL ||
+      header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS ||
+      header->cmsg_len != CMSG_LEN(sizeof(int))) {
+    errno = EBADMSG;
+    return -1;
+  }
+  int received;
+  memcpy(&received, CMSG_DATA(header), sizeof(received));
+  return received;
+}
+
+static int check_rights_guard(int kvm) {
+  int sockets[2];
+  if (socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
+                 0, sockets) != 0) return 181;
+  char path[64];
+  if (snprintf(path, sizeof(path), "/proc/self/fd/%d", STDOUT_FILENO) >=
+      (int)sizeof(path)) return 182;
+  int duplicate = dup(STDOUT_FILENO);
+  int reopened = open(path, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+  int path_only = open(path, O_PATH | O_CLOEXEC);
+  if (duplicate < 0 || reopened < 0 || path_only < 0) return 183;
+  int donated[] = {STDOUT_FILENO, duplicate, reopened, path_only};
+  for (unsigned index = 0; index < sizeof(donated) / sizeof(donated[0]); ++index) {
+    errno = 0;
+    int sent = send_right(sockets[0], donated[index]);
+    if (kvm) {
+      if (sent != -1 || errno != ENOSYS) return 184 + (int)index * 2;
+      errno = 0;
+      if (receive_right(sockets[1]) != -1 || errno != EAGAIN)
+        return 185 + (int)index * 2;
+    } else {
+      if (sent != 1) return 190 + (int)index * 2;
+      int received = receive_right(sockets[1]);
+      if (received < 0) return 191 + (int)index * 2;
+      close(received);
+    }
+  }
+  int event = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  if (event < 0 || send_right(sockets[0], event) != 1) return 197;
+  int received = receive_right(sockets[1]);
+  if (received < 0) return 198;
+  close(received);
+  close(event);
+  close(duplicate);
+  close(reopened);
+  close(path_only);
+  close(sockets[0]);
+  close(sockets[1]);
+  return 0;
+}
+
+static int positive_socket_controls(int saved_stdout, int saved_stderr) {
+  int sockets[2];
+  if (socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
+                 0, sockets) != 0) return 201;
+  if (dup2(sockets[0], STDOUT_FILENO) != STDOUT_FILENO ||
+      dup2(sockets[1], STDERR_FILENO) != STDERR_FILENO) return 202;
+  close(sockets[0]);
+  close(sockets[1]);
+  int one = 1;
+  if (syscall(SYS_setsockopt, HIGH_WORD | STDOUT_FILENO,
+              HIGH_WORD | SOL_SOCKET, HIGH_WORD | SO_REUSEADDR,
+              &one, HIGH_WORD | sizeof(one)) != 0) return 203;
+  int option = 0;
+  socklen_t option_length = sizeof(option);
+  if (syscall(SYS_getsockopt, HIGH_WORD | STDOUT_FILENO,
+              HIGH_WORD | SOL_SOCKET, HIGH_WORD | SO_TYPE,
+              &option, &option_length) != 0 || option != SOCK_DGRAM)
+    return 204;
+  char byte = 'a';
+  if (syscall(SYS_sendto, HIGH_WORD | STDOUT_FILENO, &byte, 1,
+              HIGH_WORD | MSG_DONTWAIT, NULL, HIGH_WORD) != 1) return 205;
+  char received = 0;
+  if (syscall(SYS_recvfrom, HIGH_WORD | STDERR_FILENO, &received, 1,
+              HIGH_WORD | MSG_DONTWAIT, NULL, NULL) != 1 || received != 'a')
+    return 206;
+  struct iovec send_iov = {.iov_base = &byte, .iov_len = 1};
+  struct msghdr send_message;
+  memset(&send_message, 0, sizeof(send_message));
+  send_message.msg_iov = &send_iov;
+  send_message.msg_iovlen = 1;
+  byte = 'b';
+  if (syscall(SYS_sendmsg, HIGH_WORD | STDERR_FILENO, &send_message,
+              HIGH_WORD | MSG_DONTWAIT) != 1) return 207;
+  struct iovec receive_iov = {.iov_base = &received, .iov_len = 1};
+  struct msghdr receive_message;
+  memset(&receive_message, 0, sizeof(receive_message));
+  receive_message.msg_iov = &receive_iov;
+  receive_message.msg_iovlen = 1;
+  if (syscall(SYS_recvmsg, HIGH_WORD | STDOUT_FILENO, &receive_message,
+              HIGH_WORD | MSG_DONTWAIT) != 1 || received != 'b') return 208;
+  char first = 'c', second = 'd';
+  if (send(STDOUT_FILENO, &first, 1, 0) != 1 ||
+      send(STDOUT_FILENO, &second, 1, 0) != 1) return 209;
+  char outputs[2] = {0, 0};
+  struct iovec receive_iovecs[2] = {
+      {.iov_base = &outputs[0], .iov_len = 1},
+      {.iov_base = &outputs[1], .iov_len = 1},
+  };
+  struct mmsghdr messages[2];
+  memset(messages, 0, sizeof(messages));
+  messages[0].msg_hdr.msg_iov = &receive_iovecs[0];
+  messages[0].msg_hdr.msg_iovlen = 1;
+  messages[1].msg_hdr.msg_iov = &receive_iovecs[1];
+  messages[1].msg_hdr.msg_iovlen = 1;
+  if (syscall(SYS_recvmmsg, HIGH_WORD | STDERR_FILENO, messages,
+              HIGH_WORD | 2, HIGH_WORD | MSG_DONTWAIT, NULL) != 2 ||
+      outputs[0] != 'c' || outputs[1] != 'd') return 210;
+
+  struct sockaddr_un address;
+  memset(&address, 0, sizeof(address));
+  address.sun_family = AF_UNIX;
+  int name_length = snprintf(address.sun_path + 1,
+                             sizeof(address.sun_path) - 1,
+                             "capture-%ld", (long)getpid());
+  if (name_length <= 0) return 211;
+  unsigned long address_length = offsetof(struct sockaddr_un, sun_path) +
+                                 1 + (unsigned long)name_length;
+  int listener = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  if (listener < 0 || dup2(listener, STDERR_FILENO) != STDERR_FILENO) return 212;
+  close(listener);
+  if (syscall(SYS_bind, HIGH_WORD | STDERR_FILENO, &address,
+              HIGH_WORD | address_length) != 0 ||
+      syscall(SYS_listen, HIGH_WORD | STDERR_FILENO, HIGH_WORD | 2) != 0)
+    return 213;
+  int client = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (client < 0 || dup2(client, STDOUT_FILENO) != STDOUT_FILENO) return 214;
+  close(client);
+  if (syscall(SYS_connect, HIGH_WORD | STDOUT_FILENO, &address,
+              HIGH_WORD | address_length) != 0) return 215;
+  int second_client = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (second_client < 0 || connect(second_client,
+      (struct sockaddr *)&address, (socklen_t)address_length) != 0) return 216;
+  int accepted = syscall(SYS_accept, HIGH_WORD | STDERR_FILENO, NULL, NULL);
+  int accepted4 = syscall(SYS_accept4, HIGH_WORD | STDERR_FILENO, NULL, NULL,
+                          HIGH_WORD | SOCK_NONBLOCK | SOCK_CLOEXEC);
+  if (accepted < 0 || accepted4 < 0) return 217;
+  if (syscall(SYS_shutdown, HIGH_WORD | STDOUT_FILENO,
+              HIGH_WORD | SHUT_RDWR) != 0) return 218;
+  close(accepted);
+  close(accepted4);
+  close(second_client);
+  if (write(saved_stdout, "captured-sockets-ok\n", 20) != 20) return 219;
+  if (write(saved_stderr, "captured-sockets-err\n", 21) != 21) return 220;
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 231;
+  int kvm = strcmp(argv[1], "kvm") == 0;
+  if (!kvm && strcmp(argv[1], "native") != 0) return 232;
+  int saved_stdout = dup(STDOUT_FILENO);
+  int saved_stderr = dup(STDERR_FILENO);
+  if (saved_stdout < 0 || saved_stderr < 0) return 233;
+  for (int stream = 0; stream < 2; ++stream) {
+    int fd = stream + 1;
+    char path[64];
+    if (snprintf(path, sizeof(path), "/proc/self/fd/%d", fd) >=
+        (int)sizeof(path)) return 234;
+    int aliases[] = {
+      fd,
+      dup(fd),
+      open(path, O_WRONLY | O_NONBLOCK | O_CLOEXEC),
+      open(path, O_PATH | O_CLOEXEC),
+    };
+    if (aliases[1] < 0 || aliases[2] < 0 || aliases[3] < 0) return 235;
+    for (unsigned index = 0; index < sizeof(aliases) / sizeof(aliases[0]); ++index) {
+      int result = check_nonsocket(aliases[index],
+          1 + stream * 80 + (int)index * 20,
+          index == 3 ? EBADF : ENOTSOCK);
+      if (result != 0) return result;
+    }
+    close(aliases[1]);
+    close(aliases[2]);
+    close(aliases[3]);
+  }
+  int result = check_rights_guard(kvm);
+  if (result != 0) return result;
+  result = positive_socket_controls(saved_stdout, saved_stderr);
+  close(saved_stdout);
+  close(saved_stderr);
+  return result;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable)
+        .arg("native")
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert_eq!(native.stdout, b"captured-sockets-ok\n");
+    assert_eq!(native.stderr, b"captured-sockets-err\n");
+
+    let executable = executable.to_str().unwrap();
+    let run = |with_tool: bool| {
+        let image = std::fs::read(executable).unwrap();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, "kvm"],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        if with_tool {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<CounterTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        }
+    };
+
+    struct RestoreStandardDescriptors {
+        stdout: std::fs::File,
+        stderr: std::fs::File,
+    }
+    impl Drop for RestoreStandardDescriptors {
+        fn drop(&mut self) {
+            use std::os::fd::AsRawFd;
+            assert_eq!(unsafe { libc::dup2(self.stdout.as_raw_fd(), 1) }, 1);
+            assert_eq!(unsafe { libc::dup2(self.stderr.as_raw_fd(), 2) }, 2);
+        }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct SocketAddressSnapshot {
+        result: libc::c_int,
+        error: libc::c_int,
+        length: libc::socklen_t,
+        bytes: Vec<u8>,
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct SocketSnapshot {
+        device: libc::dev_t,
+        inode: libc::ino_t,
+        mode: libc::mode_t,
+        socket_type: libc::c_int,
+        domain: libc::c_int,
+        accepting: libc::c_int,
+        reuse_address: libc::c_int,
+        receive_buffer: libc::c_int,
+        send_buffer: libc::c_int,
+        owner_status_flags: libc::c_int,
+        raw_status_flags: libc::c_int,
+        owner_descriptor_flags: libc::c_int,
+        raw_descriptor_flags: libc::c_int,
+        fionread_result: libc::c_int,
+        fionread_value: libc::c_int,
+        poll_result: libc::c_int,
+        poll_revents: libc::c_short,
+        local_address: SocketAddressSnapshot,
+        peer_address: SocketAddressSnapshot,
+    }
+
+    fn socket_option(fd: libc::c_int, option: libc::c_int) -> libc::c_int {
+        let mut value = 0;
+        let mut length = std::mem::size_of_val(&value) as libc::socklen_t;
+        assert_eq!(
+            unsafe {
+                libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    option,
+                    std::ptr::from_mut(&mut value).cast(),
+                    &mut length,
+                )
+            },
+            0
+        );
+        assert_eq!(length as usize, std::mem::size_of_val(&value));
+        value
+    }
+
+    fn socket_address(fd: libc::c_int, peer: bool) -> SocketAddressSnapshot {
+        let mut address = std::mem::MaybeUninit::<libc::sockaddr_storage>::zeroed();
+        let mut length = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+        let result = unsafe {
+            if peer {
+                libc::getpeername(fd, address.as_mut_ptr().cast(), &mut length)
+            } else {
+                libc::getsockname(fd, address.as_mut_ptr().cast(), &mut length)
+            }
+        };
+        let error = if result == 0 {
+            0
+        } else {
+            std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO)
+        };
+        let address = unsafe { address.assume_init() };
+        let bytes = if result == 0 {
+            let used = (length as usize).min(std::mem::size_of_val(&address));
+            unsafe {
+                std::slice::from_raw_parts(std::ptr::from_ref(&address).cast::<u8>(), used).to_vec()
+            }
+        } else {
+            Vec::new()
+        };
+        SocketAddressSnapshot {
+            result,
+            error,
+            length,
+            bytes,
+        }
+    }
+
+    fn snapshot(owner_fd: libc::c_int, raw_fd: libc::c_int) -> SocketSnapshot {
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        assert_eq!(unsafe { libc::fstat(owner_fd, stat.as_mut_ptr()) }, 0);
+        let stat = unsafe { stat.assume_init() };
+        let mut available = 0;
+        let fionread_result = unsafe { libc::ioctl(owner_fd, libc::FIONREAD, &mut available) };
+        let mut poll = libc::pollfd {
+            fd: owner_fd,
+            events: libc::POLLIN | libc::POLLOUT,
+            revents: 0,
+        };
+        let poll_result = unsafe { libc::poll(&mut poll, 1, 0) };
+        SocketSnapshot {
+            device: stat.st_dev,
+            inode: stat.st_ino,
+            mode: stat.st_mode,
+            socket_type: socket_option(owner_fd, libc::SO_TYPE),
+            domain: socket_option(owner_fd, libc::SO_DOMAIN),
+            accepting: socket_option(owner_fd, libc::SO_ACCEPTCONN),
+            reuse_address: socket_option(owner_fd, libc::SO_REUSEADDR),
+            receive_buffer: socket_option(owner_fd, libc::SO_RCVBUF),
+            send_buffer: socket_option(owner_fd, libc::SO_SNDBUF),
+            owner_status_flags: unsafe { libc::fcntl(owner_fd, libc::F_GETFL) },
+            raw_status_flags: unsafe { libc::fcntl(raw_fd, libc::F_GETFL) },
+            owner_descriptor_flags: unsafe { libc::fcntl(owner_fd, libc::F_GETFD) },
+            raw_descriptor_flags: unsafe { libc::fcntl(raw_fd, libc::F_GETFD) },
+            fionread_result,
+            fionread_value: available,
+            poll_result,
+            poll_revents: poll.revents,
+            local_address: socket_address(owner_fd, false),
+            peer_address: socket_address(owner_fd, true),
+        }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct AmbientSockets {
+        stdout: SocketSnapshot,
+        stdout_peer: SocketSnapshot,
+        stderr: SocketSnapshot,
+        stderr_client: SocketSnapshot,
+    }
+
+    let panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let redirected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        use std::io::Read;
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+        use std::os::fd::FromRawFd;
+        use std::os::unix::net::UnixDatagram;
+        use std::os::unix::net::UnixListener;
+        use std::os::unix::net::UnixStream;
+
+        let saved_stdout = unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) };
+        let saved_stderr = unsafe { libc::fcntl(2, libc::F_DUPFD_CLOEXEC, 3) };
+        assert!(saved_stdout >= 3 && saved_stderr >= 3);
+        let restore = RestoreStandardDescriptors {
+            stdout: unsafe { std::fs::File::from_raw_fd(saved_stdout) },
+            stderr: unsafe { std::fs::File::from_raw_fd(saved_stderr) },
+        };
+
+        let (stdout_socket, stdout_peer) = UnixDatagram::pair().unwrap();
+        stdout_socket.set_nonblocking(true).unwrap();
+        stdout_peer.set_nonblocking(true).unwrap();
+        assert_eq!(stdout_peer.send(b"first-seven").unwrap(), 11);
+        assert_eq!(stdout_peer.send(b"second-eleven").unwrap(), 13);
+
+        let listener_path = directory.0.join("ambient-listener.sock");
+        let stderr_socket = UnixListener::bind(&listener_path).unwrap();
+        stderr_socket.set_nonblocking(true).unwrap();
+        let mut stderr_client = UnixStream::connect(&listener_path).unwrap();
+        stderr_client.set_nonblocking(true).unwrap();
+
+        assert_eq!(unsafe { libc::dup2(stdout_socket.as_raw_fd(), 1) }, 1);
+        assert_eq!(unsafe { libc::dup2(stderr_socket.as_raw_fd(), 2) }, 2);
+        assert_eq!(
+            unsafe { libc::fcntl(1, libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
+        assert_eq!(unsafe { libc::fcntl(2, libc::F_SETFD, 0) }, 0);
+
+        let observe = || AmbientSockets {
+            stdout: snapshot(stdout_socket.as_raw_fd(), 1),
+            stdout_peer: snapshot(stdout_peer.as_raw_fd(), stdout_peer.as_raw_fd()),
+            stderr: snapshot(stderr_socket.as_raw_fd(), 2),
+            stderr_client: snapshot(stderr_client.as_raw_fd(), stderr_client.as_raw_fd()),
+        };
+        let expected = observe();
+        let mut observed = Vec::new();
+        let mut results = Vec::new();
+        for with_tool in [false, false, true, true] {
+            results.push(run(with_tool));
+            observed.push(observe());
+        }
+        assert!(observed.iter().all(|snapshot| snapshot == &expected));
+
+        let mut datagram = [0; 32];
+        assert_eq!(stdout_socket.recv(&mut datagram).unwrap(), 11);
+        assert_eq!(&datagram[..11], b"first-seven");
+        assert_eq!(stdout_socket.recv(&mut datagram).unwrap(), 13);
+        assert_eq!(&datagram[..13], b"second-eleven");
+        assert_eq!(
+            stdout_socket.recv(&mut datagram).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            stdout_peer.recv(&mut datagram).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+
+        let (mut accepted, _) = stderr_socket.accept().unwrap();
+        accepted.write_all(b"ambient-nonce").unwrap();
+        let mut nonce = [0; 13];
+        stderr_client.read_exact(&mut nonce).unwrap();
+        assert_eq!(&nonce, b"ambient-nonce");
+        assert_eq!(
+            stderr_socket.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        drop(restore);
+        (results, expected, observed)
+    }));
+    std::panic::set_hook(panic_hook);
+    let (results, expected_snapshot, observed_snapshots) = match redirected {
+        Ok(results) => results,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            panic!("captured socket setup/run panicked: {message}");
+        }
+    };
+    assert!(
+        observed_snapshots
+            .iter()
+            .all(|snapshot| snapshot == &expected_snapshot)
+    );
     for (index, result) in results.iter().enumerate() {
         assert_eq!(
             result.0,

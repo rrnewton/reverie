@@ -629,48 +629,48 @@ fn execute_basic_syscall_inner(
         socket(state, args)
     } else if number == libc::SYS_setsockopt as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        setsockopt(memory, state, args)
+        setsockopt(memory, state, args, capture_metadata)
     } else if number == libc::SYS_getsockopt as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-230): Review bounded SO_TYPE copy-out semantics.
-        getsockopt(memory, state, args)
+        getsockopt(memory, state, args, capture_metadata)
     } else if number == libc::SYS_bind as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        bind(memory, state, args)
+        bind(memory, state, args, capture_metadata)
     } else if number == libc::SYS_listen as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        listen(state, args)
+        listen(state, args, capture_metadata)
     } else if number == libc::SYS_getsockname as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        getsockname(memory, state, args)
+        getsockname(memory, state, args, capture_metadata)
     } else if number == libc::SYS_getpeername as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(kvm-socket-parity): Review bounded socket-name copyout.
-        getpeername(memory, state, args)
+        getpeername(memory, state, args, capture_metadata)
     } else if number == libc::SYS_socketpair as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         socketpair(memory, state, args)
     } else if number == libc::SYS_connect as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        connect(memory, state, args)
+        connect(memory, state, args, capture_metadata)
     } else if number == libc::SYS_shutdown as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        shutdown(state, args)
+        shutdown(state, args, capture_metadata)
     } else if number == libc::SYS_sendto as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        sendto(memory, state, args)
+        sendto(memory, state, args, capture_metadata)
     } else if number == libc::SYS_recvfrom as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        recvfrom(memory, state, args)
+        recvfrom(memory, state, args, capture_metadata)
     } else if number == libc::SYS_sendmsg as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        sendmsg(memory, state, args, capture_output)
+        sendmsg(memory, state, args, capture_metadata)
     } else if number == libc::SYS_recvmsg as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        recvmsg(memory, state, args)
+        recvmsg(memory, state, args, capture_metadata)
     } else if number == libc::SYS_recvmmsg as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        recvmmsg(memory, state, args)
+        recvmmsg(memory, state, args, capture_metadata)
     } else if number == libc::SYS_ioctl as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         ioctl(memory, state, args, capture_metadata)
@@ -2656,14 +2656,12 @@ fn mutates_file_table(number: u64) -> bool {
     )
 }
 
-fn accept_flags(request: &SyscallRequest) -> Option<Result<libc::c_int, i64>> {
+fn accept_flags(request: &SyscallRequest) -> Option<libc::c_int> {
     match request.number() {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        number if number == libc::SYS_accept as u64 => Some(Ok(0)),
+        number if number == libc::SYS_accept as u64 => Some(0),
         // AUTONOMOUS-BOT-IMPLEMENTED
-        number if number == libc::SYS_accept4 as u64 => {
-            Some(libc::c_int::try_from(request.args()[3]).map_err(|_| negative_errno(libc::EINVAL)))
-        }
+        number if number == libc::SYS_accept4 as u64 => Some(request.args()[3] as libc::c_int),
         _ => None,
     }
 }
@@ -2794,11 +2792,7 @@ impl ElfExecutor {
 
     fn execute_accept(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> Option<i64> {
         let _retirement = self.state.file_retirement.hold();
-        let raw_flags = accept_flags(request)?;
-        let flags = match raw_flags {
-            Ok(flags) => flags,
-            Err(error) => return Some(error),
-        };
+        let flags = accept_flags(request)?;
         let file_table = self.file_table.clone();
         {
             let shared_files = file_table.lock().expect("KVM file-table lock poisoned");
@@ -2809,7 +2803,14 @@ impl ElfExecutor {
         self.state.file_retirement.drain_unlocked();
 
         let mut memory = memory.clone();
-        let accepted = match accept_socket(&mut memory, &self.state, request.args(), flags) {
+        let capture_metadata = self.output.as_ref().map(CapturedOutput::metadata);
+        let accepted = match accept_socket(
+            &mut memory,
+            &self.state,
+            request.args(),
+            flags,
+            capture_metadata,
+        ) {
             Ok(file) => self.state.file_retirement.stage(file),
             Err(error) => return Some(error),
         };
@@ -5556,10 +5557,23 @@ impl ElfExecutor {
             let shared = shared_files
                 .as_mut()
                 .expect("receive syscall retained its serialized file table");
+            let capture_metadata = self.output.as_ref().map(CapturedOutput::metadata);
             let result = if request.number() == libc::SYS_recvmsg as u64 {
-                recvmsg_with_table(&mut memory, &mut self.state, request.args(), shared)
+                recvmsg_with_table(
+                    &mut memory,
+                    &mut self.state,
+                    request.args(),
+                    shared,
+                    capture_metadata,
+                )
             } else {
-                recvmmsg_with_table(&mut memory, &mut self.state, request.args(), shared)
+                recvmmsg_with_table(
+                    &mut memory,
+                    &mut self.state,
+                    request.args(),
+                    shared,
+                    capture_metadata,
+                )
             };
             // Receive commit already publishes the exact same prepared files
             // and metadata to both tables. Do not run the fallible generic
@@ -9305,17 +9319,13 @@ fn virtual_signalfd_write_error(
                 libc::ESPIPE
             }
         }
-        number if number == libc::SYS_sendto as u64 || number == libc::SYS_sendmsg as u64 => {
-            libc::ENOTSOCK
-        }
         _ => return None,
     };
-    let fd = if number == libc::SYS_write as u64 {
-        // Match scalar write before it can reach the private eventfd carrier.
-        args[0] as libc::c_int
-    } else {
-        libc::c_int::try_from(args[0]).ok()?
-    };
+    // Every guarded syscall consumes a Linux `int fd`; high register bits do
+    // not distinguish the private signalfd description from its low-word fd.
+    // Socket sends use their normal handlers, whose pointer/type ordering is
+    // safe because an eventfd carrier cannot accept socket traffic.
+    let fd = args[0] as libc::c_int;
     signalfd_mask(state, fd).map(|_| negative_errno(errno))
 }
 
@@ -11077,9 +11087,15 @@ fn ensure_host_socket(host_fd: RawFd) -> Result<(), i64> {
 }
 
 // TODO-HUMAN-REVIEW(PR-213): Review bounded guest socket-option translation.
-fn setsockopt(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return negative_errno(libc::EBADF);
+fn setsockopt(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    let host_fd = match socket_host_fd(state, args[0] as libc::c_int, capture) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
     };
     if let Err(error) = ensure_host_socket(host_fd) {
         return error;
@@ -11129,10 +11145,16 @@ fn canonicalize_tcp_info(info: &mut [u8]) {
     }
 }
 
-fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn getsockopt(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
     let guest_fd = args[0] as libc::c_int;
-    let Some(host_fd) = host_fd(state, guest_fd) else {
-        return negative_errno(libc::EBADF);
+    let host_fd = match socket_host_fd(state, guest_fd, capture) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
     };
     if let Err(error) = ensure_host_socket(host_fd) {
         return error;
@@ -11320,22 +11342,31 @@ fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
 
 // TODO-HUMAN-REVIEW(PR-213): Review bounded host-backed AF_INET bind translation.
 // TODO-HUMAN-REVIEW(PR-217): Review filesystem-backed AF_UNIX bind translation.
-fn bind(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return negative_errno(libc::EBADF);
+fn bind(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    let host_fd = match socket_host_fd(state, args[0] as libc::c_int, capture) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
     };
-    let Ok(length) = libc::socklen_t::try_from(args[2]) else {
-        return negative_errno(libc::EINVAL);
-    };
-    let length_usize = length as usize;
-    if length_usize < std::mem::size_of::<libc::sa_family_t>()
-        || length_usize > std::mem::size_of::<libc::sockaddr_storage>()
-    {
+    if let Err(error) = ensure_host_socket(host_fd) {
+        return error;
+    }
+    let signed_length = args[2] as libc::c_int;
+    if signed_length < 0 || signed_length as usize > std::mem::size_of::<libc::sockaddr_storage>() {
         return negative_errno(libc::EINVAL);
     }
+    let length = signed_length as libc::socklen_t;
+    let length_usize = length as usize;
     let mut address = vec![0; length_usize];
-    if memory.user().read(args[1], &mut address).is_err() {
+    if length_usize != 0 && memory.user().read(args[1], &mut address).is_err() {
         return negative_errno(libc::EFAULT);
+    }
+    if length_usize < std::mem::size_of::<libc::sa_family_t>() {
+        return negative_errno(libc::EINVAL);
     }
     let family = libc::sa_family_t::from_ne_bytes(
         address[..std::mem::size_of::<libc::sa_family_t>()]
@@ -11361,9 +11392,10 @@ fn bind(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-213): Review host-backed listen translation.
-fn listen(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return negative_errno(libc::EBADF);
+fn listen(state: &LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
+    let host_fd = match socket_host_fd(state, args[0] as libc::c_int, capture) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
     };
     // SAFETY: host_fd belongs to the guest descriptor table; listen validates
     // whether it is a stream socket.
@@ -11371,14 +11403,24 @@ fn listen(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-213): Review bounded getsockname copyback semantics.
-fn getsockname(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    socket_name(memory, state, args, SocketNameOperation::Local)
+fn getsockname(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    socket_name(memory, state, args, SocketNameOperation::Local, capture)
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(kvm-socket-parity): Review peer-name error and copyout ordering.
-fn getpeername(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    socket_name(memory, state, args, SocketNameOperation::Peer)
+fn getpeername(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    socket_name(memory, state, args, SocketNameOperation::Peer, capture)
 }
 
 #[derive(Clone, Copy)]
@@ -11392,9 +11434,11 @@ fn socket_name(
     state: &LoadedStaticElf,
     args: &[u64; 6],
     operation: SocketNameOperation,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return negative_errno(libc::EBADF);
+    let host_fd = match socket_host_fd(state, args[0] as libc::c_int, capture) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
     };
 
     // Query into fixed host storage before touching guest pointers. Linux gives
@@ -11474,30 +11518,19 @@ fn accept_socket(
     state: &LoadedStaticElf,
     args: &[u64; 6],
     flags: libc::c_int,
+    capture: Option<CaptureMetadata>,
 ) -> Result<std::fs::File, i64> {
+    let host_fd = socket_host_fd(state, args[0] as libc::c_int, capture)?;
     let allowed_flags = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
     if flags & !allowed_flags != 0 {
         return Err(negative_errno(libc::EINVAL));
     }
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return Err(negative_errno(libc::EBADF));
-    };
+    ensure_host_socket(host_fd)?;
 
     // SAFETY: a zeroed sockaddr_storage is valid scratch space for accept4.
     let mut address =
         unsafe { std::mem::MaybeUninit::<libc::sockaddr_storage>::zeroed().assume_init() };
     let mut length = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-    let guest_capacity = if args[1] == 0 {
-        0
-    } else {
-        if args[2] == 0 {
-            return Err(negative_errno(libc::EFAULT));
-        }
-        let capacity = read_guest_struct::<libc::socklen_t>(memory, args[2])
-            .map_err(|_| negative_errno(libc::EFAULT))?;
-        length = length.min(capacity);
-        capacity as usize
-    };
     let address_pointer = if args[1] == 0 {
         std::ptr::null_mut()
     } else {
@@ -11526,6 +11559,22 @@ fn accept_socket(
     let accepted = unsafe { std::fs::File::from_raw_fd(accepted_fd) };
 
     if args[1] != 0 {
+        if args[2] == 0 {
+            return Err(negative_errno(libc::EFAULT));
+        }
+        let guest_capacity = read_guest_struct::<libc::socklen_t>(memory, args[2])
+            .map_err(|_| negative_errno(libc::EFAULT))?;
+        if guest_capacity > libc::c_int::MAX as libc::socklen_t {
+            return Err(negative_errno(libc::EINVAL));
+        }
+        let guest_capacity = guest_capacity as usize;
+        // Linux publishes the full peer-address length before the bounded
+        // address copy. A bad address therefore still consumes and closes this
+        // accepted connection while leaving the returned length observable.
+        let result = write_struct(memory, args[2], &length);
+        if result < 0 {
+            return Err(result);
+        }
         let copy_length = guest_capacity
             .min(length as usize)
             .min(std::mem::size_of::<libc::sockaddr_storage>());
@@ -11538,10 +11587,6 @@ fn accept_socket(
             if memory.user().write(args[1], bytes).is_err() {
                 return Err(negative_errno(libc::EFAULT));
             }
-        }
-        let result = write_struct(memory, args[2], &length);
-        if result < 0 {
-            return Err(result);
         }
     }
     Ok(accepted)
@@ -11593,22 +11638,31 @@ fn socketpair(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 // TODO-HUMAN-REVIEW(PR-217): Review filesystem-backed AF_UNIX connect translation.
 // TODO-HUMAN-REVIEW(PR-349): Review host-backed AF_INET/AF_INET6 connect translation.
-fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return negative_errno(libc::EBADF);
+fn connect(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    let host_fd = match socket_host_fd(state, args[0] as libc::c_int, capture) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
     };
-    let Ok(length) = libc::socklen_t::try_from(args[2]) else {
-        return negative_errno(libc::EINVAL);
-    };
-    let length_usize = length as usize;
-    if length_usize < std::mem::size_of::<libc::sa_family_t>()
-        || length_usize > std::mem::size_of::<libc::sockaddr_storage>()
-    {
+    let signed_length = args[2] as libc::c_int;
+    if signed_length < 0 || signed_length as usize > std::mem::size_of::<libc::sockaddr_storage>() {
         return negative_errno(libc::EINVAL);
     }
+    let length = signed_length as libc::socklen_t;
+    let length_usize = length as usize;
     let mut address = vec![0; length_usize];
-    if memory.user().read(args[1], &mut address).is_err() {
+    if length_usize != 0 && memory.user().read(args[1], &mut address).is_err() {
         return negative_errno(libc::EFAULT);
+    }
+    if let Err(error) = ensure_host_socket(host_fd) {
+        return error;
+    }
+    if length_usize < std::mem::size_of::<libc::sa_family_t>() {
+        return negative_errno(libc::EINVAL);
     }
     let family = libc::sa_family_t::from_ne_bytes(
         address[..std::mem::size_of::<libc::sa_family_t>()]
@@ -11651,10 +11705,14 @@ fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-205): Review host-backed AF_UNIX shutdown semantics.
-fn shutdown(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return negative_errno(libc::EBADF);
+fn shutdown(state: &LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
+    let host_fd = match socket_host_fd(state, args[0] as libc::c_int, capture) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
     };
+    if let Err(error) = ensure_host_socket(host_fd) {
+        return error;
+    }
     let how = args[1] as libc::c_int;
     if !matches!(how, libc::SHUT_RD | libc::SHUT_WR | libc::SHUT_RDWR) {
         return negative_errno(libc::EINVAL);
@@ -11665,33 +11723,39 @@ fn shutdown(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-218): Review bounded guest sendto translation and SIGPIPE suppression.
-fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = libc::c_int::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
-    let Some(host_fd) = host_fd(state, fd) else {
-        return negative_errno(libc::EBADF);
-    };
-    let Ok(flags) = libc::c_int::try_from(args[3]) else {
-        return negative_errno(libc::EINVAL);
-    };
+fn sendto(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
-    let length = requested_length.min(MAX_HOST_IO);
-    let mut bytes = vec![0; length];
-    if length != 0 && memory.user().read(args[1], &mut bytes).is_err() {
+    if requested_length != 0 && !range_is_valid(memory, args[1], args[2]) {
         return negative_errno(libc::EFAULT);
     }
+    let length = requested_length.min(MAX_HOST_IO);
+    let fd = args[0] as libc::c_int;
+    let host_fd = match socket_host_fd(state, fd, capture) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
+    };
+    if let Err(error) = ensure_host_socket(host_fd) {
+        return error;
+    }
+    let flags = args[3] as libc::c_int;
 
-    let Ok(address_length) = libc::socklen_t::try_from(args[5]) else {
-        return negative_errno(libc::EINVAL);
+    let address_length = if args[4] == 0 {
+        0
+    } else {
+        args[5] as libc::socklen_t
     };
     if address_length as usize > std::mem::size_of::<libc::sockaddr_storage>() {
         return negative_errno(libc::EINVAL);
     }
     let mut address = vec![0; address_length as usize];
-    if args[4] != 0 && address_length != 0 && memory.user().read(args[4], &mut address).is_err() {
+    if address_length != 0 && memory.user().read(args[4], &mut address).is_err() {
         return negative_errno(libc::EFAULT);
     }
     let address_pointer = if args[4] == 0 {
@@ -11699,6 +11763,10 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
     } else {
         address.as_ptr().cast::<libc::sockaddr>()
     };
+    let mut bytes = vec![0; length];
+    if length != 0 && memory.user().read(args[1], &mut bytes).is_err() {
+        return negative_errno(libc::EFAULT);
+    }
 
     // SAFETY: the payload and optional address are readable host buffers and
     // host_fd belongs to the guest descriptor table. MSG_NOSIGNAL keeps a
@@ -11721,21 +11789,25 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
 }
 
 // TODO-HUMAN-REVIEW(PR-218): Review bounded recvfrom buffer and peer-address copyback semantics.
-fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = libc::c_int::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
-    let Some(host_fd) = host_fd(state, fd) else {
-        return negative_errno(libc::EBADF);
-    };
-    let Ok(flags) = libc::c_int::try_from(args[3]) else {
-        return negative_errno(libc::EINVAL);
-    };
+fn recvfrom(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
-    if !range_is_valid(memory, args[1], args[2]) {
+    if requested_length != 0 && !range_is_valid(memory, args[1], args[2]) {
         return negative_errno(libc::EFAULT);
+    }
+    let fd = args[0] as libc::c_int;
+    let host_fd = match socket_host_fd(state, fd, capture) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
+    };
+    if let Err(error) = ensure_host_socket(host_fd) {
+        return error;
     }
     let length = requested_length.min(MAX_HOST_IO);
     let Ok(writable) = memory.user().user_accessible_prefix(args[1], length) else {
@@ -11744,25 +11816,13 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
     if writable == 0 && requested_length != 0 {
         return negative_errno(libc::EFAULT);
     }
+    let flags = args[3] as libc::c_int;
     let mut bytes = vec![0; writable];
 
     // SAFETY: a zeroed sockaddr_storage is valid scratch space for recvfrom.
     let mut address =
         unsafe { std::mem::MaybeUninit::<libc::sockaddr_storage>::zeroed().assume_init() };
     let mut address_length = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-    let guest_address_capacity = if args[4] == 0 {
-        0
-    } else {
-        if args[5] == 0 {
-            return negative_errno(libc::EFAULT);
-        }
-        let capacity = match read_guest_struct::<libc::socklen_t>(memory, args[5]) {
-            Ok(capacity) => capacity,
-            Err(_) => return negative_errno(libc::EFAULT),
-        };
-        address_length = address_length.min(capacity);
-        capacity as usize
-    };
     let address_pointer = if args[4] == 0 {
         std::ptr::null_mut()
     } else {
@@ -11795,7 +11855,21 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
     }
 
     if args[4] != 0 {
-        let address_copy_length = guest_address_capacity
+        if args[5] == 0 {
+            return negative_errno(libc::EFAULT);
+        }
+        let guest_address_capacity = match read_guest_struct::<libc::socklen_t>(memory, args[5]) {
+            Ok(capacity) => capacity,
+            Err(_) => return negative_errno(libc::EFAULT),
+        };
+        if guest_address_capacity > libc::c_int::MAX as libc::socklen_t {
+            return negative_errno(libc::EINVAL);
+        }
+        let copy_result = write_struct(memory, args[5], &address_length);
+        if copy_result < 0 {
+            return copy_result;
+        }
+        let address_copy_length = (guest_address_capacity as usize)
             .min(address_length as usize)
             .min(std::mem::size_of::<libc::sockaddr_storage>());
         if address_copy_length != 0 {
@@ -11810,10 +11884,6 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
             if memory.user().write(args[4], address_bytes).is_err() {
                 return negative_errno(libc::EFAULT);
             }
-        }
-        let copy_result = write_struct(memory, args[5], &address_length);
-        if copy_result < 0 {
-            return copy_result;
         }
     }
     result as i64
@@ -11919,7 +11989,7 @@ fn is_socket_timestamp_cmsg(message: ControlMessage) -> bool {
 fn translate_outgoing_control(
     control: &mut [u8],
     state: &LoadedStaticElf,
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> Result<(), i64> {
     let messages = control_messages(control)?;
     let mut translations = Vec::new();
@@ -11939,18 +12009,25 @@ fn translate_outgoing_control(
         for offset in (message.data_offset..message.end).step_by(std::mem::size_of::<libc::c_int>())
         {
             let guest_fd = read_control_fd(control, offset)?;
-            let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
+            let host_fd = isolated_host_fd(state, guest_fd, capture)
+                .ok_or_else(|| negative_errno(libc::EBADF))?;
             if state.fdinfo_files.contains_key(&guest_fd)
                 || state.proc_fd_directories.contains_key(&guest_fd)
                 || signalfd_mask(state, guest_fd).is_some()
                 || state.random_device_fds.contains(&guest_fd)
                 || state.loginuid_fds.contains(&guest_fd)
-                || (capture_output && output_alias(state, guest_fd).is_some())
             {
                 // The receiver cannot reconstruct private virtual metadata.
                 // Refuse before host sendmsg so no datagram or descriptor is
                 // delivered with a supervisor-only carrier identity.
                 return Err(negative_errno(libc::ENOSYS));
+            }
+            if let Some(capture) = capture {
+                match host_is_capture_carrier(host_fd, capture) {
+                    Ok(true) => return Err(negative_errno(libc::ENOSYS)),
+                    Ok(false) => {}
+                    Err(error) => return Err(error),
+                }
             }
             translations.push((offset, host_fd));
         }
@@ -12433,11 +12510,15 @@ fn sendmsg(
     memory: &GuestMemory,
     state: &LoadedStaticElf,
     args: &[u64; 6],
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return negative_errno(libc::EBADF);
+    let host_fd = match socket_host_fd(state, args[0] as libc::c_int, capture) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
     };
+    if let Err(error) = ensure_host_socket(host_fd) {
+        return error;
+    }
     if args[1] == 0 {
         return negative_errno(libc::EFAULT);
     }
@@ -12513,7 +12594,7 @@ fn sendmsg(
     {
         return negative_errno(libc::EFAULT);
     }
-    if let Err(error) = translate_outgoing_control(&mut control, state, capture_output) {
+    if let Err(error) = translate_outgoing_control(&mut control, state, capture) {
         return error;
     }
 
@@ -12586,10 +12667,15 @@ fn recvmsg_with_table(
     state: &mut LoadedStaticElf,
     args: &[u64; 6],
     shared: &mut FileTableState,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return negative_errno(libc::EBADF);
+    let host_fd = match socket_host_fd(state, args[0] as libc::c_int, capture) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
     };
+    if let Err(error) = ensure_host_socket(host_fd) {
+        return error;
+    }
     let message_address = args[1];
     if message_address == 0 {
         return negative_errno(libc::EFAULT);
@@ -12796,12 +12882,17 @@ fn recvmsg_with_table(
     received as i64
 }
 
-fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn recvmsg(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
     let mut shared = match FileTableState::try_from_elf(state) {
         Ok(shared) => shared,
         Err(error) => return io_error(error),
     };
-    recvmsg_with_table(memory, state, args, &mut shared)
+    recvmsg_with_table(memory, state, args, &mut shared, capture)
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -12811,15 +12902,27 @@ fn recvmmsg_with_table(
     state: &mut LoadedStaticElf,
     args: &[u64; 6],
     shared: &mut FileTableState,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
-    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
-        return negative_errno(libc::EBADF);
+    if args[4] != 0 {
+        let timeout = match read_guest_struct::<libc::timespec>(memory, args[4]) {
+            Ok(timeout) => timeout,
+            Err(error) => return error,
+        };
+        if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+            return negative_errno(libc::EINVAL);
+        }
+    }
+    let host_fd = match socket_host_fd(state, args[0] as libc::c_int, capture) {
+        Ok(host_fd) => host_fd,
+        Err(error) => return error,
     };
-    let Ok(message_count) = usize::try_from(args[2]) else {
-        return negative_errno(libc::EINVAL);
-    };
-    if message_count == 0 || message_count > libc::UIO_MAXIOV as usize {
-        return negative_errno(libc::EINVAL);
+    if let Err(error) = ensure_host_socket(host_fd) {
+        return error;
+    }
+    let message_count = (args[2] as libc::c_uint as usize).min(libc::UIO_MAXIOV as usize);
+    if message_count == 0 {
+        return 0;
     }
 
     let message_size = std::mem::size_of::<libc::mmsghdr>();
@@ -13129,12 +13232,17 @@ fn recvmmsg_with_table(
     delivered as i64
 }
 
-fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn recvmmsg(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
     let mut shared = match FileTableState::try_from_elf(state) {
         Ok(shared) => shared,
         Err(error) => return io_error(error),
     };
-    recvmmsg_with_table(memory, state, args, &mut shared)
+    recvmmsg_with_table(memory, state, args, &mut shared, capture)
 }
 
 // General FIONREAD support was withdrawn in 345681e44bf9d07f8c9f52138ce2682633adfffe:
@@ -16348,6 +16456,25 @@ fn isolated_host_fd(
         return descriptor_creation_host_fd(state, guest_fd, Some(capture));
     }
     host_fd(state, guest_fd)
+}
+
+/// Resolves a socket syscall's guest descriptor without consulting inherited
+/// supervisor fd 1/2 and preserves Linux's O_PATH-before-argument ordering.
+/// Socket type validation remains separate because connect and the transfer
+/// syscalls admit some guest pointer checks before reporting ENOTSOCK.
+fn socket_host_fd(
+    state: &LoadedStaticElf,
+    guest_fd: libc::c_int,
+    capture: Option<CaptureMetadata>,
+) -> Result<RawFd, i64> {
+    let host_fd =
+        isolated_host_fd(state, guest_fd, capture).ok_or_else(|| negative_errno(libc::EBADF))?;
+    let status = fd_status_flags(host_fd)?;
+    if status & libc::O_PATH != 0 {
+        Err(negative_errno(libc::EBADF))
+    } else {
+        Ok(host_fd)
+    }
 }
 
 // TODO-HUMAN-REVIEW(PR-52): Review KVM guest fcntl compatibility boundaries.
@@ -29869,6 +29996,240 @@ mod tests {
     }
 
     #[test]
+    fn nonsocket_socket_syscalls_preserve_linux_error_precedence() {
+        const PIPE_FDS: u64 = 0x100;
+        const SOCKET_FDS: u64 = 0x120;
+        const TIMEOUT: u64 = 0x200;
+        const PAYLOAD: u64 = 0x300;
+        const UNMAPPED: u64 = PAGE_SIZE;
+        const BAD_ADDRESS: u64 = u64::MAX;
+
+        let root = TestDir::new();
+        let mut memory = GuestMemory::new(0, (2 * PAGE_SIZE) as usize).unwrap();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_pipe as u64, [PIPE_FDS, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        let fd = pipe_fds[0] as u64;
+        let socket_fd = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_socket as u64,
+                [libc::AF_UNIX as u64, libc::SOCK_DGRAM as u64, 0, 0, 0, 0],
+            ),
+            &memory,
+        );
+        assert!(socket_fd >= 0);
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_socketpair as u64,
+                    [
+                        libc::AF_UNIX as u64,
+                        (libc::SOCK_DGRAM | libc::SOCK_NONBLOCK) as u64,
+                        0,
+                        SOCKET_FDS,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, SOCKET_FDS);
+        let sockaddr_length = std::mem::size_of::<libc::sockaddr_un>() as u64;
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                TIMEOUT,
+                &libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            ),
+            0
+        );
+        memory.write(PAYLOAD, b"x").unwrap();
+        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
+        memory.enable_user_access();
+
+        let call = |executor: &mut ElfExecutor, number: libc::c_long, args| {
+            executor.execute(&SyscallRequest::new(number as u64, args), &memory)
+        };
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_setsockopt,
+                [
+                    fd,
+                    libc::SOL_SOCKET as u64,
+                    libc::SO_REUSEADDR as u64,
+                    BAD_ADDRESS,
+                    std::mem::size_of::<libc::c_int>() as u64,
+                    0,
+                ],
+            ),
+            negative_errno(libc::ENOTSOCK)
+        );
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_bind,
+                [fd, BAD_ADDRESS, sockaddr_length, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOTSOCK)
+        );
+        assert_eq!(
+            call(&mut executor, libc::SYS_bind, [fd, BAD_ADDRESS, 1, 0, 0, 0],),
+            negative_errno(libc::ENOTSOCK)
+        );
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_bind,
+                [socket_fd as u64, BAD_ADDRESS, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_connect,
+                [fd, BAD_ADDRESS, sockaddr_length, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            call(&mut executor, libc::SYS_connect, [fd, 0, 0, 0, 0, 0],),
+            negative_errno(libc::ENOTSOCK)
+        );
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_connect,
+                [fd, BAD_ADDRESS, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_connect,
+                [socket_fd as u64, BAD_ADDRESS, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_shutdown,
+                [fd, u64::MAX, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOTSOCK)
+        );
+        for number in [libc::SYS_sendto, libc::SYS_recvfrom] {
+            assert_eq!(
+                call(&mut executor, number, [fd, BAD_ADDRESS, 1, 0, 0, 0],),
+                negative_errno(libc::EFAULT),
+                "syscall {number}"
+            );
+        }
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_recvfrom,
+                [fd, UNMAPPED, 1, libc::MSG_DONTWAIT as u64, 0, 0],
+            ),
+            negative_errno(libc::ENOTSOCK),
+            "mapped-page admission follows nonsocket validation"
+        );
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_sendto,
+                [socket_fds[0] as u64, PAYLOAD, 1, 0, 0, 0],
+            ),
+            1
+        );
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_recvfrom,
+                [
+                    socket_fds[1] as u64,
+                    UNMAPPED,
+                    1,
+                    libc::MSG_DONTWAIT as u64,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EFAULT),
+            "KVM refuses inaccessible output before dequeuing"
+        );
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_recvfrom,
+                [
+                    socket_fds[1] as u64,
+                    PAYLOAD + 8,
+                    1,
+                    libc::MSG_DONTWAIT as u64,
+                    0,
+                    0,
+                ],
+            ),
+            1
+        );
+        assert_eq!(read_guest_bytes::<1>(&memory, PAYLOAD + 8).unwrap(), *b"x");
+        for number in [libc::SYS_sendmsg, libc::SYS_recvmsg] {
+            assert_eq!(
+                call(&mut executor, number, [fd, BAD_ADDRESS, 0, 0, 0, 0]),
+                negative_errno(libc::ENOTSOCK),
+                "syscall {number}"
+            );
+        }
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_recvmmsg,
+                [fd, BAD_ADDRESS, 1, 0, BAD_ADDRESS, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_recvmmsg,
+                [fd, BAD_ADDRESS, 1, 0, TIMEOUT, 0],
+            ),
+            negative_errno(libc::ENOTSOCK)
+        );
+        assert_eq!(
+            call(&mut executor, libc::SYS_accept4, [99, 0, 0, u64::MAX, 0, 0],),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            call(&mut executor, libc::SYS_accept4, [fd, 0, 0, u64::MAX, 0, 0],),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            call(
+                &mut executor,
+                libc::SYS_accept4,
+                [fd, 0, 0, libc::SOCK_NONBLOCK as u64, 0, 0],
+            ),
+            negative_errno(libc::ENOTSOCK)
+        );
+    }
+
+    #[test]
     fn unix_seqpacket_socket_autobinds_like_stream_and_dgram() {
         // socket(AF_UNIX, SOCK_SEQPACKET) must take the identical
         // socket -> bind(autobind) -> getsockname path as the already supported
@@ -29965,8 +30326,11 @@ mod tests {
 
     #[test]
     fn elf_executor_accepts_unix_listener_connection() {
+        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
         const ADDRESS: u64 = 0x100;
         const PAYLOAD: u64 = 0x300;
+        const PEER_ADDRESS: u64 = 0x400;
+        const PEER_LENGTH: u64 = 0x500;
 
         let root = TestDir::new();
         let socket_path = root.0.join("accept.sock");
@@ -29987,7 +30351,14 @@ mod tests {
         let server = executor.execute(
             &SyscallRequest::new(
                 libc::SYS_socket as u64,
-                [libc::AF_UNIX as u64, libc::SOCK_STREAM as u64, 0, 0, 0, 0],
+                [
+                    libc::AF_UNIX as u64,
+                    (libc::SOCK_STREAM | libc::SOCK_NONBLOCK) as u64,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
             ),
             &memory,
         );
@@ -29996,7 +30367,14 @@ mod tests {
             executor.execute(
                 &SyscallRequest::new(
                     libc::SYS_bind as u64,
-                    [server as u64, ADDRESS, address_length as u64, 0, 0, 0],
+                    [
+                        HIGH_WORD | server as u64,
+                        ADDRESS,
+                        HIGH_WORD | address_length as u64,
+                        0,
+                        0,
+                        0,
+                    ],
                 ),
                 &memory,
             ),
@@ -30004,7 +30382,10 @@ mod tests {
         );
         assert_eq!(
             executor.execute(
-                &SyscallRequest::new(libc::SYS_listen as u64, [server as u64, 1, 0, 0, 0, 0],),
+                &SyscallRequest::new(
+                    libc::SYS_listen as u64,
+                    [HIGH_WORD | server as u64, HIGH_WORD | 1, 0, 0, 0, 0],
+                ),
                 &memory,
             ),
             0
@@ -30021,7 +30402,14 @@ mod tests {
             executor.execute(
                 &SyscallRequest::new(
                     libc::SYS_connect as u64,
-                    [client as u64, ADDRESS, address_length as u64, 0, 0, 0],
+                    [
+                        HIGH_WORD | client as u64,
+                        ADDRESS,
+                        HIGH_WORD | address_length as u64,
+                        0,
+                        0,
+                        0,
+                    ],
                 ),
                 &memory,
             ),
@@ -30030,7 +30418,14 @@ mod tests {
         let accepted = executor.execute(
             &SyscallRequest::new(
                 libc::SYS_accept4 as u64,
-                [server as u64, 0, 0, libc::SOCK_CLOEXEC as u64, 0, 0],
+                [
+                    HIGH_WORD | server as u64,
+                    0,
+                    0,
+                    HIGH_WORD | libc::SOCK_CLOEXEC as u64,
+                    0,
+                    0,
+                ],
             ),
             &memory,
         );
@@ -30041,7 +30436,14 @@ mod tests {
             executor.execute(
                 &SyscallRequest::new(
                     libc::SYS_sendto as u64,
-                    [client as u64, PAYLOAD, 5, libc::MSG_NOSIGNAL as u64, 0, 0,],
+                    [
+                        HIGH_WORD | client as u64,
+                        PAYLOAD,
+                        5,
+                        HIGH_WORD | libc::MSG_NOSIGNAL as u64,
+                        0,
+                        HIGH_WORD,
+                    ],
                 ),
                 &memory,
             ),
@@ -30051,7 +30453,7 @@ mod tests {
             executor.execute(
                 &SyscallRequest::new(
                     libc::SYS_recvfrom as u64,
-                    [accepted as u64, PAYLOAD + 8, 5, 0, 0, 0],
+                    [HIGH_WORD | accepted as u64, PAYLOAD + 8, 5, HIGH_WORD, 0, 0,],
                 ),
                 &memory,
             ),
@@ -30060,6 +30462,139 @@ mod tests {
         let mut payload = [0; 5];
         memory.read(PAYLOAD + 8, &mut payload).unwrap();
         assert_eq!(&payload, b"hello");
+
+        memory.write(PAYLOAD, b"again").unwrap();
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_sendto as u64,
+                    [client as u64, PAYLOAD, 5, 0, 0, u32::MAX as u64],
+                ),
+                &memory,
+            ),
+            5,
+            "a NULL sendto destination ignores addrlen"
+        );
+        memory.write(PEER_ADDRESS, &[0x6b; 128]).unwrap();
+        let signed_high_capacity = 0x8000_0000_u32;
+        assert_eq!(
+            write_struct(&mut memory, PEER_LENGTH, &signed_high_capacity),
+            0
+        );
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_recvfrom as u64,
+                    [
+                        accepted as u64,
+                        PAYLOAD + 16,
+                        5,
+                        libc::MSG_DONTWAIT as u64,
+                        PEER_ADDRESS,
+                        PEER_LENGTH,
+                    ],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::EINVAL),
+            "recvfrom validates signed addrlen after consuming and copying payload"
+        );
+        memory.read(PAYLOAD + 16, &mut payload).unwrap();
+        assert_eq!(&payload, b"again");
+        assert_eq!(
+            read_struct::<u32>(&memory, PEER_LENGTH),
+            signed_high_capacity
+        );
+        assert_eq!(
+            read_guest_bytes::<128>(&memory, PEER_ADDRESS).unwrap(),
+            [0x6b; 128]
+        );
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_recvfrom as u64,
+                    [
+                        accepted as u64,
+                        PAYLOAD + 16,
+                        1,
+                        libc::MSG_DONTWAIT as u64,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::EAGAIN),
+            "the failed recvfrom consumed exactly one payload"
+        );
+
+        let second_client = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_socket as u64,
+                [libc::AF_UNIX as u64, libc::SOCK_STREAM as u64, 0, 0, 0, 0],
+            ),
+            &memory,
+        );
+        assert!(second_client >= 0);
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_connect as u64,
+                    [
+                        second_client as u64,
+                        ADDRESS,
+                        address_length as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            0
+        );
+        memory.write(PEER_ADDRESS, &[0x7c; 128]).unwrap();
+        assert_eq!(
+            write_struct(&mut memory, PEER_LENGTH, &signed_high_capacity),
+            0
+        );
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_accept4 as u64,
+                    [
+                        server as u64,
+                        PEER_ADDRESS,
+                        PEER_LENGTH,
+                        libc::SOCK_NONBLOCK as u64,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::EINVAL),
+            "accept validates signed addrlen only after consuming the connection"
+        );
+        assert_eq!(
+            read_struct::<u32>(&memory, PEER_LENGTH),
+            signed_high_capacity
+        );
+        assert_eq!(
+            read_guest_bytes::<128>(&memory, PEER_ADDRESS).unwrap(),
+            [0x7c; 128]
+        );
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_accept4 as u64,
+                    [server as u64, 0, 0, libc::SOCK_NONBLOCK as u64, 0, 0],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::EAGAIN),
+            "the failed accept consumed exactly one connection"
+        );
     }
 
     #[test]
@@ -31885,6 +32420,7 @@ mod tests {
 
     #[test]
     fn recvmmsg_translates_guest_headers_and_receives_multiple_datagrams() {
+        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
         const PAIR_FDS: u64 = 0x100;
         const SECOND_PAYLOAD: u64 = 0x220;
         const MESSAGES: u64 = 0x300;
@@ -31894,6 +32430,7 @@ mod tests {
         const SECOND_BUFFER: u64 = 0x540;
         const FIRST_CONTROL: u64 = 0x580;
         const PIPE_RESULT: u64 = 0x600;
+        const TIMEOUT: u64 = 0x700;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -31917,6 +32454,81 @@ mod tests {
             0
         );
         let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmmsg,
+                [u64::MAX, u64::MAX, 1, 0, u64::MAX, 0],
+            ),
+            negative_errno(libc::EFAULT),
+            "timeout copy precedes descriptor validation"
+        );
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                TIMEOUT,
+                &libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 1_000_000_000,
+                },
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmmsg,
+                [socket_fds[1] as u64, u64::MAX, 1, 0, TIMEOUT, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            write_struct(
+                &mut memory,
+                TIMEOUT,
+                &libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmmsg,
+                [
+                    HIGH_WORD | socket_fds[1] as u64,
+                    u64::MAX,
+                    HIGH_WORD,
+                    HIGH_WORD,
+                    TIMEOUT,
+                    0,
+                ],
+            ),
+            0,
+            "a zero low-word vlen ignores msgvec"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmmsg,
+                [
+                    socket_fds[1] as u64,
+                    u64::MAX,
+                    libc::UIO_MAXIOV as u64 + 1,
+                    0,
+                    TIMEOUT,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EFAULT),
+            "Linux clamps vlen before validating the bounded msgvec"
+        );
         // Queue the first datagram from the host with one real descriptor, then
         // queue the second through the guest path. recvmmsg must translate the
         // first control record without affecting ordinary later messages.
@@ -32000,10 +32612,10 @@ mod tests {
                 &mut state,
                 libc::SYS_recvmmsg,
                 [
-                    socket_fds[1] as u64,
+                    HIGH_WORD | socket_fds[1] as u64,
                     MESSAGES,
-                    2,
-                    libc::MSG_DONTWAIT as u64,
+                    HIGH_WORD | 2,
+                    HIGH_WORD | libc::MSG_DONTWAIT as u64,
                     0,
                     0,
                 ],
@@ -32690,6 +33302,7 @@ mod tests {
                     0,
                 ],
                 &mut shared,
+                None,
             ),
             1,
             "the valid first message commits before the bad later message"
@@ -32858,6 +33471,7 @@ mod tests {
                     0,
                 ],
                 &mut shared,
+                None,
             ),
             1,
             "two same-handle rights in one message share authentication, but the next message must consume the syscall-wide budget"
@@ -33302,10 +33916,49 @@ mod tests {
         // Active output capture makes both standard slots and every duplicate
         // private. Exercise the real sendmsg translation with capture enabled;
         // the ordinary syscall helper intentionally passes false.
-        let stdout_alias =
-            duplicate_fd(&mut state, libc::STDOUT_FILENO as u64, None, 0, false, None);
+        let captured = CapturedOutput::default();
+        let capture_metadata = captured.metadata();
+        let capture = Some(capture_metadata);
+        let stdout_alias = duplicate_fd(
+            &mut state,
+            libc::STDOUT_FILENO as u64,
+            None,
+            0,
+            false,
+            capture,
+        );
         assert!(stdout_alias >= 0);
-        for donated in [libc::STDOUT_FILENO as i64, stdout_alias] {
+        let stdout_path = open_guest_fd_path(
+            &mut state,
+            libc::STDOUT_FILENO,
+            libc::O_PATH as u64,
+            true,
+            capture,
+        );
+        assert!(stdout_path >= 0);
+        let unlabelled_raw = unsafe {
+            libc::fcntl(
+                capture_metadata.descriptor_carrier(OutputAlias::Stdout),
+                libc::F_DUPFD_CLOEXEC,
+                3,
+            )
+        };
+        assert!(unlabelled_raw >= 3);
+        let unlabelled_file = unsafe { std::fs::File::from_raw_fd(unlabelled_raw) };
+        let unlabelled = insert_file_with_flags(&mut state, unlabelled_file, true, None);
+        assert!(unlabelled >= 0);
+        assert!(output_alias(&state, unlabelled as libc::c_int).is_none());
+        assert!(
+            !state
+                .capture_status_flags
+                .contains_key(&(unlabelled as libc::c_int))
+        );
+        for donated in [
+            libc::STDOUT_FILENO as i64,
+            stdout_alias,
+            stdout_path,
+            unlabelled,
+        ] {
             let control = rights_control(&[donated as libc::c_int]);
             memory.write(SEND_CONTROL, &control).unwrap();
             send_message.msg_controllen = control.len();
@@ -33315,10 +33968,10 @@ mod tests {
                     &memory,
                     &state,
                     &[socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
-                    true,
+                    capture,
                 ),
                 negative_errno(libc::ENOSYS),
-                "captured output alias {donated} escaped through SCM_RIGHTS",
+                "captured output carrier {donated} escaped through SCM_RIGHTS",
             );
         }
 
@@ -36454,7 +37107,7 @@ mod tests {
             let mut control = rights_control(&rights);
             let unchanged = control.clone();
             assert_eq!(
-                translate_outgoing_control(&mut control, &executor.state, false),
+                translate_outgoing_control(&mut control, &executor.state, None),
                 Err(negative_errno(libc::ENOSYS)),
             );
             assert_eq!(
@@ -40031,7 +40684,7 @@ mod tests {
             );
             let mut control = rights_control(&[fd as i32]);
             assert_eq!(
-                translate_outgoing_control(&mut control, &f.executor.state, false),
+                translate_outgoing_control(&mut control, &f.executor.state, None),
                 Err(negative_errno(libc::ENOSYS))
             );
         }
@@ -43965,26 +44618,38 @@ mod tests {
             ),
             negative_errno(libc::EINVAL),
         );
-        // Linux validates the target type before copying socket payload
-        // metadata. Do not expose the eventfd carrier through a bad pointer.
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_sendto,
-                [alias as u64, u64::MAX, 8, 0, 0, 0],
-            ),
-            negative_errno(libc::ENOTSOCK),
-        );
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_sendmsg,
-                [alias as u64, u64::MAX, 0, 0, 0, 0],
-            ),
-            negative_errno(libc::ENOTSOCK),
-        );
+        // sendto rejects a noncanonical payload range before looking up the
+        // socket, while sendmsg validates the descriptor type before importing
+        // its header. High register bits never bypass either low-word fd rule.
+        for raw_fd in [alias as u64, (1_u64 << 32) | alias as u64] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_sendto,
+                    [raw_fd, u64::MAX, 8, 0, 0, 0],
+                ),
+                negative_errno(libc::EFAULT),
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_sendto,
+                    [raw_fd, DATA, 8, 0, 0, 0],
+                ),
+                negative_errno(libc::ENOTSOCK),
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_sendmsg,
+                    [raw_fd, u64::MAX, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::ENOTSOCK),
+            );
+        }
         assert_eq!(
             syscall_result(
                 &mut memory,
