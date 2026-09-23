@@ -6532,6 +6532,11 @@ fn sendfile(
 ) -> i64 {
     // Linux syscall `int` arguments consume only the low descriptor word.
     let out_fd = args[0] as libc::c_int;
+    // Linux rejects a negative output descriptor before sendfile's input
+    // classification can route an otherwise-live unsupported input to ENOSYS.
+    if out_fd < 0 {
+        return negative_errno(libc::EBADF);
+    }
     let in_fd = args[1] as libc::c_int;
     // Resolve the input endpoint. sendfile(2) requires an mmap-able input, so a
     // valid-but-non-regular descriptor (a standard stream, pipe, or socket) must
@@ -21158,6 +21163,63 @@ mod tests {
             ),
             6
         );
+    }
+
+    #[test]
+    fn sendfile_rejects_negative_output_before_input_routing() {
+        const SIGNED_LOW_WORD: u64 = 0x5a5a_5a5a_8000_0000;
+        const PIPE_FDS: u64 = 0x100;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        let socket_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_socket,
+            [libc::AF_UNIX as u64, libc::SOCK_STREAM as u64, 0, 0, 0, 0],
+        );
+        assert!(socket_fd >= 0, "socket() returned {socket_fd}");
+        state
+            .files
+            .insert(20, std::fs::File::open(&root.0).unwrap());
+        state
+            .files
+            .insert(21, std::fs::File::open("/proc/self/status").unwrap());
+
+        for (raw_out, encoding) in [
+            (SIGNED_LOW_WORD | 1, "low-word sign bit"),
+            (u64::MAX, "sign-extended -1"),
+        ] {
+            for (in_fd, input_kind) in [
+                (pipe_fds[0] as u64, "pipe"),
+                (socket_fd as u64, "socket"),
+                (20, "directory"),
+                (libc::STDOUT_FILENO as u64, "standard stream"),
+                (21, "procfs"),
+            ] {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_sendfile,
+                        [raw_out, in_fd, 0, 1, 0, 0]
+                    ),
+                    negative_errno(libc::EBADF),
+                    "{encoding} output must precede {input_kind} routing"
+                );
+            }
+        }
     }
 
     #[test]

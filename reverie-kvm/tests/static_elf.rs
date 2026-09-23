@@ -16086,6 +16086,7 @@ fn sendfile_and_lseek_consume_low_descriptor_words_on_kvm() {
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -16101,6 +16102,25 @@ int main(int argc, char **argv) {
   if (argc != 2) return 1;
   int fd = open(argv[1], O_RDONLY);
   if (fd < 0) return 2;
+
+  int pipe_fds[2], sockets[2];
+  if (pipe(pipe_fds) != 0) return 20;
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) return 21;
+  const uint64_t invalid_outputs[] = {
+      SIGNED_LOW_WORD | UINT64_C(1), UINT64_MAX};
+  const int fallback_inputs[] = {pipe_fds[0], sockets[0]};
+  for (unsigned output = 0;
+       output < sizeof(invalid_outputs) / sizeof(invalid_outputs[0]);
+       ++output) {
+    for (unsigned input = 0;
+         input < sizeof(fallback_inputs) / sizeof(fallback_inputs[0]);
+         ++input) {
+      errno = 0;
+      if (!failed_with(syscall(SYS_sendfile, invalid_outputs[output],
+                               (uint32_t)fallback_inputs[input], NULL, 1),
+                       EBADF)) return 22 + (int)(output * 2 + input);
+    }
+  }
 
   off_t offset = 0;
   errno = 0;
@@ -16141,6 +16161,8 @@ int main(int argc, char **argv) {
               length - split) != (long)(length - split) ||
       offset != (off_t)length || lseek(fd, 0, SEEK_CUR) != 3) return 9;
 
+  if (close(pipe_fds[0]) != 0 || close(pipe_fds[1]) != 0 ||
+      close(sockets[0]) != 0 || close(sockets[1]) != 0) return 26;
   if (close(fd) != 0) return 10;
   return 0;
 }
