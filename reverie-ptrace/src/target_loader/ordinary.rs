@@ -158,7 +158,7 @@ fn validate_sysv_hash(
     bytes: &[u8],
     strings: &[u8],
     address: u64,
-    selected: usize,
+    selected: Option<usize>,
 ) -> io::Result<()> {
     let header = Provider::ro_file(elf, bytes, address, 8)?;
     let bucket_count = u32_at(header, 0) as usize;
@@ -225,12 +225,12 @@ fn validate_sysv_hash(
             if elf_hash(name.as_bytes()) as usize % bucket_count != bucket_number {
                 return Err(invalid("runtime SysV hash table disagrees with symbols"));
             }
-            selected_reachable |= index == selected;
+            selected_reachable |= Some(index) == selected;
             index = u32_at(chains, index * 4) as usize;
             steps += 1;
         }
     }
-    if !selected_reachable {
+    if selected.is_some() && !selected_reachable {
         return Err(invalid("initializer is unreachable from runtime SysV hash"));
     }
     Ok(())
@@ -241,8 +241,8 @@ fn validate_gnu_hash(
     bytes: &[u8],
     strings: &[u8],
     address: u64,
-    selected: usize,
-) -> io::Result<()> {
+    selected: Option<usize>,
+) -> io::Result<usize> {
     let header = Provider::ro_file(elf, bytes, address, 16)?;
     let bucket_count = u32_at(header, 0) as usize;
     let symbol_offset = u32_at(header, 4) as usize;
@@ -254,10 +254,23 @@ fn validate_gnu_hash(
         || bloom_count > MAX_RUNTIME_SYMBOLS
         || !bloom_count.is_power_of_two()
         || bloom_shift >= 32
-        || symbol_offset >= elf.dynsyms.len()
+        || symbol_offset > elf.dynsyms.len()
+        || selected.is_some() && symbol_offset == elf.dynsyms.len()
         || elf.dynsyms.len() > MAX_RUNTIME_SYMBOLS
     {
         return Err(invalid("malformed runtime GNU hash table"));
+    }
+    let prefix_length = 16 + bloom_count * 8 + bucket_count * 4;
+    let prefix = Provider::ro_file(elf, bytes, address, prefix_length as u64)?;
+    // GNU ld emits no chain array for an executable whose dynamic symbols are
+    // all undefined. Its symoffset may still be one, below the symbol count.
+    // This case is valid only for generic table validation; an initializer or
+    // ABI marker must remain reachable through a real definition's hash chain.
+    if selected.is_none()
+        && elf.dynsyms.iter().all(|symbol| symbol.st_shndx == 0)
+        && prefix[16..].iter().all(|byte| *byte == 0)
+    {
+        return Ok(prefix_length);
     }
     let chain_count = elf.dynsyms.len() - symbol_offset;
     let length = 16_usize
@@ -312,7 +325,7 @@ fn validate_gnu_hash(
             index += 1;
         }
     }
-    if !reachable[selected] {
+    if selected.is_some_and(|selected| !reachable[selected]) {
         return Err(invalid("initializer is unreachable from runtime GNU hash"));
     }
     if reachable[symbol_offset..]
@@ -321,15 +334,26 @@ fn validate_gnu_hash(
     {
         return Err(invalid("malformed runtime GNU hash table"));
     }
-    Ok(())
+    Ok(length)
 }
 
-fn validate_runtime_hashes(
+pub(super) fn validated_gnu_hash_size(
+    elf: &Elf<'_>,
+    bytes: &[u8],
+    strings: &[u8],
+    address: u64,
+) -> io::Result<u64> {
+    validate_gnu_hash(elf, bytes, strings, address, None).map(|length| length as u64)
+}
+
+// Callers establish hash presence before this shared structural validation:
+// parse_runtime for ordinary exports and InitImage::parse for loader images.
+pub(super) fn validate_runtime_hashes(
     elf: &Elf<'_>,
     bytes: &[u8],
     strings: &[u8],
     unique: &BTreeMap<u64, u64>,
-    selected: usize,
+    selected: Option<usize>,
 ) -> io::Result<()> {
     let sysv = unique.get(&dynamic::DT_HASH).copied();
     let gnu = unique.get(&dynamic::DT_GNU_HASH).copied();
@@ -500,7 +524,7 @@ fn parse_runtime(bytes: &[u8]) -> io::Result<Provider<'_>> {
 
     let (selected_index, symbol) =
         selected.ok_or_else(|| invalid("ordinary initializer absent"))?;
-    validate_runtime_hashes(&elf, bytes, strings, &unique, selected_index)?;
+    validate_runtime_hashes(&elf, bytes, strings, &unique, Some(selected_index))?;
 
     Ok(Provider {
         bytes,
@@ -511,6 +535,48 @@ fn parse_runtime(bytes: &[u8]) -> io::Result<Provider<'_>> {
         dynamic_offset,
         dynamic_size,
     })
+}
+
+pub(super) fn validate_runtime_init_image(bytes: &[u8]) -> io::Result<()> {
+    let provider = parse_runtime(bytes)?;
+    let elf = &provider.elf;
+    let tags = &elf.dynamic.as_ref().unwrap().dyns;
+    let metadata: BTreeMap<_, _> = tags
+        .iter()
+        .map(|entry| (entry.d_tag, entry.d_val))
+        .collect();
+    let strings = Provider::ro_file(
+        elf,
+        bytes,
+        metadata[&dynamic::DT_STRTAB],
+        metadata[&dynamic::DT_STRSZ],
+    )?;
+    let versions = metadata
+        .get(&dynamic::DT_VERSYM)
+        .map(|address| Provider::ro_file(elf, bytes, *address, (elf.dynsyms.len() * 2) as u64))
+        .transpose()?;
+    let mut found = None;
+    for (index, symbol) in elf.dynsyms.iter().enumerate() {
+        if c_string(strings, symbol.st_name)? != "reverie_liteinst_host_runtime_abi" {
+            continue;
+        }
+        if found.replace(index).is_some()
+            || symbol.st_bind() != sym::STB_GLOBAL
+            || symbol.st_type() != sym::STT_OBJECT
+            || symbol.st_other != sym::STV_DEFAULT
+            || symbol.st_shndx == 0
+            || symbol.st_shndx >= 0xff00
+            || symbol.st_size != 8
+            || versions.is_some_and(|table| u16_at(table, index * 2) != 1)
+            || u64_at(Provider::ro_file(elf, bytes, symbol.st_value, 8)?, 0) != 1
+        {
+            return Err(invalid(
+                "runtime lacks constructor-disabled host ABI version one",
+            ));
+        }
+    }
+    let index = found.ok_or_else(|| invalid("runtime host ABI marker is absent"))?;
+    validate_runtime_hashes(elf, bytes, strings, &metadata, Some(index))
 }
 
 #[cfg(test)]

@@ -45,6 +45,7 @@ mod injected_syscall;
 mod liteinst_stats;
 mod perf;
 pub mod regs;
+mod runtime_init;
 mod stack;
 mod stats;
 #[cfg(target_arch = "x86_64")]
@@ -62,6 +63,7 @@ pub use injected_syscall::InjectedSyscallFrame;
 pub use liteinst_stats::LiteinstInstrumentationStats;
 pub use liteinst_stats::LiteinstInstrumentationStatsHandle;
 pub use perf::is_perf_supported;
+pub use runtime_init::LiteinstRuntimeInit;
 pub use stats::PtraceBackendStatsSnapshot;
 pub use stats::PtraceBackendStatsSource;
 pub use timer::PmuConfig;

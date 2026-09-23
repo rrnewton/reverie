@@ -100,6 +100,7 @@ use crate::regs::Reg;
 use crate::regs::RegAccess;
 use crate::stack::GuestStack;
 use crate::timer::HandleFailure;
+use crate::timer::PreciseStepResume;
 use crate::timer::Timer;
 use crate::timer::TimerEventRequest;
 use crate::tracer::HeldRootStop;
@@ -107,6 +108,9 @@ use crate::tracer::NewbornTracee;
 use crate::tracer::RootStopLease;
 use crate::tracer::TraceeIdentity;
 use crate::vdso;
+
+#[cfg(target_arch = "x86_64")]
+mod runtime_init;
 
 fn validate_liteinst_user_regs_update(
     current: &libc::user_regs_struct,
@@ -527,6 +531,7 @@ impl InjectedSyscallTrap {
 #[derive(Clone)]
 pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) preload: PathBuf,
+    pub(crate) initialization: Option<Arc<crate::LiteinstRuntimeInit>>,
     pub(crate) begin_marker: u64,
     pub(crate) ready_marker: u64,
     pub(crate) helper_return_marker: u64,
@@ -759,6 +764,9 @@ struct LiteinstRuntimeState {
     frame: Option<LiteinstHandshakeFrame>,
     generation: u64,
     ready_generation: Option<u64>,
+    runtime_identity: Option<(u64, u64, u64)>,
+    #[cfg(target_arch = "x86_64")]
+    initialization_vdso: Option<Arc<crate::target_loader::BoundRuntimeInitVdso>>,
     attempted_sites: HashSet<u64>,
     fallback_sites: HashMap<u64, LiteinstPatchOutcome>,
     active_hooks: HashMap<u64, ActiveHookFootprint>,
@@ -777,6 +785,9 @@ impl Default for LiteinstRuntimeState {
             frame: None,
             generation: 0,
             ready_generation: None,
+            runtime_identity: None,
+            #[cfg(target_arch = "x86_64")]
+            initialization_vdso: None,
             attempted_sites: HashSet::new(),
             fallback_sites: HashMap::new(),
             active_hooks: HashMap::new(),
@@ -2075,26 +2086,83 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// therefore should not be forwarded to the tool / guest.
     async fn handle_timer(&mut self, task: Stopped) -> Result<(bool, Stopped), TraceError> {
         let armer = self.liteinst_root_stop_armer(&task);
+        let newborn_tracees = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.newborn_tracees));
         let held_root_stop = armer
             .as_ref()
             .map(|armer| Arc::clone(&armer.held_root_stop));
         let mut step = move |task| RootStopLease::new(task, held_root_stop.clone()).step(None);
         let mut observe = |wait: &Wait| {
+            // An unexpected child event can cancel this handler immediately.
+            // Register cleanup ownership before handing the stop to run_loop.
+            if let (Some(newborns), Wait::Stopped(task, Event::NewChild(op, child))) =
+                (newborn_tracees.as_ref(), wait)
+            {
+                newborns
+                    .lock()
+                    .unwrap()
+                    .entry(child.pid())
+                    .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
+            }
             if let (Some(armer), Wait::Stopped(task, event)) = (armer.as_ref(), wait) {
                 armer.arm(task, event)?;
             }
             Ok(())
         };
-        let task = match self
+        let mut result = self
             .timer
             .handle_signal(task, &mut step, &mut observe)
-            .await
-        {
-            Err(HandleFailure::ImproperSignal(task)) => return Ok((false, task)),
-            Err(HandleFailure::Cancelled(task)) => return Ok((true, task)),
-            Err(HandleFailure::TraceError(e)) => return Err(e),
-            Err(HandleFailure::Event(wait)) => self.abort(Ok(wait)).await,
-            Ok(task) => task,
+            .await;
+        let task = loop {
+            let (wait, continuation) = match result {
+                Err(HandleFailure::ImproperSignal(task)) => return Ok((false, task)),
+                Err(HandleFailure::Cancelled(task)) => return Ok((true, task)),
+                Err(HandleFailure::TraceError(e)) => return Err(e),
+                Err(HandleFailure::Event(wait, continuation)) => (wait, continuation),
+                Ok(task) => break task,
+            };
+            let (task, completion) = match wait {
+                #[cfg(target_arch = "x86_64")]
+                Wait::Stopped(task, Event::Signal(Signal::SIGTRAP))
+                    if self.is_liteinst_controller_entry(&task)? =>
+                {
+                    (
+                        self.initialize_liteinst_at_entry_bounded(task).await?,
+                        PreciseStepResume::RetryInstruction,
+                    )
+                }
+                Wait::Stopped(task, Event::Seccomp)
+                    if self.is_liteinst_controller_mapping(&task)? =>
+                {
+                    let (nr, args) = self.get_syscall(&task)?.into_parts();
+                    let wait = self
+                        .finish_liteinst_mapping_syscall(task, nr, args)
+                        .await
+                        .map_err(|error| {
+                            self.record_liteinst_failure(
+                                LiteinstActivationFailureReason::UnexpectedActivationTrap,
+                                error,
+                            );
+                            TraceError::from(Errno::EPROTO)
+                        })?;
+                    match wait {
+                        Wait::Stopped(task, Event::Syscall) => {
+                            (task, PreciseStepResume::CompletedInstruction)
+                        }
+                        // A real intervening event retains the original
+                        // cancellation semantics; it is not a completed step.
+                        wait => self.abort(Ok(wait)).await,
+                    }
+                }
+                wait => self.abort(Ok(wait)).await,
+            };
+            result = self
+                .timer
+                .resume_precise_step(task, continuation, completion, &mut step, &mut observe)
+                .await;
         };
         #[cfg(test)]
         if let Some(sender) = self
@@ -2120,7 +2188,18 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Postconditions:
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
-        self.timer.observe_event();
+        // The owned entry breakpoint is a controller event. Counting it as a
+        // guest event would cancel a timer armed by the post-exec Tool callback.
+        #[cfg(target_arch = "x86_64")]
+        let controller_entry = matches!(event, Event::Signal(Signal::SIGTRAP))
+            && self.is_liteinst_controller_entry(&stopped)?;
+        #[cfg(not(target_arch = "x86_64"))]
+        let controller_entry = false;
+        let controller_mapping =
+            matches!(event, Event::Seccomp) && self.is_liteinst_controller_mapping(&stopped)?;
+        if !controller_entry && !controller_mapping {
+            self.timer.observe_event();
+        }
         let tid = self.tid();
 
         #[cfg(test)]
@@ -2309,10 +2388,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             return None;
         }
         let maps = guest_maps(task.pid())?;
+        let runtime_identity = self.liteinst_runtime.lock().unwrap().runtime_identity;
         let preload_code = |address| {
             maps.iter().any(|mapping| {
                 mapping.executable
                     && mapping.path.as_ref() == Some(&config.preload)
+                    && (config.initialization.is_none()
+                        || runtime_identity
+                            == Some((mapping.device_major, mapping.device_minor, mapping.inode)))
                     && mapping.contains(address)
             })
         };
@@ -2491,6 +2574,18 @@ impl<L: Tool + 'static> TracedTask<L> {
         if let Some(guard) = self.liteinst_entry_guard
             && regs.ip() == guard.address.saturating_add(1)
         {
+            #[cfg(target_arch = "x86_64")]
+            if self
+                .global_state
+                .liteinst_runtime
+                .as_ref()
+                .is_some_and(|config| config.initialization.is_some())
+            {
+                let task = self.initialize_liteinst_at_entry_bounded(task).await?;
+                return Ok(HandleSignalResult::SignalSuppressed(
+                    self.resume_stopped(task, None)?.next_state().await?,
+                ));
+            }
             let address = Addr::from_raw(guard.address as usize).ok_or(Errno::EFAULT)?;
             let observed: u64 = task.read_value(address)?;
             let guarded_instruction = (guard.saved_instruction & !0xff) | 0xcc;
@@ -3014,6 +3109,30 @@ impl<L: Tool + 'static> TracedTask<L> {
             task
         };
         let mut task = self.tracee_preinit(task).await?;
+        #[cfg(target_arch = "x86_64")]
+        if self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .is_some_and(|config| config.initialization.is_some())
+        {
+            match crate::target_loader::capture_runtime_init_vdso(&task) {
+                Ok(vdso) => {
+                    self.liteinst_runtime.lock().unwrap().initialization_vdso = Some(Arc::new(vdso))
+                }
+                Err(error) => {
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::UnexpectedActivationTrap,
+                        Error::runtime(
+                            self.tid(),
+                            "capture LiteInst initial kernel vDSO",
+                            error.to_string(),
+                        ),
+                    );
+                    return Err(Errno::EPROTO.into());
+                }
+            }
+        }
         if let Err(error) = self.install_liteinst_entry_guard(&mut task) {
             self.record_liteinst_failure(
                 LiteinstActivationFailureReason::InstallExecutableEntryGuard,
@@ -3102,11 +3221,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await?;
             Ok(running.next_state().await?)
         } else {
-            let running = if self.global_state.liteinst_runtime.is_some() {
-                self.resume_stopped(task, None)?
-            } else {
-                self.step_stopped(task, None)?
-            };
+            // Pre-initialization is complete. An extra single-step here creates
+            // a controller SIGTRAP after handle_post_exec has armed a timer;
+            // treating that stop as an event would cancel the real deadline.
+            let running = self.resume_stopped(task, None)?;
             Ok(running.next_state().await?)
         }
     }
@@ -4019,7 +4137,22 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
-    async fn handle_liteinst_mapping_syscall(
+    fn is_liteinst_controller_mapping(&self, task: &Stopped) -> Result<bool, TraceError> {
+        if self.global_state.liteinst_runtime.is_none() {
+            return Ok(false);
+        }
+        let (number, _) = self.get_syscall(task)?.into_parts();
+        Ok(is_liteinst_mapping_syscall(number)
+            && !self
+                .global_state
+                .subscriptions
+                .iter_syscalls()
+                .any(|nr| nr == number))
+    }
+
+    /// Execute the guest mapping syscall only as far as syscall-exit. Precise
+    /// stepping must account for that one instruction before any guest resume.
+    async fn finish_liteinst_mapping_syscall(
         &mut self,
         task: Stopped,
         nr: Sysno,
@@ -4040,19 +4173,30 @@ impl<L: Tool + 'static> TracedTask<L> {
             .await
             .tracee_context(tid, "wait for controller-observed mapping syscall")?;
         self.arm_liteinst_wait(&wait);
-        match wait {
-            Wait::Stopped(stopped, Event::Syscall) => {
-                let regs = stopped
-                    .getregs()
-                    .tracee_context(tid, "read controller-observed mapping result")?;
-                let result = Errno::from_ret(regs.ret() as usize).map(|value| value as i64);
-                self.observe_liteinst_mapping_result(nr, args, result);
-                self.resume_stopped(stopped, None)
-                    .tracee_context(tid, "resume after controller-observed mapping syscall")?
-                    .next_state()
-                    .await
-                    .tracee_context(tid, "wait after controller-observed mapping syscall")
-            }
+        if let Wait::Stopped(stopped, Event::Syscall) = &wait {
+            let regs = stopped
+                .getregs()
+                .tracee_context(tid, "read controller-observed mapping result")?;
+            let result = Errno::from_ret(regs.ret() as usize).map(|value| value as i64);
+            self.observe_liteinst_mapping_result(nr, args, result);
+        }
+        Ok(wait)
+    }
+
+    async fn handle_liteinst_mapping_syscall(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+        args: SyscallArgs,
+    ) -> Result<Wait, Error> {
+        let tid = self.tid();
+        match self.finish_liteinst_mapping_syscall(task, nr, args).await? {
+            Wait::Stopped(stopped, Event::Syscall) => self
+                .resume_stopped(stopped, None)
+                .tracee_context(tid, "resume after controller-observed mapping syscall")?
+                .next_state()
+                .await
+                .tracee_context(tid, "wait after controller-observed mapping syscall"),
             Wait::Stopped(_, event) => Err(Error::runtime(
                 tid,
                 "observe LiteInst mapping syscall",

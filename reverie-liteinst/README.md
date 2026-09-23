@@ -124,6 +124,47 @@ Built-in `strace` and compatibility modes remain available through
 `configure_command`. They use the same shared preload and LiteInst hook path
 without a coordinator.
 
+### Explicit initialization with a host Tool
+
+`run_host_with_output_and_runtime_init_and_stats::<T>` loads a
+constructor-disabled runtime at the original executable's guarded `AT_ENTRY`.
+The caller supplies a `reverie_ptrace::LiteinstRuntimeInit` containing independently
+selected libc, dynamic-linker, libgcc, and runtime bytes plus the public `dlopen`
+version. Build the runtime with `--no-default-features`; its exported ABI marker
+must identify that constructor-disabled build. Ptrace continues to own `T` and
+its `GlobalTool`. This API does not install an in-process Tool.
+
+This first integration accepts a single root task and a closed default loader
+namespace: the executable, kernel vDSO, and the bound libraries. It refuses
+executable symbol interposition, additional loader objects/namespaces, unsupported
+dependency or search directives, secure execution, and nonempty loader environment
+controls (`LD_*` and `GLIBC_TUNABLES`). It compares mapped code and metadata with
+the bound bytes; these structural checks do not defend against arbitrary guest
+modification of the loader's writable internals.
+
+The controller stages sealed memfds after the original loader finishes, calls
+the resolved initializer on a separate guarded stack, and services exactly one
+Begin/Ready sequence. It restores registers, XSTATE, errno, instruction-fault
+policies, signal mask, and the guest's clock/deadline before publishing Ready and
+restoring executable entry. Unexpected signals, lifecycle events, failed returns,
+or cancellation terminate and reap the target. Runtime staging descriptors close
+before application execution.
+
+Run `tests/run_runtime_init.sh` from this directory to build and bind the release
+DSO and execute the mandatory integration matrix. It requires Linux x86-64,
+ptrace and a functioning branch-counter PMU; the hardware CI job runs this gate
+explicitly. The fixture has no runtime-loading
+code: two calls at one syscall site must produce one discovery and exactly one
+real patched dispatch, both reaching the host Tool. Ten ordinary pairs and three
+timer pairs require 52 `getpid` callbacks and 13 installed-hook dispatches. The
+timer controls compare exact clocks, instruction pointers and loop registers
+with ordinary ptrace: one long deadline, a complete one-branch-at-a-time trace
+through executable entry, and a deadline of one branch and twelve instructions
+crossing an unsubscribed mapping syscall. The four preinit `gettid` markers are
+counted separately. Seven refusals, one cancellation, and four native controls
+remain mandatory. This qualifies the initialization and dispatch boundary; full
+Hermit determinism and general workload parity remain separate requirements.
+
 ### Shared `reverie-preload` built-in tools
 
 The single `REVERIE_LITEINST_TOOL` selector is a superset of the
