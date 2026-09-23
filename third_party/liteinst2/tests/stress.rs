@@ -33,6 +33,8 @@ const SITE_OFFSET: usize = 60;
 const TARGET_OFFSET: usize = 128;
 const EXECUTOR_THREADS: usize = 4;
 const TOGGLER_THREADS: usize = 4;
+const ISOLATED_FAULT_TIMEOUT: Duration = Duration::from_secs(30);
+const ISOLATED_BODY_SUCCESS_EXIT: libc::c_int = 102;
 
 static HOOK_CALLS: AtomicU64 = AtomicU64::new(0);
 static EXECUTED_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -45,21 +47,53 @@ const ISOLATED_STRESS_ENV: &str = "LITEINST_ISOLATED_STRESS_TEST";
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#10): Review the subprocess boundary for global signal state.
-fn run_isolated(test_name: &str, body: fn()) {
+fn run_isolated(test_name: &str, timeout: Option<Duration>, body: fn()) {
     if std::env::var(ISOLATED_STRESS_ENV).as_deref() == Ok(test_name) {
         body();
-        return;
+        // SAFETY: this process exists only to isolate the selected test body.
+        unsafe { libc::_exit(ISOLATED_BODY_SUCCESS_EXIT) };
     }
 
     let executable = std::env::current_exe().expect("failed to locate stress test executable");
-    let status = Command::new(executable)
-        .args(["--exact", test_name, "--ignored", "--nocapture"])
+    let mut command = Command::new(executable);
+    command.args(["--exact", test_name, "--include-ignored", "--nocapture"]);
+    let mut child = command
         .env(ISOLATED_STRESS_ENV, test_name)
-        .status()
+        .spawn()
         .expect("failed to launch isolated stress test");
-    assert!(
-        status.success(),
-        "isolated stress test {test_name} failed: {status}"
+    let status = if let Some(timeout) = timeout {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) => {
+                    child
+                        .kill()
+                        .expect("failed to kill timed-out isolated stress test");
+                    child
+                        .wait()
+                        .expect("failed to reap timed-out isolated stress test");
+                    panic!("isolated stress test {test_name} timed out after {timeout:?}");
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("failed to poll isolated stress test {test_name}: {error}");
+                }
+            }
+        }
+    } else {
+        child
+            .wait()
+            .expect("failed to wait for isolated stress test")
+    };
+    assert_eq!(
+        status.code(),
+        Some(ISOLATED_BODY_SUCCESS_EXIT),
+        "isolated stress test {test_name} did not return its authenticated body receipt: {status}"
     );
 }
 
@@ -106,7 +140,13 @@ extern "C" fn translate_fault_pc(
     let matches = generated == FAULT_GENERATED_PC.load(Ordering::Relaxed)
         && translated == Some(FAULT_ORIGINAL_PC.load(Ordering::Relaxed));
     // SAFETY: _exit is async-signal-safe and terminates this isolated child.
-    unsafe { libc::_exit(if matches { 0 } else { 101 }) };
+    unsafe {
+        libc::_exit(if matches {
+            ISOLATED_BODY_SUCCESS_EXIT
+        } else {
+            101
+        })
+    };
 }
 
 fn install_fault_handler() {
@@ -383,6 +423,7 @@ fn relocated_fault_pc_translation_body() {
         hook.trampoline().relocated_tail_address(),
         Ordering::Relaxed,
     );
+    hook.trampoline().publish_program_counter_mappings();
     install_fault_handler();
     hook.activate().unwrap();
 
@@ -395,10 +436,10 @@ fn relocated_fault_pc_translation_body() {
 }
 
 #[test]
-#[ignore = "isolated intentional SIGSEGV regression test"]
 fn relocated_fault_pc_translation() {
     run_isolated(
         "relocated_fault_pc_translation",
+        Some(ISOLATED_FAULT_TIMEOUT),
         relocated_fault_pc_translation_body,
     );
 }
@@ -581,7 +622,11 @@ fn executable_mapping_end(maps: &str, address: usize) -> Option<usize> {
 #[test]
 #[ignore = "long-running M5 live stress matrix"]
 fn live_probe_stress_matrix() {
-    run_isolated("live_probe_stress_matrix", live_probe_stress_matrix_body);
+    run_isolated(
+        "live_probe_stress_matrix",
+        None,
+        live_probe_stress_matrix_body,
+    );
 }
 
 fn live_probe_stress_matrix_body() {
@@ -769,7 +814,11 @@ fn probe_index(probe: &RapidProbe, executable_base: usize) -> usize {
 #[test]
 #[ignore = "release-mode M5 overhead benchmark"]
 fn probe_overhead_benchmark() {
-    run_isolated("probe_overhead_benchmark", probe_overhead_benchmark_body);
+    run_isolated(
+        "probe_overhead_benchmark",
+        None,
+        probe_overhead_benchmark_body,
+    );
 }
 
 fn probe_overhead_benchmark_body() {

@@ -30,10 +30,11 @@ pub use nix::sys::ptrace::Options;
 pub use nix::sys::signal::Signal;
 use nix::sys::wait::WaitPidFlag;
 use nix::sys::wait::WaitStatus;
+#[cfg(feature = "notifier")]
+pub use reverie_process::ControllerLaunchPhase;
+pub use reverie_process::ControllerSpawnToken;
 pub use reverie_process::ExitStatus;
 pub use reverie_process::Pid;
-#[cfg(feature = "notifier")]
-pub use reverie_process::ControllerSpawnToken;
 pub use syscalls::Errno;
 use syscalls::Sysno;
 use thiserror::Error;
@@ -43,17 +44,17 @@ pub use crate::notifier::CleanupStopLease;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::CleanupStopTransfer;
 #[cfg(feature = "notifier")]
-pub use crate::notifier::OriginalRootStartup;
-#[cfg(feature = "notifier")]
 pub use crate::notifier::OriginalRootCleanupAuthority;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::OriginalRootStartup;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::OriginalRootStartupError;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::OriginalRootStartupIdentity;
 #[cfg(feature = "notifier")]
-pub use crate::notifier::StopResolutionOutcome;
-#[cfg(feature = "notifier")]
 pub use crate::notifier::StopResolutionLaterStatus;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::StopResolutionOutcome;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::StopResolutionResumeErrorOutcome;
 #[cfg(feature = "notifier")]
@@ -66,6 +67,8 @@ pub use crate::notifier::TerminalCleanupContinue;
 pub use crate::notifier::TransferredStopCompletion;
 #[cfg(feature = "notifier")]
 pub use crate::notifier::TransferredStopResolution;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::TransferredStopSuccessor;
 pub use crate::physical_observer::*;
 pub use crate::regs::*;
 use crate::waitid::IdType;
@@ -105,7 +108,7 @@ impl LogicalStopId {
 #[derive(Debug)]
 pub struct PhysicalResumeFailure {
     error: Errno,
-    attempt: Option<PhysicalResumeAttempt>,
+    attempt: Option<Box<PhysicalResumeAttempt>>,
 }
 
 impl PhysicalResumeFailure {
@@ -116,7 +119,7 @@ impl PhysicalResumeFailure {
 
     /// Returns the exact physical resume attempt, when an observer was bound.
     pub fn attempt(&self) -> Option<PhysicalResumeAttempt> {
-        self.attempt
+        self.attempt.as_deref().copied()
     }
 }
 
@@ -274,6 +277,53 @@ impl TraceeToken {
 
 #[cfg(target_arch = "x86_64")]
 const NT_X86_XSTATE: i32 = 0x202;
+#[cfg(target_arch = "x86_64")]
+const MAX_X86_XSTATE_TRANSPORT_BYTES: usize = 1024 * 1024;
+
+#[cfg(target_arch = "x86_64")]
+fn validate_x86_xstate_transport_len(capacity: usize, reported: usize) -> Result<usize, Errno> {
+    if reported >= capacity {
+        Err(Errno::EOVERFLOW)
+    } else {
+        Ok(reported)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn capture_x86_extended_state_with<GetXstate, GetFpregs>(
+    get_xstate: GetXstate,
+    get_fpregs: GetFpregs,
+) -> Result<X86ExtendedState, Error>
+where
+    GetXstate: FnOnce() -> Result<XState, Error>,
+    GetFpregs: FnOnce() -> Result<FpRegs, Error>,
+{
+    match get_xstate() {
+        Ok(state) => Ok(X86ExtendedState::StandardXsave64(state)),
+        // An inactive NT_X86_XSTATE regset is the kernel's exact proof that
+        // this tracee needs the fixed-size NT_PRFPREG variant.
+        Err(Error::Errno(Errno::ENODEV)) => {
+            get_fpregs().map(|state| X86ExtendedState::Fxsave64(Box::new(state)))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn restore_x86_extended_state_with<SetFpregs, SetXstate>(
+    state: &X86ExtendedState,
+    set_fpregs: SetFpregs,
+    set_xstate: SetXstate,
+) -> Result<(), Error>
+where
+    SetFpregs: FnOnce(&FpRegs) -> Result<(), Error>,
+    SetXstate: FnOnce(&XState) -> Result<(), Error>,
+{
+    match state {
+        X86ExtendedState::Fxsave64(regs) => set_fpregs(regs),
+        X86ExtendedState::StandardXsave64(state) => set_xstate(state),
+    }
+}
 
 /// An error that occurred during tracing.
 #[derive(Error, Debug, Eq, PartialEq)]
@@ -1271,11 +1321,11 @@ impl Stopped {
     // TODO-HUMAN-REVIEW(PR-270): Review complete ptrace XSTATE preservation API.
     #[cfg(target_arch = "x86_64")]
     pub fn getxstate(&self) -> Result<XState, Error> {
-        // CPUID.(EAX=0xD,ECX=0):ECX reports the maximum XSAVE area for all
-        // processor-supported user components. The kernel returns the exact
-        // active regset length through iov_len.
-        let maximum = core::arch::x86_64::__cpuid_count(0x0d, 0).ecx as usize;
-        let mut bytes = vec![0_u8; maximum.max(4096)];
+        // Transport sizing must not rely on the controller's CPUID view: the
+        // tracee can run under a different CPU-feature policy. Use a bounded
+        // buffer and require the kernel to report a strictly smaller exact
+        // length, so a result at the cap remains an ambiguous overflow.
+        let mut bytes = vec![0_u8; MAX_X86_XSTATE_TRANSPORT_BYTES];
         let mut iov = libc::iovec {
             iov_base: bytes.as_mut_ptr().cast(),
             iov_len: bytes.len(),
@@ -1290,10 +1340,8 @@ impl Stopped {
             )
         }
         .map_err(|err| self.map_err(err))?;
-        if iov.iov_len > bytes.len() {
-            return Err(Error::Errno(Errno::EOVERFLOW));
-        }
-        bytes.truncate(iov.iov_len);
+        let exact_len = validate_x86_xstate_transport_len(bytes.len(), iov.iov_len)?;
+        bytes.truncate(exact_len);
         Ok(XState(bytes))
     }
 
@@ -1319,20 +1367,176 @@ impl Stopped {
         Ok(())
     }
 
+    /// Captures the complete restorable x86 floating-point and extended state.
+    ///
+    /// Processors with OS-enabled XSAVE use the opaque `NT_X86_XSTATE`
+    /// representation. Older processors use the fixed-size floating-point
+    /// regset, so callers never have to assume that XSAVE exists.
+    #[cfg(target_arch = "x86_64")]
+    pub fn get_x86_extended_state(&self) -> Result<X86ExtendedState, Error> {
+        capture_x86_extended_state_with(|| self.getxstate(), || self.getfpregs())
+    }
+
+    /// Restores a complete x86 state returned by
+    /// [`Stopped::get_x86_extended_state`] or
+    /// `Stopped::read_and_merge_x86_saved_state`.
+    #[cfg(target_arch = "x86_64")]
+    pub fn set_x86_extended_state(&self, state: &X86ExtendedState) -> Result<(), Error> {
+        restore_x86_extended_state_with(
+            state,
+            |regs| self.setfpregs(regs),
+            |state| self.setxstate(state),
+        )
+    }
+
+    /// Authenticates and binds saved-XSTATE layout metadata to this exact stop.
+    ///
+    /// A fork child must call this method for its own stopped capability; a
+    /// binding made for its parent cannot be reused because the physical Event
+    /// generation, logical stop, and status provenance differ. The immutable
+    /// structural layout itself may be shared when the mapping was inherited.
+    ///
+    /// # Safety
+    ///
+    /// This is the sole authentication boundary. The caller must have proved:
+    ///
+    /// - the declared opcode, canonical ordered component table, mask, lengths,
+    ///   source address, runtime generation, trampoline version, and trampoline
+    ///   identity are exact for the tracee-side install;
+    /// - the table was generated from this tracee lineage's CPUID/XGETBV view
+    ///   and covers every component the callback can clobber; and
+    /// - this exact currently stopped task still owns that mapping, code, and
+    ///   source lineage. For a fork child, the controller must prove inheritance
+    ///   before binding; after exec, unmap, replacement, or an unrelated task,
+    ///   the layout must not be bound.
+    ///
+    /// All metadata must already reside in immutable controller-owned storage.
+    /// A false proof can restore incorrect architectural state, but cannot
+    /// violate Rust memory safety.
+    #[cfg(all(target_arch = "x86_64", feature = "memory", feature = "notifier"))]
+    pub unsafe fn bind_x86_saved_state_install(
+        &self,
+        layout: &X86SavedStateInstallLayout,
+        expected_identity: X86SavedStateInstallIdentity,
+    ) -> Result<BoundX86SavedStateInstall, X86SavedStateAccessError> {
+        if layout.declared_identity() != expected_identity {
+            return Err(X86SavedStateAccessError::InstallIdentityMismatch);
+        }
+        let template = self
+            .get_x86_extended_state()
+            .map_err(X86SavedStateAccessError::KernelState)?;
+        let transport = layout
+            .kernel_transport_binding(&template)
+            .map_err(X86SavedStateAccessError::Merge)?;
+        Ok(BoundX86SavedStateInstall::new(
+            layout.clone(),
+            X86SavedStateInvocationIdentity::new(
+                self.0,
+                self.1.event().physical_generation(),
+                self.1.event().physical_task_identity(self.0),
+                self.logical_stop_id(),
+                self.physical_status_id(),
+            ),
+            transport,
+        ))
+    }
+
+    /// Reads and merges the exact saved image owned by a task-bound install.
+    ///
+    /// No source address, byte slice, or component geometry is accepted here:
+    /// all three come only from the immutable authenticated seal. Before the
+    /// read, this verifies the exact task identity, physical Event generation,
+    /// logical stop, physical status provenance, install identity, layout-seal
+    /// identity, kernel regset format, kernel transport length, and OS-enabled
+    /// XFEATURE mask. It captures the kernel template on both sides of the
+    /// remote read and requires byte-exact equality before merging only into the
+    /// post-read value. That value supplies all reserved and kernel-owned bytes.
+    #[cfg(all(target_arch = "x86_64", feature = "memory", feature = "notifier"))]
+    pub fn read_and_merge_x86_saved_state(
+        &self,
+        bound: &BoundX86SavedStateInstall,
+        layout: &X86SavedStateInstallLayout,
+        expected_identity: X86SavedStateInstallIdentity,
+    ) -> Result<X86ExtendedState, X86SavedStateAccessError> {
+        let physical_generation = self.1.event().physical_generation();
+        let physical_task = self.1.event().physical_task_identity(self.0);
+        bound.validate_invocation(
+            X86SavedStateInvocationIdentity::new(
+                self.0,
+                physical_generation,
+                physical_task,
+                self.logical_stop_id(),
+                self.physical_status_id(),
+            ),
+            layout,
+            expected_identity,
+        )?;
+
+        let before_template = self
+            .get_x86_extended_state()
+            .map_err(X86SavedStateAccessError::KernelState)?;
+        let before_transport = layout
+            .kernel_transport_binding(&before_template)
+            .map_err(X86SavedStateAccessError::Merge)?;
+        bound.validate_transport(before_transport)?;
+
+        let source = reverie_memory::Addr::<u8>::from_raw(bound.layout().source_address())
+            .ok_or(X86SavedStateAccessError::Memory(Errno::EFAULT))?;
+        let mut saved = vec![0_u8; bound.layout().image_len()];
+        reverie_memory::MemoryAccess::read_exact_with_user_access(self, source, &mut saved)
+            .map_err(X86SavedStateAccessError::Memory)?;
+
+        // The stopped token is immutable, but repeat the identity check after
+        // the external memory read so a notifier identity upgrade cannot be
+        // mistaken for the originally bound physical task.
+        bound.validate_invocation(
+            X86SavedStateInvocationIdentity::new(
+                self.0,
+                self.1.event().physical_generation(),
+                self.1.event().physical_task_identity(self.0),
+                self.logical_stop_id(),
+                self.physical_status_id(),
+            ),
+            layout,
+            expected_identity,
+        )?;
+
+        let after_template = self
+            .get_x86_extended_state()
+            .map_err(X86SavedStateAccessError::KernelState)?;
+        let after_transport = layout
+            .kernel_transport_binding(&after_template)
+            .map_err(X86SavedStateAccessError::Merge)?;
+        bound.validate_post_read_template(&before_template, &after_template, after_transport)?;
+
+        // GETREGSET itself must not cross a logical-stop or status boundary.
+        bound.validate_invocation(
+            X86SavedStateInvocationIdentity::new(
+                self.0,
+                self.1.event().physical_generation(),
+                self.1.event().physical_task_identity(self.0),
+                self.logical_stop_id(),
+                self.physical_status_id(),
+            ),
+            layout,
+            expected_identity,
+        )?;
+        layout
+            .merge(&after_template, &saved)
+            .map_err(X86SavedStateAccessError::Merge)
+    }
+
     /// Resumes the process and transitions it back to a running state.
     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         let signal = sig.into();
         #[cfg(feature = "notifier")]
         if self.1.owns_claimed_exit_stop {
-            let result =
-                self.1
-                    .event()
-                    .continue_claimed_exit_stop(
-                        self.0,
-                        self.logical_stop_id(),
-                        self.1.physical_status,
-                        signal,
-                    );
+            let result = self.1.event().continue_claimed_exit_stop(
+                self.0,
+                self.logical_stop_id(),
+                self.1.physical_status,
+                signal,
+            );
             result.map_err(|err| self.map_nix_err(err))?;
             return Ok(Running::from_token(self.0, self.1.into_running()));
         }
@@ -1374,7 +1578,7 @@ impl Stopped {
             Ok(()) => Ok((Running::from_token(self.0, self.1.into_running()), attempt)),
             Err(error) => Err(PhysicalResumeFailure {
                 error: Errno::new(error as i32),
-                attempt: Some(attempt),
+                attempt: Some(Box::new(attempt)),
             }),
         }
     }
@@ -1654,6 +1858,18 @@ impl Running {
         Self::from_token(pid, TraceeToken::new())
     }
 
+    /// Binds a running-state capability to the notifier registry's currently
+    /// validated process generation for `pid`.
+    ///
+    /// The caller must independently know that the selected task is in a
+    /// running state. Unlike [`Running::new`], this captures or adopts the
+    /// current pidfd/procfs identity before returning, so a later notifier
+    /// registration cannot silently retarget a provisional generation.
+    #[cfg(feature = "notifier")]
+    pub fn try_new_current(pid: Pid) -> Result<Self, Errno> {
+        Self::from_current_or_new(pid)
+    }
+
     /// Creates the original controller-spawned tracee from its one-shot
     /// atomic pidfd launch capability.
     ///
@@ -1662,10 +1878,7 @@ impl Running {
     #[cfg(feature = "notifier")]
     pub fn from_controller_launch(token: ControllerSpawnToken) -> Self {
         let pid = token.child();
-        Self::from_token(
-            pid,
-            TraceeToken::from_controller_launch(token),
-        )
+        Self::from_token(pid, TraceeToken::from_controller_launch(token))
     }
 
     fn from_token(pid: Pid, token: TraceeToken) -> Self {
@@ -1762,15 +1975,12 @@ impl Running {
 
     /// Grants this pre-registration generation sole authority to consume the
     /// controller-launched root thread group's `WCONTINUED` state.
-    ///
     #[cfg(feature = "notifier")]
     pub fn prepare_original_root_continued_status_authority(
         &self,
         launch: OriginalRootLaunchToken,
     ) -> Result<OriginalRootStartup, OriginalRootStartupError> {
-        self.1
-            .event()
-            .prepare_original_root_startup(self.0, launch)
+        self.1.event().prepare_original_root_startup(self.0, launch)
     }
 
     /// Exact-pidfd cleanup for a controller launch which failed after clone
@@ -1780,12 +1990,13 @@ impl Running {
     /// same Event and pidfd; this method never retries or reopens the PID.
     #[cfg(feature = "notifier")]
     pub fn cleanup_failed_controller_launch(
-        &self,
+        self,
         cause: Errno,
     ) -> Result<(), OriginalRootStartupError> {
-        self.1
-            .event()
-            .cleanup_failed_controller_launch(self.0, cause)
+        let pid = self.0;
+        let event = self.1.event().clone();
+        drop(self);
+        event.cleanup_failed_controller_launch(pid, cause)
     }
 
     /// Terminates and reaps this unregistered original-root generation using
@@ -1796,10 +2007,7 @@ impl Running {
     /// The caller must still own the controller-spawned child before notifier
     /// registration and must not race another waiter or cleanup owner.
     #[cfg(feature = "notifier")]
-    pub unsafe fn terminate_unregistered_original_root(
-        &self,
-        cause: Errno,
-    ) -> Result<(), Errno> {
+    pub unsafe fn terminate_unregistered_original_root(&self, cause: Errno) -> Result<(), Errno> {
         self.1
             .event()
             .terminate_unregistered_original_root(self.0, cause)
@@ -2006,6 +2214,8 @@ pub fn stop_for_tracer() -> Result<(), Errno> {
 /// These tests are meant to test this API but also to show how ptrace works.
 #[cfg(test)]
 mod test {
+    #[cfg(target_arch = "x86_64")]
+    use std::cell::Cell;
     use std::io;
     use std::os::fd::BorrowedFd;
     use std::thread;
@@ -2018,6 +2228,131 @@ mod test {
     use tokio as _;
 
     use super::*;
+
+    #[cfg(target_arch = "x86_64")]
+    fn zeroed_fpregs() -> FpRegs {
+        // FpRegs is a C integer-and-array storage image, so every all-zero bit
+        // pattern is valid and provides deterministic bytes for dispatch tests.
+        unsafe { core::mem::zeroed() }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn xstate_transport_rejects_equal_or_truncated_capacity() {
+        assert_eq!(validate_x86_xstate_transport_len(1024, 1023), Ok(1023));
+        assert_eq!(
+            validate_x86_xstate_transport_len(1024, 1024),
+            Err(Errno::EOVERFLOW)
+        );
+        assert_eq!(
+            validate_x86_xstate_transport_len(1024, 1025),
+            Err(Errno::EOVERFLOW)
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_extended_state_enodev_alone_selects_nt_prfpreg() {
+        let nt_prfpreg_calls = Cell::new(0);
+        let observed = capture_x86_extended_state_with(
+            || Err(Error::Errno(Errno::ENODEV)),
+            || {
+                nt_prfpreg_calls.set(nt_prfpreg_calls.get() + 1);
+                Ok(zeroed_fpregs())
+            },
+        )
+        .expect("ENODEV must select the fixed-size NT_PRFPREG transport");
+
+        assert_eq!(nt_prfpreg_calls.get(), 1);
+        assert_eq!(
+            observed,
+            X86ExtendedState::Fxsave64(Box::new(zeroed_fpregs()))
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_extended_state_non_enodev_propagates_without_fallback() {
+        let nt_prfpreg_calls = Cell::new(0);
+        let observed = capture_x86_extended_state_with(
+            || Err(Error::Errno(Errno::EIO)),
+            || {
+                nt_prfpreg_calls.set(nt_prfpreg_calls.get() + 1);
+                Ok(zeroed_fpregs())
+            },
+        );
+
+        assert_eq!(observed, Err(Error::Errno(Errno::EIO)));
+        assert_eq!(nt_prfpreg_calls.get(), 0);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_extended_state_xsave_capture_stays_standard_xsave64() {
+        let nt_prfpreg_calls = Cell::new(0);
+        let xstate = XState(vec![0x5a; 832]);
+        let observed = capture_x86_extended_state_with(
+            || Ok(xstate.clone()),
+            || {
+                nt_prfpreg_calls.set(nt_prfpreg_calls.get() + 1);
+                Ok(zeroed_fpregs())
+            },
+        )
+        .expect("successful NT_X86_XSTATE capture must not fall back");
+
+        assert_eq!(observed, X86ExtendedState::StandardXsave64(xstate));
+        assert_eq!(nt_prfpreg_calls.get(), 0);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_extended_state_restore_dispatches_by_exact_variant() {
+        let nt_prfpreg_calls = Cell::new(0);
+        let nt_x86_xstate_calls = Cell::new(0);
+        let fxsave = X86ExtendedState::Fxsave64(Box::new(zeroed_fpregs()));
+        restore_x86_extended_state_with(
+            &fxsave,
+            |_| {
+                nt_prfpreg_calls.set(nt_prfpreg_calls.get() + 1);
+                Ok(())
+            },
+            |_| {
+                nt_x86_xstate_calls.set(nt_x86_xstate_calls.get() + 1);
+                Ok(())
+            },
+        )
+        .expect("Fxsave64 restore must select NT_PRFPREG");
+        assert_eq!(nt_prfpreg_calls.get(), 1);
+        assert_eq!(nt_x86_xstate_calls.get(), 0);
+
+        let expected_xstate = XState(vec![0xa5; 960]);
+        let standard = X86ExtendedState::StandardXsave64(expected_xstate.clone());
+        restore_x86_extended_state_with(
+            &standard,
+            |_| {
+                nt_prfpreg_calls.set(nt_prfpreg_calls.get() + 1);
+                Ok(())
+            },
+            |observed| {
+                nt_x86_xstate_calls.set(nt_x86_xstate_calls.get() + 1);
+                assert_eq!(observed, &expected_xstate);
+                Ok(())
+            },
+        )
+        .expect("StandardXsave64 restore must select NT_X86_XSTATE");
+        assert_eq!(nt_prfpreg_calls.get(), 1);
+        assert_eq!(nt_x86_xstate_calls.get(), 1);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_extended_state_cross_variant_equality_is_false() {
+        let fxsave = X86ExtendedState::Fxsave64(Box::new(zeroed_fpregs()));
+        let standard = X86ExtendedState::StandardXsave64(XState(vec![0; 512]));
+
+        assert_ne!(fxsave, standard);
+        assert_ne!(standard, fxsave);
+    }
 
     #[test]
     fn ptrace_sigmask_preserves_exact_kernel_bytes() {
@@ -2058,6 +2393,31 @@ mod test {
             stopped.setsigmask(&mask),
             Err(Error::Died(zombie)) if zombie.pid() == pid
         ));
+    }
+
+    #[cfg(feature = "notifier")]
+    #[test]
+    fn running_try_new_current_adopts_authoritative_generation() {
+        let (pid, stopped) =
+            trace(|| 0, Options::empty()).expect("spawn stopped current-generation adoption child");
+        let stopped_terminal = stopped.terminal_cleanup();
+        let generation = stopped_terminal.physical_event_generation();
+
+        let adopted = Running::try_new_current(pid)
+            .expect("bind running capability to current registered generation");
+        let adopted_terminal = adopted.terminal_cleanup();
+        assert_eq!(adopted.physical_event_generation(), generation);
+        assert_eq!(adopted_terminal.physical_event_generation(), generation);
+        assert!(stopped_terminal.same_generation(&adopted_terminal));
+        drop(adopted);
+
+        let exited = stopped
+            .resume(None)
+            .expect("resume adoption child")
+            .wait()
+            .expect("wait adoption child exit")
+            .assume_exited();
+        assert_eq!(exited, (pid, ExitStatus::Exited(0)));
     }
 
     #[test]
@@ -2103,8 +2463,7 @@ mod test {
         assert!(successor_stop.is_strictly_after(exit_stop));
         assert!(!exit_stop.is_strictly_after(successor_stop));
         assert!(!exit_stop.is_strictly_after(exit_stop));
-        let claimed =
-            TraceeToken::from_claimed_exit_event(event.clone(), None, exit_stop);
+        let claimed = TraceeToken::from_claimed_exit_event(event.clone(), None, exit_stop);
         assert!(claimed.owns_claimed_exit_stop);
         assert!(!claimed.into_running().owns_claimed_exit_stop);
         assert!(!TraceeToken::from_event(event.clone()).owns_claimed_exit_stop);

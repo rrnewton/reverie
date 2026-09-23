@@ -9,6 +9,47 @@
 use reverie::Pid;
 use thiserror::Error;
 
+/// Exact authentication boundary at which an after-loader launch was refused.
+///
+/// These stages are part of the experimental caller's typed fail-closed
+/// contract. Callers must use this value instead of parsing diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LiteinstAfterLoaderAuthenticationStage {
+    /// The complete command environment differed before the child was cloned.
+    CommandEnvironmentAuthentication,
+    /// The image established by `execve` differed from the reviewed bundle.
+    ExecBundleAuthentication,
+    /// A dynamic-loader descriptor was not backed by its reviewed artifact.
+    LoaderFdAuthentication,
+    /// A dynamic-loader mapping differed from its reviewed artifact or policy.
+    LoaderMappingAuthentication,
+    /// The temporary loader namespace was not restored exactly before entry.
+    NamespaceRestorationAuthentication,
+}
+
+/// Typed refusal from an after-loader authentication boundary.
+#[derive(Debug, Error)]
+#[error("LiteInst after-loader authentication failed at {stage:?}: {source}")]
+pub struct LiteinstAfterLoaderAuthenticationFailure {
+    stage: LiteinstAfterLoaderAuthenticationStage,
+    #[source]
+    source: std::io::Error,
+}
+
+impl LiteinstAfterLoaderAuthenticationFailure {
+    pub(crate) fn new(
+        stage: LiteinstAfterLoaderAuthenticationStage,
+        source: std::io::Error,
+    ) -> Self {
+        Self { stage, source }
+    }
+
+    /// Returns the exact boundary that refused this launch.
+    pub const fn stage(&self) -> LiteinstAfterLoaderAuthenticationStage {
+        self.stage
+    }
+}
+
 /// The controller operation whose LiteInst activation invariants failed.
 ///
 /// This is internal to the ptrace-owned LiteInst runtime. Keeping it typed lets

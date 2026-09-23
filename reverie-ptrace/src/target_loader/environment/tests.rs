@@ -2,6 +2,24 @@ use std::os::unix::ffi::OsStringExt;
 
 use super::*;
 
+const TEST_DIRECT_LIBC_SHA256: [u8; 32] = [
+    0x09, 0xb2, 0x3e, 0xe7, 0xf2, 0x47, 0xc6, 0x31, 0x19, 0xd0, 0x8e, 0x7a, 0x4b, 0xc7, 0xb7, 0x26,
+    0xf1, 0x09, 0x24, 0xb3, 0x88, 0x0d, 0x93, 0xe9, 0x21, 0xf0, 0x1c, 0x6c, 0x69, 0x0c, 0xb3, 0x89,
+];
+const TEST_DIRECT_GETENV_CODE: &[u8] = &[
+    0x48, 0x8b, 0x05, 0xb9, 0x10, 0, 0, // mov rax,[rip+0x10b9] -> 0x2200
+    0x4c, 0x8b, 0x20, // mov r12,[rax]
+    0xc3, // ret
+];
+const TEST_DIRECT_GETENV_PROFILE: ReviewedGetenvProfile = ReviewedGetenvProfile {
+    provider_sha256: TEST_DIRECT_LIBC_SHA256,
+    code: TEST_DIRECT_GETENV_CODE,
+    address: 0x1140,
+    got: 0x2200,
+    object: 0x3800,
+    bookkeeping: None,
+};
+
 fn put16(bytes: &mut [u8], at: usize, value: u16) {
     bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
 }
@@ -25,16 +43,24 @@ fn elf_header(bytes: &mut [u8], kind: u16, count: u16) {
     put16(bytes, 56, count);
 }
 
-fn phdr(
-    bytes: &mut [u8],
-    index: usize,
+struct Phdr {
     kind: u32,
     flags: u32,
     offset: u64,
     address: u64,
     file_size: u64,
     memory_size: u64,
-) {
+}
+
+fn phdr(bytes: &mut [u8], index: usize, spec: Phdr) {
+    let Phdr {
+        kind,
+        flags,
+        offset,
+        address,
+        file_size,
+        memory_size,
+    } = spec;
     let at = 64 + index * 56;
     put32(bytes, at, kind);
     put32(bytes, at + 4, flags);
@@ -52,16 +78,24 @@ fn string_offset(strings: &[u8], name: &[u8]) -> u32 {
         .unwrap() as u32
 }
 
-fn symbol(
-    bytes: &mut [u8],
-    index: usize,
+struct Symbol {
     name: u32,
     binding: u8,
     kind: u8,
     section: u16,
     value: u64,
     size: u64,
-) {
+}
+
+fn symbol(bytes: &mut [u8], index: usize, spec: Symbol) {
+    let Symbol {
+        name,
+        binding,
+        kind,
+        section,
+        value,
+        size,
+    } = spec;
     let at = 0x500 + index * 24;
     put32(bytes, at, name);
     bytes[at + 4] = (binding << 4) | kind;
@@ -84,26 +118,41 @@ fn version_definition(bytes: &mut [u8], at: usize, index: u16, name: u32, text: 
 fn libc_image() -> Vec<u8> {
     let mut bytes = vec![0; 0x4000];
     elf_header(&mut bytes, header::ET_DYN, 4);
-    phdr(&mut bytes, 0, ph::PT_LOAD, ph::PF_R, 0, 0, 0x1000, 0x1000);
+    phdr(
+        &mut bytes,
+        0,
+        Phdr {
+            kind: ph::PT_LOAD,
+            flags: ph::PF_R,
+            offset: 0,
+            address: 0,
+            file_size: 0x1000,
+            memory_size: 0x1000,
+        },
+    );
     phdr(
         &mut bytes,
         1,
-        ph::PT_LOAD,
-        ph::PF_R | ph::PF_X,
-        0x1000,
-        0x1000,
-        0x1000,
-        0x1000,
+        Phdr {
+            kind: ph::PT_LOAD,
+            flags: ph::PF_R | ph::PF_X,
+            offset: 0x1000,
+            address: 0x1000,
+            file_size: 0x1000,
+            memory_size: 0x1000,
+        },
     );
     phdr(
         &mut bytes,
         2,
-        ph::PT_LOAD,
-        ph::PF_R | ph::PF_W,
-        0x2000,
-        0x2000,
-        0x400,
-        0x2000,
+        Phdr {
+            kind: ph::PT_LOAD,
+            flags: ph::PF_R | ph::PF_W,
+            offset: 0x2000,
+            address: 0x2000,
+            file_size: 0x400,
+            memory_size: 0x2000,
+        },
     );
 
     let strings =
@@ -112,52 +161,62 @@ fn libc_image() -> Vec<u8> {
     symbol(
         &mut bytes,
         1,
-        string_offset(strings, b"dlopen"),
-        sym::STB_GLOBAL,
-        sym::STT_FUNC,
-        1,
-        0x1100,
-        16,
+        Symbol {
+            name: string_offset(strings, b"dlopen"),
+            binding: sym::STB_GLOBAL,
+            kind: sym::STT_FUNC,
+            section: 1,
+            value: 0x1100,
+            size: 16,
+        },
     );
     symbol(
         &mut bytes,
         2,
-        string_offset(strings, b"environ"),
-        sym::STB_WEAK,
-        sym::STT_OBJECT,
-        2,
-        0x3800,
-        8,
+        Symbol {
+            name: string_offset(strings, b"environ"),
+            binding: sym::STB_WEAK,
+            kind: sym::STT_OBJECT,
+            section: 2,
+            value: 0x3800,
+            size: 8,
+        },
     );
     symbol(
         &mut bytes,
         3,
-        string_offset(strings, b"_environ"),
-        sym::STB_WEAK,
-        sym::STT_OBJECT,
-        2,
-        0x3800,
-        8,
+        Symbol {
+            name: string_offset(strings, b"_environ"),
+            binding: sym::STB_WEAK,
+            kind: sym::STT_OBJECT,
+            section: 2,
+            value: 0x3800,
+            size: 8,
+        },
     );
     symbol(
         &mut bytes,
         4,
-        string_offset(strings, b"__environ"),
-        sym::STB_GLOBAL,
-        sym::STT_OBJECT,
-        2,
-        0x3800,
-        8,
+        Symbol {
+            name: string_offset(strings, b"__environ"),
+            binding: sym::STB_GLOBAL,
+            kind: sym::STT_OBJECT,
+            section: 2,
+            value: 0x3800,
+            size: 8,
+        },
     );
     symbol(
         &mut bytes,
         5,
-        string_offset(strings, b"getenv"),
-        sym::STB_GLOBAL,
-        sym::STT_FUNC,
-        1,
-        0x1140,
-        11,
+        Symbol {
+            name: string_offset(strings, b"getenv"),
+            binding: sym::STB_GLOBAL,
+            kind: sym::STT_FUNC,
+            section: 1,
+            value: 0x1140,
+            size: 11,
+        },
     );
 
     // SysV hash publishes the exact six-entry dynamic symbol count.
@@ -233,12 +292,14 @@ fn libc_image() -> Vec<u8> {
     phdr(
         &mut bytes,
         3,
-        ph::PT_DYNAMIC,
-        ph::PF_R | ph::PF_W,
-        0x2000,
-        0x2000,
-        (tags.len() * 16) as u64,
-        (tags.len() * 16) as u64,
+        Phdr {
+            kind: ph::PT_DYNAMIC,
+            flags: ph::PF_R | ph::PF_W,
+            offset: 0x2000,
+            address: 0x2000,
+            file_size: (tags.len() * 16) as u64,
+            memory_size: (tags.len() * 16) as u64,
+        },
     );
     for (index, (tag, value)) in tags.into_iter().enumerate() {
         put64(&mut bytes, 0x2000 + index * 16, tag);
@@ -267,42 +328,50 @@ impl Target {
         phdr(
             &mut main,
             0,
-            ph::PT_LOAD,
-            ph::PF_R,
-            0,
-            0x400000,
-            0x1000,
-            0x1000,
+            Phdr {
+                kind: ph::PT_LOAD,
+                flags: ph::PF_R,
+                offset: 0,
+                address: 0x400000,
+                file_size: 0x1000,
+                memory_size: 0x1000,
+            },
         );
         phdr(
             &mut main,
             1,
-            ph::PT_PHDR,
-            ph::PF_R,
-            64,
-            0x400040,
-            4 * 56,
-            4 * 56,
+            Phdr {
+                kind: ph::PT_PHDR,
+                flags: ph::PF_R,
+                offset: 64,
+                address: 0x400040,
+                file_size: 4 * 56,
+                memory_size: 4 * 56,
+            },
         );
         phdr(
             &mut main,
             2,
-            ph::PT_LOAD,
-            ph::PF_R | ph::PF_W,
-            0x1000,
-            0x401000,
-            0x1000,
-            0x1000,
+            Phdr {
+                kind: ph::PT_LOAD,
+                flags: ph::PF_R | ph::PF_W,
+                offset: 0x1000,
+                address: 0x401000,
+                file_size: 0x1000,
+                memory_size: 0x1000,
+            },
         );
         phdr(
             &mut main,
             3,
-            ph::PT_DYNAMIC,
-            ph::PF_R | ph::PF_W,
-            0x1000,
-            0x401000,
-            32,
-            32,
+            Phdr {
+                kind: ph::PT_DYNAMIC,
+                flags: ph::PF_R | ph::PF_W,
+                offset: 0x1000,
+                address: 0x401000,
+                file_size: 32,
+                memory_size: 32,
+            },
         );
         put64(&mut main, 0x1000, dynamic::DT_DEBUG);
         put64(&mut main, 0x1008, 0x900000);
@@ -514,7 +583,10 @@ impl Target {
     }
 
     fn graph(&self, expected: &BTreeMap<OsString, OsString>) -> io::Result<TargetEnvironmentGraph> {
-        let environment = EnvironmentProvider::parse(&self.expected_libc)?;
+        let environment = EnvironmentProvider::parse_with_additional_profiles(
+            &self.expected_libc,
+            &[TEST_DIRECT_GETENV_PROFILE],
+        )?;
         let expected = expected_environment(expected)?;
         let mut memory = Memory::new(&self.maps, |address, bytes: &mut [u8]| {
             self.read(address, bytes)
@@ -1138,7 +1210,9 @@ fn static_parser_refuses_alias_version_relocation_and_getenv_shape_mutations() {
 #[test]
 fn bookkeeping_is_all_or_nothing_and_requires_two_exact_local_bss_words() {
     let image = libc_image();
-    let provider = EnvironmentProvider::parse(&image).unwrap();
+    let provider =
+        EnvironmentProvider::parse_with_additional_profiles(&image, &[TEST_DIRECT_GETENV_PROFILE])
+            .unwrap();
     let objects = || {
         vec![
             LocalObject {
@@ -1179,24 +1253,73 @@ fn bookkeeping_is_all_or_nothing_and_requires_two_exact_local_bss_words() {
 }
 
 #[test]
-fn getenv_shape_binds_both_counter_reads_when_bookkeeping_is_available() {
-    let mut code = vec![
-        0x4c, 0x8b, 0x2d, 0xf9, 0x1f, 0, 0, // mov r13,[rip+0x1ff9] -> 0x3000
-        0x48, 0x8b, 0x05, 0xf2, 0x0f, 0, 0, // mov rax,[rip+0xff2] -> 0x2000
-        0x4c, 0x8b, 0x20, // mov r12,[rax]
-        0x48, 0x8b, 0x05, 0xe8, 0x1f, 0, 0, // mov rax,[rip+0x1fe8] -> 0x3000
-        0xc3,
-    ];
-    let bookkeeping = Some(StaticBookkeeping {
-        counter_rva: 0x3000,
-        allocation_list_rva: 0x3010,
-    });
+fn direct_getenv_requires_an_explicit_exact_provider_profile() {
+    assert!(EnvironmentProvider::parse(&libc_image()).is_err());
     assert!(
-        validate_getenv_data_accesses([0; 32], &code, 0x1000, 0x2000, 0x4000, bookkeeping).is_ok()
+        validate_getenv_data_accesses(
+            TEST_DIRECT_LIBC_SHA256,
+            TEST_DIRECT_GETENV_CODE,
+            TEST_DIRECT_GETENV_PROFILE.address,
+            TEST_DIRECT_GETENV_PROFILE.got,
+            TEST_DIRECT_GETENV_PROFILE.object,
+            TEST_DIRECT_GETENV_PROFILE.bookkeeping,
+            &[],
+        )
+        .is_err()
     );
-    code[20] ^= 1;
     assert!(
-        validate_getenv_data_accesses([0; 32], &code, 0x1000, 0x2000, 0x4000, bookkeeping).is_err()
+        validate_getenv_data_accesses(
+            TEST_DIRECT_LIBC_SHA256,
+            TEST_DIRECT_GETENV_CODE,
+            TEST_DIRECT_GETENV_PROFILE.address,
+            TEST_DIRECT_GETENV_PROFILE.got,
+            TEST_DIRECT_GETENV_PROFILE.object,
+            TEST_DIRECT_GETENV_PROFILE.bookkeeping,
+            &[TEST_DIRECT_GETENV_PROFILE],
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn reviewed_direct_getenv_rejects_an_extra_global_read() {
+    let mut code = TEST_DIRECT_GETENV_CODE[..TEST_DIRECT_GETENV_CODE.len() - 1].to_vec();
+    code.extend_from_slice(&[
+        0x48, 0x8b, 0x15, 0xaf, 0x11, 0, 0, // mov rdx,[rip+0x11af] -> 0x2300
+        0xc3,
+    ]);
+    assert!(
+        validate_getenv_data_accesses(
+            TEST_DIRECT_LIBC_SHA256,
+            &code,
+            TEST_DIRECT_GETENV_PROFILE.address,
+            TEST_DIRECT_GETENV_PROFILE.got,
+            TEST_DIRECT_GETENV_PROFILE.object,
+            TEST_DIRECT_GETENV_PROFILE.bookkeeping,
+            &[TEST_DIRECT_GETENV_PROFILE],
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn reviewed_direct_getenv_rejects_an_out_of_line_call() {
+    let mut code = TEST_DIRECT_GETENV_CODE[..TEST_DIRECT_GETENV_CODE.len() - 1].to_vec();
+    code.extend_from_slice(&[
+        0xe8, 0x31, 0, 0, 0, // call 0x1180
+        0xc3,
+    ]);
+    assert!(
+        validate_getenv_data_accesses(
+            TEST_DIRECT_LIBC_SHA256,
+            &code,
+            TEST_DIRECT_GETENV_PROFILE.address,
+            TEST_DIRECT_GETENV_PROFILE.got,
+            TEST_DIRECT_GETENV_PROFILE.object,
+            TEST_DIRECT_GETENV_PROFILE.bookkeeping,
+            &[TEST_DIRECT_GETENV_PROFILE],
+        )
+        .is_err()
     );
 }
 
@@ -1210,6 +1333,7 @@ fn counter_guarded_getenv_requires_exact_provider_code_metadata_and_bookkeeping(
             COUNTER_GUARDED_GETENV_GOT_RVA,
             COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA,
             Some(COUNTER_GUARDED_BOOKKEEPING),
+            &[],
         )
         .is_ok()
     );
@@ -1222,6 +1346,7 @@ fn counter_guarded_getenv_requires_exact_provider_code_metadata_and_bookkeeping(
             COUNTER_GUARDED_GETENV_GOT_RVA,
             COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA,
             Some(COUNTER_GUARDED_BOOKKEEPING),
+            &[],
         )
         .is_err()
     );
@@ -1237,6 +1362,7 @@ fn counter_guarded_getenv_requires_exact_provider_code_metadata_and_bookkeeping(
                 COUNTER_GUARDED_GETENV_GOT_RVA,
                 COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA,
                 Some(COUNTER_GUARDED_BOOKKEEPING),
+                &[],
             )
             .is_err(),
             "mutated getenv byte {index} was accepted"
@@ -1295,6 +1421,7 @@ fn counter_guarded_getenv_requires_exact_provider_code_metadata_and_bookkeeping(
                 got,
                 object,
                 bookkeeping,
+                &[],
             )
             .is_err()
         );

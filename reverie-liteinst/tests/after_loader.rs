@@ -1,30 +1,15 @@
 //! End-to-end coverage for the constructor-disabled after-loader host runner.
 //!
-//! This test consumes three retained staging artifacts named by
+//! This test consumes retained, independently reviewed staging artifacts named by
+//! `REVERIE_LITEINST_AFTER_LOADER_FIXTURE`,
 //! `REVERIE_LITEINST_AFTER_LOADER_RUNTIME`,
 //! `REVERIE_LITEINST_AFTER_LOADER_MARKER`, and
-//! `REVERIE_LITEINST_AFTER_LOADER_GRAPH`. Run it in Cargo's release profile
+//! three opaque manifest path/SHA-256 pairs. Run it in Cargo's release profile
 //! with default features disabled and only `liteinst-after-loader-experiment`
-//! enabled. The graph file is canonical UTF-8 with a final newline:
-//!
-//! ```text
-//! schema=1
-//! executable_sha256=<lowercase SHA-256>
-//! executable_pt_interp=/lib64/ld-linux-x86-64.so.2
-//! provider=libc.so.6
-//! image=ld-linux-x86-64.so.2<TAB>/canonical/path<TAB><lowercase SHA-256>
-//! image=libc.so.6<TAB>/canonical/path<TAB><lowercase SHA-256>
-//! ```
-//!
-//! `image` lines must be strictly sorted by SONAME and must describe the exact
-//! dependency closure of both the fixed executable and staged runtime. The
-//! staging producer builds the runtime with the same Cargo flags, emits its
-//! marker with `LiteinstCallerImage::runtime_stage_marker`, compiles this
-//! fixture with the flags below, obtains PT_INTERP with `readelf -lW`, resolves
-//! both dependency closures with `LC_ALL=C ldd`, canonicalizes every path with
-//! `realpath`, and records `sha256sum` for every image. The retained graph must
-//! be reviewed before it is supplied here. This test verifies all of those
-//! claims independently before execution.
+//! enabled. A separate review must approve each complete manifest and supply
+//! its exact digest. This harness neither constructs nor interprets manifest
+//! bytes; it only checks their independently supplied identities before asking
+//! the public binder to enforce their contract.
 //!
 //! This is runner and restoration coverage. The unchanged backend parity cells
 //! remain the acceptance test for the original RDTSC divergence.
@@ -32,22 +17,27 @@
 #![cfg(all(
     target_os = "linux",
     target_arch = "x86_64",
-    feature = "liteinst-after-loader-experiment"
+    feature = "liteinst-after-loader-experiment",
+    not(feature = "preload-constructor")
 ))]
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command as ProcessCommand;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use goblin::elf::Elf;
-use goblin::elf::header;
+use goblin::elf::program_header;
+use liteinst2::scanner::InstructionScanner;
+use liteinst2::scanner::ScanError;
 use reverie::Error;
 use reverie::ExitStatus;
 use reverie::GlobalTool;
@@ -56,22 +46,39 @@ use reverie::Subscription;
 use reverie::Tid;
 use reverie::Tool;
 use reverie::process::Command;
+use reverie::process::Stdio;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_liteinst::LiteinstBackend;
+use reverie_liteinst::LiteinstBackendStatsSource;
+use reverie_liteinst::LiteinstDispatchPath;
+use reverie_ptrace::LiteinstAfterLoaderAuthenticationFailure;
+use reverie_ptrace::LiteinstAfterLoaderAuthenticationStage;
 use reverie_ptrace::LiteinstAfterLoaderConfig;
+use reverie_ptrace::LiteinstAfterLoaderProfile;
 use reverie_ptrace::LiteinstCallerDiagnostics;
-use reverie_ptrace::LiteinstCallerImage;
 use reverie_ptrace::LiteinstCallerObservation;
 use sha2::Digest;
 use sha2::Sha256;
 
+const FIXTURE_ENV: &str = "REVERIE_LITEINST_AFTER_LOADER_FIXTURE";
 const RUNTIME_ENV: &str = "REVERIE_LITEINST_AFTER_LOADER_RUNTIME";
 const MARKER_ENV: &str = "REVERIE_LITEINST_AFTER_LOADER_MARKER";
-const GRAPH_ENV: &str = "REVERIE_LITEINST_AFTER_LOADER_GRAPH";
-const MAX_GRAPH_BYTES: usize = 64 * 1024;
+const FOUR_CANONICAL_MANIFEST_ENV: &str = "REVERIE_LITEINST_AFTER_LOADER_MANIFEST_FOUR_CANONICAL";
+const FOUR_CANONICAL_MANIFEST_SHA256_ENV: &str =
+    "REVERIE_LITEINST_AFTER_LOADER_MANIFEST_FOUR_CANONICAL_SHA256";
+const ONE_CALL_MANIFEST_ENV: &str = "REVERIE_LITEINST_AFTER_LOADER_MANIFEST_ONE_CALL";
+const ONE_CALL_MANIFEST_SHA256_ENV: &str = "REVERIE_LITEINST_AFTER_LOADER_MANIFEST_ONE_CALL_SHA256";
+const UNPATCHABLE_MANIFEST_ENV: &str = "REVERIE_LITEINST_AFTER_LOADER_MANIFEST_UNPATCHABLE";
+const UNPATCHABLE_MANIFEST_SHA256_ENV: &str =
+    "REVERIE_LITEINST_AFTER_LOADER_MANIFEST_UNPATCHABLE_SHA256";
+const MAX_REVIEWED_MANIFEST_BYTES: usize = 64 * 1024;
 const GETPID_SENTINEL: i64 = 0x4c49_5445;
+const CANONICAL_STDOUT: &[u8] = b"guest-entered-v1\n\
+restoration=preinit-constructor-main-ok\n\
+environment=sentinel-preserved-loader-selectors-absent\n\
+getpid=4c495445 calls=4 stages=3\n";
 
 #[derive(Debug, Default)]
 struct GetpidCallbacks(AtomicU64);
@@ -110,59 +117,62 @@ impl Tool for CountRawGetpid {
     }
 }
 
-fn compile_fixture(directory: &Path) -> PathBuf {
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/after_loader.c");
-    let fixture = directory.join("after-loader");
-    let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
-    let output = ProcessCommand::new(compiler)
-        .args([
-            "-std=gnu11",
-            "-O0",
-            "-fno-pie",
-            "-no-pie",
-            "-Wl,--build-id=none",
-        ])
-        .arg(&source)
-        .arg("-o")
-        .arg(&fixture)
-        .output()
-        .expect("run C compiler for after-loader fixture");
-    assert!(
-        output.status.success(),
-        "failed to compile {}: status={:?} stdout={:?} stderr={:?}",
-        source.display(),
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert!(
-        output.stdout.is_empty() && output.stderr.is_empty(),
-        "compiler emitted output for reviewed fixture: stdout={:?} stderr={:?}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    fixture
-        .canonicalize()
-        .expect("canonicalize compiled after-loader fixture")
-}
-
 fn required_staged_file(variable: &str) -> PathBuf {
     let value = std::env::var_os(variable)
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| panic!("{variable} must name one retained staging artifact"));
     let path = PathBuf::from(value);
     assert!(path.is_absolute(), "{variable} must be an absolute path");
-    let path = path
+    let metadata = std::fs::symlink_metadata(&path)
+        .unwrap_or_else(|error| panic!("inspect {variable}: {error}"));
+    assert!(
+        metadata.file_type().is_file(),
+        "{variable} must name a regular file without a terminal symlink"
+    );
+    let canonical = path
         .canonicalize()
         .unwrap_or_else(|error| panic!("canonicalize {variable}: {error}"));
-    assert!(path.is_file(), "{variable} does not name a regular file");
-    path
+    assert_eq!(
+        canonical.as_os_str().as_bytes(),
+        path.as_os_str().as_bytes(),
+        "{variable} must use its exact canonical absolute path"
+    );
+    canonical
 }
 
+fn required_reviewed_sha256(variable: &str) -> String {
+    let digest = std::env::var(variable)
+        .unwrap_or_else(|_| panic!("{variable} must contain one independently reviewed SHA-256"));
+    assert!(
+        is_lower_hex(&digest, 64),
+        "{variable} must be exactly 64 lowercase hexadecimal characters"
+    );
+    digest
+}
+
+#[derive(Debug)]
+struct ReviewedManifestInput {
+    path: PathBuf,
+    digest: String,
+}
+
+impl ReviewedManifestInput {
+    fn from_environment(path_variable: &str, digest_variable: &str) -> Self {
+        Self {
+            path: required_staged_file(path_variable),
+            digest: required_reviewed_sha256(digest_variable),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct StagedInputs {
+    fixture: PathBuf,
     runtime: PathBuf,
     marker: PathBuf,
-    graph: PathBuf,
+    four_canonical: ReviewedManifestInput,
+    one_call: ReviewedManifestInput,
+    unpatchable: ReviewedManifestInput,
 }
 
 fn staged_inputs() -> StagedInputs {
@@ -175,404 +185,187 @@ fn staged_inputs() -> StagedInputs {
         "after-loader staging evidence requires the preload constructor feature to be disabled"
     );
     let inputs = StagedInputs {
+        fixture: required_staged_file(FIXTURE_ENV),
         runtime: required_staged_file(RUNTIME_ENV),
         marker: required_staged_file(MARKER_ENV),
-        graph: required_staged_file(GRAPH_ENV),
+        four_canonical: ReviewedManifestInput::from_environment(
+            FOUR_CANONICAL_MANIFEST_ENV,
+            FOUR_CANONICAL_MANIFEST_SHA256_ENV,
+        ),
+        one_call: ReviewedManifestInput::from_environment(
+            ONE_CALL_MANIFEST_ENV,
+            ONE_CALL_MANIFEST_SHA256_ENV,
+        ),
+        unpatchable: ReviewedManifestInput::from_environment(
+            UNPATCHABLE_MANIFEST_ENV,
+            UNPATCHABLE_MANIFEST_SHA256_ENV,
+        ),
     };
-    let distinct = [&inputs.runtime, &inputs.marker, &inputs.graph]
-        .into_iter()
-        .collect::<BTreeSet<_>>();
+    let distinct = [
+        &inputs.fixture,
+        &inputs.runtime,
+        &inputs.marker,
+        &inputs.four_canonical.path,
+        &inputs.one_call.path,
+        &inputs.unpatchable.path,
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
     assert_eq!(
         distinct.len(),
-        3,
-        "runtime, marker and graph must be three distinct retained files"
+        6,
+        "fixture, runtime, marker and three reviewed manifests must be distinct retained files"
     );
     inputs
 }
 
-fn valid_soname(soname: &str) -> bool {
-    !soname.is_empty()
-        && soname
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte))
+fn elf_symbol_prefix(path: &Path, name: &str, len: usize) -> (u64, Vec<u8>) {
+    let bytes = std::fs::read(path).expect("read fixed executable for symbol validation");
+    let elf = Elf::parse(&bytes).expect("parse fixed executable for symbol validation");
+    let symbol = elf
+        .syms
+        .iter()
+        .find(|symbol| elf.strtab.get_at(symbol.st_name) == Some(name))
+        .unwrap_or_else(|| panic!("fixed executable lacks symbol {name:?}"));
+    let end = symbol
+        .st_value
+        .checked_add(u64::try_from(len).expect("symbol prefix length fits u64"))
+        .expect("symbol prefix address overflows");
+    let segment = elf
+        .program_headers
+        .iter()
+        .find(|segment| {
+            segment.p_type == program_header::PT_LOAD
+                && segment.p_vaddr <= symbol.st_value
+                && segment
+                    .p_vaddr
+                    .checked_add(segment.p_filesz)
+                    .is_some_and(|segment_end| end <= segment_end)
+        })
+        .unwrap_or_else(|| panic!("symbol {name:?} prefix is outside a file-backed PT_LOAD"));
+    let offset = segment
+        .p_offset
+        .checked_add(symbol.st_value - segment.p_vaddr)
+        .and_then(|offset| usize::try_from(offset).ok())
+        .expect("symbol file offset is not representable");
+    let end = offset
+        .checked_add(len)
+        .expect("symbol prefix file range overflows");
+    (
+        symbol.st_value,
+        bytes
+            .get(offset..end)
+            .unwrap_or_else(|| panic!("symbol {name:?} prefix exceeds executable bytes"))
+            .to_vec(),
+    )
 }
 
-#[derive(Debug)]
-struct ManifestImage {
-    path: PathBuf,
-    digest: String,
+fn assert_unpatchable_getpid_prefix(fixture: &Path) {
+    let (site, prefix) = elf_symbol_prefix(fixture, "reverie_liteinst_unpatchable_getpid_site", 32);
+    assert_eq!(
+        &prefix[..6],
+        &[0x0f, 0x05, 0xeb, 0x18, 0x0f, 0x04],
+        "unpatchable getpid fixture lost its exact syscall/jump/invalid prefix"
+    );
+    assert!(
+        matches!(
+            InstructionScanner::default().scan_prefix(&prefix, site, 8),
+            Err(ScanError::InvalidInstruction { address, offset })
+                if address == site + 4 && offset == 4
+        ),
+        "production prefix scanner did not refuse the fixed invalid encoding"
+    );
 }
 
-#[derive(Debug)]
-struct GraphManifest {
-    executable_digest: String,
-    executable_pt_interp: PathBuf,
-    provider: String,
-    images: BTreeMap<String, ManifestImage>,
+fn assert_stack_getpid_prefix(fixture: &Path) {
+    let (site, prefix) = elf_symbol_prefix(fixture, "reverie_liteinst_stack_getpid_site", 8);
+    assert_eq!(
+        prefix,
+        [0x0f, 0x05, 0x4c, 0x89, 0xe4, 0x41, 0x5c, 0xc3],
+        "controlled-stack getpid fixture lost its exact syscall/restore/return prefix"
+    );
+    let scan = InstructionScanner::default()
+        .scan_prefix(&prefix, site, 8)
+        .expect("controlled-stack getpid site is no longer patchable");
+    assert_eq!(scan.instructions()[0].address(), site);
+    assert_eq!(scan.instructions()[0].len(), 2);
 }
 
-fn read_graph_manifest(path: &Path) -> GraphManifest {
+fn sha256_file(path: &Path) -> String {
     let mut bytes = Vec::new();
     std::fs::File::open(path)
-        .expect("open retained after-loader graph")
-        .take(MAX_GRAPH_BYTES as u64 + 1)
+        .expect("open reviewed manifest input")
+        .take(MAX_REVIEWED_MANIFEST_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
-        .expect("read retained after-loader graph");
+        .expect("read reviewed manifest input");
     assert!(
-        !bytes.is_empty() && bytes.len() <= MAX_GRAPH_BYTES,
-        "retained after-loader graph is empty or exceeds its byte bound"
+        !bytes.is_empty() && bytes.len() <= MAX_REVIEWED_MANIFEST_BYTES,
+        "reviewed manifest input is empty or exceeds its byte bound"
     );
-    let text = std::str::from_utf8(&bytes).expect("after-loader graph is not canonical UTF-8");
-    let body = text
-        .strip_suffix('\n')
-        .expect("after-loader graph lacks its final newline");
-    assert!(
-        !body.contains(['\r', '\0']),
-        "after-loader graph has noncanonical control bytes"
-    );
-    let fields = body.split('\n').collect::<Vec<_>>();
-    assert!(fields.len() >= 5, "after-loader graph is incomplete");
-    assert_eq!(fields[0], "schema=1", "unsupported graph schema");
-    let executable_digest = fields[1]
-        .strip_prefix("executable_sha256=")
-        .filter(|digest| {
-            digest.len() == 64
-                && digest
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        })
-        .expect("graph has no canonical executable SHA-256")
-        .to_owned();
-    let executable_pt_interp = fields[2]
-        .strip_prefix("executable_pt_interp=")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .expect("graph has no absolute executable PT_INTERP");
-    let provider = fields[3]
-        .strip_prefix("provider=")
-        .filter(|provider| valid_soname(provider))
-        .expect("graph has no canonical provider SONAME")
-        .to_owned();
-    let mut images = BTreeMap::new();
-    let mut previous = None::<String>;
-    for field in &fields[4..] {
-        let value = field
-            .strip_prefix("image=")
-            .expect("graph contains an unknown or misplaced field");
-        let parts = value.split('\t').collect::<Vec<_>>();
-        assert_eq!(
-            parts.len(),
-            3,
-            "graph image must contain SONAME, canonical path and SHA-256"
-        );
-        let soname = parts[0];
-        assert!(valid_soname(soname), "graph image has malformed SONAME");
-        if let Some(previous) = previous.as_deref() {
-            assert!(
-                previous < soname,
-                "graph image lines are duplicated or not strictly sorted"
-            );
-        }
-        previous = Some(soname.to_owned());
-        let image_path = PathBuf::from(parts[1]);
-        assert!(
-            image_path.is_absolute() && image_path.is_file(),
-            "graph image does not name one existing absolute file: {image_path:?}"
-        );
-        assert_eq!(
-            image_path
-                .canonicalize()
-                .expect("canonicalize graph image path"),
-            image_path,
-            "graph image path is not canonical"
-        );
-        let digest = parts[2];
-        assert!(
-            digest.len() == 64
-                && digest
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
-            "graph image has malformed lowercase SHA-256"
-        );
-        assert!(
-            images
-                .insert(
-                    soname.to_owned(),
-                    ManifestImage {
-                        path: image_path,
-                        digest: digest.to_owned(),
-                    },
-                )
-                .is_none(),
-            "graph image SONAME is duplicated"
-        );
-    }
-    assert!(
-        !images.is_empty() && images.len() <= 32,
-        "graph image count is outside the fixed fixture bound"
-    );
-    assert!(
-        images.contains_key(&provider),
-        "graph provider has no bound image"
-    );
-    GraphManifest {
-        executable_digest,
-        executable_pt_interp,
-        provider,
-        images,
-    }
+    format!("{:x}", Sha256::digest(bytes))
 }
 
-#[derive(Debug)]
-struct ElfContract {
-    interpreter: Option<PathBuf>,
-    soname: Option<String>,
-    needed: BTreeSet<String>,
+fn bind_reviewed_profile(
+    manifest: &ReviewedManifestInput,
+    expected_marker: &Path,
+) -> LiteinstAfterLoaderConfig {
+    let observed = sha256_file(&manifest.path);
+    assert_eq!(
+        observed, manifest.digest,
+        "retained manifest differs from its independently supplied reviewed SHA-256"
+    );
+    // SAFETY: `manifest.digest` is supplied independently by the reviewed
+    // staging receipt. This harness neither creates the manifest nor derives
+    // the approval value from its bytes; the hash above is only a refusal gate.
+    let profile =
+        unsafe { LiteinstAfterLoaderProfile::review_dynamic_x86_64_et_exec_v2(&manifest.digest) }
+            .expect("approve exact reviewed after-loader manifest digest");
+    let caller = profile
+        .bind_reviewed_manifest(&manifest.path)
+        .expect("bind exact reviewed after-loader manifest");
+    assert_eq!(
+        caller.runtime_marker_path().as_os_str().as_bytes(),
+        expected_marker.as_os_str().as_bytes(),
+        "authenticated manifest runtime marker differs from the separately retained marker"
+    );
+    caller
 }
 
-fn elf_contract(path: &Path, expected_type: u16) -> ElfContract {
-    let bytes = std::fs::read(path).expect("read ELF for graph validation");
-    let elf = Elf::parse(&bytes).expect("parse ELF for graph validation");
-    assert!(
-        elf.is_64
-            && elf.little_endian
-            && elf.header.e_machine == header::EM_X86_64
-            && elf.header.e_type == expected_type,
-        "graph contains an ELF outside the fixed x86-64 contract: {}",
-        path.display()
-    );
-    let mut needed = BTreeSet::new();
-    for dependency in elf.libraries {
-        assert!(
-            valid_soname(dependency) && needed.insert(dependency.to_owned()),
-            "ELF has malformed or duplicate DT_NEEDED: {}",
-            path.display()
-        );
-    }
-    let soname = elf.soname.map(str::to_owned);
-    assert!(
-        soname.as_deref().is_none_or(valid_soname),
-        "ELF has a malformed DT_SONAME: {}",
-        path.display()
-    );
-    ElfContract {
-        interpreter: elf.interpreter.map(PathBuf::from),
-        soname,
-        needed,
-    }
+fn four_canonical_environment() -> BTreeMap<OsString, OsString> {
+    BTreeMap::from([
+        (
+            OsString::from("LITEINST_CALLER_OUTPUT"),
+            OsString::from("canonical-v1"),
+        ),
+        (
+            OsString::from("LITEINST_CALLER_SENTINEL"),
+            OsString::from("preserved"),
+        ),
+    ])
 }
 
-fn parse_load_address(text: &str) -> &str {
-    let (prefix, address) = text
-        .rsplit_once(" (")
-        .unwrap_or_else(|| panic!("ldd line lacks a load address: {text:?}"));
-    let address = address
-        .strip_suffix(')')
-        .unwrap_or_else(|| panic!("ldd line has malformed load address: {text:?}"));
-    let digits = address
-        .strip_prefix("0x")
-        .unwrap_or_else(|| panic!("ldd line has non-hex load address: {text:?}"));
-    assert!(
-        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "ldd line has malformed load address: {text:?}"
-    );
-    prefix
+fn one_call_environment() -> BTreeMap<OsString, OsString> {
+    BTreeMap::from([
+        (OsString::from("LITEINST_CALLER_CALLS"), OsString::from("1")),
+        (
+            OsString::from("LITEINST_CALLER_SENTINEL"),
+            OsString::from("preserved"),
+        ),
+    ])
 }
 
-fn dynamic_dependencies(image: &Path) -> BTreeMap<String, PathBuf> {
-    let output = ProcessCommand::new("ldd")
-        .arg(image)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("LC_ALL", "C")
-        .output()
-        .expect("run ldd for fixed after-loader graph");
-    assert!(
-        output.status.success(),
-        "ldd failed for {}: status={:?} stdout={:?} stderr={:?}",
-        image.display(),
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert!(
-        output.stderr.is_empty(),
-        "ldd emitted diagnostics for {}: {:?}",
-        image.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = std::str::from_utf8(&output.stdout).expect("ldd output is not UTF-8");
-    assert!(
-        !stdout.is_empty() && stdout.ends_with('\n'),
-        "ldd returned an empty or unterminated dependency graph"
-    );
-    let mut dependencies = BTreeMap::new();
-    for raw_line in stdout.lines() {
-        let line = raw_line.trim();
-        assert!(!line.is_empty(), "ldd emitted an empty graph line");
-        let binding = parse_load_address(line);
-        if binding == "linux-vdso.so.1" {
-            continue;
-        }
-        let (soname, path) = match binding.split_once(" => ") {
-            Some((soname, path)) => {
-                assert!(
-                    valid_soname(soname),
-                    "ldd emitted a malformed soname: {line:?}"
-                );
-                (soname.to_owned(), PathBuf::from(path))
-            }
-            None => {
-                let path = PathBuf::from(binding);
-                let soname = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .filter(|name| valid_soname(name))
-                    .expect("ldd interpreter has no canonical SONAME")
-                    .to_owned();
-                (soname, path)
-            }
-        };
-        assert!(
-            path.is_absolute() && path.is_file(),
-            "ldd dependency is not one existing absolute file: {line:?}"
-        );
-        let path = path
-            .canonicalize()
-            .expect("canonicalize fixed after-loader dependency");
-        assert!(
-            dependencies.insert(soname.clone(), path).is_none(),
-            "ldd emitted duplicate dependency {soname}"
-        );
-    }
-    assert!(
-        !dependencies.is_empty(),
-        "ldd graph contained only the virtual DSO"
-    );
-    dependencies
-}
-
-fn bind_loader_graph(
-    fixture: &Path,
-    runtime: &Path,
-    graph: &Path,
-) -> (LiteinstCallerImage, Vec<LiteinstCallerImage>) {
-    let manifest = read_graph_manifest(graph);
-    let fixture_bytes = std::fs::read(fixture).expect("read compiled fixed executable");
-    assert_eq!(
-        format!("{:x}", Sha256::digest(&fixture_bytes)),
-        manifest.executable_digest,
-        "compiled fixed executable differs from the reviewed graph"
-    );
-    assert_eq!(
-        manifest.provider, "libc.so.6",
-        "fixed runner provider must be libc.so.6"
-    );
-    let fixture_contract = elf_contract(fixture, header::ET_EXEC);
-    let runtime_contract = elf_contract(runtime, header::ET_DYN);
-    assert!(
-        runtime_contract.interpreter.is_none(),
-        "staged runtime unexpectedly has PT_INTERP"
-    );
-    assert_eq!(
-        fixture_contract.interpreter.as_ref(),
-        Some(&manifest.executable_pt_interp),
-        "compiled fixture PT_INTERP differs from the retained graph"
-    );
-    let interpreter_soname = manifest
-        .executable_pt_interp
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| valid_soname(name))
-        .expect("retained PT_INTERP has no canonical SONAME")
-        .to_owned();
-    let interpreter_path = manifest
-        .executable_pt_interp
-        .canonicalize()
-        .expect("canonicalize retained executable PT_INTERP");
-    assert_eq!(
-        manifest
-            .images
-            .get(&interpreter_soname)
-            .map(|image| &image.path),
-        Some(&interpreter_path),
-        "retained PT_INTERP is absent from or differs in the bound graph"
-    );
-
-    let mut observed = dynamic_dependencies(fixture);
-    for (soname, path) in dynamic_dependencies(runtime) {
-        if let Some(previous) = observed.insert(soname.clone(), path.clone()) {
-            assert_eq!(
-                previous, path,
-                "the fixed graphs resolve {soname} to different files"
-            );
-        }
-    }
-    assert_eq!(
-        observed.len(),
-        manifest.images.len(),
-        "resolved dependency count differs from the retained graph: observed={observed:?} manifest={manifest:?}"
-    );
-    for (soname, image) in &manifest.images {
-        assert_eq!(
-            observed.get(soname),
-            Some(&image.path),
-            "resolved path for {soname} differs from the retained graph"
-        );
-    }
-
-    let mut pending = fixture_contract.needed.clone();
-    pending.extend(runtime_contract.needed);
-    pending.insert(interpreter_soname);
-    let mut reachable = BTreeSet::new();
-    while let Some(soname) = pending.pop_first() {
-        if !reachable.insert(soname.clone()) {
-            continue;
-        }
-        let image = manifest
-            .images
-            .get(&soname)
-            .unwrap_or_else(|| panic!("dependency closure lacks {soname}"));
-        let contract = elf_contract(&image.path, header::ET_DYN);
-        if let Some(interpreter) = contract.interpreter {
-            assert_eq!(
-                interpreter, manifest.executable_pt_interp,
-                "dependency image {soname} names a different PT_INTERP"
-            );
-        }
-        assert_eq!(
-            contract.soname.as_deref(),
-            Some(soname.as_str()),
-            "dependency image DT_SONAME differs from graph key {soname}"
-        );
-        pending.extend(contract.needed);
-    }
-    assert_eq!(
-        reachable,
-        manifest.images.keys().cloned().collect(),
-        "retained graph contains missing or unreachable dependency images"
-    );
-
-    let mut bound = BTreeMap::new();
-    for (soname, image) in manifest.images {
-        let before = std::fs::read(&image.path).expect("read graph image before binding");
-        assert_eq!(
-            format!("{:x}", Sha256::digest(&before)),
-            image.digest,
-            "SHA-256 differs for graph image {soname}"
-        );
-        let caller_image = LiteinstCallerImage::read(&image.path)
-            .unwrap_or_else(|error| panic!("bind graph image {soname}: {error}"));
-        assert_eq!(
-            std::fs::read(&image.path).expect("read graph image after binding"),
-            before,
-            "graph image {soname} changed while it was bound"
-        );
-        bound.insert(soname, caller_image);
-    }
-    let provider = bound.remove(&manifest.provider).unwrap();
-    let dependencies = bound.into_values().collect();
-    (provider, dependencies)
+fn unpatchable_environment() -> BTreeMap<OsString, OsString> {
+    BTreeMap::from([
+        (OsString::from("LITEINST_CALLER_CALLS"), OsString::from("1")),
+        (
+            OsString::from("LITEINST_CALLER_SENTINEL"),
+            OsString::from("preserved"),
+        ),
+        (
+            OsString::from("LITEINST_CALLER_SITE"),
+            OsString::from("unpatchable"),
+        ),
+    ])
 }
 
 fn is_lower_hex(text: &str, width: usize) -> bool {
@@ -612,15 +405,16 @@ fn parse_sample(line: &str, label: &str) -> ((i64, u32), String, String) {
     ((seconds, nanoseconds), canary.to_owned(), random.to_owned())
 }
 
-fn assert_fixture_stdout(stdout: &[u8]) {
+fn assert_fixture_stdout(stdout: &[u8], getpid_calls: usize, unpatchable_site: bool) {
     let stdout = std::str::from_utf8(stdout).expect("fixture stdout is not UTF-8");
     assert!(stdout.ends_with('\n'), "fixture stdout is unterminated");
     let lines = stdout.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 8, "unexpected fixture stdout: {stdout:?}");
+    assert_eq!(lines.len(), 9, "unexpected fixture stdout: {stdout:?}");
+    assert_eq!(lines[0], "guest-entered-v1");
     let samples = ["preinit", "constructor", "main"]
         .into_iter()
         .enumerate()
-        .map(|(index, label)| parse_sample(lines[index], label))
+        .map(|(index, label)| parse_sample(lines[index + 1], label))
         .collect::<Vec<_>>();
     assert!(
         samples.windows(2).all(|pair| pair[0].0 <= pair[1].0),
@@ -634,11 +428,85 @@ fn assert_fixture_stdout(stdout: &[u8]) {
         samples.windows(2).all(|pair| pair[0].2 == pair[1].2),
         "AT_RANDOM changed in fixture output: {samples:?}"
     );
-    assert_eq!(lines[3], "env LITEINST_CALLER_SENTINEL=preserved");
-    assert_eq!(lines[4], "env LD_PRELOAD=<absent>");
-    assert_eq!(lines[5], "env REVERIE_LITEINST_HOST_RUNTIME=<absent>");
-    assert_eq!(lines[6], "env REVERIE_LITEINST_TOOL=<absent>");
-    assert_eq!(lines[7], "getpid=4c495445 stages=3");
+    assert_eq!(lines[4], "env LITEINST_CALLER_SENTINEL=preserved");
+    assert_eq!(lines[5], "env LD_PRELOAD=<absent>");
+    assert_eq!(lines[6], "env REVERIE_LITEINST_HOST_RUNTIME=<absent>");
+    assert_eq!(lines[7], "env REVERIE_LITEINST_TOOL=<absent>");
+    match (getpid_calls, unpatchable_site) {
+        (1, false) => assert_eq!(lines[8], "getpid=4c495445 calls=1 stages=3"),
+        (1, true) => assert_eq!(
+            lines[8],
+            "getpid=4c495445 calls=1 site=unpatchable stages=3"
+        ),
+        (4, false) => assert_eq!(lines[8], "getpid=4c495445 stages=3"),
+        _ => panic!("test requested an unsupported getpid call count"),
+    }
+}
+
+fn assert_dispatch_stats(
+    stats: &LiteinstBackendStatsSource,
+    first_site_seccomp: u64,
+    ptrace_installation: u64,
+    direct_hook: u64,
+    unpatchable_or_other_fallback: u64,
+) {
+    assert_eq!(
+        stats.snapshot().process_reports(),
+        0,
+        "ptrace-host after-loader stats unexpectedly contain guest reports: {stats}"
+    );
+    let paths = stats.dispatch_path_counts();
+    for path in LiteinstDispatchPath::ALL {
+        let expected = match path {
+            LiteinstDispatchPath::FirstSiteSeccomp => first_site_seccomp,
+            LiteinstDispatchPath::PtraceInstallation => ptrace_installation,
+            LiteinstDispatchPath::DirectHook => direct_hook,
+            LiteinstDispatchPath::UnpatchableOrOtherFallback => unpatchable_or_other_fallback,
+            _ => 0,
+        };
+        assert_eq!(
+            paths.count(path),
+            expected,
+            "unexpected typed dispatch count for {path}: {stats}"
+        );
+    }
+}
+
+fn assert_one_installed_site(stats: &LiteinstBackendStatsSource) {
+    assert_eq!(stats.decision_counts(), [0, 1, 0, 0]);
+    assert_eq!(stats.patch_candidates(), 1);
+    assert_eq!(stats.distinct_rips(), 1);
+}
+
+fn assert_tool_callback_counts(
+    diagnostics: &LiteinstCallerDiagnostics,
+    seccomp: usize,
+    installed: usize,
+) {
+    let observations = diagnostics.observations();
+    assert_eq!(
+        observations
+            .iter()
+            .filter(|observation| {
+                observation.operation == "Tool callback: Tool::handle_syscall_event(seccomp)"
+            })
+            .count(),
+        seccomp,
+        "unexpected seccomp Tool callback count: {}",
+        bounded_diagnostics(diagnostics)
+    );
+    assert_eq!(
+        observations
+            .iter()
+            .filter(|observation| {
+                observation.operation
+                    == "Tool callback: Tool::handle_syscall_event(installed completion)"
+            })
+            .count(),
+        installed,
+        "unexpected installed-completion Tool callback count: {}",
+        bounded_diagnostics(diagnostics)
+    );
 }
 
 fn one_observation<'a>(
@@ -871,7 +739,7 @@ fn assert_restoration_diagnostics(diagnostics: &LiteinstCallerDiagnostics) {
     );
     let (restored_index, restored) = one_observation(
         &observations,
-        "guest machine state restored and helper isolated",
+        "guest machine state restored and helper/arena writers isolated",
         diagnostics,
     );
     let (ordinary_index, ordinary) = one_observation(
@@ -1015,96 +883,215 @@ fn bounded_diagnostics(diagnostics: &LiteinstCallerDiagnostics) -> String {
 }
 
 #[test]
-fn staged_union_graph_partitions_initial_and_dlopen_dependencies() {
+fn staged_reviewed_profiles_bind_exact_union_graph() {
     let staged = staged_inputs();
-    let directory = tempfile::tempdir().expect("create after-loader graph test directory");
-    let fixture = compile_fixture(directory.path());
-    let executable = LiteinstCallerImage::read(&fixture).expect("bind exact fixture executable");
-    let runtime_image = LiteinstCallerImage::read_runtime(&staged.runtime, &staged.marker)
-        .expect("bind constructor-disabled runtime and marker");
-    let (provider, dependencies) = bind_loader_graph(&fixture, &staged.runtime, &staged.graph);
-    let environment = BTreeMap::from([(
-        OsString::from("LITEINST_CALLER_SENTINEL"),
-        OsString::from("preserved"),
-    )]);
-    // SAFETY: identical fixed staging contract to the runner below; this test
-    // only constructs and inspects the configuration and never starts a guest.
-    let caller = unsafe {
-        LiteinstAfterLoaderConfig::new(
-            executable,
-            provider,
-            runtime_image,
-            dependencies,
-            environment,
-        )
+    assert_stack_getpid_prefix(&staged.fixture);
+    for manifest in [
+        &staged.four_canonical,
+        &staged.one_call,
+        &staged.unpatchable,
+    ] {
+        let caller = bind_reviewed_profile(manifest, &staged.marker);
+        let diagnostics = caller.diagnostics();
+        let observations = diagnostics.observations();
+        let (_, reviewed_manifest) =
+            one_observation(&observations, "reviewed manifest bound", &diagnostics);
+        assert_eq!(
+            diagnostic_field(&reviewed_manifest.detail, "profile="),
+            "DynamicX86_64EtExecV2"
+        );
+        assert_eq!(
+            diagnostic_field(&reviewed_manifest.detail, "manifest_sha256="),
+            manifest.digest,
+            "reviewed manifest diagnostic does not carry the independently supplied digest"
+        );
+        assert_eq!(
+            loader_phase_counts(&observations, &diagnostics),
+            (1, 1),
+            "fixed loader graph has a different initial/deferred partition"
+        );
+        let (_, phases) = one_observation(
+            &observations,
+            "loader dependency phases bound",
+            &diagnostics,
+        );
+        assert_eq!(
+            phases
+                .detail
+                .matches("(Some(\"ld-linux-x86-64.so.2\"),")
+                .count(),
+            1,
+            "initial loader identity is missing or duplicated: {phases:?}"
+        );
+        assert_eq!(
+            phases.detail.matches("(Some(\"libgcc_s.so.1\"),").count(),
+            1,
+            "deferred loader identity is missing or duplicated: {phases:?}"
+        );
+        assert_eq!(
+            phases.detail.matches("(Some(\"").count(),
+            2,
+            "loader phase lists contain an unexpected image: {phases:?}"
+        );
     }
-    .expect("partition fixed after-loader dependency graph");
-    let diagnostics = caller.diagnostics();
-    let observations = diagnostics.observations();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn command_environment_mismatch_is_typed_and_never_enters_the_guest() {
+    let staged = staged_inputs();
+    let caller = bind_reviewed_profile(&staged.four_canonical, &staged.marker);
+    let mut command = Command::new(&staged.fixture);
+    let mut mismatched = four_canonical_environment();
     assert_eq!(
-        loader_phase_counts(&observations, &diagnostics),
-        (1, 1),
-        "fixed loader graph has a different initial/deferred partition"
+        mismatched.insert(
+            OsString::from("LITEINST_CALLER_SENTINEL"),
+            OsString::from("changed-after-review"),
+        ),
+        Some(OsString::from("preserved"))
     );
-    let (_, phases) = one_observation(
-        &observations,
-        "loader dependency phases bound",
-        &diagnostics,
-    );
+    let mut stdout = tempfile::tempfile().expect("create empty no-entry stdout receipt");
+    command
+        .env_clear()
+        .envs(mismatched)
+        .stdout(stdout.try_clone().expect("clone no-entry stdout receipt"))
+        .stderr(Stdio::null());
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(30),
+        LiteinstBackend::run_host_after_loader::<CountRawGetpid>(
+            command,
+            (),
+            &staged.runtime,
+            caller,
+        ),
+    )
+    .await
+    .expect("command-environment refusal timed out")
+    .expect_err("a command-environment mismatch reached the guest");
+    let Error::Tool(error) = &error else {
+        panic!("environment mismatch lacked a typed Tool refusal: {error}");
+    };
+    let refusal = error
+        .downcast_ref::<LiteinstAfterLoaderAuthenticationFailure>()
+        .unwrap_or_else(|| panic!("environment mismatch has the wrong Tool type: {error}"));
     assert_eq!(
-        phases
-            .detail
-            .matches("(Some(\"ld-linux-x86-64.so.2\"),")
-            .count(),
-        1,
-        "initial loader identity is missing or duplicated: {phases:?}"
+        refusal.stage(),
+        LiteinstAfterLoaderAuthenticationStage::CommandEnvironmentAuthentication
     );
+
+    stdout
+        .seek(SeekFrom::Start(0))
+        .expect("rewind no-entry stdout receipt");
+    let mut observed = Vec::new();
+    stdout
+        .read_to_end(&mut observed)
+        .expect("read no-entry stdout receipt");
     assert_eq!(
-        phases.detail.matches("(Some(\"libgcc_s.so.1\"),").count(),
-        1,
-        "deferred loader identity is missing or duplicated: {phases:?}"
-    );
-    assert_eq!(
-        phases.detail.matches("(Some(\"").count(),
-        2,
-        "loader phase lists contain an unexpected image: {phases:?}"
+        observed.as_slice(),
+        b"",
+        "the immediate preinit guest-entered-v1 canary ran before refusal"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks() {
+async fn stats_output_api_matches_old_api_raw_bytes_for_four_calls() {
     let staged = staged_inputs();
-    let directory = tempfile::tempdir().expect("create after-loader test directory");
-    let fixture = compile_fixture(directory.path());
+    let old_caller = bind_reviewed_profile(&staged.four_canonical, &staged.marker);
+    let old_diagnostics = old_caller.diagnostics();
+    let mut old_command = Command::new(&staged.fixture);
+    old_command.env_clear().envs(four_canonical_environment());
+    let old_result = tokio::time::timeout(
+        Duration::from_secs(30),
+        LiteinstBackend::run_host_with_output_after_loader::<CountRawGetpid>(
+            old_command,
+            (),
+            &staged.runtime,
+            old_caller,
+        ),
+    )
+    .await;
+    let (old_output, old_global) = match old_result {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => panic!(
+            "old output after-loader API failed: {error}; {}",
+            bounded_diagnostics(&old_diagnostics)
+        ),
+        Err(_) => panic!(
+            "old output after-loader API timed out; {}",
+            bounded_diagnostics(&old_diagnostics)
+        ),
+    };
 
-    let executable = LiteinstCallerImage::read(&fixture).expect("bind exact fixture executable");
-    let runtime_image = LiteinstCallerImage::read_runtime(&staged.runtime, &staged.marker)
-        .expect("bind constructor-disabled runtime and marker");
-    let (provider, dependencies) = bind_loader_graph(&fixture, &staged.runtime, &staged.graph);
-    let environment = BTreeMap::from([(
-        OsString::from("LITEINST_CALLER_SENTINEL"),
-        OsString::from("preserved"),
-    )]);
-    // SAFETY: this test owns the compiled fixed executable, constructor-disabled
-    // runtime, exact ldd-resolved loader graph and complete one-entry environment.
-    // It supplies no preload, audit module or guest interposer.
-    let caller = unsafe {
-        LiteinstAfterLoaderConfig::new(
-            executable,
-            provider,
-            runtime_image,
-            dependencies,
-            environment.clone(),
-        )
-    }
-    .expect("bind fixed after-loader caller configuration");
+    let stats_caller = bind_reviewed_profile(&staged.four_canonical, &staged.marker);
+    let stats_diagnostics = stats_caller.diagnostics();
+    let mut stats_command = Command::new(&staged.fixture);
+    stats_command.env_clear().envs(four_canonical_environment());
+    let stats_result = tokio::time::timeout(
+        Duration::from_secs(30),
+        LiteinstBackend::run_host_with_output_after_loader_and_stats::<CountRawGetpid>(
+            stats_command,
+            (),
+            &staged.runtime,
+            stats_caller,
+        ),
+    )
+    .await;
+    let (stats_output, stats_global, stats) = match stats_result {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => panic!(
+            "stats output after-loader API failed: {error}; {}",
+            bounded_diagnostics(&stats_diagnostics)
+        ),
+        Err(_) => panic!(
+            "stats output after-loader API timed out; {}",
+            bounded_diagnostics(&stats_diagnostics)
+        ),
+    };
+
+    assert_eq!(old_output.status, ExitStatus::Exited(0), "{old_output:?}");
+    assert_eq!(
+        stats_output.status,
+        ExitStatus::Exited(0),
+        "{stats_output:?}"
+    );
+    assert_eq!(old_output.status, stats_output.status);
+    assert_eq!(old_output.stdout.as_slice(), CANONICAL_STDOUT);
+    assert_eq!(stats_output.stdout.as_slice(), CANONICAL_STDOUT);
+    assert_eq!(old_output.stdout, stats_output.stdout);
+    assert_eq!(old_output.stderr.as_slice(), b"");
+    assert_eq!(stats_output.stderr.as_slice(), b"");
+    assert_eq!(old_output.stderr, stats_output.stderr);
+    assert_eq!(
+        old_global.0.load(Ordering::SeqCst),
+        4,
+        "old output API did not receive exactly four raw getpid calls"
+    );
+    assert_eq!(
+        stats_global.0.load(Ordering::SeqCst),
+        4,
+        "stats output API did not receive exactly four raw getpid calls"
+    );
+    assert_dispatch_stats(&stats, 1, 1, 3, 0);
+    assert_one_installed_site(&stats);
+    assert_restoration_diagnostics(&old_diagnostics);
+    assert_restoration_diagnostics(&stats_diagnostics);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn non_output_stats_api_reports_four_call_dispatch_exactly() {
+    let staged = staged_inputs();
+    let caller = bind_reviewed_profile(&staged.four_canonical, &staged.marker);
     let diagnostics = caller.diagnostics();
-    let mut command = Command::new(&fixture);
-    command.env_clear().envs(environment);
+    let mut command = Command::new(&staged.fixture);
+    command
+        .env_clear()
+        .envs(four_canonical_environment())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
 
     let result = tokio::time::timeout(
         Duration::from_secs(30),
-        LiteinstBackend::run_host_with_output_after_loader::<CountRawGetpid>(
+        LiteinstBackend::run_host_after_loader_and_stats::<CountRawGetpid>(
             command,
             (),
             &staged.runtime,
@@ -1112,25 +1099,115 @@ async fn constructor_disabled_runner_restores_guest_before_raw_getpid_callbacks(
         ),
     )
     .await;
-    let (output, global) = match result {
+    let (status, global, stats) = match result {
         Ok(Ok(result)) => result,
         Ok(Err(error)) => panic!(
-            "after-loader runner failed: {error}; {}",
+            "non-output stats after-loader API failed: {error}; {}",
             bounded_diagnostics(&diagnostics)
         ),
         Err(_) => panic!(
-            "after-loader runner timed out; {}",
+            "non-output stats after-loader API timed out; {}",
+            bounded_diagnostics(&diagnostics)
+        ),
+    };
+
+    assert_eq!(status, ExitStatus::Exited(0));
+    assert_eq!(
+        global.0.load(Ordering::SeqCst),
+        4,
+        "non-output stats API did not receive exactly four raw getpid calls"
+    );
+    assert_dispatch_stats(&stats, 1, 1, 3, 0);
+    assert_one_installed_site(&stats);
+    assert_restoration_diagnostics(&diagnostics);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn one_getpid_call_has_no_direct_hook_or_fallback_dispatch() {
+    let staged = staged_inputs();
+    let caller = bind_reviewed_profile(&staged.one_call, &staged.marker);
+    let diagnostics = caller.diagnostics();
+    let mut command = Command::new(&staged.fixture);
+    command.env_clear().envs(one_call_environment());
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        LiteinstBackend::run_host_with_output_after_loader_and_stats::<CountRawGetpid>(
+            command,
+            (),
+            &staged.runtime,
+            caller,
+        ),
+    )
+    .await;
+    let (output, global, stats) = match result {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => panic!(
+            "one-call after-loader runner failed: {error}; {}",
+            bounded_diagnostics(&diagnostics)
+        ),
+        Err(_) => panic!(
+            "one-call after-loader runner timed out; {}",
             bounded_diagnostics(&diagnostics)
         ),
     };
 
     assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
     assert!(output.stderr.is_empty(), "unexpected stderr: {output:?}");
-    assert_fixture_stdout(&output.stdout);
+    assert_fixture_stdout(&output.stdout, 1, false);
     assert_eq!(
         global.0.load(Ordering::SeqCst),
-        4,
-        "Tool did not receive exactly the fixture's four raw getpid calls"
+        1,
+        "Tool did not receive exactly the fixture's one raw getpid call"
     );
-    assert_restoration_diagnostics(&diagnostics);
+    assert_dispatch_stats(&stats, 1, 1, 0, 0);
+    assert_one_installed_site(&stats);
+    assert_tool_callback_counts(&diagnostics, 1, 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unpatchable_getpid_refuses_installation_and_uses_one_retained_fallback() {
+    let staged = staged_inputs();
+    assert_unpatchable_getpid_prefix(&staged.fixture);
+    let caller = bind_reviewed_profile(&staged.unpatchable, &staged.marker);
+    let diagnostics = caller.diagnostics();
+    let mut command = Command::new(&staged.fixture);
+    command.env_clear().envs(unpatchable_environment());
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        LiteinstBackend::run_host_with_output_after_loader_and_stats::<CountRawGetpid>(
+            command,
+            (),
+            &staged.runtime,
+            caller,
+        ),
+    )
+    .await;
+    let (output, global, stats) = match result {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => panic!(
+            "fallback after-loader runner failed: {error}; {}",
+            bounded_diagnostics(&diagnostics)
+        ),
+        Err(_) => panic!(
+            "fallback after-loader runner timed out; {}",
+            bounded_diagnostics(&diagnostics)
+        ),
+    };
+
+    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "unexpected stderr: {output:?}");
+    assert_fixture_stdout(&output.stdout, 1, true);
+    assert_eq!(
+        global.0.load(Ordering::SeqCst),
+        1,
+        "Tool did not service exactly one retained-fallback getpid call"
+    );
+    assert_dispatch_stats(&stats, 1, 0, 0, 1);
+    assert_eq!(stats.decision_counts(), [0, 0, 0, 1]);
+    assert_eq!(stats.patch_candidates(), 1);
+    assert_eq!(stats.distinct_rips(), 0);
+    assert_eq!(stats.classified_candidates(), 0);
+    assert_tool_callback_counts(&diagnostics, 1, 0);
 }

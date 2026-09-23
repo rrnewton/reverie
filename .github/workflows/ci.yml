@@ -35,12 +35,14 @@ jobs:
         path: target/*/reverie-dbt-native-cache/dynamorio-install-*
         key: dynamorio-${{ runner.os }}-${{ hashFiles('reverie-dbt/vendor/dynamorio/**', 'reverie-dbt/build.rs') }}
     - name: Build
-      run: cargo build --workspace --all-features
+      run: cargo build --workspace --all-features --locked
     - name: DBT virtual identity and pidfd_open policy
       run: reverie-dbt/scripts/test-identity-policy.sh
+    - name: Compile and enumerate exact LiteInst after-loader evidence
+      run: bash scripts/check-liteinst-after-loader-test-inventory.sh
     - name: Test regular workspace cases
       run: >-
-        cargo test --workspace --all-features --
+        cargo test --workspace --all-features --locked --
         --test-threads=1
         --skip container::tests::bind_to_low_port
         --skip container::tests::mount_error_from_child_is_returned
@@ -62,10 +64,14 @@ jobs:
         --skip tests::port_isolation
         --skip tests::seccomp_notify
         --skip tests::uid_namespace
+    - name: Test LiteInst2 release targets
+      run: >-
+        cargo test -p liteinst2 --release --all-targets --all-features --locked --
+        --test-threads=1
     - name: Documentation tests
-      run: cargo test --workspace --doc
+      run: cargo test --workspace --doc --locked
     - name: Clippy
-      run: cargo clippy --workspace --all-targets --all-features
+      run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     - name: Format
       run: cargo fmt --all -- --check
 
@@ -168,7 +174,7 @@ jobs:
           --soft-deadline 300 --hard-box 540 &
         watchdog=$!
         set +e
-        cargo test --workspace --all-features -- --test-threads=1
+        cargo test --workspace --all-features --locked -- --test-threads=1
         status=$?
         kill "$watchdog" 2>/dev/null || true
         wait "$watchdog" 2>/dev/null || true

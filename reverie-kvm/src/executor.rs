@@ -26125,7 +26125,7 @@ mod tests {
                 5,
                 original_flags | i64::from(libc::O_APPEND),
                 1,
-                [b'5'],
+                *b"5",
                 6,
                 1,
                 original_flags,

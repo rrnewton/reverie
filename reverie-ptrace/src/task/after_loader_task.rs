@@ -29,6 +29,14 @@ const PAGE: u64 = 4096;
 const MAX_STACK_SNAPSHOT: usize = 1024 * 1024;
 const MAX_PRIVATE_READ: u64 = 1024 * 1024;
 const MAX_PRIVATE_MMAP_EFFECT: u64 = crate::after_loader::MAX_RUNTIME_LOAD_SPAN;
+// Before the v12 handshake is readable, admit only the finite set of exact
+// page-rounded usable lengths that its FXSAVE/XSAVE reserve contract can
+// produce. The retained mapping is bound byte-for-byte to the handshake after
+// Begin/Ready; this range is admission, not tolerance.
+const CALLBACK_STACK_MIN_USABLE_BYTES: u64 = LITEINST_CALLBACK_EXECUTION_HEADROOM_BYTES + PAGE;
+const CALLBACK_STACK_MAX_USABLE_BYTES: u64 = LITEINST_CALLBACK_EXECUTION_HEADROOM_BYTES
+    + LITEINST_CALLBACK_SAVED_XSTATE_RESERVE_CEILING_BYTES
+    + PAGE;
 const RETURN_MARKER: u64 = 0x4c49_4341_4c4c_0001;
 const TRAMPOLINE_ARENA_SIZE: u64 = 128 * PAGE;
 const KERNEL_O_LARGEFILE: u64 = 0o100000;
@@ -385,6 +393,7 @@ impl AfterLoaderOwnedDescriptor {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AfterLoaderMappingPurpose {
     Controller,
+    CallbackStack,
     Image { image: AfterLoaderImageId },
     ImageZeroFill { image: AfterLoaderImageId },
     SharedReservation { trampoline: AfterLoaderTrampolineId },
@@ -581,6 +590,60 @@ pub(super) struct AfterLoaderPrivateState {
     sealed_trampolines: BTreeSet<AfterLoaderTrampolineId>,
     next_trampoline_serial: u64,
     timer_suspension: Option<PrivateExecutionTimerSuspension>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum PrivateTimerRestoreOwnershipError<E> {
+    Restore(E),
+    MissingToken,
+}
+
+/// Applies the timer API's ownership transition without interpreting any
+/// later validation result. A failed restore retains terminal-retirement
+/// authority; a successful restore consumes it before any subsequent fallible
+/// observation can return.
+fn settle_private_timer_restore<T, E>(
+    token: &mut Option<T>,
+    restore: Result<(), E>,
+) -> Result<(), PrivateTimerRestoreOwnershipError<E>> {
+    match restore {
+        Err(error) => Err(PrivateTimerRestoreOwnershipError::Restore(error)),
+        Ok(()) => {
+            drop(
+                token
+                    .take()
+                    .ok_or(PrivateTimerRestoreOwnershipError::MissingToken)?,
+            );
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+impl Clone for AfterLoaderPrivateState {
+    fn clone(&self) -> Self {
+        assert!(
+            self.timer_suspension.is_none(),
+            "test state clone must not duplicate private timer ownership"
+        );
+        Self {
+            image: self.image,
+            original_mappings: self.original_mappings.clone(),
+            original_descriptors: self.original_descriptors.clone(),
+            owned_descriptors: self.owned_descriptors.clone(),
+            owned_mappings: self.owned_mappings.clone(),
+            current_break: self.current_break,
+            shared_reservations: self.shared_reservations.clone(),
+            protected_ranges: self.protected_ranges.clone(),
+            image_mappings: self.image_mappings.clone(),
+            image_geometries: self.image_geometries.clone(),
+            trampoline_mappings: self.trampoline_mappings.clone(),
+            trampoline_seals_added: self.trampoline_seals_added.clone(),
+            sealed_trampolines: self.sealed_trampolines.clone(),
+            next_trampoline_serial: self.next_trampoline_serial,
+            timer_suspension: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -904,6 +967,121 @@ impl AfterLoaderPrivateState {
         self.owned_mappings.iter().any(|mapping| {
             mapping.start <= range.0 && range.1 <= mapping.end && (!writable || mapping.writable)
         })
+    }
+
+    fn callback_stack_overlaps(&self, range: (u64, u64)) -> bool {
+        self.owned_mappings.iter().any(|mapping| {
+            mapping.purpose == AfterLoaderMappingPurpose::CallbackStack
+                && ranges_overlap((mapping.start, mapping.end), range)
+        })
+    }
+
+    fn callback_stack_protect_transition_is_exact(
+        &self,
+        range: (u64, u64),
+        raw_length: u64,
+        protection: i32,
+    ) -> bool {
+        let mut mappings = self
+            .owned_mappings
+            .iter()
+            .filter(|mapping| mapping.purpose == AfterLoaderMappingPurpose::CallbackStack);
+        let Some(mapping) = mappings.next() else {
+            return false;
+        };
+        let Some(mapping_len) = mapping.end.checked_sub(mapping.start) else {
+            return false;
+        };
+        let Some(usable_len) = mapping_len.checked_sub(2 * PAGE) else {
+            return false;
+        };
+        mappings.next().is_none()
+            && callback_stack_usable_length_is_admissible(usable_len)
+            && !mapping.readable
+            && !mapping.writable
+            && !mapping.executable
+            && !mapping.shared
+            && mapping.descriptor.is_none()
+            && mapping.offset == 0
+            && raw_length == usable_len
+            && mapping.start.checked_add(PAGE) == Some(range.0)
+            && range.0.checked_add(usable_len) == Some(range.1)
+            && range.1.checked_add(PAGE) == Some(mapping.end)
+            && protection == (libc::PROT_READ | libc::PROT_WRITE)
+    }
+
+    fn protect_callback_stack(&mut self, range: (u64, u64)) -> bool {
+        let Some(raw_length) = range.1.checked_sub(range.0) else {
+            return false;
+        };
+        if !self.callback_stack_protect_transition_is_exact(
+            range,
+            raw_length,
+            libc::PROT_READ | libc::PROT_WRITE,
+        ) {
+            return false;
+        }
+        let index = self
+            .owned_mappings
+            .iter()
+            .position(|mapping| mapping.purpose == AfterLoaderMappingPurpose::CallbackStack)
+            .expect("exact callback-stack transition has one mapping");
+        let mapping = self.owned_mappings.remove(index);
+        self.owned_mappings.extend([
+            AfterLoaderOwnedMapping {
+                end: range.0,
+                ..mapping
+            },
+            AfterLoaderOwnedMapping {
+                start: range.0,
+                end: range.1,
+                readable: true,
+                writable: true,
+                offset: 0,
+                ..mapping
+            },
+            AfterLoaderOwnedMapping {
+                start: range.1,
+                offset: 0,
+                ..mapping
+            },
+        ]);
+        true
+    }
+
+    pub(super) fn callback_stack_range(&self) -> Option<GuestRange> {
+        let mut mappings = self
+            .owned_mappings
+            .iter()
+            .filter(|mapping| mapping.purpose == AfterLoaderMappingPurpose::CallbackStack)
+            .collect::<Vec<_>>();
+        mappings.sort_by_key(|mapping| mapping.start);
+        let [lower, usable, upper] = mappings.as_slice() else {
+            return None;
+        };
+        let common_shape = |mapping: &AfterLoaderOwnedMapping| {
+            !mapping.executable && !mapping.shared && mapping.descriptor.is_none()
+        };
+        let usable_len = usable.end.checked_sub(usable.start)?;
+        (common_shape(lower)
+            && common_shape(usable)
+            && common_shape(upper)
+            && !lower.readable
+            && !lower.writable
+            && lower.end - lower.start == PAGE
+            && lower.offset == 0
+            && usable.readable
+            && usable.writable
+            && callback_stack_usable_length_is_admissible(usable_len)
+            && usable.offset == 0
+            && !upper.readable
+            && !upper.writable
+            && upper.end - upper.start == PAGE
+            && upper.offset == 0
+            && lower.end == usable.start
+            && usable.end == upper.start)
+            .then(|| GuestRange::new(usable.start, usable_len))
+            .flatten()
     }
 
     fn owns_same_image_range(&self, range: (u64, u64), image: AfterLoaderImageId) -> bool {
@@ -1306,7 +1484,7 @@ impl AfterLoaderPrivateState {
     }
 }
 
-impl<T: Tool> TracedTask<T> {
+impl<T: Tool + 'static> TracedTask<T> {
     pub(super) fn after_loader_private_timer_is_owned(&self) -> bool {
         self.liteinst_after_loader_private_state
             .as_ref()
@@ -1441,6 +1619,26 @@ fn exact_trampoline_mmap_length(raw_length: u64) -> bool {
 
 fn exact_shared_reservation_mmap_length(raw_length: u64) -> bool {
     raw_length == PAGE
+}
+
+fn callback_stack_usable_length_is_admissible(length: u64) -> bool {
+    length.is_multiple_of(PAGE)
+        && (CALLBACK_STACK_MIN_USABLE_BYTES..=CALLBACK_STACK_MAX_USABLE_BYTES).contains(&length)
+}
+
+fn callback_stack_mapping_length_is_admissible(length: u64) -> bool {
+    length
+        .checked_sub(2 * PAGE)
+        .is_some_and(callback_stack_usable_length_is_admissible)
+}
+
+fn exact_callback_stack_mmap_shape(args: [u64; 6], protection: i32, flags: i32) -> bool {
+    args[0] == 0
+        && callback_stack_mapping_length_is_admissible(args[1])
+        && protection == libc::PROT_NONE
+        && flags == (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_STACK)
+        && canonical_anonymous_mmap_descriptor(args[4])
+        && args[5] == 0
 }
 
 fn descriptor_position(tid: Pid, descriptor: u64) -> io::Result<u64> {
@@ -2179,6 +2377,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 })?;
                 let range = checked_page_effect_range(args[0], args[1])?;
                 if !state.owns_range(range, false)
+                    || state.callback_stack_overlaps(range)
                     || state.refuses_protected_overlap(range)
                     || protection & !(libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) != 0
                     || protection & libc::PROT_WRITE != 0 && protection & libc::PROT_EXEC != 0
@@ -2195,7 +2394,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             libc::SYS_munmap => {
                 let range = checked_page_effect_range(args[0], args[1])?;
-                if !state.owns_range(range, false) {
+                if !state.owns_range(range, false) || state.callback_stack_overlaps(range) {
                     return Err(self.caller_error("private munmap is outside an owned range"));
                 }
                 if !state.shared_reservation_unmap_is_exact(range) {
@@ -2448,29 +2647,38 @@ impl<L: Tool + 'static> TracedTask<L> {
                 )
             }
             Some(CallerFunction::Initializer) => {
-                let expected_flags = libc::MAP_SHARED | libc::MAP_ANONYMOUS;
-                if args[0] != 0
-                    || args[5] != 0
-                    || !exact_shared_reservation_mmap_length(length)
-                    || protection != (libc::PROT_READ | libc::PROT_WRITE)
-                    || flags != expected_flags
-                {
-                    return Err(self.caller_error(
-                        "shared anonymous mapping is not one exact initializer reservation",
-                    ));
-                }
-                let trampoline =
-                    state
-                        .trampoline_awaiting_shared_reservation()
-                        .ok_or_else(|| {
-                            self.caller_error(
+                let callback_stack = exact_callback_stack_mmap_shape(args, protection, flags)
+                    && !state
+                        .owned_mappings
+                        .iter()
+                        .any(|mapping| mapping.purpose == AfterLoaderMappingPurpose::CallbackStack);
+                if callback_stack {
+                    (None, AfterLoaderMappingPurpose::CallbackStack)
+                } else {
+                    let expected_flags = libc::MAP_SHARED | libc::MAP_ANONYMOUS;
+                    if args[0] != 0
+                        || args[5] != 0
+                        || !exact_shared_reservation_mmap_length(length)
+                        || protection != (libc::PROT_READ | libc::PROT_WRITE)
+                        || flags != expected_flags
+                    {
+                        return Err(self.caller_error(
+                            "anonymous initializer mmap is neither the exact callback stack nor one exact shared reservation",
+                        ));
+                    }
+                    let trampoline =
+                        state
+                            .trampoline_awaiting_shared_reservation()
+                            .ok_or_else(|| {
+                                self.caller_error(
                                 "shared reservation has no unique fully aliased trampoline owner",
                             )
-                        })?;
-                (
-                    None,
-                    AfterLoaderMappingPurpose::SharedReservation { trampoline },
-                )
+                            })?;
+                    (
+                        None,
+                        AfterLoaderMappingPurpose::SharedReservation { trampoline },
+                    )
+                }
             }
             Some(CallerFunction::ErrnoLocation) => {
                 return Err(self.caller_error("errno accessor attempted a private mmap"));
@@ -2588,10 +2796,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                     )
                 })?;
                 let range = checked_page_effect_range(args[0], args[1])?;
-                if !state.owns_range(range, false)
-                    || state.refuses_protected_overlap(range)
-                    || protection & !(libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) != 0
-                    || protection & libc::PROT_WRITE != 0 && protection & libc::PROT_EXEC != 0
+                let exact_callback_transition = function == CallerFunction::Initializer
+                    && state.callback_stack_protect_transition_is_exact(range, args[1], protection);
+                if !exact_callback_transition
+                    && (!state.owns_range(range, false)
+                        || state.callback_stack_overlaps(range)
+                        || state.refuses_protected_overlap(range)
+                        || protection & !(libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC)
+                            != 0
+                        || protection & libc::PROT_WRITE != 0 && protection & libc::PROT_EXEC != 0)
                 {
                     return Err(self.caller_error("private function mprotect is unowned or W+X"));
                 }
@@ -2603,7 +2816,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             libc::SYS_munmap => {
                 let range = checked_page_effect_range(args[0], args[1])?;
-                if !state.owns_range(range, false) {
+                if !state.owns_range(range, false) || state.callback_stack_overlaps(range) {
                     return Err(self.caller_error("private function munmap is unowned"));
                 }
                 if !state.shared_reservation_unmap_is_exact(range) {
@@ -3215,6 +3428,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 if matches!(
                     purpose,
                     AfterLoaderMappingPurpose::Controller
+                        | AfterLoaderMappingPurpose::CallbackStack
                         | AfterLoaderMappingPurpose::ImageZeroFill { .. }
                         | AfterLoaderMappingPurpose::SharedReservation { .. }
                         | AfterLoaderMappingPurpose::Trampoline { .. }
@@ -3226,7 +3440,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 if matches!(
                     purpose,
-                    AfterLoaderMappingPurpose::Trampoline { .. }
+                    AfterLoaderMappingPurpose::CallbackStack
+                        | AfterLoaderMappingPurpose::Trampoline { .. }
                         | AfterLoaderMappingPurpose::SharedReservation { .. }
                 ) && (mapped.start != start || mapped.end != end)
                 {
@@ -3271,6 +3486,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         }
                     }
                     AfterLoaderMappingPurpose::Controller
+                    | AfterLoaderMappingPurpose::CallbackStack
                     | AfterLoaderMappingPurpose::SharedReservation { .. } => {}
                 }
                 state.remove_owned_range((start, end));
@@ -3312,8 +3528,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                 protection,
             } => {
                 let range = checked_page_effect_range(*start, *raw_length)?;
-                self.after_loader_private_state_mut()?
-                    .protect_owned_range(range, *protection);
+                let state = self.after_loader_private_state_mut()?;
+                if state.callback_stack_protect_transition_is_exact(range, *raw_length, *protection)
+                {
+                    if !state.protect_callback_stack(range) {
+                        return Err(Errno::EPROTO.into());
+                    }
+                } else {
+                    state.protect_owned_range(range, *protection);
+                }
             }
             AfterLoaderSyscallEffect::Remove { start, raw_length } => {
                 let range = checked_page_effect_range(*start, *raw_length)?;
@@ -4153,11 +4376,23 @@ impl<L: Tool + 'static> TracedTask<L> {
         {
             return Err(self.caller_error("controller scratch mapping survived restoration"));
         }
+        let callback_stack = state.callback_stack_range().ok_or_else(|| {
+            self.caller_error("retained callback stack lacks exact guard/RW/guard geometry")
+        })?;
+        let frame =
+            self.liteinst_runtime.lock().unwrap().frame.ok_or_else(|| {
+                self.caller_error("retained callback stack has no handshake frame")
+            })?;
+        if liteinst_callback_stack_range(frame) != Some(callback_stack) {
+            return Err(self
+                .caller_error("retained callback stack differs from the authenticated handshake"));
+        }
         let maps = guest_maps(task.pid()).ok_or(Errno::EPROTO)?;
         for owned in &state.owned_mappings {
             let exact_boundaries = matches!(
                 owned.purpose,
-                AfterLoaderMappingPurpose::SharedReservation { .. }
+                AfterLoaderMappingPurpose::CallbackStack
+                    | AfterLoaderMappingPurpose::SharedReservation { .. }
                     | AfterLoaderMappingPurpose::Trampoline { .. }
             );
             let mapped = maps.iter().find(|mapping| {
@@ -4185,6 +4420,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                         return Err(
                             self.caller_error("retained anonymous mapping acquired file identity")
                         );
+                    }
+                }
+                AfterLoaderMappingPurpose::CallbackStack => {
+                    if mapped.offset != 0 || mapped.inode != 0 || mapped.path.is_some() {
+                        return Err(self.caller_error(
+                            "retained callback stack acquired file identity or nonzero offset",
+                        ));
                     }
                 }
                 AfterLoaderMappingPurpose::SharedReservation { trampoline } => {
@@ -4761,11 +5003,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 operation.purpose, operation.number
             ),
         )?;
-        let signal = self
-            .take_pending_signal_for_resume(
-                &task,
-                LiteinstActivationOperation::ResumeInjectedSyscall,
-            )?;
+        let signal = self.take_pending_signal_for_resume(
+            &task,
+            LiteinstActivationOperation::ResumeInjectedSyscall,
+        )?;
         let wait = self.resume_stopped(task, signal)?.next_state().await?;
         self.arm_liteinst_wait(&wait)?;
         Ok(AfterLoaderForwardRoute::Completed(wait))
@@ -5270,7 +5511,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Err(self.caller_error("snapshot stack bound"));
         }
         let regs = task.getregs()?;
-        let xstate = task.getxstate()?;
+        let xstate = task.get_x86_extended_state()?;
         let mut stack_bytes = vec![0; length];
         task.read_exact(stack as usize, &mut stack_bytes)?;
         let mut random_bytes = [0; 16];
@@ -5966,7 +6207,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         let mut saved_regs = task.getregs()?;
         saved_regs.rip = image.at_entry;
-        let saved_xstate = task.getxstate()?;
+        let saved_xstate = task.get_x86_extended_state()?;
         let saved_signals = signal_state(task.pid()).map_err(|e| self.caller_error(e))?;
         let saved_descriptors = descriptor_state(task.pid()).map_err(|e| self.caller_error(e))?;
         if self.liteinst_after_loader_private_state.is_some()
@@ -6113,7 +6354,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             cpuid_policy: LiteinstCpuidPolicy::Unsupported,
             tsc_policy: LiteinstTscPolicy::Unsupported,
             regs: task.getregs()?,
-            xstate: task.getxstate()?,
+            xstate: task.get_x86_extended_state()?,
             stack_address: policy_scratch_address as usize,
             stack_value: u64::from_ne_bytes(policy_scratch),
         };
@@ -6723,12 +6964,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             )
             .await?;
         self.restore_liteinst_entry_guard(&mut task)?;
-        task.setxstate(&saved_xstate)?;
+        task.set_x86_extended_state(&saved_xstate)?;
         task.setregs(&saved_regs)?;
         let mut restored_word = [0; 8];
         task.read_exact(image.at_entry as usize, &mut restored_word)?;
         if restored_word != calls.guard().original()
-            || task.getxstate()? != saved_xstate
+            || task.get_x86_extended_state()? != saved_xstate
             || register_words(&task.getregs()?) != register_words(&saved_regs)
         {
             return Err(self.caller_error("entry or complete machine state readback differs"));
@@ -6775,6 +7016,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             .unwrap()
             .frame
             .ok_or(Errno::EPROTO)?;
+        let callback_stack = liteinst_callback_stack_allocation(frame).ok_or_else(|| {
+            self.caller_error("authenticated callback-stack allocation is invalid")
+        })?;
         let helper_code = bind_liteinst_helper_code(&task, frame).ok_or_else(|| {
             self.caller_error("retained LiteInst helper page could not be bound exactly")
         })?;
@@ -6805,6 +7049,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 &prepared_arenas,
                 &prepared_reservations,
                 &helper_code,
+                callback_stack,
                 &initializer,
             ) {
                 return Err(self.caller_error(
@@ -6818,7 +7063,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             .await
             .map_err(Error::Internal)?;
         task = next;
-        task.setxstate(&saved_xstate)?;
+        task.set_x86_extended_state(&saved_xstate)?;
         task.setregs(&saved_regs)?;
         self.caller_quiescent(&task, image)?;
         if helper_protection_result != Ok(0)
@@ -6836,7 +7081,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.read_exact(cp::PRIVATE_PAGE_OFFSET, &mut post_isolation_private_stub)?;
         if post_isolation_entry != calls.guard().original()
             || post_isolation_private_stub != [0x0f, 0x05, 0x0f, 0x0b]
-            || task.getxstate()? != saved_xstate
+            || task.get_x86_extended_state()? != saved_xstate
             || register_words(&task.getregs()?) != register_words(&saved_regs)
         {
             return Err(self.caller_error(
@@ -6851,17 +7096,30 @@ impl<L: Tool + 'static> TracedTask<L> {
                 libc::PROT_NONE,
             );
         let (next, arena_aliases_isolated) = self
-            .set_liteinst_arena_writable_protection(
-                task,
-                &prepared_arenas,
-                libc::PROT_NONE,
-            )
+            .set_liteinst_arena_writable_protection(task, &prepared_arenas, libc::PROT_NONE)
             .await
             .map_err(Error::Internal)?;
         task = next;
-        task.setxstate(&saved_xstate)?;
+        task.set_x86_extended_state(&saved_xstate)?;
         task.setregs(&saved_regs)?;
         self.caller_quiescent(&task, image)?;
+        let restored_xstate = task.get_x86_extended_state().map_err(|error| {
+            self.caller_error(format!(
+                "read restored x86 extended state after final arena-alias isolation: {error}"
+            ))
+        })?;
+        let restored_regs = task.getregs().map_err(|error| {
+            self.caller_error(format!(
+                "read restored general registers after final arena-alias isolation: {error}"
+            ))
+        })?;
+        if restored_xstate != saved_xstate
+            || register_words(&restored_regs) != register_words(&saved_regs)
+        {
+            return Err(self.caller_error(
+                "final arena-alias isolation changed the restored x86 extended state or general registers",
+            ));
+        }
         if !arena_aliases_isolated {
             return Err(self.caller_error(
                 "isolate retained LiteInst arena writable aliases: PROT_NONE transition or exact map readback differed",
@@ -6871,10 +7129,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.liteinst_after_loader_private_state
                 .as_mut()
                 .ok_or(Errno::EPROTO)?
-                .protect_owned_range(
-                    (arena.writable.start, arena.writable.end),
-                    libc::PROT_NONE,
-                );
+                .protect_owned_range((arena.writable.start, arena.writable.end), libc::PROT_NONE);
         }
         self.validate_after_loader_retained_resources(&task, &config, Some(&helper_isolation))?;
         let projection = helper_isolation.target_loader_projection().ok_or_else(|| {
@@ -6922,13 +7177,25 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .as_ref()
                 .and_then(|state| state.timer_suspension.as_ref())
                 .ok_or(Errno::EPROTO)?;
-            self.timer
-                .restore_after_private_execution(timer_suspension)
+            self.timer.restore_after_private_execution(timer_suspension)
         };
-        if let Err(error) = restore_timer {
-            return Err(self.caller_error(format!(
-                "restore deterministic timer after private after-loader execution: {error}"
-            )));
+        let timer_ownership = {
+            let state = self
+                .liteinst_after_loader_private_state
+                .as_mut()
+                .ok_or(Errno::EPROTO)?;
+            settle_private_timer_restore(&mut state.timer_suspension, restore_timer)
+        };
+        match timer_ownership {
+            Ok(()) => {}
+            Err(PrivateTimerRestoreOwnershipError::Restore(error)) => {
+                return Err(self.caller_error(format!(
+                    "restore deterministic timer after private after-loader execution: {error}"
+                )));
+            }
+            Err(PrivateTimerRestoreOwnershipError::MissingToken) => {
+                return Err(Errno::EPROTO.into());
+            }
         }
         if self.timer.diagnostic_clock() != Some(frozen_timer_clock) {
             return Err(self.caller_error(
@@ -6943,28 +7210,35 @@ impl<L: Tool + 'static> TracedTask<L> {
             &prepared_arenas,
             &prepared_reservations,
             &helper_code,
+            callback_stack,
             &initializer,
         ) {
             return Err(self.caller_error(
                 "initializer runtime state changed before atomic Ready publication",
             ));
         }
-        let mut validated_state = self
+        if self
+            .liteinst_after_loader_private_state
+            .as_ref()
+            .is_none_or(|state| state.timer_suspension.is_some())
+        {
+            return Err(
+                self.caller_error("Ready publication retained consumed timer suspension authority")
+            );
+        }
+        let validated_state = self
             .liteinst_after_loader_private_state
             .take()
             .ok_or(Errno::EPROTO)?;
-        drop(
-            validated_state
-                .timer_suspension
-                .take()
-                .ok_or(Errno::EPROTO)?,
-        );
+        debug_assert!(validated_state.timer_suspension.is_none());
+        drop(validated_state);
         commit_after_loader_liteinst_ready(
             &mut runtime,
             image.generation,
             prepared_arenas,
             prepared_reservations,
             helper_code,
+            callback_stack,
             handle,
             initializer,
         );
@@ -6975,6 +7249,46 @@ impl<L: Tool + 'static> TracedTask<L> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PostRestoreFailure {
+        DiagnosticClock,
+        ReadyPublication,
+    }
+
+    #[test]
+    fn timer_restore_ownership_is_consumed_before_post_restore_failures() {
+        for failure in [
+            PostRestoreFailure::DiagnosticClock,
+            PostRestoreFailure::ReadyPublication,
+        ] {
+            let mut token = Some(41_u64);
+            assert_eq!(
+                settle_private_timer_restore(&mut token, Ok::<_, ()>(())),
+                Ok(())
+            );
+            let post_restore_check: Result<(), PostRestoreFailure> = Err(failure);
+            assert_eq!(post_restore_check, Err(failure));
+            assert!(
+                token.is_none(),
+                "{failure:?} retained stale timer authority"
+            );
+            assert!(
+                token.take().is_none(),
+                "terminal cleanup could acquire a second retirement token after {failure:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn timer_restore_failure_retains_terminal_retirement_authority() {
+        let mut token = Some(73_u64);
+        assert_eq!(
+            settle_private_timer_restore(&mut token, Err("restore failed")),
+            Err(PrivateTimerRestoreOwnershipError::Restore("restore failed")),
+        );
+        assert_eq!(token, Some(73));
+    }
 
     fn mapping_state(generation: u64) -> AfterLoaderPrivateState {
         AfterLoaderPrivateState {
@@ -7016,6 +7330,152 @@ mod tests {
             offset: 0,
             purpose: AfterLoaderMappingPurpose::Controller,
         }
+    }
+
+    fn callback_stack_mapping(start: u64, usable_len: u64) -> AfterLoaderOwnedMapping {
+        AfterLoaderOwnedMapping {
+            start,
+            end: start + usable_len + 2 * PAGE,
+            readable: false,
+            writable: false,
+            executable: false,
+            shared: false,
+            descriptor: None,
+            offset: 0,
+            purpose: AfterLoaderMappingPurpose::CallbackStack,
+        }
+    }
+
+    #[test]
+    fn callback_stack_transition_requires_exact_raw_shape_and_preserves_anonymous_offsets() {
+        let start = 0x70_0000;
+        let usable_len = CALLBACK_STACK_MIN_USABLE_BYTES;
+        let mapping_len = usable_len + 2 * PAGE;
+        let usable = (start + PAGE, start + PAGE + usable_len);
+        let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_STACK;
+        let mmap_args = [
+            0,
+            mapping_len,
+            libc::PROT_NONE as u64,
+            flags as u64,
+            u64::MAX,
+            0,
+        ];
+        assert!(exact_callback_stack_mmap_shape(
+            mmap_args,
+            libc::PROT_NONE,
+            flags,
+        ));
+        for changed in [
+            [1, mmap_args[1], mmap_args[2], mmap_args[3], mmap_args[4], 0],
+            [
+                0,
+                mapping_len - 1,
+                mmap_args[2],
+                mmap_args[3],
+                mmap_args[4],
+                0,
+            ],
+            [0, mmap_args[1], mmap_args[2], mmap_args[3], 0, 0],
+            [
+                0,
+                mmap_args[1],
+                mmap_args[2],
+                mmap_args[3],
+                mmap_args[4],
+                PAGE,
+            ],
+        ] {
+            assert!(!exact_callback_stack_mmap_shape(
+                changed,
+                libc::PROT_NONE,
+                flags,
+            ));
+        }
+        assert!(!exact_callback_stack_mmap_shape(
+            mmap_args,
+            libc::PROT_READ,
+            flags,
+        ));
+        assert!(!exact_callback_stack_mmap_shape(
+            mmap_args,
+            libc::PROT_NONE,
+            flags ^ libc::MAP_STACK,
+        ));
+        let mut maximum = mmap_args;
+        maximum[1] = CALLBACK_STACK_MAX_USABLE_BYTES + 2 * PAGE;
+        assert!(exact_callback_stack_mmap_shape(
+            maximum,
+            libc::PROT_NONE,
+            flags,
+        ));
+        for refused_length in [
+            CALLBACK_STACK_MIN_USABLE_BYTES - PAGE,
+            CALLBACK_STACK_MIN_USABLE_BYTES + 1,
+            CALLBACK_STACK_MAX_USABLE_BYTES + PAGE,
+        ] {
+            let mut refused = mmap_args;
+            refused[1] = refused_length + 2 * PAGE;
+            assert!(!exact_callback_stack_mmap_shape(
+                refused,
+                libc::PROT_NONE,
+                flags,
+            ));
+        }
+        let mut state = mapping_state(1);
+        state
+            .owned_mappings
+            .push(callback_stack_mapping(start, usable_len));
+
+        assert!(state.callback_stack_protect_transition_is_exact(
+            usable,
+            usable_len,
+            libc::PROT_READ | libc::PROT_WRITE,
+        ));
+        for raw_length in [usable_len - 1, usable_len + 1] {
+            assert!(
+                !state.callback_stack_protect_transition_is_exact(
+                    usable,
+                    raw_length,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                ),
+                "page-rounded raw-length near miss was accepted"
+            );
+        }
+        for range in [(usable.0 - PAGE, usable.1), (usable.0, usable.1 + PAGE)] {
+            assert!(!state.callback_stack_protect_transition_is_exact(
+                range,
+                usable_len,
+                libc::PROT_READ | libc::PROT_WRITE,
+            ));
+        }
+        assert!(!state.callback_stack_protect_transition_is_exact(
+            usable,
+            usable_len,
+            libc::PROT_READ,
+        ));
+
+        assert!(state.protect_callback_stack(usable));
+        assert_eq!(
+            state.callback_stack_range(),
+            GuestRange::new(usable.0, usable_len)
+        );
+        let mut segments = state
+            .owned_mappings
+            .iter()
+            .filter(|mapping| mapping.purpose == AfterLoaderMappingPurpose::CallbackStack)
+            .collect::<Vec<_>>();
+        segments.sort_by_key(|mapping| mapping.start);
+        assert_eq!(segments.len(), 3);
+        assert!(segments.iter().all(|mapping| mapping.offset == 0));
+        assert!(!state.protect_callback_stack(usable));
+
+        let mut changed = state.clone();
+        changed.owned_mappings[1].executable = true;
+        assert!(changed.callback_stack_range().is_none());
+        let mut missing = state;
+        missing.owned_mappings.pop();
+        assert!(missing.callback_stack_range().is_none());
     }
 
     #[test]

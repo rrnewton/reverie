@@ -6,14 +6,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use syscalls::Errno;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 
-use super::Pid;
+use syscalls::Errno;
+
 use super::ControllerLaunchId;
 use super::ControllerSpawnToken;
+use super::Pid;
 
 pub(super) const CHILD_STACK_SIZE: usize = 2 * 1024 * 1024;
 
@@ -80,9 +81,9 @@ pub(super) enum ClonePidfdResult {
 
 /// Proves the upstream Linux pidfd operations required by controller launch.
 pub(super) fn probe_clone_pidfd_support() -> Result<(), Errno> {
-    let raw = unsafe {
-        syscalls::syscall2(syscalls::Sysno::pidfd_open, libc::getpid() as usize, 0)
-    }? as libc::c_int;
+    let raw =
+        unsafe { syscalls::syscall2(syscalls::Sysno::pidfd_open, libc::getpid() as usize, 0) }?
+            as libc::c_int;
     let pidfd = unsafe { OwnedFd::from_raw_fd(raw) };
     let fd_flags = Errno::result(unsafe { libc::fcntl(pidfd.as_raw_fd(), libc::F_GETFD) })?;
     if fd_flags & libc::FD_CLOEXEC == 0 {

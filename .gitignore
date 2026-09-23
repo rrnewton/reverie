@@ -1,5 +1,6 @@
 target/
 Cargo.lock
+!/Cargo.lock
 
 # Local backup and Python cache files.
 *.orig

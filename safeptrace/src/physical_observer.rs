@@ -24,6 +24,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use parking_lot::Mutex;
 use reverie_process::ControllerLaunchId;
 
 use crate::Pid;
@@ -38,6 +39,7 @@ static NEXT_WAIT_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_STATUS_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_RESERVATION_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_RESUME_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_PIDFD_SIGNAL_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_CLEANUP_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_ORIGINAL_ROOT_LAUNCH_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -109,6 +111,17 @@ impl PhysicalReservationId {
 pub struct PhysicalResumeAttemptId(u64);
 
 impl PhysicalResumeAttemptId {
+    /// Returns the nonzero integer representation.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Identity of one generation-bound `pidfd_send_signal` attempt.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PhysicalPidfdSignalAttemptId(u64);
+
+impl PhysicalPidfdSignalAttemptId {
     /// Returns the nonzero integer representation.
     pub fn get(self) -> u64 {
         self.0
@@ -266,6 +279,9 @@ pub enum PhysicalObserverAttachError {
     /// This Event lacks the exact unclaimed controller-spawn capability, or
     /// the observer session already claimed its sole original-root launch.
     InvalidOriginalRootLaunch,
+    /// The observer could not reserve both mandatory attachment records before
+    /// mutating the Event.
+    InsufficientCapacity,
 }
 
 /// The physical producer that issued a wait call.
@@ -327,6 +343,18 @@ impl PhysicalTaskIdentity {
             start_time: None,
             proc_inode: None,
             pidfd: None,
+        }
+    }
+
+    pub(crate) fn direct_child_with_pidfd(tid: Pid, pidfd: i32) -> Self {
+        Self {
+            tid: tid.as_raw(),
+            tgid: None,
+            ppid: None,
+            tracer_pid: None,
+            start_time: None,
+            proc_inode: None,
+            pidfd: Some(pidfd),
         }
     }
 
@@ -400,6 +428,11 @@ impl PhysicalTaskIdentity {
         self.pidfd
     }
 
+    pub(crate) fn with_pidfd(mut self, pidfd: i32) -> Self {
+        self.pidfd = Some(pidfd);
+        self
+    }
+
     fn is_direct_child(self) -> bool {
         self.tid > 0
             && self.tgid.is_none()
@@ -408,6 +441,16 @@ impl PhysicalTaskIdentity {
             && self.start_time.is_none()
             && self.proc_inode.is_none()
             && self.pidfd.is_none()
+    }
+
+    fn is_pidfd_bound_direct_child(self) -> bool {
+        self.tid > 0
+            && self.tgid.is_none()
+            && self.ppid.is_none()
+            && self.tracer_pid.is_none()
+            && self.start_time.is_none()
+            && self.proc_inode.is_none()
+            && self.pidfd.is_some_and(|pidfd| pidfd >= 0)
     }
 
     fn is_captured(self) -> bool {
@@ -445,6 +488,10 @@ impl PhysicalTaskIdentity {
     fn authorizes(self, observed: Self, allow_direct_narrowing: bool) -> bool {
         observed == self
             || self.same_stable_task(observed)
+            || (allow_direct_narrowing
+                && self.is_direct_child()
+                && observed.is_pidfd_bound_direct_child()
+                && self.tid == observed.tid)
             || (allow_direct_narrowing
                 && observed.is_direct_child()
                 && self.is_captured()
@@ -709,6 +756,9 @@ pub enum PhysicalResumeOwner {
     PreRegistrationCleanup,
     /// Linear cleanup of one retained original-root startup transaction.
     StartupBarrierCleanup,
+    /// Controller-thread continuation after a notifier worker atomically
+    /// transferred an authorized-root startup cleanup transaction.
+    AuthorizedRootExternalCleanup,
     /// Root tracee whole-session cleanup.
     RootCleanup,
     /// Descendant whole-session cleanup.
@@ -728,7 +778,10 @@ impl PhysicalResumeOwner {
     }
 
     fn is_startup_barrier_cleanup(self) -> bool {
-        self == Self::StartupBarrierCleanup
+        matches!(
+            self,
+            Self::StartupBarrierCleanup | Self::AuthorizedRootExternalCleanup
+        )
     }
 }
 
@@ -757,6 +810,27 @@ pub struct PhysicalResumeAttempt {
     context: PhysicalResumeContext,
 }
 
+pub(crate) struct StartupCleanupWaitFailureExitProof {
+    pub(crate) transaction: PhysicalCleanupTransaction,
+    pub(crate) generation: PhysicalEventGenerationId,
+    pub(crate) task: PhysicalTaskIdentity,
+    pub(crate) pidfd: i32,
+    pub(crate) failed_wait: PhysicalWaitAttempt,
+    pub(crate) error: i32,
+    pub(crate) revents: i16,
+}
+
+pub(crate) struct StartupCleanupResumeFailureExitProof {
+    pub(crate) transaction: PhysicalCleanupTransaction,
+    pub(crate) generation: PhysicalEventGenerationId,
+    pub(crate) task: PhysicalTaskIdentity,
+    pub(crate) pidfd: i32,
+    pub(crate) resume: PhysicalResumeAttempt,
+    pub(crate) source_status: PhysicalStatusId,
+    pub(crate) error: i32,
+    pub(crate) revents: i16,
+}
+
 impl PhysicalResumeAttempt {
     /// Returns this call's unique attempt ID.
     pub fn id(self) -> PhysicalResumeAttemptId {
@@ -773,6 +847,50 @@ impl PhysicalResumeAttempt {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PhysicalResumeOutcome {
     /// The kernel accepted the request.
+    Success,
+    /// The kernel returned this errno.
+    Error(i32),
+}
+
+/// Description fixed before one exact-pidfd cleanup signal syscall.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PhysicalPidfdSignalContext {
+    /// Immutable Event generation owning the pidfd.
+    pub generation: PhysicalEventGenerationId,
+    /// Exact task identity retained by the cleanup transaction.
+    pub task: PhysicalTaskIdentity,
+    /// Cleanup transaction whose terminal authority issues the signal.
+    pub transaction: PhysicalCleanupTransactionId,
+    /// Exact process-local pidfd used by the syscall.
+    pub pidfd: i32,
+    /// Signal passed to `pidfd_send_signal`.
+    pub signal: i32,
+}
+
+/// Token returned before one exact-pidfd cleanup signal syscall.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PhysicalPidfdSignalAttempt {
+    observer: PhysicalObserverId,
+    id: PhysicalPidfdSignalAttemptId,
+    context: PhysicalPidfdSignalContext,
+}
+
+impl PhysicalPidfdSignalAttempt {
+    /// Returns this call's unique attempt ID.
+    pub fn id(self) -> PhysicalPidfdSignalAttemptId {
+        self.id
+    }
+
+    /// Returns the context fixed before entering the kernel.
+    pub fn context(self) -> PhysicalPidfdSignalContext {
+        self.context
+    }
+}
+
+/// Raw result of one exact-pidfd cleanup signal syscall.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PhysicalPidfdSignalOutcome {
+    /// The kernel accepted the signal request.
     Success,
     /// The kernel returned this errno.
     Error(i32),
@@ -884,6 +1002,35 @@ pub enum PhysicalEventRecordKind {
         /// Consumed status transferred to cleanup.
         consumed_status: PhysicalStatusId,
         /// Sole cleanup transaction owning the consumed stop.
+        transaction: PhysicalCleanupTransactionId,
+    },
+    /// The authorized worker's first consuming wait failed before returning a
+    /// status.  The retained WNOWAIT barrier and its preallocated transaction
+    /// nevertheless move atomically into registered cleanup ownership.
+    PreRegistrationBarrierStatuslessFailureLinked {
+        /// Immutable original-root generation.
+        generation: PhysicalEventGenerationId,
+        /// Retained `WNOWAIT` attempt.
+        barrier: PhysicalWaitAttemptId,
+        /// Exact failing first AuthorizedRoot wait.
+        cause_wait: PhysicalWaitAttemptId,
+        /// Exact nonzero wait errno.
+        error: i32,
+        /// Sole preallocated cleanup transaction.
+        transaction: PhysicalCleanupTransactionId,
+    },
+    /// The later cleanup wait which consumed or terminally superseded a
+    /// retained barrier after a statusless first AuthorizedRoot failure.
+    PreRegistrationBarrierStatuslessCleanupResolved {
+        /// Immutable original-root generation.
+        generation: PhysicalEventGenerationId,
+        /// Retained `WNOWAIT` attempt.
+        barrier: PhysicalWaitAttemptId,
+        /// Later exact registered-cleanup wait.
+        cleanup_wait: PhysicalWaitAttemptId,
+        /// Returned status, absent only for exact terminal `ECHILD` proof.
+        status: Option<PhysicalStatusId>,
+        /// Sole preallocated cleanup transaction.
         transaction: PhysicalCleanupTransactionId,
     },
     /// Startup failed after an exact pidfd was retained but before the
@@ -1292,6 +1439,83 @@ pub enum PhysicalEventRecordKind {
         /// Kernel result before error conversion.
         outcome: PhysicalResumeOutcome,
     },
+    /// A generation-bound cleanup `pidfd_send_signal` is about to be issued.
+    PidfdSignalAttempt {
+        /// Unique call identity.
+        id: PhysicalPidfdSignalAttemptId,
+        /// Exact transaction, task, descriptor, and signal.
+        context: PhysicalPidfdSignalContext,
+    },
+    /// Raw result of one cleanup `pidfd_send_signal` call.
+    PidfdSignalResult {
+        /// Attempt identity.
+        attempt: PhysicalPidfdSignalAttemptId,
+        /// Kernel result before errno classification.
+        outcome: PhysicalPidfdSignalOutcome,
+    },
+    /// A nonblocking poll proved the exact startup-cleanup pidfd exited after
+    /// a definitive `pidfd_send_signal` error.
+    StartupCleanupPidfdExitProved {
+        /// Cleanup transaction retaining terminal authority.
+        transaction: PhysicalCleanupTransactionId,
+        /// Immutable Event generation owning the pidfd.
+        generation: PhysicalEventGenerationId,
+        /// Exact task identity containing the pidfd.
+        task: PhysicalTaskIdentity,
+        /// Exact process-local descriptor passed to poll.
+        pidfd: i32,
+        /// Lossless poll result; `POLLIN` proves final exit.
+        revents: i16,
+    },
+    /// A non-retried registered-cleanup wait failure was followed by exact
+    /// pidfd terminal readability before a later terminal wait.
+    StartupCleanupWaitFailureExitProved {
+        /// Sole startup cleanup transaction.
+        transaction: PhysicalCleanupTransactionId,
+        /// Immutable Event generation.
+        generation: PhysicalEventGenerationId,
+        /// Exact cleanup task.
+        task: PhysicalTaskIdentity,
+        /// Exact pidfd used for the proof.
+        pidfd: i32,
+        /// Failed wait which is never replayed.
+        failed_wait: PhysicalWaitAttemptId,
+        /// Exact nonzero wait errno.
+        error: i32,
+        /// Poll readiness including `POLLIN`.
+        revents: i16,
+    },
+    /// A failed one-shot startup-cleanup resume was followed by exact pidfd
+    /// readability, proving that terminal drain may continue without another
+    /// resume or signal attempt.
+    StartupCleanupResumeFailureExitProved {
+        /// Sole startup cleanup transaction.
+        transaction: PhysicalCleanupTransactionId,
+        /// Immutable Event generation.
+        generation: PhysicalEventGenerationId,
+        /// Exact cleanup task containing the pidfd.
+        task: PhysicalTaskIdentity,
+        /// Exact pidfd used by the zero-time poll.
+        pidfd: i32,
+        /// Spent physical resume attempt.
+        resume: PhysicalResumeAttemptId,
+        /// Physical stopped status named by the attempt.
+        source_status: PhysicalStatusId,
+        /// Exact nonzero resume errno.
+        error: i32,
+        /// Poll readiness including `POLLIN`.
+        revents: i16,
+    },
+    /// The notifier worker transferred a fixed startup transaction to the
+    /// original controller before publishing its terminal-error wake.
+    StartupCleanupExecutorTransferred {
+        /// Sole startup cleanup transaction.
+        transaction: PhysicalCleanupTransactionId,
+        /// Immutable Event generation.
+        generation: PhysicalEventGenerationId,
+        /// Exact controller-traced task.
+        task: PhysicalTaskIdentity,
+    },
     /// Cleanup deliberately tolerated a raw ptrace error after recording it.
     ResumeErrorTolerated {
         /// Attempt whose error was tolerated.
@@ -1381,6 +1605,43 @@ impl RecordBuffer {
         true
     }
 
+    fn reserve(&self, count: usize) -> Option<usize> {
+        let mut claimed = self.claimed.load(Ordering::Acquire);
+        loop {
+            let end = claimed.checked_add(count)?;
+            if end > self.slots.len() {
+                return None;
+            }
+            match self.claimed.compare_exchange_weak(
+                claimed,
+                end,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(claimed),
+                Err(current) => claimed = current,
+            }
+        }
+    }
+
+    fn push_reserved(&self, slot: usize, record: PhysicalEventRecord) {
+        let destination = self
+            .slots
+            .get(slot)
+            .expect("pre-reserved physical observer slot disappeared");
+        debug_assert!(!destination.ready.load(Ordering::Acquire));
+        unsafe {
+            (*destination.record.get()).write(record);
+        }
+        destination.ready.store(true, Ordering::Release);
+    }
+
+    fn release_reserved_tail(&self, first: usize, count: usize) -> bool {
+        self.claimed
+            .compare_exchange(first + count, first, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
     fn snapshot(&self, output: &mut Vec<PhysicalEventRecord>) -> u64 {
         let claimed = self.claimed.load(Ordering::Acquire).min(self.slots.len());
         for slot in &self.slots[..claimed] {
@@ -1395,6 +1656,7 @@ impl RecordBuffer {
 #[derive(Debug)]
 struct PhysicalObserverInner {
     id: PhysicalObserverId,
+    lifecycle: Mutex<()>,
     original_root_launch: AtomicU64,
     ordinary: RecordBuffer,
     cleanup: RecordBuffer,
@@ -1420,25 +1682,33 @@ pub struct PhysicalEventObserver {
 /// This private linear reservation precedes Event attachment. Dropping it
 /// rolls back only its own still-uncommitted claim.
 #[derive(Debug)]
-pub(crate) struct OriginalRootLaunchReservation {
+struct OriginalRootLaunchReservation {
     observer: PhysicalEventObserver,
     link: Option<PhysicalOriginalRootLaunchId>,
+    ordinary_slot: usize,
 }
 
 impl OriginalRootLaunchReservation {
-    pub(crate) fn commit(
+    fn commit(
         mut self,
         task: PhysicalTaskIdentity,
         generation: PhysicalEventGenerationId,
         controller_launch: ControllerLaunchId,
+        install_physical_link: impl FnOnce(PhysicalOriginalRootLaunchId),
     ) -> OriginalRootLaunchToken {
         let link = self
             .link
             .take()
             .expect("original-root launch reservation was already committed");
-        self.observer.record(
-            RecordClass::Ordinary,
-            PhysicalEventRecordKind::OriginalRootLaunchLinked {
+        let generation_record = PhysicalEventRecord {
+            sequence: next_nonzero(&self.observer.inner.next_sequence),
+            observer: self.observer.id(),
+            kind: PhysicalEventRecordKind::GenerationAttached(generation),
+        };
+        let launch_record = PhysicalEventRecord {
+            sequence: next_nonzero(&self.observer.inner.next_sequence),
+            observer: self.observer.id(),
+            kind: PhysicalEventRecordKind::OriginalRootLaunchLinked {
                 link,
                 generation,
                 task,
@@ -1446,7 +1716,16 @@ impl OriginalRootLaunchReservation {
                 controller_tid: controller_launch.controller_tid(),
                 controller_sequence: controller_launch.sequence(),
             },
-        );
+        };
+        self.observer
+            .inner
+            .ordinary
+            .push_reserved(self.ordinary_slot, generation_record);
+        self.observer
+            .inner
+            .ordinary
+            .push_reserved(self.ordinary_slot + 1, launch_record);
+        install_physical_link(link);
         OriginalRootLaunchToken {
             observer: self.observer.id(),
             link,
@@ -1460,12 +1739,23 @@ impl OriginalRootLaunchReservation {
 impl Drop for OriginalRootLaunchReservation {
     fn drop(&mut self) {
         if let Some(link) = self.link {
-            let _ = self.observer.inner.original_root_launch.compare_exchange(
+            let link_rolled_back = self.observer.inner.original_root_launch.compare_exchange(
                 link.get(),
                 0,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             );
+            let slots_rolled_back = self
+                .observer
+                .inner
+                .ordinary
+                .release_reserved_tail(self.ordinary_slot, 2);
+            if link_rolled_back.is_err() || !slots_rolled_back {
+                self.observer
+                    .inner
+                    .sticky_failure
+                    .store(true, Ordering::Release);
+            }
         }
     }
 }
@@ -1479,6 +1769,7 @@ impl PhysicalEventObserver {
         Ok(Self {
             inner: Arc::new(PhysicalObserverInner {
                 id: PhysicalObserverId(next_nonzero(&NEXT_OBSERVER_ID)),
+                lifecycle: Mutex::new(()),
                 original_root_launch: AtomicU64::new(0),
                 ordinary: RecordBuffer::new(config.ordinary_capacity),
                 cleanup: RecordBuffer::new(config.cleanup_capacity),
@@ -1541,23 +1832,51 @@ impl PhysicalEventObserver {
         );
     }
 
-    pub(crate) fn reserve_original_root_launch(
+    pub(crate) fn attach_original_root_launch(
         &self,
-    ) -> Result<OriginalRootLaunchReservation, PhysicalObserverAttachError> {
-        if !self.is_open() {
+        task: PhysicalTaskIdentity,
+        generation: PhysicalEventGenerationId,
+        controller_launch: ControllerLaunchId,
+        attach_event: impl FnOnce(),
+        install_physical_link: impl FnOnce(PhysicalOriginalRootLaunchId),
+    ) -> Result<OriginalRootLaunchToken, PhysicalObserverAttachError> {
+        // close() takes the same lifecycle lock before OPEN -> CLOSING.  This
+        // guard therefore keeps the observer OPEN through Event attachment,
+        // both pre-reserved records, and physical-link installation.
+        let _lifecycle = self.inner.lifecycle.lock();
+        if self.inner.state.load(Ordering::SeqCst) != OBSERVER_OPEN {
             return Err(PhysicalObserverAttachError::ObserverClosed);
         }
-        let link = PhysicalOriginalRootLaunchId(next_nonzero(
-            &NEXT_ORIGINAL_ROOT_LAUNCH_ID,
-        ));
-        self.inner
+        let link = PhysicalOriginalRootLaunchId(next_nonzero(&NEXT_ORIGINAL_ROOT_LAUNCH_ID));
+        if self
+            .inner
             .original_root_launch
             .compare_exchange(0, link.get(), Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| PhysicalObserverAttachError::InvalidOriginalRootLaunch)?;
-        Ok(OriginalRootLaunchReservation {
+            .is_err()
+        {
+            return Err(PhysicalObserverAttachError::InvalidOriginalRootLaunch);
+        }
+        let Some(ordinary_slot) = self.inner.ordinary.reserve(2) else {
+            let rollback = self.inner.original_root_launch.compare_exchange(
+                link.get(),
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            debug_assert!(rollback.is_ok());
+            return Err(PhysicalObserverAttachError::InsufficientCapacity);
+        };
+        let reservation = OriginalRootLaunchReservation {
             observer: self.clone(),
             link: Some(link),
-        })
+            ordinary_slot,
+        };
+        // The caller established every fallible Event/token precondition
+        // before entering this helper.  From here through physical-link
+        // installation the private lifecycle lock makes the transaction
+        // non-escapable and close cannot advance to CLOSING.
+        attach_event();
+        Ok(reservation.commit(task, generation, controller_launch, install_physical_link))
     }
 
     pub(crate) fn record_startup_barrier_fallback_prepared(
@@ -1636,9 +1955,7 @@ impl PhysicalEventObserver {
         transaction
     }
 
-    pub(crate) fn prepare_startup_barrier_cleanup_transaction(
-        &self,
-    ) -> PhysicalCleanupTransaction {
+    pub(crate) fn prepare_startup_barrier_cleanup_transaction(&self) -> PhysicalCleanupTransaction {
         PhysicalCleanupTransaction {
             observer: self.id(),
             id: PhysicalCleanupTransactionId(next_nonzero(&NEXT_CLEANUP_TRANSACTION_ID)),
@@ -1760,7 +2077,11 @@ impl PhysicalEventObserver {
                     owner,
                 },
             },
-            &[transaction.observer, barrier.observer, consuming_wait.observer],
+            &[
+                transaction.observer,
+                barrier.observer,
+                consuming_wait.observer,
+            ],
         );
         transaction
     }
@@ -1822,6 +2143,83 @@ impl PhysicalEventObserver {
                 launch,
             },
             &[transaction.observer, terminal_wait.observer],
+        );
+    }
+
+    pub(crate) fn record_startup_cleanup_pidfd_exit_proved(
+        &self,
+        transaction: PhysicalCleanupTransaction,
+        generation: PhysicalEventGenerationId,
+        task: PhysicalTaskIdentity,
+        pidfd: i32,
+        revents: i16,
+    ) {
+        self.record_checked(
+            RecordClass::Cleanup,
+            PhysicalEventRecordKind::StartupCleanupPidfdExitProved {
+                transaction: transaction.id,
+                generation,
+                task,
+                pidfd,
+                revents,
+            },
+            &[transaction.observer],
+        );
+    }
+
+    pub(crate) fn record_startup_cleanup_wait_failure_exit_proved(
+        &self,
+        proof: StartupCleanupWaitFailureExitProof,
+    ) {
+        self.record_checked(
+            RecordClass::Cleanup,
+            PhysicalEventRecordKind::StartupCleanupWaitFailureExitProved {
+                transaction: proof.transaction.id,
+                generation: proof.generation,
+                task: proof.task,
+                pidfd: proof.pidfd,
+                failed_wait: proof.failed_wait.id,
+                error: proof.error,
+                revents: proof.revents,
+            },
+            &[proof.transaction.observer, proof.failed_wait.observer],
+        );
+    }
+
+    pub(crate) fn record_startup_cleanup_resume_failure_exit_proved(
+        &self,
+        proof: StartupCleanupResumeFailureExitProof,
+    ) {
+        self.record_checked(
+            RecordClass::Cleanup,
+            PhysicalEventRecordKind::StartupCleanupResumeFailureExitProved {
+                transaction: proof.transaction.id,
+                generation: proof.generation,
+                task: proof.task,
+                pidfd: proof.pidfd,
+                resume: proof.resume.id,
+                source_status: proof.source_status,
+                error: proof.error,
+                revents: proof.revents,
+            },
+            &[proof.transaction.observer, proof.resume.observer],
+        );
+    }
+
+    pub(crate) fn record_startup_cleanup_executor_transferred(
+        &self,
+        transaction: PhysicalCleanupTransaction,
+        generation: PhysicalEventGenerationId,
+        task: PhysicalTaskIdentity,
+    ) {
+        self.record_checked(
+            RecordClass::Cleanup,
+            PhysicalEventRecordKind::StartupCleanupExecutorTransferred {
+                transaction: transaction.id,
+                generation,
+                task,
+            },
+            &[transaction.observer],
         );
     }
 
@@ -2122,6 +2520,38 @@ impl PhysicalEventObserver {
         );
     }
 
+    pub(crate) fn begin_pidfd_signal(
+        &self,
+        context: PhysicalPidfdSignalContext,
+    ) -> PhysicalPidfdSignalAttempt {
+        let id = PhysicalPidfdSignalAttemptId(next_nonzero(&NEXT_PIDFD_SIGNAL_ATTEMPT_ID));
+        let attempt = PhysicalPidfdSignalAttempt {
+            observer: self.id(),
+            id,
+            context,
+        };
+        self.record(
+            RecordClass::Cleanup,
+            PhysicalEventRecordKind::PidfdSignalAttempt { id, context },
+        );
+        attempt
+    }
+
+    pub(crate) fn finish_pidfd_signal(
+        &self,
+        attempt: PhysicalPidfdSignalAttempt,
+        outcome: PhysicalPidfdSignalOutcome,
+    ) {
+        self.record_checked(
+            RecordClass::Cleanup,
+            PhysicalEventRecordKind::PidfdSignalResult {
+                attempt: attempt.id,
+                outcome,
+            },
+            &[attempt.observer],
+        );
+    }
+
     /// Records that cleanup tolerated an already recorded raw error.
     pub fn tolerate_resume_error(&self, attempt: PhysicalResumeAttempt, errno: i32) {
         self.record_checked(
@@ -2303,10 +2733,12 @@ impl PhysicalEventObserver {
 
     /// Stops accepting records after all notifier and cleanup owners finish.
     ///
-    /// The method waits only for already-entered atomic writers; it acquires no
+    /// The method first excludes the one original-root attachment transaction,
+    /// then waits only for already-entered atomic writers; it acquires no
     /// notifier or registry lock. Any later attempted record is counted and
     /// makes validation fail.
     pub fn close(&self) {
+        let _lifecycle = self.inner.lifecycle.lock();
         if self
             .inner
             .state
@@ -2373,10 +2805,7 @@ impl PhysicalEventObserver {
         );
     }
 
-    pub(crate) fn record_continued_authority_revoked(
-        &self,
-        generation: PhysicalEventGenerationId,
-    ) {
+    pub(crate) fn record_continued_authority_revoked(&self, generation: PhysicalEventGenerationId) {
         self.record(
             RecordClass::Ordinary,
             PhysicalEventRecordKind::ContinuedAuthorityRevoked { generation },
@@ -2426,6 +2855,52 @@ impl PhysicalEventObserver {
             &[
                 barrier.observer,
                 consuming_wait.observer,
+                transaction.observer,
+            ],
+        );
+    }
+
+    pub(crate) fn record_pre_registration_barrier_statusless_failure_linked(
+        &self,
+        generation: PhysicalEventGenerationId,
+        barrier: PhysicalWaitAttempt,
+        cause_wait: PhysicalWaitAttempt,
+        error: i32,
+        transaction: PhysicalCleanupTransaction,
+    ) {
+        self.record_checked(
+            RecordClass::Cleanup,
+            PhysicalEventRecordKind::PreRegistrationBarrierStatuslessFailureLinked {
+                generation,
+                barrier: barrier.id(),
+                cause_wait: cause_wait.id(),
+                error,
+                transaction: transaction.id(),
+            },
+            &[barrier.observer, cause_wait.observer, transaction.observer],
+        );
+    }
+
+    pub(crate) fn record_pre_registration_barrier_statusless_cleanup_resolved(
+        &self,
+        generation: PhysicalEventGenerationId,
+        barrier: PhysicalWaitAttempt,
+        cleanup_wait: PhysicalWaitAttempt,
+        status: Option<PhysicalStatusId>,
+        transaction: PhysicalCleanupTransaction,
+    ) {
+        self.record_checked(
+            RecordClass::Cleanup,
+            PhysicalEventRecordKind::PreRegistrationBarrierStatuslessCleanupResolved {
+                generation,
+                barrier: barrier.id(),
+                cleanup_wait: cleanup_wait.id(),
+                status,
+                transaction: transaction.id(),
+            },
+            &[
+                barrier.observer,
+                cleanup_wait.observer,
                 transaction.observer,
             ],
         );
@@ -3084,6 +3559,9 @@ impl PhysicalEventSnapshot {
 pub enum PhysicalPartitionViolation {
     /// Validation ran before the session closed.
     ObserverOpen,
+    /// An observer-internal invariant failure made the evidence sticky-invalid
+    /// independently of the bounded-buffer counters.
+    ObserverStickyFailure,
     /// At least one record was lost or attempted after close.
     Overflow {
         /// Lost ordinary records.
@@ -3239,6 +3717,15 @@ pub enum PhysicalPartitionViolation {
     DuplicateResumeResult(PhysicalResumeAttemptId),
     /// A resume attempt never received a raw result.
     ResumeAttemptWithoutResult(PhysicalResumeAttemptId),
+    /// A pidfd-signal result had no matching attempt.
+    PidfdSignalResultWithoutAttempt(PhysicalPidfdSignalAttemptId),
+    /// One pidfd-signal attempt received more than one raw result.
+    DuplicatePidfdSignalResult(PhysicalPidfdSignalAttemptId),
+    /// A pidfd-signal attempt never received a raw result.
+    PidfdSignalAttemptWithoutResult(PhysicalPidfdSignalAttemptId),
+    /// A startup cleanup transaction had missing, repeated, or mismatched
+    /// generation-bound pidfd-signal evidence.
+    InvalidStartupCleanupPidfdSignal(PhysicalCleanupTransactionId),
     /// Cleanup tolerated an error different from the recorded raw result.
     InvalidToleratedResumeError(PhysicalResumeAttemptId),
     /// One resume attempt received more than one tolerance record.
@@ -3312,6 +3799,7 @@ struct StatusTrack {
     created_sequence: u64,
     raw_status: Option<i32>,
     undecodable: bool,
+    undecodable_siginfo: Option<PhysicalWaitSiginfo>,
     published: usize,
     publication_destination: Option<PhysicalStatusPublication>,
     publication_sequence: Option<u64>,
@@ -3336,6 +3824,18 @@ struct StatusTrack {
     registered_controller_cleanup_resumes: usize,
     successful_resume_sequence: Option<u64>,
     successful_resume_owner: Option<PhysicalResumeOwner>,
+}
+
+impl StatusTrack {
+    fn startup_typed_unsupported_terminal(&self) -> bool {
+        self.undecodable_siginfo
+            .is_some_and(siginfo_is_startup_typed_unsupported_terminal)
+    }
+
+    fn startup_typed_unsupported_stopped(&self) -> bool {
+        self.undecodable_siginfo
+            .is_some_and(siginfo_is_startup_typed_unsupported_stopped)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3438,6 +3938,36 @@ fn siginfo_is_rejected_by_waitid(siginfo: PhysicalWaitSiginfo) -> bool {
     matches!(shared_waitid_status(siginfo), Err(crate::Errno::EPROTO))
 }
 
+fn siginfo_is_startup_typed_unsupported_terminal(siginfo: PhysicalWaitSiginfo) -> bool {
+    siginfo.code == libc::CLD_KILLED
+        && matches!(
+            crate::waitid::classify_physical_wait_siginfo(
+                siginfo.signo,
+                siginfo.errno,
+                siginfo.code,
+                siginfo.pid,
+                siginfo.uid,
+                siginfo.status,
+            ),
+            Ok(crate::waitid::PhysicalWaitSiginfoClass::ValidButTypedUnsupported)
+        )
+}
+
+fn siginfo_is_startup_typed_unsupported_stopped(siginfo: PhysicalWaitSiginfo) -> bool {
+    siginfo.code == libc::CLD_TRAPPED
+        && matches!(
+            crate::waitid::classify_physical_wait_siginfo(
+                siginfo.signo,
+                siginfo.errno,
+                siginfo.code,
+                siginfo.pid,
+                siginfo.uid,
+                siginfo.status,
+            ),
+            Ok(crate::waitid::PhysicalWaitSiginfoClass::ValidButTypedUnsupported)
+        )
+}
+
 fn siginfo_is_exact_no_status(siginfo: PhysicalWaitSiginfo) -> bool {
     siginfo
         == (PhysicalWaitSiginfo {
@@ -3461,16 +3991,14 @@ fn production_wait_flags(producer: PhysicalWaitProducer) -> i32 {
         }
         PhysicalWaitProducer::NotifierWorker
         | PhysicalWaitProducer::SynchronousWait
-        | PhysicalWaitProducer::RegisteredCleanup => {
-            libc::WEXITED | libc::WSTOPPED | libc::__WALL
-        }
+        | PhysicalWaitProducer::RegisteredCleanup => libc::WEXITED | libc::WSTOPPED | libc::__WALL,
         PhysicalWaitProducer::PreRegistrationBarrier => {
             libc::WEXITED | libc::WSTOPPED | libc::WNOWAIT | libc::__WALL
         }
         PhysicalWaitProducer::PreRegistrationBarrierCleanup => {
-            libc::WEXITED | libc::WSTOPPED | libc::__WALL
+            libc::WEXITED | libc::WSTOPPED | libc::WCONTINUED | libc::__WALL
         }
-        PhysicalWaitProducer::PreRegistrationCleanup => libc::__WALL,
+        PhysicalWaitProducer::PreRegistrationCleanup => libc::__WALL | libc::WNOHANG,
     }
 }
 
@@ -3505,8 +4033,7 @@ fn wait_outcome_matches_flags(context: PhysicalWaitContext, outcome: PhysicalWai
                 libc::CLD_STOPPED | libc::CLD_TRAPPED => context.flags & libc::WSTOPPED != 0,
                 libc::CLD_CONTINUED => context.flags & libc::WCONTINUED != 0,
                 _ => false,
-            }) && (libc::WIFCONTINUED(raw_status)
-                == (siginfo.code == libc::CLD_CONTINUED))
+            }) && (libc::WIFCONTINUED(raw_status) == (siginfo.code == libc::CLD_CONTINUED))
         }
         PhysicalWaitOutcome::Status {
             raw_status,
@@ -3520,9 +4047,17 @@ fn wait_outcome_matches_flags(context: PhysicalWaitContext, outcome: PhysicalWai
             context.producer != PhysicalWaitProducer::PreRegistrationCleanup
         }
         PhysicalWaitOutcome::NoStatus { .. } => context.flags & libc::WNOHANG != 0,
-        PhysicalWaitOutcome::Interrupted
-        | PhysicalWaitOutcome::NoChild
-        | PhysicalWaitOutcome::Error(_) => true,
+        PhysicalWaitOutcome::Interrupted | PhysicalWaitOutcome::NoChild => true,
+        PhysicalWaitOutcome::Error(error) => error != 0,
+    }
+}
+
+fn wait_outcome_matches_errno(outcome: Option<&PhysicalWaitOutcome>, error: i32) -> bool {
+    match outcome {
+        Some(PhysicalWaitOutcome::Interrupted) => error == libc::EINTR,
+        Some(PhysicalWaitOutcome::NoChild) => error == libc::ECHILD,
+        Some(PhysicalWaitOutcome::Error(observed)) => *observed == error,
+        _ => false,
     }
 }
 
@@ -3598,11 +4133,10 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
     if !snapshot.closed {
         violations.push(PhysicalPartitionViolation::ObserverOpen);
     }
-    if snapshot.sticky_failure
-        || snapshot.ordinary_lost != 0
-        || snapshot.cleanup_lost != 0
-        || snapshot.after_close != 0
-    {
+    if snapshot.sticky_failure {
+        violations.push(PhysicalPartitionViolation::ObserverStickyFailure);
+    }
+    if snapshot.ordinary_lost != 0 || snapshot.cleanup_lost != 0 || snapshot.after_close != 0 {
         violations.push(PhysicalPartitionViolation::Overflow {
             ordinary: snapshot.ordinary_lost,
             cleanup: snapshot.cleanup_lost,
@@ -3640,10 +4174,24 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             | PhysicalEventRecordKind::ContinuedAuthorityRevoked { generation }
             | PhysicalEventRecordKind::PreRegistrationBarrierConsumed { generation, .. }
             | PhysicalEventRecordKind::PreRegistrationBarrierFailureLinked { generation, .. }
+            | PhysicalEventRecordKind::PreRegistrationBarrierStatuslessFailureLinked {
+                generation,
+                ..
+            }
+            | PhysicalEventRecordKind::PreRegistrationBarrierStatuslessCleanupResolved {
+                generation,
+                ..
+            }
             | PhysicalEventRecordKind::PreRegistrationBarrierSetupFailed { generation, .. }
             | PhysicalEventRecordKind::StartupSetupCleanupPrepared { generation, .. }
             | PhysicalEventRecordKind::StartupSetupCleanupLinked { generation, .. }
             | PhysicalEventRecordKind::StartupSetupCleanupNoStatusLinked { generation, .. }
+            | PhysicalEventRecordKind::StartupCleanupPidfdExitProved { generation, .. }
+            | PhysicalEventRecordKind::StartupCleanupWaitFailureExitProved { generation, .. }
+            | PhysicalEventRecordKind::StartupCleanupResumeFailureExitProved {
+                generation, ..
+            }
+            | PhysicalEventRecordKind::StartupCleanupExecutorTransferred { generation, .. }
             | PhysicalEventRecordKind::StopResolutionWatchArmed { generation, .. }
             | PhysicalEventRecordKind::StopResolutionFirstStopped { generation, .. }
             | PhysicalEventRecordKind::StopResolutionGroupAcknowledged { generation, .. }
@@ -3688,6 +4236,10 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         generation: Some(generation),
                         ..
                     },
+                ..
+            }
+            | PhysicalEventRecordKind::PidfdSignalAttempt {
+                context: PhysicalPidfdSignalContext { generation, .. },
                 ..
             }
             | PhysicalEventRecordKind::StatusPublished {
@@ -3872,9 +4424,23 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             | PhysicalEventRecordKind::IdentityBound { generation, .. }
             | PhysicalEventRecordKind::PreRegistrationBarrierConsumed { generation, .. }
             | PhysicalEventRecordKind::PreRegistrationBarrierFailureLinked { generation, .. }
+            | PhysicalEventRecordKind::PreRegistrationBarrierStatuslessFailureLinked {
+                generation,
+                ..
+            }
+            | PhysicalEventRecordKind::PreRegistrationBarrierStatuslessCleanupResolved {
+                generation,
+                ..
+            }
             | PhysicalEventRecordKind::PreRegistrationBarrierSetupFailed { generation, .. }
             | PhysicalEventRecordKind::StartupSetupCleanupLinked { generation, .. }
             | PhysicalEventRecordKind::StartupSetupCleanupNoStatusLinked { generation, .. }
+            | PhysicalEventRecordKind::StartupCleanupPidfdExitProved { generation, .. }
+            | PhysicalEventRecordKind::StartupCleanupWaitFailureExitProved { generation, .. }
+            | PhysicalEventRecordKind::StartupCleanupResumeFailureExitProved {
+                generation, ..
+            }
+            | PhysicalEventRecordKind::StartupCleanupExecutorTransferred { generation, .. }
             | PhysicalEventRecordKind::ExecGenerationBound { generation, .. }
             | PhysicalEventRecordKind::SyntheticEchildPublished { generation, .. } => {
                 if !active(generation, &generation_lifecycles) {
@@ -3903,10 +4469,12 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         ..
                     },
                 ..
-            } => {
-                if !active(generation, &generation_lifecycles) {
-                    invalid_generation_lifecycles.insert(generation);
-                }
+            }
+            | PhysicalEventRecordKind::PidfdSignalAttempt {
+                context: PhysicalPidfdSignalContext { generation, .. },
+                ..
+            } if !active(generation, &generation_lifecycles) => {
+                invalid_generation_lifecycles.insert(generation);
             }
             _ => {}
         }
@@ -4056,8 +4624,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             && controller_tgid.as_raw() > 0
             && controller_tid.as_raw() > 0
             && controller_sequence != 0
-            && canonical_generation(generation, &adoptions, &invalid_adoptions)
-                == Some(generation)
+            && canonical_generation(generation, &adoptions, &invalid_adoptions) == Some(generation)
             && global_first_link_sequence == Some(sequence);
         if !valid {
             violations.push(PhysicalPartitionViolation::InvalidOriginalRootLaunch(
@@ -4065,7 +4632,14 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             ));
             None
         } else {
-            Some((link, generation, task, controller_tgid, controller_tid, sequence))
+            Some((
+                link,
+                generation,
+                task,
+                controller_tgid,
+                controller_tid,
+                sequence,
+            ))
         }
     } else {
         for (link, generation, ..) in &original_root_launches {
@@ -4082,6 +4656,50 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         }
         None
     };
+    let exact_original_root_launch_captured =
+        |expected_launch: Option<PhysicalOriginalRootLaunchId>,
+         generation: PhysicalEventGenerationId,
+         task: PhysicalTaskIdentity,
+         before_sequence: u64| {
+            original_root_launch.is_some_and(
+                |(
+                    launch,
+                    launch_generation,
+                    launch_task,
+                    controller_tgid,
+                    controller_tid,
+                    launch_sequence,
+                )| {
+                    expected_launch.is_none_or(|expected| expected == launch)
+                        && launch_generation == generation
+                        && launch_sequence < before_sequence
+                        && launch_task.is_direct_child()
+                        && task.is_captured()
+                        && task.tid == launch_task.tid
+                        && task.tgid == Some(launch_task.tid)
+                        && task.ppid == Some(controller_tgid.as_raw())
+                        && task.tracer_pid.is_some_and(|tracer_pid| {
+                            tracer_pid == 0 || tracer_pid == controller_tid.as_raw()
+                        })
+                },
+            )
+        };
+    let exact_original_root_launch_pidfd_direct =
+        |expected_launch: PhysicalOriginalRootLaunchId,
+         generation: PhysicalEventGenerationId,
+         task: PhysicalTaskIdentity,
+         before_sequence: u64| {
+            original_root_launch.is_some_and(
+                |(launch, launch_generation, launch_task, _, _, launch_sequence)| {
+                    launch == expected_launch
+                        && launch_generation == generation
+                        && launch_sequence < before_sequence
+                        && launch_task.is_direct_child()
+                        && task.is_pidfd_bound_direct_child()
+                        && task.tid == launch_task.tid
+                },
+            )
+        };
     let mut missing_authorities = BTreeSet::new();
     for generation in authority_required {
         if let Some(canonical) = canonical_generation(generation, &adoptions, &invalid_adoptions)
@@ -4095,10 +4713,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
     let mut continued_authorities =
         BTreeMap::<PhysicalEventGenerationId, ContinuedAuthorityTrack>::new();
     let mut invalid_continued_authorities = BTreeSet::new();
-    let mut continued_authority_tasks = Vec::<(
-        PhysicalTaskIdentity,
-        PhysicalEventGenerationId,
-    )>::new();
+    let mut continued_authority_tasks =
+        Vec::<(PhysicalTaskIdentity, PhysicalEventGenerationId)>::new();
     for record in &snapshot.records {
         match record.kind {
             PhysicalEventRecordKind::ContinuedAuthorityEnabled {
@@ -4108,17 +4724,20 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 controller_tracer_tid,
             } => {
                 let canonical = canonical_generation(generation, &adoptions, &invalid_adoptions);
-                let authority = canonical.and_then(|canonical| authorities.get(&canonical).copied());
+                let authority =
+                    canonical.and_then(|canonical| authorities.get(&canonical).copied());
                 let identity_precedes = canonical.is_some_and(|canonical| {
-                    identity_binding_sequences.get(&canonical).is_some_and(|bindings| {
-                        bindings.iter().any(|(task, sequence)| {
-                            *sequence < record.sequence
-                                && task.tid == root
-                                && task.tgid == Some(root)
-                                && task.ppid == Some(controller_tgid)
-                                && task.tracer_pid == Some(controller_tracer_tid)
+                    identity_binding_sequences
+                        .get(&canonical)
+                        .is_some_and(|bindings| {
+                            bindings.iter().any(|(task, sequence)| {
+                                *sequence < record.sequence
+                                    && task.tid == root
+                                    && task.tgid == Some(root)
+                                    && task.ppid == Some(controller_tgid)
+                                    && task.tracer_pid == Some(controller_tracer_tid)
+                            })
                         })
-                    })
                 });
                 let launch_precedes = canonical.is_some_and(|canonical| {
                     original_root_launch.is_some_and(
@@ -4181,18 +4800,20 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 }
             }
             PhysicalEventRecordKind::ContinuedAuthorityRevoked { generation } => {
-                let valid = continued_authorities.get_mut(&generation).is_some_and(|track| {
-                    if track.revoked_sequence.is_some()
-                        || record.sequence <= track.enabled_sequence
-                        || worker_start_sequences
-                            .get(&generation)
-                            .is_none_or(|started| *started >= record.sequence)
-                    {
-                        return false;
-                    }
-                    track.revoked_sequence = Some(record.sequence);
-                    true
-                });
+                let valid = continued_authorities
+                    .get_mut(&generation)
+                    .is_some_and(|track| {
+                        if track.revoked_sequence.is_some()
+                            || record.sequence <= track.enabled_sequence
+                            || worker_start_sequences
+                                .get(&generation)
+                                .is_none_or(|started| *started >= record.sequence)
+                        {
+                            return false;
+                        }
+                        track.revoked_sequence = Some(record.sequence);
+                        true
+                    });
                 if !valid {
                     invalid_continued_authorities.insert(generation);
                 }
@@ -4207,10 +4828,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         let Some(track) = continued_authorities.get(&generation) else {
             continue;
         };
-        if track.root <= 0
-            || track.controller_tgid <= 0
-            || track.controller_tracer_tid <= 0
-        {
+        if track.root <= 0 || track.controller_tgid <= 0 || track.controller_tracer_tid <= 0 {
             invalid_continued_authorities.insert(generation);
         }
     }
@@ -4444,6 +5062,51 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         BTreeMap::<PhysicalResumeAttemptId, PhysicalEventGenerationId>::new();
     let mut resume_results = BTreeMap::<PhysicalResumeAttemptId, PhysicalResumeOutcome>::new();
     let mut resume_result_sequences = BTreeMap::<PhysicalResumeAttemptId, u64>::new();
+    let mut pidfd_signal_attempts =
+        BTreeMap::<PhysicalPidfdSignalAttemptId, PhysicalPidfdSignalContext>::new();
+    let mut pidfd_signal_attempt_sequences = BTreeMap::<PhysicalPidfdSignalAttemptId, u64>::new();
+    let mut pidfd_signal_results =
+        BTreeMap::<PhysicalPidfdSignalAttemptId, PhysicalPidfdSignalOutcome>::new();
+    let mut pidfd_signal_result_sequences = BTreeMap::<PhysicalPidfdSignalAttemptId, u64>::new();
+    let mut startup_pidfd_exit_proofs = BTreeMap::<
+        PhysicalCleanupTransactionId,
+        (
+            PhysicalEventGenerationId,
+            PhysicalTaskIdentity,
+            i32,
+            i16,
+            u64,
+        ),
+    >::new();
+    let mut startup_wait_failure_exit_proofs = BTreeMap::<
+        PhysicalCleanupTransactionId,
+        (
+            PhysicalEventGenerationId,
+            PhysicalTaskIdentity,
+            i32,
+            PhysicalWaitAttemptId,
+            i32,
+            i16,
+            u64,
+        ),
+    >::new();
+    let mut startup_resume_failure_exit_proofs = BTreeMap::<
+        PhysicalCleanupTransactionId,
+        (
+            PhysicalEventGenerationId,
+            PhysicalTaskIdentity,
+            i32,
+            PhysicalResumeAttemptId,
+            PhysicalStatusId,
+            i32,
+            i16,
+            u64,
+        ),
+    >::new();
+    let mut startup_executor_transfers = BTreeMap::<
+        PhysicalCleanupTransactionId,
+        (PhysicalEventGenerationId, PhysicalTaskIdentity, u64),
+    >::new();
     let mut tolerated = BTreeMap::<PhysicalResumeAttemptId, i32>::new();
     let mut tolerated_sequences = BTreeMap::<PhysicalResumeAttemptId, u64>::new();
     let mut ambiguous_resume_resolutions = Vec::<(
@@ -4482,6 +5145,22 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         PhysicalCleanupTransactionId,
         u64,
     )>::new();
+    let mut startup_barrier_statusless_failures = Vec::<(
+        PhysicalEventGenerationId,
+        PhysicalWaitAttemptId,
+        PhysicalWaitAttemptId,
+        i32,
+        PhysicalCleanupTransactionId,
+        u64,
+    )>::new();
+    let mut startup_barrier_statusless_resolutions = Vec::<(
+        PhysicalEventGenerationId,
+        PhysicalWaitAttemptId,
+        PhysicalWaitAttemptId,
+        Option<PhysicalStatusId>,
+        PhysicalCleanupTransactionId,
+        u64,
+    )>::new();
     let mut startup_barrier_setup_failures = Vec::<(
         PhysicalEventGenerationId,
         PhysicalTaskIdentity,
@@ -4516,14 +5195,10 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
     )>::new();
     let mut stop_resolution_arms =
         BTreeMap::<PhysicalStatusId, (PhysicalEventGenerationId, u64)>::new();
-    let mut stop_resolution_first =
-        BTreeMap::<PhysicalStatusId, (PhysicalStatusId, u64)>::new();
-    let mut stop_resolution_acks =
-        BTreeMap::<PhysicalStatusId, (PhysicalStatusId, u64)>::new();
-    let mut stop_resolution_claims =
-        BTreeMap::<PhysicalStatusId, (PhysicalStatusId, u64)>::new();
-    let mut stop_resolution_closes =
-        BTreeMap::<PhysicalStatusId, u64>::new();
+    let mut stop_resolution_first = BTreeMap::<PhysicalStatusId, (PhysicalStatusId, u64)>::new();
+    let mut stop_resolution_acks = BTreeMap::<PhysicalStatusId, (PhysicalStatusId, u64)>::new();
+    let mut stop_resolution_claims = BTreeMap::<PhysicalStatusId, (PhysicalStatusId, u64)>::new();
+    let mut stop_resolution_closes = BTreeMap::<PhysicalStatusId, u64>::new();
     let mut stop_resolution_causal_closes = Vec::<(
         PhysicalEventGenerationId,
         PhysicalStatusId,
@@ -4559,21 +5234,19 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 let continued_authority = continued_authorities.get(&generation);
                 let continued_mode_valid = match context.producer {
                     PhysicalWaitProducer::AuthorizedRootNotifier => continued_authority
-                        .is_some_and(|authority| {
-                            authority.enabled_sequence < record.sequence
-                        }),
-                    PhysicalWaitProducer::PreStopContinuedDrain => continued_authority
-                        .is_some_and(|authority| {
+                        .is_some_and(|authority| authority.enabled_sequence < record.sequence),
+                    PhysicalWaitProducer::PreStopContinuedDrain => {
+                        continued_authority.is_some_and(|authority| {
                             authority.enabled_sequence < record.sequence
                                 && authority
                                     .revoked_sequence
                                     .is_none_or(|revoked| record.sequence < revoked)
-                        }),
+                        })
+                    }
                     PhysicalWaitProducer::NotifierWorker
                     | PhysicalWaitProducer::SynchronousWait => continued_authority.is_none(),
-                    PhysicalWaitProducer::PreRegistrationBarrier => {
-                        continued_authority.is_none()
-                    }
+                    PhysicalWaitProducer::PreRegistrationBarrier => continued_authority
+                        .is_none_or(|authority| record.sequence < authority.enabled_sequence),
                     PhysicalWaitProducer::PreRegistrationCleanup
                     | PhysicalWaitProducer::PreRegistrationBarrierCleanup
                     | PhysicalWaitProducer::RegisteredCleanup => true,
@@ -4589,9 +5262,44 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         | PhysicalWaitProducer::PreRegistrationBarrier
                         | PhysicalWaitProducer::PreRegistrationBarrierCleanup
                 );
+                let original_root_launch_was_linked = original_root_launch.is_some_and(
+                    |(
+                        _,
+                        launch_generation,
+                        launch_task,
+                        controller_tgid,
+                        controller_tid,
+                        launch_sequence,
+                    )| {
+                        let captured_root = context.task.is_captured()
+                            && context.task.tid == launch_task.tid
+                            && context.task.tgid == Some(launch_task.tid)
+                            && context.task.ppid == Some(controller_tgid.as_raw())
+                            && context.task.tracer_pid.is_some_and(|tracer_pid| {
+                                tracer_pid == 0 || tracer_pid == controller_tid.as_raw()
+                            });
+                        context.generation == Some(launch_generation)
+                            && launch_task.is_direct_child()
+                            && context.task.tid == launch_task.tid
+                            && launch_sequence < record.sequence
+                            && match context.producer {
+                                PhysicalWaitProducer::PreRegistrationBarrier => captured_root,
+                                PhysicalWaitProducer::PreRegistrationBarrierCleanup => {
+                                    captured_root || context.task.is_pidfd_bound_direct_child()
+                                }
+                                PhysicalWaitProducer::PreRegistrationCleanup
+                                | PhysicalWaitProducer::AuthorizedRootNotifier
+                                | PhysicalWaitProducer::PreStopContinuedDrain
+                                | PhysicalWaitProducer::NotifierWorker
+                                | PhysicalWaitProducer::SynchronousWait
+                                | PhysicalWaitProducer::RegisteredCleanup => false,
+                            }
+                    },
+                );
                 if !authorities.get(&generation).is_some_and(|authority| {
                     authority.authorizes(context.task, allow_direct_narrowing)
-                }) {
+                }) && !original_root_launch_was_linked
+                {
                     violations.push(PhysicalPartitionViolation::WrongWaitTask(id));
                 }
                 let pre_registration_was_linked = pre_registration_link_sequences
@@ -4612,20 +5320,21 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                     && bound.authorizes(context.task, allow_direct_narrowing)
                             })
                         });
-                let operation_was_authorized_in_time = (matches!(
-                    context.producer,
-                    PhysicalWaitProducer::PreRegistrationCleanup
-                        | PhysicalWaitProducer::PreRegistrationBarrier
-                        | PhysicalWaitProducer::PreRegistrationBarrierCleanup
-                )
-                    && context.task.is_direct_child()
-                    && pre_registration_was_linked)
-                    || (matches!(
-                        context.producer,
-                        PhysicalWaitProducer::PreRegistrationBarrier
-                            | PhysicalWaitProducer::PreRegistrationBarrierCleanup
-                    ) && pre_registration_was_linked)
-                    || identity_was_bound;
+                let operation_was_authorized_in_time = match context.producer {
+                    PhysicalWaitProducer::PreRegistrationCleanup => {
+                        (context.task.is_direct_child() && pre_registration_was_linked)
+                            || identity_was_bound
+                    }
+                    PhysicalWaitProducer::PreRegistrationBarrier
+                    | PhysicalWaitProducer::PreRegistrationBarrierCleanup => {
+                        original_root_launch_was_linked
+                    }
+                    PhysicalWaitProducer::AuthorizedRootNotifier
+                    | PhysicalWaitProducer::PreStopContinuedDrain
+                    | PhysicalWaitProducer::NotifierWorker
+                    | PhysicalWaitProducer::SynchronousWait
+                    | PhysicalWaitProducer::RegisteredCleanup => identity_was_bound,
+                };
                 if !operation_was_authorized_in_time {
                     violations.push(PhysicalPartitionViolation::WaitBeforeIdentityBound(id));
                 }
@@ -4711,19 +5420,19 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                                                                 ..
                                                                             }) if generation == canonical
                                                                                 && task == proof_task
-                                                                                && proof_task.is_direct_child()
+                                                                                && proof_task.is_pidfd_bound_direct_child()
                                                                                 && proof_launch == Some(launch)
                                                                                 && original_root_launch.is_some_and(
                                                                                     |(root_launch, root_generation, root_task, _, _, root_sequence)| {
                                                                                         root_launch == launch
                                                                                             && root_generation == generation
-                                                                                            && root_task == proof_task
+                                                                                            && root_task.authorizes(proof_task, true)
                                                                                             && root_sequence < proof_sequence
                                                                                     }
                                                                                 )
                                                                         ))
                                                                     && revents & libc::POLLIN != 0
-                                                                    && result < proof_sequence
+                                                                    && *result < proof_sequence
                                                                     && proof_sequence < completed
                                                                     && completed < record.sequence
                                                             },
@@ -4739,6 +5448,9 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         Some(PhysicalWaitOutcome::Status { raw_status, .. }) => {
                             libc::WIFEXITED(*raw_status) || libc::WIFSIGNALED(*raw_status)
                         }
+                        Some(PhysicalWaitOutcome::UndecodableStatus { siginfo, .. }) => {
+                            siginfo_is_startup_typed_unsupported_terminal(*siginfo)
+                        }
                         _ => false,
                     };
                     let valid_context = canonical.is_some_and(|canonical| {
@@ -4748,10 +5460,22 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                     context.producer,
                                     PhysicalWaitProducer::PreRegistrationCleanup
                                         | PhysicalWaitProducer::PreRegistrationBarrierCleanup
-                                )
-                                    && authorities.get(&canonical).is_some_and(|authority| {
-                                        authority.authorizes(context.task, true)
-                                    })
+                                ) && (authorities.get(&canonical).is_some_and(|authority| {
+                                    authority.authorizes(context.task, true)
+                                }) || (context.producer
+                                    == PhysicalWaitProducer::PreRegistrationBarrierCleanup
+                                    && context.generation.is_some_and(|raw_generation| {
+                                        wait_attempt_sequences.get(&attempt).is_some_and(
+                                            |wait_sequence| {
+                                                exact_original_root_launch_captured(
+                                                    None,
+                                                    raw_generation,
+                                                    context.task,
+                                                    *wait_sequence,
+                                                )
+                                            },
+                                        )
+                                    })))
                             })
                     });
                     if !valid_outcome || !valid_context {
@@ -4781,14 +5505,12 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 if !task_matches {
                     violations.push(PhysicalPartitionViolation::WaitSiginfoTaskMismatch(attempt));
                 }
-                if let Some(status) = status {
-                    if siginfo_status_attempts
+                if let Some(status) = status
+                    && siginfo_status_attempts
                         .insert(status, attempt)
                         .is_some_and(|owner| owner != attempt)
-                    {
-                        violations
-                            .push(PhysicalPartitionViolation::DuplicatePhysicalStatus(status));
-                    }
+                {
+                    violations.push(PhysicalPartitionViolation::DuplicatePhysicalStatus(status));
                 }
                 if wait_siginfos.insert(attempt, (siginfo, status)).is_some() {
                     violations.push(PhysicalPartitionViolation::WaitSiginfoStatusMismatch(
@@ -4810,18 +5532,18 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 wait_result_sequences.insert(attempt, record.sequence);
                 let status_boundary = match outcome {
                     PhysicalWaitOutcome::Status { id, raw_status, .. } => {
-                        Some((id, Some(raw_status), false))
+                        Some((id, Some(raw_status), false, None))
                     }
                     PhysicalWaitOutcome::UndecodableStatus { id, siginfo, error } => {
                         if error != libc::EPROTO || !siginfo_is_rejected_by_waitid(siginfo) {
                             violations
                                 .push(PhysicalPartitionViolation::InvalidUndecodableStatus(id));
                         }
-                        Some((id, None, true))
+                        Some((id, None, true, Some(siginfo)))
                     }
                     _ => None,
                 };
-                if let Some((id, raw_status, undecodable)) = status_boundary {
+                if let Some((id, raw_status, undecodable, undecodable_siginfo)) = status_boundary {
                     if siginfo_status_attempts
                         .get(&id)
                         .is_some_and(|owner| *owner != attempt)
@@ -4840,6 +5562,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                 created_sequence: record.sequence,
                                 raw_status,
                                 undecodable,
+                                undecodable_siginfo,
                                 ..StatusTrack::default()
                             },
                         )
@@ -4874,6 +5597,34 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 barrier,
                 consuming_wait,
                 consumed_status,
+                transaction,
+                record.sequence,
+            )),
+            PhysicalEventRecordKind::PreRegistrationBarrierStatuslessFailureLinked {
+                generation,
+                barrier,
+                cause_wait,
+                error,
+                transaction,
+            } => startup_barrier_statusless_failures.push((
+                generation,
+                barrier,
+                cause_wait,
+                error,
+                transaction,
+                record.sequence,
+            )),
+            PhysicalEventRecordKind::PreRegistrationBarrierStatuslessCleanupResolved {
+                generation,
+                barrier,
+                cleanup_wait,
+                status,
+                transaction,
+            } => startup_barrier_statusless_resolutions.push((
+                generation,
+                barrier,
+                cleanup_wait,
+                status,
                 transaction,
                 record.sequence,
             )),
@@ -4947,9 +5698,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 }
             }
             PhysicalEventRecordKind::StopResolutionFirstStopped {
-                delivery,
-                stopped,
-                ..
+                delivery, stopped, ..
             } => {
                 if stop_resolution_first
                     .insert(stopped, (delivery, record.sequence))
@@ -5053,6 +5802,86 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 {
                     violations.push(
                         PhysicalPartitionViolation::DuplicateRegisteredCleanupCauseWait(cause_wait),
+                    );
+                }
+            }
+            PhysicalEventRecordKind::StartupCleanupWaitFailureExitProved {
+                transaction,
+                generation,
+                task,
+                pidfd,
+                failed_wait,
+                error,
+                revents,
+            } => {
+                if startup_wait_failure_exit_proofs
+                    .insert(
+                        transaction,
+                        (
+                            generation,
+                            task,
+                            pidfd,
+                            failed_wait,
+                            error,
+                            revents,
+                            record.sequence,
+                        ),
+                    )
+                    .is_some()
+                {
+                    violations.push(
+                        PhysicalPartitionViolation::InvalidRegisteredCleanupTransaction(
+                            transaction,
+                        ),
+                    );
+                }
+            }
+            PhysicalEventRecordKind::StartupCleanupResumeFailureExitProved {
+                transaction,
+                generation,
+                task,
+                pidfd,
+                resume,
+                source_status,
+                error,
+                revents,
+            } => {
+                if startup_resume_failure_exit_proofs
+                    .insert(
+                        transaction,
+                        (
+                            generation,
+                            task,
+                            pidfd,
+                            resume,
+                            source_status,
+                            error,
+                            revents,
+                            record.sequence,
+                        ),
+                    )
+                    .is_some()
+                {
+                    violations.push(
+                        PhysicalPartitionViolation::InvalidRegisteredCleanupTransaction(
+                            transaction,
+                        ),
+                    );
+                }
+            }
+            PhysicalEventRecordKind::StartupCleanupExecutorTransferred {
+                transaction,
+                generation,
+                task,
+            } => {
+                if startup_executor_transfers
+                    .insert(transaction, (generation, task, record.sequence))
+                    .is_some()
+                {
+                    violations.push(
+                        PhysicalPartitionViolation::InvalidRegisteredCleanupTransaction(
+                            transaction,
+                        ),
                     );
                 }
             }
@@ -5229,8 +6058,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         destination == PhysicalStatusPublication::ExternalCleanup;
                     let cleanup_terminal =
                         destination == PhysicalStatusPublication::CleanupTerminal;
-                    let startup_cleanup_terminal = destination
-                        == PhysicalStatusPublication::StartupBarrierCleanupTerminal;
+                    let startup_cleanup_terminal =
+                        destination == PhysicalStatusPublication::StartupBarrierCleanupTerminal;
                     let cleanup_stopped = destination == PhysicalStatusPublication::CleanupStopped;
                     let pre_stop_drain_failure =
                         destination == PhysicalStatusPublication::PreStopDrainFailureCleanup;
@@ -5238,7 +6067,15 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         destination == PhysicalStatusPublication::StartupBarrierFailureCleanup;
                     let startup_cleanup_stopped =
                         destination == PhysicalStatusPublication::StartupBarrierCleanupStopped;
-                    if track.undecodable && !startup_barrier_failure {
+                    let typed_unsupported_startup_terminal =
+                        startup_cleanup_terminal && track.startup_typed_unsupported_terminal();
+                    let typed_unsupported_startup_stopped =
+                        startup_cleanup_stopped && track.startup_typed_unsupported_stopped();
+                    if track.undecodable
+                        && !startup_barrier_failure
+                        && !typed_unsupported_startup_terminal
+                        && !typed_unsupported_startup_stopped
+                    {
                         violations
                             .push(PhysicalPartitionViolation::UndecodableStatusEscaped(status));
                     }
@@ -5246,13 +6083,11 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         || (external_cleanup
                             && !matches!(
                                 (recorded_generation, track.producer),
-                                (
-                                    None,
-                                    Some(PhysicalWaitProducer::PreRegistrationCleanup)
-                                ) | (
-                                    Some(_),
-                                    Some(PhysicalWaitProducer::PreRegistrationBarrierCleanup)
-                                )
+                                (None, Some(PhysicalWaitProducer::PreRegistrationCleanup))
+                                    | (
+                                        Some(_),
+                                        Some(PhysicalWaitProducer::PreRegistrationBarrierCleanup)
+                                    )
                             ))
                         || (cleanup_terminal || cleanup_stopped)
                             && (generation.is_none()
@@ -5283,9 +6118,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         || startup_cleanup_stopped
                             && (generation.is_none()
                                 || track.producer
-                                    != Some(
-                                        PhysicalWaitProducer::PreRegistrationBarrierCleanup,
-                                    ))
+                                    != Some(PhysicalWaitProducer::PreRegistrationBarrierCleanup))
                         || (!external_cleanup
                             && !cleanup_terminal
                             && !startup_cleanup_terminal
@@ -5334,7 +6167,9 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                         == Some(PhysicalWaitProducer::AuthorizedRootNotifier)
                                 }
                             };
-                            producer_matches && raw_status.is_some_and(libc::WIFCONTINUED)
+                            producer_matches
+                                && raw_status
+                                    .is_some_and(|raw_status| libc::WIFCONTINUED(raw_status))
                         }
                         PhysicalStatusPublication::RetainedTerminal => {
                             matches!(
@@ -5353,8 +6188,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                     PhysicalWaitProducer::NotifierWorker
                                         | PhysicalWaitProducer::AuthorizedRootNotifier
                                 )
-                            )
-                                && raw_status.is_some_and(is_ptrace_exit_stop)
+                            ) && raw_status.is_some_and(is_ptrace_exit_stop)
                         }
                         PhysicalStatusPublication::SynchronousFifo => {
                             track.producer == Some(PhysicalWaitProducer::SynchronousWait)
@@ -5367,8 +6201,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                     PhysicalWaitProducer::PreRegistrationCleanup
                                         | PhysicalWaitProducer::PreRegistrationBarrierCleanup
                                 )
-                            )
-                                && raw_status.is_some_and(|raw_status| libc::WIFSTOPPED(raw_status))
+                            ) && raw_status.is_some_and(|raw_status| libc::WIFSTOPPED(raw_status))
                         }
                         PhysicalStatusPublication::ExternalCleanup => {
                             matches!(
@@ -5377,8 +6210,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                     PhysicalWaitProducer::PreRegistrationCleanup
                                         | PhysicalWaitProducer::PreRegistrationBarrierCleanup
                                 )
-                            )
-                                && raw_status.is_some_and(is_terminal_raw_status)
+                            ) && raw_status.is_some_and(is_terminal_raw_status)
                         }
                         PhysicalStatusPublication::CleanupTerminal => {
                             track.producer == Some(PhysicalWaitProducer::RegisteredCleanup)
@@ -5391,8 +6223,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                     PhysicalWaitProducer::PreRegistrationBarrierCleanup
                                         | PhysicalWaitProducer::AuthorizedRootNotifier
                                 )
-                            )
-                                && raw_status.is_some_and(is_terminal_raw_status)
+                            ) && (raw_status.is_some_and(is_terminal_raw_status)
+                                || track.startup_typed_unsupported_terminal())
                         }
                         PhysicalStatusPublication::CleanupStopped => {
                             track.producer == Some(PhysicalWaitProducer::RegisteredCleanup)
@@ -5424,7 +6256,9 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         PhysicalStatusPublication::StartupBarrierCleanupStopped => {
                             track.producer
                                 == Some(PhysicalWaitProducer::PreRegistrationBarrierCleanup)
-                                && raw_status.is_some_and(libc::WIFSTOPPED)
+                                && (raw_status
+                                    .is_some_and(|raw_status| libc::WIFSTOPPED(raw_status))
+                                    || track.startup_typed_unsupported_stopped())
                         }
                     };
                     if !producer_and_shape_valid || track.created_sequence >= record.sequence {
@@ -5444,7 +6278,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     }
                     let terminal = track.raw_status.is_some_and(|raw_status| {
                         libc::WIFEXITED(raw_status) || libc::WIFSIGNALED(raw_status)
-                    });
+                    }) || typed_unsupported_startup_terminal;
                     if !terminal {
                         if external_cleanup {
                             violations.push(
@@ -5578,19 +6412,18 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         }
                     }
                 }
-                if reservations.contains_key(&reservation) {
+                if let std::collections::btree_map::Entry::Vacant(e) =
+                    reservations.entry(reservation)
+                {
+                    e.insert(ReservationTrack {
+                        status: Some(status),
+                        reserved_sequence: Some(record.sequence),
+                        ..ReservationTrack::default()
+                    });
+                } else {
                     violations.push(PhysicalPartitionViolation::DuplicateReservation(
                         reservation,
                     ));
-                } else {
-                    reservations.insert(
-                        reservation,
-                        ReservationTrack {
-                            status: Some(status),
-                            reserved_sequence: Some(record.sequence),
-                            ..ReservationTrack::default()
-                        },
-                    );
                 }
             }
             PhysicalEventRecordKind::ReservationCommitted {
@@ -5704,9 +6537,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         track.continued_side_channel_dispositions += 1;
                         track.continued_side_channel_sequence = Some(record.sequence);
                         if track.continued_side_channel_route.replace(route).is_some() {
-                            violations.push(PhysicalPartitionViolation::InvalidStatusDisposition(
-                                status,
-                            ));
+                            violations
+                                .push(PhysicalPartitionViolation::InvalidStatusDisposition(status));
                         }
                     }
                     if disposition == PhysicalStatusDisposition::DecodeDied {
@@ -5764,19 +6596,161 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     continue;
                 };
                 resume_generations.insert(id, generation);
-                let allow_direct_narrowing =
-                    matches!(
-                        context.owner,
-                        PhysicalResumeOwner::PreRegistrationCleanup
-                            | PhysicalResumeOwner::StartupBarrierCleanup
-                    );
-                let authority_matches = authorities.get(&generation).is_some_and(|authority| {
-                    authority.authorizes(context.task, allow_direct_narrowing)
-                        || (context.owner.is_startup_barrier_cleanup()
-                            && authority.is_direct_child()
-                            && context.task.is_captured()
-                            && authority.tid == context.task.tid)
-                });
+                let allow_direct_narrowing = matches!(
+                    context.owner,
+                    PhysicalResumeOwner::PreRegistrationCleanup
+                        | PhysicalResumeOwner::StartupBarrierCleanup
+                );
+                let opaque_launch_retained_barrier_resume = context.owner
+                    == PhysicalResumeOwner::StartupBarrierCleanup
+                    && context.generation.is_some_and(|raw_generation| {
+                        exact_original_root_launch_captured(
+                            None,
+                            raw_generation,
+                            context.task,
+                            record.sequence,
+                        )
+                    })
+                    && context.source_status.is_some_and(|status| {
+                        statuses.get(&status).is_some_and(|status_track| {
+                            status_track.producer
+                                == Some(PhysicalWaitProducer::PreRegistrationBarrierCleanup)
+                        }) && cleanup_status_transactions
+                            .get(&status)
+                            .and_then(|transaction| cleanup_transactions.get(transaction))
+                            .is_some_and(|cleanup| {
+                                cleanup.statuses.contains_key(&status)
+                                    && matches!(
+                                        cleanup.kind,
+                                        Some(
+                                            PhysicalCleanupTransactionKind::StartupBarrier {
+                                                generation: transaction_generation,
+                                                task,
+                                                owner: PhysicalStartupCleanupOwner::Unstarted,
+                                                ..
+                                            }
+                                        ) if context.generation
+                                            == Some(transaction_generation)
+                                            && task == context.task
+                                    )
+                            })
+                    });
+                let opaque_launch_startup_setup_resume = context.owner
+                    == PhysicalResumeOwner::StartupBarrierCleanup
+                    && context.source_status.is_some_and(|status| {
+                        let Some(transaction) = cleanup_status_transactions.get(&status) else {
+                            return false;
+                        };
+                        let Some(cleanup) = cleanup_transactions.get(transaction) else {
+                            return false;
+                        };
+                        let Some(PhysicalCleanupTransactionKind::StartupSetup {
+                            generation: transaction_generation,
+                            task,
+                            error,
+                            launch,
+                        }) = cleanup.kind
+                        else {
+                            return false;
+                        };
+                        if context.generation != Some(transaction_generation)
+                            || context.task != task
+                            || !task.is_pidfd_bound_direct_child()
+                            || cleanup.cause_wait.is_none()
+                            || !cleanup.statuses.contains_key(&status)
+                        {
+                            return false;
+                        }
+                        let cause_wait = cleanup.cause_wait.expect("checked setup cause wait");
+                        let matching_failures = startup_barrier_setup_failures
+                            .iter()
+                            .filter(|(generation, candidate_task, candidate_error, candidate_launch, _)| {
+                                *generation == transaction_generation
+                                    && *candidate_task == task
+                                    && *candidate_error == error
+                                    && *candidate_launch == launch
+                            })
+                            .collect::<Vec<_>>();
+                        let matching_prepared = startup_setup_prepared
+                            .iter()
+                            .filter(|(generation, candidate_task, candidate_error, candidate_transaction, candidate_launch, _)| {
+                                *generation == transaction_generation
+                                    && *candidate_task == task
+                                    && *candidate_error == error
+                                    && *candidate_transaction == *transaction
+                                    && *candidate_launch == launch
+                            })
+                            .collect::<Vec<_>>();
+                        let matching_links = startup_setup_linked
+                            .iter()
+                            .filter(|(generation, candidate_error, wait, candidate_status, candidate_transaction, candidate_launch, _)| {
+                                *generation == transaction_generation
+                                    && *candidate_error == error
+                                    && *wait == cause_wait
+                                    && *candidate_status == status
+                                    && *candidate_transaction == *transaction
+                                    && *candidate_launch == launch
+                            })
+                            .collect::<Vec<_>>();
+                        let ([failure], [prepared], [linked]) = (
+                            matching_failures.as_slice(),
+                            matching_prepared.as_slice(),
+                            matching_links.as_slice(),
+                        ) else {
+                            return false;
+                        };
+                        let (_, _, _, _, failure_sequence) = **failure;
+                        let (_, _, _, _, _, prepared_sequence) = **prepared;
+                        let (_, _, _, _, _, _, linked_sequence) = **linked;
+                        exact_original_root_launch_pidfd_direct(
+                            launch,
+                            transaction_generation,
+                            task,
+                            failure_sequence,
+                        ) && matches!(
+                            wait_outcomes.get(&cause_wait),
+                            Some(PhysicalWaitOutcome::Status { id, .. })
+                                | Some(PhysicalWaitOutcome::UndecodableStatus { id, .. })
+                                if *id == status
+                        ) && wait_attempts.get(&cause_wait).is_some_and(|wait_context| {
+                            wait_context.generation == Some(transaction_generation)
+                                && wait_context.task == task
+                                && wait_context.producer
+                                    == PhysicalWaitProducer::PreRegistrationBarrierCleanup
+                        }) && wait_attempt_sequences.get(&cause_wait).is_some_and(|attempt| {
+                            wait_result_sequences.get(&cause_wait).is_some_and(|result| {
+                                cleanup.start_sequence.is_some_and(|start| {
+                                    cleanup.statuses.get(&status).is_some_and(|status_link| {
+                                        statuses.get(&status).is_some_and(|status_track| {
+                                            status_track.producer
+                                                == Some(PhysicalWaitProducer::PreRegistrationBarrierCleanup)
+                                                && status_track.task == Some(task)
+                                                && status_track.publication_sequence.is_some_and(|published| {
+                                                    failure_sequence < prepared_sequence
+                                                        && prepared_sequence < *attempt
+                                                        && *attempt < *result
+                                                        && *result < start
+                                                        && start < *status_link
+                                                        && *status_link < linked_sequence
+                                                        && linked_sequence < published
+                                                        && published < record.sequence
+                                                })
+                                        })
+                                    })
+                                })
+                            })
+                        })
+                    });
+                let opaque_launch_startup_resume =
+                    opaque_launch_retained_barrier_resume || opaque_launch_startup_setup_resume;
+                let authority_matches =
+                    if context.owner == PhysicalResumeOwner::StartupBarrierCleanup {
+                        opaque_launch_startup_resume
+                    } else {
+                        authorities.get(&generation).is_some_and(|authority| {
+                            authority.authorizes(context.task, allow_direct_narrowing)
+                        })
+                    };
                 let identity_was_bound =
                     identity_binding_sequences
                         .get(&generation)
@@ -5797,8 +6771,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     });
                 let startup_barrier_cleanup = context.source_status.is_some_and(|status| {
                     statuses.get(&status).is_some_and(|track| {
-                        track.producer
-                            == Some(PhysicalWaitProducer::PreRegistrationBarrierCleanup)
+                        track.producer == Some(PhysicalWaitProducer::PreRegistrationBarrierCleanup)
                     })
                 });
                 let status_matches = context.source_status.is_none_or(|status| {
@@ -5824,6 +6797,53 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                 || track.producer == Some(PhysicalWaitProducer::RegisteredCleanup)
                         })
                 });
+                let startup_wait_failure_handoff = context.source_status.is_some_and(|status| {
+                    cleanup_status_transactions
+                        .get(&status)
+                        .and_then(|transaction| cleanup_transactions.get(transaction))
+                        .is_some_and(|track| {
+                            matches!(
+                                track.kind,
+                                Some(PhysicalCleanupTransactionKind::StartupBarrier {
+                                    owner: PhysicalStartupCleanupOwner::AuthorizedWorker,
+                                    ..
+                                })
+                            )
+                        })
+                });
+                let authorized_root_external_cleanup =
+                    context.source_status.is_some_and(|status| {
+                        cleanup_status_transactions
+                            .get(&status)
+                            .and_then(|transaction| {
+                                cleanup_transactions
+                                    .get(transaction)
+                                    .zip(startup_executor_transfers.get(transaction))
+                            })
+                            .is_some_and(
+                                |(track, (transfer_generation, transfer_task, transfer))| {
+                                    matches!(
+                                        track.kind,
+                                        Some(PhysicalCleanupTransactionKind::StartupBarrier {
+                                            generation: transaction_generation,
+                                            task,
+                                            owner: PhysicalStartupCleanupOwner::AuthorizedWorker,
+                                            ..
+                                        }) if transaction_generation == generation
+                                            && *transfer_generation == generation
+                                            && task.authorizes(*transfer_task, false)
+                                            && transfer_task.authorizes(context.task, false)
+                                    ) && *transfer < record.sequence
+                                        && startup_barrier_statusless_resolutions.iter().any(
+                                            |(_, _, _, resolved_status, transaction, resolved)| {
+                                                *transaction == cleanup_status_transactions[&status]
+                                                    && *resolved_status == Some(status)
+                                                    && *resolved < record.sequence
+                                            },
+                                        )
+                                },
+                            )
+                    });
                 let cleanup_shape_valid = match context.owner {
                     PhysicalResumeOwner::TypedStopped => context
                         .signal
@@ -5838,14 +6858,21 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     }
                     PhysicalResumeOwner::StartupBarrierCleanup => {
                         context.operation == PhysicalResumeOperation::Continue
-                            && context.signal == Some(libc::SIGKILL)
+                            && context.signal.is_none()
                             && startup_barrier_cleanup
+                    }
+                    PhysicalResumeOwner::AuthorizedRootExternalCleanup => {
+                        context.operation == PhysicalResumeOperation::Continue
+                            && context.signal.is_none()
+                            && authorized_root_external_cleanup
                     }
                     PhysicalResumeOwner::SynchronousCancellation
                     | PhysicalResumeOwner::RootCleanup
                     | PhysicalResumeOwner::DescendantCleanup => {
                         context.operation == PhysicalResumeOperation::Continue
-                            && if registered_wait_failure_handoff {
+                            && if startup_wait_failure_handoff {
+                                context.signal.is_none()
+                            } else if registered_wait_failure_handoff {
                                 context.signal == Some(libc::SIGKILL)
                             } else {
                                 context.signal.is_none()
@@ -5872,23 +6899,24 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 if !cleanup_shape_valid {
                     violations.push(PhysicalPartitionViolation::InvalidCleanupResumeShape(id));
                 }
-                if !identity_was_bound
-                    && !(matches!(
-                        context.owner,
-                        PhysicalResumeOwner::PreRegistrationCleanup
-                            | PhysicalResumeOwner::StartupBarrierCleanup
-                    )
-                        && pre_registration_was_linked)
-                    && !(context.owner == PhysicalResumeOwner::TypedStopped
-                        && context.task.is_direct_child()
-                        && pre_registration_was_linked
-                        && context.source_status.is_some_and(|status| {
-                            statuses.get(&status).is_some_and(|track| {
-                                track.publication_destination
-                                    == Some(PhysicalStatusPublication::DirectStopped)
-                            })
-                        }))
-                {
+                let resume_was_authorized_in_time =
+                    if context.owner == PhysicalResumeOwner::StartupBarrierCleanup {
+                        opaque_launch_startup_resume
+                    } else {
+                        identity_was_bound
+                            || (context.owner == PhysicalResumeOwner::PreRegistrationCleanup
+                                && pre_registration_was_linked)
+                            || (context.owner == PhysicalResumeOwner::TypedStopped
+                                && context.task.is_direct_child()
+                                && pre_registration_was_linked
+                                && context.source_status.is_some_and(|status| {
+                                    statuses.get(&status).is_some_and(|track| {
+                                        track.publication_destination
+                                            == Some(PhysicalStatusPublication::DirectStopped)
+                                    })
+                                }))
+                    };
+                if !resume_was_authorized_in_time {
                     violations.push(PhysicalPartitionViolation::ResumeBeforeIdentityBound(id));
                 }
             }
@@ -5898,10 +6926,63 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         attempt,
                     ));
                 }
+                if outcome == PhysicalResumeOutcome::Error(0) {
+                    violations.push(PhysicalPartitionViolation::InvalidCleanupResumeShape(
+                        attempt,
+                    ));
+                }
                 if resume_results.insert(attempt, outcome).is_some() {
                     violations.push(PhysicalPartitionViolation::DuplicateResumeResult(attempt));
                 }
                 resume_result_sequences.insert(attempt, record.sequence);
+            }
+            PhysicalEventRecordKind::PidfdSignalAttempt { id, context } => {
+                let duplicate_context = pidfd_signal_attempts.insert(id, context).is_some();
+                let duplicate_sequence = pidfd_signal_attempt_sequences
+                    .insert(id, record.sequence)
+                    .is_some();
+                if duplicate_context || duplicate_sequence {
+                    violations.push(
+                        PhysicalPartitionViolation::InvalidStartupCleanupPidfdSignal(
+                            context.transaction,
+                        ),
+                    );
+                }
+            }
+            PhysicalEventRecordKind::PidfdSignalResult { attempt, outcome } => {
+                if !pidfd_signal_attempts.contains_key(&attempt) {
+                    violations.push(PhysicalPartitionViolation::PidfdSignalResultWithoutAttempt(
+                        attempt,
+                    ));
+                }
+                let duplicate_result = pidfd_signal_results.insert(attempt, outcome).is_some();
+                let duplicate_sequence = pidfd_signal_result_sequences
+                    .insert(attempt, record.sequence)
+                    .is_some();
+                if duplicate_result || duplicate_sequence {
+                    violations.push(PhysicalPartitionViolation::DuplicatePidfdSignalResult(
+                        attempt,
+                    ));
+                }
+            }
+            PhysicalEventRecordKind::StartupCleanupPidfdExitProved {
+                transaction,
+                generation,
+                task,
+                pidfd,
+                revents,
+            } => {
+                if startup_pidfd_exit_proofs
+                    .insert(
+                        transaction,
+                        (generation, task, pidfd, revents, record.sequence),
+                    )
+                    .is_some()
+                {
+                    violations.push(
+                        PhysicalPartitionViolation::InvalidStartupCleanupPidfdSignal(transaction),
+                    );
+                }
             }
             PhysicalEventRecordKind::ResumeErrorTolerated { attempt, errno } => {
                 if tolerated.contains_key(&attempt) || tolerated_sequences.contains_key(&attempt) {
@@ -5937,7 +7018,12 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
     >::new();
     let mut startup_fallback_released = BTreeMap::<
         PhysicalWaitAttemptId,
-        (PhysicalEventGenerationId, PhysicalWaitAttemptId, PhysicalStatusId, u64),
+        (
+            PhysicalEventGenerationId,
+            PhysicalWaitAttemptId,
+            PhysicalStatusId,
+            u64,
+        ),
     >::new();
     let mut startup_prepared_transactions =
         BTreeMap::<PhysicalCleanupTransactionId, Option<PhysicalWaitAttemptId>>::new();
@@ -5950,21 +7036,11 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 task,
                 transaction,
             } => {
-                let launch_valid = original_root_launches.iter().any(
-                    |(
-                        candidate,
-                        launch_generation,
-                        launch_task,
-                        _,
-                        _,
-                        _,
-                        launch_sequence,
-                    )| {
-                        *candidate == launch
-                            && *launch_generation == generation
-                            && launch_task.authorizes(task, true)
-                            && *launch_sequence < record.sequence
-                    },
+                let launch_valid = exact_original_root_launch_captured(
+                    Some(launch),
+                    generation,
+                    task,
+                    record.sequence,
                 );
                 let barrier_valid = wait_attempts.get(&barrier).is_some_and(|context| {
                     context.generation == Some(generation)
@@ -6002,18 +7078,16 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 barrier,
                 consuming_wait,
                 status,
-            } => {
-                if startup_fallback_released
-                    .insert(
-                        barrier,
-                        (generation, consuming_wait, status, record.sequence),
-                    )
-                    .is_some()
-                {
-                    violations.push(PhysicalPartitionViolation::InvalidPreRegistrationBarrier(
-                        barrier,
-                    ));
-                }
+            } if startup_fallback_released
+                .insert(
+                    barrier,
+                    (generation, consuming_wait, status, record.sequence),
+                )
+                .is_some() =>
+            {
+                violations.push(PhysicalPartitionViolation::InvalidPreRegistrationBarrier(
+                    barrier,
+                ));
             }
             _ => {}
         }
@@ -6023,9 +7097,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             .insert(*transaction, None)
             .is_some()
         {
-            violations.push(
-                PhysicalPartitionViolation::InvalidPreRegistrationSetupFailure(*generation),
-            );
+            violations
+                .push(PhysicalPartitionViolation::InvalidPreRegistrationSetupFailure(*generation));
         }
     }
     let mut startup_barrier_owners =
@@ -6091,34 +7164,34 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         });
         let producer_order = consuming_context.is_some_and(|context| match context.producer {
             PhysicalWaitProducer::AuthorizedRootNotifier => {
-                let identity_bound = identity_binding_sequences
-                    .get(generation)
-                    .is_some_and(|bindings| {
-                        bindings.iter().any(|(_, sequence)| {
-                            barrier_result.is_some_and(|barrier_result| {
-                                barrier_result < *sequence
-                                    && continued_authorities.get(generation).is_some_and(
-                                        |authority| {
-                                            *sequence < authority.enabled_sequence
-                                                && worker_start_sequences
-                                                    .get(generation)
-                                                    .is_some_and(|started| {
-                                                        authority.enabled_sequence < *started
-                                                            && *started
-                                                                < consuming_attempt
-                                                                    .unwrap_or(u64::MAX)
-                                                    })
-                                        },
-                                    )
+                let identity_bound =
+                    identity_binding_sequences
+                        .get(generation)
+                        .is_some_and(|bindings| {
+                            bindings.iter().any(|(_, sequence)| {
+                                barrier_result.is_some_and(|barrier_result| {
+                                    barrier_result < *sequence
+                                        && continued_authorities.get(generation).is_some_and(
+                                            |authority| {
+                                                *sequence < authority.enabled_sequence
+                                                    && worker_start_sequences
+                                                        .get(generation)
+                                                        .is_some_and(|started| {
+                                                            authority.enabled_sequence < *started
+                                                                && *started
+                                                                    < consuming_attempt
+                                                                        .unwrap_or(u64::MAX)
+                                                        })
+                                            },
+                                        )
+                                })
                             })
-                        })
-                    });
+                        });
                 let first_authorized_wait = wait_attempts
                     .iter()
                     .filter(|(_, candidate)| {
                         candidate.generation == Some(*generation)
-                            && candidate.producer
-                                == PhysicalWaitProducer::AuthorizedRootNotifier
+                            && candidate.producer == PhysicalWaitProducer::AuthorizedRootNotifier
                     })
                     .filter_map(|(attempt, _)| {
                         wait_attempt_sequences
@@ -6131,30 +7204,21 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 identity_bound && first_authorized_wait == Some(*consuming_wait)
             }
             PhysicalWaitProducer::PreRegistrationBarrierCleanup => {
-                original_root_launch.is_some_and(
-                    |(_, launch_generation, launch_task, _, _, launch_sequence)| {
-                        launch_generation == *generation
-                            && launch_task.authorizes(context.task, true)
-                            && launch_sequence < barrier_result.unwrap_or(u64::MAX)
-                    },
-                )
-                    && worker_start_sequences.get(generation).is_none()
+                exact_original_root_launch_captured(
+                    None,
+                    *generation,
+                    context.task,
+                    barrier_result.unwrap_or(u64::MAX),
+                ) && !worker_start_sequences.contains_key(generation)
                     && wait_attempts.values().all(|candidate| {
                         candidate.generation != Some(*generation)
-                            || candidate.producer
-                                != PhysicalWaitProducer::AuthorizedRootNotifier
+                            || candidate.producer != PhysicalWaitProducer::AuthorizedRootNotifier
                     })
             }
             _ => false,
         });
         let prepared_order = startup_fallback_prepared.get(barrier).is_some_and(
-            |(
-                _,
-                prepared_generation,
-                prepared_task,
-                prepared_transaction,
-                prepared_sequence,
-            )| {
+            |(_, prepared_generation, prepared_task, prepared_transaction, prepared_sequence)| {
                 *prepared_generation == *generation
                     && consuming_context
                         .is_some_and(|context| prepared_task.authorizes(context.task, false))
@@ -6164,46 +7228,46 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         PhysicalWaitProducer::AuthorizedRootNotifier => {
                             !cleanup_transactions.contains_key(prepared_transaction)
                         }
-                        PhysicalWaitProducer::PreRegistrationBarrierCleanup => {
-                            cleanup_transactions.get(prepared_transaction).is_some_and(
-                                |cleanup| {
-                                    cleanup.starts == 1
-                                        && cleanup.cause_wait == Some(*consuming_wait)
-                                        && cleanup.statuses.contains_key(consumed_status)
-                                        && matches!(
-                                            cleanup.kind,
-                                            Some(
-                                                PhysicalCleanupTransactionKind::StartupBarrier {
-                                                    generation: transaction_generation,
-                                                    barrier: transaction_barrier,
-                                                    task,
-                                                    owner: PhysicalStartupCleanupOwner::Unstarted,
-                                                }
-                                            ) if transaction_generation == *generation
-                                                && transaction_barrier == *barrier
-                                                && prepared_task.authorizes(task, false)
-                                        )
-                                },
-                            )
-                        }
+                        PhysicalWaitProducer::PreRegistrationBarrierCleanup => cleanup_transactions
+                            .get(prepared_transaction)
+                            .is_some_and(|cleanup| {
+                                cleanup.starts == 1
+                                    && cleanup.cause_wait == Some(*consuming_wait)
+                                    && cleanup.statuses.contains_key(consumed_status)
+                                    && matches!(
+                                        cleanup.kind,
+                                        Some(
+                                            PhysicalCleanupTransactionKind::StartupBarrier {
+                                                generation: transaction_generation,
+                                                barrier: transaction_barrier,
+                                                task,
+                                                owner: PhysicalStartupCleanupOwner::Unstarted,
+                                            }
+                                        ) if transaction_generation == *generation
+                                            && transaction_barrier == *barrier
+                                            && prepared_task.authorizes(task, false)
+                                    )
+                            }),
                         _ => false,
                     })
             },
         );
         let release_order = consuming_context.is_some_and(|context| match context.producer {
-            PhysicalWaitProducer::AuthorizedRootNotifier => startup_fallback_released
-                .get(barrier)
-                .is_some_and(|(released_generation, released_wait, released_status, released)| {
-                    *released_generation == *generation
-                        && *released_wait == *consuming_wait
-                        && *released_status == *consumed_status
-                        && *link_sequence < *released
-                        && statuses.get(consumed_status).is_some_and(|status| {
-                            status
-                                .publication_sequence
-                                .is_some_and(|published| *released < published)
-                        })
-                }),
+            PhysicalWaitProducer::AuthorizedRootNotifier => {
+                startup_fallback_released.get(barrier).is_some_and(
+                    |(released_generation, released_wait, released_status, released)| {
+                        *released_generation == *generation
+                            && *released_wait == *consuming_wait
+                            && *released_status == *consumed_status
+                            && *link_sequence < *released
+                            && statuses.get(consumed_status).is_some_and(|status| {
+                                status
+                                    .publication_sequence
+                                    .is_some_and(|published| *released < published)
+                            })
+                    },
+                )
+            }
             PhysicalWaitProducer::PreRegistrationBarrierCleanup => {
                 !startup_fallback_released.contains_key(barrier)
             }
@@ -6226,14 +7290,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             ));
         }
     }
-    for (
-        generation,
-        barrier,
-        consuming_wait,
-        consumed_status,
-        transaction,
-        link_sequence,
-    ) in &startup_barrier_failures
+    for (generation, barrier, consuming_wait, consumed_status, transaction, link_sequence) in
+        &startup_barrier_failures
     {
         let barrier_context = wait_attempts.get(barrier);
         let consuming_context = wait_attempts.get(consuming_wait);
@@ -6254,8 +7312,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     siginfo: Some(siginfo),
                 }),
             ) => {
-                id == consumed_status
-                    && (raw_status != retained_raw || siginfo != retained_siginfo)
+                id == consumed_status && (raw_status != retained_raw || siginfo != retained_siginfo)
             }
             (
                 Some(PhysicalWaitOutcome::RetainedStatus { .. }),
@@ -6266,12 +7323,9 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 Some(PhysicalWaitOutcome::Status { id, .. }),
             ) => id == consumed_status,
             (
-                Some(PhysicalWaitOutcome::RetainedUndecodableStatus {
-                    siginfo: retained_siginfo,
-                    ..
-                }),
-                Some(PhysicalWaitOutcome::UndecodableStatus { id, siginfo, .. }),
-            ) => id == consumed_status && siginfo == retained_siginfo,
+                Some(PhysicalWaitOutcome::RetainedUndecodableStatus { .. }),
+                Some(PhysicalWaitOutcome::UndecodableStatus { id, .. }),
+            ) => id == consumed_status,
             _ => false,
         };
         let same_generation_task = matches!((barrier_context, consuming_context),
@@ -6353,25 +7407,18 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 }),
             PhysicalWaitProducer::PreRegistrationBarrierCleanup => {
                 !continued_authorities.contains_key(generation)
-                    && worker_start_sequences.get(generation).is_none()
-                    && original_root_launch.is_some_and(
-                        |(_, launch_generation, launch_task, _, _, launch_sequence)| {
-                            launch_generation == *generation
-                                && launch_task.authorizes(context.task, true)
-                                && launch_sequence < consuming_attempt.unwrap_or(u64::MAX)
-                        },
+                    && !worker_start_sequences.contains_key(generation)
+                    && exact_original_root_launch_captured(
+                        None,
+                        *generation,
+                        context.task,
+                        consuming_attempt.unwrap_or(u64::MAX),
                     )
             }
             _ => false,
         });
         let prepared_order = startup_fallback_prepared.get(barrier).is_some_and(
-            |(
-                _,
-                prepared_generation,
-                prepared_task,
-                prepared_transaction,
-                prepared_sequence,
-            )| {
+            |(_, prepared_generation, prepared_task, prepared_transaction, prepared_sequence)| {
                 *prepared_generation == *generation
                     && consuming_context
                         .is_some_and(|context| prepared_task.authorizes(context.task, false))
@@ -6399,8 +7446,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             .iter()
             .filter(|(_, candidate)| {
                 candidate.generation == Some(*generation)
-                    && candidate.producer
-                        == PhysicalWaitProducer::PreRegistrationBarrierCleanup
+                    && candidate.producer == PhysicalWaitProducer::PreRegistrationBarrierCleanup
             })
             .filter_map(|(attempt, _)| {
                 wait_attempt_sequences
@@ -6415,11 +7461,10 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 && cleanup.cause_wait == Some(*consuming_wait)
                 && cleanup.statuses.contains_key(consumed_status)
                 && match cleanup.kind {
-                    Some(PhysicalCleanupTransactionKind::Registered) => {
-                        consuming_context.is_some_and(|context| {
+                    Some(PhysicalCleanupTransactionKind::Registered) => consuming_context
+                        .is_some_and(|context| {
                             context.producer == PhysicalWaitProducer::AuthorizedRootNotifier
-                        })
-                    }
+                        }),
                     Some(PhysicalCleanupTransactionKind::StartupBarrier {
                         generation: transaction_generation,
                         barrier: transaction_barrier,
@@ -6474,8 +7519,348 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             ));
         }
     }
+    let mut valid_startup_barrier_statusless_transactions = BTreeSet::new();
+    let mut valid_startup_barrier_statusless_resolution_sequences = BTreeSet::new();
+    for (generation, barrier, cause_wait, error, transaction, link_sequence) in
+        &startup_barrier_statusless_failures
+    {
+        let barrier_context = wait_attempts.get(barrier);
+        let cause_context = wait_attempts.get(cause_wait);
+        let barrier_result = wait_result_sequences.get(barrier).copied();
+        let cause_attempt = wait_attempt_sequences.get(cause_wait).copied();
+        let cause_result = wait_result_sequences.get(cause_wait).copied();
+        let cleanup = cleanup_transactions.get(transaction);
+        let authorized_wait_count = wait_attempts
+            .iter()
+            .filter(|(_, candidate)| {
+                candidate.generation == Some(*generation)
+                    && candidate.producer == PhysicalWaitProducer::AuthorizedRootNotifier
+            })
+            .count();
+        let mut authorized_waits = wait_attempts
+            .iter()
+            .filter(|(_, candidate)| {
+                candidate.generation == Some(*generation)
+                    && candidate.producer == PhysicalWaitProducer::AuthorizedRootNotifier
+            })
+            .filter_map(|(attempt, _)| {
+                Some((
+                    *attempt,
+                    wait_attempt_sequences.get(attempt).copied()?,
+                    wait_result_sequences.get(attempt).copied()?,
+                ))
+            })
+            .collect::<Vec<_>>();
+        authorized_waits.sort_by_key(|(_, attempt, _)| *attempt);
+        let authorized_wait_prefix_valid = authorized_waits.len() == authorized_wait_count
+            && authorized_waits
+                .last()
+                .is_some_and(|(attempt, _, _)| *attempt == *cause_wait)
+            && authorized_waits.iter().enumerate().all(
+                |(index, (attempt, attempt_sequence, result_sequence))| {
+                    *attempt_sequence < *result_sequence
+                        && authorized_waits
+                            .get(index + 1)
+                            .is_none_or(|(_, next_attempt, _)| *result_sequence < *next_attempt)
+                        && if *attempt == *cause_wait {
+                            index + 1 == authorized_waits.len()
+                                && wait_outcome_matches_errno(wait_outcomes.get(attempt), *error)
+                        } else {
+                            matches!(
+                                wait_outcomes.get(attempt),
+                                Some(PhysicalWaitOutcome::Interrupted)
+                            )
+                        }
+                },
+            );
+        let first_authorized_attempt_sequence =
+            authorized_waits.first().map(|(_, attempt, _)| *attempt);
+        let exact_prepared = startup_fallback_prepared.get(barrier).is_some_and(
+            |(_, prepared_generation, prepared_task, prepared_transaction, prepared_sequence)| {
+                *prepared_generation == *generation
+                    && *prepared_transaction == *transaction
+                    && barrier_result.is_some_and(|result| result < *prepared_sequence)
+                    && first_authorized_attempt_sequence
+                        .is_some_and(|attempt| *prepared_sequence < attempt)
+                    && cause_context
+                        .is_some_and(|context| prepared_task.authorizes(context.task, false))
+                    && !startup_fallback_released.contains_key(barrier)
+            },
+        );
+        let exact_transaction = cleanup.is_some_and(|cleanup| {
+            cleanup.starts == 1
+                && cleanup.cause_wait == Some(*cause_wait)
+                && cleanup.start_sequence.is_some_and(|started| {
+                    cause_result.is_some_and(|result| result < started && started < *link_sequence)
+                })
+                && matches!(
+                    cleanup.kind,
+                    Some(PhysicalCleanupTransactionKind::StartupBarrier {
+                        generation: transaction_generation,
+                        barrier: transaction_barrier,
+                        task,
+                        owner: PhysicalStartupCleanupOwner::AuthorizedWorker,
+                    }) if transaction_generation == *generation
+                        && transaction_barrier == *barrier
+                        && cause_context
+                            .is_some_and(|context| task.authorizes(context.task, false))
+                )
+        });
+        let authority_ordered = barrier_result.is_some_and(|barrier_result| {
+            continued_authorities
+                .get(generation)
+                .is_some_and(|authority| {
+                    identity_binding_sequences
+                        .get(generation)
+                        .is_some_and(|bindings| {
+                            bindings.iter().any(|(_, identity)| {
+                                worker_start_sequences
+                                    .get(generation)
+                                    .is_some_and(|started| {
+                                        barrier_result < *identity
+                                            && *identity < authority.enabled_sequence
+                                            && authority.enabled_sequence < *started
+                                            && first_authorized_attempt_sequence
+                                                .is_some_and(|attempt| *started < attempt)
+                                    })
+                            })
+                        })
+                })
+        });
+        let matching_resolutions = startup_barrier_statusless_resolutions
+            .iter()
+            .filter(
+                |(resolved_generation, resolved_barrier, _, _, resolved_transaction, _)| {
+                    *resolved_generation == *generation
+                        && *resolved_barrier == *barrier
+                        && *resolved_transaction == *transaction
+                },
+            )
+            .collect::<Vec<_>>();
+        let exact_resolution = match matching_resolutions.as_slice() {
+            [(_, _, cleanup_wait, resolved_status, _, resolution_sequence)] => {
+                let cleanup_wait = *cleanup_wait;
+                let resolution_sequence = *resolution_sequence;
+                let cleanup_context = wait_attempts.get(&cleanup_wait);
+                let cleanup_attempt = wait_attempt_sequences.get(&cleanup_wait).copied();
+                let cleanup_result = wait_result_sequences.get(&cleanup_wait).copied();
+                let signal_sequences = pidfd_signal_attempts
+                    .iter()
+                    .filter(|(_, context)| context.transaction == *transaction)
+                    .filter_map(|(attempt, _)| {
+                        pidfd_signal_attempt_sequences
+                            .get(attempt)
+                            .copied()
+                            .zip(pidfd_signal_result_sequences.get(attempt).copied())
+                    })
+                    .collect::<Vec<_>>();
+                let ordered = matches!(signal_sequences.as_slice(), [(signal, result)]
+                    if *link_sequence < *signal
+                        && *signal < *result
+                        && cleanup_attempt.is_some_and(|attempt| *result < attempt)
+                        && cleanup_result.is_some_and(|result| {
+                            cleanup_attempt.is_some_and(|attempt| {
+                                attempt < result && result < resolution_sequence
+                            })
+                        })
+                        && cleanup.and_then(|cleanup| cleanup.completion_sequence)
+                            .is_some_and(|completed| resolution_sequence < completed));
+                let exact_shape = match *resolved_status {
+                    Some(status) => {
+                        let retained = wait_outcomes.get(barrier);
+                        let consumed = wait_outcomes.get(&cleanup_wait);
+                        let exact_retained = matches!(
+                            (retained, consumed),
+                            (
+                                Some(PhysicalWaitOutcome::RetainedStatus {
+                                    raw_status: retained_raw,
+                                    siginfo: retained_siginfo,
+                                }),
+                                Some(PhysicalWaitOutcome::Status {
+                                    id,
+                                    raw_status,
+                                    siginfo: Some(siginfo),
+                                }),
+                            ) if *id == status
+                                && raw_status == retained_raw
+                                && siginfo == retained_siginfo
+                        ) || matches!(
+                            (retained, consumed),
+                            (
+                                Some(PhysicalWaitOutcome::RetainedUndecodableStatus {
+                                    siginfo: retained_siginfo,
+                                    error: retained_error,
+                                }),
+                                Some(PhysicalWaitOutcome::UndecodableStatus {
+                                    id,
+                                    siginfo,
+                                    error,
+                                }),
+                            ) if *id == status
+                                && siginfo == retained_siginfo
+                                && error == retained_error
+                        );
+                        let terminal_superseded = matches!(
+                            consumed,
+                            Some(PhysicalWaitOutcome::Status { id, raw_status, .. })
+                                if *id == status && is_terminal_raw_status(*raw_status)
+                        );
+                        let exit_stop_signal_attempts = pidfd_signal_attempts
+                            .iter()
+                            .filter(|(_, context)| context.transaction == *transaction)
+                            .collect::<Vec<_>>();
+                        let accepted_exit_signal = matches!(
+                            exit_stop_signal_attempts.as_slice(),
+                            [(signal_attempt, _)] if pidfd_signal_results
+                                .get(signal_attempt)
+                                .is_some_and(|outcome| {
+                                    matches!(
+                                        outcome,
+                                        PhysicalPidfdSignalOutcome::Success
+                                            | PhysicalPidfdSignalOutcome::Error(libc::ESRCH)
+                                    )
+                                }) && pidfd_signal_result_sequences
+                                    .get(signal_attempt)
+                                    .is_some_and(|signal| {
+                                        cleanup_attempt.is_some_and(|wait| *signal < wait)
+                                    })
+                        );
+                        let exit_stop_resumes = resume_attempts
+                            .iter()
+                            .filter(|(_, context)| context.source_status == Some(status))
+                            .collect::<Vec<_>>();
+                        let exact_exit_resume = matches!(
+                            exit_stop_resumes.as_slice(),
+                            [(resume, context)] if context.owner
+                                == PhysicalResumeOwner::AuthorizedRootExternalCleanup
+                                && context.operation == PhysicalResumeOperation::Continue
+                                && context.signal.is_none()
+                                && resume_attempt_sequences.get(resume).is_some_and(|attempt| {
+                                    resolution_sequence < *attempt
+                                        && resume_result_sequences.get(resume).is_some_and(
+                                            |result| {
+                                                *attempt < *result
+                                                    && cleanup
+                                                        .and_then(|cleanup| {
+                                                            cleanup.completion_sequence
+                                                        })
+                                                        .is_some_and(|completed| {
+                                                            *result < completed
+                                                        })
+                                            },
+                                        )
+                                })
+                        );
+                        let exit_stop_superseded = matches!(
+                            consumed,
+                            Some(PhysicalWaitOutcome::Status { id, raw_status, .. })
+                                if *id == status && is_ptrace_exit_stop(*raw_status)
+                        ) && accepted_exit_signal
+                            && exact_exit_resume;
+                        (exact_retained || terminal_superseded || exit_stop_superseded)
+                            && cleanup.is_some_and(|cleanup| {
+                                cleanup.statuses.get(&status).is_some_and(|linked| {
+                                    statuses.get(&status).is_some_and(|status| {
+                                        status.publication_sequence.is_some_and(|published| {
+                                            *linked < published && published < resolution_sequence
+                                        })
+                                    })
+                                })
+                            })
+                    }
+                    None => {
+                        matches!(
+                            wait_outcomes.get(&cleanup_wait),
+                            Some(PhysicalWaitOutcome::NoChild)
+                        ) && cleanup.is_some_and(|cleanup| {
+                            cleanup.pidfd_exit_proof.is_some_and(
+                                |(proof_wait, _, _, revents, _, proof_sequence)| {
+                                    proof_wait == cleanup_wait
+                                        && revents & libc::POLLIN != 0
+                                        && cleanup_result.is_some_and(|result| {
+                                            result < proof_sequence
+                                                && proof_sequence < resolution_sequence
+                                        })
+                                },
+                            )
+                        })
+                    }
+                };
+                ordered
+                    && exact_shape
+                    && cleanup_context.is_some_and(|context| {
+                        context.generation == Some(*generation)
+                            && context.producer == PhysicalWaitProducer::RegisteredCleanup
+                            && cause_context
+                                .is_some_and(|cause| cause.task.authorizes(context.task, false))
+                    })
+            }
+            _ => false,
+        };
+        let valid = *error != 0
+            && *error != libc::EINTR
+            && authorized_wait_prefix_valid
+            && matches!(
+                (barrier_context, cause_context),
+                (Some(barrier_context), Some(cause_context))
+                    if barrier_context.generation == Some(*generation)
+                        && barrier_context.producer
+                            == PhysicalWaitProducer::PreRegistrationBarrier
+                        && cause_context.generation == Some(*generation)
+                        && cause_context.producer
+                            == PhysicalWaitProducer::AuthorizedRootNotifier
+                        && barrier_context.task.same_stable_task(cause_context.task)
+            )
+            && matches!(
+                wait_outcomes.get(barrier),
+                Some(
+                    PhysicalWaitOutcome::RetainedStatus { .. }
+                        | PhysicalWaitOutcome::RetainedUndecodableStatus { .. }
+                )
+            )
+            && wait_outcome_matches_errno(wait_outcomes.get(cause_wait), *error)
+            && barrier_result.is_some_and(|barrier_result| {
+                cause_attempt.is_some_and(|cause_attempt| {
+                    cause_result.is_some_and(|cause_result| {
+                        barrier_result < cause_attempt
+                            && cause_attempt < cause_result
+                            && cause_result < *link_sequence
+                    })
+                })
+            })
+            && exact_prepared
+            && exact_transaction
+            && authority_ordered
+            && exact_resolution
+            && startup_barrier_owners
+                .insert(*barrier, *cause_wait)
+                .is_none()
+            && startup_consuming_waits.insert(*cause_wait)
+            && startup_barrier_failure_transactions
+                .insert(*transaction, *barrier)
+                .is_none();
+        if !valid {
+            violations.push(PhysicalPartitionViolation::InvalidPreRegistrationBarrier(
+                *barrier,
+            ));
+        } else {
+            valid_startup_barrier_statusless_transactions.insert(*transaction);
+            if let [(_, _, _, _, _, resolution_sequence)] = matching_resolutions.as_slice() {
+                valid_startup_barrier_statusless_resolution_sequences.insert(*resolution_sequence);
+            }
+        }
+    }
     for barrier in startup_fallback_prepared.keys() {
         if !startup_barrier_owners.contains_key(barrier) {
+            violations.push(PhysicalPartitionViolation::InvalidPreRegistrationBarrier(
+                *barrier,
+            ));
+        }
+    }
+    for (_, barrier, _, _, transaction, sequence) in &startup_barrier_statusless_resolutions {
+        if !valid_startup_barrier_statusless_transactions.contains(transaction)
+            || !valid_startup_barrier_statusless_resolution_sequences.contains(sequence)
+        {
             violations.push(PhysicalPartitionViolation::InvalidPreRegistrationBarrier(
                 *barrier,
             ));
@@ -6493,7 +7878,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
     }
     for (attempt, context) in &wait_attempts {
         if context.producer == PhysicalWaitProducer::PreRegistrationBarrier {
-            let retained_owner = startup_barrier_owners.get(attempt).is_some()
+            let retained_owner = startup_barrier_owners.contains_key(attempt)
                 && matches!(
                     wait_outcomes.get(attempt),
                     Some(
@@ -6512,11 +7897,13 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     context.generation == Some(*generation)
                         && barrier_context.generation == context.generation
                         && barrier_context.task.same_stable_task(context.task)
-                        && wait_result_sequences.get(attempt).is_some_and(|interrupted| {
-                            wait_attempt_sequences
-                                .get(barrier)
-                                .is_some_and(|retained| interrupted < retained)
-                        })
+                        && wait_result_sequences
+                            .get(attempt)
+                            .is_some_and(|interrupted| {
+                                wait_attempt_sequences
+                                    .get(barrier)
+                                    .is_some_and(|retained| interrupted < retained)
+                            })
                 },
             ) || matches!(
                 wait_outcomes.get(attempt),
@@ -6529,25 +7916,44 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     context.generation == Some(*generation)
                         && barrier_context.generation == context.generation
                         && barrier_context.task.same_stable_task(context.task)
-                        && wait_result_sequences.get(attempt).is_some_and(|interrupted| {
-                            wait_attempt_sequences
-                                .get(barrier)
-                                .is_some_and(|retained| interrupted < retained)
-                        })
+                        && wait_result_sequences
+                            .get(attempt)
+                            .is_some_and(|interrupted| {
+                                wait_attempt_sequences
+                                    .get(barrier)
+                                    .is_some_and(|retained| interrupted < retained)
+                            })
                 },
-            );
+            ) || matches!(
+                wait_outcomes.get(attempt),
+                Some(PhysicalWaitOutcome::Interrupted)
+            ) && startup_barrier_statusless_failures
+                .iter()
+                .any(|(generation, barrier, _, _, _, _)| {
+                    let Some(barrier_context) = wait_attempts.get(barrier) else {
+                        return false;
+                    };
+                    context.generation == Some(*generation)
+                        && barrier_context.generation == context.generation
+                        && barrier_context.task.same_stable_task(context.task)
+                        && wait_result_sequences
+                            .get(attempt)
+                            .is_some_and(|interrupted| {
+                                wait_attempt_sequences
+                                    .get(barrier)
+                                    .is_some_and(|retained| interrupted < retained)
+                            })
+                });
             let setup_failure_owned = startup_barrier_setup_failures.iter().any(
                 |(generation, task, _, _, failure_sequence)| {
                     context.generation == Some(*generation)
                         && context.task.authorizes(*task, true)
-                        && wait_result_sequences.get(attempt).is_some_and(|result| {
-                            *result < *failure_sequence
-                        })
+                        && wait_result_sequences
+                            .get(attempt)
+                            .is_some_and(|result| *result < *failure_sequence)
                         && match wait_outcomes.get(attempt) {
                             Some(PhysicalWaitOutcome::Interrupted) => true,
-                            Some(PhysicalWaitOutcome::Error(error)) => {
-                                *error != libc::EINTR
-                            }
+                            Some(PhysicalWaitOutcome::Error(error)) => *error != libc::EINTR,
                             _ => false,
                         }
                 },
@@ -6571,12 +7977,21 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         );
         let matching_prepared = startup_setup_prepared
             .iter()
-            .filter(|(candidate_generation, candidate_task, candidate_error, _, candidate_launch, _)| {
-                candidate_generation == generation
-                    && candidate_task == task
-                    && candidate_error == error
-                    && candidate_launch == launch
-            })
+            .filter(
+                |(
+                    candidate_generation,
+                    candidate_task,
+                    candidate_error,
+                    _,
+                    candidate_launch,
+                    _,
+                )| {
+                    candidate_generation == generation
+                        && candidate_task == task
+                        && candidate_error == error
+                        && candidate_launch == launch
+                },
+            )
             .collect::<Vec<_>>();
         let typed_cleanup = if matching_prepared.len() == 1 {
             let (_, _, _, transaction, _, prepared_sequence) = *matching_prepared[0];
@@ -6602,14 +8017,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             let matching_no_status_linked = startup_setup_no_status_linked
                 .iter()
                 .filter(
-                    |(
-                        linked_generation,
-                        linked_error,
-                        _,
-                        linked_transaction,
-                        linked_launch,
-                        _,
-                    )| {
+                    |(linked_generation, linked_error, _, linked_transaction, linked_launch, _)| {
                         *linked_generation == *generation
                             && *linked_error == *error
                             && *linked_transaction == transaction
@@ -6632,8 +8040,9 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                     status_track.publication_sequence.is_some_and(|published| {
                                         wait_attempt_sequences.get(&consuming_wait).is_some_and(
                                             |attempt| {
-                                                wait_result_sequences.get(&consuming_wait).is_some_and(
-                                                    |result| {
+                                                wait_result_sequences
+                                                    .get(&consuming_wait)
+                                                    .is_some_and(|result| {
                                                         *failure_sequence < prepared_sequence
                                                             && prepared_sequence < *attempt
                                                             && *attempt < *result
@@ -6643,11 +8052,11 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                                                         && started < *status_link
                                                                         && *status_link
                                                                             < linked_sequence
-                                                                        && linked_sequence < published
+                                                                        && linked_sequence
+                                                                            < published
                                                                 },
                                                             )
-                                                    },
-                                                )
+                                                    })
                                             },
                                         )
                                     })
@@ -6680,8 +8089,9 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                             && cleanup.cause_wait == Some(consuming_wait)
                             && cleanup.statuses.is_empty()
                             && cleanup.start_sequence.is_some_and(|started| {
-                                wait_attempt_sequences.get(&consuming_wait).is_some_and(
-                                    |attempt| {
+                                wait_attempt_sequences
+                                    .get(&consuming_wait)
+                                    .is_some_and(|attempt| {
                                         wait_result_sequences.get(&consuming_wait).is_some_and(
                                             |result| {
                                                 *failure_sequence < prepared_sequence
@@ -6691,8 +8101,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                                     && started < linked_sequence
                                             },
                                         )
-                                    },
-                                )
+                                    })
                             })
                             && cleanup
                                 .completion_sequence
@@ -6731,8 +8140,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 }
                 wait_attempts.get(terminal_wait).is_some_and(|context| {
                     context.generation == Some(*generation)
-                        && context.producer
-                            == PhysicalWaitProducer::PreRegistrationBarrierCleanup
+                        && context.producer == PhysicalWaitProducer::PreRegistrationBarrierCleanup
                         && context.task.authorizes(*task, true)
                         && wait_result_sequences
                             .get(terminal_wait)
@@ -6773,35 +8181,39 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     })
                 })
                 && fatal_attempts.first().is_some_and(|fatal| {
-                    wait_attempt_sequences.get(fatal).is_some_and(|fatal_started| {
-                        barrier_attempts.iter().all(|attempt| {
-                            *attempt == *fatal
-                                || wait_result_sequences
-                                    .get(attempt)
-                                    .is_some_and(|result| result < fatal_started)
+                    wait_attempt_sequences
+                        .get(fatal)
+                        .is_some_and(|fatal_started| {
+                            barrier_attempts.iter().all(|attempt| {
+                                *attempt == *fatal
+                                    || wait_result_sequences
+                                        .get(attempt)
+                                        .is_some_and(|result| result < fatal_started)
+                            })
                         })
-                    })
                 })
         };
         let exact_setup_error = if let Some(fatal) = fatal_attempts.first() {
             fatal_attempts.len() == 1
-                && wait_outcomes.get(fatal)
-                    == Some(&PhysicalWaitOutcome::Error(*error))
+                && wait_outcomes.get(fatal) == Some(&PhysicalWaitOutcome::Error(*error))
         } else {
             barrier_attempts.is_empty()
                 || barrier_attempts.iter().all(|attempt| {
-                    matches!(wait_outcomes.get(attempt), Some(PhysicalWaitOutcome::Interrupted))
+                    matches!(
+                        wait_outcomes.get(attempt),
+                        Some(PhysicalWaitOutcome::Interrupted)
+                    )
                 })
         };
         let no_started_authority = !continued_authorities.contains_key(generation)
-            && worker_start_sequences.get(generation).is_none()
+            && !worker_start_sequences.contains_key(generation)
             && !wait_attempts.values().any(|context| {
                 context.generation == Some(*generation)
                     && context.producer == PhysicalWaitProducer::AuthorizedRootNotifier
             });
         let unique = valid_startup_setup_failures.insert(*generation);
         if *error == 0
-            || (!task.is_direct_child() && !task.is_captured())
+            || (!task.is_pidfd_bound_direct_child() && !task.is_captured())
             || !linked_once
             || !typed_cleanup
             || !terminal_cleanup
@@ -6810,9 +8222,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             || !no_started_authority
             || !unique
         {
-            violations.push(
-                PhysicalPartitionViolation::InvalidPreRegistrationSetupFailure(*generation),
-            );
+            violations
+                .push(PhysicalPartitionViolation::InvalidPreRegistrationSetupFailure(*generation));
         }
     }
     for generation in startup_setup_prepared
@@ -6830,9 +8241,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         )
     {
         if !valid_startup_setup_failures.contains(&generation) {
-            violations.push(
-                PhysicalPartitionViolation::InvalidPreRegistrationSetupFailure(generation),
-            );
+            violations
+                .push(PhysicalPartitionViolation::InvalidPreRegistrationSetupFailure(generation));
         }
     }
     for (generation, error, consuming_wait, transaction, launch, _) in
@@ -6841,45 +8251,49 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         let matching_failures = startup_barrier_setup_failures
             .iter()
             .filter(|(failed_generation, _, failed_error, failed_launch, _)| {
-                failed_generation == generation
-                    && failed_error == error
-                    && failed_launch == launch
+                failed_generation == generation && failed_error == error && failed_launch == launch
             })
             .collect::<Vec<_>>();
         let exact_owner = match matching_failures.as_slice() {
             [failure] => {
                 let (_, task, _, failure_launch, _) = **failure;
-                startup_setup_prepared.iter().filter(
-                    |(
-                        prepared_generation,
-                        prepared_task,
-                        prepared_error,
-                        prepared_transaction,
-                        prepared_launch,
-                        _,
-                    )| {
-                        prepared_generation == generation
-                            && *prepared_task == task
-                            && prepared_error == error
-                            && prepared_transaction == transaction
-                            && *prepared_launch == failure_launch
-                    },
-                ).count() == 1
-                    && cleanup_transactions.get(transaction).is_some_and(|cleanup| {
-                        cleanup.cause_wait == Some(*consuming_wait)
-                            && matches!(
-                                cleanup.kind,
-                                Some(PhysicalCleanupTransactionKind::StartupSetup {
-                                    generation: cleanup_generation,
-                                    task: cleanup_task,
-                                    error: cleanup_error,
-                                    launch: cleanup_launch,
-                                }) if cleanup_generation == *generation
-                                    && cleanup_task == task
-                                    && cleanup_error == *error
-                                    && cleanup_launch == failure_launch
-                            )
-                    })
+                startup_setup_prepared
+                    .iter()
+                    .filter(
+                        |(
+                            prepared_generation,
+                            prepared_task,
+                            prepared_error,
+                            prepared_transaction,
+                            prepared_launch,
+                            _,
+                        )| {
+                            prepared_generation == generation
+                                && *prepared_task == task
+                                && prepared_error == error
+                                && prepared_transaction == transaction
+                                && *prepared_launch == failure_launch
+                        },
+                    )
+                    .count()
+                    == 1
+                    && cleanup_transactions
+                        .get(transaction)
+                        .is_some_and(|cleanup| {
+                            cleanup.cause_wait == Some(*consuming_wait)
+                                && matches!(
+                                    cleanup.kind,
+                                    Some(PhysicalCleanupTransactionKind::StartupSetup {
+                                        generation: cleanup_generation,
+                                        task: cleanup_task,
+                                        error: cleanup_error,
+                                        launch: cleanup_launch,
+                                    }) if cleanup_generation == *generation
+                                        && cleanup_task == task
+                                        && cleanup_error == *error
+                                        && cleanup_launch == failure_launch
+                                )
+                        })
                     && wait_attempts.get(consuming_wait).is_some_and(|context| {
                         context.generation == Some(*generation)
                             && context.producer
@@ -6894,9 +8308,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             _ => false,
         };
         if !exact_owner {
-            violations.push(
-                PhysicalPartitionViolation::InvalidPreRegistrationSetupFailure(*generation),
-            );
+            violations
+                .push(PhysicalPartitionViolation::InvalidPreRegistrationSetupFailure(*generation));
         }
     }
     let mut startup_generations = BTreeSet::new();
@@ -6928,13 +8341,12 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 .get(barrier)
                 .is_some_and(|context| context.generation == Some(generation))
                 && wait_attempts.get(consuming).is_some_and(|context| {
-                    context.producer
-                        == PhysicalWaitProducer::PreRegistrationBarrierCleanup
+                    context.producer == PhysicalWaitProducer::PreRegistrationBarrierCleanup
                 })
         });
         let authority_shape = if cleanup_owned {
             !continued_authorities.contains_key(&generation)
-                && worker_start_sequences.get(&generation).is_none()
+                && !worker_start_sequences.contains_key(&generation)
         } else {
             continued_authorities.contains_key(&generation)
         };
@@ -6963,13 +8375,15 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 && track
                     .publication_sequence
                     .is_some_and(|published| published < *armed)
-        }) && continued_authorities.get(generation).is_some_and(|authority| {
-            authority.enabled_sequence < *armed
-                && authority
-                    .revoked_sequence
-                    .is_none_or(|revoked| *armed < revoked)
-        }) && stop_resolution_close_sequence(delivery)
-            .is_some_and(|closed| *armed < closed);
+        }) && continued_authorities
+            .get(generation)
+            .is_some_and(|authority| {
+                authority.enabled_sequence < *armed
+                    && authority
+                        .revoked_sequence
+                        .is_none_or(|revoked| *armed < revoked)
+            })
+            && stop_resolution_close_sequence(delivery).is_some_and(|closed| *armed < closed);
         if !valid {
             violations.push(PhysicalPartitionViolation::InvalidStopResolutionEvidence(
                 *delivery,
@@ -6982,7 +8396,9 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             .is_some_and(|(generation, armed)| {
                 statuses.get(stopped).is_some_and(|track| {
                     track.generation == Some(*generation)
-                        && track.raw_status.is_some_and(libc::WIFSTOPPED)
+                        && track
+                            .raw_status
+                            .is_some_and(|raw_status| libc::WIFSTOPPED(raw_status))
                         && track.created_sequence < *first_sequence
                         && track
                             .publication_sequence
@@ -7004,9 +8420,9 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     && *first < *acknowledged
                     && statuses.get(group_stop).is_some_and(|track| {
                         track.raw_status.is_some_and(is_plain_sigstop)
-                            && track.publication_sequence.is_some_and(|published| {
-                                published < *acknowledged
-                            })
+                            && track
+                                .publication_sequence
+                                .is_some_and(|published| published < *acknowledged)
                     })
             });
         if !valid {
@@ -7020,16 +8436,18 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             .get(group_stop)
             .is_some_and(|(_, acknowledged)| {
                 statuses.get(continued).is_some_and(|track| {
-                    track.raw_status.is_some_and(libc::WIFCONTINUED)
+                    track
+                        .raw_status
+                        .is_some_and(|raw_status| libc::WIFCONTINUED(raw_status))
                         && track.publication_destination
                             == Some(PhysicalStatusPublication::ContinuedSideChannel {
                                 route: PhysicalContinuedStatusRoute::AfterAcknowledgedGroupStop,
                             })
                         && *acknowledged < track.created_sequence
                         && track.publication_sequence.is_some_and(|published| {
-                            track.continued_side_channel_sequence.is_some_and(|disposed| {
-                                published < disposed && disposed < *claimed
-                            })
+                            track
+                                .continued_side_channel_sequence
+                                .is_some_and(|disposed| published < disposed && disposed < *claimed)
                         })
                 })
             });
@@ -7084,7 +8502,11 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         })
             })
             && resume_results.get(attempt).is_some_and(|outcome| {
-                matches!(outcome, PhysicalResumeOutcome::Error(error) if matches!(error, libc::ESRCH | libc::EIO))
+                matches!(
+                    outcome,
+                    PhysicalResumeOutcome::Error(error)
+                        if matches!(*error, libc::ESRCH | libc::EIO)
+                )
             })
             && ambiguous_resume_resolutions.iter().any(
                 |(source, resolution_attempt, proof, resolved)| {
@@ -7094,7 +8516,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         && *resolved < *closed
                 },
             )
-            && stop_resolution_closes.get(delivery).is_none();
+            && !stop_resolution_closes.contains_key(delivery);
         if !valid {
             violations.push(PhysicalPartitionViolation::InvalidStopResolutionEvidence(
                 *successor,
@@ -7111,38 +8533,46 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             PhysicalContinuedStatusRoute::AfterAcknowledgedGroupStop => {
                 stop_resolution_claims.contains_key(status)
             }
-            PhysicalContinuedStatusRoute::BeforeFirstStop => stop_resolution_arms
-                .iter()
-                .any(|(delivery, (generation, armed))| {
-                    track.generation == Some(*generation)
-                        && *armed < track.created_sequence
-                        && stop_resolution_first.values().all(|(first_delivery, first)| {
-                            first_delivery != delivery || track.created_sequence < *first
-                        })
-                }),
-            PhysicalContinuedStatusRoute::AfterFirstStop => stop_resolution_first
-                .iter()
-                .any(|(group, (delivery, first))| {
-                    statuses.get(group).is_some_and(|group_track| {
-                        group_track.generation == track.generation
-                            && *first < track.created_sequence
-                            && stop_resolution_acks.get(group).is_none_or(|(_, ack)| {
-                                track.created_sequence < *ack
-                            })
-                            && stop_resolution_closes.get(delivery).is_none_or(|closed| {
-                                track.created_sequence < *closed
-                            })
+            PhysicalContinuedStatusRoute::BeforeFirstStop => {
+                stop_resolution_arms
+                    .iter()
+                    .any(|(delivery, (generation, armed))| {
+                        track.generation == Some(*generation)
+                            && *armed < track.created_sequence
+                            && stop_resolution_first
+                                .values()
+                                .all(|(first_delivery, first)| {
+                                    first_delivery != delivery || track.created_sequence < *first
+                                })
                     })
-                }),
+            }
+            PhysicalContinuedStatusRoute::AfterFirstStop => {
+                stop_resolution_first
+                    .iter()
+                    .any(|(group, (delivery, first))| {
+                        statuses.get(group).is_some_and(|group_track| {
+                            group_track.generation == track.generation
+                                && *first < track.created_sequence
+                                && stop_resolution_acks
+                                    .get(group)
+                                    .is_none_or(|(_, ack)| track.created_sequence < *ack)
+                                && stop_resolution_closes
+                                    .get(delivery)
+                                    .is_none_or(|closed| track.created_sequence < *closed)
+                        })
+                    })
+            }
             PhysicalContinuedStatusRoute::UnwatchedRoot => {
                 let generation = track.generation;
-                !stop_resolution_arms.iter().any(|(delivery, (arm_generation, armed))| {
-                    generation == Some(*arm_generation)
-                        && *armed < track.created_sequence
-                        && stop_resolution_closes
-                            .get(delivery)
-                            .is_none_or(|closed| track.created_sequence < *closed)
-                })
+                !stop_resolution_arms
+                    .iter()
+                    .any(|(delivery, (arm_generation, armed))| {
+                        generation == Some(*arm_generation)
+                            && *armed < track.created_sequence
+                            && stop_resolution_closes
+                                .get(delivery)
+                                .is_none_or(|closed| track.created_sequence < *closed)
+                    })
             }
             PhysicalContinuedStatusRoute::PreStopDrain { .. } => true,
         };
@@ -7153,68 +8583,70 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         }
     }
 
-    let pre_stop_epoch_is_contiguous = |
-        generation: PhysicalEventGenerationId,
-        task: PhysicalTaskIdentity,
-        stopped: PhysicalStatusId,
-        stopped_created: u64,
-        boundary: u64,
-        final_attempt: PhysicalWaitAttemptId,
-    | {
-        let source_attempt = siginfo_status_attempts.get(&stopped).copied();
-        let no_straddling_wait = wait_attempts.iter().all(|(attempt, context)| {
-            if Some(*attempt) == source_attempt
-                || context.generation != Some(generation)
-                || !context.task.authorizes(task, false)
-            {
-                return true;
-            }
-            let Some(started) = wait_attempt_sequences.get(attempt).copied() else {
-                return false;
-            };
-            let result = wait_result_sequences.get(attempt).copied();
-            let overlaps = started < boundary
-                && result.is_none_or(|result| stopped_created < result);
-            !overlaps
-                || (context.producer == PhysicalWaitProducer::PreStopContinuedDrain
-                    && stopped_created < started
-                    && result.is_some_and(|result| result < boundary))
-        });
-        let mut epoch = wait_attempts
-            .iter()
-            .filter_map(|(attempt, context)| {
-                let started = wait_attempt_sequences.get(attempt).copied()?;
-                (context.generation == Some(generation)
-                    && context.task.authorizes(task, false)
-                    && stopped_created < started
-                    && started < boundary)
-                    .then_some((*attempt, *context, started))
-            })
-            .collect::<Vec<_>>();
-        epoch.sort_unstable_by_key(|(_, _, started)| *started);
-        no_straddling_wait
-            && source_attempt.is_some()
-            && !epoch.is_empty()
-            && epoch.last().is_some_and(|(attempt, _, _)| *attempt == final_attempt)
-            && epoch.iter().all(|(_, context, _)| {
-                context.producer == PhysicalWaitProducer::PreStopContinuedDrain
-            })
-            && epoch.iter().enumerate().all(|(index, (attempt, _, started))| {
-                wait_result_sequences.get(attempt).is_some_and(|result| {
-                    *started < *result
-                        && *result < boundary
-                        && epoch
-                            .get(index + 1)
-                            .is_none_or(|(_, _, next_started)| *result < *next_started)
+    let pre_stop_epoch_is_contiguous =
+        |generation: PhysicalEventGenerationId,
+         task: PhysicalTaskIdentity,
+         stopped: PhysicalStatusId,
+         stopped_created: u64,
+         boundary: u64,
+         final_attempt: PhysicalWaitAttemptId| {
+            let source_attempt = siginfo_status_attempts.get(&stopped).copied();
+            let no_straddling_wait = wait_attempts.iter().all(|(attempt, context)| {
+                if Some(*attempt) == source_attempt
+                    || context.generation != Some(generation)
+                    || !context.task.authorizes(task, false)
+                {
+                    return true;
+                }
+                let Some(started) = wait_attempt_sequences.get(attempt).copied() else {
+                    return false;
+                };
+                let result = wait_result_sequences.get(attempt).copied();
+                let overlaps =
+                    started < boundary && result.is_none_or(|result| stopped_created < result);
+                !overlaps
+                    || (context.producer == PhysicalWaitProducer::PreStopContinuedDrain
+                        && stopped_created < started
+                        && result.is_some_and(|result| result < boundary))
+            });
+            let mut epoch = wait_attempts
+                .iter()
+                .filter_map(|(attempt, context)| {
+                    let started = wait_attempt_sequences.get(attempt).copied()?;
+                    (context.generation == Some(generation)
+                        && context.task.authorizes(task, false)
+                        && stopped_created < started
+                        && started < boundary)
+                        .then_some((*attempt, *context, started))
                 })
-            })
-    };
-    let pre_stop_epoch_start = |
-        generation: PhysicalEventGenerationId,
-        task: PhysicalTaskIdentity,
-        stopped_created: u64,
-        boundary: u64,
-    | {
+                .collect::<Vec<_>>();
+            epoch.sort_unstable_by_key(|(_, _, started)| *started);
+            no_straddling_wait
+                && source_attempt.is_some()
+                && !epoch.is_empty()
+                && epoch
+                    .last()
+                    .is_some_and(|(attempt, _, _)| *attempt == final_attempt)
+                && epoch.iter().all(|(_, context, _)| {
+                    context.producer == PhysicalWaitProducer::PreStopContinuedDrain
+                })
+                && epoch
+                    .iter()
+                    .enumerate()
+                    .all(|(index, (attempt, _, started))| {
+                        wait_result_sequences.get(attempt).is_some_and(|result| {
+                            *started < *result
+                                && *result < boundary
+                                && epoch
+                                    .get(index + 1)
+                                    .is_none_or(|(_, _, next_started)| *result < *next_started)
+                        })
+                    })
+        };
+    let pre_stop_epoch_start = |generation: PhysicalEventGenerationId,
+                                task: PhysicalTaskIdentity,
+                                stopped_created: u64,
+                                boundary: u64| {
         wait_attempts
             .iter()
             .filter(|(_, context)| {
@@ -7227,8 +8659,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             .min()
     };
     let mut pre_stop_drains = BTreeMap::<PhysicalStatusId, PreStopDrainTrack>::new();
-    let mut pre_stop_barriers =
-        BTreeMap::<PhysicalWaitAttemptId, PhysicalStatusId>::new();
+    let mut pre_stop_barriers = BTreeMap::<PhysicalWaitAttemptId, PhysicalStatusId>::new();
     for record in &snapshot.records {
         let PhysicalEventRecordKind::PreStopContinuedDrainCompleted {
             generation,
@@ -7256,17 +8687,17 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 track.generation == Some(generation)
                     && track.producer == Some(PhysicalWaitProducer::AuthorizedRootNotifier)
                     && track.raw_status.is_some_and(is_plain_sigstop)
-                    && track.publication_destination
-                        == Some(PhysicalStatusPublication::RegularFifo)
-                    && track.publication_sequence.is_some_and(|published| {
-                        record.sequence < published
-                    })
+                    && track.publication_destination == Some(PhysicalStatusPublication::RegularFifo)
+                    && track
+                        .publication_sequence
+                        .is_some_and(|published| record.sequence < published)
             })
             && barrier_context.is_some_and(|context| {
                 context.generation == Some(generation)
                     && context.producer == PhysicalWaitProducer::PreStopContinuedDrain
                     && stopped_track.is_some_and(|track| {
-                        track.task
+                        track
+                            .task
                             .is_some_and(|task| task.authorizes(context.task, false))
                     })
             })
@@ -7279,9 +8710,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 stopped_track.is_some_and(|track| track.created_sequence < *attempt)
             })
             && barrier_result_sequence.is_some_and(|result| {
-                barrier_attempt_sequence.is_some_and(|attempt| {
-                    attempt < result && *result < record.sequence
-                })
+                barrier_attempt_sequence
+                    .is_some_and(|attempt| attempt < result && *result < record.sequence)
             })
             && stopped_track.is_some_and(|track| {
                 barrier_context.is_some_and(|context| {
@@ -7295,26 +8725,30 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     )
                 })
             })
-            && !stop_resolution_arms.iter().any(|(delivery, (armed_generation, armed))| {
-                *armed_generation == generation
-                    && stopped_track.is_some_and(|track| {
-                        track.publication_sequence.is_some_and(|published| {
-                            *armed < published
-                                && track.task.is_some_and(|task| {
-                                    pre_stop_epoch_start(
-                                        generation,
-                                        task,
-                                        track.created_sequence,
-                                        record.sequence,
-                                    )
-                                    .is_some_and(|epoch_start| {
-                                        stop_resolution_close_sequence(delivery)
-                                            .is_none_or(|closed| epoch_start < closed)
+            && !stop_resolution_arms
+                .iter()
+                .any(|(delivery, (armed_generation, armed))| {
+                    *armed_generation == generation
+                        && stopped_track.is_some_and(|track| {
+                            track.publication_sequence.is_some_and(|published| {
+                                *armed < published
+                                    && track.task.is_some_and(|task| {
+                                        pre_stop_epoch_start(
+                                            generation,
+                                            task,
+                                            track.created_sequence,
+                                            record.sequence,
+                                        )
+                                        .is_some_and(
+                                            |epoch_start| {
+                                                stop_resolution_close_sequence(delivery)
+                                                    .is_none_or(|closed| epoch_start < closed)
+                                            },
+                                        )
                                     })
                             })
                         })
-                    })
-            });
+                });
         let duplicate_barrier = pre_stop_barriers
             .insert(final_no_status_attempt, stopped)
             .filter(|existing| *existing != stopped);
@@ -7323,10 +8757,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 existing,
             ));
         }
-        if !valid
-            || duplicate_barrier.is_some()
-            || pre_stop_drains.contains_key(&stopped)
-        {
+        if !valid || duplicate_barrier.is_some() || pre_stop_drains.contains_key(&stopped) {
             violations.push(PhysicalPartitionViolation::InvalidPreStopContinuedDrain(
                 stopped,
             ));
@@ -7361,9 +8792,15 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
     }
     let mut pre_stop_drain_failures = BTreeMap::<
         PhysicalCleanupTransactionId,
-        (PhysicalEventGenerationId, PhysicalStatusId, PhysicalWaitAttemptId, u64),
+        (
+            PhysicalEventGenerationId,
+            PhysicalStatusId,
+            PhysicalWaitAttemptId,
+            u64,
+        ),
     >::new();
-    let mut failed_pre_stop_statuses = BTreeMap::<PhysicalStatusId, PhysicalCleanupTransactionId>::new();
+    let mut failed_pre_stop_statuses =
+        BTreeMap::<PhysicalStatusId, PhysicalCleanupTransactionId>::new();
     for (generation, task, stopped, cause_wait, transaction, failure_sequence) in
         &pre_stop_drain_failure_records
     {
@@ -7374,10 +8811,9 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         let cleanup = cleanup_transactions.get(transaction);
         let fatal_drain_outcome = match wait_outcomes.get(cause_wait) {
             Some(PhysicalWaitOutcome::Error(error)) => *error != libc::EINTR,
-            Some(
-                PhysicalWaitOutcome::NoChild
-                | PhysicalWaitOutcome::UndecodableStatus { .. },
-            ) => true,
+            Some(PhysicalWaitOutcome::NoChild | PhysicalWaitOutcome::UndecodableStatus { .. }) => {
+                true
+            }
             Some(PhysicalWaitOutcome::Status { raw_status, .. }) => {
                 !libc::WIFCONTINUED(*raw_status)
             }
@@ -7385,23 +8821,27 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         };
         let valid = canonical_generation(*generation, &adoptions, &invalid_adoptions)
             == Some(*generation)
-            && continued_authorities.get(generation).is_some_and(|authority| {
-                authority.enabled_sequence
-                    < stopped_track.map_or(u64::MAX, |track| track.created_sequence)
-                    && authority
-                        .revoked_sequence
-                        .is_none_or(|revoked| *failure_sequence < revoked)
-            })
+            && continued_authorities
+                .get(generation)
+                .is_some_and(|authority| {
+                    authority.enabled_sequence
+                        < stopped_track.map_or(u64::MAX, |track| track.created_sequence)
+                        && authority
+                            .revoked_sequence
+                            .is_none_or(|revoked| *failure_sequence < revoked)
+                })
             && stopped_track.is_some_and(|track| {
                 track.generation == Some(*generation)
-                    && track.task.is_some_and(|owner| owner.authorizes(*task, false))
+                    && track
+                        .task
+                        .is_some_and(|owner| owner.authorizes(*task, false))
                     && track.producer == Some(PhysicalWaitProducer::AuthorizedRootNotifier)
                     && track.raw_status.is_some_and(is_plain_sigstop)
                     && track.publication_destination
                         == Some(PhysicalStatusPublication::PreStopDrainFailureCleanup)
-                    && track.publication_sequence.is_some_and(|published| {
-                        published < *failure_sequence
-                    })
+                    && track
+                        .publication_sequence
+                        .is_some_and(|published| published < *failure_sequence)
             })
             && cause_context.is_some_and(|context| {
                 context.generation == Some(*generation)
@@ -7419,22 +8859,24 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     *cause_wait,
                 )
             })
-            && !stop_resolution_arms.iter().any(|(delivery, (armed_generation, armed))| {
-                *armed_generation == *generation
-                    && *armed < *failure_sequence
-                    && stopped_track.is_some_and(|track| {
-                        pre_stop_epoch_start(
-                            *generation,
-                            *task,
-                            track.created_sequence,
-                            *failure_sequence,
-                        )
-                        .is_some_and(|epoch_start| {
-                            stop_resolution_close_sequence(delivery)
-                                .is_none_or(|closed| epoch_start < closed)
+            && !stop_resolution_arms
+                .iter()
+                .any(|(delivery, (armed_generation, armed))| {
+                    *armed_generation == *generation
+                        && *armed < *failure_sequence
+                        && stopped_track.is_some_and(|track| {
+                            pre_stop_epoch_start(
+                                *generation,
+                                *task,
+                                track.created_sequence,
+                                *failure_sequence,
+                            )
+                            .is_some_and(|epoch_start| {
+                                stop_resolution_close_sequence(delivery)
+                                    .is_none_or(|closed| epoch_start < closed)
+                            })
                         })
-                    })
-            })
+                })
             && cleanup.is_some_and(|cleanup| {
                 cleanup.starts == 1
                     && cleanup.cause_wait == Some(*cause_wait)
@@ -7446,12 +8888,9 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                         track.created_sequence
                                             < cause_attempt_sequence.unwrap_or_default()
                                             && started < *linked
-                                            && track.publication_sequence.is_some_and(
-                                                |published| {
-                                                    *linked < published
-                                                        && published < *failure_sequence
-                                                },
-                                            )
+                                            && track.publication_sequence.is_some_and(|published| {
+                                                *linked < published && published < *failure_sequence
+                                            })
                                     })
                             })
                         })
@@ -7498,73 +8937,74 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         else {
             continue;
         };
-        let exact_route_prefix = |
-            generation: PhysicalEventGenerationId,
-            boundary: u64,
-            final_attempt: PhysicalWaitAttemptId,
-        | {
-            let before_track = statuses.get(&before);
-            before_track.is_some_and(|before_track| {
-                track.generation == Some(generation)
-                    && before_track.generation == track.generation
-                    && before_track.task.is_some_and(|before_task| {
-                        track
-                            .task
-                            .is_some_and(|continued_task| before_task.authorizes(continued_task, false))
-                    })
-                    && before_track.created_sequence < track.created_sequence
-                    && siginfo_status_attempts.get(continued).is_some_and(|attempt| {
-                        wait_result_sequences.get(attempt).is_some_and(|result| {
-                            let next_attempt = wait_attempts
-                                .iter()
-                                .filter(|(_, context)| {
-                                    context.generation == Some(generation)
-                                        && context.producer
-                                            == PhysicalWaitProducer::PreStopContinuedDrain
-                                        && before_track.task.is_some_and(|task| {
-                                            task.authorizes(context.task, false)
-                                        })
-                                })
-                                .filter_map(|(candidate, _)| {
-                                    wait_attempt_sequences
-                                        .get(candidate)
-                                        .copied()
-                                        .filter(|started| {
-                                            *result < *started && *started < boundary
-                                        })
-                                        .map(|started| (*candidate, started))
-                                })
-                                .min_by_key(|(_, started)| *started);
-                            next_attempt.is_some_and(|(next, next_started)| {
-                                (next == final_attempt
-                                    || wait_attempt_sequences
-                                        .get(&final_attempt)
-                                        .is_some_and(|final_started| {
-                                            next_started < *final_started
-                                        }))
-                                    && track.publication_sequence.is_some_and(|published| {
-                                        track.created_sequence < published
-                                            && track.continued_side_channel_sequence.is_some_and(
-                                                |disposed| {
-                                                    published < disposed
-                                                        && disposed < next_started
-                                                },
-                                            )
-                                    })
+        let exact_route_prefix =
+            |generation: PhysicalEventGenerationId,
+             boundary: u64,
+             final_attempt: PhysicalWaitAttemptId| {
+                let before_track = statuses.get(&before);
+                before_track.is_some_and(|before_track| {
+                    track.generation == Some(generation)
+                        && before_track.generation == track.generation
+                        && before_track.task.is_some_and(|before_task| {
+                            track.task.is_some_and(|continued_task| {
+                                before_task.authorizes(continued_task, false)
                             })
                         })
-                    })
-            })
-        };
+                        && before_track.created_sequence < track.created_sequence
+                        && siginfo_status_attempts
+                            .get(continued)
+                            .is_some_and(|attempt| {
+                                wait_result_sequences.get(attempt).is_some_and(|result| {
+                                    let next_attempt = wait_attempts
+                                        .iter()
+                                        .filter(|(_, context)| {
+                                            context.generation == Some(generation)
+                                                && context.producer
+                                                    == PhysicalWaitProducer::PreStopContinuedDrain
+                                                && before_track.task.is_some_and(|task| {
+                                                    task.authorizes(context.task, false)
+                                                })
+                                        })
+                                        .filter_map(|(candidate, _)| {
+                                            wait_attempt_sequences
+                                                .get(candidate)
+                                                .copied()
+                                                .filter(|started| {
+                                                    *result < *started && *started < boundary
+                                                })
+                                                .map(|started| (*candidate, started))
+                                        })
+                                        .min_by_key(|(_, started)| *started);
+                                    next_attempt.is_some_and(|(next, next_started)| {
+                                        (next == final_attempt
+                                            || wait_attempt_sequences
+                                                .get(&final_attempt)
+                                                .is_some_and(|final_started| {
+                                                    next_started < *final_started
+                                                }))
+                                            && track.publication_sequence.is_some_and(|published| {
+                                                track.created_sequence < published
+                                                    && track
+                                                        .continued_side_channel_sequence
+                                                        .is_some_and(|disposed| {
+                                                            published < disposed
+                                                                && disposed < next_started
+                                                        })
+                                            })
+                                    })
+                                })
+                            })
+                })
+            };
         let valid_success = pre_stop_drains.get(&before).is_some_and(|drain| {
             exact_route_prefix(
                 drain.generation,
                 drain.completed_sequence,
                 drain.final_no_status_attempt,
             ) && statuses.get(&before).is_some_and(|before_track| {
-                before_track.publication_sequence.is_some_and(|published| {
-                    drain.completed_sequence < published
-                })
+                before_track
+                    .publication_sequence
+                    .is_some_and(|published| drain.completed_sequence < published)
             })
         });
         let valid_failure = failed_pre_stop_statuses
@@ -7573,9 +9013,9 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             .is_some_and(|(generation, _, cause, failed)| {
                 exact_route_prefix(*generation, *failed, *cause)
                     && statuses.get(&before).is_some_and(|before_track| {
-                        before_track.publication_sequence.is_some_and(|published| {
-                            published < *failed
-                        })
+                        before_track
+                            .publication_sequence
+                            .is_some_and(|published| published < *failed)
                     })
             });
         let valid = valid_success ^ valid_failure;
@@ -7603,14 +9043,16 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         | PhysicalStatusPublication::PreStopDrainFailureCleanup
                 )
             )
-            || !continued_authorities.get(&generation).is_some_and(|authority| {
-                authority.enabled_sequence < track.created_sequence
-                    && authority.revoked_sequence.is_none_or(|revoked| {
-                        track
-                            .publication_sequence
-                            .is_some_and(|published| published < revoked)
-                    })
-            })
+            || !continued_authorities
+                .get(&generation)
+                .is_some_and(|authority| {
+                    authority.enabled_sequence < track.created_sequence
+                        && authority.revoked_sequence.is_none_or(|revoked| {
+                            track
+                                .publication_sequence
+                                .is_some_and(|published| published < revoked)
+                        })
+                })
         {
             continue;
         }
@@ -7641,17 +9083,70 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         }
     }
     for (generation, authority) in &continued_authorities {
-        let first_new_child = statuses.values().filter(|track| {
-            track.generation == Some(*generation)
-                && track.producer == Some(PhysicalWaitProducer::AuthorizedRootNotifier)
-                && track.raw_status.is_some_and(is_new_child_stop)
-        }).min_by_key(|track| track.created_sequence);
+        let terminal_boundary = wait_outcomes
+            .iter()
+            .filter_map(|(attempt, outcome)| {
+                if wait_generations.get(attempt) != Some(generation)
+                    || !wait_attempts.get(attempt).is_some_and(|context| {
+                        context.producer == PhysicalWaitProducer::AuthorizedRootNotifier
+                    })
+                {
+                    return None;
+                }
+                let result = wait_result_sequences.get(attempt).copied()?;
+                match outcome {
+                    PhysicalWaitOutcome::Status { id, raw_status, .. }
+                        if is_terminal_raw_status(*raw_status) =>
+                    {
+                        statuses.get(id).and_then(|track| {
+                            (track.publication_destination
+                                == Some(PhysicalStatusPublication::RetainedTerminal))
+                            .then_some(track.publication_sequence)
+                            .flatten()
+                            .filter(|published| result < *published)
+                        })
+                    }
+                    PhysicalWaitOutcome::NoChild => synthetic_echild_evidence
+                        .get(attempt)
+                        .and_then(|(evidence_generation, sequence)| {
+                            (*evidence_generation == *generation && result < *sequence)
+                                .then_some(*sequence)
+                        }),
+                    _ => None,
+                }
+            })
+            .min();
+        let statusless_startup_cleanup_boundary = startup_barrier_statusless_resolutions
+            .iter()
+            .filter_map(
+                |(resolved_generation, _, _, _, transaction, resolution_sequence)| {
+                    (*resolved_generation == *generation
+                        && valid_startup_barrier_statusless_transactions.contains(transaction))
+                    .then_some(*resolution_sequence)
+                },
+            )
+            .min();
+        let terminal_boundary = [terminal_boundary, statusless_startup_cleanup_boundary]
+            .into_iter()
+            .flatten()
+            .min();
+        let first_new_child = statuses
+            .values()
+            .filter(|track| {
+                track.generation == Some(*generation)
+                    && track.producer == Some(PhysicalWaitProducer::AuthorizedRootNotifier)
+                    && track.raw_status.is_some_and(is_new_child_stop)
+            })
+            .min_by_key(|track| track.created_sequence);
         let exact_revoke = match (authority.revoked_sequence, first_new_child) {
             (None, None) => true,
-            (Some(revoked), Some(first)) => first.publication_sequence.is_some_and(|published| {
-                first.created_sequence < revoked && revoked < published
+            (Some(revoked), Some(first)) => first
+                .publication_sequence
+                .is_some_and(|published| first.created_sequence < revoked && revoked < published),
+            (Some(revoked), None) => terminal_boundary.is_some_and(|terminal| {
+                authority.enabled_sequence < terminal && terminal < revoked
             }),
-            (None, Some(_)) | (Some(_), None) => false,
+            (None, Some(_)) => false,
         };
         if !exact_revoke {
             violations.push(PhysicalPartitionViolation::InvalidContinuedAuthority(
@@ -7764,6 +9259,13 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             ));
         }
     }
+    for attempt in pidfd_signal_attempts.keys() {
+        if !pidfd_signal_results.contains_key(attempt) {
+            violations.push(PhysicalPartitionViolation::PidfdSignalAttemptWithoutResult(
+                *attempt,
+            ));
+        }
+    }
     for (attempt, outcome) in &resume_results {
         let context = resume_attempts.get(attempt);
         if let Some(generation) = context.and_then(|context| context.generation)
@@ -7827,33 +9329,24 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         let unique_source = seen_ambiguous_resolution_sources.insert(*source);
         let unique_proof = seen_ambiguous_resolution_proofs.insert(*proof);
         if !unique_attempt || !unique_source || !unique_proof {
-            violations.push(
-                PhysicalPartitionViolation::DuplicateAmbiguousResumeResolution(*attempt),
-            );
+            violations
+                .push(PhysicalPartitionViolation::DuplicateAmbiguousResumeResolution(*attempt));
         }
 
         let Some(source_track) = statuses.get(source) else {
-            violations.push(PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(
-                *attempt,
-            ));
+            violations.push(PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(*attempt));
             continue;
         };
         let Some(context) = resume_attempts.get(attempt) else {
-            violations.push(PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(
-                *attempt,
-            ));
+            violations.push(PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(*attempt));
             continue;
         };
         let Some(generation) = resume_generations.get(attempt).copied() else {
-            violations.push(PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(
-                *attempt,
-            ));
+            violations.push(PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(*attempt));
             continue;
         };
         let Some(result_sequence) = resume_result_sequences.get(attempt).copied() else {
-            violations.push(PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(
-                *attempt,
-            ));
+            violations.push(PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(*attempt));
             continue;
         };
         let resume_started = resume_attempt_sequences.get(attempt).copied();
@@ -7864,10 +9357,12 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             == Some(PhysicalStatusPublication::RegularFifo)
             && source_track.raw_status.is_some_and(is_plain_sigstop)
             && stop_resolution_acks.contains_key(source)
-            && stop_resolution_claims.values().any(|(group_stop, claimed)| {
-                *group_stop == *source
-                    && resume_started.is_some_and(|resume_started| *claimed < resume_started)
-            })
+            && stop_resolution_claims
+                .values()
+                .any(|(group_stop, claimed)| {
+                    *group_stop == *source
+                        && resume_started.is_some_and(|resume_started| *claimed < resume_started)
+                })
             && context.owner == PhysicalResumeOwner::TypedStopped
             && context.signal.is_none();
         let source_valid = source_track.generation == Some(generation)
@@ -7889,14 +9384,12 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             && source_track.ambiguous_resume_resolved_dispositions == 1
             && source_track.ambiguous_resume_resolved_sequence == Some(*resolution_sequence)
             && !tolerated.contains_key(attempt)
-            && (!group_source
-                || matches!(proof, PhysicalAmbiguousResumeProof::LaterStatus(_)));
+            && (!group_source || matches!(proof, PhysicalAmbiguousResumeProof::LaterStatus(_)));
 
         let proof_valid = match proof {
             PhysicalAmbiguousResumeProof::LaterStatus(proof_status)
-            | PhysicalAmbiguousResumeProof::FinalStatus(proof_status) => statuses
-                .get(proof_status)
-                .is_some_and(|proof_track| {
+            | PhysicalAmbiguousResumeProof::FinalStatus(proof_status) => {
+                statuses.get(proof_status).is_some_and(|proof_track| {
                     let expected_shape = match proof {
                         PhysicalAmbiguousResumeProof::LaterStatus(_) => {
                             proof_track
@@ -7930,49 +9423,55 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                 *resume_started < proof_track.created_sequence
                             })
                         && source_track.created_sequence < proof_track.created_sequence
-                        && source_track.publication_sequence.is_some_and(|source_published| {
-                            proof_track.publication_sequence.is_some_and(|proof_published| {
-                                source_published < proof_track.created_sequence
-                                    && proof_track.created_sequence < proof_published
-                                    && proof_published < *resolution_sequence
+                        && source_track
+                            .publication_sequence
+                            .is_some_and(|source_published| {
+                                proof_track
+                                    .publication_sequence
+                                    .is_some_and(|proof_published| {
+                                        source_published < proof_track.created_sequence
+                                            && proof_track.created_sequence < proof_published
+                                            && proof_published < *resolution_sequence
+                                    })
                             })
-                        })
                         && expected_shape
-                }),
+                })
+            }
             PhysicalAmbiguousResumeProof::ProvenEchild(wait) => {
                 wait_generations.get(wait) == Some(&generation)
                     && wait_outcomes.get(wait) == Some(&PhysicalWaitOutcome::NoChild)
-                    && wait_attempt_sequences.get(wait).is_some_and(|wait_started| {
-                        source_track
-                            .publication_sequence
-                            .is_some_and(|source_published| source_published < *wait_started)
-                    })
+                    && wait_attempt_sequences
+                        .get(wait)
+                        .is_some_and(|wait_started| {
+                            source_track
+                                .publication_sequence
+                                .is_some_and(|source_published| source_published < *wait_started)
+                        })
                     && wait_result_sequences.get(wait).is_some_and(|wait_result| {
-                        resume_attempt_sequences.get(attempt).is_some_and(|resume_started| {
-                            *resume_started < *wait_result
-                        }) && echild_terminal_proofs.get(wait).is_some_and(
-                            |(proof_generation, proof_task, proof_sequence)| {
-                                *proof_generation == generation
-                                    && source_track.task.is_some_and(|source_task| {
-                                        source_task.authorizes(*proof_task, false)
-                                    })
-                                    && *wait_result < *proof_sequence
-                                    && synthetic_echild_evidence.get(wait).is_some_and(
-                                        |(synthetic_generation, synthetic_sequence)| {
-                                            *synthetic_generation == generation
-                                                && *proof_sequence < *synthetic_sequence
-                                                && *synthetic_sequence < *resolution_sequence
-                                        },
-                                    )
-                            },
-                        )
+                        resume_attempt_sequences
+                            .get(attempt)
+                            .is_some_and(|resume_started| *resume_started < *wait_result)
+                            && echild_terminal_proofs.get(wait).is_some_and(
+                                |(proof_generation, proof_task, proof_sequence)| {
+                                    *proof_generation == generation
+                                        && source_track.task.is_some_and(|source_task| {
+                                            source_task.authorizes(*proof_task, false)
+                                        })
+                                        && *wait_result < *proof_sequence
+                                        && synthetic_echild_evidence.get(wait).is_some_and(
+                                            |(synthetic_generation, synthetic_sequence)| {
+                                                *synthetic_generation == generation
+                                                    && *proof_sequence < *synthetic_sequence
+                                                    && *synthetic_sequence < *resolution_sequence
+                                            },
+                                        )
+                                },
+                            )
                     })
             }
         };
         if !source_valid || !proof_valid {
-            violations.push(PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(
-                *attempt,
-            ));
+            violations.push(PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(*attempt));
         } else if unique_attempt && unique_source && unique_proof {
             valid_ambiguous_resolution_attempts.insert(*attempt);
             valid_ambiguous_resolution_sources.insert(*source);
@@ -8010,9 +9509,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         let resolved = valid_ambiguous_resolution_attempts.contains(attempt)
             && valid_ambiguous_resolution_sources.contains(&source);
         if source_attempts != 1 || tolerated.contains_key(attempt) || !resolved {
-            violations.push(PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(
-                *attempt,
-            ));
+            violations.push(PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(*attempt));
         }
     }
     let mut status_reservations =
@@ -8199,7 +9696,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         })
             })
             .collect::<Vec<_>>();
-        let stopped_transition = if !stopped || matching_attempts.len() != 1 {
+
+        if !stopped || matching_attempts.len() != 1 {
             false
         } else {
             let attempt = *matching_attempts[0].0;
@@ -8236,8 +9734,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     }
                     _ => false,
                 }
-        };
-        stopped_transition
+        }
     };
     for (reservation, track) in &reservations {
         if track.completion.is_none() {
@@ -8461,12 +9958,18 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         let terminal_generation = wait_generations.get(&terminal_wait).copied();
         let terminal_result_sequence = wait_result_sequences.get(&terminal_wait).copied();
         let terminal_outcome = wait_outcomes.get(&terminal_wait);
+        let typed_unsupported_terminal = matches!(
+            terminal_outcome,
+            Some(PhysicalWaitOutcome::UndecodableStatus { siginfo, .. })
+                if siginfo_is_startup_typed_unsupported_terminal(*siginfo)
+        );
         let terminal = matches!(terminal_outcome, Some(PhysicalWaitOutcome::NoChild))
             || matches!(
                 terminal_outcome,
                 Some(PhysicalWaitOutcome::Status { raw_status, .. })
                     if is_terminal_raw_status(*raw_status)
-            );
+            )
+            || typed_unsupported_terminal;
         let pidfd_exit_proof = match terminal_outcome {
             Some(PhysicalWaitOutcome::NoChild) => track.pidfd_exit_proof.is_some_and(
                 |(
@@ -8491,7 +9994,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                         ..
                                     }) if generation == proof_generation
                                         && task == proof_task
-                                        && proof_task.is_direct_child()
+                                        && proof_task.is_pidfd_bound_direct_child()
                                         && proof_task == context.task
                                         && proof_launch == Some(launch)
                                 )
@@ -8507,7 +10010,24 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             {
                 track.pidfd_exit_proof.is_none()
             }
+            Some(PhysicalWaitOutcome::UndecodableStatus { .. }) if typed_unsupported_terminal => {
+                track.pidfd_exit_proof.is_none()
+            }
             _ => false,
+        };
+        let terminal_boundary_sequence = match terminal_outcome {
+            Some(PhysicalWaitOutcome::NoChild) => track
+                .pidfd_exit_proof
+                .map(|(_, _, _, _, _, proof_sequence)| proof_sequence),
+            Some(PhysicalWaitOutcome::Status { raw_status, .. })
+                if is_terminal_raw_status(*raw_status) =>
+            {
+                terminal_result_sequence
+            }
+            Some(PhysicalWaitOutcome::UndecodableStatus { .. }) if typed_unsupported_terminal => {
+                terminal_result_sequence
+            }
+            _ => None,
         };
         let cause_context = wait_attempts.get(&cause_wait);
         let startup_kind = match track.kind {
@@ -8528,6 +10048,69 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             }) => Some((generation, task, error, launch)),
             _ => None,
         };
+        let startup_failure_link_sequences = startup_kind
+            .map(|(generation, barrier, _, owner)| {
+                startup_barrier_failures
+                    .iter()
+                    .filter_map(
+                        |(
+                            linked_generation,
+                            linked_barrier,
+                            linked_wait,
+                            _,
+                            linked_transaction,
+                            linked_sequence,
+                        )| {
+                            (*linked_generation == generation
+                                && *linked_barrier == barrier
+                                && *linked_wait == cause_wait
+                                && *linked_transaction == *transaction
+                                && owner == PhysicalStartupCleanupOwner::AuthorizedWorker)
+                                .then_some(*linked_sequence)
+                        },
+                    )
+                    .chain(startup_barrier_statusless_failures.iter().filter_map(
+                        |(
+                            linked_generation,
+                            linked_barrier,
+                            linked_wait,
+                            _,
+                            linked_transaction,
+                            linked_sequence,
+                        )| {
+                            (*linked_generation == generation
+                                && *linked_barrier == barrier
+                                && *linked_wait == cause_wait
+                                && *linked_transaction == *transaction
+                                && owner == PhysicalStartupCleanupOwner::AuthorizedWorker)
+                                .then_some(*linked_sequence)
+                        },
+                    ))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let executor_transfer_valid =
+            match (startup_kind, startup_executor_transfers.get(transaction)) {
+                (
+                    Some((generation, _, task, PhysicalStartupCleanupOwner::AuthorizedWorker)),
+                    Some((transfer_generation, transfer_task, transfer_sequence)),
+                ) => {
+                    *transfer_generation == generation
+                        && task.authorizes(*transfer_task, false)
+                        && matches!(startup_failure_link_sequences.as_slice(), [failure_link]
+                        if *failure_link < *transfer_sequence)
+                        && *transfer_sequence < completion_sequence
+                }
+                (Some((_, _, _, PhysicalStartupCleanupOwner::AuthorizedWorker)), None) => false,
+                (_, None) => true,
+                (_, Some(_)) => false,
+            };
+        if !executor_transfer_valid {
+            violations.push(
+                PhysicalPartitionViolation::InvalidRegisteredCleanupTransaction(*transaction),
+            );
+        }
+        valid &= executor_transfer_valid;
         let setup_no_status_links = setup_kind
             .map(|(generation, _, error, launch)| {
                 startup_setup_no_status_linked
@@ -8562,6 +10145,43 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     == Some(PhysicalStatusPublication::PreStopDrainFailureCleanup)
             })
         });
+        let startup_barrier_statusless_cause =
+            startup_kind.and_then(|(generation, barrier, task, owner)| {
+                if !valid_startup_barrier_statusless_transactions.contains(transaction) {
+                    return None;
+                }
+                let matches = startup_barrier_statusless_failures
+                    .iter()
+                    .filter(
+                        |(
+                            linked_generation,
+                            linked_barrier,
+                            linked_wait,
+                            linked_error,
+                            linked_transaction,
+                            linked_sequence,
+                        )| {
+                            *linked_generation == generation
+                                && *linked_barrier == barrier
+                                && *linked_wait == cause_wait
+                                && *linked_error != 0
+                                && *linked_error != libc::EINTR
+                                && *linked_transaction == *transaction
+                                && start_sequence < *linked_sequence
+                                && owner == PhysicalStartupCleanupOwner::AuthorizedWorker
+                                && cause_context.is_some_and(|context| {
+                                    context.producer == PhysicalWaitProducer::AuthorizedRootNotifier
+                                        && task.authorizes(context.task, false)
+                                })
+                                && wait_outcome_matches_errno(
+                                    wait_outcomes.get(&cause_wait),
+                                    *linked_error,
+                                )
+                        },
+                    )
+                    .count();
+                (matches == 1).then_some(())
+            });
         let fatal_cause = if let Some((generation, barrier, task, owner)) = startup_kind {
             (startup_barrier_failure_transactions.get(transaction) == Some(&barrier)
                 || startup_barrier_owners.get(&barrier) == Some(&cause_wait))
@@ -8578,13 +10198,13 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         }
                         && task.authorizes(context.task, false)
                 })
-                && matches!(
+                && (matches!(
                     wait_outcomes.get(&cause_wait),
                     Some(
                         PhysicalWaitOutcome::Status { .. }
                             | PhysicalWaitOutcome::UndecodableStatus { .. }
                     )
-                )
+                ) || startup_barrier_statusless_cause.is_some())
         } else if let Some((generation, task, error, launch)) = setup_kind {
             let status_cause = startup_setup_linked.iter().any(
                 |(
@@ -8618,13 +10238,14 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 );
             (status_cause || no_status_cause)
                 && startup_barrier_setup_failures.iter().any(
-                |(failed_generation, failed_task, failed_error, failed_launch, _)| {
-                    *failed_generation == generation
-                        && *failed_task == task
-                        && *failed_error == error
-                        && *failed_launch == launch
-                },
-            ) && wait_generations.get(&cause_wait) == Some(&generation)
+                    |(failed_generation, failed_task, failed_error, failed_launch, _)| {
+                        *failed_generation == generation
+                            && *failed_task == task
+                            && *failed_error == error
+                            && *failed_launch == launch
+                    },
+                )
+                && wait_generations.get(&cause_wait) == Some(&generation)
                 && cause_context.is_some_and(|context| {
                     context.producer == PhysicalWaitProducer::PreRegistrationBarrierCleanup
                         && task.authorizes(context.task, false)
@@ -8692,7 +10313,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                         |(generation, task, _, launch)| {
                                             generation == proof_generation
                                                 && task == proof_task
-                                                && proof_task.is_direct_child()
+                                                && proof_task.is_pidfd_bound_direct_child()
                                                 && proof_task == context.task
                                                 && proof_launch == Some(launch)
                                                 && original_root_launch.is_some_and(
@@ -8706,7 +10327,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                                     )| {
                                                         root_launch == launch
                                                             && root_generation == generation
-                                                            && root_task == proof_task
+                                                            && root_task.authorizes(proof_task, true)
                                                             && root_sequence < proof_sequence
                                                     },
                                                 )
@@ -8722,11 +10343,473 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         let startup_source_is_terminal = setup_statusless_terminal
             || ((startup_kind.is_some() || setup_kind.is_some())
                 && cause_wait == terminal_wait
-                && matches!(
+                && (matches!(
                     terminal_outcome,
                     Some(PhysicalWaitOutcome::Status { raw_status, .. })
                         if is_terminal_raw_status(*raw_status)
-                ));
+                ) || typed_unsupported_terminal));
+        let transaction_pidfd_signals = pidfd_signal_attempts
+            .iter()
+            .filter(|(_, context)| context.transaction == *transaction)
+            .collect::<Vec<_>>();
+        let pidfd_signal_valid = if startup_kind.is_none() && setup_kind.is_none() {
+            match transaction_pidfd_signals.as_slice() {
+                [] => true,
+                [(attempt, context)] => {
+                    let attempt = **attempt;
+                    let attempt_sequence = pidfd_signal_attempt_sequences.get(&attempt).copied();
+                    let result_sequence = pidfd_signal_result_sequences.get(&attempt).copied();
+                    let exact_identity = context.signal == libc::SIGKILL
+                        && context.pidfd >= 0
+                        && context.task.pidfd() == Some(context.pidfd)
+                        && terminal_generation == Some(context.generation)
+                        && terminal_context.is_some_and(|terminal| terminal.task == context.task);
+                    let exact_result = matches!(
+                        pidfd_signal_results.get(&attempt),
+                        Some(
+                            PhysicalPidfdSignalOutcome::Success
+                                | PhysicalPidfdSignalOutcome::Error(libc::ESRCH)
+                        )
+                    );
+                    let causally_before_registered_drain = attempt_sequence
+                        .zip(result_sequence)
+                        .is_some_and(|(attempt_sequence, result_sequence)| {
+                            start_sequence < attempt_sequence
+                                && wait_result_sequences
+                                    .get(&cause_wait)
+                                    .is_some_and(|cause| *cause < attempt_sequence)
+                                && attempt_sequence < result_sequence
+                                && result_sequence < completion_sequence
+                                && wait_attempts.iter().all(|(wait, wait_context)| {
+                                    wait_context.producer != PhysicalWaitProducer::RegisteredCleanup
+                                        || wait_context.generation != terminal_generation
+                                        || terminal_context.is_none_or(|terminal| {
+                                            !context.task.authorizes(terminal.task, false)
+                                        })
+                                        || wait_attempt_sequences.get(wait).is_none_or(
+                                            |wait_sequence| {
+                                                *wait_sequence <= start_sequence
+                                                    || completion_sequence <= *wait_sequence
+                                                    || result_sequence < *wait_sequence
+                                            },
+                                        )
+                                })
+                        });
+                    exact_identity && exact_result && causally_before_registered_drain
+                }
+                _ => false,
+            }
+        } else if startup_source_is_terminal {
+            transaction_pidfd_signals.is_empty()
+        } else {
+            match transaction_pidfd_signals.as_slice() {
+                [(attempt, context)] => {
+                    let attempt = **attempt;
+                    let attempt_sequence = pidfd_signal_attempt_sequences.get(&attempt).copied();
+                    let result_sequence = pidfd_signal_result_sequences.get(&attempt).copied();
+                    let result_ordered = attempt_sequence.zip(result_sequence).is_some_and(
+                        |(attempt_sequence, result_sequence)| {
+                            attempt_sequence < result_sequence
+                                && result_sequence < completion_sequence
+                                && terminal_result_sequence
+                                    .is_some_and(|terminal| result_sequence < terminal)
+                        },
+                    );
+                    let identity_matches = context.signal == libc::SIGKILL
+                        && context.pidfd >= 0
+                        && terminal_generation == Some(context.generation)
+                        && terminal_context.is_some_and(|terminal_context| {
+                            context.task.authorizes(terminal_context.task, false)
+                        })
+                        && context.task.pidfd() == Some(context.pidfd);
+                    let result_shape = match pidfd_signal_results.get(&attempt) {
+                        Some(PhysicalPidfdSignalOutcome::Success) => {
+                            !startup_pidfd_exit_proofs.contains_key(transaction)
+                        }
+                        Some(PhysicalPidfdSignalOutcome::Error(libc::ESRCH)) => {
+                            !startup_pidfd_exit_proofs.contains_key(transaction)
+                        }
+                        Some(PhysicalPidfdSignalOutcome::Error(error)) if *error != 0 => {
+                            startup_pidfd_exit_proofs.get(transaction).is_some_and(
+                                |(
+                                    proof_generation,
+                                    proof_task,
+                                    proof_pidfd,
+                                    revents,
+                                    proof_sequence,
+                                )| {
+                                    *proof_generation == context.generation
+                                        && *proof_task == context.task
+                                        && *proof_pidfd == context.pidfd
+                                        && revents & libc::POLLIN != 0
+                                        && result_sequence.is_some_and(|result| {
+                                            result < *proof_sequence
+                                                && *proof_sequence < completion_sequence
+                                                && wait_attempt_sequences
+                                                    .get(&terminal_wait)
+                                                    .is_some_and(|wait| *proof_sequence < *wait)
+                                                && wait_attempts.iter().all(
+                                                    |(wait_attempt, wait_context)| {
+                                                        wait_attempt_sequences
+                                                            .get(wait_attempt)
+                                                            .is_none_or(|wait_sequence| {
+                                                                *wait_sequence <= result
+                                                                    || wait_context.generation
+                                                                        != Some(context.generation)
+                                                                    || !context.task.authorizes(
+                                                                        wait_context.task,
+                                                                        false,
+                                                                    )
+                                                                    || *proof_sequence
+                                                                        < *wait_sequence
+                                                            })
+                                                    },
+                                                )
+                                        })
+                                        && !resume_attempts.values().any(|resume| {
+                                            resume.generation == Some(context.generation)
+                                                && context.task.authorizes(resume.task, false)
+                                                && resume.source_status.is_some_and(|status| {
+                                                    track.statuses.contains_key(&status)
+                                                })
+                                        })
+                                },
+                            )
+                        }
+                        _ => false,
+                    };
+                    let causal_order = if let Some((generation, _, task, owner)) = startup_kind {
+                        attempt_sequence.is_some_and(|attempt_sequence| match owner {
+                            PhysicalStartupCleanupOwner::Unstarted => {
+                                start_sequence < attempt_sequence
+                            }
+                            PhysicalStartupCleanupOwner::AuthorizedWorker => {
+                                startup_executor_transfers.get(transaction).is_some_and(
+                                    |(transfer_generation, transfer_task, transfer_sequence)| {
+                                        *transfer_generation == generation
+                                            && task.authorizes(*transfer_task, false)
+                                            && *transfer_sequence < attempt_sequence
+                                    },
+                                )
+                            }
+                        })
+                    } else {
+                        startup_setup_prepared.iter().any(
+                            |(_, _, _, prepared_transaction, _, prepared_sequence)| {
+                                *prepared_transaction == *transaction
+                                    && attempt_sequence.is_some_and(|attempt_sequence| {
+                                        *prepared_sequence < attempt_sequence
+                                            && start_sequence < attempt_sequence
+                                            && wait_result_sequences.get(&cause_wait).is_some_and(
+                                                |cause_result| *cause_result < attempt_sequence,
+                                            )
+                                    })
+                            },
+                        )
+                    };
+                    let external_cleanup_after_signal = if let Some((
+                        generation,
+                        _,
+                        task,
+                        PhysicalStartupCleanupOwner::AuthorizedWorker,
+                    )) = startup_kind
+                    {
+                        result_sequence.is_some_and(|signal_result| {
+                            wait_attempts.iter().all(|(wait, context)| {
+                                context.producer != PhysicalWaitProducer::RegisteredCleanup
+                                    || context.generation != Some(generation)
+                                    || !task.authorizes(context.task, false)
+                                    || wait_attempt_sequences.get(wait).is_none_or(
+                                        |wait_sequence| {
+                                            *wait_sequence <= start_sequence
+                                                || completion_sequence <= *wait_sequence
+                                                || signal_result < *wait_sequence
+                                        },
+                                    )
+                            }) && startup_barrier_statusless_resolutions.iter().all(
+                                |(_, _, _, _, resolved_transaction, resolved_sequence)| {
+                                    *resolved_transaction != *transaction
+                                        || signal_result < *resolved_sequence
+                                },
+                            )
+                        })
+                    } else {
+                        true
+                    };
+                    identity_matches
+                        && causal_order
+                        && result_ordered
+                        && result_shape
+                        && external_cleanup_after_signal
+                }
+                _ => false,
+            }
+        };
+        if !pidfd_signal_valid {
+            violations
+                .push(PhysicalPartitionViolation::InvalidStartupCleanupPidfdSignal(*transaction));
+        }
+        valid &= pidfd_signal_valid;
+        let mut transaction_registered_cleanup_waits = wait_attempts
+            .iter()
+            .filter(|(_, context)| {
+                context.producer == PhysicalWaitProducer::RegisteredCleanup
+                    && terminal_generation == context.generation
+                    && terminal_context
+                        .is_some_and(|terminal| context.task.authorizes(terminal.task, false))
+            })
+            .filter_map(|(wait, _)| {
+                let attempt = wait_attempt_sequences.get(wait).copied()?;
+                let result = wait_result_sequences.get(wait).copied()?;
+                (start_sequence < attempt && result < completion_sequence)
+                    .then_some((*wait, attempt, result))
+            })
+            .collect::<Vec<_>>();
+        transaction_registered_cleanup_waits.sort_by_key(|(_, attempt, _)| *attempt);
+        let registered_cleanup_waits_serialized = transaction_registered_cleanup_waits
+            .iter()
+            .all(|(_, attempt, result)| attempt < result)
+            && transaction_registered_cleanup_waits.windows(2).all(|pair| {
+                let (_, _, first_result) = pair[0];
+                let (_, second_attempt, _) = pair[1];
+                first_result < second_attempt
+            });
+        valid &= registered_cleanup_waits_serialized;
+        let transaction_wait_failures = transaction_registered_cleanup_waits
+            .iter()
+            .copied()
+            .filter(|(wait, _, _)| {
+                matches!(wait_outcomes.get(wait), Some(PhysicalWaitOutcome::Error(error))
+                    if *error != libc::EINTR)
+            })
+            .collect::<Vec<_>>();
+        let wait_failure_exit_proof_valid = match startup_wait_failure_exit_proofs.get(transaction)
+        {
+            None => transaction_wait_failures.is_empty(),
+            Some((
+                proof_generation,
+                proof_task,
+                proof_pidfd,
+                failed_wait,
+                failed_error,
+                revents,
+                proof_sequence,
+            )) => {
+                let exact_failed_wait = matches!(transaction_wait_failures.as_slice(),
+                    [(wait, attempt, result)]
+                        if wait == failed_wait
+                            && wait_outcomes.get(wait).is_some_and(|outcome| {
+                                matches!(outcome, PhysicalWaitOutcome::Error(error)
+                                    if error == failed_error && *error != libc::EINTR)
+                            })
+                            && *result < *proof_sequence
+                            && wait_attempts.get(wait).is_some_and(|context| {
+                                context.generation == Some(*proof_generation)
+                                    && context.task.authorizes(*proof_task, false)
+                            })
+                            && *attempt < *result);
+                let exact_identity = terminal_generation == Some(*proof_generation)
+                    && terminal_context
+                        .is_some_and(|context| proof_task.authorizes(context.task, false))
+                    && proof_task.pidfd() == Some(*proof_pidfd)
+                    && *revents & libc::POLLIN != 0;
+                let other_cleanup_waits_outside_failure_to_proof = transaction_wait_failures
+                    .iter()
+                    .find_map(|(wait, attempt, result)| {
+                        (*wait == *failed_wait).then_some((*attempt, *result))
+                    })
+                    .is_some_and(|(failed_attempt, failed_result)| {
+                        failed_result < *proof_sequence
+                            && transaction_registered_cleanup_waits.iter().all(
+                                |(wait, attempt, result)| {
+                                    *wait == *failed_wait
+                                        || *result < failed_attempt
+                                        || *proof_sequence < *attempt
+                                },
+                            )
+                    });
+                let exact_signal = transaction_pidfd_signals.as_slice().first().is_some_and(
+                    |(signal_attempt, signal_context)| {
+                        signal_context.pidfd == *proof_pidfd
+                            && signal_context.task == *proof_task
+                            && pidfd_signal_results
+                                .get(signal_attempt)
+                                .is_some_and(|outcome| {
+                                    matches!(
+                                        outcome,
+                                        PhysicalPidfdSignalOutcome::Success
+                                            | PhysicalPidfdSignalOutcome::Error(libc::ESRCH)
+                                    )
+                                })
+                            && pidfd_signal_result_sequences
+                                .get(signal_attempt)
+                                .is_some_and(|signal| {
+                                    transaction_wait_failures
+                                        .first()
+                                        .is_some_and(|(_, wait, _)| *signal < *wait)
+                                })
+                    },
+                );
+                let exact_order = terminal_result_sequence.is_some_and(|terminal_result| {
+                    wait_attempt_sequences
+                        .get(&terminal_wait)
+                        .is_some_and(|terminal_attempt| {
+                            *proof_sequence < *terminal_attempt
+                                && *terminal_attempt < terminal_result
+                                && terminal_result < completion_sequence
+                        })
+                });
+                startup_kind.is_some()
+                    && exact_failed_wait
+                    && exact_identity
+                    && other_cleanup_waits_outside_failure_to_proof
+                    && exact_signal
+                    && exact_order
+                    && (!matches!(
+                        startup_kind,
+                        Some((_, _, _, PhysicalStartupCleanupOwner::AuthorizedWorker))
+                    ) || transaction_registered_cleanup_waits
+                        .last()
+                        .is_some_and(|(wait, _, _)| *wait == terminal_wait))
+            }
+        };
+        if !wait_failure_exit_proof_valid {
+            violations.push(
+                PhysicalPartitionViolation::InvalidRegisteredCleanupTransaction(*transaction),
+            );
+        }
+        valid &= wait_failure_exit_proof_valid;
+        let startup_pidfd_signal_result_sequence = transaction_pidfd_signals
+            .first()
+            .and_then(|(attempt, _)| pidfd_signal_result_sequences.get(attempt).copied());
+        let startup_resume_proof_owner = startup_kind
+            .map(|(generation, _, task, owner)| {
+                (
+                    generation,
+                    task,
+                    match owner {
+                        PhysicalStartupCleanupOwner::Unstarted => {
+                            PhysicalResumeOwner::StartupBarrierCleanup
+                        }
+                        PhysicalStartupCleanupOwner::AuthorizedWorker => {
+                            PhysicalResumeOwner::AuthorizedRootExternalCleanup
+                        }
+                    },
+                )
+            })
+            .or_else(|| {
+                setup_kind.map(|(generation, task, _, _)| {
+                    (generation, task, PhysicalResumeOwner::StartupBarrierCleanup)
+                })
+            });
+        let startup_resume_failure_proof_valid = match startup_resume_failure_exit_proofs
+            .get(transaction)
+        {
+            None => true,
+            Some((
+                proof_generation,
+                proof_task,
+                proof_pidfd,
+                failed_resume,
+                source_status,
+                failed_error,
+                revents,
+                proof_sequence,
+            )) => {
+                let resume_context = resume_attempts.get(failed_resume);
+                let resume_attempt_sequence = resume_attempt_sequences.get(failed_resume).copied();
+                let resume_result_sequence = resume_result_sequences.get(failed_resume).copied();
+                let source_track = statuses.get(source_status);
+                startup_resume_proof_owner.is_some_and(|(generation, task, resume_owner)| {
+                    generation == *proof_generation
+                        && task == *proof_task
+                        && resume_context.is_some_and(|context| context.owner == resume_owner)
+                }) && *failed_error != 0
+                    && terminal_generation == Some(*proof_generation)
+                    && proof_task.pidfd() == Some(*proof_pidfd)
+                    && *revents & libc::POLLIN != 0
+                    && track.statuses.contains_key(source_status)
+                    && (!matches!(
+                        startup_kind,
+                        Some((_, _, _, PhysicalStartupCleanupOwner::AuthorizedWorker))
+                    ) || transaction_registered_cleanup_waits
+                        .last()
+                        .is_some_and(|(wait, _, _)| *wait == terminal_wait))
+                    && source_track.is_some_and(|status| {
+                        status
+                            .raw_status
+                            .is_some_and(|raw_status| libc::WIFSTOPPED(raw_status))
+                            && status.cancellation_cleanup_dispositions == 1
+                            && status
+                                .cancellation_cleanup_sequence
+                                .is_some_and(|disposition| {
+                                    terminal_boundary_sequence.is_some_and(|terminal_boundary| {
+                                        terminal_boundary < disposition
+                                            && disposition < completion_sequence
+                                    })
+                                })
+                    })
+                    && resume_context.is_some_and(|context| {
+                        context.generation == Some(*proof_generation)
+                            && context.task == *proof_task
+                            && context.source_status == Some(*source_status)
+                            && context.operation == PhysicalResumeOperation::Continue
+                            && context.signal.is_none()
+                            && startup_resume_proof_owner
+                                .is_some_and(|(_, _, resume_owner)| context.owner == resume_owner)
+                    })
+                    && resume_results.get(failed_resume)
+                        == Some(&PhysicalResumeOutcome::Error(*failed_error))
+                    && !tolerated.contains_key(failed_resume)
+                    && !track.resumes.contains_key(failed_resume)
+                    && startup_pidfd_signal_result_sequence.is_some_and(|signal_result| {
+                        resume_attempt_sequence.is_some_and(|resume_attempt| {
+                            resume_result_sequence.is_some_and(|resume_result| {
+                                wait_attempt_sequences.get(&terminal_wait).is_some_and(
+                                    |terminal_attempt| {
+                                        signal_result < resume_attempt
+                                            && resume_attempt < resume_result
+                                            && resume_result < *proof_sequence
+                                            && *proof_sequence < *terminal_attempt
+                                            && terminal_result_sequence.is_some_and(
+                                                |terminal_result| {
+                                                    *terminal_attempt < terminal_result
+                                                        && terminal_result < completion_sequence
+                                                },
+                                            )
+                                    },
+                                )
+                            })
+                        })
+                    })
+                    && resume_attempt_sequence.is_some_and(|failed_attempt| {
+                        transaction_registered_cleanup_waits.iter().all(
+                            |(_, wait_attempt, wait_result)| {
+                                *wait_result < failed_attempt || *proof_sequence < *wait_attempt
+                            },
+                        )
+                    })
+                    && resume_attempt_sequence
+                        .zip(resume_result_sequence)
+                        .is_some_and(|(failed_attempt, _)| {
+                            resume_attempts.iter().all(|(attempt, context)| {
+                                context.source_status.is_none_or(|status| {
+                                    !track.statuses.contains_key(&status)
+                                        || *attempt == *failed_resume
+                                        || resume_result_sequences
+                                            .get(attempt)
+                                            .is_some_and(|result| *result < failed_attempt)
+                                })
+                            })
+                        })
+            }
+        };
+        if !startup_resume_failure_proof_valid {
+            violations.push(
+                PhysicalPartitionViolation::InvalidRegisteredCleanupTransaction(*transaction),
+            );
+        }
+        valid &= startup_resume_failure_proof_valid;
         if let Some((generation, barrier, task, _)) = startup_kind {
             let source_status = match wait_outcomes.get(&cause_wait) {
                 Some(PhysicalWaitOutcome::Status { id, .. })
@@ -8734,15 +10817,10 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 _ => None,
             };
             valid &= terminal_generation == Some(generation)
-                && source_status.is_some_and(|status| track.statuses.contains_key(&status))
+                && (source_status.is_some_and(|status| track.statuses.contains_key(&status))
+                    || startup_barrier_statusless_cause.is_some())
                 && startup_barrier_owners.get(&barrier) == Some(&cause_wait)
-                && original_root_launch.is_some_and(
-                    |(_, launch_generation, launch_task, _, _, launch_sequence)| {
-                        launch_generation == generation
-                            && launch_task.authorizes(task, true)
-                            && launch_sequence < start_sequence
-                    },
-                );
+                && exact_original_root_launch_captured(None, generation, task, start_sequence);
         }
         if let Some((generation, task, error, launch)) = setup_kind {
             let source_status = match wait_outcomes.get(&cause_wait) {
@@ -8785,9 +10863,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 Some(PhysicalCleanupTransactionKind::Registered) => {
                     context.producer == PhysicalWaitProducer::RegisteredCleanup
                 }
-                Some(PhysicalCleanupTransactionKind::StartupBarrier {
-                    task, owner, ..
-                }) => {
+                Some(PhysicalCleanupTransactionKind::StartupBarrier { task, owner, .. }) => {
                     context.producer
                         == if startup_source_is_terminal {
                             match owner {
@@ -8831,8 +10907,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             valid &= wait_attempt_sequences
                 .get(&terminal_wait)
                 .is_some_and(|started| *failure_record_sequence < *started)
-                && terminal_result_sequence
-                    .is_some_and(|result| *failure_record_sequence < result);
+                && terminal_result_sequence.is_some_and(|result| *failure_record_sequence < result);
         }
         valid &= (cause_wait != terminal_wait || startup_source_is_terminal)
             && fatal_cause
@@ -8878,6 +10953,11 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             let terminal_status = matches!(
                 terminal_outcome,
                 Some(PhysicalWaitOutcome::Status { id, .. }) if id == status
+            ) || matches!(
+                terminal_outcome,
+                Some(PhysicalWaitOutcome::UndecodableStatus { id, siginfo, .. })
+                    if id == status
+                        && siginfo_is_startup_typed_unsupported_terminal(*siginfo)
             );
             let status_matches = statuses.get(status).is_some_and(|status_track| {
                 status_track.generation == terminal_generation
@@ -8897,11 +10977,10 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     };
                 lifecycle_sequence.is_some_and(|sequence| {
                     *link_sequence < sequence
-                        && pre_stop_failure
-                            .is_none_or(|(_, _, _, failed)| *failed < sequence)
+                        && pre_stop_failure.is_none_or(|(_, _, _, failed)| *failed < sequence)
                         && sequence < completion_sequence
                         && (status_track.dispositions == 0
-                            || terminal_result_sequence
+                            || terminal_boundary_sequence
                                 .is_some_and(|terminal| terminal < sequence))
                 })
             });
@@ -8915,29 +10994,42 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                             | PhysicalStatusPublication::StartupBarrierCleanupStopped
                             | PhysicalStatusPublication::StartupBarrierCleanupTerminal
                     )
-                )
-                    || status_track.publication_sequence.is_some_and(|sequence| {
-                        *link_sequence < sequence && sequence < completion_sequence
-                    })
+                ) || status_track.publication_sequence.is_some_and(|sequence| {
+                    *link_sequence < sequence && sequence < completion_sequence
+                })
             });
             let registered_resumes = resume_attempts
                 .iter()
-                .filter(|(_, context)| {
+                .filter(|(attempt, context)| {
                     context.source_status == Some(*status)
                         && match track.kind {
                             Some(PhysicalCleanupTransactionKind::Registered) => {
                                 context.owner.is_registered_controller_cleanup()
                             }
                             Some(PhysicalCleanupTransactionKind::StartupBarrier {
-                                owner, ..
+                                generation,
+                                task,
+                                owner,
+                                ..
                             }) => match owner {
                                 PhysicalStartupCleanupOwner::Unstarted => {
                                     context.owner.is_startup_barrier_cleanup()
                                 }
                                 PhysicalStartupCleanupOwner::AuthorizedWorker => {
-                                    context.owner.is_registered_controller_cleanup()
+                                    context.owner
+                                        == PhysicalResumeOwner::AuthorizedRootExternalCleanup
+                                        && startup_executor_transfers.get(transaction).is_some_and(
+                                            |(transfer_generation, transfer_task, transfer)| {
+                                                *transfer_generation == generation
+                                                    && task.authorizes(*transfer_task, false)
+                                                    && transfer_task.authorizes(context.task, false)
+                                                    && resume_attempt_sequences
+                                                        .get(attempt)
+                                                        .is_some_and(|resume| *transfer < *resume)
+                                            },
+                                        )
                                 }
-                            }
+                            },
                             Some(PhysicalCleanupTransactionKind::StartupSetup { .. }) => {
                                 context.owner.is_startup_barrier_cleanup()
                             }
@@ -8945,15 +11037,17 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         }
                 })
                 .collect::<Vec<_>>();
-            let exact_pre_stop_resume_cardinality = pre_stop_failure
-                .is_none_or(|(_, failed_status, _, _)| {
+            let exact_pre_stop_resume_cardinality =
+                pre_stop_failure.is_none_or(|(_, failed_status, _, _)| {
                     failed_status != status || registered_resumes.len() <= 1
                 });
-            let exact_startup_resume_cardinality =
-                (startup_kind.is_none() && setup_kind.is_none())
+            let exact_startup_resume_cardinality = (startup_kind.is_none() && setup_kind.is_none())
                 || if terminal_status
                     || !statuses.get(status).is_some_and(|status| {
-                        status.raw_status.is_some_and(libc::WIFSTOPPED)
+                        status
+                            .raw_status
+                            .is_some_and(|raw_status| libc::WIFSTOPPED(raw_status))
+                            || status.startup_typed_unsupported_stopped()
                     })
                 {
                     registered_resumes.is_empty()
@@ -8968,15 +11062,18 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                         == status.last_disposition_sequence
                             }))
                 };
-            let registered_resumes_ordered = registered_resumes
-                .into_iter()
-                .all(|(resume, context)| {
+            let registered_resumes_ordered =
+                registered_resumes.into_iter().all(|(resume, context)| {
                     let attempt_sequence = resume_attempt_sequences.get(resume).copied();
                     let result_sequence = resume_result_sequences.get(resume).copied();
+                    let startup_cleanup = startup_kind.is_some() || setup_kind.is_some();
                     let base_ordered = attempt_sequence.zip(result_sequence).is_some_and(
                         |(attempt_sequence, result_sequence)| {
                             start_sequence < *link_sequence
                                 && *link_sequence < attempt_sequence
+                                && ((startup_kind.is_none() && setup_kind.is_none())
+                                    || startup_pidfd_signal_result_sequence
+                                        .is_some_and(|signal| signal < attempt_sequence))
                                 && pre_stop_failure
                                     .is_none_or(|(_, _, _, failed)| *failed < attempt_sequence)
                                 && attempt_sequence < result_sequence
@@ -8992,6 +11089,24 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                             Some(PhysicalResumeOutcome::Success) => {
                                 !tolerated.contains_key(resume)
                                     && !track.resumes.contains_key(resume)
+                                    && (!startup_cleanup
+                                        || startup_resume_failure_exit_proofs
+                                            .get(transaction)
+                                            .is_none_or(|(_, _, _, failed, ..)| failed != resume))
+                            }
+                            Some(PhysicalResumeOutcome::Error(error)) if startup_cleanup => {
+                                *error != 0
+                                    && !tolerated.contains_key(resume)
+                                    && !track.resumes.contains_key(resume)
+                                    && startup_resume_failure_exit_proofs
+                                        .get(transaction)
+                                        .is_some_and(
+                                            |(_, _, _, failed, failed_status, failed_error, ..)| {
+                                                failed == resume
+                                                    && failed_status == status
+                                                    && failed_error == error
+                                            },
+                                        )
                             }
                             Some(PhysicalResumeOutcome::Error(error))
                                 if matches!(*error, libc::ESRCH | libc::EIO) =>
@@ -9009,21 +11124,10 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                 })
                             }
                             Some(PhysicalResumeOutcome::Error(error)) => {
-                                (startup_kind.is_some() || setup_kind.is_some())
-                                    && !matches!(*error, libc::ESRCH | libc::EIO)
-                                    && !tolerated.contains_key(resume)
-                                    && !track.resumes.contains_key(resume)
-                                    && statuses.get(status).is_some_and(|status_track| {
-                                        status_track.cancellation_cleanup_dispositions == 1
-                                            && status_track.cancellation_cleanup_sequence.is_some_and(
-                                                |disposition| {
-                                                    terminal_result_sequence.is_some_and(
-                                                        |terminal| terminal < disposition,
-                                                    ) && disposition < completion_sequence
-                                                },
-                                            )
-                                    })
+                                let _exact_error = error;
+                                false
                             }
+                            None => false,
                         }
                 });
             valid &= status_matches
@@ -9053,22 +11157,33 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     Some(PhysicalCleanupTransactionKind::Registered) => {
                         context.owner.is_registered_controller_cleanup()
                     }
-                    Some(PhysicalCleanupTransactionKind::StartupBarrier { owner, .. }) => {
-                        match owner {
-                            PhysicalStartupCleanupOwner::Unstarted => {
-                                context.owner.is_startup_barrier_cleanup()
-                            }
-                            PhysicalStartupCleanupOwner::AuthorizedWorker => {
-                                context.owner.is_registered_controller_cleanup()
-                            }
+                    Some(PhysicalCleanupTransactionKind::StartupBarrier {
+                        generation,
+                        task,
+                        owner,
+                        ..
+                    }) => match owner {
+                        PhysicalStartupCleanupOwner::Unstarted => {
+                            context.owner.is_startup_barrier_cleanup()
                         }
-                    }
+                        PhysicalStartupCleanupOwner::AuthorizedWorker => {
+                            context.owner == PhysicalResumeOwner::AuthorizedRootExternalCleanup
+                                && startup_executor_transfers.get(transaction).is_some_and(
+                                    |(transfer_generation, transfer_task, transfer)| {
+                                        *transfer_generation == generation
+                                            && task.authorizes(*transfer_task, false)
+                                            && transfer_task.authorizes(context.task, false)
+                                            && attempt_sequence
+                                                .is_some_and(|resume| *transfer < resume)
+                                    },
+                                )
+                        }
+                    },
                     Some(PhysicalCleanupTransactionKind::StartupSetup { .. }) => {
                         context.owner.is_startup_barrier_cleanup()
                     }
                     None => false,
-                })
-                    && resume_generations.get(resume).copied() == terminal_generation
+                }) && resume_generations.get(resume).copied() == terminal_generation
                     && terminal_context.is_some_and(|terminal_context| {
                         context.task.authorizes(terminal_context.task, false)
                     })
@@ -9103,6 +11218,44 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             );
         }
     }
+    for context in pidfd_signal_attempts.values() {
+        if !cleanup_transactions.contains_key(&context.transaction) {
+            violations.push(
+                PhysicalPartitionViolation::InvalidStartupCleanupPidfdSignal(context.transaction),
+            );
+        }
+    }
+    for transaction in startup_pidfd_exit_proofs.keys() {
+        if !cleanup_transactions.contains_key(transaction)
+            || !pidfd_signal_attempts
+                .values()
+                .any(|context| context.transaction == *transaction)
+        {
+            violations
+                .push(PhysicalPartitionViolation::InvalidStartupCleanupPidfdSignal(*transaction));
+        }
+    }
+    for transaction in startup_wait_failure_exit_proofs.keys() {
+        if !valid_cleanup_transactions.contains(transaction) {
+            violations.push(
+                PhysicalPartitionViolation::InvalidRegisteredCleanupTransaction(*transaction),
+            );
+        }
+    }
+    for transaction in startup_resume_failure_exit_proofs.keys() {
+        if !valid_cleanup_transactions.contains(transaction) {
+            violations.push(
+                PhysicalPartitionViolation::InvalidRegisteredCleanupTransaction(*transaction),
+            );
+        }
+    }
+    for transaction in startup_executor_transfers.keys() {
+        if !valid_cleanup_transactions.contains(transaction) {
+            violations.push(
+                PhysicalPartitionViolation::InvalidRegisteredCleanupTransaction(*transaction),
+            );
+        }
+    }
     for (transaction, barrier) in &startup_barrier_failure_transactions {
         if !valid_cleanup_transactions.contains(transaction) {
             violations.push(PhysicalPartitionViolation::InvalidPreRegistrationBarrier(
@@ -9122,13 +11275,12 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             .filter(|(before, drain)| {
                 generation == Some(drain.generation)
                     && statuses.get(before).is_some_and(|before_track| {
-                        before_track.created_sequence
-                            < attempt_sequence.unwrap_or_default()
+                        before_track.created_sequence < attempt_sequence.unwrap_or_default()
                             && result_sequence
                                 .is_some_and(|result| result < drain.completed_sequence)
-                            && before_track.task.is_some_and(|task| {
-                                task.authorizes(context.task, false)
-                            })
+                            && before_track
+                                .task
+                                .is_some_and(|task| task.authorizes(context.task, false))
                     })
             })
             .collect::<Vec<_>>();
@@ -9167,21 +11319,23 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     && generation == Some(*failure_generation)
                     && statuses.get(before).is_some_and(|before_track| {
                         before_track.created_sequence < attempt_sequence.unwrap_or_default()
-                            && wait_result_sequences.get(cause).is_some_and(|cause_result| {
-                                result_sequence.is_some_and(|result| result <= *cause_result)
-                            })
-                            && before_track.task.is_some_and(|task| {
-                                task.authorizes(context.task, false)
-                            })
+                            && wait_result_sequences
+                                .get(cause)
+                                .is_some_and(|cause_result| {
+                                    result_sequence.is_some_and(|result| result <= *cause_result)
+                                })
+                            && before_track
+                                .task
+                                .is_some_and(|task| task.authorizes(context.task, false))
                     })
             })
             .collect::<Vec<_>>();
         let failed_drain_attempt = if matching_failed_drains.len() == 1 {
             let (_, (_, before, cause, _)) = matching_failed_drains[0];
             if *attempt == *cause {
-                cleanup_cause_wait_transactions.get(attempt).is_some_and(|transaction| {
-                    valid_cleanup_transactions.contains(transaction)
-                })
+                cleanup_cause_wait_transactions
+                    .get(attempt)
+                    .is_some_and(|transaction| valid_cleanup_transactions.contains(transaction))
             } else {
                 match wait_outcomes.get(attempt) {
                     Some(PhysicalWaitOutcome::Interrupted) => true,
@@ -9203,9 +11357,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             false
         };
         if !completed_drain_attempt && !failed_drain_attempt {
-            violations.push(
-                PhysicalPartitionViolation::InvalidPreStopContinuedDrainAttempt(*attempt),
-            );
+            violations
+                .push(PhysicalPartitionViolation::InvalidPreStopContinuedDrainAttempt(*attempt));
         }
     }
     for (attempt, context) in &wait_attempts {
@@ -9265,7 +11418,9 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     }
                     Some(PhysicalWaitOutcome::Interrupted) => true,
                     Some(
-                        PhysicalWaitOutcome::UndecodableStatus { .. }
+                        PhysicalWaitOutcome::RetainedStatus { .. }
+                        | PhysicalWaitOutcome::RetainedUndecodableStatus { .. }
+                        | PhysicalWaitOutcome::UndecodableStatus { .. }
                         | PhysicalWaitOutcome::NoStatus { .. }
                         | PhysicalWaitOutcome::NoChild
                         | PhysicalWaitOutcome::Error(_),
@@ -9304,7 +11459,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 .push(PhysicalPartitionViolation::FatalWaitWithoutCleanupTransaction(*attempt));
         }
     }
-    for (attempt, _outcome) in &resume_results {
+    for attempt in resume_results.keys() {
         let Some(context) = resume_attempts.get(attempt) else {
             continue;
         };
@@ -9457,6 +11612,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                                     .is_registered_controller_cleanup(),
                                                 Some(
                                                     PhysicalCleanupTransactionKind::StartupBarrier {
+                                                        generation,
+                                                        task,
                                                         owner,
                                                         ..
                                                     },
@@ -9464,9 +11621,33 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                                     PhysicalStartupCleanupOwner::Unstarted => context
                                                         .owner
                                                         .is_startup_barrier_cleanup(),
-                                                    PhysicalStartupCleanupOwner::AuthorizedWorker => context
-                                                        .owner
-                                                        .is_registered_controller_cleanup(),
+                                                    PhysicalStartupCleanupOwner::AuthorizedWorker => {
+                                                        context.owner
+                                                            == PhysicalResumeOwner::AuthorizedRootExternalCleanup
+                                                            && startup_executor_transfers
+                                                                .get(transaction)
+                                                                .is_some_and(
+                                                                    |(
+                                                                        transfer_generation,
+                                                                        transfer_task,
+                                                                        transfer_sequence,
+                                                                    )| {
+                                                                        *transfer_generation
+                                                                            == generation
+                                                                            && task.authorizes(
+                                                                                *transfer_task,
+                                                                                false,
+                                                                            )
+                                                                            && transfer_task
+                                                                                .authorizes(
+                                                                                    context.task,
+                                                                                    false,
+                                                                                )
+                                                                            && *transfer_sequence
+                                                                                < attempt_sequence
+                                                                    },
+                                                                )
+                                                    }
                                                 },
                                                 Some(
                                                     PhysicalCleanupTransactionKind::StartupSetup {
@@ -9533,7 +11714,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 && track.terminal_wait == Some(wait)
                 && track.cause_wait.is_some_and(|cause| {
                     wait_attempts.get(&cause).is_some_and(|context| {
-                        match (track.kind, context.producer) {
+                        (match (track.kind, context.producer) {
                             (
                                 Some(PhysicalCleanupTransactionKind::Registered),
                                 PhysicalWaitProducer::SynchronousWait,
@@ -9554,8 +11735,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                                 PhysicalWaitProducer::PreRegistrationBarrierCleanup,
                             ) => transaction_generation == generation,
                             _ => false,
-                        }
-                            && wait_generations.get(&cause) == Some(&generation)
+                        }) && wait_generations.get(&cause) == Some(&generation)
                     })
                 })
                 && wait_generations.get(&wait) == Some(&generation)
@@ -9583,10 +11763,24 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             | PhysicalEventRecordKind::ContinuedAuthorityRevoked { generation }
             | PhysicalEventRecordKind::PreRegistrationBarrierConsumed { generation, .. }
             | PhysicalEventRecordKind::PreRegistrationBarrierFailureLinked { generation, .. }
+            | PhysicalEventRecordKind::PreRegistrationBarrierStatuslessFailureLinked {
+                generation,
+                ..
+            }
+            | PhysicalEventRecordKind::PreRegistrationBarrierStatuslessCleanupResolved {
+                generation,
+                ..
+            }
             | PhysicalEventRecordKind::PreRegistrationBarrierSetupFailed { generation, .. }
             | PhysicalEventRecordKind::StartupSetupCleanupPrepared { generation, .. }
             | PhysicalEventRecordKind::StartupSetupCleanupLinked { generation, .. }
             | PhysicalEventRecordKind::StartupSetupCleanupNoStatusLinked { generation, .. }
+            | PhysicalEventRecordKind::StartupCleanupPidfdExitProved { generation, .. }
+            | PhysicalEventRecordKind::StartupCleanupWaitFailureExitProved { generation, .. }
+            | PhysicalEventRecordKind::StartupCleanupResumeFailureExitProved {
+                generation, ..
+            }
+            | PhysicalEventRecordKind::StartupCleanupExecutorTransferred { generation, .. }
             | PhysicalEventRecordKind::StopResolutionWatchArmed { generation, .. }
             | PhysicalEventRecordKind::StopResolutionFirstStopped { generation, .. }
             | PhysicalEventRecordKind::StopResolutionGroupAcknowledged { generation, .. }
@@ -9660,6 +11854,16 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             | PhysicalEventRecordKind::ResumeErrorTolerated { attempt, .. } => {
                 record_generations.extend(resume_generations.get(&attempt).copied());
             }
+            PhysicalEventRecordKind::PidfdSignalAttempt { context, .. } => {
+                add_generation(context.generation);
+            }
+            PhysicalEventRecordKind::PidfdSignalResult { attempt, .. } => {
+                record_generations.extend(
+                    pidfd_signal_attempts
+                        .get(&attempt)
+                        .map(|context| context.generation),
+                );
+            }
         }
         for generation in record_generations {
             generation_activity_records
@@ -9729,21 +11933,23 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                             .flatten()
                         })
                         .filter(|completed| *completed < finish_sequence);
-                    startup_completion.or_else(|| wait_attempts.get(&attempt).and_then(|context| {
-                        valid_pre_registration_task_gone
-                            .get(&canonical)
-                            .and_then(|evidence| {
-                                evidence
-                                    .iter()
-                                    .filter_map(|(task, sequence)| {
-                                        (context.task.authorizes(*task, true)
-                                            && result < *sequence
-                                            && *sequence < finish_sequence)
-                                            .then_some(*sequence)
-                                    })
-                                    .min()
-                            })
-                    }))
+                    startup_completion.or_else(|| {
+                        wait_attempts.get(&attempt).and_then(|context| {
+                            valid_pre_registration_task_gone
+                                .get(&canonical)
+                                .and_then(|evidence| {
+                                    evidence
+                                        .iter()
+                                        .filter_map(|(task, sequence)| {
+                                            (context.task.authorizes(*task, true)
+                                                && result < *sequence
+                                                && *sequence < finish_sequence)
+                                                .then_some(*sequence)
+                                        })
+                                        .min()
+                                })
+                        })
+                    })
                 }
                 Some(PhysicalWaitOutcome::Status { id, raw_status, .. })
                     if is_terminal_raw_status(*raw_status) =>
@@ -9777,6 +11983,30 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         } else {
                             None
                         }
+                    })
+                }
+                Some(PhysicalWaitOutcome::UndecodableStatus { id, siginfo, .. })
+                    if siginfo_is_startup_typed_unsupported_terminal(*siginfo) =>
+                {
+                    statuses.get(id).and_then(|track| {
+                        let published = track.publication_sequence?;
+                        let disposition = track.last_disposition_sequence?;
+                        if track.publication_destination
+                            != Some(PhysicalStatusPublication::StartupBarrierCleanupTerminal)
+                        {
+                            return None;
+                        }
+                        cleanup_terminal_wait_transactions
+                            .get(&attempt)
+                            .filter(|transaction| valid_cleanup_transactions.contains(transaction))
+                            .and_then(|transaction| cleanup_transactions.get(transaction))
+                            .and_then(|cleanup| cleanup.completion_sequence)
+                            .filter(|completed| {
+                                result < published
+                                    && published < disposition
+                                    && disposition < *completed
+                                    && *completed < finish_sequence
+                            })
                     })
                 }
                 _ => None,
@@ -9899,7 +12129,15 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     allowed_replay_sequences.extend(track.completion.map(|(_, sequence)| sequence));
                 }
             }
-            if terminal_boundary == Some(evidence) {
+            if terminal_boundary == Some(evidence) || cleanup_boundary == Some(evidence) {
+                if let Some(authority) = continued_authorities.get(&canonical)
+                    && authority.enabled_sequence < evidence
+                    && authority
+                        .revoked_sequence
+                        .is_some_and(|revoked| evidence < revoked && revoked < finish_sequence)
+                {
+                    allowed_replay_sequences.extend(authority.revoked_sequence);
+                }
                 for (status, status_track) in &statuses {
                     let Some(disposition) = status_track.cancellation_cleanup_sequence else {
                         continue;
@@ -9931,10 +12169,58 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         )
                         && status_track.created_sequence < evidence
                         && evidence < disposition
-                        && disposition < finish_sequence
                         && consumed_before_terminal;
                     if exact_deferred_cancellation {
                         allowed_replay_sequences.insert(disposition);
+                    }
+                }
+                for (source, attempt, proof, resolution_sequence) in &ambiguous_resume_resolutions {
+                    if !valid_ambiguous_resolution_attempts.contains(attempt)
+                        || !valid_ambiguous_resolution_sources.contains(source)
+                        || statuses
+                            .get(source)
+                            .and_then(|track| track.generation)
+                            .and_then(|generation| {
+                                canonical_generation(generation, &adoptions, &invalid_adoptions)
+                            })
+                            != Some(canonical)
+                    {
+                        continue;
+                    }
+                    let exact_terminal_proof = match proof {
+                        PhysicalAmbiguousResumeProof::FinalStatus(proof_status) => {
+                            statuses.get(proof_status).is_some_and(|proof_track| {
+                                proof_track.publication_destination
+                                    == Some(PhysicalStatusPublication::RetainedTerminal)
+                                    && proof_track.publication_sequence == Some(evidence)
+                                    && proof_track.generation.and_then(|generation| {
+                                        canonical_generation(
+                                            generation,
+                                            &adoptions,
+                                            &invalid_adoptions,
+                                        )
+                                    }) == Some(canonical)
+                            })
+                        }
+                        PhysicalAmbiguousResumeProof::ProvenEchild(wait) => {
+                            synthetic_echild_evidence.get(wait).is_some_and(
+                                |(proof_generation, proof_sequence)| {
+                                    *proof_sequence == evidence
+                                        && canonical_generation(
+                                            *proof_generation,
+                                            &adoptions,
+                                            &invalid_adoptions,
+                                        ) == Some(canonical)
+                                },
+                            )
+                        }
+                        PhysicalAmbiguousResumeProof::LaterStatus(_) => false,
+                    };
+                    if exact_terminal_proof
+                        && evidence < *resolution_sequence
+                        && *resolution_sequence < finish_sequence
+                    {
+                        allowed_replay_sequences.insert(*resolution_sequence);
                     }
                 }
             }
@@ -10222,8 +12508,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
         });
         let valid_cause = resume_attempts.get(attempt).is_some_and(|context| {
             if context.owner.is_registered_controller_cleanup() {
-                has_valid_resume_transaction(*attempt)
-                    || synchronous_cancellation_commit
+                has_valid_resume_transaction(*attempt) || synchronous_cancellation_commit
             } else if context.owner == PhysicalResumeOwner::TypedStopped {
                 false
             } else if context.owner == PhysicalResumeOwner::PreRegistrationCleanup {
@@ -10396,8 +12681,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             let resumed_by_cleanup = track.dispositions == 0
                 && track.successful_resumes == 1
                 && track.successful_resume_owner.is_some_and(|owner| {
-                    owner.is_registered_controller_cleanup()
-                        || owner.is_startup_barrier_cleanup()
+                    owner.is_registered_controller_cleanup() || owner.is_startup_barrier_cleanup()
                 });
             if !disposed_by_cleanup && !resumed_by_cleanup {
                 violations
@@ -10443,8 +12727,8 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
             _ => None,
         };
         let continued_publication = continued_publication_route.is_some();
-        let continued_producer_matches_route = continued_publication_route.is_some_and(|route| {
-            match route {
+        let continued_producer_matches_route =
+            continued_publication_route.is_some_and(|route| match route {
                 PhysicalContinuedStatusRoute::PreStopDrain { .. } => {
                     track.producer == Some(PhysicalWaitProducer::PreStopContinuedDrain)
                 }
@@ -10454,11 +12738,10 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                 | PhysicalContinuedStatusRoute::AfterAcknowledgedGroupStop => {
                     track.producer == Some(PhysicalWaitProducer::AuthorizedRootNotifier)
                 }
-            }
-        });
+            });
         let exact_continued_side_channel = track
             .raw_status
-            .is_some_and(libc::WIFCONTINUED)
+            .is_some_and(|raw_status| libc::WIFCONTINUED(raw_status))
             && continued_producer_matches_route
             && track.published == 1
             && track.dispositions == 1
@@ -10471,8 +12754,7 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                     .is_some_and(|disposed| published < disposed)
             });
         if continued_publication != exact_continued_side_channel
-            || (track.continued_side_channel_dispositions != 0
-                && !exact_continued_side_channel)
+            || (track.continued_side_channel_dispositions != 0 && !exact_continued_side_channel)
         {
             violations.push(PhysicalPartitionViolation::InvalidStatusDisposition(
                 *status,
@@ -10537,12 +12819,16 @@ fn validate_partition(snapshot: &PhysicalEventSnapshot) -> PhysicalPartitionVali
                         track.raw_status.is_some_and(is_terminal_raw_status)
                             || has_future_external_terminal_evidence(generation, task, sequence)
                     }),
-                Some(PhysicalWaitProducer::RegisteredCleanup) => has_cleanup_transaction,
+                Some(
+                    PhysicalWaitProducer::PreRegistrationBarrierCleanup
+                    | PhysicalWaitProducer::RegisteredCleanup,
+                ) => has_cleanup_transaction,
                 Some(PhysicalWaitProducer::PreStopContinuedDrain) => has_cleanup_transaction,
+                Some(PhysicalWaitProducer::PreRegistrationBarrier) => false,
                 Some(
                     PhysicalWaitProducer::NotifierWorker
-                        | PhysicalWaitProducer::AuthorizedRootNotifier
-                        | PhysicalWaitProducer::SynchronousWait,
+                    | PhysicalWaitProducer::AuthorizedRootNotifier
+                    | PhysicalWaitProducer::SynchronousWait,
                 ) => {
                     let consumed_before_disposition = track
                         .cancellation_cleanup_sequence
@@ -10723,6 +13009,596 @@ mod tests {
             uid: 1000,
             status: libc::SIGSTOP,
         }
+    }
+
+    fn original_root_task() -> PhysicalTaskIdentity {
+        PhysicalTaskIdentity::direct_child(Pid::from_raw(7))
+    }
+
+    fn captured_original_root_task(
+        tid: i32,
+        tgid: i32,
+        ppid: i32,
+        tracer_pid: i32,
+    ) -> PhysicalTaskIdentity {
+        PhysicalTaskIdentity::captured_with_controller(
+            Pid::from_raw(tid),
+            Pid::from_raw(tgid),
+            Pid::from_raw(ppid),
+            Pid::from_raw(tracer_pid),
+            101,
+            103,
+            11,
+        )
+    }
+
+    fn inject_original_root_launch(
+        observer: &PhysicalEventObserver,
+        generation: PhysicalEventGenerationId,
+        link: u64,
+    ) {
+        inject_original_root_launch_with(
+            observer,
+            generation,
+            PhysicalOriginalRootLaunchId(link),
+            original_root_task(),
+            Pid::from_raw(41),
+            Pid::from_raw(42),
+            1,
+        );
+    }
+
+    fn inject_original_root_launch_with(
+        observer: &PhysicalEventObserver,
+        generation: PhysicalEventGenerationId,
+        link: PhysicalOriginalRootLaunchId,
+        task: PhysicalTaskIdentity,
+        controller_tgid: Pid,
+        controller_tid: Pid,
+        controller_sequence: u64,
+    ) {
+        observer.inject_for_test(PhysicalEventRecordKind::OriginalRootLaunchLinked {
+            link,
+            generation,
+            task,
+            controller_tgid,
+            controller_tid,
+            controller_sequence,
+        });
+    }
+
+    fn finish_interrupted_wait(
+        observer: &PhysicalEventObserver,
+        generation: PhysicalEventGenerationId,
+        task: PhysicalTaskIdentity,
+        producer: PhysicalWaitProducer,
+    ) -> PhysicalWaitAttempt {
+        let wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer,
+            flags: production_wait_flags(producer),
+        });
+        observer.finish_wait_error(wait, libc::EINTR);
+        wait
+    }
+
+    fn has_wait_before_identity_bound(
+        validation: &PhysicalPartitionValidation,
+        wait: PhysicalWaitAttempt,
+    ) -> bool {
+        validation
+            .violations
+            .contains(&PhysicalPartitionViolation::WaitBeforeIdentityBound(
+                wait.id(),
+            ))
+    }
+
+    fn has_wrong_wait_task(
+        validation: &PhysicalPartitionValidation,
+        wait: PhysicalWaitAttempt,
+    ) -> bool {
+        validation
+            .violations
+            .contains(&PhysicalPartitionViolation::WrongWaitTask(wait.id()))
+    }
+
+    fn record_valid_original_root_barrier_session(
+        observer: &PhysicalEventObserver,
+        tracer_pid: i32,
+        prepared_launch: Option<PhysicalOriginalRootLaunchId>,
+        prepared_task: Option<PhysicalTaskIdentity>,
+    ) -> PhysicalWaitAttempt {
+        let generation = generation();
+        let barrier_task = captured_original_root_task(7, 7, 41, tracer_pid);
+        let task = captured_original_root_task(7, 7, 41, 42);
+        let launch = PhysicalOriginalRootLaunchId(7_001 + tracer_pid as u64);
+        let raw_status = (libc::SIGTRAP << 8) | 0x7f;
+        let siginfo = PhysicalWaitSiginfo {
+            signo: libc::SIGCHLD,
+            errno: 0,
+            code: libc::CLD_TRAPPED,
+            pid: 7,
+            uid: 1000,
+            status: libc::SIGTRAP,
+        };
+
+        observer.attach_generation(generation);
+        inject_original_root_launch(observer, generation, launch.get());
+        let barrier = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task: barrier_task,
+            producer: PhysicalWaitProducer::PreRegistrationBarrier,
+            flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationBarrier),
+        });
+        observer.finish_wait_retained_status(barrier, raw_status, siginfo);
+        let transaction = observer.prepare_startup_barrier_cleanup_transaction();
+        observer.record_startup_barrier_fallback_prepared(
+            prepared_launch.unwrap_or(launch),
+            generation,
+            barrier,
+            prepared_task.unwrap_or(barrier_task),
+            transaction,
+        );
+        observer.bind_identity(generation, task);
+        observer.record_continued_authority_enabled(
+            generation,
+            Pid::from_raw(7),
+            Pid::from_raw(41),
+            Pid::from_raw(42),
+        );
+        observer.record_worker_started(generation);
+
+        let consuming_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::AuthorizedRootNotifier,
+            flags: production_wait_flags(PhysicalWaitProducer::AuthorizedRootNotifier),
+        });
+        let status = observer.allocate_status();
+        observer.record_wait_siginfo(consuming_wait, siginfo, Some(status));
+        observer.finish_wait_status_with_id(consuming_wait, status, raw_status, Some(siginfo));
+        observer.record_pre_registration_barrier_consumed(
+            generation,
+            barrier,
+            consuming_wait,
+            status,
+        );
+        observer.record_startup_barrier_fallback_released(
+            generation,
+            barrier,
+            consuming_wait,
+            status,
+        );
+        observer.record_status_published(
+            generation,
+            status,
+            PhysicalStatusPublication::RegularFifo,
+        );
+        deliver_status(observer, generation, status);
+        resume_typed_status(observer, generation, task, status);
+
+        let terminal_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::AuthorizedRootNotifier,
+            flags: production_wait_flags(PhysicalWaitProducer::AuthorizedRootNotifier),
+        });
+        observer.finish_wait_error(terminal_wait, libc::ECHILD);
+        observer.record_echild_pidfd_exited(terminal_wait, generation, task, libc::POLLIN);
+        observer.record_synthetic_echild(generation, Some(terminal_wait.id()));
+        observer.record_continued_authority_revoked(generation);
+        observer.record_generation_finished(generation);
+        observer.close();
+        barrier
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum StartupResumeMutation {
+        None,
+        Task(PhysicalTaskIdentity),
+        WrongGeneration,
+        Owner(PhysicalResumeOwner),
+        WrongSourceProducer,
+        LaunchAfterResume,
+        GenericLinkBeforeLateLaunch,
+    }
+
+    fn record_valid_unstarted_original_root_barrier_cleanup(
+        observer: &PhysicalEventObserver,
+        matched_barrier: bool,
+        cleanup_task: Option<PhysicalTaskIdentity>,
+        resume_mutation: StartupResumeMutation,
+    ) -> (PhysicalWaitAttempt, PhysicalResumeAttempt) {
+        let generation = generation();
+        let barrier_task = captured_original_root_task(7, 7, 41, 42);
+        let task = cleanup_task.unwrap_or(barrier_task);
+        let launch = PhysicalOriginalRootLaunchId(7_500 + u64::from(matched_barrier));
+        let delayed_launch = matches!(
+            resume_mutation,
+            StartupResumeMutation::LaunchAfterResume
+                | StartupResumeMutation::GenericLinkBeforeLateLaunch
+        );
+        let retained_raw = (libc::SIGTRAP << 8) | 0x7f;
+        let retained_siginfo = PhysicalWaitSiginfo {
+            signo: libc::SIGCHLD,
+            errno: 0,
+            code: libc::CLD_TRAPPED,
+            pid: 7,
+            uid: 1000,
+            status: libc::SIGTRAP,
+        };
+        let (source_raw, source_siginfo) = if matched_barrier {
+            (retained_raw, retained_siginfo)
+        } else {
+            (stopped_status(), wait_siginfo(7))
+        };
+
+        observer.attach_generation(generation);
+        if resume_mutation == StartupResumeMutation::GenericLinkBeforeLateLaunch {
+            observer.link_pre_registration_task(original_root_task(), generation);
+        }
+        if !delayed_launch {
+            inject_original_root_launch(observer, generation, launch.get());
+        }
+        let barrier = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task: barrier_task,
+            producer: PhysicalWaitProducer::PreRegistrationBarrier,
+            flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationBarrier),
+        });
+        observer.finish_wait_retained_status(barrier, retained_raw, retained_siginfo);
+        let transaction = observer.prepare_startup_barrier_cleanup_transaction();
+        observer.record_startup_barrier_fallback_prepared(
+            launch,
+            generation,
+            barrier,
+            barrier_task,
+            transaction,
+        );
+
+        let consuming_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::PreRegistrationBarrierCleanup,
+            flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationBarrierCleanup),
+        });
+        let source = observer.allocate_status();
+        observer.record_wait_siginfo(consuming_wait, source_siginfo, Some(source));
+        observer.finish_wait_status_with_id(
+            consuming_wait,
+            source,
+            source_raw,
+            Some(source_siginfo),
+        );
+        if matched_barrier {
+            observer.record_pre_registration_barrier_consumed(
+                generation,
+                barrier,
+                consuming_wait,
+                source,
+            );
+        }
+        observer.begin_startup_barrier_cleanup_transaction(
+            transaction,
+            generation,
+            task,
+            barrier,
+            consuming_wait,
+            PhysicalStartupCleanupOwner::Unstarted,
+        );
+        observer.link_registered_cleanup_status(transaction, source);
+        if !matched_barrier {
+            observer.record_pre_registration_barrier_failure_linked(
+                generation,
+                barrier,
+                consuming_wait,
+                source,
+                transaction,
+            );
+        }
+        observer.record_cleanup_status_published(
+            generation,
+            source,
+            if matched_barrier {
+                PhysicalStatusPublication::StartupBarrierCleanupStopped
+            } else {
+                PhysicalStatusPublication::StartupBarrierFailureCleanup
+            },
+        );
+
+        let signal = observer.begin_pidfd_signal(PhysicalPidfdSignalContext {
+            generation,
+            task,
+            transaction: transaction.id(),
+            pidfd: 11,
+            signal: libc::SIGKILL,
+        });
+        observer.finish_pidfd_signal(signal, PhysicalPidfdSignalOutcome::Success);
+        let wrong_generation =
+            (resume_mutation == StartupResumeMutation::WrongGeneration).then(|| {
+                let wrong = PhysicalEventGenerationId::allocate();
+                observer.attach_generation(wrong);
+                wrong
+            });
+        let wrong_source =
+            (resume_mutation == StartupResumeMutation::WrongSourceProducer).then(|| {
+                let wait = observer.begin_wait(PhysicalWaitContext {
+                    generation: Some(generation),
+                    task,
+                    producer: PhysicalWaitProducer::PreRegistrationCleanup,
+                    flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationCleanup),
+                });
+                let status = observer.allocate_status();
+                observer.finish_wait_status_with_id(wait, status, stopped_status(), None);
+                observer.record_status_published(
+                    generation,
+                    status,
+                    PhysicalStatusPublication::DirectStopped,
+                );
+                status
+            });
+        let resume = observer.begin_resume(PhysicalResumeContext {
+            generation: Some(wrong_generation.unwrap_or(generation)),
+            task: match resume_mutation {
+                StartupResumeMutation::Task(task) => task,
+                _ => task,
+            },
+            source_status: Some(wrong_source.unwrap_or(source)),
+            operation: PhysicalResumeOperation::Continue,
+            signal: None,
+            owner: match resume_mutation {
+                StartupResumeMutation::Owner(owner) => owner,
+                _ => PhysicalResumeOwner::StartupBarrierCleanup,
+            },
+        });
+        observer.finish_resume(resume, PhysicalResumeOutcome::Success);
+        if delayed_launch {
+            inject_original_root_launch(observer, generation, launch.get());
+        }
+
+        let terminal_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::PreRegistrationBarrierCleanup,
+            flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationBarrierCleanup),
+        });
+        let terminal = finish_exited_wait(observer, terminal_wait);
+        observer.link_registered_cleanup_status(transaction, terminal);
+        observer.finish_startup_barrier_cleanup_terminal_status(generation, terminal);
+        observer.finish_registered_cleanup_transaction(transaction, terminal_wait);
+        observer.finish_unregistered_generation(generation, terminal_wait.id());
+        if let Some(wrong_generation) = wrong_generation {
+            observer.record_generation_finished(wrong_generation);
+        }
+        observer.close();
+        (barrier, resume)
+    }
+
+    fn record_valid_pidfd_bound_startup_setup_cleanup(
+        observer: &PhysicalEventObserver,
+    ) -> PhysicalWaitAttempt {
+        let generation = generation();
+        let task = PhysicalTaskIdentity::direct_child_with_pidfd(Pid::from_raw(7), 11);
+        let launch = PhysicalOriginalRootLaunchId(7_600);
+        let error = libc::EIO;
+
+        observer.attach_generation(generation);
+        inject_original_root_launch(observer, generation, launch.get());
+        observer.record_pre_registration_barrier_setup_failed(generation, task, error, launch);
+        let transaction = observer.prepare_startup_barrier_cleanup_transaction();
+        observer.record_startup_setup_cleanup_prepared(
+            generation,
+            task,
+            error,
+            transaction,
+            launch,
+        );
+        let terminal_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::PreRegistrationBarrierCleanup,
+            flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationBarrierCleanup),
+        });
+        let terminal = finish_exited_wait(observer, terminal_wait);
+        observer.begin_startup_setup_cleanup_transaction(
+            transaction,
+            generation,
+            task,
+            error,
+            terminal_wait,
+            launch,
+        );
+        observer.link_registered_cleanup_status(transaction, terminal);
+        observer.record_startup_setup_cleanup_linked(
+            generation,
+            error,
+            terminal_wait,
+            terminal,
+            transaction,
+            launch,
+        );
+        observer.finish_startup_barrier_cleanup_terminal_status(generation, terminal);
+        observer.finish_registered_cleanup_transaction(transaction, terminal_wait);
+        observer.finish_unregistered_generation(generation, terminal_wait.id());
+        observer.close();
+        terminal_wait
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SetupResumeMutation {
+        None,
+        WrongLaunch,
+        WrongGeneration,
+        LaunchAfterResume,
+        Task(PhysicalTaskIdentity),
+        WrongTransaction,
+        WrongSourceProducer,
+        WrongCauseStatus,
+        SignalBeforeCauseWaitResult,
+        Owner(PhysicalResumeOwner),
+    }
+
+    fn record_valid_pidfd_bound_startup_setup_resume(
+        observer: &PhysicalEventObserver,
+        mutation: SetupResumeMutation,
+    ) -> PhysicalResumeAttempt {
+        let generation = generation();
+        let task = PhysicalTaskIdentity::direct_child_with_pidfd(Pid::from_raw(7), 11);
+        let launch = PhysicalOriginalRootLaunchId(7_700);
+        let transaction_launch = if mutation == SetupResumeMutation::WrongLaunch {
+            PhysicalOriginalRootLaunchId(7_701)
+        } else {
+            launch
+        };
+        let delayed_launch = mutation == SetupResumeMutation::LaunchAfterResume;
+        let error = libc::EIO;
+
+        observer.attach_generation(generation);
+        if !delayed_launch {
+            inject_original_root_launch(observer, generation, launch.get());
+        }
+        observer.record_pre_registration_barrier_setup_failed(generation, task, error, launch);
+        let transaction = observer.prepare_startup_barrier_cleanup_transaction();
+        observer.record_startup_setup_cleanup_prepared(
+            generation,
+            task,
+            error,
+            transaction,
+            launch,
+        );
+        let source_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::PreRegistrationBarrierCleanup,
+            flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationBarrierCleanup),
+        });
+        let source = if mutation == SetupResumeMutation::SignalBeforeCauseWaitResult {
+            let source = observer.allocate_status();
+            let siginfo = wait_siginfo(source_wait.context().task.tid());
+            observer.record_wait_siginfo(source_wait, siginfo, Some(source));
+            let signal = observer.begin_pidfd_signal(PhysicalPidfdSignalContext {
+                generation,
+                task,
+                transaction: transaction.id(),
+                pidfd: 11,
+                signal: libc::SIGKILL,
+            });
+            observer.finish_pidfd_signal(signal, PhysicalPidfdSignalOutcome::Success);
+            observer.finish_wait_status_with_id(
+                source_wait,
+                source,
+                stopped_status(),
+                Some(siginfo),
+            );
+            source
+        } else {
+            finish_stopped_wait(observer, source_wait)
+        };
+        let transaction_source = if mutation == SetupResumeMutation::WrongCauseStatus {
+            let other_wait = observer.begin_wait(PhysicalWaitContext {
+                generation: Some(generation),
+                task,
+                producer: PhysicalWaitProducer::PreRegistrationBarrierCleanup,
+                flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationBarrierCleanup),
+            });
+            finish_stopped_wait(observer, other_wait)
+        } else {
+            source
+        };
+        observer.begin_startup_setup_cleanup_transaction(
+            transaction,
+            generation,
+            task,
+            error,
+            source_wait,
+            transaction_launch,
+        );
+        observer.link_registered_cleanup_status(transaction, transaction_source);
+        observer.record_startup_setup_cleanup_linked(
+            generation,
+            error,
+            source_wait,
+            transaction_source,
+            transaction,
+            transaction_launch,
+        );
+        observer.record_cleanup_status_published(
+            generation,
+            transaction_source,
+            PhysicalStatusPublication::StartupBarrierFailureCleanup,
+        );
+        if mutation != SetupResumeMutation::SignalBeforeCauseWaitResult {
+            let signal = observer.begin_pidfd_signal(PhysicalPidfdSignalContext {
+                generation,
+                task,
+                transaction: transaction.id(),
+                pidfd: 11,
+                signal: libc::SIGKILL,
+            });
+            observer.finish_pidfd_signal(signal, PhysicalPidfdSignalOutcome::Success);
+        }
+
+        if mutation == SetupResumeMutation::WrongTransaction {
+            let wrong_transaction = observer.prepare_startup_barrier_cleanup_transaction();
+            observer.link_registered_cleanup_status(wrong_transaction, source);
+        }
+        let wrong_source = (mutation == SetupResumeMutation::WrongSourceProducer).then(|| {
+            let wait = observer.begin_wait(PhysicalWaitContext {
+                generation: Some(generation),
+                task,
+                producer: PhysicalWaitProducer::PreRegistrationCleanup,
+                flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationCleanup),
+            });
+            let status = observer.allocate_status();
+            observer.finish_wait_status_with_id(wait, status, stopped_status(), None);
+            observer.record_status_published(
+                generation,
+                status,
+                PhysicalStatusPublication::DirectStopped,
+            );
+            status
+        });
+        let wrong_generation = (mutation == SetupResumeMutation::WrongGeneration).then(|| {
+            let wrong = PhysicalEventGenerationId::allocate();
+            observer.attach_generation(wrong);
+            wrong
+        });
+        let resume = observer.begin_resume(PhysicalResumeContext {
+            generation: Some(wrong_generation.unwrap_or(generation)),
+            task: match mutation {
+                SetupResumeMutation::Task(task) => task,
+                _ => task,
+            },
+            source_status: Some(wrong_source.unwrap_or(transaction_source)),
+            operation: PhysicalResumeOperation::Continue,
+            signal: None,
+            owner: match mutation {
+                SetupResumeMutation::Owner(owner) => owner,
+                _ => PhysicalResumeOwner::StartupBarrierCleanup,
+            },
+        });
+        observer.finish_resume(resume, PhysicalResumeOutcome::Success);
+        if delayed_launch {
+            inject_original_root_launch(observer, generation, launch.get());
+        }
+
+        let terminal_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::PreRegistrationBarrierCleanup,
+            flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationBarrierCleanup),
+        });
+        let terminal = finish_exited_wait(observer, terminal_wait);
+        observer.link_registered_cleanup_status(transaction, terminal);
+        observer.finish_startup_barrier_cleanup_terminal_status(generation, terminal);
+        observer.finish_registered_cleanup_transaction(transaction, terminal_wait);
+        observer.finish_unregistered_generation(generation, terminal_wait.id());
+        if let Some(wrong_generation) = wrong_generation {
+            observer.record_generation_finished(wrong_generation);
+        }
+        observer.close();
+        resume
     }
 
     fn undecodable_wait_siginfo(pid: i32) -> PhysicalWaitSiginfo {
@@ -11106,6 +13982,649 @@ mod tests {
     }
 
     #[test]
+    fn partition_accepts_original_root_barrier_before_identity_binding() {
+        for tracer_pid in [0, 42] {
+            let observer = observer();
+            let wait =
+                record_valid_original_root_barrier_session(&observer, tracer_pid, None, None);
+            let validation = observer.snapshot().validate();
+            assert!(
+                validation.is_valid(),
+                "production-shaped original-root launch did not authorize tracer_pid={tracer_pid}: {:?}",
+                validation.violations,
+            );
+            assert!(!has_wait_before_identity_bound(&validation, wait));
+            assert!(!has_wrong_wait_task(&validation, wait));
+        }
+    }
+
+    #[test]
+    fn partition_rejects_original_root_barrier_after_continued_authority_enabled() {
+        let observer = observer();
+        let generation = generation();
+        let task = captured_original_root_task(7, 7, 41, 42);
+        let launch = PhysicalOriginalRootLaunchId(7_099);
+        let raw_status = (libc::SIGTRAP << 8) | 0x7f;
+        let siginfo = PhysicalWaitSiginfo {
+            signo: libc::SIGCHLD,
+            errno: 0,
+            code: libc::CLD_TRAPPED,
+            pid: 7,
+            uid: 1000,
+            status: libc::SIGTRAP,
+        };
+
+        observer.attach_generation(generation);
+        inject_original_root_launch(&observer, generation, launch.get());
+        observer.bind_identity(generation, task);
+        observer.record_continued_authority_enabled(
+            generation,
+            Pid::from_raw(7),
+            Pid::from_raw(41),
+            Pid::from_raw(42),
+        );
+        let barrier = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::PreRegistrationBarrier,
+            flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationBarrier),
+        });
+        observer.finish_wait_retained_status(barrier, raw_status, siginfo);
+        let transaction = observer.prepare_startup_barrier_cleanup_transaction();
+        observer.record_startup_barrier_fallback_prepared(
+            launch,
+            generation,
+            barrier,
+            task,
+            transaction,
+        );
+        observer.record_worker_started(generation);
+
+        let consuming_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::AuthorizedRootNotifier,
+            flags: production_wait_flags(PhysicalWaitProducer::AuthorizedRootNotifier),
+        });
+        let status = observer.allocate_status();
+        observer.record_wait_siginfo(consuming_wait, siginfo, Some(status));
+        observer.finish_wait_status_with_id(consuming_wait, status, raw_status, Some(siginfo));
+        observer.record_pre_registration_barrier_consumed(
+            generation,
+            barrier,
+            consuming_wait,
+            status,
+        );
+        observer.record_startup_barrier_fallback_released(
+            generation,
+            barrier,
+            consuming_wait,
+            status,
+        );
+        observer.record_status_published(
+            generation,
+            status,
+            PhysicalStatusPublication::RegularFifo,
+        );
+        deliver_status(&observer, generation, status);
+        resume_typed_status(&observer, generation, task, status);
+
+        let terminal_wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::AuthorizedRootNotifier,
+            flags: production_wait_flags(PhysicalWaitProducer::AuthorizedRootNotifier),
+        });
+        observer.finish_wait_error(terminal_wait, libc::ECHILD);
+        observer.record_echild_pidfd_exited(terminal_wait, generation, task, libc::POLLIN);
+        observer.record_synthetic_echild(generation, Some(terminal_wait.id()));
+        observer.record_continued_authority_revoked(generation);
+        observer.record_generation_finished(generation);
+        observer.close();
+
+        let validation = observer.snapshot().validate();
+        assert_eq!(validation.violations.len(), 2, "{validation:#?}");
+        assert!(validation.violations.contains(
+            &PhysicalPartitionViolation::InvalidContinuedAuthority(generation),
+        ));
+        assert!(validation.violations.contains(
+            &PhysicalPartitionViolation::InvalidPreRegistrationBarrier(barrier.id()),
+        ));
+        assert_eq!(
+            validation
+                .violations
+                .iter()
+                .filter(|violation| matches!(
+                    violation,
+                    PhysicalPartitionViolation::InvalidContinuedAuthority(observed)
+                        if *observed == generation
+                ))
+                .count(),
+            1,
+            "{validation:#?}",
+        );
+    }
+
+    #[test]
+    fn partition_rejects_original_root_fallback_launch_and_captured_shape_mutations() {
+        let mutations = [
+            (Some(PhysicalOriginalRootLaunchId(8_001)), None, "launch-id"),
+            (
+                None,
+                Some(captured_original_root_task(7, 8, 41, 42)),
+                "tgid",
+            ),
+            (
+                None,
+                Some(captured_original_root_task(7, 7, 40, 42)),
+                "ppid",
+            ),
+            (
+                None,
+                Some(captured_original_root_task(7, 7, 41, 43)),
+                "tracer",
+            ),
+            (
+                None,
+                Some(PhysicalTaskIdentity::captured(
+                    Pid::from_raw(7),
+                    Pid::from_raw(7),
+                    101,
+                    103,
+                    11,
+                )),
+                "controller-shape",
+            ),
+        ];
+        for (prepared_launch, prepared_task, field) in mutations {
+            let observer = observer();
+            let barrier = record_valid_original_root_barrier_session(
+                &observer,
+                42,
+                prepared_launch,
+                prepared_task,
+            );
+            let validation = observer.snapshot().validate();
+            assert!(
+                validation.violations.contains(
+                    &PhysicalPartitionViolation::InvalidPreRegistrationBarrier(barrier.id()),
+                ),
+                "fallback {field} mutation was accepted: {:?}",
+                validation.violations,
+            );
+        }
+    }
+
+    #[test]
+    fn partition_accepts_pidfd_bound_original_root_barrier_cleanup_before_capture() {
+        let observer = observer();
+        let wait = record_valid_pidfd_bound_startup_setup_cleanup(&observer);
+        let validation = observer.snapshot().validate();
+        assert!(
+            validation.is_valid(),
+            "spawn-sourced pidfd-bound cleanup evidence was invalid: {:?}",
+            validation.violations,
+        );
+        assert!(!has_wait_before_identity_bound(&validation, wait));
+        assert!(!has_wrong_wait_task(&validation, wait));
+    }
+
+    #[test]
+    fn partition_accepts_pidfd_bound_startup_setup_stop_resume_and_terminal_finish() {
+        let observer = observer();
+        let resume =
+            record_valid_pidfd_bound_startup_setup_resume(&observer, SetupResumeMutation::None);
+        let validation = observer.snapshot().validate();
+        assert!(
+            validation.is_valid(),
+            "pidfd-bound StartupSetup resume evidence was invalid: {:?}",
+            validation.violations,
+        );
+        assert!(
+            !validation
+                .violations
+                .contains(&PhysicalPartitionViolation::WrongResumeTask(resume.id()))
+        );
+        assert!(!validation.violations.contains(
+            &PhysicalPartitionViolation::ResumeBeforeIdentityBound(resume.id()),
+        ));
+    }
+
+    #[test]
+    fn partition_rejects_pidfd_bound_startup_setup_resume_tuple_mutations() {
+        let mutations = [
+            SetupResumeMutation::WrongLaunch,
+            SetupResumeMutation::WrongGeneration,
+            SetupResumeMutation::LaunchAfterResume,
+            SetupResumeMutation::Task(PhysicalTaskIdentity::direct_child_with_pidfd(
+                Pid::from_raw(8),
+                11,
+            )),
+            SetupResumeMutation::Task(PhysicalTaskIdentity::direct_child_with_pidfd(
+                Pid::from_raw(7),
+                12,
+            )),
+            SetupResumeMutation::WrongTransaction,
+            SetupResumeMutation::WrongSourceProducer,
+            SetupResumeMutation::WrongCauseStatus,
+            SetupResumeMutation::Owner(PhysicalResumeOwner::RootCleanup),
+        ];
+        for (index, mutation) in mutations.into_iter().enumerate() {
+            let observer = observer();
+            let resume = record_valid_pidfd_bound_startup_setup_resume(&observer, mutation);
+            let validation = observer.snapshot().validate();
+            assert!(
+                validation
+                    .violations
+                    .contains(&PhysicalPartitionViolation::WrongResumeTask(resume.id())),
+                "StartupSetup resume tuple mutation {index} retained task authority: {:?}",
+                validation.violations,
+            );
+            assert!(
+                validation.violations.contains(
+                    &PhysicalPartitionViolation::ResumeBeforeIdentityBound(resume.id()),
+                ),
+                "StartupSetup resume tuple mutation {index} retained temporal authority: {:?}",
+                validation.violations,
+            );
+        }
+    }
+
+    #[test]
+    fn partition_rejects_startup_setup_signal_before_cause_wait_result() {
+        let observer = observer();
+        record_valid_pidfd_bound_startup_setup_resume(
+            &observer,
+            SetupResumeMutation::SignalBeforeCauseWaitResult,
+        );
+        let validation = observer.snapshot().validate();
+        assert!(
+            validation.violations.iter().any(|violation| matches!(
+                violation,
+                PhysicalPartitionViolation::InvalidStartupCleanupPidfdSignal(_)
+            )),
+            "startup setup signal preceding its cause wait result was accepted: {:?}",
+            validation.violations,
+        );
+    }
+
+    #[test]
+    fn partition_accepts_exact_and_mismatched_unstarted_original_root_cleanup() {
+        for matched_barrier in [true, false] {
+            let observer = observer();
+            let (barrier, _) = record_valid_unstarted_original_root_barrier_cleanup(
+                &observer,
+                matched_barrier,
+                None,
+                StartupResumeMutation::None,
+            );
+            let validation = observer.snapshot().validate();
+            assert!(
+                validation.is_valid(),
+                "unstarted original-root cleanup matched={matched_barrier} was invalid: {:?}",
+                validation.violations,
+            );
+            assert!(!has_wait_before_identity_bound(&validation, barrier));
+            assert!(!has_wrong_wait_task(&validation, barrier));
+        }
+    }
+
+    #[test]
+    fn partition_rejects_unstarted_original_root_cleanup_controller_shape_mutations() {
+        let mutations = [
+            captured_original_root_task(7, 8, 41, 42),
+            captured_original_root_task(7, 7, 40, 42),
+            captured_original_root_task(7, 7, 41, 43),
+            PhysicalTaskIdentity::captured(Pid::from_raw(7), Pid::from_raw(7), 101, 103, 11),
+        ];
+        for matched_barrier in [true, false] {
+            for (index, task) in mutations.into_iter().enumerate() {
+                let observer = observer();
+                let (barrier, _) = record_valid_unstarted_original_root_barrier_cleanup(
+                    &observer,
+                    matched_barrier,
+                    Some(task),
+                    StartupResumeMutation::None,
+                );
+                let validation = observer.snapshot().validate();
+                assert!(
+                    validation.violations.contains(
+                        &PhysicalPartitionViolation::InvalidPreRegistrationBarrier(barrier.id()),
+                    ),
+                    "cleanup controller-shape mutation {index}, matched={matched_barrier} was accepted: {:?}",
+                    validation.violations,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn partition_rejects_opaque_launch_resume_binding_mutations() {
+        let mutations = [
+            StartupResumeMutation::Task(captured_original_root_task(7, 8, 41, 42)),
+            StartupResumeMutation::Task(captured_original_root_task(7, 7, 40, 42)),
+            StartupResumeMutation::Task(captured_original_root_task(7, 7, 41, 43)),
+            StartupResumeMutation::WrongGeneration,
+            StartupResumeMutation::Owner(PhysicalResumeOwner::RootCleanup),
+            StartupResumeMutation::WrongSourceProducer,
+            StartupResumeMutation::LaunchAfterResume,
+            StartupResumeMutation::GenericLinkBeforeLateLaunch,
+        ];
+        for (index, mutation) in mutations.into_iter().enumerate() {
+            let observer = observer();
+            let (_, resume) = record_valid_unstarted_original_root_barrier_cleanup(
+                &observer, true, None, mutation,
+            );
+            let validation = observer.snapshot().validate();
+            assert!(
+                validation
+                    .violations
+                    .contains(&PhysicalPartitionViolation::WrongResumeTask(resume.id())),
+                "resume binding mutation {index} retained task authority: {:?}",
+                validation.violations,
+            );
+            assert!(
+                validation.violations.contains(
+                    &PhysicalPartitionViolation::ResumeBeforeIdentityBound(resume.id()),
+                ),
+                "resume binding mutation {index} retained temporal authority: {:?}",
+                validation.violations,
+            );
+        }
+    }
+
+    #[test]
+    fn partition_rejects_original_root_launch_recorded_after_wait_attempt() {
+        let observer = observer();
+        let generation = generation();
+        observer.attach_generation(generation);
+        let wait = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task: captured_original_root_task(7, 7, 41, 42),
+            producer: PhysicalWaitProducer::PreRegistrationBarrier,
+            flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationBarrier),
+        });
+        inject_original_root_launch(&observer, generation, 7_003);
+        observer.finish_wait_error(wait, libc::EINTR);
+        observer.record_generation_finished(generation);
+        observer.close();
+
+        let validation = observer.snapshot().validate();
+        assert!(has_wait_before_identity_bound(&validation, wait));
+        assert!(has_wrong_wait_task(&validation, wait));
+    }
+
+    #[test]
+    fn partition_rejects_original_root_launch_from_wrong_or_adopted_raw_generation() {
+        for adopted in [false, true] {
+            let observer = observer();
+            let launch_generation = generation();
+            let wait_generation = generation();
+            observer.attach_generation(launch_generation);
+            observer.attach_generation(wait_generation);
+            inject_original_root_launch(&observer, launch_generation, 7_004);
+            if adopted {
+                observer.adopt_generation(launch_generation, wait_generation);
+            }
+            let wait = finish_interrupted_wait(
+                &observer,
+                wait_generation,
+                captured_original_root_task(7, 7, 41, 42),
+                PhysicalWaitProducer::PreRegistrationBarrier,
+            );
+            observer.record_generation_finished(wait_generation);
+            if !adopted {
+                observer.record_generation_finished(launch_generation);
+            }
+            observer.close();
+
+            let validation = observer.snapshot().validate();
+            assert!(
+                has_wait_before_identity_bound(&validation, wait),
+                "raw-generation mismatch was authorized when adopted={adopted}: {:?}",
+                validation.violations,
+            );
+            assert!(has_wrong_wait_task(&validation, wait));
+        }
+    }
+
+    #[test]
+    fn partition_rejects_duplicate_original_root_launch_authority_for_barrier() {
+        let observer = observer();
+        let generation = generation();
+        observer.attach_generation(generation);
+        inject_original_root_launch(&observer, generation, 7_005);
+        inject_original_root_launch(&observer, generation, 7_006);
+        let wait = finish_interrupted_wait(
+            &observer,
+            generation,
+            captured_original_root_task(7, 7, 41, 42),
+            PhysicalWaitProducer::PreRegistrationBarrier,
+        );
+        observer.record_generation_finished(generation);
+        observer.close();
+
+        let validation = observer.snapshot().validate();
+        assert!(has_wait_before_identity_bound(&validation, wait));
+        assert!(has_wrong_wait_task(&validation, wait));
+        assert!(validation.violations.contains(
+            &PhysicalPartitionViolation::InvalidOriginalRootLaunch(generation),
+        ));
+    }
+
+    #[test]
+    fn partition_rejects_original_root_launch_record_field_mutations() {
+        let mutations = [
+            (
+                original_root_task(),
+                Pid::from_raw(40),
+                Pid::from_raw(42),
+                1,
+                false,
+                "controller-tgid",
+            ),
+            (
+                original_root_task(),
+                Pid::from_raw(41),
+                Pid::from_raw(43),
+                1,
+                false,
+                "controller-tid",
+            ),
+            (
+                original_root_task(),
+                Pid::from_raw(41),
+                Pid::from_raw(42),
+                0,
+                true,
+                "controller-sequence",
+            ),
+            (
+                PhysicalTaskIdentity::direct_child_with_pidfd(Pid::from_raw(7), 11),
+                Pid::from_raw(41),
+                Pid::from_raw(42),
+                1,
+                true,
+                "launch-task-shape",
+            ),
+        ];
+        for (
+            index,
+            (launch_task, controller_tgid, controller_tid, sequence, invalid_launch, field),
+        ) in mutations.into_iter().enumerate()
+        {
+            let observer = observer();
+            let generation = generation();
+            observer.attach_generation(generation);
+            inject_original_root_launch_with(
+                &observer,
+                generation,
+                PhysicalOriginalRootLaunchId(7_400 + index as u64),
+                launch_task,
+                controller_tgid,
+                controller_tid,
+                sequence,
+            );
+            let wait = finish_interrupted_wait(
+                &observer,
+                generation,
+                captured_original_root_task(7, 7, 41, 42),
+                PhysicalWaitProducer::PreRegistrationBarrier,
+            );
+            observer.record_generation_finished(generation);
+            observer.close();
+
+            let validation = observer.snapshot().validate();
+            assert!(
+                has_wait_before_identity_bound(&validation, wait)
+                    && has_wrong_wait_task(&validation, wait),
+                "launch record {field} mutation retained wait authority: {:?}",
+                validation.violations,
+            );
+            assert_eq!(
+                validation.violations.contains(
+                    &PhysicalPartitionViolation::InvalidOriginalRootLaunch(generation),
+                ),
+                invalid_launch,
+            );
+        }
+    }
+
+    #[test]
+    fn partition_rejects_original_root_barrier_controller_shape_mutations() {
+        let mutations = [
+            captured_original_root_task(8, 7, 41, 42),
+            captured_original_root_task(7, 8, 41, 42),
+            captured_original_root_task(7, 7, 40, 42),
+            captured_original_root_task(7, 7, 41, 43),
+            PhysicalTaskIdentity::captured(Pid::from_raw(7), Pid::from_raw(7), 101, 103, 11),
+            PhysicalTaskIdentity::direct_child_with_pidfd(Pid::from_raw(7), 11),
+        ];
+        for (index, task) in mutations.into_iter().enumerate() {
+            let observer = observer();
+            let generation = generation();
+            observer.attach_generation(generation);
+            inject_original_root_launch(&observer, generation, 7_100 + index as u64);
+            let wait = finish_interrupted_wait(
+                &observer,
+                generation,
+                task,
+                PhysicalWaitProducer::PreRegistrationBarrier,
+            );
+            observer.record_generation_finished(generation);
+            observer.close();
+
+            let validation = observer.snapshot().validate();
+            assert!(
+                has_wait_before_identity_bound(&validation, wait),
+                "controller-shape mutation {index} was authorized: {:?}",
+                validation.violations,
+            );
+            if index + 1 != mutations.len() {
+                assert!(has_wrong_wait_task(&validation, wait));
+            }
+        }
+    }
+
+    #[test]
+    fn partition_rejects_original_root_launch_for_all_other_wait_producers() {
+        let excluded = [
+            PhysicalWaitProducer::PreRegistrationCleanup,
+            PhysicalWaitProducer::AuthorizedRootNotifier,
+            PhysicalWaitProducer::PreStopContinuedDrain,
+            PhysicalWaitProducer::NotifierWorker,
+            PhysicalWaitProducer::SynchronousWait,
+            PhysicalWaitProducer::RegisteredCleanup,
+        ];
+        for (index, producer) in excluded.into_iter().enumerate() {
+            let observer = observer();
+            let generation = generation();
+            observer.attach_generation(generation);
+            inject_original_root_launch(&observer, generation, 7_200 + index as u64);
+            let wait = finish_interrupted_wait(
+                &observer,
+                generation,
+                captured_original_root_task(7, 7, 41, 42),
+                producer,
+            );
+            observer.record_generation_finished(generation);
+            observer.close();
+
+            let validation = observer.snapshot().validate();
+            assert!(
+                has_wait_before_identity_bound(&validation, wait),
+                "opaque launch authorized excluded producer {producer:?}: {:?}",
+                validation.violations,
+            );
+            assert!(has_wrong_wait_task(&validation, wait));
+        }
+    }
+
+    #[test]
+    fn partition_rejects_generic_link_for_live_original_root_barrier_waits() {
+        let cases = [
+            (
+                PhysicalWaitProducer::PreRegistrationBarrier,
+                captured_original_root_task(7, 7, 41, 42),
+                true,
+            ),
+            (
+                PhysicalWaitProducer::PreRegistrationBarrierCleanup,
+                PhysicalTaskIdentity::direct_child_with_pidfd(Pid::from_raw(7), 11),
+                false,
+            ),
+        ];
+        for (producer, task, wrong_task_expected) in cases {
+            let observer = observer();
+            let generation = generation();
+            observer.attach_generation(generation);
+            observer.link_pre_registration_task(original_root_task(), generation);
+            let wait = finish_interrupted_wait(&observer, generation, task, producer);
+            observer.record_generation_finished(generation);
+            observer.close();
+
+            let validation = observer.snapshot().validate();
+            assert!(
+                has_wait_before_identity_bound(&validation, wait),
+                "generic link authorized live {producer:?} wait: {:?}",
+                validation.violations,
+            );
+            assert_eq!(has_wrong_wait_task(&validation, wait), wrong_task_expected);
+        }
+    }
+
+    #[test]
+    fn partition_rejects_generic_link_as_original_root_fallback_provenance() {
+        let observer = observer();
+        let generation = generation();
+        observer.attach_generation(generation);
+        observer.link_pre_registration_task(original_root_task(), generation);
+        let task = captured_original_root_task(7, 7, 41, 42);
+        let barrier = observer.begin_wait(PhysicalWaitContext {
+            generation: Some(generation),
+            task,
+            producer: PhysicalWaitProducer::PreRegistrationBarrier,
+            flags: production_wait_flags(PhysicalWaitProducer::PreRegistrationBarrier),
+        });
+        observer.finish_wait_retained_status(barrier, stopped_status(), wait_siginfo(7));
+        let transaction = observer.prepare_startup_barrier_cleanup_transaction();
+        observer.record_startup_barrier_fallback_prepared(
+            PhysicalOriginalRootLaunchId(7_300),
+            generation,
+            barrier,
+            task,
+            transaction,
+        );
+        observer.record_generation_finished(generation);
+        observer.close();
+
+        let validation = observer.snapshot().validate();
+        assert!(validation.violations.contains(
+            &PhysicalPartitionViolation::InvalidPreRegistrationBarrier(barrier.id()),
+        ));
+    }
+
+    #[test]
     fn partition_accepts_one_wait_one_delivery_one_resume() {
         let observer = observer();
         publish_and_resume(&observer, generation());
@@ -11271,7 +14790,8 @@ mod tests {
         observer.record_pre_registration_task_gone(generation, context.task, libc::ESRCH);
         observer.finish_unregistered_generation(generation, terminal.id());
         observer.close();
-        assert!(observer.snapshot().validate().is_valid());
+        let validation = observer.snapshot().validate();
+        assert!(validation.is_valid(), "{validation:#?}");
     }
 
     #[test]
@@ -11305,7 +14825,8 @@ mod tests {
         observer.finish_unregistered_generation(generation, terminal.id());
         observer.close();
 
-        assert!(observer.snapshot().validate().is_valid());
+        let validation = observer.snapshot().validate();
+        assert!(validation.is_valid(), "{validation:#?}");
     }
 
     #[test]
@@ -11341,7 +14862,8 @@ mod tests {
         observer.finish_unregistered_generation(generation, terminal.id());
         observer.close();
 
-        assert!(observer.snapshot().validate().is_valid());
+        let validation = observer.snapshot().validate();
+        assert!(validation.is_valid(), "{validation:#?}");
     }
 
     #[test]
@@ -12303,7 +15825,7 @@ mod tests {
         observer.close();
 
         let validation = observer.snapshot().validate();
-        assert!(validation.is_valid());
+        assert!(validation.is_valid(), "{validation:#?}");
         assert_eq!(validation.physical_statuses, 0);
     }
 
@@ -12354,6 +15876,52 @@ mod tests {
                         PhysicalPartitionViolation::InvalidWaitFlags(observed)
                             if *observed == wait.id()
                     ))
+            );
+        }
+    }
+
+    #[test]
+    fn partition_rejects_cross_owner_continued_wait_flags() {
+        for (producer, flags) in [
+            (
+                PhysicalWaitProducer::PreRegistrationBarrierCleanup,
+                production_wait_flags(PhysicalWaitProducer::PreRegistrationBarrierCleanup)
+                    & !libc::WCONTINUED,
+            ),
+            (
+                PhysicalWaitProducer::RegisteredCleanup,
+                production_wait_flags(PhysicalWaitProducer::RegisteredCleanup) | libc::WCONTINUED,
+            ),
+        ] {
+            let observer = observer();
+            let generation = generation();
+            let task = captured_task(7, 11);
+            observer.attach_generation(generation);
+            observer.bind_identity(generation, task);
+            if producer == PhysicalWaitProducer::RegisteredCleanup {
+                observer.record_worker_started(generation);
+            }
+            let wait = observer.begin_wait(PhysicalWaitContext {
+                generation: Some(generation),
+                task,
+                producer,
+                flags,
+            });
+            observer.finish_wait_error(wait, libc::EINVAL);
+            observer.close();
+
+            assert!(
+                observer
+                    .snapshot()
+                    .validate()
+                    .violations
+                    .iter()
+                    .any(|violation| matches!(
+                        violation,
+                        PhysicalPartitionViolation::InvalidWaitFlags(observed)
+                            if *observed == wait.id()
+                    )),
+                "cross-owner WCONTINUED flags were accepted for {producer:?}"
             );
         }
     }
@@ -13010,6 +16578,155 @@ mod tests {
         assert!(validation.is_valid());
         assert_eq!(validation.physical_statuses, 1);
         assert_eq!(validation.explicit_dispositions, 1);
+    }
+
+    #[test]
+    fn partition_accepts_registered_cleanup_pidfd_sigkill_before_exact_echild_drain() {
+        for outcome in [
+            PhysicalPidfdSignalOutcome::Success,
+            PhysicalPidfdSignalOutcome::Error(libc::ESRCH),
+        ] {
+            let observer = observer();
+            let generation = generation();
+            let worker = captured_task(7, 11);
+            let cleanup = captured_task(7, 12);
+            observer.attach_generation(generation);
+            observer.bind_identity(generation, worker);
+            observer.record_worker_started(generation);
+            let (status, cause_wait) = record_undecodable_status(&observer, generation, worker);
+            let transaction = observer.begin_registered_cleanup_transaction(cause_wait);
+            observer.link_registered_cleanup_status(transaction, status);
+            let signal = observer.begin_pidfd_signal(PhysicalPidfdSignalContext {
+                generation,
+                task: cleanup,
+                transaction: transaction.id(),
+                pidfd: cleanup.pidfd().expect("captured cleanup pidfd"),
+                signal: libc::SIGKILL,
+            });
+            observer.finish_pidfd_signal(signal, outcome);
+            let terminal_wait = observer.begin_wait(PhysicalWaitContext {
+                generation: Some(generation),
+                task: cleanup,
+                producer: PhysicalWaitProducer::RegisteredCleanup,
+                flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+            });
+            observer.finish_wait_error(terminal_wait, libc::ECHILD);
+            prove_registered_cleanup_echild(&observer, transaction, terminal_wait);
+            observer.finish_status(status, PhysicalStatusDisposition::CancellationCleanup);
+            observer.finish_registered_cleanup_transaction(transaction, terminal_wait);
+            observer.record_generation_finished(generation);
+            observer.close();
+
+            assert!(observer.snapshot().validate().is_valid());
+        }
+    }
+
+    #[test]
+    fn partition_rejects_malformed_registered_cleanup_pidfd_sigkill() {
+        #[derive(Clone, Copy)]
+        enum Malformation {
+            WrongGeneration,
+            WrongTask,
+            WrongPidfd,
+            WrongSignal,
+            WrongResult,
+            AfterDrainStarted,
+            Duplicate,
+        }
+
+        for malformation in [
+            Malformation::WrongGeneration,
+            Malformation::WrongTask,
+            Malformation::WrongPidfd,
+            Malformation::WrongSignal,
+            Malformation::WrongResult,
+            Malformation::AfterDrainStarted,
+            Malformation::Duplicate,
+        ] {
+            let observer = observer();
+            let generation = generation();
+            let worker = captured_task(7, 11);
+            let cleanup = captured_task(7, 12);
+            observer.attach_generation(generation);
+            observer.bind_identity(generation, worker);
+            observer.record_worker_started(generation);
+            let (status, cause_wait) = record_undecodable_status(&observer, generation, worker);
+            let transaction = observer.begin_registered_cleanup_transaction(cause_wait);
+            observer.link_registered_cleanup_status(transaction, status);
+            let terminal_wait =
+                matches!(malformation, Malformation::AfterDrainStarted).then(|| {
+                    observer.begin_wait(PhysicalWaitContext {
+                        generation: Some(generation),
+                        task: cleanup,
+                        producer: PhysicalWaitProducer::RegisteredCleanup,
+                        flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+                    })
+                });
+            let context = PhysicalPidfdSignalContext {
+                generation: if matches!(malformation, Malformation::WrongGeneration) {
+                    PhysicalEventGenerationId::allocate()
+                } else {
+                    generation
+                },
+                task: if matches!(malformation, Malformation::WrongTask) {
+                    captured_task(8, 12)
+                } else {
+                    cleanup
+                },
+                transaction: transaction.id(),
+                pidfd: if matches!(malformation, Malformation::WrongPidfd) {
+                    13
+                } else {
+                    12
+                },
+                signal: if matches!(malformation, Malformation::WrongSignal) {
+                    libc::SIGTERM
+                } else {
+                    libc::SIGKILL
+                },
+            };
+            let signal = observer.begin_pidfd_signal(context);
+            observer.finish_pidfd_signal(
+                signal,
+                if matches!(malformation, Malformation::WrongResult) {
+                    PhysicalPidfdSignalOutcome::Error(libc::EIO)
+                } else {
+                    PhysicalPidfdSignalOutcome::Error(libc::ESRCH)
+                },
+            );
+            if matches!(malformation, Malformation::Duplicate) {
+                let duplicate = observer.begin_pidfd_signal(context);
+                observer
+                    .finish_pidfd_signal(duplicate, PhysicalPidfdSignalOutcome::Error(libc::ESRCH));
+            }
+            let terminal_wait = terminal_wait.unwrap_or_else(|| {
+                observer.begin_wait(PhysicalWaitContext {
+                    generation: Some(generation),
+                    task: cleanup,
+                    producer: PhysicalWaitProducer::RegisteredCleanup,
+                    flags: libc::WEXITED | libc::WSTOPPED | libc::__WALL,
+                })
+            });
+            observer.finish_wait_error(terminal_wait, libc::ECHILD);
+            prove_registered_cleanup_echild(&observer, transaction, terminal_wait);
+            observer.finish_status(status, PhysicalStatusDisposition::CancellationCleanup);
+            observer.finish_registered_cleanup_transaction(transaction, terminal_wait);
+            observer.record_generation_finished(generation);
+            observer.close();
+
+            assert!(
+                observer
+                    .snapshot()
+                    .validate()
+                    .violations
+                    .iter()
+                    .any(|violation| matches!(
+                        violation,
+                        PhysicalPartitionViolation::InvalidStartupCleanupPidfdSignal(observed)
+                            if *observed == transaction.id()
+                    ))
+            );
+        }
     }
 
     #[test]
@@ -14501,57 +18218,68 @@ mod tests {
     #[test]
     fn partition_accepts_consumed_stop_cancelled_after_terminal_evidence() {
         for cleanup_delivery in [false, true] {
-            let observer = observer();
-            let generation = generation();
-            let task = captured_task(7, 11);
-            observer.attach_generation(generation);
-            observer.bind_identity(generation, task);
-            observer.record_worker_started(generation);
-            let status = publish_fifo_stop(
-                &observer,
-                generation,
-                task,
-                PhysicalWaitProducer::NotifierWorker,
-                PhysicalStatusPublication::RegularFifo,
-            );
-            let delivery = observer.next_reservation();
-            if cleanup_delivery {
-                observer.record_cleanup_reserved(generation, delivery, status);
-            } else {
-                observer.record_reserved(generation, delivery, status);
-            }
-            let owner = if cleanup_delivery {
-                PhysicalDecodeOwner::Cleanup
-            } else {
-                PhysicalDecodeOwner::Notifier
-            };
-            observer.record_decode_started(delivery, status, owner);
-            observer.record_decode_finished(
-                delivery,
-                status,
-                PhysicalDecodeOutcome::Returned,
-                owner,
-            );
-            if cleanup_delivery {
-                observer.record_cleanup_reservation_committed(delivery, status);
-            } else {
-                observer.record_reservation_committed(delivery, status);
-            }
-            let failed = observer.begin_resume(PhysicalResumeContext {
-                generation: Some(generation),
-                task: captured_task(7, 12),
-                source_status: Some(status),
-                operation: PhysicalResumeOperation::Continue,
-                signal: None,
-                owner: PhysicalResumeOwner::TypedStopped,
-            });
-            observer.finish_resume(failed, PhysicalResumeOutcome::Error(libc::EIO));
-            publish_retained_terminal(&observer, generation, captured_task(7, 13));
-            observer.finish_status(status, PhysicalStatusDisposition::CancellationCleanup);
-            observer.record_generation_finished(generation);
-            observer.close();
+            for disposition_after_finish in [false, true] {
+                let observer = observer();
+                let generation = generation();
+                let task = captured_task(7, 11);
+                observer.attach_generation(generation);
+                observer.bind_identity(generation, task);
+                observer.record_worker_started(generation);
+                let status = publish_fifo_stop(
+                    &observer,
+                    generation,
+                    task,
+                    PhysicalWaitProducer::NotifierWorker,
+                    PhysicalStatusPublication::RegularFifo,
+                );
+                let delivery = observer.next_reservation();
+                if cleanup_delivery {
+                    observer.record_cleanup_reserved(generation, delivery, status);
+                } else {
+                    observer.record_reserved(generation, delivery, status);
+                }
+                let owner = if cleanup_delivery {
+                    PhysicalDecodeOwner::Cleanup
+                } else {
+                    PhysicalDecodeOwner::Notifier
+                };
+                observer.record_decode_started(delivery, status, owner);
+                observer.record_decode_finished(
+                    delivery,
+                    status,
+                    PhysicalDecodeOutcome::Returned,
+                    owner,
+                );
+                if cleanup_delivery {
+                    observer.record_cleanup_reservation_committed(delivery, status);
+                } else {
+                    observer.record_reservation_committed(delivery, status);
+                }
+                let failed = observer.begin_resume(PhysicalResumeContext {
+                    generation: Some(generation),
+                    task: captured_task(7, 12),
+                    source_status: Some(status),
+                    operation: PhysicalResumeOperation::Continue,
+                    signal: None,
+                    owner: PhysicalResumeOwner::TypedStopped,
+                });
+                observer.finish_resume(failed, PhysicalResumeOutcome::Error(libc::EIO));
+                publish_retained_terminal(&observer, generation, captured_task(7, 13));
+                if disposition_after_finish {
+                    observer.record_generation_finished(generation);
+                    observer.finish_status(status, PhysicalStatusDisposition::CancellationCleanup);
+                } else {
+                    observer.finish_status(status, PhysicalStatusDisposition::CancellationCleanup);
+                    observer.record_generation_finished(generation);
+                }
+                observer.close();
 
-            assert!(observer.snapshot().validate().is_valid());
+                let validation = observer.snapshot().validate();
+                assert!(
+                    validation.is_valid(),
+                    "cleanup_delivery={cleanup_delivery} disposition_after_finish={disposition_after_finish}: {validation:#?}",
+                );
+            }
         }
     }
 
@@ -15271,7 +18999,8 @@ mod tests {
 
     #[test]
     fn partition_rejects_fabricated_ordinary_disposition() {
-        for disposition in [PhysicalStatusDisposition::OrdinaryHandled] {
+        {
+            let disposition = PhysicalStatusDisposition::OrdinaryHandled;
             let observer = observer();
             let generation = generation();
             let task = captured_task(7, 11);
@@ -15725,8 +19454,7 @@ mod tests {
             observer.attach_generation(generation);
             observer.bind_identity(generation, task);
             observer.record_worker_started(generation);
-            let (source, failed) =
-                begin_ambiguous_exit_resume(&observer, generation, task, error);
+            let (source, failed) = begin_ambiguous_exit_resume(&observer, generation, task, error);
 
             let successor_wait = observer.begin_wait(PhysicalWaitContext {
                 generation: Some(generation),
@@ -15801,14 +19529,8 @@ mod tests {
                 source,
                 PhysicalStatusPublication::ExitCapability,
             );
-            observer.record_exit_capability(
-                source,
-                PhysicalExitCapabilityTransition::Published,
-            );
-            observer.record_exit_capability(
-                source,
-                PhysicalExitCapabilityTransition::Revoked,
-            );
+            observer.record_exit_capability(source, PhysicalExitCapabilityTransition::Published);
+            observer.record_exit_capability(source, PhysicalExitCapabilityTransition::Revoked);
             let terminal_wait = observer.begin_wait(PhysicalWaitContext {
                 generation: Some(generation),
                 task,
@@ -15826,12 +19548,7 @@ mod tests {
             observer.finish_resume(failed, PhysicalResumeOutcome::Error(libc::EIO));
             let proof = if use_echild {
                 observer.finish_wait_error(terminal_wait, libc::ECHILD);
-                observer.record_echild_pidfd_exited(
-                    terminal_wait,
-                    generation,
-                    task,
-                    libc::POLLIN,
-                );
+                observer.record_echild_pidfd_exited(terminal_wait, generation, task, libc::POLLIN);
                 observer.record_synthetic_echild(generation, Some(terminal_wait.id()));
                 observer.resolve_ambiguous_resume_with_proven_echild(failed, terminal_wait);
                 PhysicalAmbiguousResumeProof::ProvenEchild(terminal_wait.id())
@@ -15864,6 +19581,66 @@ mod tests {
     }
 
     #[test]
+    fn partition_rejects_ambiguous_exit_resolution_after_generation_finish() {
+        for use_echild in [false, true] {
+            let observer = observer();
+            let generation = generation();
+            let task = captured_task(7, 11);
+            observer.attach_generation(generation);
+            observer.bind_identity(generation, task);
+            observer.record_worker_started(generation);
+            let (source, failed) =
+                begin_ambiguous_exit_resume(&observer, generation, task, libc::EIO);
+            let terminal_wait = observer.begin_wait(PhysicalWaitContext {
+                generation: Some(generation),
+                task,
+                producer: PhysicalWaitProducer::NotifierWorker,
+                flags: production_wait_flags(PhysicalWaitProducer::NotifierWorker),
+            });
+            let proof = if use_echild {
+                observer.finish_wait_error(terminal_wait, libc::ECHILD);
+                observer.record_echild_pidfd_exited(terminal_wait, generation, task, libc::POLLIN);
+                observer.record_synthetic_echild(generation, Some(terminal_wait.id()));
+                observer.record_generation_finished(generation);
+                observer.resolve_ambiguous_resume_with_proven_echild(failed, terminal_wait);
+                PhysicalAmbiguousResumeProof::ProvenEchild(terminal_wait.id())
+            } else {
+                let final_status = finish_exited_wait(&observer, terminal_wait);
+                observer.record_status_published(
+                    generation,
+                    final_status,
+                    PhysicalStatusPublication::RetainedTerminal,
+                );
+                observer.record_generation_finished(generation);
+                observer.resolve_ambiguous_resume_with_final_status(failed, final_status);
+                PhysicalAmbiguousResumeProof::FinalStatus(final_status)
+            };
+            observer.close();
+
+            let validation = observer.snapshot().validate();
+            assert!(
+                validation.violations.contains(
+                    &PhysicalPartitionViolation::InvalidGenerationLifecycle(generation),
+                ),
+                "post-finish {proof:?} resolution was accepted: {validation:#?}",
+            );
+            assert!(!validation.violations.contains(
+                &PhysicalPartitionViolation::InvalidAmbiguousResumeResolution(failed.id()),
+            ));
+            assert!(observer.snapshot().records().iter().any(|record| matches!(
+                record.kind(),
+                PhysicalEventRecordKind::StatusDisposition {
+                    status,
+                    disposition: PhysicalStatusDisposition::AmbiguousResumeCausallyResolved {
+                        attempt,
+                        proof: observed,
+                    },
+                } if status == source && attempt == failed.id() && observed == proof
+            )));
+        }
+    }
+
+    #[test]
     fn partition_rejects_duplicate_ambiguous_resolution() {
         let observer = observer();
         let generation = generation();
@@ -15871,8 +19648,7 @@ mod tests {
         observer.attach_generation(generation);
         observer.bind_identity(generation, task);
         observer.record_worker_started(generation);
-        let (source, failed) =
-            begin_ambiguous_exit_resume(&observer, generation, task, libc::EIO);
+        let (source, failed) = begin_ambiguous_exit_resume(&observer, generation, task, libc::EIO);
         let final_wait = observer.begin_wait(PhysicalWaitContext {
             generation: Some(generation),
             task,
@@ -16129,7 +19905,8 @@ mod tests {
 
         first_observer.finish_unregistered_generation(first_generation, first_wait.id());
         first_observer.close();
-        assert!(first_observer.snapshot().validate().is_valid());
+        let first_validation = first_observer.snapshot().validate();
+        assert!(first_validation.is_valid(), "{first_validation:#?}");
 
         second_observer.finish_unregistered_generation(second_generation, first_wait.id());
         second_observer.close();

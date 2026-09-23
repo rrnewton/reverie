@@ -24,6 +24,12 @@ pub type GuardSignalHandler =
 
 /// Install the guard router and return the prior exact kernel action.
 ///
+/// The callback must admit only prior `SIG_DFL` and `SIG_IGN` dispositions. It
+/// must reject every custom handler before replacing it and leave the prior
+/// action unchanged on error. The guard router cannot emulate the kernel's
+/// mask, reset, alternate-stack, or restart semantics for a directly invoked
+/// custom handler.
+///
 /// The callback runs during single-threaded runtime preparation, before the
 /// restrictive syscall filter is installed.
 pub type GuardSignalInstaller = unsafe fn(
@@ -354,6 +360,9 @@ mod imp {
             }?;
             // SAFETY: the successful callback initialized the exact action.
             let previous = unsafe { previous.assume_init() };
+            if !previous_action_is_admitted(&previous) {
+                return Err(libc::EPERM);
+            }
             let _ = PREVIOUS_ACTION.set(PreviousAction(previous));
             return Ok(());
         }
@@ -366,6 +375,9 @@ mod imp {
         // SAFETY: successful sigaction initialized previous.
         let previous = unsafe { previous.assume_init() };
         let previous = guard_action_from_libc(&previous);
+        if !previous_action_is_admitted(&previous) {
+            return Err(libc::EPERM);
+        }
         let _ = PREVIOUS_ACTION.set(PreviousAction(previous));
 
         // SAFETY: zeroed sigaction is initialized below before installation.
@@ -379,6 +391,10 @@ mod imp {
             return Err(last_errno());
         }
         Ok(())
+    }
+
+    fn previous_action_is_admitted(action: &super::GuardSignalAction) -> bool {
+        matches!(action.handler, libc::SIG_DFL | libc::SIG_IGN)
     }
 
     fn guard_action_from_libc(action: &libc::sigaction) -> super::GuardSignalAction {
@@ -428,7 +444,7 @@ mod imp {
         unsafe { handle_trap(signal, info, context) };
     }
 
-    unsafe fn handle_trap(signal: libc::c_int, info: *mut libc::siginfo_t, context: *mut c_void) {
+    unsafe fn handle_trap(signal: libc::c_int, _info: *mut libc::siginfo_t, context: *mut c_void) {
         if signal == libc::SIGTRAP && !context.is_null() {
             // SAFETY: SA_SIGINFO supplies a mutable ucontext_t.
             let context = unsafe { &mut *context.cast::<libc::ucontext_t>() };
@@ -454,14 +470,10 @@ mod imp {
         }
 
         // SAFETY: unknown traps are delegated to the disposition we replaced.
-        unsafe { chain_previous(signal, info, context) };
+        unsafe { chain_previous(signal) };
     }
 
-    unsafe fn chain_previous(
-        signal: libc::c_int,
-        info: *mut libc::siginfo_t,
-        context: *mut c_void,
-    ) {
+    unsafe fn chain_previous(signal: libc::c_int) {
         let Some(previous) = PREVIOUS_ACTION.get() else {
             // SAFETY: _exit is async-signal-safe and never returns.
             unsafe { libc::_exit(128 + signal) };
@@ -488,33 +500,144 @@ mod imp {
             return;
         }
 
-        if previous.0.flags & libc::SA_SIGINFO as libc::c_ulong != 0 {
-            type Handler = unsafe extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut c_void);
-            // SAFETY: SA_SIGINFO specifies the three-argument handler ABI.
-            let handler: Handler = unsafe { core::mem::transmute(handler) };
-            // SAFETY: arguments are the kernel-provided signal context.
-            unsafe { handler(signal, info, context) };
-        } else {
-            type Handler = unsafe extern "C" fn(libc::c_int);
-            // SAFETY: absence of SA_SIGINFO specifies the one-argument ABI.
-            let handler: Handler = unsafe { core::mem::transmute(handler) };
-            // SAFETY: signal number is kernel-provided.
-            unsafe { handler(signal) };
-        }
+        // Installation admits only the two kernel sentinel dispositions above.
+        // Directly invoking an unexpected custom handler would omit the
+        // kernel-applied mask, SA_NODEFER, SA_RESETHAND, SA_ONSTACK, and restart
+        // semantics, so an invariant violation must fail closed.
+        unsafe { libc::_exit(128 + signal) };
     }
     #[cfg(test)]
     mod tests {
+        use std::process::Command;
         use std::sync::Arc;
         use std::sync::Barrier;
         use std::thread;
 
+        use super::PREVIOUS_ACTION;
         use super::REGISTRY_LOCK;
         use super::TrapError;
+        use super::guard_action_from_libc;
+        use super::install_handler;
         use super::pending_overlaps;
         use super::register;
         use super::reserve;
+        use super::trap_handler;
 
         const PENDING_LIST_RACE_ITERATIONS: usize = 64;
+        const ADMISSION_CHILD_ENV: &str = "LITEINST2_TRAP_ADMISSION_CHILD";
+        const ADMISSION_CHILD_MARKER: &str = "liteinst2-sigtrap-admission-child";
+        const ADMISSION_CHILD_TEST: &str =
+            "trap::imp::tests::standalone_install_accepts_only_default_and_ignore";
+
+        unsafe extern "C" fn custom_trap_handler(
+            _signal: libc::c_int,
+            _info: *mut libc::siginfo_t,
+            _context: *mut core::ffi::c_void,
+        ) {
+        }
+
+        fn query_sigtrap_action() -> super::super::GuardSignalAction {
+            let mut action = core::mem::MaybeUninit::<libc::sigaction>::uninit();
+            // SAFETY: a null new-action pointer queries the current action and
+            // initializes the output on success.
+            assert_eq!(
+                unsafe { libc::sigaction(libc::SIGTRAP, core::ptr::null(), action.as_mut_ptr()) },
+                0
+            );
+            // SAFETY: successful sigaction initialized the action.
+            let action = unsafe { action.assume_init() };
+            guard_action_from_libc(&action)
+        }
+
+        fn set_sigtrap_action(handler: usize, flags: libc::c_int, mask_signal: libc::c_int) {
+            // SAFETY: every field consumed by sigaction is initialized below.
+            let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+            action.sa_sigaction = handler;
+            action.sa_flags = flags;
+            // SAFETY: action owns a valid signal set.
+            assert_eq!(unsafe { libc::sigemptyset(&mut action.sa_mask) }, 0);
+            if mask_signal != 0 {
+                // SAFETY: action owns a valid signal set and mask_signal is a
+                // real signal number supplied by the test.
+                assert_eq!(
+                    unsafe { libc::sigaddset(&mut action.sa_mask, mask_signal) },
+                    0
+                );
+            }
+            // SAFETY: action is fully initialized for SIGTRAP installation.
+            assert_eq!(
+                unsafe { libc::sigaction(libc::SIGTRAP, &action, core::ptr::null_mut()) },
+                0
+            );
+        }
+
+        #[test]
+        fn standalone_install_accepts_only_default_and_ignore() {
+            let Some(mode) = std::env::var_os(ADMISSION_CHILD_ENV) else {
+                for mode in ["custom", "default", "ignore"] {
+                    let output = Command::new(std::env::current_exe().unwrap())
+                        .args(["--exact", ADMISSION_CHILD_TEST, "--nocapture"])
+                        .env(ADMISSION_CHILD_ENV, mode)
+                        .output()
+                        .unwrap();
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    assert!(
+                        output.status.success(),
+                        "{mode} admission child failed:\nstdout:\n{}\nstderr:\n{}",
+                        stdout,
+                        stderr
+                    );
+                    assert!(
+                        stdout.contains(&format!("{ADMISSION_CHILD_MARKER}:{mode}")),
+                        "{mode} admission child filter ran no matching test:\nstdout:\n{}\nstderr:\n{}",
+                        stdout,
+                        stderr
+                    );
+                }
+                return;
+            };
+            println!("{ADMISSION_CHILD_MARKER}:{}", mode.to_string_lossy());
+            match mode.to_str().unwrap() {
+                "custom" => {
+                    set_sigtrap_action(
+                        custom_trap_handler as *const () as usize,
+                        libc::SA_SIGINFO
+                            | libc::SA_NODEFER
+                            | libc::SA_RESETHAND
+                            | libc::SA_ONSTACK
+                            | libc::SA_RESTART,
+                        libc::SIGUSR1,
+                    );
+                    let before = query_sigtrap_action();
+                    assert_eq!(install_handler(), Err(libc::EPERM));
+                    assert_eq!(
+                        query_sigtrap_action(),
+                        before,
+                        "rejecting a custom action must not replace or normalize it"
+                    );
+                    assert!(
+                        PREVIOUS_ACTION.get().is_none(),
+                        "a refused action must not be published as chainable"
+                    );
+                }
+                "default" | "ignore" => {
+                    let disposition = if mode == "default" {
+                        libc::SIG_DFL
+                    } else {
+                        libc::SIG_IGN
+                    };
+                    set_sigtrap_action(disposition, 0, 0);
+                    assert_eq!(install_handler(), Ok(()));
+                    assert_eq!(PREVIOUS_ACTION.get().unwrap().0.handler, disposition);
+                    let installed = query_sigtrap_action();
+                    assert_eq!(installed.handler, trap_handler as *const () as usize);
+                    assert_ne!(installed.flags & libc::SA_SIGINFO as libc::c_ulong, 0);
+                    assert_ne!(installed.flags & libc::SA_RESTART as libc::c_ulong, 0);
+                }
+                unexpected => panic!("unexpected admission mode {unexpected}"),
+            }
+        }
 
         #[test]
         fn pending_reservation_blocks_only_overlapping_registrations() {

@@ -54,8 +54,24 @@ use crate::scanner::ScanResult;
 const SYSTEM_V_RED_ZONE_BYTES: i32 = 128;
 const SAVED_INTEGER_BYTES: i32 = 16 * 8;
 const HOOK_METADATA_BYTES: i32 = 2 * 8;
+const SAVED_EXTENDED_STATE_DESCRIPTOR_BYTES: i32 = 4 * 8;
 const FXSAVE_BYTES: i32 = 512;
 const FXSAVE_ALIGNMENT: i32 = 16;
+/// Bytes below entry RSP occupied before the extended-state save allocation.
+///
+/// For ptrace-owned stacks, the HookContext base (live R12) is exactly this far
+/// below the controller-supplied stack top.
+pub const HOOK_CONTEXT_STACK_PREFIX_BYTES: usize = (SYSTEM_V_RED_ZONE_BYTES
+    + SAVED_EXTENDED_STATE_DESCRIPTOR_BYTES
+    + SAVED_INTEGER_BYTES
+    + HOOK_METADATA_BYTES) as usize;
+const _: () = assert!(HOOK_CONTEXT_STACK_PREFIX_BYTES == 304);
+/// Maximum non-legacy xfeatures described by one emitted trampoline.
+///
+/// The current preservation mask has five such bits. Keeping spare entries
+/// permits conservative growth while construction still fails rather than
+/// truncating whenever an exact mask cannot fit.
+pub const SAVED_EXTENDED_STATE_COMPONENT_CAPACITY: usize = 8;
 const NEAR_RETURN_JUMP_BYTES: usize = 5;
 const NOTRACK_ABSOLUTE_JUMP_BYTES: usize = 15;
 const PTRACE_STOP_BYTES: [u8; 1] = [0xcc];
@@ -73,13 +89,248 @@ const STATE_TRANSITIONING: u8 = 2;
 #[derive(Clone, Copy)]
 enum ExtendedState {
     FxSave,
-    XSave { bytes: i32, mask: u64 },
+    XSave { layout: SavedExtendedStateLayout },
 }
 
+/// Stable wire tag describing the instruction that produced a saved state area.
+///
+/// This is a transparent integer rather than a Rust enum because the descriptor
+/// crosses an instrumentation/controller memory boundary. Every bit pattern is
+/// therefore safe to read; consumers must admit only the named constants.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SavedExtendedStateFormat(u64);
+
+impl SavedExtendedStateFormat {
+    /// No saved extended-state image is available.
+    pub const UNAVAILABLE: Self = Self(0);
+    /// Legacy 512-byte `FXSAVE64` image aligned to 16 bytes.
+    pub const FXSAVE64: Self = Self(1);
+    /// Standard, non-compacted `XSAVE64` image aligned to 64 bytes.
+    pub const XSAVE64_STANDARD: Self = Self(2);
+
+    /// Returns the stable integer carried by the cross-process ABI.
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+
+    /// Returns the required saved-area alignment for an admitted format.
+    pub const fn required_alignment(self) -> Option<u64> {
+        if self.0 == Self::FXSAVE64.0 {
+            Some(FXSAVE_ALIGNMENT as u64)
+        } else if self.0 == Self::XSAVE64_STANDARD.0 {
+            Some(64)
+        } else {
+            None
+        }
+    }
+}
+
+/// One standard-format XSAVE component selected by a trampoline.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SavedExtendedStateComponent {
+    xfeature: u64,
+    offset: u64,
+    size: u64,
+}
+
+impl SavedExtendedStateComponent {
+    const UNAVAILABLE: Self = Self {
+        xfeature: 0,
+        offset: 0,
+        size: 0,
+    };
+
+    const fn new(xfeature: u64, offset: u64, size: u64) -> Self {
+        Self {
+            xfeature,
+            offset,
+            size,
+        }
+    }
+
+    /// Returns the one-hot xfeature bit represented by this entry.
+    pub const fn xfeature(self) -> u64 {
+        self.xfeature
+    }
+
+    /// Returns the component's offset in a standard XSAVE image.
+    pub const fn offset(self) -> u64 {
+        self.offset
+    }
+
+    /// Returns the component's architectural byte length.
+    pub const fn size(self) -> u64 {
+        self.size
+    }
+}
+
+/// Per-trampoline extended-state save layout and authenticated component map.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SavedExtendedStateLayout {
+    allocation_len: u64,
+    image_len: u64,
+    mask: u64,
+    format: SavedExtendedStateFormat,
+    component_count: u64,
+    components: [SavedExtendedStateComponent; SAVED_EXTENDED_STATE_COMPONENT_CAPACITY],
+}
+
+impl SavedExtendedStateLayout {
+    /// Explicit absence used by contexts that did not originate in a trampoline.
+    pub const UNAVAILABLE: Self = Self {
+        allocation_len: 0,
+        image_len: 0,
+        mask: 0,
+        format: SavedExtendedStateFormat::UNAVAILABLE,
+        component_count: 0,
+        components: [SavedExtendedStateComponent::UNAVAILABLE;
+            SAVED_EXTENDED_STATE_COMPONENT_CAPACITY],
+    };
+
+    const FXSAVE64: Self = Self {
+        allocation_len: FXSAVE_BYTES as u64,
+        image_len: FXSAVE_BYTES as u64,
+        mask: 0b11,
+        format: SavedExtendedStateFormat::FXSAVE64,
+        component_count: 0,
+        components: [SavedExtendedStateComponent::UNAVAILABLE;
+            SAVED_EXTENDED_STATE_COMPONENT_CAPACITY],
+    };
+
+    const fn standard_xsave64(
+        allocation_len: u64,
+        image_len: u64,
+        mask: u64,
+        component_count: u64,
+        components: [SavedExtendedStateComponent; SAVED_EXTENDED_STATE_COMPONENT_CAPACITY],
+    ) -> Self {
+        Self {
+            allocation_len,
+            image_len,
+            mask,
+            format: SavedExtendedStateFormat::XSAVE64_STANDARD,
+            component_count,
+            components,
+        }
+    }
+
+    /// Returns the allocated saved-area length.
+    pub const fn len(self) -> u64 {
+        self.allocation_len
+    }
+
+    /// Returns whether no saved extended-state image is available.
+    pub const fn is_empty(self) -> bool {
+        self.allocation_len == 0
+    }
+
+    /// Returns the logical standard-image extent before allocation padding.
+    pub const fn image_len(self) -> u64 {
+        self.image_len
+    }
+
+    /// Returns the exact mask supplied to `XSAVE64`/`XRSTOR64`.
+    ///
+    /// `FXSAVE64` uses the architectural x87/SSE mask `0b11`.
+    pub const fn mask(self) -> u64 {
+        self.mask
+    }
+
+    /// Returns the stable saved-image format tag.
+    pub const fn format(self) -> SavedExtendedStateFormat {
+        self.format
+    }
+
+    /// Returns the exact non-legacy standard-format component table.
+    pub fn components(&self) -> &[SavedExtendedStateComponent] {
+        &self.components[..self.component_count as usize]
+    }
+}
+
+/// One invocation's saved extended-state image.
+///
+/// The first field is the actual address established by the emitted alignment
+/// and allocation instructions. The remaining fields must exactly equal the
+/// layout published for the trampoline that supplied the enclosing context.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SavedExtendedStateDescriptor {
+    address: u64,
+    len: u64,
+    mask: u64,
+    format: SavedExtendedStateFormat,
+}
+
+impl SavedExtendedStateDescriptor {
+    /// Explicit absence used by contexts that did not originate in a trampoline.
+    pub const UNAVAILABLE: Self = Self {
+        address: 0,
+        len: 0,
+        mask: 0,
+        format: SavedExtendedStateFormat::UNAVAILABLE,
+    };
+
+    /// Returns the saved area's tracee virtual address.
+    pub const fn address(self) -> u64 {
+        self.address
+    }
+
+    /// Returns the allocated saved-area length.
+    pub const fn len(self) -> u64 {
+        self.len
+    }
+
+    /// Returns whether this descriptor carries no saved image.
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns the exact mask supplied to `XSAVE64`/`XRSTOR64`.
+    pub const fn mask(self) -> u64 {
+        self.mask
+    }
+
+    /// Returns the stable saved-image format tag.
+    pub const fn format(self) -> SavedExtendedStateFormat {
+        self.format
+    }
+
+    /// Checks the descriptor fields that are repeated in an authenticated layout.
+    pub fn matches_layout(self, layout: SavedExtendedStateLayout) -> bool {
+        self.len == layout.len() && self.mask == layout.mask() && self.format == layout.format()
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<SavedExtendedStateFormat>() == 8);
+const _: () = assert!(core::mem::size_of::<SavedExtendedStateComponent>() == 24);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateComponent, xfeature) == 0);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateComponent, offset) == 8);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateComponent, size) == 16);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateLayout, allocation_len) == 0);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateLayout, image_len) == 8);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateLayout, mask) == 16);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateLayout, format) == 24);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateLayout, component_count) == 32);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateLayout, components) == 40);
+const _: () = assert!(core::mem::size_of::<SavedExtendedStateLayout>() == 232);
+const _: () = assert!(core::mem::size_of::<SavedExtendedStateDescriptor>() == 32);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateDescriptor, address) == 0);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateDescriptor, len) == 8);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateDescriptor, mask) == 16);
+const _: () = assert!(core::mem::offset_of!(SavedExtendedStateDescriptor, format) == 24);
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-impl ExtendedState {
+impl SavedExtendedStateLayout {
+    /// Detects the exact tracee-side layout used by newly emitted trampolines.
+    ///
+    /// Runtime stack sizing and trampoline emission share this single CPUID/
+    /// XGETBV implementation. Callers must still require exact equality before
+    /// publishing a hook in case the per-thread enabled state changed.
     #[allow(unused_unsafe)]
-    fn detect() -> Self {
+    pub fn detect() -> Result<Self, TrampolineError> {
         use core::arch::x86_64::__cpuid;
         use core::arch::x86_64::__cpuid_count;
         use core::arch::x86_64::_xgetbv;
@@ -88,37 +339,114 @@ impl ExtendedState {
         let features = unsafe { __cpuid(1) };
         let has_xsave = features.ecx & (1 << 26) != 0;
         let has_osxsave = features.ecx & (1 << 27) != 0;
-        if has_xsave && has_osxsave {
-            // SAFETY: OSXSAVE proves XGETBV is enabled for XCR0.
-            // Linux can expose AMX in XCR0 while denying this thread tile-state
-            // permission through XFD. Preserve the universally usable user
-            // components through PKRU and leave AMX to its explicit owner.
-            const USER_STATE_MASK: u64 = 0b10_1110_0111;
-            let mask = unsafe { _xgetbv(0) } & USER_STATE_MASK;
-            // SAFETY: CPUID leaf D is available when XSAVE is present.
-            let state = unsafe { __cpuid_count(0xD, 0) };
-            if mask != 0 {
-                let rounded = state.ebx.checked_add(63).map(|bytes| bytes & !63);
-                if let Some(bytes) = rounded.and_then(|bytes| i32::try_from(bytes).ok()) {
-                    if bytes >= 576 {
-                        return Self::XSave { bytes, mask };
-                    }
-                }
-            }
+        if !has_xsave || !has_osxsave {
+            return Ok(Self::FXSAVE64);
         }
-        Self::FxSave
+
+        // SAFETY: OSXSAVE proves XGETBV is enabled for XCR0. Linux can expose
+        // AMX in XCR0 while denying this thread tile-state permission through
+        // XFD. Preserve the universally usable user components through PKRU
+        // and leave AMX to its explicit owner.
+        const USER_STATE_MASK: u64 = 0b10_1110_0111;
+        let mask = unsafe { _xgetbv(0) } & USER_STATE_MASK;
+        let root = unsafe { __cpuid_count(0xD, 0) };
+        let supported = u64::from(root.eax) | (u64::from(root.edx) << 32);
+        if mask & 0b11 != 0b11 || mask & !supported != 0 {
+            return Err(TrampolineError::InvalidExtendedStateLayout {
+                message: "XCR0 preservation mask is incomplete or unsupported",
+            });
+        }
+
+        let mut components =
+            [SavedExtendedStateComponent::UNAVAILABLE; SAVED_EXTENDED_STATE_COMPONENT_CAPACITY];
+        let mut component_count = 0_usize;
+        let mut image_len = 576_u64;
+        for index in 2..64_u32 {
+            let xfeature = 1_u64 << index;
+            if mask & xfeature == 0 {
+                continue;
+            }
+            if component_count == components.len() {
+                return Err(TrampolineError::InvalidExtendedStateLayout {
+                    message: "XSAVE component table capacity is insufficient",
+                });
+            }
+            let leaf = unsafe { __cpuid_count(0xD, index) };
+            let offset = u64::from(leaf.ebx);
+            let size = u64::from(leaf.eax);
+            let Some(end) = offset.checked_add(size) else {
+                return Err(TrampolineError::InvalidExtendedStateLayout {
+                    message: "XSAVE component extent overflows",
+                });
+            };
+            if size == 0 || offset < 576 || leaf.ecx & 1 != 0 {
+                return Err(TrampolineError::InvalidExtendedStateLayout {
+                    message: "XSAVE component lacks a standard user-state layout",
+                });
+            }
+            if components[..component_count].iter().any(|component| {
+                let prior_end = component.offset + component.size;
+                offset < prior_end && component.offset < end
+            }) {
+                return Err(TrampolineError::InvalidExtendedStateLayout {
+                    message: "XSAVE component extents overlap",
+                });
+            }
+            components[component_count] = SavedExtendedStateComponent::new(xfeature, offset, size);
+            component_count += 1;
+            image_len = image_len.max(end);
+        }
+        let allocation_len = image_len
+            .checked_add(63)
+            .map(|value| value & !63)
+            .and_then(|value| i32::try_from(value).ok())
+            .filter(|value| *value >= 576)
+            .ok_or(TrampolineError::InvalidExtendedStateLayout {
+                message: "XSAVE image allocation is not representable",
+            })?;
+        Ok(Self::standard_xsave64(
+            allocation_len as u64,
+            image_len,
+            mask,
+            component_count as u64,
+            components,
+        ))
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+impl ExtendedState {
+    fn layout(self) -> SavedExtendedStateLayout {
+        match self {
+            Self::FxSave => SavedExtendedStateLayout::FXSAVE64,
+            Self::XSave { layout } => layout,
+        }
+    }
+
+    fn detect() -> Result<Self, TrampolineError> {
+        let layout = SavedExtendedStateLayout::detect()?;
+        if layout.format() == SavedExtendedStateFormat::FXSAVE64 {
+            Ok(Self::FxSave)
+        } else if layout.format() == SavedExtendedStateFormat::XSAVE64_STANDARD {
+            Ok(Self::XSave { layout })
+        } else {
+            Err(TrampolineError::InvalidExtendedStateLayout {
+                message: "detected saved-state format is unavailable",
+            })
+        }
     }
 
     fn encode_save(self, assembler: &mut CodeAssembler) -> Result<(), TrampolineError> {
         let (alignment, bytes) = match self {
             Self::FxSave => (FXSAVE_ALIGNMENT, FXSAVE_BYTES),
-            Self::XSave { bytes, .. } => (64, bytes),
+            Self::XSave { layout } => (64, layout.len() as i32),
         };
         assembler.and(rsp, -alignment).map_err(encoding_error)?;
         assembler.sub(rsp, bytes).map_err(encoding_error)?;
         match self {
             Self::FxSave => assembler.fxsave64(rsp.into()).map_err(encoding_error),
-            Self::XSave { mask, .. } => {
+            Self::XSave { layout } => {
+                let mask = layout.mask();
                 // XSAVE does not initialize every reserved header byte, while
                 // XRSTOR requires them to be zero or raises #GP.
                 assembler.xor(eax, eax).map_err(encoding_error)?;
@@ -139,7 +467,8 @@ impl ExtendedState {
     fn encode_restore(self, assembler: &mut CodeAssembler) -> Result<(), TrampolineError> {
         match self {
             Self::FxSave => assembler.fxrstor64(rsp.into()).map_err(encoding_error),
-            Self::XSave { mask, .. } => {
+            Self::XSave { layout } => {
+                let mask = layout.mask();
                 assembler.mov(eax, mask as u32).map_err(encoding_error)?;
                 assembler
                     .mov(edx, (mask >> 32) as u32)
@@ -164,7 +493,7 @@ pub type HookCallback = unsafe extern "C" fn(*mut HookContext);
 /// state. The instruction and stack-pointer fields are metadata. SIMD state is
 /// preserved transparently rather than exposed to callbacks.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct HookContext {
     /// Address of the displaced instruction.
     pub instruction_pointer: u64,
@@ -202,9 +531,26 @@ pub struct HookContext {
     pub rax: u64,
     /// Saved RFLAGS.
     pub rflags: u64,
+    /// Trampoline-owned descriptor for the saved extended-state image.
+    ///
+    /// Callbacks must treat this as read-only. Contexts synthesized outside a
+    /// generated trampoline report [`SavedExtendedStateDescriptor::UNAVAILABLE`].
+    saved_extended_state: SavedExtendedStateDescriptor,
 }
 
-/// Checked byte lengths for the sections of one trampoline.
+impl HookContext {
+    /// Returns the generated trampoline's per-invocation saved-state descriptor.
+    pub const fn saved_extended_state(&self) -> SavedExtendedStateDescriptor {
+        self.saved_extended_state
+    }
+}
+
+const _: () = assert!(core::mem::offset_of!(HookContext, instruction_pointer) == 0);
+const _: () = assert!(core::mem::offset_of!(HookContext, rflags) == 136);
+const _: () = assert!(core::mem::offset_of!(HookContext, saved_extended_state) == 144);
+const _: () = assert!(core::mem::size_of::<HookContext>() == 176);
+
+/// Checked byte lengths and saved-state layout for one trampoline.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TrampolineLayout {
     /// Optional INT3 reached with the untouched application register state.
@@ -219,6 +565,8 @@ pub struct TrampolineLayout {
     pub restore_len: usize,
     /// Control-transfer bytes returning to application code.
     pub return_len: usize,
+    /// Exact format, allocation length, and mask used for extended state.
+    pub saved_extended_state: SavedExtendedStateLayout,
 }
 
 impl TrampolineLayout {
@@ -411,6 +759,11 @@ pub enum TrampolineError {
         /// Available allocation bytes.
         allocation_len: usize,
     },
+    /// The tracee CPU's enabled standard XSAVE layout cannot be encoded exactly.
+    InvalidExtendedStateLayout {
+        /// Fail-closed layout diagnostic.
+        message: &'static str,
+    },
     /// A hook toggle raced another toggle on the same site.
     TransitionInProgress,
     /// M2 rejected patch planning, binding, or publication.
@@ -472,6 +825,9 @@ impl fmt::Display for TrampolineError {
                 formatter,
                 "{code_len}-byte trampoline exceeds {allocation_len}-byte allocation"
             ),
+            Self::InvalidExtendedStateLayout { message } => {
+                write!(formatter, "invalid extended-state layout: {message}")
+            }
             Self::TransitionInProgress => {
                 formatter.write_str("another thread is toggling this hook")
             }
@@ -539,11 +895,16 @@ impl TrampolinePlan {
     /// Builds a replace-first plan bracketed by two tracer-owned INT3 stops.
     ///
     /// The entry stop executes before any instrumentation code with the
-    /// application register file untouched. The completion stop executes only
-    /// after the saved integer, flags, stack, and extended state have been
-    /// restored, immediately before the relocated tail. This mode requires an
-    /// external ptrace controller that authenticates and suppresses both
-    /// breakpoints; executing it without that controller is unsupported.
+    /// application register file untouched. Before suppressing it, the external
+    /// ptrace controller must write the application RSP at `owned_top - 8` and
+    /// replace RSP with `owned_top`, where the complete downward-growing owned
+    /// stack is controller-authenticated. Instrumentation then saves and calls
+    /// entirely on that owned stack while retaining the application RSP in
+    /// [`HookContext`]. At the completion stop every explicitly saved GPR,
+    /// RFLAGS, and extended-state component has been restored. RSP deliberately
+    /// remains `owned_top`; the authenticated controller must restore the
+    /// application RSP before exposing the relocated tail. Executing this mode
+    /// without a controller that performs both pivots is unsupported.
     pub fn from_scan_replacing_first_with_ptrace_stops(
         scan: &ScanResult,
         execute_address: u64,
@@ -640,11 +1001,12 @@ impl TrampolinePlan {
         }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
-            let extended_state = ExtendedState::detect();
-            let entry_stop = self
-                .ptrace_stops
-                .then_some(PTRACE_STOP_BYTES.as_slice())
-                .unwrap_or_default();
+            let extended_state = ExtendedState::detect()?;
+            let entry_stop: &[u8] = if self.ptrace_stops {
+                PTRACE_STOP_BYTES.as_slice()
+            } else {
+                &[]
+            };
             let instrumentation_address = address
                 .checked_add(entry_stop.len() as u64)
                 .ok_or(TrampolineError::AddressNotRepresentable { address })?;
@@ -657,10 +1019,11 @@ impl TrampolinePlan {
             let completion_stop_address = restore_address
                 .checked_add(restore.len() as u64)
                 .ok_or(TrampolineError::AddressNotRepresentable { address })?;
-            let completion_stop = self
-                .ptrace_stops
-                .then_some(PTRACE_STOP_BYTES.as_slice())
-                .unwrap_or_default();
+            let completion_stop: &[u8] = if self.ptrace_stops {
+                PTRACE_STOP_BYTES.as_slice()
+            } else {
+                &[]
+            };
             let relocated_address = completion_stop_address
                 .checked_add(completion_stop.len() as u64)
                 .ok_or(TrampolineError::AddressNotRepresentable { address })?;
@@ -679,6 +1042,7 @@ impl TrampolinePlan {
                 completion_stop_len: completion_stop.len(),
                 relocated_len: relocated.len(),
                 return_len: return_jump.len(),
+                saved_extended_state: extended_state.layout(),
             };
             let total_len = layout.total_len().ok_or(TrampolineError::CodeTooLarge {
                 code_len: usize::MAX,
@@ -751,15 +1115,46 @@ impl TrampolinePlan {
         assembler
             .lea(rsp, rsp - SYSTEM_V_RED_ZONE_BYTES)
             .map_err(encoding_error)?;
+        // Reserve the descriptor immediately below the untouched application
+        // red zone. Flags and GPR pushes below it retain every pre-existing
+        // HookContext offset, while the descriptor becomes its 32-byte tail.
+        assembler
+            .sub(rsp, SAVED_EXTENDED_STATE_DESCRIPTOR_BYTES)
+            .map_err(encoding_error)?;
         assembler.pushfq().map_err(encoding_error)?;
         for register in [
             rax, rcx, rdx, rbx, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
         ] {
             assembler.push(register).map_err(encoding_error)?;
         }
-        assembler
-            .lea(rax, rsp + SYSTEM_V_RED_ZONE_BYTES + SAVED_INTEGER_BYTES)
-            .map_err(encoding_error)?;
+        if self.ptrace_stops {
+            // The authenticated entry controller placed the application RSP in
+            // the last word of the owned stack. Saving flags and fifteen GPRs
+            // after the descriptor and red zone leaves RSP exactly 288 bytes
+            // below owned_top. This slot is 280 bytes above the current frame
+            // and has not been overwritten. No instruction before this load
+            // dereferences the application stack.
+            assembler
+                .mov(
+                    rax,
+                    qword_ptr(
+                        rsp + SAVED_EXTENDED_STATE_DESCRIPTOR_BYTES
+                            + SYSTEM_V_RED_ZONE_BYTES
+                            + SAVED_INTEGER_BYTES
+                            - core::mem::size_of::<u64>() as i32,
+                    ),
+                )
+                .map_err(encoding_error)?;
+        } else {
+            assembler
+                .lea(
+                    rax,
+                    rsp + SAVED_EXTENDED_STATE_DESCRIPTOR_BYTES
+                        + SYSTEM_V_RED_ZONE_BYTES
+                        + SAVED_INTEGER_BYTES,
+                )
+                .map_err(encoding_error)?;
+        }
         assembler.push(rax).map_err(encoding_error)?;
         assembler
             .mov(rax, self.execute_address)
@@ -767,6 +1162,36 @@ impl TrampolinePlan {
         assembler.push(rax).map_err(encoding_error)?;
         assembler.mov(r12, rsp).map_err(encoding_error)?;
         extended_state.encode_save(&mut assembler)?;
+        let layout = extended_state.layout();
+        let descriptor_offset = core::mem::offset_of!(HookContext, saved_extended_state) as i32;
+        assembler
+            .mov(
+                qword_ptr(
+                    r12 + descriptor_offset
+                        + core::mem::offset_of!(SavedExtendedStateDescriptor, address) as i32,
+                ),
+                rsp,
+            )
+            .map_err(encoding_error)?;
+        for (offset, value) in [
+            (
+                core::mem::offset_of!(SavedExtendedStateDescriptor, len),
+                layout.len(),
+            ),
+            (
+                core::mem::offset_of!(SavedExtendedStateDescriptor, mask),
+                layout.mask(),
+            ),
+            (
+                core::mem::offset_of!(SavedExtendedStateDescriptor, format),
+                layout.format().raw(),
+            ),
+        ] {
+            assembler.mov(rax, value).map_err(encoding_error)?;
+            assembler
+                .mov(qword_ptr(r12 + descriptor_offset + offset as i32), rax)
+                .map_err(encoding_error)?;
+        }
         assembler.cld().map_err(encoding_error)?;
         assembler.mov(rdi, r12).map_err(encoding_error)?;
         assembler
@@ -791,6 +1216,9 @@ fn encode_restore(address: u64, extended_state: ExtendedState) -> Result<Vec<u8>
         assembler.pop(register).map_err(encoding_error)?;
     }
     assembler.popfq().map_err(encoding_error)?;
+    assembler
+        .add(rsp, SAVED_EXTENDED_STATE_DESCRIPTOR_BYTES)
+        .map_err(encoding_error)?;
     assembler
         .lea(rsp, rsp + SYSTEM_V_RED_ZONE_BYTES)
         .map_err(encoding_error)?;
@@ -1151,12 +1579,17 @@ impl TrampolineArena {
 fn reserve_arena_slot(next: &AtomicUsize, len: usize) -> Result<usize, TrampolineError> {
     // This reserves exclusive storage; it does not publish completed code.
     // Saturation prevents failed reservations from wrapping and reusing bytes.
-    next.try_update(Ordering::AcqRel, Ordering::Acquire, |offset| {
-        offset
+    let mut offset = next.load(Ordering::Acquire);
+    loop {
+        let end = offset
             .checked_add(TRAMPOLINE_ALLOCATION_BYTES)
             .filter(|end| *end <= len)
-    })
-    .map_err(|_| TrampolineError::ArenaFull)
+            .ok_or(TrampolineError::ArenaFull)?;
+        match next.compare_exchange_weak(offset, end, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(reserved) => return Ok(reserved),
+            Err(observed) => offset = observed,
+        }
+    }
 }
 
 /// Process-lifetime executable trampoline mapping.
@@ -1255,9 +1688,10 @@ impl ExecutableTrampoline {
 
     /// Returns the RIP reported after the optional post-restore INT3.
     ///
-    /// This is also the first byte of the relocated tail. At this stop the
-    /// trampoline has restored the complete application register and extended
-    /// state, but no relocated application instruction has executed yet.
+    /// This is also the first byte of the relocated tail. At this stop every
+    /// explicitly saved application GPR, RFLAGS, and extended-state component
+    /// is restored, but RSP intentionally remains at the controller-owned stack
+    /// top. No relocated application instruction has executed yet.
     pub const fn ptrace_completion_stop_rip(&self) -> Option<u64> {
         if self.layout.completion_stop_len == PTRACE_STOP_BYTES.len() {
             Some(
@@ -2161,6 +2595,7 @@ fn align_up(value: usize, alignment: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::HookContext;
+    use super::SavedExtendedStateLayout;
     use super::TrampolineError;
     use super::TrampolineLayout;
     use super::TrampolinePlan;
@@ -2365,6 +2800,7 @@ mod tests {
             relocated_len: 12,
             restore_len: 16,
             return_len: 5,
+            saved_extended_state: SavedExtendedStateLayout::UNAVAILABLE,
         };
         assert_eq!(layout.total_len(), Some(67));
     }
@@ -2428,7 +2864,7 @@ mod tests {
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
-    fn ptrace_stops_bracket_instrumentation_and_restored_application_state() {
+    fn ptrace_stops_restore_saved_state_but_leave_rsp_at_owned_top() {
         let base = 0x20_0000;
         let trampoline = base + 0x10_0000;
         let code = [0x0F, 0x05, 0x48, 0x83, 0xC0, 0x01];
@@ -2446,6 +2882,60 @@ mod tests {
         assert_eq!(layout.completion_stop_len, 1);
         assert_eq!(image.bytes()[0], 0xcc);
         assert_eq!(image.bytes()[completion_offset], 0xcc);
+        let instrumentation_start = layout.entry_stop_len;
+        let instrumentation_end = instrumentation_start + layout.instrumentation_len;
+        let mut decoder = iced_x86::Decoder::with_ip(
+            64,
+            &image.bytes()[instrumentation_start..instrumentation_end],
+            trampoline + instrumentation_start as u64,
+            iced_x86::DecoderOptions::NONE,
+        );
+        let mut instructions = Vec::new();
+        while decoder.can_decode() {
+            instructions.push(decoder.decode());
+        }
+        assert!(instructions.iter().any(|instruction| {
+            instruction.mnemonic() == iced_x86::Mnemonic::Mov
+                && instruction.op0_register() == iced_x86::Register::RAX
+                && instruction.op1_kind() == iced_x86::OpKind::Memory
+                && instruction.memory_base() == iced_x86::Register::RSP
+                && instruction.memory_displacement64() == 280
+        }));
+        assert!(!instructions.iter().any(|instruction| {
+            instruction.mnemonic() == iced_x86::Mnemonic::Lea
+                && instruction.op0_register() == iced_x86::Register::RAX
+                && instruction.memory_base() == iced_x86::Register::RSP
+                && instruction.memory_displacement64() == 288
+        }));
+        let restore_start = instrumentation_end;
+        let restore_end = restore_start + layout.restore_len;
+        let mut restore_decoder = iced_x86::Decoder::with_ip(
+            64,
+            &image.bytes()[restore_start..restore_end],
+            trampoline + restore_start as u64,
+            iced_x86::DecoderOptions::NONE,
+        );
+        let mut restore_instructions = Vec::new();
+        while restore_decoder.can_decode() {
+            restore_instructions.push(restore_decoder.decode());
+        }
+        assert!(restore_instructions.iter().any(|instruction| {
+            instruction.mnemonic() == iced_x86::Mnemonic::Mov
+                && instruction.op0_register() == iced_x86::Register::RSP
+                && instruction.op1_register() == iced_x86::Register::R12
+        }));
+        let final_restore = restore_instructions.last().unwrap();
+        assert_eq!(final_restore.mnemonic(), iced_x86::Mnemonic::Lea);
+        assert_eq!(final_restore.op0_register(), iced_x86::Register::RSP);
+        assert_eq!(final_restore.memory_base(), iced_x86::Register::RSP);
+        assert_eq!(final_restore.memory_displacement64(), 128);
+        let owned_top = 0x7100_0000_u64;
+        let context_base = owned_top - super::HOOK_CONTEXT_STACK_PREFIX_BYTES as u64;
+        assert_eq!(
+            context_base + super::HOOK_CONTEXT_STACK_PREFIX_BYTES as u64,
+            owned_top
+        );
+        assert_ne!(owned_top, 0x7fff_0000_u64, "RSP is not yet application RSP");
         let executable = super::ExecutableTrampoline {
             address: trampoline,
             allocation_len: super::TRAMPOLINE_ALLOCATION_BYTES,

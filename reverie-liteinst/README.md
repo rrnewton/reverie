@@ -110,15 +110,18 @@ through the existing Backend statistics API.
 
 ## Backend launcher
 
-`LiteinstBackend` implements Reverie's `Backend` trait. It owns the single
-`GlobalTool`, starts a UDS coordinator, sets `LD_PRELOAD`, runs the guest,
-and returns its status and final global state. Existing preload APIs retain the
-`REVERIE_LITEINST_COORDINATOR` environment contract. The example launcher
-uses `run_with_output_and_preload_data` instead, passing the coordinator
-path and selector in a sealed, dynamically allocated memfd that the preload
-discovers, validates, consumes, and closes before guest `main`.
-`REVERIE_LITEINST_TOOL_PRELOAD` must name a DSO that embeds the same concrete
-`T` and calls `install_tool::<T>`.
+`LiteinstBackend` retains Reverie's `Backend` trait shape for source
+compatibility, but every generic trait entry point currently fails with
+`Unsupported` before resolving a preload or spawning a guest. The trait cannot
+carry the digest-approved after-loader authority, and the legacy direct path
+does not implement the complete arbitrary-`Tool` lifecycle promised by that
+trait. Explicit experimental preload APIs retain the
+`REVERIE_LITEINST_COORDINATOR` environment contract and take their DSO path as
+an argument. The example launcher uses `run_with_output_and_preload_data`,
+passing the coordinator path and selector in a sealed, dynamically allocated
+memfd that the preload discovers, validates, consumes, and closes before guest
+`main`. `REVERIE_LITEINST_TOOL_PRELOAD` remains exported only for source
+compatibility and is not consulted by the generic trait.
 
 Built-in `strace` and compatibility modes remain available through
 `configure_command`. They use the same shared preload and LiteInst hook path

@@ -8,6 +8,8 @@ use std::io::Write;
 use std::io::{self};
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -24,15 +26,63 @@ use goblin::elf::sym;
 use sha2::Digest;
 use sha2::Sha256;
 
+mod inode_policy;
+mod manifest;
+mod manifest_v4;
+mod stable_cover;
+mod stable_store;
+
+pub use manifest::LiteinstAfterLoaderProfile;
+
 pub(crate) const MAX_CALLER_FILE: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_LOADER_CACHE_FILE: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_RUNTIME_FILE: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_RUNTIME_LOAD_SPAN: u64 = 128 * 1024 * 1024;
 const RUNTIME_LOAD_PAGE: u64 = 4096;
 const MAX_STAGE_MARKER: usize = 1024;
 const HOST_INITIALIZER: &str = "reverie_liteinst_initialize_host";
 const LEGACY_INITIALIZER: &str = "reverie_liteinst_initialize";
-pub(crate) const RUNTIME_SEALS: i32 =
+pub(crate) const IMMUTABLE_FILE_SEALS: i32 =
     libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+pub(crate) const RUNTIME_SEALS: i32 = IMMUTABLE_FILE_SEALS;
+
+/// Exact loader-input policy declared by a schema-3 manifest.
+///
+/// The paths are profile data, not conventional glibc names: patched loaders
+/// may probe different cache and preload paths. The eventual launch path must
+/// expose the bundle's exact sealed cache at `loader_cache_path`, make
+/// `system_preload_path` absent (not merely empty or unreadable), and resolve
+/// every requested image exclusively to its immutable bundle artifact. Phase 1
+/// retains this contract; it does not claim to enforce consumption.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LiteinstLoaderPolicy {
+    loader_cache_path: PathBuf,
+    system_preload_path: PathBuf,
+}
+
+impl LiteinstLoaderPolicy {
+    pub(crate) fn exact_cache_and_absent_preload(
+        loader_cache_path: PathBuf,
+        system_preload_path: PathBuf,
+    ) -> Self {
+        Self {
+            loader_cache_path,
+            system_preload_path,
+        }
+    }
+
+    pub(crate) fn loader_cache_path(&self) -> &Path {
+        &self.loader_cache_path
+    }
+
+    pub(crate) fn system_preload_path(&self) -> &Path {
+        &self.system_preload_path
+    }
+
+    fn diagnostic(&self) -> &'static str {
+        "loader_cache=exact system_preload=absent loader_search=sealed-bundle-only"
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct FileIdentity {
@@ -46,6 +96,222 @@ impl FileIdentity {
             device: metadata.dev(),
             inode: metadata.ino(),
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LiteinstLoaderCache {
+    path: PathBuf,
+    bytes: Arc<[u8]>,
+    file_identity: FileIdentity,
+}
+
+impl LiteinstLoaderCache {
+    pub(crate) fn read(path: &Path) -> io::Result<Self> {
+        let path = path.canonicalize()?;
+        let mut file = std::fs::File::open(&path)?;
+        let before = file.metadata()?;
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(MAX_LOADER_CACHE_FILE as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if !before.is_file()
+            || bytes.len() > MAX_LOADER_CACHE_FILE
+            || file_stamp(&before) != file_stamp(&file.metadata()?)
+            || file_stamp(&before) != file_stamp(&std::fs::metadata(&path)?)
+        {
+            return Err(io::Error::other(
+                "loader cache is not a bounded unchanged regular file",
+            ));
+        }
+        Ok(Self {
+            path,
+            bytes: bytes.into(),
+            file_identity: FileIdentity::from_metadata(&before),
+        })
+    }
+}
+
+/// Exact role of one immutable schema-3 input.
+///
+/// These roles describe reviewed controller inputs. Phase 1 deliberately does
+/// not claim that exec or the dynamic loader consumes their sealed copies.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ImmutableAfterLoaderRole {
+    LoaderCache,
+    Executable,
+    Interpreter,
+    Provider,
+    InitialDependency(String),
+    DeferredDependency(String),
+    Runtime,
+    RuntimeMarker,
+}
+
+/// One byte-exact immutable copy retained for the lifetime of the configuration.
+#[derive(Debug)]
+pub(crate) struct ImmutableAfterLoaderArtifact {
+    role: ImmutableAfterLoaderRole,
+    logical_path: PathBuf,
+    source_identity: FileIdentity,
+    sealed_source: PathBuf,
+    sealed_identity: FileIdentity,
+    sha256: [u8; 32],
+    bytes: Arc<[u8]>,
+    file: Arc<std::fs::File>,
+}
+
+impl ImmutableAfterLoaderArtifact {
+    fn prepare(
+        role: ImmutableAfterLoaderRole,
+        logical_path: &Path,
+        source_identity: FileIdentity,
+        bytes: Arc<[u8]>,
+    ) -> io::Result<Self> {
+        let expected_digest: [u8; 32] = Sha256::digest(bytes.as_ref()).into();
+        // SAFETY: the static name is NUL terminated, the flags are supported by
+        // the existing runtime path, and a successful descriptor has one owner.
+        let descriptor = unsafe {
+            libc::memfd_create(
+                c"reverie-after-loader-immutable".as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        if descriptor < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut file = unsafe { std::fs::File::from_raw_fd(descriptor) };
+        file.write_all(&bytes)?;
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, IMMUTABLE_FILE_SEALS) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) } != IMMUTABLE_FILE_SEALS {
+            return Err(io::Error::other("immutable after-loader seals differ"));
+        }
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() != bytes.len() as u64 {
+            return Err(io::Error::other(
+                "immutable after-loader length or file type differs",
+            ));
+        }
+        file.rewind()?;
+        let mut readback = Vec::new();
+        (&mut file)
+            .take(
+                u64::try_from(bytes.len())
+                    .map_err(|_| io::Error::other("immutable byte length is not representable"))?
+                    .checked_add(1)
+                    .ok_or_else(|| io::Error::other("immutable readback bound overflow"))?,
+            )
+            .read_to_end(&mut readback)?;
+        let readback_digest: [u8; 32] = Sha256::digest(&readback).into();
+        if readback.as_slice() != bytes.as_ref() || readback_digest != expected_digest {
+            return Err(io::Error::other(
+                "immutable after-loader readback or digest differs",
+            ));
+        }
+        let sealed_identity = FileIdentity::from_metadata(&metadata);
+        let sealed_source = PathBuf::from(format!(
+            "/proc/{}/fd/{}",
+            std::process::id(),
+            file.as_raw_fd()
+        ));
+        let linked_metadata = std::fs::metadata(&sealed_source)?;
+        if !linked_metadata.is_file()
+            || linked_metadata.len() != bytes.len() as u64
+            || FileIdentity::from_metadata(&linked_metadata) != sealed_identity
+        {
+            return Err(io::Error::other(
+                "immutable after-loader proc source identity differs",
+            ));
+        }
+        Ok(Self {
+            role,
+            logical_path: logical_path.to_path_buf(),
+            source_identity,
+            sealed_source,
+            sealed_identity,
+            sha256: expected_digest,
+            bytes,
+            file: Arc::new(file),
+        })
+    }
+
+    pub(crate) fn role(&self) -> &ImmutableAfterLoaderRole {
+        &self.role
+    }
+
+    pub(crate) fn logical_path(&self) -> &Path {
+        &self.logical_path
+    }
+
+    pub(crate) fn source_identity(&self) -> FileIdentity {
+        self.source_identity
+    }
+
+    pub(crate) fn sealed_source(&self) -> &Path {
+        &self.sealed_source
+    }
+
+    pub(crate) fn raw_fd(&self) -> i32 {
+        self.file.as_raw_fd()
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn sealed_identity(&self) -> FileIdentity {
+        self.sealed_identity
+    }
+
+    pub(crate) fn sha256(&self) -> [u8; 32] {
+        self.sha256
+    }
+}
+
+/// Complete immutable controller-side copy of one reviewed schema-3 input set.
+#[derive(Debug)]
+pub(crate) struct ImmutableAfterLoaderBundle {
+    artifacts: BTreeMap<ImmutableAfterLoaderRole, Arc<ImmutableAfterLoaderArtifact>>,
+}
+
+impl ImmutableAfterLoaderBundle {
+    fn from_artifacts(artifacts: Vec<Arc<ImmutableAfterLoaderArtifact>>) -> io::Result<Arc<Self>> {
+        let mut by_role = BTreeMap::new();
+        let mut logical_paths = BTreeSet::new();
+        let mut source_identities = BTreeSet::new();
+        let mut sealed_identities = BTreeSet::new();
+        for artifact in artifacts {
+            if !logical_paths.insert(artifact.logical_path.clone())
+                || !source_identities.insert(artifact.source_identity)
+                || !sealed_identities.insert(artifact.sealed_identity)
+                || by_role.insert(artifact.role.clone(), artifact).is_some()
+            {
+                return Err(io::Error::other(
+                    "immutable after-loader role, path or identity is aliased",
+                ));
+            }
+        }
+        Ok(Arc::new(Self { artifacts: by_role }))
+    }
+
+    pub(crate) fn artifact(
+        &self,
+        role: &ImmutableAfterLoaderRole,
+    ) -> Option<&Arc<ImmutableAfterLoaderArtifact>> {
+        self.artifacts.get(role)
+    }
+
+    pub(crate) fn iter(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &ImmutableAfterLoaderRole,
+            &Arc<ImmutableAfterLoaderArtifact>,
+        ),
+    > {
+        self.artifacts.iter()
     }
 }
 
@@ -227,6 +493,8 @@ fn validate_runtime_elf(bytes: &[u8]) -> io::Result<()> {
     {
         return Err(io::Error::other("unsupported staged runtime ELF"));
     }
+    reject_unreviewed_loader_selectors(&elf)?;
+    reject_dlopen_refusing_flags(dynamic_flags_1(&elf), "staged runtime")?;
     validate_runtime_load_geometry(&elf, bytes.len())?;
     crate::target_loader::validate_host_runtime_elf(bytes)?;
 
@@ -237,8 +505,8 @@ fn validate_runtime_elf(bytes: &[u8]) -> io::Result<()> {
         let Some(name) = elf.dynstrtab.get_at(symbol.st_name) else {
             continue;
         };
-        if name == HOST_INITIALIZER {
-            if symbol.st_bind() != sym::STB_GLOBAL
+        if name == HOST_INITIALIZER
+            && (symbol.st_bind() != sym::STB_GLOBAL
                 || symbol.st_type() != sym::STT_FUNC
                 || symbol.st_other != sym::STV_DEFAULT
                 || symbol.st_shndx == section_header::SHN_UNDEF as usize
@@ -246,12 +514,11 @@ fn validate_runtime_elf(bytes: &[u8]) -> io::Result<()> {
                 || symbol.st_value == 0
                 || symbol.st_size == 0
                 || !symbol_is_file_backed_executable(&elf, &symbol)
-                || host_initializer.replace(index).is_some()
-            {
-                return Err(io::Error::other(
-                    "staged runtime host initializer is not one ordinary export",
-                ));
-            }
+                || host_initializer.replace(index).is_some())
+        {
+            return Err(io::Error::other(
+                "staged runtime host initializer is not one ordinary export",
+            ));
         }
         if name == LEGACY_INITIALIZER {
             legacy_symbols.push(index);
@@ -426,18 +693,16 @@ fn reject_legacy_init_array(
                     return Err(io::Error::other("duplicate runtime init-array address"));
                 }
             }
-            dynamic::DT_INIT_ARRAYSZ => {
-                if array_size.replace(entry.d_val).is_some() {
-                    return Err(io::Error::other("duplicate runtime init-array size"));
-                }
+            dynamic::DT_INIT_ARRAYSZ if array_size.replace(entry.d_val).is_some() => {
+                return Err(io::Error::other("duplicate runtime init-array size"));
             }
             _ => {}
         }
     }
     let (array_address, array_size) = match (array_address, array_size) {
         (None, None) => return Ok(()),
-        (Some(address), Some(0)) if address == 0 => return Ok(()),
-        (Some(address), Some(size)) if address != 0 && size != 0 && size % 8 == 0 => {
+        (Some(0), Some(0)) => return Ok(()),
+        (Some(address), Some(size)) if address != 0 && size != 0 && size.is_multiple_of(8) => {
             (address, size)
         }
         _ => return Err(io::Error::other("runtime init-array tags are inconsistent")),
@@ -455,11 +720,11 @@ fn reject_legacy_init_array(
         .get(array_offset..array_end)
         .ok_or_else(|| io::Error::other("runtime init array is outside staged bytes"))?;
 
-    for (slot, raw) in array.chunks_exact(8).enumerate() {
+    for (slot, raw) in array.as_chunks::<8>().0.iter().enumerate() {
         let slot_address = array_address
             .checked_add((slot * 8) as u64)
             .ok_or_else(|| io::Error::other("runtime init-array address overflow"))?;
-        let raw = u64::from_le_bytes(raw.try_into().unwrap());
+        let raw = u64::from_le_bytes(*raw);
         let relocations: Vec<_> = elf
             .dynrelas
             .iter()
@@ -554,6 +819,7 @@ fn file_stamp(m: &std::fs::Metadata) -> (u64, u64, u64, i64, i64, i64, i64) {
 pub(crate) struct SealedRuntime {
     pub(crate) file: std::fs::File,
     pub(crate) image: LiteinstCallerImage,
+    backing: Arc<ImmutableAfterLoaderArtifact>,
 }
 impl SealedRuntime {
     fn prepare(stage: &LiteinstCallerImage) -> io::Result<Self> {
@@ -572,46 +838,117 @@ impl SealedRuntime {
                 "runtime stage or marker changed before sealing",
             ));
         }
-        // SAFETY: static NUL-terminated name, supported memfd flags, and exactly
-        // one File owner is constructed for a successfully returned descriptor.
-        let fd = unsafe {
-            libc::memfd_create(
-                c"liteinst-after-loader-runtime".as_ptr(),
-                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-            )
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
-        file.write_all(&stage.bytes)?;
-        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, RUNTIME_SEALS) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) } != RUNTIME_SEALS {
-            return Err(io::Error::other("runtime seals differ"));
-        }
-        file.rewind()?;
-        let mut bytes = Vec::new();
-        (&mut file)
-            .take(MAX_RUNTIME_FILE as u64 + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.as_slice() != stage.bytes.as_ref() {
-            return Err(io::Error::other("sealed runtime readback differs"));
-        }
-        let metadata = file.metadata()?;
+        let backing = Arc::new(ImmutableAfterLoaderArtifact::prepare(
+            ImmutableAfterLoaderRole::Runtime,
+            &stage.path,
+            stage.file_identity,
+            stage.bytes.clone(),
+        )?);
+        let file = backing.file.try_clone()?;
         let image = LiteinstCallerImage {
-            path: PathBuf::from(format!(
-                "/proc/{}/fd/{}",
-                std::process::id(),
-                file.as_raw_fd()
-            )),
+            path: backing.sealed_source.clone(),
             bytes: stage.bytes.clone(),
-            file_identity: FileIdentity::from_metadata(&metadata),
+            file_identity: backing.sealed_identity,
             marker: None,
         };
-        Ok(Self { file, image })
+        Ok(Self {
+            file,
+            image,
+            backing,
+        })
     }
+}
+
+struct ImmutableBundleInputs<'a> {
+    loader_cache: &'a LiteinstLoaderCache,
+    executable: &'a LiteinstCallerImage,
+    interpreter: &'a LiteinstCallerImage,
+    provider: &'a LiteinstCallerImage,
+    runtime: &'a LiteinstCallerImage,
+    dependencies: &'a [LiteinstCallerImage],
+    initial_dependencies: &'a [LiteinstCallerImage],
+    deferred_dependencies: &'a [LiteinstCallerImage],
+    sealed_runtime: &'a Arc<SealedRuntime>,
+}
+
+fn prepare_immutable_bundle(
+    inputs: ImmutableBundleInputs<'_>,
+) -> io::Result<Arc<ImmutableAfterLoaderBundle>> {
+    let ImmutableBundleInputs {
+        loader_cache,
+        executable,
+        interpreter,
+        provider,
+        runtime,
+        dependencies,
+        initial_dependencies,
+        deferred_dependencies,
+        sealed_runtime,
+    } = inputs;
+    let marker = runtime
+        .marker
+        .as_ref()
+        .ok_or_else(|| io::Error::other("runtime stage marker absent from immutable bundle"))?;
+    let mut artifacts = vec![
+        Arc::new(ImmutableAfterLoaderArtifact::prepare(
+            ImmutableAfterLoaderRole::LoaderCache,
+            &loader_cache.path,
+            loader_cache.file_identity,
+            loader_cache.bytes.clone(),
+        )?),
+        Arc::new(ImmutableAfterLoaderArtifact::prepare(
+            ImmutableAfterLoaderRole::Executable,
+            &executable.path,
+            executable.file_identity,
+            executable.bytes.clone(),
+        )?),
+        Arc::new(ImmutableAfterLoaderArtifact::prepare(
+            ImmutableAfterLoaderRole::Interpreter,
+            &interpreter.path,
+            interpreter.file_identity,
+            interpreter.bytes.clone(),
+        )?),
+        Arc::new(ImmutableAfterLoaderArtifact::prepare(
+            ImmutableAfterLoaderRole::Provider,
+            &provider.path,
+            provider.file_identity,
+            provider.bytes.clone(),
+        )?),
+        sealed_runtime.backing.clone(),
+        Arc::new(ImmutableAfterLoaderArtifact::prepare(
+            ImmutableAfterLoaderRole::RuntimeMarker,
+            &marker.path,
+            marker.file_identity,
+            marker.bytes.clone(),
+        )?),
+    ];
+    for dependency in dependencies {
+        let soname = dependency
+            .dynamic_soname()
+            .ok_or_else(|| io::Error::other("immutable dependency lacks DT_SONAME"))?;
+        let initial = initial_dependencies
+            .iter()
+            .any(|candidate| candidate.file_identity == dependency.file_identity);
+        let deferred = deferred_dependencies
+            .iter()
+            .any(|candidate| candidate.file_identity == dependency.file_identity);
+        let role = match (initial, deferred) {
+            (true, false) => ImmutableAfterLoaderRole::InitialDependency(soname),
+            (false, true) => ImmutableAfterLoaderRole::DeferredDependency(soname),
+            _ => {
+                return Err(io::Error::other(
+                    "immutable dependency has missing or ambiguous loader phase",
+                ));
+            }
+        };
+        artifacts.push(Arc::new(ImmutableAfterLoaderArtifact::prepare(
+            role,
+            &dependency.path,
+            dependency.file_identity,
+            dependency.bytes.clone(),
+        )?));
+    }
+    ImmutableAfterLoaderBundle::from_artifacts(artifacts)
 }
 
 /// One controller observation. This is diagnostic data, never a clock correction.
@@ -686,9 +1023,12 @@ impl LiteinstCallerDiagnostics {
 #[derive(Clone, Debug)]
 pub struct LiteinstAfterLoaderConfig {
     pub(crate) executable: LiteinstCallerImage,
+    pub(crate) interpreter: LiteinstCallerImage,
     pub(crate) provider: LiteinstCallerImage,
     pub(crate) runtime: LiteinstCallerImage,
     pub(crate) sealed_runtime: Arc<SealedRuntime>,
+    pub(crate) immutable_bundle: Arc<ImmutableAfterLoaderBundle>,
+    loader_policy: LiteinstLoaderPolicy,
     pub(crate) dependencies: Vec<LiteinstCallerImage>,
     /// Members of `dependencies` that must already be mapped at executable
     /// entry. This is the exact DT_NEEDED/PT_INTERP closure of `executable`,
@@ -701,50 +1041,72 @@ pub struct LiteinstAfterLoaderConfig {
     pub(crate) diagnostics: LiteinstCallerDiagnostics,
     pub(crate) physical_observer: safeptrace::PhysicalEventObserver,
 }
+
+struct LiteinstAfterLoaderInputs {
+    executable: LiteinstCallerImage,
+    interpreter: LiteinstCallerImage,
+    provider: LiteinstCallerImage,
+    runtime: LiteinstCallerImage,
+    loader_cache: LiteinstLoaderCache,
+    dependencies: Vec<LiteinstCallerImage>,
+    loader_policy: LiteinstLoaderPolicy,
+    environment: BTreeMap<OsString, OsString>,
+}
+
 impl LiteinstAfterLoaderConfig {
-    /// Bind the fixed experiment's executable, libc, constructor-disabled runtime
-    /// and complete other loader dependencies.
+    /// Finish binding inputs already admitted by a reviewed manifest profile.
     ///
-    /// # Safety
-    /// The independently reviewed graph must contain no guest interposer, audit
-    /// callback or IFUNC that can call guest code during the controller's dlopen
-    /// or initializer. The runtime must omit its legacy constructor. These are
-    /// semantic properties that ELF identity alone cannot prove. The runtime
-    /// stage marker binds the exact ELF to the staging producer's canonical
-    /// record of a constructor-disabled build with only the after-loader
-    /// experiment feature enabled. The producer remains trusted for its Cargo
-    /// invocation claims.
-    /// The remaining loader graph must remain immutable through the run. This
-    /// constructor seals an exact private copy of the runtime; failure to create
-    /// or expose that copy makes staging unavailable. Supply the exact fixed
-    /// fixture; this does not authorize arbitrary-program execution.
-    /// The complete expected environment must be reviewed together with that
-    /// graph, including locale/module paths and allocator configuration. The
-    /// launcher and stopped image both compare the exact complete environment.
-    pub unsafe fn new(
-        executable: LiteinstCallerImage,
-        provider: LiteinstCallerImage,
-        runtime: LiteinstCallerImage,
-        dependencies: Vec<LiteinstCallerImage>,
-        environment: BTreeMap<OsString, OsString>,
-    ) -> io::Result<Self> {
-        if dependencies.len() > 32
+    /// This stays private so callers cannot bypass the digest-bound review in
+    /// [`LiteinstAfterLoaderProfile::bind_reviewed_manifest`]. It deliberately
+    /// retains all of the original graph, environment, runtime-marker and
+    /// sealing checks as independent rechecks after manifest validation.
+    fn new(inputs: LiteinstAfterLoaderInputs) -> io::Result<Self> {
+        let LiteinstAfterLoaderInputs {
+            executable,
+            interpreter,
+            provider,
+            runtime,
+            loader_cache,
+            dependencies,
+            loader_policy,
+            environment,
+        } = inputs;
+        if dependencies
+            .len()
+            .checked_add(2)
+            .is_none_or(|count| count > 32)
             || executable.bytes.len() > MAX_CALLER_FILE
+            || interpreter.bytes.len() > MAX_CALLER_FILE
             || provider.bytes.len() > MAX_CALLER_FILE
             || dependencies
                 .iter()
                 .any(|image| image.bytes.len() > MAX_CALLER_FILE)
             || runtime.bytes.len() > MAX_RUNTIME_FILE
+            || loader_cache.bytes.len() > MAX_LOADER_CACHE_FILE
         {
             return Err(io::Error::other("caller dependency bound exceeded"));
         }
+        if loader_policy.loader_cache_path() != loader_cache.path.as_path() {
+            return Err(io::Error::other(
+                "loader policy cache path differs from bound artifact",
+            ));
+        }
+        match std::fs::symlink_metadata(loader_policy.system_preload_path()) {
+            Ok(_) => {
+                return Err(io::Error::other(
+                    "loader policy expected-absent system preload exists",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
         if environment.len() > 256
             || environment.iter().any(|(key, value)| {
-                let key = key.as_encoded_bytes();
+                let key = key.as_bytes();
                 key.is_empty()
                     || key.contains(&0)
                     || key.contains(&b'=')
-                    || value.as_encoded_bytes().contains(&0)
+                    || value.as_bytes().contains(&0)
                     || key.starts_with(b"LD_")
                     || key == b"GLIBC_TUNABLES"
                     || key.starts_with(b"MALLOC_")
@@ -762,8 +1124,27 @@ impl LiteinstAfterLoaderConfig {
             ));
         }
         let sealed_runtime = Arc::new(SealedRuntime::prepare(&runtime)?);
-        let (initial_dependencies, deferred_dependencies) =
-            partition_loader_images(&executable, &provider, &runtime, &dependencies)?;
+        let (initial_dependencies, deferred_dependencies) = partition_loader_images(
+            &executable,
+            &interpreter,
+            &provider,
+            &runtime,
+            &dependencies,
+        )?;
+        let immutable_bundle = prepare_immutable_bundle(ImmutableBundleInputs {
+            loader_cache: &loader_cache,
+            executable: &executable,
+            interpreter: &interpreter,
+            provider: &provider,
+            runtime: &runtime,
+            dependencies: &dependencies,
+            initial_dependencies: &initial_dependencies,
+            deferred_dependencies: &deferred_dependencies,
+            sealed_runtime: &sealed_runtime,
+        })?;
+        let dependencies = std::iter::once(interpreter.clone())
+            .chain(dependencies)
+            .collect::<Vec<_>>();
         let diagnostics = LiteinstCallerDiagnostics::default();
         let physical_observer = safeptrace::PhysicalEventObserver::new(
             safeptrace::PhysicalEventObserverConfig::default(),
@@ -777,6 +1158,15 @@ impl LiteinstAfterLoaderConfig {
             marker.file_identity.device, marker.file_identity.inode, marker.bytes.len(),
             sealed_runtime.image.path.display(), sealed_runtime.image.file_identity.device,
             sealed_runtime.image.file_identity.inode, RUNTIME_SEALS))?;
+        diagnostics.record(
+            "immutable reviewed bundle retained",
+            None,
+            format!(
+                "artifact_count={} {} consumption=phase-2-unenforced",
+                immutable_bundle.iter().count(),
+                loader_policy.diagnostic(),
+            ),
+        )?;
         diagnostics.record(
             "loader dependency phases bound",
             None,
@@ -796,9 +1186,12 @@ impl LiteinstAfterLoaderConfig {
         )?;
         Ok(Self {
             executable,
+            interpreter,
             provider,
             runtime,
             sealed_runtime,
+            immutable_bundle,
+            loader_policy,
             dependencies,
             initial_dependencies,
             deferred_dependencies,
@@ -820,6 +1213,26 @@ impl LiteinstAfterLoaderConfig {
     pub fn diagnostics(&self) -> LiteinstCallerDiagnostics {
         self.diagnostics.clone()
     }
+
+    /// Return the exact canonical Unix path of the manifest-bound runtime
+    /// marker. The marker bytes and digest were authenticated during binding;
+    /// this accessor grants no construction or rebinding authority.
+    pub fn runtime_marker_path(&self) -> &Path {
+        &self
+            .runtime
+            .marker
+            .as_ref()
+            .expect("bound after-loader runtime always retains its marker")
+            .path
+    }
+
+    pub(crate) fn immutable_bundle(&self) -> &Arc<ImmutableAfterLoaderBundle> {
+        &self.immutable_bundle
+    }
+
+    pub(crate) fn loader_policy(&self) -> &LiteinstLoaderPolicy {
+        &self.loader_policy
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -827,6 +1240,7 @@ struct LoaderImageContract {
     soname: Option<String>,
     needed: BTreeSet<String>,
     interpreter: Option<PathBuf>,
+    flags_1: u64,
 }
 
 fn valid_loader_name(name: &str) -> bool {
@@ -834,6 +1248,114 @@ fn valid_loader_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte))
+}
+
+const DT_FEATURE_1: u64 = 0x6fff_fdfc;
+const DT_POSFLAG_1: u64 = 0x6fff_fdfd;
+const DT_GNU_PRELINKED: u64 = 0x6fff_fdf5;
+const DT_GNU_CONFLICTSZ: u64 = 0x6fff_fdf6;
+const DT_GNU_LIBLISTSZ: u64 = 0x6fff_fdf7;
+const DT_SYMINSZ: u64 = 0x6fff_fdfe;
+const DT_SYMINENT: u64 = 0x6fff_fdff;
+const DT_GNU_CONFLICT: u64 = 0x6fff_fef8;
+const DT_SYMINFO: u64 = 0x6fff_feff;
+const DT_AUXILIARY: u64 = 0x7fff_fffd;
+const DT_FILTER: u64 = 0x7fff_ffff;
+const REVIEWED_NON_SELECTOR_FLAGS: u64 =
+    dynamic::DF_TEXTREL | dynamic::DF_BIND_NOW | dynamic::DF_STATIC_TLS;
+const REVIEWED_NON_SELECTOR_FLAGS_1: u64 =
+    dynamic::DF_1_NOW | dynamic::DF_1_NODELETE | dynamic::DF_1_NOOPEN | dynamic::DF_1_NODUMP;
+const DLOPEN_REFUSING_FLAGS_1: u64 = dynamic::DF_1_NOOPEN;
+
+fn dynamic_flags_1(elf: &Elf<'_>) -> u64 {
+    elf.dynamic
+        .as_ref()
+        .into_iter()
+        .flat_map(|table| table.dyns.iter())
+        .filter(|entry| entry.d_tag == dynamic::DT_FLAGS_1)
+        .fold(0, |flags, entry| flags | entry.d_val)
+}
+
+fn reject_dlopen_refusing_flags(flags_1: u64, role: &str) -> io::Result<()> {
+    if flags_1 & DLOPEN_REFUSING_FLAGS_1 != 0 {
+        return Err(io::Error::other(format!(
+            "{role} carries DT_FLAGS_1 bits that refuse ordinary dlopen"
+        )));
+    }
+    Ok(())
+}
+
+fn reject_unreviewed_loader_selectors(elf: &Elf<'_>) -> io::Result<()> {
+    let Some(table) = elf.dynamic.as_ref() else {
+        return Ok(());
+    };
+    for entry in &table.dyns {
+        let forbidden_tag = matches!(
+            entry.d_tag,
+            dynamic::DT_RPATH
+                | dynamic::DT_RUNPATH
+                | dynamic::DT_AUDIT
+                | dynamic::DT_DEPAUDIT
+                | dynamic::DT_CONFIG
+                | dynamic::DT_GNU_LIBLIST
+                | DT_GNU_PRELINKED
+                | DT_GNU_CONFLICTSZ
+                | DT_GNU_LIBLISTSZ
+                | DT_FEATURE_1
+                | DT_POSFLAG_1
+                | DT_SYMINSZ
+                | DT_SYMINENT
+                | DT_GNU_CONFLICT
+                | DT_SYMINFO
+                | DT_AUXILIARY
+                | DT_FILTER
+                | dynamic::DT_SYMBOLIC
+        );
+        let forbidden_flags =
+            entry.d_tag == dynamic::DT_FLAGS && entry.d_val & !REVIEWED_NON_SELECTOR_FLAGS != 0;
+        let forbidden_flags_1 =
+            entry.d_tag == dynamic::DT_FLAGS_1 && entry.d_val & !REVIEWED_NON_SELECTOR_FLAGS_1 != 0;
+        if forbidden_tag || forbidden_flags || forbidden_flags_1 {
+            return Err(io::Error::other(format!(
+                "bound ELF contains unreviewed loader selector tag {:#x}",
+                entry.d_tag
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn raw_loader_interpreter(elf: &Elf<'_>, bytes: &[u8]) -> io::Result<Option<PathBuf>> {
+    let mut interpreter = None;
+    for header in &elf.program_headers {
+        if header.p_type != ph::PT_INTERP {
+            continue;
+        }
+        if interpreter.is_some() {
+            return Err(io::Error::other(
+                "bound executable has multiple PT_INTERP segments",
+            ));
+        }
+        let offset = usize::try_from(header.p_offset)
+            .map_err(|_| io::Error::other("bound PT_INTERP offset is not representable"))?;
+        let length = usize::try_from(header.p_filesz)
+            .map_err(|_| io::Error::other("bound PT_INTERP size is not representable"))?;
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| io::Error::other("bound PT_INTERP range overflow"))?;
+        let raw = bytes
+            .get(offset..end)
+            .ok_or_else(|| io::Error::other("bound PT_INTERP is outside ELF bytes"))?;
+        if raw.len() < 2 || raw.last() != Some(&0) || raw[..raw.len() - 1].contains(&0) {
+            return Err(io::Error::other(
+                "bound PT_INTERP lacks one exact nonempty NUL-terminated path",
+            ));
+        }
+        interpreter = Some(PathBuf::from(OsString::from_vec(
+            raw[..raw.len() - 1].to_vec(),
+        )));
+    }
+    Ok(interpreter)
 }
 
 fn loader_image_contract(
@@ -852,6 +1374,7 @@ fn loader_image_contract(
             "bound loader image is outside the fixed x86-64 contract",
         ));
     }
+    reject_unreviewed_loader_selectors(&elf)?;
     let soname = elf.soname.map(str::to_owned);
     if soname
         .as_deref()
@@ -862,14 +1385,14 @@ fn loader_image_contract(
         ));
     }
     let mut needed = BTreeSet::new();
-    for dependency in elf.libraries {
+    for dependency in elf.libraries.iter().copied() {
         if !valid_loader_name(dependency) || !needed.insert(dependency.to_owned()) {
             return Err(io::Error::other(
                 "bound loader image has malformed or duplicate DT_NEEDED",
             ));
         }
     }
-    let interpreter = elf.interpreter.map(PathBuf::from);
+    let interpreter = raw_loader_interpreter(&elf, &image.bytes)?;
     if interpreter.as_ref().is_some_and(|path| !path.is_absolute()) {
         return Err(io::Error::other(
             "bound executable has non-absolute PT_INTERP",
@@ -879,6 +1402,7 @@ fn loader_image_contract(
         soname,
         needed,
         interpreter,
+        flags_1: dynamic_flags_1(&elf),
     })
 }
 
@@ -922,18 +1446,28 @@ fn partition_loader_dependency_names(
 
 fn partition_loader_images(
     executable: &LiteinstCallerImage,
+    interpreter: &LiteinstCallerImage,
     provider: &LiteinstCallerImage,
     runtime: &LiteinstCallerImage,
     dependencies: &[LiteinstCallerImage],
 ) -> io::Result<(Vec<LiteinstCallerImage>, Vec<LiteinstCallerImage>)> {
     let executable_contract = loader_image_contract(executable, header::ET_EXEC)?;
+    let interpreter_contract = loader_image_contract(interpreter, header::ET_DYN)?;
     let runtime_contract = loader_image_contract(runtime, header::ET_DYN)?;
     if runtime_contract.interpreter.is_some() {
         return Err(io::Error::other("bound runtime unexpectedly has PT_INTERP"));
     }
 
+    if interpreter_contract.interpreter.is_some() {
+        return Err(io::Error::other(
+            "bound interpreter unexpectedly has PT_INTERP",
+        ));
+    }
     let mut images = BTreeMap::<String, (&LiteinstCallerImage, LoaderImageContract)>::new();
-    for image in std::iter::once(provider).chain(dependencies.iter()) {
+    for image in std::iter::once(interpreter)
+        .chain(std::iter::once(provider))
+        .chain(dependencies.iter())
+    {
         let contract = loader_image_contract(image, header::ET_DYN)?;
         let soname = contract
             .soname
@@ -962,24 +1496,30 @@ fn partition_loader_images(
         .map(|(name, (_, contract))| (name.clone(), contract.needed.clone()))
         .collect::<BTreeMap<_, _>>();
 
-    let interpreter = executable_contract
+    let executable_interpreter = executable_contract
         .interpreter
         .as_ref()
         .ok_or_else(|| io::Error::other("bound executable lacks PT_INTERP"))?;
-    let interpreter_name = interpreter
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| valid_loader_name(name))
-        .ok_or_else(|| io::Error::other("bound PT_INTERP has no canonical loader name"))?
-        .to_owned();
-    let interpreter_path = interpreter.canonicalize()?;
-    if images
-        .get(&interpreter_name)
-        .map(|(image, _)| image.path.as_path())
-        != Some(interpreter_path.as_path())
+    let interpreter_name = interpreter_contract
+        .soname
+        .clone()
+        .ok_or_else(|| io::Error::other("bound interpreter lacks DT_SONAME"))?;
+    if executable_interpreter.as_os_str().as_bytes() != interpreter.path.as_os_str().as_bytes()
+        || images
+            .get(&interpreter_name)
+            .map(|(image, _)| image.file_identity)
+            != Some(interpreter.file_identity)
     {
         return Err(io::Error::other(
-            "bound PT_INTERP differs from the loader graph",
+            "bound PT_INTERP differs from the explicit interpreter role",
+        ));
+    }
+    if interpreter_name == provider_name
+        || interpreter.path == provider.path
+        || interpreter.file_identity == provider.file_identity
+    {
+        return Err(io::Error::other(
+            "bound interpreter and provider roles are aliased",
         ));
     }
 
@@ -987,6 +1527,17 @@ fn partition_loader_images(
     initial_roots.insert(interpreter_name);
     let (initial, deferred) =
         partition_loader_dependency_names(&initial_roots, &runtime_contract.needed, &graph)?;
+    reject_dlopen_refusing_flags(runtime_contract.flags_1, "bound runtime")?;
+    for name in &deferred {
+        let contract = &images
+            .get(name)
+            .expect("deferred closure contains only bound graph nodes")
+            .1;
+        reject_dlopen_refusing_flags(
+            contract.flags_1,
+            &format!("deferred loader dependency {name}"),
+        )?;
+    }
     if !initial.contains(&provider_name) {
         return Err(io::Error::other(
             "bound dlopen provider is not in the initial loader closure",

@@ -9,5 +9,5 @@ fn main() {
         "--defsym=__reverie_liteinst_downstream_requires_runtime_helper=1"
     );
     println!("cargo:rustc-link-arg-cdylib={require_runtime}");
-    println!("cargo:rustc-link-arg-cdylib=-Wl,-T,{}", script.display());
+    println!("cargo:rustc-link-arg=-Wl,-T,{}", script.display());
 }

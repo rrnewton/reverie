@@ -25,10 +25,10 @@ use super::clone::ClonePidfdResult;
 use super::clone::clone;
 use super::clone::clone_with_pidfd;
 use super::clone::probe_clone_pidfd_support;
+use super::container::ChildContext;
 use super::controller_launch::ControllerStartupRecord;
 use super::controller_launch::decode_startup_record;
 use super::controller_launch::startup_record_len;
-use super::container::ChildContext;
 use super::error::Context;
 use super::error::Error;
 use super::fd::Fd;
@@ -86,9 +86,8 @@ impl Command {
     where
         F: FnMut(&mut ControllerStartupPublisher) -> Result<(), Errno>,
     {
-        let before_clone = |error, context| {
-            ControllerSpawnError::BeforeClone(Error::new(error, context))
-        };
+        let before_clone =
+            |error, context| ControllerSpawnError::BeforeClone(Error::new(error, context));
         if self.container.seccomp_notify {
             return Err(before_clone(Errno::EINVAL, Context::Seccomp));
         }
@@ -157,10 +156,7 @@ impl Command {
         };
         let child_main = || {
             let mut publisher = ControllerStartupPublisher::new(startup_writer_fd);
-            if unsafe {
-                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0)
-            } != 0
-            {
+            if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) } != 0 {
                 publisher.publish_error(Error::new(Errno::last(), Context::PreExec));
                 return 1;
             }
@@ -182,12 +178,8 @@ impl Command {
                     }
                 }
             }
-            let error = self.do_exec_controller(
-                &context,
-                &env,
-                &mut publisher,
-                &mut controller_init,
-            );
+            let error =
+                self.do_exec_controller(&context, &env, &mut publisher, &mut controller_init);
             let code = 1;
             let _ = error;
             unsafe { libc::_exit(code) }
@@ -209,9 +201,10 @@ impl Command {
                 drop(child_stdout);
                 drop(child_stderr);
                 reap_unsupported_gated_child(pid);
-                return Err(ControllerSpawnError::UnsupportedKernelContract(
-                    Error::new(Errno::EOPNOTSUPP, Context::Clone),
-                ));
+                return Err(ControllerSpawnError::UnsupportedKernelContract(Error::new(
+                    Errno::EOPNOTSUPP,
+                    Context::Clone,
+                )));
             }
             ClonePidfdResult::PidfdValidationFailed { token, error } => {
                 // A nonnegative clone result always becomes a linear token
@@ -232,7 +225,7 @@ impl Command {
                 drop(self.container.pty.take());
                 return Err(ControllerSpawnError::AfterClone {
                     source: ControllerSpawnFailure::PidfdValidation(error),
-                    authority: pending,
+                    authority: Box::new(pending),
                 });
             }
         };
@@ -241,14 +234,8 @@ impl Command {
         // syscall, before its stack/callback allocations unwind. No fallible
         // operation, allocation, conversion, or child release occurs between
         // that exact authority owner and this fixed pending owner.
-        let mut pending = PendingControllerLaunch::new(
-            token,
-            stdin,
-            stdout,
-            stderr,
-            gate_writer,
-            startup_reader,
-        );
+        let mut pending =
+            PendingControllerLaunch::new(token, stdin, stdout, stderr, gate_writer, startup_reader);
 
         drop(child_stdin);
         drop(child_stdout);
@@ -258,7 +245,7 @@ impl Command {
             drop(startup_writer);
             return Err(ControllerSpawnError::AfterClone {
                 source: ControllerSpawnFailure::GateWrite(error),
-                authority: pending,
+                authority: Box::new(pending),
             });
         }
         drop(startup_writer);
@@ -266,30 +253,31 @@ impl Command {
         let mut startup_record = [0u8; 16];
         debug_assert_eq!(startup_record.len(), startup_record_len());
         match pending.startup_reader_mut().read(&mut startup_record) {
-            Ok(bytes) if bytes == startup_record.len() => match decode_startup_record(startup_record)
-            {
-                Some(ControllerStartupRecord::Ready) => {
-                    pending.mark_ready();
-                    Ok(ControllerLaunch::from_pending(pending))
+            Ok(bytes) if bytes == startup_record.len() => {
+                match decode_startup_record(startup_record) {
+                    Some(ControllerStartupRecord::Ready) => {
+                        pending.mark_ready();
+                        Ok(ControllerLaunch::from_pending(pending))
+                    }
+                    Some(ControllerStartupRecord::Error(error)) => {
+                        Err(ControllerSpawnError::AfterClone {
+                            source: ControllerSpawnFailure::ChildStartup(error),
+                            authority: Box::new(pending),
+                        })
+                    }
+                    None => Err(ControllerSpawnError::AfterClone {
+                        source: ControllerSpawnFailure::StartupRecordMalformed,
+                        authority: Box::new(pending),
+                    }),
                 }
-                Some(ControllerStartupRecord::Error(error)) => {
-                    Err(ControllerSpawnError::AfterClone {
-                        source: ControllerSpawnFailure::ChildStartup(error),
-                        authority: pending,
-                    })
-                }
-                None => Err(ControllerSpawnError::AfterClone {
-                    source: ControllerSpawnFailure::StartupRecordMalformed,
-                    authority: pending,
-                }),
-            },
+            }
             Ok(bytes) => Err(ControllerSpawnError::AfterClone {
                 source: ControllerSpawnFailure::StartupRecordShortRead(bytes),
-                authority: pending,
+                authority: Box::new(pending),
             }),
             Err(error) => Err(ControllerSpawnError::AfterClone {
                 source: ControllerSpawnFailure::StartupRecordRead(error),
-                authority: pending,
+                authority: Box::new(pending),
             }),
         }
     }
@@ -407,14 +395,13 @@ impl Command {
     where
         F: FnMut(&mut ControllerStartupPublisher) -> Result<(), Errno>,
     {
-        if let Err(error) = self.container.setup_with_final_pre_seccomp(
-            context,
-            &mut self.pre_exec,
-            || {
-                controller_init(publisher)?;
-                publisher.is_published().then_some(()).ok_or(Errno::EPROTO)
-            },
-        ) {
+        if let Err(error) =
+            self.container
+                .setup_with_final_pre_seccomp(context, &mut self.pre_exec, || {
+                    controller_init(publisher)?;
+                    publisher.is_published().then_some(()).ok_or(Errno::EPROTO)
+                })
+        {
             publisher.publish_error(error);
             return error;
         }

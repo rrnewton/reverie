@@ -198,7 +198,7 @@ fn runtime_stage_preflight_rejects_invalid_or_overlapping_loads() {
     assert!(LiteinstCallerImage::runtime_stage_marker(&file_range_overflow).is_err());
 
     let mut address_overflow = runtime();
-    put64(&mut address_overflow, THIRD_LOAD + 16, u64::MAX & !0xfff);
+    put64(&mut address_overflow, THIRD_LOAD + 16, !0xfff);
     assert_eq!(
         runtime_load_span(&address_overflow)
             .unwrap_err()

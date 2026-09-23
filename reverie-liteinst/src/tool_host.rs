@@ -167,7 +167,7 @@ where
         rdtsc: subscriptions.has_rdtsc(),
     };
     runtime::preflight_instruction_faulting(instruction_subscriptions)?;
-    let vdso_sites = reverie_ptrace::patch_current_vdso(&subscriptions)
+    let vdso_patch = reverie_ptrace::patch_current_vdso(&subscriptions)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let _signal_state = runtime::prepare_guest_signal_state(instruction_subscriptions)?;
     let syscall_subscriptions = subscriptions.iter_syscalls().collect();
@@ -189,7 +189,14 @@ where
         .map_err(|_| {
             io::Error::new(io::ErrorKind::AlreadyExists, "Reverie tool installed twice")
         })?;
-    runtime::initialize_reverie_tool(stats, publication, instruction_subscriptions, &vdso_sites)
+    runtime::initialize_reverie_tool(
+        stats,
+        publication,
+        instruction_subscriptions,
+        vdso_patch.sites(),
+    )?;
+    vdso_patch.commit();
+    Ok(())
 }
 
 pub(crate) fn dispatch(event: &mut SyscallEvent) {
@@ -971,17 +978,12 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         std::future::pending().await
     }
 
-    // TODO-HUMAN-REVIEW(PR-326): Review the coarse
-    // syscall-boundary clock until the minimal ptrace supervisor wires PMU delivery.
-    fn set_timer(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        // Every intercepted syscall remains a deterministic scheduling boundary,
-        // but a CPU-bound thread cannot yet be preempted between syscalls.
-        Ok(())
+    fn set_timer(&mut self, sched: TimerSchedule) -> Result<(), Error> {
+        unsupported_timer_request(sched, TimerPrecision::Imprecise)
     }
 
-    fn set_timer_precise(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        // Same coarse boundary as set_timer; never synthesize host time.
-        Ok(())
+    fn set_timer_precise(&mut self, sched: TimerSchedule) -> Result<(), Error> {
+        unsupported_timer_request(sched, TimerPrecision::Precise)
     }
 
     fn read_clock(&mut self) -> Result<u64, Error> {
@@ -991,6 +993,25 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
     fn has_cpuid_interception(&self) -> bool {
         self.cpuid_interception
     }
+}
+
+#[derive(Clone, Copy)]
+enum TimerPrecision {
+    Imprecise,
+    Precise,
+}
+
+fn unsupported_timer_request(
+    _sched: TimerSchedule,
+    precision: TimerPrecision,
+) -> Result<(), Error> {
+    let message = match precision {
+        TimerPrecision::Imprecise => "LiteInst Tool host does not implement timer-event delivery",
+        TimerPrecision::Precise => {
+            "LiteInst Tool host does not implement precise timer-event delivery"
+        }
+    };
+    Err(io::Error::new(io::ErrorKind::Unsupported, message).into())
 }
 
 pub struct LocalStack {
@@ -1089,6 +1110,77 @@ fn fatal(status: i32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_unsupported_timer(result: Result<(), Error>, expected_message: &'static str) {
+        match result {
+            Err(Error::Io(error)) => {
+                assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+                assert_eq!(error.to_string(), expected_message);
+            }
+            other => panic!("timer request did not fail closed: {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn timer_requests_never_report_success_without_delivery() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("timer-test.sock");
+        let server =
+            reverie_rpc_transport::RpcServer::bind(&socket, std::sync::Arc::new(()), ()).unwrap();
+        let serving = tokio::spawn(async move { server.serve_one().await });
+        let rpc = tokio::task::spawn_blocking(move || CoordinatorRpc::<()>::connect(socket))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut event = SyscallEvent {
+            number: libc::SYS_getpid,
+            args: [0; 6],
+            instruction_pointer: 0,
+            result: 0,
+            context: 0,
+            dispatch: runtime::SyscallDispatch::InstalledHook,
+            guest_pkru: None,
+        };
+        let pid = Pid::from_raw(std::process::id() as i32);
+        let mut state = ();
+        let tail = TailResult::default();
+        let mut guest = LiteinstGuest::<()> {
+            event: &mut event,
+            tid: pid,
+            pid,
+            ppid: None,
+            state: &mut state,
+            rpc: &rpc,
+            tail: &tail,
+            cpuid_interception: false,
+            fork_parent_state: None,
+        };
+
+        let imprecise_message = "LiteInst Tool host does not implement timer-event delivery";
+        for schedule in [
+            TimerSchedule::Time(core::time::Duration::from_nanos(1)),
+            TimerSchedule::Rcbs(1),
+            TimerSchedule::RcbsAndInstructions(1, 1),
+        ] {
+            assert_unsupported_timer(Guest::set_timer(&mut guest, schedule), imprecise_message);
+        }
+
+        let precise_message = "LiteInst Tool host does not implement precise timer-event delivery";
+        for schedule in [
+            TimerSchedule::Time(core::time::Duration::from_nanos(1)),
+            TimerSchedule::Rcbs(1),
+            TimerSchedule::RcbsAndInstructions(1, 1),
+        ] {
+            assert_unsupported_timer(
+                Guest::set_timer_precise(&mut guest, schedule),
+                precise_message,
+            );
+        }
+
+        drop(guest);
+        drop(rpc);
+        let _ = serving.await;
+    }
 
     #[repr(C)]
     #[derive(Default)]

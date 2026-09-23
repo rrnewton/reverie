@@ -38,12 +38,12 @@ pub struct ControllerLaunchId {
 impl ControllerLaunchId {
     pub(super) fn allocate() -> Result<Self, Error> {
         let raw = NEXT_CONTROLLER_LAUNCH_ID
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                 current.checked_add(1)
             })
             .map_err(|_| Error::new(Errno::EOVERFLOW, Context::Clone))?;
-        let sequence = NonZeroU64::new(raw)
-            .ok_or_else(|| Error::new(Errno::EOVERFLOW, Context::Clone))?;
+        let sequence =
+            NonZeroU64::new(raw).ok_or_else(|| Error::new(Errno::EOVERFLOW, Context::Clone))?;
         let controller_tid_raw = unsafe { libc::syscall(libc::SYS_gettid) };
         if controller_tid_raw <= 0 || controller_tid_raw > i64::from(i32::MAX) {
             return Err(Error::new(
@@ -83,6 +83,7 @@ struct ControllerSpawnTokenInner {
     launch: ControllerLaunchId,
     child: Pid,
     pidfd: OwnedFd,
+    phase: ControllerLaunchPhase,
 }
 
 /// Linear proof of a controller child created with an atomic clone-time pidfd.
@@ -102,6 +103,7 @@ impl ControllerSpawnToken {
                 launch,
                 child,
                 pidfd,
+                phase: ControllerLaunchPhase::ContainedBeforeControllerInit,
             }),
         }
     }
@@ -132,6 +134,19 @@ impl ControllerSpawnToken {
         self.inner().launch.controller_tid
     }
 
+    /// Returns the unforgeable child-execution phase advanced only by the
+    /// controller spawn protocol.
+    pub fn phase(&self) -> ControllerLaunchPhase {
+        self.inner().phase
+    }
+
+    fn set_phase(&mut self, phase: ControllerLaunchPhase) {
+        self.inner
+            .as_mut()
+            .expect("controller spawn token was already consumed")
+            .phase = phase;
+    }
+
     /// Consumes the token into its launch ID, child PID, and exact pidfd.
     pub fn into_parts(mut self) -> (ControllerLaunchId, Pid, OwnedFd) {
         let inner = self
@@ -142,15 +157,13 @@ impl ControllerSpawnToken {
     }
 
     pub(super) fn validate_pidfd_cloexec(&self) -> Result<(), Errno> {
-        let flags = Errno::result(unsafe {
-            libc::fcntl(self.inner().pidfd.as_raw_fd(), libc::F_GETFD)
-        })?;
+        let flags =
+            Errno::result(unsafe { libc::fcntl(self.inner().pidfd.as_raw_fd(), libc::F_GETFD) })?;
         if flags & libc::FD_CLOEXEC == 0 {
             return Err(Errno::EOPNOTSUPP);
         }
         Ok(())
     }
-
 }
 
 impl Drop for ControllerSpawnToken {
@@ -189,7 +202,9 @@ pub struct ControllerStartupPublisher {
 
 impl ControllerStartupPublisher {
     pub(super) fn new(raw_fd: libc::c_int) -> Self {
-        Self { raw_fd: Some(raw_fd) }
+        Self {
+            raw_fd: Some(raw_fd),
+        }
     }
 
     fn publish(&mut self, kind: u8, error: Option<Error>) -> Result<(), Errno> {
@@ -387,6 +402,11 @@ impl PendingControllerLaunch {
                     .as_mut()
                     .expect("pending controller launch lost its authority")
                     .phase = ControllerLaunchPhase::ChildReleased;
+                self.parts
+                    .as_mut()
+                    .expect("pending controller launch lost its authority")
+                    .token
+                    .set_phase(ControllerLaunchPhase::ChildReleased);
                 Ok(())
             }
             Ok(written) => Err(io::Error::new(
@@ -410,6 +430,11 @@ impl PendingControllerLaunch {
             .as_mut()
             .expect("pending controller launch lost its authority")
             .phase = ControllerLaunchPhase::TracerOwnershipReady;
+        self.parts
+            .as_mut()
+            .expect("pending controller launch lost its authority")
+            .token
+            .set_phase(ControllerLaunchPhase::TracerOwnershipReady);
     }
 
     /// Returns the exact child PID without consuming cleanup authority.
@@ -452,10 +477,9 @@ impl ControllerSpawnFailure {
     /// Returns the exact errno when one exists, otherwise a protocol errno.
     pub fn errno(&self) -> Errno {
         match self {
-            Self::GateWrite(error) | Self::StartupRecordRead(error) => error
-                .raw_os_error()
-                .map(Errno::new)
-                .unwrap_or(Errno::EIO),
+            Self::GateWrite(error) | Self::StartupRecordRead(error) => {
+                error.raw_os_error().map(Errno::new).unwrap_or(Errno::EIO)
+            }
             Self::PidfdValidation(error) => *error,
             Self::StartupRecordShortRead(_) | Self::StartupRecordMalformed => Errno::EPROTO,
             Self::ChildStartup(error) => error.errno(),
@@ -495,7 +519,7 @@ pub enum ControllerSpawnError {
         /// Exact failing operation.
         source: ControllerSpawnFailure,
         /// Linear authority which must be consumed by exact cleanup.
-        authority: PendingControllerLaunch,
+        authority: Box<PendingControllerLaunch>,
     },
 }
 

@@ -20,11 +20,6 @@ use std::ffi::OsString;
 use std::os::unix::ffi::OsStrExt;
 
 use goblin::elf::reloc;
-use iced_x86::Decoder;
-use iced_x86::DecoderOptions;
-use iced_x86::Mnemonic;
-use iced_x86::OpKind;
-use iced_x86::Register;
 use sha2::Digest;
 use sha2::Sha256;
 
@@ -138,6 +133,14 @@ pub(crate) struct TargetEnvironmentEntry {
     pub(crate) mappings: Vec<TargetEnvironmentMapping>,
 }
 
+type ObservedPointerGraph = (
+    u64,
+    Vec<u8>,
+    Vec<TargetEnvironmentMapping>,
+    Vec<TargetEnvironmentEntry>,
+    BTreeMap<Vec<u8>, Vec<u8>>,
+);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TargetEnvironmentBookkeeping {
     pub(crate) counter: TargetEnvironmentWord,
@@ -209,6 +212,25 @@ const COUNTER_GUARDED_BOOKKEEPING: StaticBookkeeping = StaticBookkeeping {
     allocation_list_rva: 0x1fd788,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ReviewedGetenvProfile {
+    provider_sha256: [u8; 32],
+    code: &'static [u8],
+    address: u64,
+    got: u64,
+    object: u64,
+    bookkeeping: Option<StaticBookkeeping>,
+}
+
+const COUNTER_GUARDED_GETENV_PROFILE: ReviewedGetenvProfile = ReviewedGetenvProfile {
+    provider_sha256: COUNTER_GUARDED_LIBC_SHA256,
+    code: COUNTER_GUARDED_GETENV_CODE,
+    address: COUNTER_GUARDED_GETENV_RVA,
+    got: COUNTER_GUARDED_GETENV_GOT_RVA,
+    object: COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA,
+    bookkeeping: Some(COUNTER_GUARDED_BOOKKEEPING),
+};
+
 struct EnvironmentProvider<'a> {
     provider: Provider<'a>,
     aliases: Vec<StaticAlias>,
@@ -220,6 +242,16 @@ struct EnvironmentProvider<'a> {
 
 impl<'a> EnvironmentProvider<'a> {
     fn parse(bytes: &'a [u8]) -> io::Result<Self> {
+        Self::parse_with_additional_profiles(bytes, &[])
+    }
+
+    /// Parse with extra exact profiles supplied by a unit-test fixture.
+    /// Production admission always enters through `parse` and therefore has
+    /// no profiles beyond the reviewed whole-provider profile above.
+    fn parse_with_additional_profiles(
+        bytes: &'a [u8],
+        additional_profiles: &[ReviewedGetenvProfile],
+    ) -> io::Result<Self> {
         let provider_digest: [u8; 32] = Sha256::digest(bytes).into();
         // Provider::parse remains the unchanged executable-function policy. In
         // particular, adding this data resolver does not make writable data a
@@ -354,6 +386,7 @@ impl<'a> EnvironmentProvider<'a> {
             getenv_got_rva,
             object_rva,
             bookkeeping,
+            additional_profiles,
         )?;
 
         Ok(Self {
@@ -519,26 +552,6 @@ fn static_bookkeeping(
     choose_bookkeeping(objects, writable)
 }
 
-fn validate_counter_guarded_getenv_data_accesses(
-    code: &[u8],
-    address: u64,
-    got: u64,
-    object: u64,
-    bookkeeping: Option<StaticBookkeeping>,
-) -> io::Result<()> {
-    if code != COUNTER_GUARDED_GETENV_CODE
-        || address != COUNTER_GUARDED_GETENV_RVA
-        || got != COUNTER_GUARDED_GETENV_GOT_RVA
-        || object != COUNTER_GUARDED_ENVIRONMENT_OBJECT_RVA
-        || bookkeeping != Some(COUNTER_GUARDED_BOOKKEEPING)
-    {
-        return Err(invalid(
-            "counter-guarded getenv profile differs from reviewed bytes",
-        ));
-    }
-    Ok(())
-}
-
 fn validate_getenv_data_accesses(
     provider_digest: [u8; 32],
     code: &[u8],
@@ -546,83 +559,26 @@ fn validate_getenv_data_accesses(
     got: u64,
     object: u64,
     bookkeeping: Option<StaticBookkeeping>,
+    additional_profiles: &[ReviewedGetenvProfile],
 ) -> io::Result<()> {
-    if provider_digest == COUNTER_GUARDED_LIBC_SHA256 || code == COUNTER_GUARDED_GETENV_CODE {
-        if provider_digest != COUNTER_GUARDED_LIBC_SHA256 {
-            return Err(invalid(
-                "counter-guarded getenv provider bytes are not reviewed",
-            ));
+    let mut selected = None;
+    for profile in
+        std::iter::once(&COUNTER_GUARDED_GETENV_PROFILE).chain(additional_profiles.iter())
+    {
+        if provider_digest == profile.provider_sha256 && selected.replace(profile).is_some() {
+            return Err(invalid("ambiguous reviewed getenv provider profile"));
         }
-        return validate_counter_guarded_getenv_data_accesses(
-            code,
-            address,
-            got,
-            object,
-            bookkeeping,
-        );
     }
-
-    // Preserve the pre-existing direct form without widening its register or
-    // adjacency requirements.  Other provider bytes remain fail-closed.
-    let mut decoder = Decoder::with_ip(64, code, address, DecoderOptions::NONE);
-    let mut instructions = Vec::new();
-    while decoder.can_decode() {
-        let instruction = decoder.decode();
-        if instruction.is_invalid() {
-            return Err(invalid("invalid instruction in exact getenv bytes"));
-        }
-        instructions.push(instruction);
-    }
-    let got_uses = instructions
-        .iter()
-        .enumerate()
-        .filter(|(_, instruction)| {
-            instruction.is_ip_rel_memory_operand() && instruction.ip_rel_memory_address() == got
-        })
-        .collect::<Vec<_>>();
-    if got_uses.len() != 1 {
-        return Err(invalid(
-            "getenv does not use its environment GOT slot exactly once",
-        ));
-    }
-    let (index, load) = got_uses[0];
-    if load.mnemonic() != Mnemonic::Mov
-        || load.op0_kind() != OpKind::Register
-        || load.op0_register() != Register::RAX
-        || load.op1_kind() != OpKind::Memory
+    let profile = selected.ok_or_else(|| invalid("getenv provider bytes are not reviewed"))?;
+    if code != profile.code
+        || address != profile.address
+        || got != profile.got
+        || object != profile.object
+        || bookkeeping != profile.bookkeeping
     {
         return Err(invalid(
-            "getenv environment GOT access has unsupported shape",
+            "getenv code or metadata differs from reviewed provider profile",
         ));
-    }
-    let dereference = instructions
-        .get(index + 1)
-        .ok_or_else(|| invalid("getenv does not dereference the environment object"))?;
-    if dereference.mnemonic() != Mnemonic::Mov
-        || dereference.op0_kind() != OpKind::Register
-        || dereference.op0_register() != Register::R12
-        || dereference.op1_kind() != OpKind::Memory
-        || dereference.memory_base() != Register::RAX
-        || dereference.memory_index() != Register::None
-        || dereference.memory_displacement64() != 0
-    {
-        return Err(invalid(
-            "getenv does not immediately read the environment object",
-        ));
-    }
-    if let Some(bookkeeping) = bookkeeping {
-        let count = instructions
-            .iter()
-            .filter(|instruction| {
-                instruction.is_ip_rel_memory_operand()
-                    && instruction.ip_rel_memory_address() == bookkeeping.counter_rva
-            })
-            .count();
-        if count != 2 {
-            return Err(invalid(
-                "getenv does not bind both environment counter reads",
-            ));
-        }
     }
     Ok(())
 }
@@ -683,7 +639,7 @@ fn observe_writable_load<F: FnMut(u64, &mut [u8]) -> io::Result<()>>(
     let mapped_file_end = page_up(file_end)?;
     let mapped_memory_end = page_up(memory_end)?;
     let mapped_file_offset = page_down(load.p_offset);
-    if mapped_file_start % TARGET_PAGE_SIZE != 0
+    if !mapped_file_start.is_multiple_of(TARGET_PAGE_SIZE)
         || mapped_file_end > mapped_memory_end
         || load.p_offset % TARGET_PAGE_SIZE != load.p_vaddr % TARGET_PAGE_SIZE
     {
@@ -923,7 +879,9 @@ fn dynamic_file_candidate<F: FnMut(u64, &mut [u8]) -> io::Result<()>>(
     }
     let phdr_bytes = memory.get(phdr_address, phdr_size as usize)?;
     let program_headers = phdr_bytes
-        .chunks_exact(56)
+        .as_chunks::<56>()
+        .0
+        .iter()
         .map(|bytes| goblin::elf::ProgramHeader {
             p_type: u32_at(bytes, 0),
             p_flags: u32_at(bytes, 4),
@@ -1722,13 +1680,7 @@ fn observe_pointer_graph<F: FnMut(u64, &mut [u8]) -> io::Result<()>>(
     memory: &mut Memory<'_, F>,
     object: &TargetEnvironmentWord,
     expected: &BTreeMap<Vec<u8>, Vec<u8>>,
-) -> io::Result<(
-    u64,
-    Vec<u8>,
-    Vec<TargetEnvironmentMapping>,
-    Vec<TargetEnvironmentEntry>,
-    BTreeMap<Vec<u8>, Vec<u8>>,
-)> {
+) -> io::Result<ObservedPointerGraph> {
     let array = object.value;
     if array == 0 {
         if expected.is_empty() {

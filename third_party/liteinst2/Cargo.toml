@@ -10,7 +10,6 @@ keywords = ["instrumentation", "x86-64", "patching", "trampoline"]
 categories = ["development-tools", "os::linux-apis"]
 rust-version = "1.85"
 include = [
-    "Cargo.lock",
     "Cargo.toml",
     "LICENSE",
     "README.md",

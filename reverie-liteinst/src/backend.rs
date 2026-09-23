@@ -13,7 +13,6 @@ use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
-use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
@@ -24,7 +23,6 @@ use std::time::Duration;
 
 use reverie::Backend;
 use reverie::BackendStatsRequest;
-use reverie::BackendStatsSource;
 use reverie::Error;
 use reverie::ExitStatus;
 use reverie::GlobalTool;
@@ -37,7 +35,11 @@ use reverie_rpc_transport::ConnectionMonitor;
 use reverie_rpc_transport::RpcError;
 use reverie_rpc_transport::RpcServer;
 
-/// Environment variable naming the tool-specific preload DSO for a backend run.
+/// Legacy environment variable formerly consumed by the generic backend trait.
+///
+/// It remains exported for source compatibility, but the generic trait now
+/// fails closed before consulting it. Explicit experimental preload entry
+/// points take their DSO path as an argument.
 pub const TOOL_PRELOAD_ENV: &str = "REVERIE_LITEINST_TOOL_PRELOAD";
 /// Environment variable passed to legacy tool preloads with the coordinator path.
 ///
@@ -237,6 +239,55 @@ impl LiteinstBackend {
             .await
     }
 
+    /// Run the after-loader experiment and return typed backend statistics.
+    ///
+    /// The statistics are collected by the ptrace host that owns every first-site
+    /// installation and installed-hook completion. This otherwise has the same
+    /// fixed-fixture and exact-restoration contract as
+    /// [`Self::run_host_after_loader`].
+    #[cfg(all(target_arch = "x86_64", feature = "liteinst-after-loader-experiment"))]
+    pub async fn run_host_after_loader_and_stats<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        runtime: impl Into<PathBuf>,
+        caller: reverie_ptrace::LiteinstAfterLoaderConfig,
+    ) -> Result<
+        (
+            ExitStatus,
+            T::GlobalState,
+            crate::LiteinstBackendStatsSource,
+        ),
+        Error,
+    >
+    where
+        T: Tool + 'static,
+    {
+        // No configure_host_command: that path changes LD_PRELOAD/selectors.
+        let runtime = runtime.into().canonicalize()?;
+        let tracer = TracerBuilder::<T>::new(command)
+            .config(config)
+            .liteinst_runtime_with_stats(
+                runtime,
+                crate::runtime::HOST_BEGIN_MARKER,
+                crate::runtime::HOST_READY_MARKER,
+                crate::runtime::HOST_HELPER_RETURN_MARKER,
+                crate::runtime::HOST_SYSCALL_MARKER,
+                BackendStatsRequest::ENABLED,
+            )
+            .liteinst_after_loader(caller)?
+            .spawn()
+            .await?;
+        let stats = tracer
+            .liteinst_instrumentation_stats()
+            .expect("LiteInst after-loader tracer must expose instrumentation statistics");
+        let (status, global) = tracer.wait().await?;
+        Ok((
+            status,
+            global,
+            crate::LiteinstBackendStatsSource::from_ptrace_host_hybrid(stats.snapshot()),
+        ))
+    }
+
     /// Run the after-loader experiment and capture the guest's output.
     ///
     /// This has the same fixed-fixture and exact-restoration contract as
@@ -270,6 +321,56 @@ impl LiteinstBackend {
             .await?
             .wait_with_output()
             .await
+    }
+
+    /// Run the after-loader experiment with captured output and typed statistics.
+    ///
+    /// The original command's environment and argv remain unchanged; only stdout
+    /// and stderr are replaced with pipes, as in
+    /// [`Self::run_host_with_output_after_loader`].
+    #[cfg(all(target_arch = "x86_64", feature = "liteinst-after-loader-experiment"))]
+    pub async fn run_host_with_output_after_loader_and_stats<T>(
+        mut command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        runtime: impl Into<PathBuf>,
+        caller: reverie_ptrace::LiteinstAfterLoaderConfig,
+    ) -> Result<
+        (
+            ReverieOutput,
+            T::GlobalState,
+            crate::LiteinstBackendStatsSource,
+        ),
+        Error,
+    >
+    where
+        T: Tool + 'static,
+    {
+        command
+            .stdout(ReverieStdio::piped())
+            .stderr(ReverieStdio::piped());
+        let runtime = runtime.into().canonicalize()?;
+        let tracer = TracerBuilder::<T>::new(command)
+            .config(config)
+            .liteinst_runtime_with_stats(
+                runtime,
+                crate::runtime::HOST_BEGIN_MARKER,
+                crate::runtime::HOST_READY_MARKER,
+                crate::runtime::HOST_HELPER_RETURN_MARKER,
+                crate::runtime::HOST_SYSCALL_MARKER,
+                BackendStatsRequest::ENABLED,
+            )
+            .liteinst_after_loader(caller)?
+            .spawn()
+            .await?;
+        let stats = tracer
+            .liteinst_instrumentation_stats()
+            .expect("LiteInst after-loader tracer must expose instrumentation statistics");
+        let (output, global) = tracer.wait_with_output().await?;
+        Ok((
+            output,
+            global,
+            crate::LiteinstBackendStatsSource::from_ptrace_host_hybrid(stats.snapshot()),
+        ))
     }
 
     /// Runs a Tool under the ptrace-owned LiteInst hybrid runtime.
@@ -662,56 +763,42 @@ impl Backend for LiteinstBackend {
     type Stats = crate::LiteinstBackendStatsSnapshot;
 
     async fn run<T>(
-        command: Command,
-        config: <T::GlobalState as GlobalTool>::Config,
+        _command: Command,
+        _config: <T::GlobalState as GlobalTool>::Config,
     ) -> Result<(ExitStatus, T::GlobalState), Error>
     where
         T: Tool + 'static,
     {
-        let preload = tool_preload_path()?;
-        Self::run_with_preload::<T>(command, config, preload).await
+        Err(unsupported_backend_contract_error())
     }
 
     async fn run_with_stats<T>(
-        command: Command,
-        config: <T::GlobalState as GlobalTool>::Config,
+        _command: Command,
+        _config: <T::GlobalState as GlobalTool>::Config,
     ) -> Result<(ExitStatus, T::GlobalState, Self::Stats), Error>
     where
         T: Tool + 'static,
     {
-        let preload = tool_preload_path()?;
-        let (status, global, stats) =
-            Self::run_with_preload_and_stats::<T>(command, config, preload).await?;
-        Ok((status, global, stats.backend_stats()))
+        Err(unsupported_backend_contract_error())
     }
 
     async fn run_with_output<T>(
-        command: Command,
-        config: <T::GlobalState as GlobalTool>::Config,
+        _command: Command,
+        _config: <T::GlobalState as GlobalTool>::Config,
     ) -> Result<(ReverieOutput, T::GlobalState, Self::Stats), Error>
     where
         T: Tool + 'static,
     {
-        // The preload path is resolved here rather than taken as a parameter:
-        // it is a LiteInst mechanism, not part of the backend-agnostic
-        // contract. See the `Backend` trait docs, "Why `preload` is
-        // deliberately not on this trait".
-        let preload = tool_preload_path()?;
-        let (output, global, stats) =
-            Self::run_with_output_and_preload_and_stats::<T>(command, config, preload).await?;
-        // This family of LiteInst entry points predates the trait and reports
-        // `std::process::Output`; the trait speaks Reverie's own `Output` so
-        // that the captured status is the same `reverie::ExitStatus` that
-        // `run` and `run_with_stats` return. Preserve the wait status's core
-        // dump bit rather than using the older infallible conversion, which
-        // cannot distinguish signal termination with and without a core dump.
-        let output = ReverieOutput {
-            status: ExitStatus::from_raw(output.status.into_raw()),
-            stdout: output.stdout,
-            stderr: output.stderr,
-        };
-        Ok((output, global, stats.backend_stats()))
+        Err(unsupported_backend_contract_error())
     }
+}
+
+fn unsupported_backend_contract_error() -> Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the generic LiteInst Backend contract is disabled until the reviewed after-loader authority is part of its API",
+    )
+    .into()
 }
 
 enum ChildWait {
@@ -983,20 +1070,6 @@ where
         None => None,
     };
     Ok((wait, global, stats))
-}
-
-fn tool_preload_path() -> io::Result<PathBuf> {
-    let path = std::env::var_os(TOOL_PRELOAD_ENV)
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, TOOL_PRELOAD_ENV))?;
-    if path.is_file() {
-        Ok(path)
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("{TOOL_PRELOAD_ENV}={} is not a file", path.display()),
-        ))
-    }
 }
 
 #[cfg(test)]

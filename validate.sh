@@ -359,7 +359,7 @@ aggregate_test_counts() {
     local executed=0 passed=0 filtered=0 i next
     for i in "${!ledger_gate_names[@]}"; do
         case "${ledger_gate_names[i]}" in
-            "Test regular workspace cases"|"Documentation tests")
+            "Test regular workspace cases"|"Test LiteInst2 release targets"|"Documentation tests")
                 if [[ ${ledger_gate_executed_tests[i]} == null ||
                     ${ledger_gate_passed_tests[i]} == null ||
                     ${ledger_gate_filtered_tests[i]} == null ]]; then
@@ -472,6 +472,7 @@ if ((SELF_TEST_GATE_COUNTS == 1)); then
     fixed_output='test result: ok. 999 passed; 0 failed; 0 ignored; 0 measured; 999 filtered out;'
     first_counts="$VALIDATION_TEST_COUNTS_DIR/first.json"
     second_counts="$VALIDATION_TEST_COUNTS_DIR/second.json"
+    third_counts="$VALIDATION_TEST_COUNTS_DIR/third.json"
     printf '%s\n' \
         '{"schema_version":2,"executed_tests":2,"passed_tests":2,"filtered_tests":3}' \
         >"$first_counts"
@@ -484,15 +485,24 @@ if ((SELF_TEST_GATE_COUNTS == 1)); then
         '{"schema_version":2,"executed_tests":5,"passed_tests":5,"filtered_tests":1}' \
         >"$second_counts"
     printf '%s\n' "$fixed_output" >>"$LOG_FILE"
-    run_check_impl "Documentation tests" "$second_counts" true
+    run_check_impl "Test LiteInst2 release targets" "$second_counts" true
     [[ ${ledger_gate_executed_tests[1]} == 5 ]]
     [[ ${ledger_gate_passed_tests[1]} == 5 ]]
     [[ ${ledger_gate_filtered_tests[1]} == 1 ]]
+    printf '%s\n' \
+        '{"schema_version":2,"executed_tests":7,"passed_tests":7,"filtered_tests":2}' \
+        >"$third_counts"
+    printf '%s\n' "$fixed_output" >>"$LOG_FILE"
+    run_check_impl "Documentation tests" "$third_counts" true
+    [[ ${ledger_gate_executed_tests[2]} == 7 ]]
+    [[ ${ledger_gate_passed_tests[2]} == 7 ]]
+    [[ ${ledger_gate_filtered_tests[2]} == 2 ]]
     positive_record=$(ledger_gates_json)
     [[ $positive_record == *'"executed_tests":2,"passed_tests":2,"filtered_tests":3'* ]]
     [[ $positive_record == *'"executed_tests":5,"passed_tests":5,"filtered_tests":1'* ]]
+    [[ $positive_record == *'"executed_tests":7,"passed_tests":7,"filtered_tests":2'* ]]
     read -r total_executed total_passed total_filtered < <(aggregate_test_counts)
-    [[ $total_executed == 7 && $total_passed == 7 && $total_filtered == 4 ]]
+    [[ $total_executed == 14 && $total_passed == 14 && $total_filtered == 6 ]]
     aggregate_test_counts_are_passing
 
     mixed_fixture="$VALIDATION_TEST_COUNTS_DIR/mixed-fixture"
@@ -749,13 +759,17 @@ readonly -a REGULAR_TEST_SKIP_ARGS=(
 )
 
 run_check "Cross-client skill discovery" "$ROOT_DIR/scripts/check-skill-discovery.rs"
-run_check "Build workspace" cargo build --workspace --all-features
+run_check "Build workspace" cargo build --workspace --all-features --locked
 run_check "DBT virtual identity and pidfd_open policy" \
     "$ROOT_DIR/reverie-dbt/scripts/test-identity-policy.sh"
-run_test_check "Test regular workspace cases" cargo test --workspace --all-features \
+run_check "Compile and enumerate exact LiteInst after-loader evidence" \
+    bash "$ROOT_DIR/scripts/check-liteinst-after-loader-test-inventory.sh"
+run_test_check "Test regular workspace cases" cargo test --workspace --all-features --locked \
     -- --test-threads=1 "${REGULAR_TEST_SKIP_ARGS[@]}"
-run_test_check "Documentation tests" cargo test --workspace --doc
-run_check "Clippy" cargo clippy --workspace --all-targets --all-features -- -D warnings
+run_test_check "Test LiteInst2 release targets" cargo test -p liteinst2 \
+    --release --all-targets --all-features --locked -- --test-threads=1
+run_test_check "Documentation tests" cargo test --workspace --doc --locked
+run_check "Clippy" cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 run_check "Rustfmt" cargo fmt --all -- --check
 
 if ((failures == 0)) && ! aggregate_test_counts_are_passing; then

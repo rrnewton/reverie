@@ -11,6 +11,10 @@ use std::collections::BTreeMap;
 #[cfg(target_arch = "x86_64")]
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
+#[cfg(target_arch = "x86_64")]
+use std::sync::atomic::Ordering;
+#[cfg(target_arch = "x86_64")]
+use std::sync::atomic::compiler_fence;
 
 use goblin::elf::Elf;
 #[cfg(target_arch = "x86_64")]
@@ -1399,7 +1403,7 @@ pub(crate) fn plan_stopped_vdso(
     mapping_start: u64,
     subscriptions: &Subscription,
 ) -> Result<StoppedVdsoPlan, Error> {
-    if mapping_start & 7 != 0 || image.len() < 8 || image.len() % 8 != 0 {
+    if mapping_start & 7 != 0 || image.len() < 8 || !image.len().is_multiple_of(8) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "target vDSO mapping is not an aligned complete word range",
@@ -1433,6 +1437,131 @@ pub struct VdsoSyscallSite {
     pub mapping_len: u64,
 }
 
+/// Owned transaction for the calling process's synthetic vDSO syscall sites.
+///
+/// Until [`Self::commit`] consumes it, every error or unwind restores the exact
+/// original complete vDSO image and RX permissions. An uncertain restoration is
+/// terminal: returning to guest code with changed bytes or writable executable
+/// pages is never an admissible result.
+#[cfg(target_arch = "x86_64")]
+#[must_use = "the vDSO rewrite must be committed only after hook installation succeeds"]
+pub struct CurrentVdsoPatch {
+    sites: Vec<VdsoSyscallSite>,
+    mapping_start: usize,
+    original: Box<[u8]>,
+    published: Box<[u8]>,
+    armed: bool,
+}
+
+#[cfg(target_arch = "x86_64")]
+const CURRENT_VDSO_RX: i32 = libc::PROT_READ | libc::PROT_EXEC;
+#[cfg(target_arch = "x86_64")]
+const CURRENT_VDSO_RWX: i32 = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
+#[cfg(target_arch = "x86_64")]
+const CURRENT_VDSO_UNCERTAIN_EXIT: i32 = 126;
+
+#[cfg(target_arch = "x86_64")]
+fn current_vdso_uncertain() -> ! {
+    unsafe { libc::_exit(CURRENT_VDSO_UNCERTAIN_EXIT) }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn protect_current_vdso_mapping(
+    mapping_start: usize,
+    mapping_len: usize,
+    protection: i32,
+) -> Result<(), Errno> {
+    Errno::result(unsafe {
+        libc::mprotect(mapping_start as *mut libc::c_void, mapping_len, protection)
+    })
+    .map(|_| ())
+}
+
+#[cfg(target_arch = "x86_64")]
+fn open_current_vdso_with(mut protect: impl FnMut(i32) -> Result<(), Errno>) -> Result<(), Errno> {
+    let Err(primary) = protect(CURRENT_VDSO_RWX) else {
+        return Ok(());
+    };
+    if protect(CURRENT_VDSO_RX).is_err() {
+        current_vdso_uncertain();
+    }
+    Err(primary)
+}
+
+#[cfg(target_arch = "x86_64")]
+impl CurrentVdsoPatch {
+    /// Returns the authenticated synthetic syscall sites to install.
+    pub fn sites(&self) -> &[VdsoSyscallSite] {
+        &self.sites
+    }
+
+    /// Commits the rewrite after every selected site and runtime control is live.
+    pub fn commit(mut self) {
+        self.armed = false;
+    }
+
+    fn rollback_with(
+        &mut self,
+        mut protect: impl FnMut(i32) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        if !self.armed {
+            return Ok(());
+        }
+        protect(CURRENT_VDSO_RWX)?;
+        let current = unsafe {
+            std::slice::from_raw_parts(self.mapping_start as *const u8, self.published.len())
+        };
+        if current != self.published.as_ref() {
+            let close = protect(CURRENT_VDSO_RX);
+            return match close {
+                Ok(()) => Err(Errno::EPROTO),
+                Err(error) => Err(error),
+            };
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                self.original.as_ptr(),
+                self.mapping_start as *mut u8,
+                self.original.len(),
+            );
+        }
+        compiler_fence(Ordering::SeqCst);
+        protect(CURRENT_VDSO_RX)?;
+        self.armed = false;
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<(), Errno> {
+        let mapping_start = self.mapping_start;
+        let mapping_len = self.original.len();
+        self.rollback_with(|protection| {
+            protect_current_vdso_mapping(mapping_start, mapping_len, protection)
+        })
+    }
+
+    fn close_with(
+        &mut self,
+        mut protect: impl FnMut(i32) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        let Err(primary) = protect(CURRENT_VDSO_RX) else {
+            return Ok(());
+        };
+        if self.rollback_with(&mut protect).is_err() {
+            current_vdso_uncertain();
+        }
+        Err(primary)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Drop for CurrentVdsoPatch {
+    fn drop(&mut self) {
+        if self.rollback().is_err() {
+            current_vdso_uncertain();
+        }
+    }
+}
+
 /// Rewrite the calling process's vDSO entry points into hookable syscalls.
 ///
 /// Returns each rewritten symbol's entry address and syscall number so an
@@ -1443,9 +1572,15 @@ pub struct VdsoSyscallSite {
 /// pseudo-vDSO function. This shares the authoritative symbol table with
 /// ptrace's stopped-guest path instead of maintaining a backend-specific list.
 #[cfg(target_arch = "x86_64")]
-pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscallSite>, Error> {
+pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<CurrentVdsoPatch, Error> {
     if !is_patch_required(subscriptions) {
-        return Ok(Vec::new());
+        return Ok(CurrentVdsoPatch {
+            sites: Vec::new(),
+            mapping_start: 0,
+            original: Box::new([]),
+            published: Box::new([]),
+            armed: false,
+        });
     }
     let process =
         procfs::process::Process::new(unistd::getpid().as_raw()).map_err(|_| Errno::ENOENT)?;
@@ -1458,17 +1593,16 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
     };
     let start = vdso.address.0 as usize;
     let len = (vdso.address.1 - vdso.address.0) as usize;
-    Errno::result(unsafe {
-        libc::mprotect(
-            start as *mut libc::c_void,
-            len,
-            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-        )
-    })?;
-
+    let original: Box<[u8]> = unsafe { std::slice::from_raw_parts(start as *const u8, len) }
+        .to_vec()
+        .into_boxed_slice();
+    let mut published = original.clone();
     let mut syscall_sites = Vec::new();
     for (name, (offset, size, _bytes, _sysno)) in subscribed_vdso_patches(subscriptions) {
-        let symbol = start + *offset as usize;
+        let offset = usize::try_from(*offset).map_err(|_| Errno::EOVERFLOW)?;
+        let end = offset.checked_add(*size).ok_or(Errno::EOVERFLOW)?;
+        let bytes = published.get_mut(offset..end).ok_or(Errno::EFAULT)?;
+        let symbol = start.checked_add(offset).ok_or(Errno::EOVERFLOW)?;
         let number = match name {
             "__vdso_time" => libc::SYS_time,
             "__vdso_clock_gettime" => libc::SYS_clock_gettime,
@@ -1477,13 +1611,11 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
             "__vdso_clock_getres" => libc::SYS_clock_getres,
             _ => continue,
         };
-        assert!(*size >= 3);
-        unsafe {
-            core::ptr::write(symbol as *mut u8, 0x0f);
-            core::ptr::write((symbol + 1) as *mut u8, 0x05);
-            core::ptr::write((symbol + 2) as *mut u8, 0xc3);
-            core::ptr::write_bytes((symbol + 3) as *mut u8, 0x90, size - 3);
+        if bytes.len() < 3 {
+            return Err(Errno::EPROTO.into());
         }
+        bytes[0..3].copy_from_slice(&[0x0f, 0x05, 0xc3]);
+        bytes[3..].fill(0x90);
         syscall_sites.push(VdsoSyscallSite {
             address: symbol as u64,
             number,
@@ -1491,15 +1623,25 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
             mapping_len: len as u64,
         });
     }
-
-    Errno::result(unsafe {
-        libc::mprotect(
-            start as *mut libc::c_void,
-            len,
-            libc::PROT_READ | libc::PROT_EXEC,
-        )
-    })?;
-    Ok(syscall_sites)
+    let mut transaction = CurrentVdsoPatch {
+        sites: syscall_sites,
+        mapping_start: start,
+        original,
+        published,
+        armed: false,
+    };
+    open_current_vdso_with(|protection| protect_current_vdso_mapping(start, len, protection))?;
+    transaction.armed = true;
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            transaction.published.as_ptr(),
+            start as *mut u8,
+            transaction.published.len(),
+        );
+    }
+    compiler_fence(Ordering::SeqCst);
+    transaction.close_with(|protection| protect_current_vdso_mapping(start, len, protection))?;
+    Ok(transaction)
 }
 
 // get vdso symbols offset/size from current process
@@ -1606,6 +1748,221 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_arch = "x86_64")]
+    fn synthetic_current_vdso_patch(
+        final_protection: i32,
+    ) -> (*mut libc::c_void, Box<[u8]>, Box<[u8]>, CurrentVdsoPatch) {
+        let page = 4096_usize;
+        let mapping = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                page,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let start = mapping as usize;
+        let original = (0..page)
+            .map(|index| 0x5a_u8 ^ (index as u8).wrapping_mul(131))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let mut published = original.clone();
+        published[page / 2..page / 2 + 8]
+            .copy_from_slice(&[0x0f, 0x05, 0xc3, 0x90, 0x90, 0x90, 0x90, 0x90]);
+        unsafe {
+            core::ptr::copy_nonoverlapping(original.as_ptr(), start as *mut u8, page);
+            assert_eq!(libc::mprotect(mapping, page, CURRENT_VDSO_RWX), 0);
+            core::ptr::copy_nonoverlapping(published.as_ptr(), start as *mut u8, page);
+            assert_eq!(libc::mprotect(mapping, page, final_protection), 0);
+        }
+        let transaction = CurrentVdsoPatch {
+            sites: Vec::new(),
+            mapping_start: start,
+            original: original.clone(),
+            published: published.clone(),
+            armed: true,
+        };
+        (mapping, original, published, transaction)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn current_mapping_permissions(start: usize) -> procfs::process::MMPermissions {
+        let maps = procfs::process::Process::new(unistd::getpid().as_raw())
+            .unwrap()
+            .maps()
+            .unwrap();
+        maps.iter()
+            .find(|entry| entry.address.0 <= start as u64 && (start as u64) < entry.address.1)
+            .expect("current vDSO transaction test mapping is absent")
+            .perms
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn assert_child_exit(child: libc::pid_t, expected: i32) {
+        assert_ne!(child, -1, "fork failed");
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert!(libc::WIFEXITED(status), "child status was {status:#x}");
+        assert_eq!(libc::WEXITSTATUS(status), expected);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn current_vdso_patch_initial_open_cleanup_preserves_primary_error() {
+        let mut calls = Vec::new();
+        let result = open_current_vdso_with(|protection| {
+            calls.push(protection);
+            match calls.len() {
+                1 => Err(Errno::EPERM),
+                2 => Ok(()),
+                _ => unreachable!("unexpected extra protection operation"),
+            }
+        });
+        assert_eq!(result.unwrap_err(), Errno::EPERM);
+        assert_eq!(calls, [CURRENT_VDSO_RWX, CURRENT_VDSO_RX]);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn current_vdso_patch_initial_open_cleanup_failure_exits_126() {
+        let child = unsafe { libc::fork() };
+        if child == 0 {
+            let expected = [CURRENT_VDSO_RWX, CURRENT_VDSO_RX];
+            let mut next = 0_usize;
+            let _ = open_current_vdso_with(|protection| {
+                if next >= expected.len() || protection != expected[next] {
+                    unsafe { libc::_exit(124) }
+                }
+                let error = if next == 0 {
+                    Errno::EPERM
+                } else {
+                    Errno::EACCES
+                };
+                next += 1;
+                Err(error)
+            });
+            unsafe { libc::_exit(125) }
+        }
+        assert_child_exit(child, CURRENT_VDSO_UNCERTAIN_EXIT);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn current_vdso_patch_final_rx_failure_rolls_back_and_preserves_primary_error() {
+        let page = 4096_usize;
+        let (mapping, original, _published, mut transaction) =
+            synthetic_current_vdso_patch(CURRENT_VDSO_RWX);
+        let start = mapping as usize;
+        let mut calls = Vec::new();
+        let result = transaction.close_with(|protection| {
+            calls.push(protection);
+            if calls.len() == 1 {
+                Err(Errno::EACCES)
+            } else {
+                protect_current_vdso_mapping(start, page, protection)
+            }
+        });
+        assert_eq!(result.unwrap_err(), Errno::EACCES);
+        assert_eq!(calls, [CURRENT_VDSO_RX, CURRENT_VDSO_RWX, CURRENT_VDSO_RX]);
+        assert!(!transaction.armed);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(start as *const u8, page) },
+            original.as_ref()
+        );
+        assert_eq!(
+            current_mapping_permissions(start),
+            procfs::process::MMPermissions::READ
+                | procfs::process::MMPermissions::EXECUTE
+                | procfs::process::MMPermissions::PRIVATE
+        );
+        drop(transaction);
+        assert_eq!(unsafe { libc::munmap(mapping, page) }, 0);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn current_vdso_patch_live_byte_mismatch_exits_126() {
+        let page = 4096_usize;
+        let (mapping, original, _published, mut transaction) =
+            synthetic_current_vdso_patch(CURRENT_VDSO_RX);
+        let start = mapping as usize;
+        let child = unsafe { libc::fork() };
+        if child == 0 {
+            if protect_current_vdso_mapping(start, page, CURRENT_VDSO_RWX).is_err() {
+                unsafe { libc::_exit(121) }
+            }
+            unsafe {
+                let byte = (start + page / 3) as *mut u8;
+                byte.write(byte.read() ^ 0xff);
+            }
+            if protect_current_vdso_mapping(start, page, CURRENT_VDSO_RX).is_err() {
+                unsafe { libc::_exit(122) }
+            }
+            unsafe { core::ptr::drop_in_place(&mut transaction) };
+            unsafe { libc::_exit(125) }
+        }
+        assert_child_exit(child, CURRENT_VDSO_UNCERTAIN_EXIT);
+        drop(transaction);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(start as *const u8, page) },
+            original.as_ref()
+        );
+        assert_eq!(unsafe { libc::munmap(mapping, page) }, 0);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn current_vdso_patch_commit_retains_published_bytes_and_rx_permissions() {
+        let page = 4096_usize;
+        let (mapping, _original, published, mut transaction) =
+            synthetic_current_vdso_patch(CURRENT_VDSO_RWX);
+        let start = mapping as usize;
+        let mut calls = Vec::new();
+        transaction
+            .close_with(|protection| {
+                calls.push(protection);
+                protect_current_vdso_mapping(start, page, protection)
+            })
+            .unwrap();
+        assert_eq!(calls, [CURRENT_VDSO_RX]);
+        transaction.commit();
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(start as *const u8, page) },
+            published.as_ref()
+        );
+        assert_eq!(
+            current_mapping_permissions(start),
+            procfs::process::MMPermissions::READ
+                | procfs::process::MMPermissions::EXECUTE
+                | procfs::process::MMPermissions::PRIVATE
+        );
+        assert_eq!(unsafe { libc::munmap(mapping, page) }, 0);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn current_vdso_patch_drop_restores_complete_bytes_and_rx_permissions() {
+        let page = 4096_usize;
+        let (mapping, original, _published, transaction) =
+            synthetic_current_vdso_patch(CURRENT_VDSO_RX);
+        let start = mapping as usize;
+        drop(transaction);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(start as *const u8, page) },
+            original.as_ref()
+        );
+        assert_eq!(
+            current_mapping_permissions(start),
+            procfs::process::MMPermissions::READ
+                | procfs::process::MMPermissions::EXECUTE
+                | procfs::process::MMPermissions::PRIVATE
+        );
+        assert_eq!(unsafe { libc::munmap(mapping, page) }, 0);
+    }
 
     #[cfg(target_arch = "x86_64")]
     const LEGACY_FIXTURE_TEXT: usize = 0x100;

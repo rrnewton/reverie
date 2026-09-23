@@ -75,6 +75,11 @@ name = "lifecycle"
 path = "tests/lifecycle.rs"
 
 [[test]]
+name = "after_loader"
+path = "tests/after_loader.rs"
+required-features = ["liteinst-after-loader-experiment"]
+
+[[test]]
 name = "preparation_allocator"
 path = "tests/preparation_allocator.rs"
 harness = false

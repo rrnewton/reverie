@@ -281,12 +281,12 @@ fn parse_maps(bytes: &[u8]) -> io::Result<Vec<Map>> {
     Ok(maps)
 }
 fn parse_auxv(bytes: &[u8]) -> io::Result<BTreeMap<u64, u64>> {
-    if bytes.len() % 16 != 0 {
+    if !bytes.len().is_multiple_of(16) {
         return Err(invalid("truncated auxv"));
     }
     let mut result = BTreeMap::new();
     let mut ended = false;
-    for entry in bytes.chunks_exact(16) {
+    for entry in bytes.as_chunks::<16>().0 {
         let (tag, value) = (u64_at(entry, 0), u64_at(entry, 8));
         if ended && (tag != 0 || value != 0) {
             return Err(invalid("data after auxv terminator"));
@@ -792,7 +792,9 @@ fn resolve<F: FnMut(u64, &mut [u8]) -> io::Result<()>>(
     let mut phdr_segment = None;
     let mut dynamic_segment = None;
     let program_headers: Vec<_> = headers
-        .chunks_exact(56)
+        .as_chunks::<56>()
+        .0
+        .iter()
         .map(|p| goblin::elf::ProgramHeader {
             p_type: u32_at(p, 0),
             p_flags: u32_at(p, 4),
@@ -805,7 +807,7 @@ fn resolve<F: FnMut(u64, &mut [u8]) -> io::Result<()>>(
         })
         .collect();
     validate_loads(&program_headers)?;
-    for p in headers.chunks_exact(56) {
+    for p in headers.as_chunks::<56>().0 {
         if matches!(u32_at(p, 0), ph::PT_PHDR | ph::PT_DYNAMIC) && u64_at(p, 32) > u64_at(p, 40) {
             return Err(invalid("executable segment file size exceeds memory size"));
         }
@@ -818,13 +820,12 @@ fn resolve<F: FnMut(u64, &mut [u8]) -> io::Result<()>>(
                     return Err(invalid("duplicate PT_PHDR"));
                 }
             }
-            ph::PT_DYNAMIC => {
+            ph::PT_DYNAMIC
                 if dynamic_segment
                     .replace((u64_at(p, 8), u64_at(p, 16), u64_at(p, 32)))
-                    .is_some()
-                {
-                    return Err(invalid("duplicate executable PT_DYNAMIC"));
-                }
+                    .is_some() =>
+            {
+                return Err(invalid("duplicate executable PT_DYNAMIC"));
             }
             _ => {}
         }
@@ -888,7 +889,7 @@ fn resolve<F: FnMut(u64, &mut [u8]) -> io::Result<()>>(
     let table = memory.get(main_dynamic, dynamic_size as usize)?;
     let mut debug = None;
     let mut terminated = false;
-    for d in table.chunks_exact(16) {
+    for d in table.as_chunks::<16>().0 {
         if u64_at(d, 0) == dynamic::DT_NULL {
             terminated = true;
             break;

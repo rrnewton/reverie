@@ -19,9 +19,14 @@ use liteinst2::patcher::GuardSignalRuntime;
 use liteinst2::patcher::PatchError;
 use liteinst2::patcher::prepare_live_patching_with_signal_runtime;
 use liteinst2::scanner::InstructionScanner;
+use liteinst2::trampoline::HOOK_CONTEXT_STACK_PREFIX_BYTES;
 use liteinst2::trampoline::HookContext;
 use liteinst2::trampoline::HookSite;
 use liteinst2::trampoline::InstalledHook;
+use liteinst2::trampoline::SAVED_EXTENDED_STATE_COMPONENT_CAPACITY;
+use liteinst2::trampoline::SavedExtendedStateComponent;
+use liteinst2::trampoline::SavedExtendedStateDescriptor;
+use liteinst2::trampoline::SavedExtendedStateLayout;
 use liteinst2::trampoline::TrampolineArena;
 use liteinst2::trampoline::TrampolineError;
 use reverie::Errno;
@@ -42,11 +47,13 @@ pub(crate) const HOST_BEGIN_MARKER: u64 = 0x7265_766c_6900_0001;
 pub(crate) const HOST_READY_MARKER: u64 = 0x7265_766c_6900_0002;
 pub(crate) const HOST_HELPER_RETURN_MARKER: u64 = 0x7265_766c_6900_0003;
 pub(crate) const HOST_SYSCALL_MARKER: u64 = 0x7265_766c_6900_0004;
-const HOST_HANDSHAKE_VERSION: u64 = 8;
+const HOST_HANDSHAKE_VERSION: u64 = 12;
 const HOST_INSTALL_REQUEST_VERSION: u64 = 1;
-const HOST_INSTALL_RESULT_VERSION: u64 = 4;
+const HOST_INSTALL_RESULT_VERSION: u64 = 6;
 const HOST_INSTALL_PC_MAPPINGS: usize = 16;
 const HOST_HELPER_STACK_BYTES: usize = 256 * 1024;
+const HOST_CALLBACK_EXECUTION_HEADROOM_BYTES: usize = 8 * 1024 * 1024;
+const HOST_CALLBACK_SAVED_XSTATE_RESERVE_CEILING_BYTES: usize = 1024 * 1024;
 #[cfg(test)]
 const X32_SYSCALL_BIT: i64 = 0x4000_0000;
 const UFFD_IOCTL_TYPE: u64 = 0xaa;
@@ -122,9 +129,15 @@ reverie_liteinst_host_syscall_trap_rip:
     .hidden reverie_liteinst_host_syscall_trap_call
     .type reverie_liteinst_host_syscall_trap_call,@function
 reverie_liteinst_host_syscall_trap_call:
+    # Rust may use callee-saved R12 for its own frame after entering the hook.
+    # Publish the authenticated HookContext base explicitly at the trap while
+    # preserving the caller's live value for the ordinary return path.
+    push r12
+    mov r12, rsi
     call reverie_liteinst_host_syscall_trap
     .global reverie_liteinst_host_syscall_trap_return_rip
 reverie_liteinst_host_syscall_trap_return_rip:
+    pop r12
     ret
     .size reverie_liteinst_host_syscall_trap_call, .-reverie_liteinst_host_syscall_trap_call
 
@@ -186,7 +199,10 @@ unsafe extern "C" {
     static reverie_liteinst_host_install_helper_rip: u8;
     fn reverie_liteinst_host_helper_return();
     static reverie_liteinst_host_helper_return_rip: u8;
-    fn reverie_liteinst_host_syscall_trap_call(frame: *mut HostSyscallFrame);
+    fn reverie_liteinst_host_syscall_trap_call(
+        frame: *mut HostSyscallFrame,
+        context: *const HookContext,
+    );
     fn reverie_liteinst_host_syscall_trap(frame: *mut HostSyscallFrame);
     static reverie_liteinst_host_syscall_trap_rip: u8;
     static reverie_liteinst_host_syscall_trap_return_rip: u8;
@@ -214,6 +230,9 @@ struct HostHandshakeFrame {
     install_helper_page_start: u64,
     install_helper_page_len: u64,
     helper_stack_top: u64,
+    callback_stack_start: u64,
+    callback_stack_len: u64,
+    callback_stack_top: u64,
     helper_return: u64,
     helper_return_rip: u64,
     syscall_trap_rip: u64,
@@ -222,6 +241,198 @@ struct HostHandshakeFrame {
     install_result: u64,
     start_program_break: u64,
     initial_program_break: u64,
+    callback_execution_headroom_len: u64,
+    saved_xstate_reserve_len: u64,
+    saved_xstate_alignment: u64,
+}
+
+const _: () = assert!(core::mem::offset_of!(HostHandshakeFrame, initial_program_break) == 18 * 8);
+const _: () =
+    assert!(core::mem::offset_of!(HostHandshakeFrame, callback_execution_headroom_len) == 19 * 8);
+const _: () =
+    assert!(core::mem::offset_of!(HostHandshakeFrame, saved_xstate_reserve_len) == 20 * 8);
+const _: () = assert!(core::mem::offset_of!(HostHandshakeFrame, saved_xstate_alignment) == 21 * 8);
+const _: () = assert!(core::mem::size_of::<HostHandshakeFrame>() == 22 * 8);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HostCallbackStack {
+    usable_start: u64,
+    usable_len: u64,
+    top: u64,
+    execution_headroom_len: u64,
+    saved_xstate_reserve_len: u64,
+    saved_xstate_alignment: u64,
+    saved_xstate_layout: SavedExtendedStateLayout,
+}
+
+static HOST_CALLBACK_STACK: OnceLock<HostCallbackStack> = OnceLock::new();
+
+fn checked_page_round_up(value: usize, page: usize) -> Option<usize> {
+    if page == 0 || !page.is_power_of_two() {
+        return None;
+    }
+    value
+        .checked_add(page - 1)
+        .map(|rounded| rounded & !(page - 1))
+}
+
+fn host_callback_usable_len(
+    execution_headroom: usize,
+    frame_prefix: usize,
+    saved_xstate_reserve: usize,
+    saved_xstate_alignment: usize,
+    page: usize,
+) -> Option<usize> {
+    if saved_xstate_reserve == 0
+        || saved_xstate_reserve > HOST_CALLBACK_SAVED_XSTATE_RESERVE_CEILING_BYTES
+        || !saved_xstate_alignment.is_power_of_two()
+    {
+        return None;
+    }
+    let required = execution_headroom
+        .checked_add(frame_prefix)?
+        .checked_add(saved_xstate_alignment - 1)?
+        .checked_add(saved_xstate_reserve)?;
+    checked_page_round_up(required, page)
+}
+
+fn host_callback_saved_state_start(
+    usable_start: u64,
+    top: u64,
+    execution_headroom: u64,
+    frame_prefix: u64,
+    saved_xstate_reserve: u64,
+    saved_xstate_alignment: u64,
+) -> Option<u64> {
+    if saved_xstate_reserve == 0 || !saved_xstate_alignment.is_power_of_two() {
+        return None;
+    }
+    let context_base = top.checked_sub(frame_prefix)?;
+    let aligned_context = context_base & !(saved_xstate_alignment - 1);
+    let state_start = aligned_context.checked_sub(saved_xstate_reserve)?;
+    let available_headroom = state_start.checked_sub(usable_start)?;
+    (available_headroom >= execution_headroom).then_some(state_start)
+}
+
+fn host_callback_stack_accepts_layout(
+    stack: &HostCallbackStack,
+    layout: SavedExtendedStateLayout,
+) -> bool {
+    layout == stack.saved_xstate_layout
+        && layout.len() == stack.saved_xstate_reserve_len
+        && layout.format().required_alignment() == Some(stack.saved_xstate_alignment)
+        && host_callback_saved_state_start(
+            stack.usable_start,
+            stack.top,
+            stack.execution_headroom_len,
+            HOOK_CONTEXT_STACK_PREFIX_BYTES as u64,
+            layout.len(),
+            stack.saved_xstate_alignment,
+        )
+        .is_some()
+}
+
+fn prepare_host_callback_stack() -> io::Result<&'static HostCallbackStack> {
+    if let Some(stack) = HOST_CALLBACK_STACK.get() {
+        return Ok(stack);
+    }
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page <= 0 {
+        return Err(io::Error::other("invalid host callback-stack page size"));
+    }
+    let page = usize::try_from(page)
+        .map_err(|_| io::Error::other("host callback-stack page size is not representable"))?;
+    if page != 4096 {
+        return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+    }
+    let saved_xstate_layout = SavedExtendedStateLayout::detect()
+        .map_err(|error| io::Error::other(format!("detect callback XSTATE layout: {error}")))?;
+    let saved_xstate_reserve = usize::try_from(saved_xstate_layout.len())
+        .map_err(|_| io::Error::other("callback XSTATE reserve is not representable"))?;
+    let saved_xstate_alignment = saved_xstate_layout
+        .format()
+        .required_alignment()
+        .and_then(|alignment| usize::try_from(alignment).ok())
+        .ok_or_else(|| io::Error::other("callback XSTATE alignment is unavailable"))?;
+    let usable_len = host_callback_usable_len(
+        HOST_CALLBACK_EXECUTION_HEADROOM_BYTES,
+        HOOK_CONTEXT_STACK_PREFIX_BYTES,
+        saved_xstate_reserve,
+        saved_xstate_alignment,
+        page,
+    )
+    .ok_or_else(|| io::Error::other("callback stack geometry is unsupported"))?;
+    let mapping_len = usable_len
+        .checked_add(
+            page.checked_mul(2)
+                .ok_or_else(|| io::Error::other("host callback-stack guard size overflow"))?,
+        )
+        .ok_or_else(|| io::Error::other("host callback-stack mapping size overflow"))?;
+    let mapping = unsafe {
+        libc::mmap(
+            ptr::null_mut(),
+            mapping_len,
+            libc::PROT_NONE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_STACK,
+            -1,
+            0,
+        )
+    };
+    if mapping == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    let mapping_start = mapping as usize;
+    let usable_start = match mapping_start.checked_add(page) {
+        Some(start) => start,
+        None => {
+            unsafe { libc::munmap(mapping, mapping_len) };
+            return Err(io::Error::other("host callback-stack address overflow"));
+        }
+    };
+    let top = match usable_start.checked_add(usable_len) {
+        Some(top) => top,
+        None => {
+            unsafe { libc::munmap(mapping, mapping_len) };
+            return Err(io::Error::other("host callback-stack address overflow"));
+        }
+    };
+    if unsafe {
+        libc::mprotect(
+            usable_start as *mut libc::c_void,
+            usable_len,
+            libc::PROT_READ | libc::PROT_WRITE,
+        )
+    } != 0
+    {
+        let error = io::Error::last_os_error();
+        unsafe { libc::munmap(mapping, mapping_len) };
+        return Err(error);
+    }
+    let stack = HostCallbackStack {
+        usable_start: usable_start as u64,
+        usable_len: usable_len as u64,
+        top: top as u64,
+        execution_headroom_len: HOST_CALLBACK_EXECUTION_HEADROOM_BYTES as u64,
+        saved_xstate_reserve_len: saved_xstate_reserve as u64,
+        saved_xstate_alignment: saved_xstate_alignment as u64,
+        saved_xstate_layout,
+    };
+    if stack.top & 0xf != 0
+        || stack.usable_start.checked_add(stack.usable_len) != Some(stack.top)
+        || !host_callback_stack_accepts_layout(&stack, saved_xstate_layout)
+    {
+        unsafe { libc::munmap(mapping, mapping_len) };
+        return Err(io::Error::other(
+            "host callback stack has invalid alignment or geometry",
+        ));
+    }
+    if HOST_CALLBACK_STACK.set(stack).is_err() {
+        unsafe { libc::munmap(mapping, mapping_len) };
+        return Err(io::Error::from_raw_os_error(libc::EALREADY));
+    }
+    Ok(HOST_CALLBACK_STACK
+        .get()
+        .expect("host callback stack was just published"))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -254,6 +465,25 @@ struct HostProgramCounterMapping {
     logical_address: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+struct HostSavedXstateComponent {
+    xfeature: u64,
+    offset: u64,
+    size: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+struct HostSavedXstatePublication {
+    allocation_len: u64,
+    mask: u64,
+    format: u64,
+    image_len: u64,
+    component_count: u64,
+    components: [HostSavedXstateComponent; SAVED_EXTENDED_STATE_COMPONENT_CAPACITY],
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 struct HostInstallResult {
@@ -275,12 +505,44 @@ struct HostInstallResult {
     program_counter_count: u64,
     program_counters: [HostProgramCounterMapping; HOST_INSTALL_PC_MAPPINGS],
     complete: u64,
+    saved_xstate_len: u64,
+    saved_xstate_mask: u64,
+    saved_xstate_format: u64,
+    saved_xstate_image_len: u64,
+    saved_xstate_component_count: u64,
+    saved_xstate_components: [HostSavedXstateComponent; SAVED_EXTENDED_STATE_COMPONENT_CAPACITY],
+}
+
+impl HostInstallResult {
+    #[cfg(test)]
+    fn saved_xstate_publication(self) -> HostSavedXstatePublication {
+        HostSavedXstatePublication {
+            allocation_len: self.saved_xstate_len,
+            mask: self.saved_xstate_mask,
+            format: self.saved_xstate_format,
+            image_len: self.saved_xstate_image_len,
+            component_count: self.saved_xstate_component_count,
+            components: self.saved_xstate_components,
+        }
+    }
 }
 
 const _: () = assert!(core::mem::size_of::<HostProgramCounterMapping>() == 24);
+const _: () = assert!(core::mem::size_of::<HostSavedXstateComponent>() == 24);
+const _: () = assert!(core::mem::offset_of!(HostSavedXstateComponent, xfeature) == 0);
+const _: () = assert!(core::mem::offset_of!(HostSavedXstateComponent, offset) == 8);
+const _: () = assert!(core::mem::offset_of!(HostSavedXstateComponent, size) == 16);
+const _: () = assert!(core::mem::size_of::<HostSavedXstatePublication>() == 232);
 const _: () = assert!(core::mem::offset_of!(HostInstallResult, program_counters) == 128);
 const _: () = assert!(core::mem::offset_of!(HostInstallResult, complete) == 512);
-const _: () = assert!(core::mem::size_of::<HostInstallResult>() == 520);
+const _: () = assert!(core::mem::offset_of!(HostInstallResult, saved_xstate_len) == 520);
+const _: () = assert!(core::mem::offset_of!(HostInstallResult, saved_xstate_mask) == 528);
+const _: () = assert!(core::mem::offset_of!(HostInstallResult, saved_xstate_format) == 536);
+const _: () = assert!(core::mem::offset_of!(HostInstallResult, saved_xstate_image_len) == 544);
+const _: () =
+    assert!(core::mem::offset_of!(HostInstallResult, saved_xstate_component_count) == 552);
+const _: () = assert!(core::mem::offset_of!(HostInstallResult, saved_xstate_components) == 560);
+const _: () = assert!(core::mem::size_of::<HostInstallResult>() == 752);
 
 #[repr(align(16))]
 struct HostHelperStack([u8; HOST_HELPER_STACK_BYTES]);
@@ -316,6 +578,16 @@ static mut HOST_INSTALL_RESULT: HostInstallResult = HostInstallResult {
         logical_address: 0,
     }; HOST_INSTALL_PC_MAPPINGS],
     complete: 0,
+    saved_xstate_len: 0,
+    saved_xstate_mask: 0,
+    saved_xstate_format: 0,
+    saved_xstate_image_len: 0,
+    saved_xstate_component_count: 0,
+    saved_xstate_components: [HostSavedXstateComponent {
+        xfeature: 0,
+        offset: 0,
+        size: 0,
+    }; SAVED_EXTENDED_STATE_COMPONENT_CAPACITY],
 };
 
 const UNSET_RESULT: i64 = i64::MIN;
@@ -1137,6 +1409,9 @@ fn host_handshake_frame(
     let helper_page_start =
         core::ptr::addr_of!(__reverie_liteinst_helper_page_start) as usize as u64;
     let helper_page_end = core::ptr::addr_of!(__reverie_liteinst_helper_page_end) as usize as u64;
+    let callback_stack = HOST_CALLBACK_STACK
+        .get()
+        .expect("host callback stack is prepared before the handshake");
     HostHandshakeFrame {
         version: HOST_HANDSHAKE_VERSION,
         begin_rip: core::ptr::addr_of!(reverie_liteinst_host_begin_rip) as usize as u64,
@@ -1147,6 +1422,9 @@ fn host_handshake_frame(
         install_helper_page_start: helper_page_start,
         install_helper_page_len: helper_page_end - helper_page_start,
         helper_stack_top: (stack_start + HOST_HELPER_STACK_BYTES) as u64,
+        callback_stack_start: callback_stack.usable_start,
+        callback_stack_len: callback_stack.usable_len,
+        callback_stack_top: callback_stack.top,
         helper_return: reverie_liteinst_host_helper_return as *const () as usize as u64,
         helper_return_rip: core::ptr::addr_of!(reverie_liteinst_host_helper_return_rip) as usize
             as u64,
@@ -1158,6 +1436,9 @@ fn host_handshake_frame(
         install_result: core::ptr::addr_of!(HOST_INSTALL_RESULT) as usize as u64,
         start_program_break,
         initial_program_break,
+        callback_execution_headroom_len: callback_stack.execution_headroom_len,
+        saved_xstate_reserve_len: callback_stack.saved_xstate_reserve_len,
+        saved_xstate_alignment: callback_stack.saved_xstate_alignment,
     }
 }
 
@@ -1211,6 +1492,7 @@ fn initialize_host_runtime_with(
         PATCH_PUBLICATION.store(PatchPublication::Quiescent as u8, Ordering::Release);
     }
     let (start_program_break, initial_program_break) = bind_program_break_geometry()?;
+    prepare_host_callback_stack()?;
     let mut frame = host_handshake_frame(start_program_break, initial_program_break);
     // SAFETY: the launcher validates this exact DSO/RIP/frame before suppressing
     // the trap. The function returns normally after ptrace resumes the tracee.
@@ -2859,7 +3141,12 @@ fn mapping_mutates_runtime_control_with(
         );
     }
     match number {
-        libc::SYS_mmap if args[3] & libc::MAP_FIXED as u64 != 0 => {
+        // NOREPLACE cannot destroy an arena even when a caller also supplies
+        // MAP_FIXED; Linux must retain ownership of its native EEXIST result.
+        libc::SYS_mmap
+            if args[3] & libc::MAP_FIXED as u64 != 0
+                && args[3] & libc::MAP_FIXED_NOREPLACE as u64 == 0 =>
+        {
             mapping_span_mutates_runtime_control(
                 checked_mapping_page_span(args[0], args[1], page_size, false),
                 false,
@@ -2991,20 +3278,6 @@ fn mapping_mutates_runtime_control_with(
         }
         _ => false,
     }
-}
-
-fn fixed_mapping_replacement_requires_global_refusal(
-    number: i64,
-    args: [u64; 6],
-    runtime_controls_exist: bool,
-) -> bool {
-    // A hugetlbfs source can make Linux round a raw one-byte fixed replacement
-    // to a huge page even when the syscall flags do not expose that geometry.
-    // MAP_FIXED_NOREPLACE does not carry MAP_FIXED and remains native because
-    // it cannot replace an existing runtime control.
-    runtime_controls_exist
-        && ((number == libc::SYS_mmap && args[3] & libc::MAP_FIXED as u64 != 0)
-            || (number == libc::SYS_mremap && args[3] & libc::MREMAP_FIXED as u64 != 0))
 }
 
 fn observe_brk_result_in(
@@ -3465,15 +3738,6 @@ unsafe fn set_text_protection(address: u64, protection: i32) -> io::Result<()> {
     Ok(())
 }
 
-unsafe fn set_mapping_protection(start: u64, len: u64, protection: i32) -> io::Result<()> {
-    let result =
-        unsafe { raw_syscall6(libc::SYS_mprotect, [start, len, protection as u64, 0, 0, 0]) };
-    if result < 0 {
-        return Err(io::Error::from_raw_os_error((-result) as i32));
-    }
-    Ok(())
-}
-
 #[derive(Debug)]
 enum InstallSiteError {
     Exhausted(&'static str),
@@ -3483,9 +3747,12 @@ enum InstallSiteError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InstallProtectionRestoreStage {
+    WritableOpenFailure,
     PlanningFailure,
     ActivationFailure,
-    Activated,
+    ActivatedRollbackReopen,
+    ActivatedRollbackDeactivation,
+    ActivatedRollbackFinalRx,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3506,18 +3773,79 @@ fn classify_install_protection_restore(
 
 fn terminate_install_protection_restore(failure: InstallProtectionRestoreFailure) -> ! {
     let marker = match failure.stage {
+        InstallProtectionRestoreStage::WritableOpenFailure => {
+            b"site-rx-restore-after-writable-open-failed".as_slice()
+        }
         InstallProtectionRestoreStage::PlanningFailure => {
             b"site-rx-restore-after-planning-failure-failed".as_slice()
         }
         InstallProtectionRestoreStage::ActivationFailure => {
             b"site-rx-restore-after-activation-failure-failed".as_slice()
         }
-        InstallProtectionRestoreStage::Activated => {
-            b"site-rx-restore-after-activation-failed".as_slice()
+        InstallProtectionRestoreStage::ActivatedRollbackReopen => {
+            b"site-rwx-reopen-for-activation-rollback-failed".as_slice()
+        }
+        InstallProtectionRestoreStage::ActivatedRollbackDeactivation => {
+            b"site-deactivate-after-rx-restore-failed".as_slice()
+        }
+        InstallProtectionRestoreStage::ActivatedRollbackFinalRx => {
+            b"site-final-rx-after-activation-rollback-failed".as_slice()
         }
     };
     emit_in_guest_stage(marker);
     unsafe { exit_now(126) }
+}
+
+#[derive(Debug)]
+enum InstallProtectionTransitionFailure {
+    Primary(io::Error),
+    Cleanup(InstallProtectionRestoreFailure),
+}
+
+fn open_install_source_with(
+    mut protect: impl FnMut(i32) -> io::Result<()>,
+) -> Result<(), InstallProtectionTransitionFailure> {
+    let writable = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
+    let readonly = libc::PROT_READ | libc::PROT_EXEC;
+    match protect(writable) {
+        Ok(()) => Ok(()),
+        Err(primary) => match classify_install_protection_restore(
+            InstallProtectionRestoreStage::WritableOpenFailure,
+            protect(readonly),
+        ) {
+            Ok(()) => Err(InstallProtectionTransitionFailure::Primary(primary)),
+            Err(cleanup) => Err(InstallProtectionTransitionFailure::Cleanup(cleanup)),
+        },
+    }
+}
+
+fn close_activated_install_with(
+    mut protect: impl FnMut(i32) -> io::Result<()>,
+    deactivate: impl FnOnce() -> Result<(), ()>,
+) -> Result<(), InstallProtectionTransitionFailure> {
+    let readonly = libc::PROT_READ | libc::PROT_EXEC;
+    let writable = libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC;
+    let primary = match protect(readonly) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    classify_install_protection_restore(
+        InstallProtectionRestoreStage::ActivatedRollbackReopen,
+        protect(writable),
+    )
+    .map_err(InstallProtectionTransitionFailure::Cleanup)?;
+    deactivate().map_err(|()| {
+        InstallProtectionTransitionFailure::Cleanup(InstallProtectionRestoreFailure {
+            stage: InstallProtectionRestoreStage::ActivatedRollbackDeactivation,
+            errno: libc::EIO,
+        })
+    })?;
+    classify_install_protection_restore(
+        InstallProtectionRestoreStage::ActivatedRollbackFinalRx,
+        protect(readonly),
+    )
+    .map_err(InstallProtectionTransitionFailure::Cleanup)?;
+    Err(InstallProtectionTransitionFailure::Primary(primary))
 }
 
 unsafe fn restore_install_source_or_exit(address: u64, stage: InstallProtectionRestoreStage) {
@@ -3606,6 +3934,20 @@ fn lock_installation() -> io::Result<InstallGuard> {
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .map(|_| InstallGuard)
         .map_err(|_| io::Error::from_raw_os_error(libc::EBUSY))
+}
+
+fn validate_host_callback_saved_state_layout(
+    layout: SavedExtendedStateLayout,
+) -> Result<(), InstallSiteError> {
+    let stack = HOST_CALLBACK_STACK.get().ok_or(InstallSiteError::Failed(
+        "host callback stack is unavailable before hook activation",
+    ))?;
+    if !host_callback_stack_accepts_layout(stack, layout) {
+        return Err(InstallSiteError::Failed(
+            "trampoline XSTATE layout does not fit the authenticated callback stack",
+        ));
+    }
+    Ok(())
 }
 
 unsafe fn install_site_hook(
@@ -3792,11 +4134,16 @@ unsafe fn install_site_hook_inner(
     let code = scan.snapshot();
 
     if manage_protection {
-        unsafe {
-            set_text_protection(
-                address,
-                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-            )?;
+        match open_install_source_with(|protection| unsafe {
+            set_text_protection(address, protection)
+        }) {
+            Ok(()) => {}
+            Err(InstallProtectionTransitionFailure::Primary(error)) => {
+                return Err(error.into());
+            }
+            Err(InstallProtectionTransitionFailure::Cleanup(failure)) => {
+                terminate_install_protection_restore(failure);
+            }
         }
     }
     // A guarded cross-line plan rejects a trampoline displacement containing
@@ -3844,9 +4191,30 @@ unsafe fn install_site_hook_inner(
             return Err(error);
         }
     };
-    let (program_counter_count, program_counters) = match host_program_counter_mappings(&installed)
+    if publication == PatchPublication::Quiescent
+        && let Err(error) = validate_host_callback_saved_state_layout(
+            installed.trampoline().layout().saved_extended_state,
+        )
     {
-        Ok(mappings) => mappings,
+        if manage_protection {
+            unsafe {
+                restore_install_source_or_exit(
+                    address,
+                    InstallProtectionRestoreStage::PlanningFailure,
+                );
+            }
+        }
+        return Err(error);
+    }
+    let result = match complete_host_install_result(
+        address,
+        &installed,
+        arena,
+        instruction_len as u64,
+        straddle_prefix as u64,
+        publication,
+    ) {
+        Ok(result) => result,
         Err(error) => {
             if manage_protection {
                 unsafe {
@@ -3878,57 +4246,32 @@ unsafe fn install_site_hook_inner(
         return Err(InstallSiteError::Failed("trampoline activation failed"));
     }
     if manage_protection {
-        unsafe {
-            restore_install_source_or_exit(address, InstallProtectionRestoreStage::Activated);
+        let closed = close_activated_install_with(
+            |protection| unsafe { set_text_protection(address, protection) },
+            || {
+                let result = match publication {
+                    PatchPublication::Concurrent => installed.deactivate(),
+                    // SAFETY: the same caller-owned quiescence used for the
+                    // activation remains in force until this function returns.
+                    PatchPublication::Quiescent => unsafe { installed.deactivate_quiescent() },
+                };
+                match result {
+                    Ok(true) => Ok(()),
+                    Ok(false) | Err(_) => Err(()),
+                }
+            },
+        );
+        match closed {
+            Ok(()) => {}
+            Err(InstallProtectionTransitionFailure::Primary(error)) => {
+                return Err(error.into());
+            }
+            Err(InstallProtectionTransitionFailure::Cleanup(failure)) => {
+                terminate_install_protection_restore(failure);
+            }
         }
     }
 
-    let relocated_tail = installed.trampoline().relocated_tail_address();
-    let (ptrace_entry_stop_rip, ptrace_completion_stop_rip) = match publication {
-        PatchPublication::Quiescent => (
-            installed
-                .trampoline()
-                .ptrace_entry_stop_rip()
-                .expect("quiescent installation emitted an entry stop"),
-            installed
-                .trampoline()
-                .ptrace_completion_stop_rip()
-                .expect("quiescent installation emitted a completion stop"),
-        ),
-        PatchPublication::Concurrent => {
-            debug_assert!(installed.trampoline().ptrace_entry_stop_rip().is_none());
-            debug_assert!(
-                installed
-                    .trampoline()
-                    .ptrace_completion_stop_rip()
-                    .is_none()
-            );
-            (0, 0)
-        }
-    };
-    let trampoline_start = installed.trampoline().address();
-    let trampoline_len = installed.trampoline().allocation_len() as u64;
-    let trampoline_code_len = installed.trampoline().code_len() as u64;
-    let result = HostInstallResult {
-        version: HOST_INSTALL_RESULT_VERSION,
-        site_start: address,
-        site_len: liteinst2::patcher::WORD_PATCH_BYTES as u64,
-        ptrace_entry_stop_rip,
-        ptrace_completion_stop_rip,
-        relocated_tail,
-        trampoline_start,
-        trampoline_len,
-        trampoline_code_len,
-        arena_writable_start: arena.writable_start,
-        arena_writable_len: arena.writable_end - arena.writable_start,
-        arena_executable_start: arena.executable_start,
-        arena_executable_len: arena.executable_end - arena.executable_start,
-        instruction_len: instruction_len as u64,
-        straddle_prefix: straddle_prefix as u64,
-        program_counter_count,
-        program_counters,
-        complete: 1,
-    };
     let installed = Box::into_raw(Box::new(installed));
     slot.hook.store(installed, Ordering::Release);
     slot.instruction_len
@@ -3959,41 +4302,151 @@ fn host_program_counter_mappings(
     Ok((source.len() as u64, output))
 }
 
+fn host_saved_xstate_components(
+    layout: SavedExtendedStateLayout,
+) -> (
+    u64,
+    [HostSavedXstateComponent; SAVED_EXTENDED_STATE_COMPONENT_CAPACITY],
+) {
+    let source = layout.components();
+    debug_assert!(source.len() <= SAVED_EXTENDED_STATE_COMPONENT_CAPACITY);
+    let mut output = [HostSavedXstateComponent::default(); SAVED_EXTENDED_STATE_COMPONENT_CAPACITY];
+    for (destination, component) in output.iter_mut().zip(source) {
+        *destination = host_saved_xstate_component(*component);
+    }
+    (source.len() as u64, output)
+}
+
+fn host_saved_xstate_component(component: SavedExtendedStateComponent) -> HostSavedXstateComponent {
+    HostSavedXstateComponent {
+        xfeature: component.xfeature(),
+        offset: component.offset(),
+        size: component.size(),
+    }
+}
+
+fn host_saved_xstate_publication(layout: SavedExtendedStateLayout) -> HostSavedXstatePublication {
+    let (component_count, components) = host_saved_xstate_components(layout);
+    HostSavedXstatePublication {
+        allocation_len: layout.len(),
+        mask: layout.mask(),
+        format: layout.format().raw(),
+        image_len: layout.image_len(),
+        component_count,
+        components,
+    }
+}
+
+fn complete_host_install_result(
+    address: u64,
+    installed: &InstalledHook,
+    arena: &RuntimeArena,
+    instruction_len: u64,
+    straddle_prefix: u64,
+    publication: PatchPublication,
+) -> Result<HostInstallResult, InstallSiteError> {
+    let (ptrace_entry_stop_rip, ptrace_completion_stop_rip) =
+        match publication {
+            PatchPublication::Quiescent => (
+                installed
+                    .trampoline()
+                    .ptrace_entry_stop_rip()
+                    .ok_or(InstallSiteError::Failed(
+                        "quiescent trampoline omitted its entry stop",
+                    ))?,
+                installed.trampoline().ptrace_completion_stop_rip().ok_or(
+                    InstallSiteError::Failed("quiescent trampoline omitted its completion stop"),
+                )?,
+            ),
+            PatchPublication::Concurrent => {
+                if installed.trampoline().ptrace_entry_stop_rip().is_some()
+                    || installed
+                        .trampoline()
+                        .ptrace_completion_stop_rip()
+                        .is_some()
+                {
+                    return Err(InstallSiteError::Failed(
+                        "concurrent trampoline unexpectedly emitted ptrace stops",
+                    ));
+                }
+                (0, 0)
+            }
+        };
+    let (program_counter_count, program_counters) = host_program_counter_mappings(installed)?;
+    let saved_xstate =
+        host_saved_xstate_publication(installed.trampoline().layout().saved_extended_state);
+    Ok(HostInstallResult {
+        version: HOST_INSTALL_RESULT_VERSION,
+        site_start: address,
+        site_len: liteinst2::patcher::WORD_PATCH_BYTES as u64,
+        ptrace_entry_stop_rip,
+        ptrace_completion_stop_rip,
+        relocated_tail: installed.trampoline().relocated_tail_address(),
+        trampoline_start: installed.trampoline().address(),
+        trampoline_len: installed.trampoline().allocation_len() as u64,
+        trampoline_code_len: installed.trampoline().code_len() as u64,
+        arena_writable_start: arena.writable_start,
+        arena_writable_len: arena.writable_end - arena.writable_start,
+        arena_executable_start: arena.executable_start,
+        arena_executable_len: arena.executable_end - arena.executable_start,
+        instruction_len,
+        straddle_prefix,
+        program_counter_count,
+        program_counters,
+        complete: 1,
+        saved_xstate_len: saved_xstate.allocation_len,
+        saved_xstate_mask: saved_xstate.mask,
+        saved_xstate_format: saved_xstate.format,
+        saved_xstate_image_len: saved_xstate.image_len,
+        saved_xstate_component_count: saved_xstate.component_count,
+        saved_xstate_components: saved_xstate.components,
+    })
+}
+
 fn install_vdso_sites(sites: &[reverie_ptrace::VdsoSyscallSite]) -> io::Result<()> {
-    for site_info in sites {
+    let callbacks = sites
+        .iter()
+        .map(|site| vdso_callback(site.number))
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut completed = 0_usize;
+    for (site_info, callback) in sites.iter().zip(callbacks) {
         let address = site_info.address;
-        let (site, claimed) = claim_site(address)
-            .ok_or_else(|| io::Error::other("LiteInst vDSO site table is full"))?;
+        let Some((site, claimed)) = claim_site(address) else {
+            if completed != 0 {
+                emit_in_guest_stage(b"vdso-batch-failed-after-published-site");
+                unsafe { exit_now(126) }
+            }
+            return Err(io::Error::other("LiteInst vDSO site table is full"));
+        };
         if !claimed {
+            if completed != 0 {
+                emit_in_guest_stage(b"vdso-batch-failed-after-published-site");
+                unsafe { exit_now(126) }
+            }
             return Err(io::Error::other("LiteInst vDSO site was claimed twice"));
         }
-        unsafe {
-            set_mapping_protection(
-                site_info.mapping_start,
-                site_info.mapping_len,
-                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-            )?;
+        let install = unsafe {
             install_site_hook(
                 address,
                 site,
-                vdso_callback(site_info.number)?,
+                callback,
                 PatchPublication::Quiescent,
                 &[0x0f, 0x05],
-                false,
+                true,
                 None,
             )
-        }
-        .map_err(|error| {
+        };
+        if let Err(error) = install {
             record_site_install_failure(site, &error);
-            io::Error::other(format!("failed to install LiteInst vDSO hook: {error}"))
-        })?;
-        unsafe {
-            set_mapping_protection(
-                site_info.mapping_start,
-                site_info.mapping_len,
-                libc::PROT_READ | libc::PROT_EXEC,
-            )?;
+            if completed != 0 {
+                emit_in_guest_stage(b"vdso-batch-failed-after-published-site");
+                unsafe { exit_now(126) }
+            }
+            return Err(io::Error::other(format!(
+                "failed to install LiteInst vDSO hook: {error}"
+            )));
         }
+        completed += 1;
     }
     Ok(())
 }
@@ -4100,28 +4553,15 @@ unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace_body(address: u64)
             }
             let hook = unsafe { &*hook };
             let arena = arena_for(address)?;
-            let (program_counter_count, program_counters) =
-                host_program_counter_mappings(hook).ok()?;
-            Some(HostInstallResult {
-                version: HOST_INSTALL_RESULT_VERSION,
-                site_start: address,
-                site_len: liteinst2::patcher::WORD_PATCH_BYTES as u64,
-                ptrace_entry_stop_rip: hook.trampoline().ptrace_entry_stop_rip()?,
-                ptrace_completion_stop_rip: hook.trampoline().ptrace_completion_stop_rip()?,
-                relocated_tail: hook.trampoline().relocated_tail_address(),
-                trampoline_start: hook.trampoline().address(),
-                trampoline_len: hook.trampoline().allocation_len() as u64,
-                trampoline_code_len: hook.trampoline().code_len() as u64,
-                arena_writable_start: arena.writable_start,
-                arena_writable_len: arena.writable_end - arena.writable_start,
-                arena_executable_start: arena.executable_start,
-                arena_executable_len: arena.executable_end - arena.executable_start,
-                instruction_len: u64::from(site.instruction_len.load(Ordering::Acquire)),
-                straddle_prefix: u64::from(site.straddle_prefix.load(Ordering::Acquire)),
-                program_counter_count,
-                program_counters,
-                complete: 1,
-            })
+            complete_host_install_result(
+                address,
+                hook,
+                arena,
+                u64::from(site.instruction_len.load(Ordering::Acquire)),
+                u64::from(site.straddle_prefix.load(Ordering::Acquire)),
+                PatchPublication::Quiescent,
+            )
+            .ok()
         });
         if let Some(result) = result {
             // SAFETY: see the reset above. Publishing `complete` is part of the
@@ -4377,7 +4817,14 @@ struct HostSyscallFrame {
     rax: u64,
     rsp: u64,
     rip: u64,
+    saved_xstate: SavedExtendedStateDescriptor,
 }
+
+const _: () = assert!(core::mem::offset_of!(HostSyscallFrame, flags) == 0);
+const _: () = assert!(core::mem::offset_of!(HostSyscallFrame, rax) == 15 * 8);
+const _: () = assert!(core::mem::offset_of!(HostSyscallFrame, rip) == 17 * 8);
+const _: () = assert!(core::mem::offset_of!(HostSyscallFrame, saved_xstate) == 18 * 8);
+const _: () = assert!(core::mem::size_of::<HostSyscallFrame>() == 22 * 8);
 
 impl HostSyscallFrame {
     const FLAGS_OF: u64 = 0x0001;
@@ -4408,6 +4855,7 @@ impl HostSyscallFrame {
             rax: context.rax,
             rsp: context.stack_pointer,
             rip: context.instruction_pointer,
+            saved_xstate: context.saved_extended_state(),
         }
     }
 
@@ -4479,7 +4927,7 @@ unsafe extern "C" fn host_syscall_hook(context: *mut HookContext) {
     // readable frame, stack relationship, and current patched-site provenance
     // before dispatch. These checks resist accidental collisions; same-process
     // arbitrary code remains outside the threat model.
-    unsafe { reverie_liteinst_host_syscall_trap_call(&mut frame) };
+    unsafe { reverie_liteinst_host_syscall_trap_call(&mut frame, context) };
     frame.copy_to_context(context, original_rflags);
 }
 
@@ -5196,18 +5644,10 @@ fn protect_runtime_mapping_control(event: &mut SyscallEvent) -> bool {
     }
     let sites = SITES.get().map_or(&[][..], |sites| sites.as_ref());
     let arenas = ARENAS.get();
-    let runtime_controls_exist = sites
-        .iter()
-        .any(|site| !site.hook.load(Ordering::Acquire).is_null())
-        || arenas.is_some_and(|arenas| !arenas.is_empty());
-    if fixed_mapping_replacement_requires_global_refusal(
-        event.number,
-        event.args,
-        runtime_controls_exist,
-    ) {
-        event.result = -i64::from(libc::ENOTSUP);
-        return true;
-    }
+    // Fixed replacements are classified by their source and destination spans
+    // below. Invalid or disjoint calls must reach Linux so their native error or
+    // success is preserved; only a valid overlap with an arena control is ours
+    // to refuse.
     if !mapping_mutates_runtime_control_with(
         event.number,
         event.args,
@@ -5902,6 +6342,125 @@ impl StackLine {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn callback_stack_geometry_preserves_eight_mib_below_fxsave_and_xsave() {
+        let start = 0x1000_u64;
+        let headroom = super::HOST_CALLBACK_EXECUTION_HEADROOM_BYTES as u64;
+        let prefix = super::HOOK_CONTEXT_STACK_PREFIX_BYTES as u64;
+        for (reserve, alignment) in [(512_u64, 16_u64), (2_752, 64)] {
+            let exact_top = start + headroom + prefix + reserve;
+            assert_eq!(
+                super::host_callback_saved_state_start(
+                    start, exact_top, headroom, prefix, reserve, alignment,
+                ),
+                Some(start + headroom)
+            );
+            assert_eq!(
+                super::host_callback_saved_state_start(
+                    start,
+                    exact_top - 1,
+                    headroom,
+                    prefix,
+                    reserve,
+                    alignment,
+                ),
+                None,
+                "one byte less must not satisfy the execution headroom"
+            );
+        }
+    }
+
+    #[test]
+    fn callback_stack_sizing_is_page_rounded_bounded_and_checked() {
+        let headroom = super::HOST_CALLBACK_EXECUTION_HEADROOM_BYTES;
+        let prefix = super::HOOK_CONTEXT_STACK_PREFIX_BYTES;
+        let page = 4096;
+        assert_eq!(
+            super::host_callback_usable_len(headroom, prefix, 512, 16, page),
+            Some(headroom + page)
+        );
+        assert_eq!(
+            super::host_callback_usable_len(headroom, prefix, 2_752, 64, page),
+            Some(headroom + page)
+        );
+        assert!(
+            super::host_callback_usable_len(
+                headroom,
+                prefix,
+                super::HOST_CALLBACK_SAVED_XSTATE_RESERVE_CEILING_BYTES,
+                64,
+                page,
+            )
+            .is_some()
+        );
+        assert_eq!(
+            super::host_callback_usable_len(
+                headroom,
+                prefix,
+                super::HOST_CALLBACK_SAVED_XSTATE_RESERVE_CEILING_BYTES + 1,
+                64,
+                page,
+            ),
+            None
+        );
+        assert_eq!(
+            super::host_callback_usable_len(usize::MAX, prefix, 512, 16, page),
+            None
+        );
+        assert_eq!(
+            super::host_callback_usable_len(headroom, prefix, 512, 3, page),
+            None
+        );
+        assert_eq!(
+            super::host_callback_saved_state_start(0, prefix as u64 - 1, 0, prefix as u64, 512, 16),
+            None
+        );
+        assert_eq!(
+            super::host_callback_saved_state_start(
+                u64::MAX - 1,
+                u64::MAX,
+                1,
+                prefix as u64,
+                512,
+                16,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn v6_saved_xstate_publication_is_canonical_and_incomplete_is_zero() {
+        let layout = super::SavedExtendedStateLayout::detect().unwrap();
+        let initial = super::host_saved_xstate_publication(layout);
+        let reconstructed = super::host_saved_xstate_publication(layout);
+        assert_eq!(initial, reconstructed);
+        let initial_bytes = unsafe {
+            core::slice::from_raw_parts(
+                core::ptr::from_ref(&initial).cast::<u8>(),
+                core::mem::size_of_val(&initial),
+            )
+        };
+        let reconstructed_bytes = unsafe {
+            core::slice::from_raw_parts(
+                core::ptr::from_ref(&reconstructed).cast::<u8>(),
+                core::mem::size_of_val(&reconstructed),
+            )
+        };
+        assert_eq!(initial_bytes, reconstructed_bytes);
+
+        let incomplete = super::HostInstallResult::default();
+        assert_eq!(incomplete.complete, 0);
+        let absent = incomplete.saved_xstate_publication();
+        assert_eq!(absent, super::HostSavedXstatePublication::default());
+        let absent_bytes = unsafe {
+            core::slice::from_raw_parts(
+                core::ptr::from_ref(&absent).cast::<u8>(),
+                core::mem::size_of_val(&absent),
+            )
+        };
+        assert!(absent_bytes.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
     fn explicit_host_refuses_concurrent_publication_without_changing_legacy_policy() {
         use super::PatchPublication;
         use super::validate_host_publication;
@@ -5980,6 +6539,7 @@ mod tests {
     use super::FallbackCounters;
     use super::InstallProtectionRestoreFailure;
     use super::InstallProtectionRestoreStage;
+    use super::InstallProtectionTransitionFailure;
     use super::InstallSiteError;
     use super::LiteinstDispatcher;
     use super::MAX_LIFETIME_PATCH_ATTEMPTS;
@@ -6019,10 +6579,10 @@ mod tests {
     use super::classify_install_protection_restore;
     use super::clone_is_fork_like;
     use super::clone3_refusal_result;
+    use super::close_activated_install_with;
     use super::collect_new_runtime_maps;
     use super::fallback_dispatch_count;
     use super::fallback_syscall_count;
-    use super::fixed_mapping_replacement_requires_global_refusal;
     use super::forward_nested_tool_syscall;
     use super::guard_prior_signal_action_is_admitted;
     use super::initialize_rcb_clock_with;
@@ -6039,6 +6599,7 @@ mod tests {
     use super::mremap_source_page_span;
     use super::observe_arena_source_generation_with;
     use super::observe_mapping_generation_in;
+    use super::open_install_source_with;
     use super::parse_runtime_map_line;
     use super::proc_maps_line_async_engine_at;
     use super::proc_self_fd_path;
@@ -6082,9 +6643,12 @@ mod tests {
     #[test]
     fn rx_restore_failure_is_fatal_before_and_after_activation() {
         for stage in [
+            InstallProtectionRestoreStage::WritableOpenFailure,
             InstallProtectionRestoreStage::PlanningFailure,
             InstallProtectionRestoreStage::ActivationFailure,
-            InstallProtectionRestoreStage::Activated,
+            InstallProtectionRestoreStage::ActivatedRollbackReopen,
+            InstallProtectionRestoreStage::ActivatedRollbackDeactivation,
+            InstallProtectionRestoreStage::ActivatedRollbackFinalRx,
         ] {
             assert_eq!(
                 classify_install_protection_restore(
@@ -6098,6 +6662,88 @@ mod tests {
             );
             assert_eq!(classify_install_protection_restore(stage, Ok(())), Ok(()));
         }
+    }
+
+    #[test]
+    fn install_protection_transactions_restore_rx_and_deactivate_before_returning_errors() {
+        let open_log = std::cell::RefCell::new(Vec::new());
+        let mut open_attempt = 0;
+        let opened = open_install_source_with(|protection| {
+            open_log.borrow_mut().push(protection);
+            open_attempt += 1;
+            if open_attempt == 1 {
+                Err(std::io::Error::from_raw_os_error(libc::EACCES))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(
+            opened,
+            Err(InstallProtectionTransitionFailure::Primary(ref error))
+                if error.raw_os_error() == Some(libc::EACCES)
+        ));
+        assert_eq!(
+            open_log.into_inner(),
+            [
+                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+                libc::PROT_READ | libc::PROT_EXEC,
+            ]
+        );
+
+        let rollback_log = std::cell::RefCell::new(Vec::new());
+        let mut protect_attempt = 0;
+        let rolled_back = close_activated_install_with(
+            |protection| {
+                rollback_log.borrow_mut().push(("protect", protection));
+                protect_attempt += 1;
+                if protect_attempt == 1 {
+                    Err(std::io::Error::from_raw_os_error(libc::EPERM))
+                } else {
+                    Ok(())
+                }
+            },
+            || {
+                rollback_log.borrow_mut().push(("deactivate", 0));
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            rolled_back,
+            Err(InstallProtectionTransitionFailure::Primary(ref error))
+                if error.raw_os_error() == Some(libc::EPERM)
+        ));
+        assert_eq!(
+            rollback_log.into_inner(),
+            [
+                ("protect", libc::PROT_READ | libc::PROT_EXEC),
+                (
+                    "protect",
+                    libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+                ),
+                ("deactivate", 0),
+                ("protect", libc::PROT_READ | libc::PROT_EXEC),
+            ]
+        );
+
+        let cleanup = close_activated_install_with(
+            |protection| {
+                if protection == (libc::PROT_READ | libc::PROT_EXEC) {
+                    Err(std::io::Error::from_raw_os_error(libc::EPERM))
+                } else {
+                    Ok(())
+                }
+            },
+            || Err(()),
+        );
+        assert!(matches!(
+            cleanup,
+            Err(InstallProtectionTransitionFailure::Cleanup(
+                InstallProtectionRestoreFailure {
+                    stage: InstallProtectionRestoreStage::ActivatedRollbackDeactivation,
+                    errno: libc::EIO,
+                }
+            ))
+        ));
     }
 
     #[test]
@@ -7435,52 +8081,157 @@ mod tests {
     }
 
     #[test]
-    fn mremap_is_refused_before_copying_installed_patches_or_runtime_arenas() {
+    fn fixed_mapping_controls_preserve_native_errors_and_protected_ranges() {
         let page = 4096_u64;
         let source = 0x20_0000;
         let destination = 0x40_0000;
+        let arena_start = 0x80_0000;
+        let arena_end = arena_start + page;
+        let overlaps_arena = |start, end, _| start < arena_end && arena_start < end;
         let active = [installed_mapping_site(source + 8, SITE_ACTIVE)];
-        assert!(fixed_mapping_replacement_requires_global_refusal(
+
+        let overlapping_fixed_mmap = [
+            arena_start,
+            page,
+            libc::PROT_READ as u64,
+            (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64,
+            u64::MAX,
+            0,
+        ];
+        assert!(mapping_mutates_runtime_control_with(
             libc::SYS_mmap,
-            [0x90_0000, 1, 0, libc::MAP_FIXED as u64, u64::MAX, 0,],
-            true,
+            overlapping_fixed_mmap,
+            page,
+            &[],
+            overlaps_arena,
         ));
-        assert!(fixed_mapping_replacement_requires_global_refusal(
-            libc::SYS_mremap,
-            [
-                source,
-                page,
-                page,
-                (libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED) as u64,
-                destination,
-                0,
-            ],
-            true,
-        ));
-        assert!(!fixed_mapping_replacement_requires_global_refusal(
+        let disjoint_fixed_mmap = [
+            0x90_0000,
+            1,
+            libc::PROT_READ as u64,
+            (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64,
+            u64::MAX,
+            0,
+        ];
+        assert!(!mapping_mutates_runtime_control_with(
             libc::SYS_mmap,
-            [
-                0x90_0000,
-                1,
+            disjoint_fixed_mmap,
+            page,
+            &active,
+            overlaps_arena,
+        ));
+        for noreplace_flags in [
+            libc::MAP_FIXED_NOREPLACE,
+            libc::MAP_FIXED | libc::MAP_FIXED_NOREPLACE,
+        ] {
+            let fixed_noreplace = [
+                arena_start,
+                page,
+                libc::PROT_READ as u64,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | noreplace_flags) as u64,
+                u64::MAX,
                 0,
-                libc::MAP_FIXED_NOREPLACE as u64,
+            ];
+            assert!(!mapping_mutates_runtime_control_with(
+                libc::SYS_mmap,
+                fixed_noreplace,
+                page,
+                &active,
+                overlaps_arena,
+            ));
+        }
+        for invalid_fixed_mmap in [
+            [
+                arena_start,
+                0,
+                libc::PROT_READ as u64,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64,
                 u64::MAX,
                 0,
             ],
-            true,
-        ));
-        assert!(!fixed_mapping_replacement_requires_global_refusal(
+            [
+                arena_start + 1,
+                page,
+                libc::PROT_READ as u64,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64,
+                u64::MAX,
+                0,
+            ],
+            [
+                u64::MAX - page + 1,
+                page,
+                libc::PROT_READ as u64,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64,
+                u64::MAX,
+                0,
+            ],
+        ] {
+            assert!(!mapping_mutates_runtime_control_with(
+                libc::SYS_mmap,
+                invalid_fixed_mmap,
+                page,
+                &active,
+                overlaps_arena,
+            ));
+        }
+
+        let fixed_destination_overlaps = [
+            source,
+            page,
+            page,
+            (libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED) as u64,
+            arena_start,
+            0,
+        ];
+        assert!(mapping_mutates_runtime_control_with(
             libc::SYS_mremap,
+            fixed_destination_overlaps,
+            page,
+            &[],
+            overlaps_arena,
+        ));
+        let disjoint_fixed_mremap = [
+            source,
+            page,
+            page,
+            (libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED) as u64,
+            destination,
+            0,
+        ];
+        assert!(!mapping_mutates_runtime_control_with(
+            libc::SYS_mremap,
+            disjoint_fixed_mremap,
+            page,
+            &[],
+            overlaps_arena,
+        ));
+        for invalid_fixed_mremap in [
+            [
+                source,
+                page,
+                page,
+                libc::MREMAP_FIXED as u64,
+                arena_start,
+                0,
+            ],
             [
                 source,
                 page,
                 page,
                 (libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED) as u64,
-                destination,
+                arena_start + 1,
                 0,
             ],
-            false,
-        ));
+        ] {
+            assert!(!mapping_mutates_runtime_control_with(
+                libc::SYS_mremap,
+                invalid_fixed_mremap,
+                page,
+                &active,
+                overlaps_arena,
+            ));
+        }
+
         let moved = [source, page, page, libc::MREMAP_MAYMOVE as u64, 0, 0];
         assert_eq!(
             mremap_source_page_span(moved, page),
@@ -7559,15 +8310,13 @@ mod tests {
             |_, _, _| false,
         ));
 
-        let arena_start = 0x80_0000;
-        let arena_end = arena_start + page;
         let arena_source = [arena_start, page, page, libc::MREMAP_MAYMOVE as u64, 0, 0];
         assert!(mapping_mutates_runtime_control_with(
             libc::SYS_mremap,
             arena_source,
             page,
             &[],
-            |start, end, _| start < arena_end && arena_start < end,
+            overlaps_arena,
         ));
         let arena_clone = [arena_start, 0, page, libc::MREMAP_MAYMOVE as u64, 0, 0];
         assert!(mapping_mutates_runtime_control_with(
@@ -7575,7 +8324,7 @@ mod tests {
             arena_clone,
             page,
             &[],
-            |start, end, _| start < arena_end && arena_start < end,
+            overlaps_arena,
         ));
 
         let fixed_overlapping_clone = [
@@ -7592,7 +8341,7 @@ mod tests {
             fixed_overlapping_clone,
             page,
             &[],
-            |start, end, _| start < arena_end && arena_start < end,
+            overlaps_arena,
         ));
 
         for invalid_dont_unmap_hint in [

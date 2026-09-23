@@ -118,7 +118,7 @@ pub(crate) fn physical_trapped_status(status: i32) -> Result<(Signal, i32), Errn
     if event == 0 {
         return Ok((exact_ptrace_stop_signal(signal as i32)?, event));
     }
-    if event == libc::PTRACE_EVENT_STOP as i32 {
+    if event == libc::PTRACE_EVENT_STOP {
         return matches!(
             signal,
             Signal::SIGTRAP | Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU
@@ -128,13 +128,13 @@ pub(crate) fn physical_trapped_status(status: i32) -> Result<(Signal, i32), Errn
     }
     let supported = matches!(
         event,
-        value if value == libc::PTRACE_EVENT_FORK as i32
-            || value == libc::PTRACE_EVENT_VFORK as i32
-            || value == libc::PTRACE_EVENT_CLONE as i32
-            || value == libc::PTRACE_EVENT_EXEC as i32
-            || value == libc::PTRACE_EVENT_VFORK_DONE as i32
-            || value == libc::PTRACE_EVENT_EXIT as i32
-            || value == libc::PTRACE_EVENT_SECCOMP as i32
+        value if value == libc::PTRACE_EVENT_FORK
+            || value == libc::PTRACE_EVENT_VFORK
+            || value == libc::PTRACE_EVENT_CLONE
+            || value == libc::PTRACE_EVENT_EXEC
+            || value == libc::PTRACE_EVENT_VFORK_DONE
+            || value == libc::PTRACE_EVENT_EXIT
+            || value == libc::PTRACE_EVENT_SECCOMP
     );
     if supported && signal == Signal::SIGTRAP {
         Ok((signal, event))
@@ -236,38 +236,112 @@ pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno
 /// conversion. Keeping the `siginfo_t` intact lets the optional physical
 /// observer record provenance when later typed conversion rejects an
 /// unexpected kernel code.
-#[cfg(feature = "notifier")]
+#[cfg(all(feature = "notifier", not(test)))]
 pub(crate) struct WaitPidfdRaw(libc::siginfo_t);
+
+#[cfg(all(feature = "notifier", test))]
+pub(crate) struct WaitPidfdRaw(WaitPidfdRawInner);
+
+#[cfg(all(feature = "notifier", test))]
+enum WaitPidfdRawInner {
+    Kernel(libc::siginfo_t),
+    Scripted {
+        signo: i32,
+        errno: i32,
+        code: i32,
+        pid: i32,
+        uid: u32,
+        status: i32,
+    },
+}
 
 #[cfg(feature = "notifier")]
 impl WaitPidfdRaw {
     #[cfg(test)]
     pub(crate) fn override_code_for_test(&mut self, code: i32) {
-        self.0.si_code = code;
+        match &mut self.0 {
+            WaitPidfdRawInner::Kernel(raw) => raw.si_code = code,
+            WaitPidfdRawInner::Scripted { code: current, .. } => *current = code,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scripted(
+        signo: i32,
+        errno: i32,
+        code: i32,
+        pid: i32,
+        uid: u32,
+        status: i32,
+    ) -> Self {
+        Self(WaitPidfdRawInner::Scripted {
+            signo,
+            errno,
+            code,
+            pid,
+            uid,
+            status,
+        })
     }
 
     pub(crate) fn pid(&self) -> i32 {
-        unsafe { self.0.si_pid() }
+        #[cfg(not(test))]
+        return unsafe { self.0.si_pid() };
+        #[cfg(test)]
+        match &self.0 {
+            WaitPidfdRawInner::Kernel(raw) => unsafe { raw.si_pid() },
+            WaitPidfdRawInner::Scripted { pid, .. } => *pid,
+        }
     }
 
     pub(crate) fn uid(&self) -> u32 {
-        unsafe { self.0.si_uid() }
+        #[cfg(not(test))]
+        return unsafe { self.0.si_uid() };
+        #[cfg(test)]
+        match &self.0 {
+            WaitPidfdRawInner::Kernel(raw) => unsafe { raw.si_uid() },
+            WaitPidfdRawInner::Scripted { uid, .. } => *uid,
+        }
     }
 
     pub(crate) fn status_value(&self) -> i32 {
-        unsafe { self.0.si_status() }
+        #[cfg(not(test))]
+        return unsafe { self.0.si_status() };
+        #[cfg(test)]
+        match &self.0 {
+            WaitPidfdRawInner::Kernel(raw) => unsafe { raw.si_status() },
+            WaitPidfdRawInner::Scripted { status, .. } => *status,
+        }
     }
 
     pub(crate) fn signo(&self) -> i32 {
-        self.0.si_signo
+        #[cfg(not(test))]
+        return self.0.si_signo;
+        #[cfg(test)]
+        match &self.0 {
+            WaitPidfdRawInner::Kernel(raw) => raw.si_signo,
+            WaitPidfdRawInner::Scripted { signo, .. } => *signo,
+        }
     }
 
     pub(crate) fn errno(&self) -> i32 {
-        self.0.si_errno
+        #[cfg(not(test))]
+        return self.0.si_errno;
+        #[cfg(test)]
+        match &self.0 {
+            WaitPidfdRawInner::Kernel(raw) => raw.si_errno,
+            WaitPidfdRawInner::Scripted { errno, .. } => *errno,
+        }
     }
 
     pub(crate) fn code(&self) -> i32 {
-        self.0.si_code
+        #[cfg(not(test))]
+        return self.0.si_code;
+        #[cfg(test)]
+        match &self.0 {
+            WaitPidfdRawInner::Kernel(raw) => raw.si_code,
+            WaitPidfdRawInner::Scripted { code, .. } => *code,
+        }
     }
 
     pub(crate) fn status(&self) -> Result<Option<i32>, Errno> {
@@ -284,7 +358,10 @@ impl WaitPidfdRaw {
 
 #[cfg(feature = "notifier")]
 pub(crate) fn waitpidfd_raw(raw_fd: RawFd, flags: WaitPidFlag) -> Result<WaitPidfdRaw, Errno> {
-    waitid_si(IdType::Pidfd(raw_fd), flags).map(WaitPidfdRaw)
+    #[cfg(not(test))]
+    return waitid_si(IdType::Pidfd(raw_fd), flags).map(WaitPidfdRaw);
+    #[cfg(test)]
+    waitid_si(IdType::Pidfd(raw_fd), flags).map(|raw| WaitPidfdRaw(WaitPidfdRawInner::Kernel(raw)))
 }
 
 /// Exact result domain of [`WaitPidfdRaw::status`] for retained raw fields.
@@ -298,14 +375,76 @@ pub(crate) fn physical_wait_siginfo_to_status(
     uid: u32,
     si_status: i32,
 ) -> Result<Option<i32>, Errno> {
-    if pid == 0 {
-        if signo == 0 && errno == 0 && code == 0 && uid == 0 && si_status == 0 {
-            Ok(None)
-        } else {
-            Err(Errno::EPROTO)
+    match classify_physical_wait_siginfo(signo, errno, code, pid, uid, si_status)? {
+        PhysicalWaitSiginfoClass::NoStatus => Ok(None),
+        PhysicalWaitSiginfoClass::Typed(status) => Ok(Some(status)),
+        PhysicalWaitSiginfoClass::ValidButTypedUnsupported => Err(Errno::EPROTO),
+    }
+}
+
+/// Exact Linux shape of a successful `waitid` result, kept separate from the
+/// narrower signal vocabulary exposed by nix.  In particular, a real-time
+/// terminating signal or signal-delivery ptrace stop is valid kernel evidence
+/// even though nix 0.31 cannot construct a typed [`Signal`] for it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PhysicalWaitSiginfoClass {
+    NoStatus,
+    Typed(i32),
+    ValidButTypedUnsupported,
+}
+
+#[inline]
+fn valid_linux_signal_number(signal: i32) -> bool {
+    // Linux exposes signals 1..=_NSIG-1.  The two NPTL-reserved signal
+    // numbers are still kernel signal numbers and may occur in retained
+    // physical evidence even though libc does not expose names for them.
+    (1..=64).contains(&signal)
+}
+
+fn valid_but_typed_unsupported_siginfo(code: i32, si_status: i32) -> bool {
+    match code {
+        libc::CLD_KILLED => {
+            valid_linux_signal_number(si_status) && Signal::try_from(si_status).is_err()
         }
-    } else {
-        physical_siginfo_to_status(signo, errno, code, pid, si_status).map(Some)
+        libc::CLD_TRAPPED => {
+            let Ok(status) = u32::try_from(si_status) else {
+                return false;
+            };
+            if status > 0x00ff_ffff {
+                return false;
+            }
+            let signal = (status & 0xff) as i32;
+            let event = status >> 8;
+            event == 0 && valid_linux_signal_number(signal) && Signal::try_from(signal).is_err()
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn classify_physical_wait_siginfo(
+    signo: i32,
+    errno: i32,
+    code: i32,
+    pid: i32,
+    uid: u32,
+    si_status: i32,
+) -> Result<PhysicalWaitSiginfoClass, Errno> {
+    if pid == 0 {
+        return (signo == 0 && errno == 0 && code == 0 && uid == 0 && si_status == 0)
+            .then_some(PhysicalWaitSiginfoClass::NoStatus)
+            .ok_or(Errno::EPROTO);
+    }
+    match physical_siginfo_to_status(signo, errno, code, pid, si_status) {
+        Ok(status) => Ok(PhysicalWaitSiginfoClass::Typed(status)),
+        Err(Errno::EPROTO)
+            if signo == libc::SIGCHLD
+                && errno == 0
+                && pid > 0
+                && valid_but_typed_unsupported_siginfo(code, si_status) =>
+        {
+            Ok(PhysicalWaitSiginfoClass::ValidButTypedUnsupported)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -524,7 +663,7 @@ mod tests {
             libc::PTRACE_EVENT_EXIT,
             libc::PTRACE_EVENT_SECCOMP,
         ]
-        .map(|event| ((event as i32) << 8) | plain_trap);
+        .map(|event| (event << 8) | plain_trap);
         let stop_events = [
             libc::SIGTRAP,
             libc::SIGSTOP,
@@ -532,7 +671,7 @@ mod tests {
             libc::SIGTTIN,
             libc::SIGTTOU,
         ]
-        .map(|signal| ((libc::PTRACE_EVENT_STOP as i32) << 8) | signal);
+        .map(|signal| (libc::PTRACE_EVENT_STOP << 8) | signal);
         for trapped_status in [plain_trap, syscall_trap]
             .into_iter()
             .chain(event_traps)
@@ -568,7 +707,7 @@ mod tests {
             Ok(WaitStatus::PtraceEvent(
                 Pid::from_raw(pid),
                 Signal::SIGTRAP,
-                libc::PTRACE_EVENT_EXIT as i32,
+                libc::PTRACE_EVENT_EXIT,
             ))
         );
 
@@ -577,8 +716,8 @@ mod tests {
             0xff,
             libc::SIGKILL,
             (8 << 8) | plain_trap,
-            ((libc::PTRACE_EVENT_FORK as i32) << 8) | libc::SIGSTOP,
-            ((libc::PTRACE_EVENT_STOP as i32) << 8) | libc::SIGTERM,
+            (libc::PTRACE_EVENT_FORK << 8) | libc::SIGSTOP,
+            (libc::PTRACE_EVENT_STOP << 8) | libc::SIGTERM,
             0x0100_0000 | plain_trap,
             -1,
             i32::MAX,
@@ -630,9 +769,9 @@ mod tests {
     #[test]
     fn exact_wait_oracle_fails_closed_on_valid_unsupported_realtime_signals() {
         let pid = 101;
-        // Linux x86-64 SIGRTMIN is a valid termination or ptrace-stop signal,
-        // but nix 0.31's typed Signal cannot represent it. These are support
-        // refusals, not malformed kernel statuses.
+        // Linux x86-64 SIGRTMIN is a valid terminating or signal-delivery
+        // ptrace-stop signal, but nix 0.31's typed Signal cannot represent it.
+        // These two shapes are support refusals, not malformed kernel statuses.
         let sig_rtmin = 34;
         for raw in [sig_rtmin, (sig_rtmin << 8) | 0x7f] {
             assert_eq!(
@@ -641,11 +780,44 @@ mod tests {
                 "accepted valid RT signal that the typed observer cannot represent"
             );
         }
-        for code in [libc::CLD_KILLED, libc::CLD_TRAPPED] {
+        for signal in [32, 33, 34, 64] {
+            for code in [libc::CLD_KILLED, libc::CLD_TRAPPED] {
+                assert_eq!(
+                    classify_physical_wait_siginfo(libc::SIGCHLD, 0, code, pid, 0, signal,),
+                    Ok(PhysicalWaitSiginfoClass::ValidButTypedUnsupported),
+                    "lost valid-but-typed-unsupported signal {signal} code {code}"
+                );
+                assert_eq!(
+                    physical_siginfo_to_status(libc::SIGCHLD, 0, code, pid, signal),
+                    Err(Errno::EPROTO),
+                    "accepted kernel-valid untyped signal {signal} code {code}"
+                );
+            }
+        }
+        for signal in [0, 65] {
+            for code in [libc::CLD_KILLED, libc::CLD_TRAPPED] {
+                assert_eq!(
+                    classify_physical_wait_siginfo(libc::SIGCHLD, 0, code, pid, 0, signal,),
+                    Err(Errno::EPROTO),
+                    "accepted out-of-domain signal {signal} code {code}"
+                );
+            }
+        }
+        for code in [libc::CLD_DUMPED, libc::CLD_STOPPED] {
             assert_eq!(
-                physical_siginfo_to_status(libc::SIGCHLD, 0, code, pid, sig_rtmin),
+                classify_physical_wait_siginfo(libc::SIGCHLD, 0, code, pid, 0, sig_rtmin,),
                 Err(Errno::EPROTO),
-                "accepted valid RT signal that the typed waitid API cannot represent"
+                "accepted impossible RT CLD code {code}"
+            );
+        }
+        for status in [
+            (libc::PTRACE_EVENT_EXEC << 8) | sig_rtmin,
+            sig_rtmin | 0x10000,
+        ] {
+            assert_eq!(
+                classify_physical_wait_siginfo(libc::SIGCHLD, 0, libc::CLD_TRAPPED, pid, 0, status,),
+                Err(Errno::EPROTO),
+                "accepted eventful RT CLD_TRAPPED status {status:#x}"
             );
         }
     }

@@ -1440,11 +1440,8 @@ impl TimerImpl {
         suspension: &PrivateExecutionTimerSuspension,
     ) -> Result<(), PrivateExecutionTimerError> {
         let current = self.retained_state();
-        let snapshot = terminal_private_execution_snapshot(
-            self.private_execution,
-            suspension,
-            current,
-        )?;
+        let snapshot =
+            terminal_private_execution_snapshot(self.private_execution, suspension, current)?;
 
         // The tracee generation is terminal: reading, enabling, disabling, or
         // otherwise touching either perf fd is both unnecessary and unsafe.
@@ -1773,7 +1770,12 @@ mod tests {
     use super::EventStatus;
     #[cfg(target_arch = "x86_64")]
     use super::PmuConfig;
+    use super::PrivateExecutionSnapshot;
+    use super::PrivateExecutionState;
+    use super::PrivateExecutionTimerError;
+    use super::PrivateExecutionTimerSuspension;
     use super::RetainedTimerState;
+    use super::terminal_private_execution_snapshot;
 
     #[cfg(target_arch = "x86_64")]
     #[test]

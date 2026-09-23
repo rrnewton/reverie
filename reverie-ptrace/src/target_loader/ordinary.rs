@@ -76,12 +76,11 @@ fn project_isolated_rx_page(maps: &mut [Map], isolated: TargetIsolatedRxPage) ->
             && !mapping.write
             && !mapping.execute
             && mapping.private
+            && matched.replace(index).is_some()
         {
-            if matched.replace(index).is_some() {
-                return Err(invalid(
-                    "isolated runtime page matches more than one maps record",
-                ));
-            }
+            return Err(invalid(
+                "isolated runtime page matches more than one maps record",
+            ));
         }
     }
     let matched = matched.ok_or_else(|| {

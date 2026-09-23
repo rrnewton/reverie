@@ -119,10 +119,14 @@ default for threaded applications.
 
 ## Development
 
+This copy is a member of the parent workspace. Run its checks from the
+repository root so `--locked` uses the tracked workspace `Cargo.lock`; no
+ignored, checkout-local lockfile is required.
+
 ```console
-cargo test --all-targets --all-features --locked
-cargo clippy --all-targets --all-features --locked -- -D warnings
-cargo package --locked
+cargo test -p liteinst2 --all-targets --all-features --locked
+cargo clippy -p liteinst2 --all-targets --all-features --locked -- -D warnings
+cargo package -p liteinst2 --locked
 ```
 
 GitHub Actions runs these blocking checks on Linux x86-64:
@@ -132,17 +136,26 @@ GitHub Actions runs these blocking checks on Linux x86-64:
 - Debug and release `cargo test --all-targets --all-features` cover decoding,
   cache-line planning, jump publication, trap routing, relocation, context
   preservation, and concurrent toggling using synthetic dual-mapped functions.
+- `relocated_fault_pc_translation` runs in the normal suite but delegates its
+  intentional SIGSEGV to a bounded child process so it cannot mutate the test
+  harness's signal state.
+
+The following host-scale checks are opt-in rather than part of the blocking
+workspace runs:
+
 - `live_probe_stress_matrix` exercises 128 rapid probes, one million opcode
   stores, 16 guarded jump probes, 10,000 activation cycles, and concurrent
   signal delivery at its default scale.
-- `probe_overhead_benchmark` is used only as a functional active-hook loop: CI
-  requires one callback per call but does not enforce its host-dependent timing.
-
-The live stress matrix and overhead benchmark are opt-in:
+- `probe_overhead_benchmark` is used only as a functional active-hook loop. When
+  run, it requires one callback per call but does not enforce host-dependent
+  timing.
+- `benchmark_single_byte_toggle_latency` is the separate host-timing benchmark
+  for the one-byte rapid-patch operation.
 
 ```console
-cargo test --release --test stress live_probe_stress_matrix -- --ignored --exact --nocapture
-cargo test --release --test stress probe_overhead_benchmark -- --ignored --exact --nocapture
+cargo test -p liteinst2 --release --locked --test stress live_probe_stress_matrix -- --ignored --exact --nocapture
+cargo test -p liteinst2 --release --locked --test stress probe_overhead_benchmark -- --ignored --exact --nocapture
+cargo test -p liteinst2 --release --locked --lib rapid::tests::live::benchmark_single_byte_toggle_latency -- --ignored --exact --nocapture
 ```
 
 `LITEINST_STRESS_RAPID_FUNCTIONS`, `LITEINST_STRESS_RAPID_ITERATIONS`,
