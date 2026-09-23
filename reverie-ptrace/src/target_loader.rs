@@ -25,6 +25,10 @@ use goblin::elf::sym;
 use reverie::syscalls::MemoryAccess;
 use safeptrace::Stopped;
 
+mod ordinary;
+pub use ordinary::TargetHostInitializer;
+pub use ordinary::resolve_host_initializer;
+
 const MAX_FILE: usize = 32 * 1024 * 1024;
 const MAX_MAPS: usize = 2 * 1024 * 1024;
 const MAX_READ: usize = 8 * 1024 * 1024;
