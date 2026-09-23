@@ -84,15 +84,38 @@ fn getdents64_copyout_matches_native_tool() {
     getdents64_copyout_case("getdents64_copyout_matches_native_tool", true);
 }
 
+#[test]
+fn getdents64_preserves_concurrent_unwritten_bytes_direct() {
+    getdents64_native_parity_case(
+        "getdents64_preserves_concurrent_unwritten_bytes_direct",
+        false,
+        GETDENTS_CONCURRENT_PROGRAM,
+    );
+}
+
+#[test]
+fn getdents64_preserves_concurrent_unwritten_bytes_tool() {
+    getdents64_native_parity_case(
+        "getdents64_preserves_concurrent_unwritten_bytes_tool",
+        true,
+        GETDENTS_CONCURRENT_PROGRAM,
+    );
+}
+
 fn getdents64_copyout_case(test: &str, with_tool: bool) {
+    getdents64_native_parity_case(test, with_tool, GETDENTS_COPYOUT_PROGRAM);
+}
+
+fn getdents64_native_parity_case(test: &str, with_tool: bool, source: &str) {
     if !leader_self_exec_bounded(test) {
         return;
     }
     let directory = TestDirectory::new();
     let input = directory.0.join("input");
     std::fs::create_dir(&input).unwrap();
+    std::fs::create_dir(directory.0.join("empty")).unwrap();
     std::fs::write(input.join("a-long-directory-entry-for-copyout"), b"x").unwrap();
-    let program = compile_c_program(&directory.0, "getdents-copyout", GETDENTS_COPYOUT_PROGRAM);
+    let program = compile_c_program(&directory.0, "getdents-copyout", source);
     let native = std::process::Command::new("timeout")
         .args(["--kill-after=2s", "10s"])
         .arg(&program)
@@ -142,6 +165,110 @@ fn getdents64_copyout_case(test: &str, with_tool: bool) {
         eprintln!("copyout parity passed: with_tool={with_tool} repetition={repetition}");
     }
 }
+
+const GETDENTS_CONCURRENT_PROGRAM: &str = r#"
+#define _GNU_SOURCE
+#include <stdatomic.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define SIZE (16 * 1024 * 1024)
+#define CHECK(expression) do { if (!(expression)) { printf("failure line=%d errno=%d\n", __LINE__, errno); return 93; } } while (0)
+static _Atomic unsigned long *wide_marker;
+static _Atomic unsigned char *padding_marker;
+static _Atomic int stop, clobber;
+static _Atomic unsigned long progress;
+static unsigned long before, observed;
+
+static unsigned long marker_value(void) {
+    return padding_marker ? atomic_load(padding_marker) : atomic_load(wide_marker);
+}
+
+static void *writer(void *unused) {
+    (void)unused;
+    unsigned long last = 0;
+    while (!atomic_load(&stop)) {
+        unsigned long actual = marker_value();
+        if (actual != last) {
+            before = last;
+            observed = actual;
+            atomic_store(&clobber, 1);
+            return 0;
+        }
+        if (padding_marker) {
+            last = (unsigned char)(last + 1);
+            atomic_store(padding_marker, last);
+        } else {
+            atomic_store(wide_marker, ++last);
+        }
+        atomic_fetch_add(&progress, 1);
+        sched_yield();
+    }
+    // Check once after the stop request too, so a final copyout cannot escape
+    // detection merely because it overlapped the writer's final yield.
+    unsigned long actual = marker_value();
+    if (actual != last) {
+        before = last;
+        observed = actual;
+        atomic_store(&clobber, 1);
+    }
+    return 0;
+}
+
+int main(void) {
+    CHECK(close(0) == 0);
+    int fd = open("empty", O_RDONLY | O_DIRECTORY);
+    CHECK(fd == 0);
+    unsigned char reference[256];
+    CHECK(syscall(SYS_getdents64, fd, reference, sizeof(reference)) == 48);
+    size_t padding_offset = 20 + strlen((char *)reference + 19);
+    CHECK(padding_offset < 24);
+    unsigned char *buffer = mmap(0, SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(buffer != MAP_FAILED);
+    const char *names[] = {"EOF", "short tail", "padding", "EINVAL"};
+    for (int mode = 0; mode < 4; ++mode) {
+        memset(buffer, 0, SIZE);
+        CHECK(lseek(fd, 0, SEEK_SET) == 0);
+        if (mode == 0) {
+            CHECK(syscall(SYS_getdents64, fd, reference, sizeof(reference)) == 48);
+            CHECK(syscall(SYS_getdents64, fd, reference, sizeof(reference)) == 0);
+        }
+        padding_marker = mode == 2 ? (_Atomic unsigned char *)(buffer + padding_offset) : 0;
+        wide_marker = (_Atomic unsigned long *)(buffer + (mode == 3 ? 8 : SIZE / 2));
+        atomic_store(&stop, 0);
+        atomic_store(&clobber, 0);
+        atomic_store(&progress, 0);
+        pthread_t thread;
+        CHECK(pthread_create(&thread, 0, writer, 0) == 0);
+        while (atomic_load(&progress) < 1000) sched_yield();
+        int calls = 0;
+        for (; calls < 32 && !atomic_load(&clobber); ++calls) {
+            if (mode != 0) CHECK(lseek(fd, 0, SEEK_SET) == 0);
+            errno = 0;
+            long result = syscall(SYS_getdents64, fd, buffer, mode == 3 ? 23 : SIZE);
+            CHECK(mode == 3 ? result == -1 && errno == EINVAL : result == (mode == 0 ? 0 : 48));
+        }
+        atomic_store(&stop, 1);
+        CHECK(pthread_join(thread, 0) == 0);
+        if (atomic_load(&clobber)) {
+            printf("%s calls=%d clobber=1 before=%lu observed=%lu\n", names[mode], calls, before, observed);
+            return 94;
+        }
+        CHECK(calls == 32);
+        printf("%s calls=32 sole-writer-preserved\n", names[mode]);
+    }
+    CHECK(munmap(buffer, SIZE) == 0 && close(fd) == 0);
+    return 0;
+}
+"#;
 
 const GETDENTS_COPYOUT_PROGRAM: &str = r#"
 #define _GNU_SOURCE

@@ -279,6 +279,60 @@ pub(crate) struct HostMemoryOperand {
     _length: usize,
 }
 
+struct WriteAliasExtent {
+    offset: usize,
+    slice: BackingSlice,
+}
+
+/// Owns only virtual addresses; every accessible page aliases retained guest
+/// backing. The numeric address is passed to the kernel, never dereferenced as
+/// a Rust slice spanning the distinct MAP_FIXED mappings.
+struct WriteAliasMapping {
+    address: usize,
+    length: usize,
+    _extents: Vec<WriteAliasExtent>,
+}
+
+impl Drop for WriteAliasMapping {
+    fn drop(&mut self) {
+        if self.length != 0 {
+            // SAFETY: this entire reserved range belongs to this value, including
+            // any subranges replaced by shared mappings during construction.
+            unsafe {
+                libc::munmap(
+                    std::ptr::with_exposed_provenance_mut::<libc::c_void>(self.address),
+                    self.length,
+                );
+            }
+        }
+    }
+}
+
+/// A scoped kernel copyout view. Permissions and host copies are serialized
+/// through the syscall, while peer vCPUs still see the exact shared-byte writes.
+/// Use only for bounded synchronous operations that do not reenter guest memory
+/// or acquire its allocation lock. This does not hold a short-copy admission.
+pub(crate) struct UserWriteAlias<'a> {
+    // Field order releases the mappings before their backing owners/locks and
+    // finally the retained-operand token, whose drop acquires the entry gate.
+    mapping: WriteAliasMapping,
+    offset: usize,
+    memory: &'a GuestMemory,
+    _host_access: MutexGuard<'a, ()>,
+    _permissions: MutexGuard<'a, AddressSpaceState>,
+    _retained: RetainedOperand,
+}
+
+impl UserWriteAlias<'_> {
+    pub(crate) fn address(&self) -> *mut libc::c_void {
+        std::ptr::with_exposed_provenance_mut(self.mapping.address + self.offset)
+    }
+
+    pub(crate) fn finish(self) -> Result<()> {
+        self.memory.check_copy_failure()
+    }
+}
+
 /// Proof returned only after the memory owner has retained an installed mmap
 /// view. Closed admission consumes this receipt before advancing the sole
 /// mapping generation.
@@ -1600,6 +1654,141 @@ impl UserMemory {
     pub(crate) fn host_operand(&self, address: u64, length: usize) -> Result<HostMemoryOperand> {
         self.memory
             .with_copy(|copy| self.host_operand_admitted(address, length, copy))
+    }
+
+    /// Mirror current writable guest pages into a bounded kernel-only alias.
+    /// Invalid and protected addresses remain PROT_NONE so the actual syscall
+    /// decides whether it needs to touch them, including at EOF or zero count.
+    pub(crate) fn writable_alias(&self, address: u64, length: usize) -> Result<UserWriteAlias<'_>> {
+        self.memory.with_copy(|copy| {
+            let retained = self
+                .memory
+                .mapping
+                .entry_gate
+                .retain_operand(copy)
+                .map_err(|failure| failure.error())?;
+            // Match permission-aware copyout's lock order. Keeping both guards
+            // through the syscall prevents stale mprotect/munmap permissions
+            // and simultaneous Rust dereferences of kernel-written memory.
+            let permissions = self
+                .memory
+                .mapping
+                .address_space
+                .lock()
+                .expect("guest memory access map lock poisoned");
+            let host_access = self
+                .memory
+                .mapping
+                .slice
+                .backing
+                .host_access
+                .lock()
+                .expect("guest memory lock poisoned");
+            let offset = address as usize % PAGE_SIZE;
+            let mapping_length = if length == 0 {
+                0
+            } else {
+                offset
+                    .checked_add(length)
+                    .and_then(|size| size.checked_add(PAGE_SIZE - 1))
+                    .map(|size| size & !(PAGE_SIZE - 1))
+                    .ok_or(Error::GuestMemoryAccessDenied { address, length })?
+            };
+            let mut extents: Vec<WriteAliasExtent> = Vec::new();
+            let first_page = address - offset as u64;
+            for alias_offset in (0..mapping_length).step_by(PAGE_SIZE) {
+                let Some(page_address) = first_page.checked_add(alias_offset as u64) else {
+                    break;
+                };
+                if page_address < self.guest_base() || page_address >= self.guest_end() {
+                    continue;
+                }
+                let page = page_address / PAGE_SIZE as u64;
+                if permissions.enabled
+                    && !matches!(
+                        permissions.pages.get(&page),
+                        Some(UserPageState::Accessible { writable: true })
+                    )
+                {
+                    continue;
+                }
+                let slice = match permissions.backing_pages.get(&page) {
+                    Some(installed) => installed._slice.clone(),
+                    None => BackingSlice {
+                        backing: self.memory.mapping.slice.backing.clone(),
+                        offset: self.memory.mapping.slice.offset
+                            + (page_address - self.guest_base()) as usize,
+                        length: PAGE_SIZE,
+                    },
+                };
+                if let Some(last) = extents.last_mut()
+                    && last.offset + last.slice.length == alias_offset
+                    && Arc::ptr_eq(&last.slice.backing, &slice.backing)
+                    && last.slice.offset + last.slice.length == slice.offset
+                {
+                    last.slice.length += slice.length;
+                } else {
+                    extents.push(WriteAliasExtent {
+                        offset: alias_offset,
+                        slice,
+                    });
+                }
+            }
+            let mapping_address = if mapping_length == 0 {
+                // getdents64 does not dereference a zero-count destination.
+                // Still retain/check admission and policy locks as above.
+                PAGE_SIZE
+            } else {
+                // SAFETY: this anonymous inaccessible reservation owns no guest
+                // bytes; the shared extents below replace only its own pages.
+                let mapping = unsafe {
+                    libc::mmap(
+                        std::ptr::null_mut(),
+                        mapping_length,
+                        libc::PROT_NONE,
+                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                        -1,
+                        0,
+                    )
+                };
+                if mapping == libc::MAP_FAILED {
+                    return Err(Error::MemoryMapping(io::Error::last_os_error()));
+                }
+                mapping.expose_provenance()
+            };
+            let mapping = WriteAliasMapping {
+                address: mapping_address,
+                length: mapping_length,
+                _extents: extents,
+            };
+            for extent in &mapping._extents {
+                let target = mapping.address + extent.offset;
+                // SAFETY: the checked extent is page-aligned, wholly within the
+                // owned reservation, and backed by a retained live memfd slice.
+                // No Rust reference is formed over any replaced mapping.
+                let installed = unsafe {
+                    libc::mmap(
+                        std::ptr::with_exposed_provenance_mut::<libc::c_void>(target),
+                        extent.slice.length,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_SHARED | libc::MAP_FIXED,
+                        extent.slice.backing.fd.as_raw_fd(),
+                        extent.slice.offset as libc::off_t,
+                    )
+                };
+                if installed == libc::MAP_FAILED {
+                    return Err(Error::MemoryMapping(io::Error::last_os_error()));
+                }
+            }
+            Ok(UserWriteAlias {
+                mapping,
+                offset,
+                memory: &self.memory,
+                _host_access: host_access,
+                _permissions: permissions,
+                _retained: retained,
+            })
+        })
     }
 
     fn host_operand_admitted(
@@ -3765,6 +3954,122 @@ mod tests {
                 .copy_to_user_prefix(2 * PAGE_SIZE as u64, b"x")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn writable_alias_shares_live_bytes_and_holds_copyout_permissions() {
+        use std::sync::atomic::AtomicU64;
+        use std::sync::atomic::Ordering;
+
+        const BASE: u64 = 0x1000;
+        let backing = Arc::new(Backing::new(4 * PAGE_SIZE).unwrap());
+        let slice = BackingSlice::new(backing, PAGE_SIZE, 3 * PAGE_SIZE).unwrap();
+        let memory = GuestMemory::from_backing_slice(BASE, slice).unwrap();
+        memory.write_raw(BASE, &[0xa5; 3 * PAGE_SIZE]).unwrap();
+        memory
+            .map_user_range(BASE, PAGE_SIZE as u64, false)
+            .unwrap();
+        memory
+            .map_user_permissions(BASE + PAGE_SIZE as u64, PAGE_SIZE as u64, true, false)
+            .unwrap();
+        memory
+            .map_user_range(BASE + 2 * PAGE_SIZE as u64, PAGE_SIZE as u64, true)
+            .unwrap();
+        memory.enable_user_access();
+        // This atomic is a controlled peer-vCPU store, which deliberately does
+        // not acquire the host-copy mutex. It is naturally aligned and remains
+        // in this live mapping, disjoint from the kernel's one-byte output.
+        let marker = unsafe { &*memory.mapping.mapping.as_ptr().add(512).cast::<AtomicU64>() };
+        marker.store(41, Ordering::SeqCst);
+        let zero = std::fs::File::open("/dev/zero").unwrap();
+        let user = memory.user();
+        let alias = user.writable_alias(BASE + 3, 3 * PAGE_SIZE - 3).unwrap();
+        assert_eq!(alias.address() as usize % PAGE_SIZE, 3);
+        assert_eq!(memory.entry_gate().test_state().copies, 0);
+        assert_eq!(memory.entry_gate().test_state().retained_operands, 1);
+        assert!(memory.mapping.address_space.try_lock().is_err());
+        assert!(memory.mapping.slice.backing.host_access.try_lock().is_err());
+        // SAFETY: the alias retains every mapping through these kernel copies.
+        assert_eq!(
+            unsafe { libc::read(zero.as_raw_fd(), alias.address(), 1) },
+            1
+        );
+        for offset in [PAGE_SIZE - 3, 2 * PAGE_SIZE - 3] {
+            let destination = alias.address().cast::<u8>().wrapping_add(offset).cast();
+            assert_eq!(unsafe { libc::read(zero.as_raw_fd(), destination, 1) }, -1);
+            assert_eq!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::EFAULT)
+            );
+        }
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| marker.store(42, Ordering::SeqCst))
+                .join()
+                .unwrap();
+        });
+        alias.finish().unwrap();
+        assert_eq!(marker.load(Ordering::SeqCst), 42);
+        assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
+        let mut actual = vec![0; 3 * PAGE_SIZE];
+        memory.read_raw(BASE, &mut actual).unwrap();
+        let mut expected = vec![0xa5; 3 * PAGE_SIZE];
+        expected[3] = 0;
+        expected[512..520].copy_from_slice(&42_u64.to_ne_bytes());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn writable_alias_uses_installed_backings_across_page_boundaries() {
+        let memory = GuestMemory::new(0, 3 * PAGE_SIZE).unwrap();
+        memory.write_raw(0, &[0xa5; 3 * PAGE_SIZE]).unwrap();
+        memory
+            .map_user_range(0, 3 * PAGE_SIZE as u64, false)
+            .unwrap();
+        memory.enable_user_access();
+        let pending = memory
+            .stage_backing_page(PAGE_SIZE as u64, &[0x5a; PAGE_SIZE])
+            .unwrap();
+        let gate = memory.entry_gate();
+        let mut closed =
+            futures::executor::block_on(gate.try_close().unwrap().unwrap().finish()).unwrap();
+        pending.publish(&mut closed).unwrap();
+        drop(closed);
+        let zero = std::fs::File::open("/dev/zero").unwrap();
+        let user = memory.user();
+        let alias = user.writable_alias(0, 3 * PAGE_SIZE).unwrap();
+        for offset in [PAGE_SIZE - 1, 2 * PAGE_SIZE - 1] {
+            let destination = alias.address().cast::<u8>().wrapping_add(offset).cast();
+            // SAFETY: both bytes are writable in the retained alias, crossing
+            // from one separately mapped backing to another only in the kernel.
+            assert_eq!(unsafe { libc::read(zero.as_raw_fd(), destination, 2) }, 2);
+        }
+        alias.finish().unwrap();
+        let mut actual = vec![0; 3 * PAGE_SIZE];
+        memory.read_raw(0, &mut actual).unwrap();
+        let mut expected = vec![0xa5; 3 * PAGE_SIZE];
+        expected[PAGE_SIZE..2 * PAGE_SIZE].fill(0x5a);
+        expected[PAGE_SIZE - 1..PAGE_SIZE + 1].fill(0);
+        expected[2 * PAGE_SIZE - 1..2 * PAGE_SIZE + 1].fill(0);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn writable_alias_zero_length_checks_poison_and_releases_failed_preparation() {
+        let memory = GuestMemory::new(0, PAGE_SIZE).unwrap();
+        let user = memory.user();
+        assert!(user.writable_alias(1, usize::MAX).is_err());
+        assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
+        assert!(memory.mapping.address_space.try_lock().is_ok());
+        assert!(memory.mapping.slice.backing.host_access.try_lock().is_ok());
+        let alias = user.writable_alias(u64::MAX, 0).unwrap();
+        memory.entry_gate().poison(
+            None,
+            Error::UnexpectedVcpuExit("alias poison control".to_owned()),
+        );
+        assert!(alias.finish().is_err());
+        assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
+        assert!(user.writable_alias(u64::MAX, 0).is_err());
     }
 
     #[test]

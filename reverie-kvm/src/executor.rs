@@ -13453,58 +13453,32 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     {
         return 0;
     }
-    // Preserve the original buffer length and page offset while making its
-    // non-writable suffix fault in the host. The kernel must decide how many
-    // complete records fit: their padding is not written, an incomplete record
-    // can modify a prefix before EFAULT, and EOF never touches the buffer.
-    // Calling once also preserves opaque directory cookies shared by dup aliases.
-    let writable = memory
-        .user()
-        .user_writable_prefix(args[1], length)
-        .unwrap_or(0);
-    let mut staged = match StagedIoVector::new(
-        GuestIoVec {
-            base: args[1],
-            length,
-        },
-        writable,
-        PAGE_SIZE as usize,
-    ) {
-        Ok(staged) => staged,
-        Err(error) => return error,
+    // Let the kernel write through a protected shared alias. A snapshot/copyback
+    // would clobber concurrent guest writes to untouched padding or the tail,
+    // including when EOF produces no output at all.
+    let user = memory.user();
+    let alias = match user.writable_alias(args[1], length) {
+        Ok(alias) => alias,
+        Err(crate::Error::MemoryMapping(error)) => return io_error(error),
+        Err(_) => return negative_errno(libc::EFAULT),
     };
-    // Prefill so bytes that Linux leaves untouched (including record padding)
-    // remain unchanged when copying back after either success or a partial fault.
-    if writable != 0
-        && memory
-            .user()
-            .read(args[1], staged.accessible_slice_mut(writable))
-            .is_err()
-    {
-        return negative_errno(libc::EFAULT);
-    }
-    let output = staged.host_iovec();
-    // SAFETY: file owns a live descriptor; output points into the live staging
-    // arena, whose protected suffix is intentionally faultable by the kernel.
+    // SAFETY: file owns a live descriptor; alias retains the current backing,
+    // permissions and host-copy locks for the requested bounded kernel operand.
     let count = unsafe {
         libc::syscall(
             libc::SYS_getdents64,
             file.as_raw_fd(),
-            output.iov_base,
-            output.iov_len,
+            alias.address(),
+            length,
         )
     };
+    // Capture errno before dropping the alias invokes munmap.
     let result = if count < 0 {
         io_error(std::io::Error::last_os_error())
     } else {
         count as i64
     };
-    if writable != 0
-        && memory
-            .user()
-            .copy_to_user(args[1], staged.accessible_slice(writable))
-            .is_err()
-    {
+    if alias.finish().is_err() {
         return negative_errno(libc::EFAULT);
     }
     result
