@@ -16194,11 +16194,56 @@ fn getdents64_consumes_low_descriptor_words_on_kvm() {
         }
     }
     common.push_str("getdents64 error-order rows=500 buffers=unchanged\n");
+    let start = std::time::Instant::now();
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(&executable)
+        .arg("native")
+        .args([&primary, &decoy, &regular])
+        .stdin(std::process::Stdio::from(proc_path_stdin()))
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "native fixture failed: {native:?}");
+    // Parse exactly three ordered, fixed-width native cookie vectors. Do not
+    // strip or normalize output: the complete native and guest byte comparisons
+    // below also reject extra, missing, duplicate, or misplaced rows.
+    let native_text = std::str::from_utf8(&native.stdout).unwrap();
+    let mut native_rows = native_text
+        .strip_prefix(common.as_str())
+        .unwrap()
+        .split('\n');
     for fd in [0, 3, 257] {
+        let row = native_rows.next().unwrap();
+        let prefix = format!("getdents64 short-count-cookies fd={fd} ");
+        let fields: Vec<_> = row
+            .strip_prefix(prefix.as_str())
+            .unwrap()
+            .split(' ')
+            .collect();
+        assert_eq!(fields.len(), 3, "native cookie vector for fd {fd}");
+        let mut cookies = [0_u64; 3];
+        for (index, label) in ["count0=", "count1=", "count23="].into_iter().enumerate() {
+            let value = fields[index].strip_prefix(label).unwrap();
+            assert_eq!(value.len(), 16, "native {label} cookie width for fd {fd}");
+            assert!(
+                value
+                    .bytes()
+                    .all(|byte| { byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte) })
+            );
+            cookies[index] = u64::from_str_radix(value, 16).unwrap();
+            assert!(cookies[index] <= i64::MAX as u64);
+        }
         common.push_str(&format!(
-            "getdents64 cursor fd={fd} rows=80 short=EINVAL fault=unchanged \
-             dup=shared rewind=fresh eof=zero\n"
+            "getdents64 short-count-cookies fd={fd} count0={:016x} count1={:016x} count23={:016x}\n",
+            cookies[0], cookies[1], cookies[2]
         ));
+        let cursor_row = format!(
+            "getdents64 cursor fd={fd} rows=80 short=EINVAL fault=unchanged \
+             dup=shared rewind=fresh eof=zero"
+        );
+        assert_eq!(native_rows.next(), Some(cursor_row.as_str()));
+        common.push_str(&cursor_row);
+        common.push('\n');
     }
     common.push_str("getdents64 canonical-count boundary=16777216,16777217 guards=unchanged\n");
     // The controlled directories have one common native/KVM oracle. Synthetic
@@ -16213,17 +16258,6 @@ fn getdents64_consumes_low_descriptor_words_on_kvm() {
          getdents64 policy=synthetic-proc rows=100 zero-before-buffer unchanged\n\
          getdents64 checked calls=874\n"
     );
-
-    let start = std::time::Instant::now();
-    let native = std::process::Command::new("timeout")
-        .args(["--kill-after=2s", "10s"])
-        .arg(&executable)
-        .arg("native")
-        .args([&primary, &decoy, &regular])
-        .stdin(std::process::Stdio::from(proc_path_stdin()))
-        .output()
-        .unwrap();
-    assert!(native.status.success(), "native fixture failed: {native:?}");
     assert_eq!(native.stdout, native_expected.as_bytes());
     assert!(native.stderr.is_empty(), "{native:?}");
     eprintln!(

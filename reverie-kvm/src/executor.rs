@@ -33252,6 +33252,42 @@ mod tests {
         );
     }
 
+    fn native_getdents64_short_position(
+        file: &mut std::fs::File,
+        upper: u64,
+        invalid_pointer: bool,
+        length: u64,
+    ) -> i64 {
+        assert!(matches!(length, 0 | 1 | 23));
+        let mut bytes = [0xa7; 16 + 23 + 16];
+        let buffer = if invalid_pointer {
+            usize::MAX as *mut libc::c_void
+        } else {
+            bytes[16..].as_mut_ptr().cast::<libc::c_void>()
+        };
+        // SAFETY: file owns a live descriptor. The valid buffer has room for
+        // every tested count; Linux validates the deliberately invalid pointer.
+        // This is an independent native syscall, not executor reinjection.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_getdents64,
+                upper | file.as_raw_fd() as u64,
+                buffer,
+                length,
+                u64::MAX,
+                0x5a5a_a5a5_dead_beef_u64,
+                1_u64 << 63,
+            )
+        };
+        assert_eq!(result, -1, "native short count={length}, upper={upper:#x}");
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EINVAL)
+        );
+        assert_eq!(bytes, [0xa7; 16 + 23 + 16], "native whole-buffer sentinels");
+        i64::try_from(file.stream_position().unwrap()).unwrap()
+    }
+
     #[test]
     fn getdents64_consumes_low_descriptor_words() {
         const BUFFER: u64 = 0x100;
@@ -33319,6 +33355,13 @@ mod tests {
         std::fs::create_dir(&decoy).unwrap();
         std::fs::write(directory.join("entry"), b"payload").unwrap();
         std::fs::write(decoy.join("decoy-entry"), b"decoy").unwrap();
+        // Independent opens of the same controlled directories supply the
+        // native cursor oracle. A dup or try_clone would share the tested
+        // cursor and could make an incorrect advance compare equal to itself.
+        let mut native_directories = BTreeMap::from([
+            (3, std::fs::File::open(&directory).unwrap()),
+            (257, std::fs::File::open(&decoy).unwrap()),
+        ]);
         let mut state = test_state(&root.0);
         state.files.insert(3, getdents64_test_directory(&directory));
         state.files.insert(257, getdents64_test_directory(&decoy));
@@ -33401,15 +33444,30 @@ mod tests {
                             negative_errno(libc::EINVAL),
                             "nonempty stream and small canonical count"
                         );
+                        let expected = native_getdents64_short_position(
+                            native_directories.get_mut(&(fd as libc::c_int)).unwrap(),
+                            upper,
+                            address == u64::MAX,
+                            length,
+                        );
+                        assert_eq!(
+                            getdents64_position(&mut memory, &mut state, fd as libc::c_int),
+                            expected,
+                            "native short-count cursor: fd={fd}, upper={upper:#x}, count={length}"
+                        );
+                        if fd == 3 {
+                            assert_eq!(
+                                getdents64_position(&mut memory, &mut state, alias as libc::c_int),
+                                expected,
+                                "the dup must observe the same native short-count cursor"
+                            );
+                        }
                     }
                 }
-                assert_eq!(
-                    getdents64_position(&mut memory, &mut state, fd as libc::c_int),
-                    0
-                );
             }
         }
 
+        let decoy_before_faults = getdents64_position(&mut memory, &mut state, 257);
         let faults = [
             (u64::MAX, CAPACITY),
             (memory.guest_end() - 16, 24),
@@ -33417,17 +33475,23 @@ mod tests {
             (PAGE_SIZE - 23, 24),
         ];
         // Both range and accessible-prefix preflight must happen before host
-        // enumeration. Check a fresh description and its dup-shared position.
+        // enumeration. Native EINVAL may establish an opaque directory cookie;
+        // each rejected copyout must preserve that exact preceding position.
         for upper in GETDENTS64_UPPER_WORDS {
             for (address, length) in faults {
+                let before = getdents64_position(&mut memory, &mut state, 3);
+                assert_eq!(
+                    getdents64_position(&mut memory, &mut state, alias as libc::c_int),
+                    before
+                );
                 assert_eq!(
                     checked_getdents64(&mut memory, &mut state, upper | 3, address, length).0,
                     negative_errno(libc::EFAULT)
                 );
-                assert_eq!(getdents64_position(&mut memory, &mut state, 3), 0);
+                assert_eq!(getdents64_position(&mut memory, &mut state, 3), before);
                 assert_eq!(
                     getdents64_position(&mut memory, &mut state, alias as libc::c_int),
-                    0
+                    before
                 );
             }
         }
@@ -33447,9 +33511,14 @@ mod tests {
             for (address, length) in faults {
                 let eof = getdents64_position(&mut memory, &mut state, 3);
                 assert_eq!(
+                    getdents64_position(&mut memory, &mut state, alias as libc::c_int),
+                    eof
+                );
+                assert_eq!(
                     checked_getdents64(&mut memory, &mut state, upper | 3, address, length).0,
                     negative_errno(libc::EFAULT)
                 );
+                assert_eq!(getdents64_position(&mut memory, &mut state, 3), eof);
                 assert_eq!(
                     getdents64_position(&mut memory, &mut state, alias as libc::c_int),
                     eof
@@ -33457,6 +33526,12 @@ mod tests {
             }
             rewind_getdents64(&mut memory, &mut state, alias as libc::c_int);
             for (address, length) in faults {
+                let before = getdents64_position(&mut memory, &mut state, 3);
+                assert_eq!(before, 0, "the explicit rewind must reset the cursor");
+                assert_eq!(
+                    getdents64_position(&mut memory, &mut state, alias as libc::c_int),
+                    before
+                );
                 assert_eq!(
                     checked_getdents64(
                         &mut memory,
@@ -33468,7 +33543,11 @@ mod tests {
                     .0,
                     negative_errno(libc::EFAULT)
                 );
-                assert_eq!(getdents64_position(&mut memory, &mut state, 3), 0);
+                assert_eq!(getdents64_position(&mut memory, &mut state, 3), before);
+                assert_eq!(
+                    getdents64_position(&mut memory, &mut state, alias as libc::c_int),
+                    before
+                );
             }
             // A usable 24-byte prefix succeeds although the rest of the
             // requested buffer is inaccessible, and consumes exactly one record.
@@ -33502,7 +33581,11 @@ mod tests {
                 0
             );
         }
-        assert_eq!(getdents64_position(&mut memory, &mut state, 257), 0);
+        assert_eq!(
+            getdents64_position(&mut memory, &mut state, 257),
+            decoy_before_faults,
+            "primary-directory operations must preserve the tested decoy cursor"
+        );
         let (_, decoy_records) = checked_getdents64(&mut memory, &mut state, 257, BUFFER, CAPACITY);
         assert_getdents64_names(&decoy_records, "decoy-entry");
     }

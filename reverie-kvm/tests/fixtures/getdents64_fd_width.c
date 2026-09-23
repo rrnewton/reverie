@@ -264,19 +264,32 @@ static void cursor_controls(int fd, const char *path, int decoy,
   CHECK(mprotect(inaccessible, 4096, PROT_NONE) == 0);
   int alias = dup(fd);
   CHECK(alias >= 0);
+  off_t short_positions[3] = {0};
   for (size_t high = 0; high < 5; ++high) {
     uint64_t raw_fd = upper_words[high] | (uint32_t)fd;
     rewind_directory(fd);
     for (size_t count = 0; count < 3; ++count) {
       expect_error(raw_fd, 0, counts[count], EINVAL);
-      CHECK(lseek(fd, 0, SEEK_CUR) == 0);
+      const off_t position = lseek(fd, 0, SEEK_CUR);
+      CHECK(position >= 0 && lseek(alias, 0, SEEK_CUR) == position);
+      if (high == 0)
+        short_positions[count] = position;
+      else
+        CHECK(position == short_positions[count]);
     }
     for (size_t count = 3; count < 5; ++count) {
+      const off_t before_invalid = lseek(fd, 0, SEEK_CUR);
+      CHECK(before_invalid >= 0 && lseek(alias, 0, SEEK_CUR) == before_invalid);
       expect_error(raw_fd, 1, counts[count], EFAULT);
-      CHECK(lseek(fd, 0, SEEK_CUR) == 0);
+      CHECK(lseek(fd, 0, SEEK_CUR) == before_invalid &&
+            lseek(alias, 0, SEEK_CUR) == before_invalid);
+      const off_t before_inaccessible = lseek(fd, 0, SEEK_CUR);
+      CHECK(before_inaccessible >= 0 &&
+            lseek(alias, 0, SEEK_CUR) == before_inaccessible);
       result_is(raw_fd, counts[count], getdents(raw_fd, inaccessible, counts[count]),
                 -1, EFAULT);
-      CHECK(lseek(fd, 0, SEEK_CUR) == 0);
+      CHECK(lseek(fd, 0, SEEK_CUR) == before_inaccessible &&
+            lseek(alias, 0, SEEK_CUR) == before_inaccessible);
       CHECK(mprotect(inaccessible, 4096, PROT_READ) == 0);
       CHECK(all_bytes(inaccessible, 4096, 0xa5));
       CHECK(mprotect(inaccessible, 4096, PROT_NONE) == 0);
@@ -310,6 +323,11 @@ static void cursor_controls(int fd, const char *path, int decoy,
   }
   CHECK(close(alias) == 0 && munmap(inaccessible, 4096) == 0);
   CHECK(calls - before == 80);
+  // Fixed-width native vectors are compared byte-for-byte with every direct
+  // KVM and Tool run by the Rust harness, in addition to the alias checks above.
+  printf("getdents64 short-count-cookies fd=%d count0=%016lx count1=%016lx "
+         "count23=%016lx\n", fd, (unsigned long)short_positions[0],
+         (unsigned long)short_positions[1], (unsigned long)short_positions[2]);
   printf("getdents64 cursor fd=%d rows=%u short=EINVAL fault=unchanged dup=shared "
          "rewind=fresh eof=zero\n", fd, calls - before);
 }
