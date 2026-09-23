@@ -1254,7 +1254,14 @@ fn captured_alias_creation_ignores_closed_and_reused_supervisor_stdio() {
             0
         );
         let metadata = capture_native_stat(raw);
-        snapshots.push((metadata.st_dev, metadata.st_ino, flags | libc::O_APPEND | libc::O_NONBLOCK));
+        snapshots.push((
+            metadata.st_dev,
+            metadata.st_ino,
+            flags | libc::O_APPEND | libc::O_NONBLOCK,
+            metadata.st_size,
+            metadata.st_blocks,
+            unsafe { libc::fcntl(raw, libc::F_GETFD) },
+        ));
         sentinels.push(unsafe { std::fs::File::from_raw_fd(raw) });
     }
 
@@ -1285,6 +1292,80 @@ fn captured_alias_creation_ignores_closed_and_reused_supervisor_stdio() {
             &memory,
         ) as i32;
         assert!(reopened >= 3);
+        let high_source = (1_u64 << 32) | source as u64;
+        for (number, args, expected) in [
+            (
+                libc::SYS_ftruncate,
+                [high_source, 0, 0, 0, 0, 0],
+                negative_errno(libc::EINVAL),
+            ),
+            (
+                libc::SYS_fallocate,
+                [high_source, 0, 0, 4096, 0, 0],
+                negative_errno(libc::ESPIPE),
+            ),
+            (
+                libc::SYS_fsync,
+                [high_source, 0, 0, 0, 0, 0],
+                negative_errno(libc::EINVAL),
+            ),
+            (
+                libc::SYS_fdatasync,
+                [high_source, 0, 0, 0, 0, 0],
+                negative_errno(libc::EINVAL),
+            ),
+            (
+                libc::SYS_readahead,
+                [high_source, 0, 1, 0, 0, 0],
+                negative_errno(libc::EBADF),
+            ),
+            (
+                libc::SYS_sync_file_range,
+                [
+                    high_source,
+                    0,
+                    4096,
+                    libc::SYNC_FILE_RANGE_WRITE as u64,
+                    0,
+                    0,
+                ],
+                negative_errno(libc::ESPIPE),
+            ),
+        ] {
+            assert_eq!(
+                reused.execute(&SyscallRequest::new(number as u64, args), &memory),
+                expected,
+                "captured fd {source} syscall {number} reached its physical memfd"
+            );
+        }
+        memory.write(0x3400, &0_i32.to_ne_bytes()).unwrap();
+        assert_eq!(
+            reused.execute(
+                &SyscallRequest::new(
+                    libc::SYS_ioctl as u64,
+                    [
+                        high_source,
+                        (1_u64 << 32) | libc::FIONBIO,
+                        0x3400,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            0
+        );
+        assert_eq!(
+            reused.execute(
+                &SyscallRequest::new(
+                    libc::SYS_ioctl as u64,
+                    [high_source, (1_u64 << 32) | libc::FIONCLEX, 0, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0
+        );
         for fd in [duplicate, reopened] {
             let host = reused.state.files[&fd].as_raw_fd();
             assert!(host >= 3);
@@ -1321,7 +1402,23 @@ fn captured_alias_creation_ignores_closed_and_reused_supervisor_stdio() {
         assert_eq!(unsafe { libc::lseek(source, 0, libc::SEEK_CUR) }, 1);
         assert_eq!(unsafe { libc::fcntl(source, libc::F_GETFL) }, snapshots[index].2);
         let metadata = capture_native_stat(source);
-        assert_eq!((metadata.st_dev, metadata.st_ino), (snapshots[index].0, snapshots[index].1));
+        assert_eq!(
+            (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_blocks,
+                unsafe { libc::fcntl(source, libc::F_GETFD) },
+            ),
+            (
+                snapshots[index].0,
+                snapshots[index].1,
+                snapshots[index].3,
+                snapshots[index].4,
+                snapshots[index].5,
+            ),
+            "captured operations changed physical supervisor fd {source}"
+        );
         reused_aliases.push((duplicate, source));
     }
     memory.write(0x3000, b"yz").unwrap();
@@ -1348,6 +1445,65 @@ fn captured_alias_creation_ignores_closed_and_reused_supervisor_stdio() {
         assert_eq!(unsafe { libc::dup2(saved.as_raw_fd(), fd) }, fd);
     }
     eprintln!("{COMPLETE}");
+}
+
+#[test]
+fn missing_captured_status_is_a_typed_backend_failure() {
+    let root = TestDir::new();
+    let mut executor = ElfExecutor::new(test_state(&root.0), true);
+    let mut memory = GuestMemory::new(0, 0x1000).unwrap();
+    memory.write(0x100, &1_i32.to_ne_bytes()).unwrap();
+    let capture = executor.output.as_ref().unwrap().metadata();
+    let carrier = capture.descriptor_carrier(OutputAlias::Stdout);
+    let original_flags = unsafe { libc::fcntl(carrier, libc::F_GETFL) };
+    assert!(original_flags >= 0);
+
+    executor.state.capture_status_flags.remove(&libc::STDOUT_FILENO);
+    executor
+        .file_table
+        .lock()
+        .unwrap()
+        .capture_status_flags
+        .remove(&libc::STDOUT_FILENO);
+    for request in [
+        SyscallRequest::new(
+            libc::SYS_ioctl as u64,
+            [
+                libc::STDOUT_FILENO as u64,
+                libc::FIONBIO,
+                0x100,
+                0,
+                0,
+                0,
+            ],
+        ),
+        SyscallRequest::new(
+            libc::SYS_fcntl as u64,
+            [
+                libc::STDOUT_FILENO as u64,
+                libc::F_SETFL as u64,
+                libc::O_NONBLOCK as u64,
+                0,
+                0,
+                0,
+            ],
+        ),
+        // accept4 validates flags and returns before ordinary scalar dispatch;
+        // authoritative capture validation must still win without a socket.
+        SyscallRequest::new(
+            libc::SYS_accept4 as u64,
+            [u64::MAX, 0, 0, u64::MAX, 0, 0],
+        ),
+    ] {
+        let error = executor
+            .execute_checked(&request, &memory)
+            .expect_err("missing captured status must terminate the backend call");
+        assert!(matches!(
+            error,
+            crate::Error::CapturedOutputStatusMissing(libc::STDOUT_FILENO)
+        ));
+    }
+    assert_eq!(unsafe { libc::fcntl(carrier, libc::F_GETFL) }, original_flags);
 }
 
 #[test]
@@ -1477,6 +1633,82 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
     assert_eq!(capture_executor_stat(&mut parent, &memory, 1), stderr);
     assert_eq!(capture_executor_stat(&mut parent, &memory, alias), stdout);
     let mut child = parent.fork_child(3, false, false).unwrap();
+    assert!(Arc::ptr_eq(
+        &child.state.capture_status_flags[&alias],
+        &stdout_status
+    ));
+
+    // Forked processes retain one open file description but do not share a
+    // file-table lock. Concurrent F_SETFL and FIONBIO therefore have to update
+    // the virtual status atomically. Every valid serialization keeps O_APPEND;
+    // a split load/store can lose it when FIONBIO publishes last.
+    let start = Arc::new(std::sync::Barrier::new(3));
+    let finish = Arc::new(std::sync::Barrier::new(3));
+    let iterations = 2_000;
+    std::thread::scope(|scope| {
+        let parent_start = start.clone();
+        let parent_finish = finish.clone();
+        let parent_executor = &mut parent;
+        let parent_worker = scope.spawn(move || {
+            let parent_memory = GuestMemory::new(0, 0x1000).unwrap();
+            for _ in 0..iterations {
+                parent_start.wait();
+                assert_eq!(
+                    parent_executor.execute(
+                        &SyscallRequest::new(
+                            libc::SYS_fcntl as u64,
+                            [
+                                alias as u64,
+                                libc::F_SETFL as u64,
+                                libc::O_APPEND as u64,
+                                0,
+                                0,
+                                0,
+                            ],
+                        ),
+                        &parent_memory,
+                    ),
+                    0
+                );
+                parent_finish.wait();
+            }
+        });
+        let child_start = start.clone();
+        let child_finish = finish.clone();
+        let child_executor = &mut child;
+        let child_worker = scope.spawn(move || {
+            let mut child_memory = GuestMemory::new(0, 0x1000).unwrap();
+            child_memory.write(0x100, &1_i32.to_ne_bytes()).unwrap();
+            for _ in 0..iterations {
+                child_start.wait();
+                assert_eq!(
+                    child_executor.execute(
+                        &SyscallRequest::new(
+                            libc::SYS_ioctl as u64,
+                            [alias as u64, libc::FIONBIO, 0x100, 0, 0, 0],
+                        ),
+                        &child_memory,
+                    ),
+                    0
+                );
+                child_finish.wait();
+            }
+        });
+        for _ in 0..iterations {
+            stdout_status.store(libc::O_WRONLY, Ordering::SeqCst);
+            start.wait();
+            finish.wait();
+            assert_ne!(
+                stdout_status.load(Ordering::SeqCst) & libc::O_APPEND,
+                0,
+                "concurrent FIONBIO lost the serialized F_SETFL update"
+            );
+        }
+        parent_worker.join().unwrap();
+        child_worker.join().unwrap();
+    });
+    stdout_status.store(libc::O_WRONLY, Ordering::SeqCst);
+
     let replacement = test_exec_replacement(&root.0, &child.state);
     child.replace_after_exec(replacement);
     assert!(Arc::ptr_eq(

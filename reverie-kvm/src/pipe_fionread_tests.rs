@@ -103,9 +103,9 @@ fn pipe_fionread_complete_memory_and_request_width() {
 }
 
 #[test]
-fn pipe_fionread_capture_objects_and_unavailable_identity_are_refused() {
+fn pipe_fionread_refuses_capture_carriers_without_physical_stdio() {
     const TEST: &str =
-        "executor::tests::pipe_fionread_capture_objects_and_unavailable_identity_are_refused";
+        "executor::tests::pipe_fionread_refuses_capture_carriers_without_physical_stdio";
     let Ok(mode) = std::env::var("REVERIE_PIPE_CAPTURE_CHILD") else {
         for mode in ["objects", "missing"] {
             let output = std::process::Command::new("timeout")
@@ -153,43 +153,130 @@ fn pipe_fionread_capture_objects_and_unavailable_identity_are_refused() {
     }
     let root = TestDir::new();
     let mut state = test_state(&root.0);
-    let duplicate = unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) };
-    assert!(duplicate >= 0);
-    state
-        .files
-        .insert(9, unsafe { std::fs::File::from_raw_fd(duplicate) });
-    assert!(
-        output_alias(&state, 9).is_none(),
-        "models received metadata"
-    );
     let [reader, writer] = pipe_fionread_host_pipe();
     state.files.insert(10, reader);
     state.files.insert(11, writer);
     let mut count = -1;
     assert_eq!(unsafe { libc::ioctl(1, libc::FIONREAD, &mut count) }, 0);
     assert_eq!(count, 11, "native backing has unrelated supervisor bytes");
-    let mut executor = ElfExecutor::new(state, true);
-    let memory = GuestMemory::new(0, 16384).unwrap();
+    let output = CapturedOutput::try_new().unwrap();
+    let capture = output.metadata();
+    let carrier_flags = [OutputAlias::Stdout, OutputAlias::Stderr].map(|alias| {
+        let flags = unsafe { libc::fcntl(capture.descriptor_carrier(alias), libc::F_GETFL) };
+        assert!(flags >= 0);
+        flags
+    });
+    let carrier_capacities = [OutputAlias::Stdout, OutputAlias::Stderr].map(|alias| {
+        let capacity =
+            unsafe { libc::fcntl(capture.descriptor_carrier(alias), libc::F_GETPIPE_SZ) };
+        assert!(capacity > 0);
+        capacity
+    });
+    let duplicate = unsafe {
+        libc::fcntl(
+            capture.descriptor_carrier(OutputAlias::Stdout),
+            libc::F_DUPFD_CLOEXEC,
+            3,
+        )
+    };
+    assert!(duplicate >= 0);
+    state
+        .files
+        .insert(9, unsafe { std::fs::File::from_raw_fd(duplicate) });
+    assert!(
+        output_alias(&state, 9).is_none(),
+        "models received metadata for a private capture carrier"
+    );
+    let mut executor = ElfExecutor::with_output(state, Some(output));
+    let next_object_inode = executor
+        .state
+        .file_identity_table
+        .lock()
+        .unwrap()
+        .next_inode;
+    let mut memory = GuestMemory::new(0, 16384).unwrap();
     let sentinel = vec![0xa5; 16384];
+    memory.write(64, &1_i32.to_ne_bytes()).unwrap();
+    assert_eq!(
+        executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_ioctl as u64,
+                [9, (1_u64 << 32) | libc::FIONBIO, 64, 0, 0, 0],
+            ),
+            &memory,
+        ),
+        negative_errno(libc::ENOTTY),
+        "an unlabelled capture carrier must not accept status mutation"
+    );
+    for (command, argument) in [
+        (libc::F_SETFL, libc::O_NONBLOCK as u64),
+        (libc::F_GETPIPE_SZ, 0),
+        (libc::F_SETPIPE_SZ, 4096),
+    ] {
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_fcntl as u64,
+                    [
+                        (1_u64 << 32) | 9,
+                        (1_u64 << 32) | command as u64,
+                        argument,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            negative_errno(libc::ENOSYS),
+            "an unlabelled capture carrier accepted fcntl command {command}"
+        );
+    }
+    for (index, alias) in [OutputAlias::Stdout, OutputAlias::Stderr]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(
+            unsafe { libc::fcntl(capture.descriptor_carrier(alias), libc::F_GETFL) },
+            carrier_flags[index],
+            "status operation changed private capture carrier {index}"
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(capture.descriptor_carrier(alias), libc::F_GETPIPE_SZ) },
+            carrier_capacities[index],
+            "capacity operation changed private capture carrier {index}"
+        );
+    }
+    assert_eq!(
+        executor
+            .state
+            .file_identity_table
+            .lock()
+            .unwrap()
+            .next_inode,
+        next_object_inode,
+        "refused carrier operations allocated guest object identity"
+    );
     if mode == "missing" {
         // Probe this guard without another file-table installation: installation
         // may legitimately allocate a cloned File into the just-closed host fd.
         memory.write_raw(0, &sentinel).unwrap();
         assert_eq!(unsafe { libc::close(2) }, 0);
-        assert_eq!(
+        let result =
             pipe_fionread(
                 &memory,
                 &executor.state,
                 10,
                 executor.state.files[&10].as_raw_fd(),
                 123,
-                true
-            ),
-            negative_errno(libc::ENOTTY)
-        );
+                executor.output.as_ref().map(CapturedOutput::metadata),
+            );
+        assert_eq!(result, 0, "unrelated pipe survives closed physical stderr");
         let mut actual = vec![0; sentinel.len()];
+        let mut expected = sentinel;
+        expected[123..127].copy_from_slice(&0_i32.to_ne_bytes());
         memory.read_raw(0, &mut actual).unwrap();
-        assert_eq!(actual, sentinel);
+        assert_eq!(actual, expected);
         drop(restore);
         return;
     }
@@ -197,7 +284,8 @@ fn pipe_fionread_capture_objects_and_unavailable_identity_are_refused() {
         memory.write_raw(0, &sentinel).unwrap();
         assert_eq!(
             pipe_fionread_call(&mut executor, &memory, [fd, libc::FIONREAD, 123, 0, 0, 0]),
-            negative_errno(libc::ENOTTY)
+            negative_errno(libc::ENOTTY),
+            "capture identity was not refused for guest fd {fd}"
         );
         let mut actual = vec![0; sentinel.len()];
         memory.read_raw(0, &mut actual).unwrap();

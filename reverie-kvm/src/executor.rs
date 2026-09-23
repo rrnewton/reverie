@@ -549,17 +549,17 @@ fn execute_basic_syscall_inner(
     } else if number == libc::SYS_lseek as u64 {
         lseek(state, args, capture_output)
     } else if number == libc::SYS_ftruncate as u64 {
-        ftruncate(state, args)
+        ftruncate(state, args, capture_metadata)
     } else if number == libc::SYS_truncate as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         truncate(memory, state, args)
     } else if number == libc::SYS_fallocate as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        fallocate(state, args)
+        fallocate(state, args, capture_metadata)
     } else if number == libc::SYS_fsync as u64 {
-        sync_file(state, args[0], false)
+        sync_file(state, args[0], false, capture_metadata)
     } else if number == libc::SYS_fdatasync as u64 {
-        sync_file(state, args[0], true)
+        sync_file(state, args[0], true, capture_metadata)
     } else if number == libc::SYS_syncfs as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(kvm-syncfs-auth): Review translated host syncfs semantics.
@@ -567,11 +567,11 @@ fn execute_basic_syscall_inner(
     } else if number == libc::SYS_readahead as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-227): Review translated host readahead semantics.
-        readahead(state, args)
+        readahead(state, args, capture_metadata)
     } else if number == libc::SYS_sync_file_range as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-227): Review translated host range-sync semantics.
-        sync_file_range(state, args)
+        sync_file_range(state, args, capture_metadata)
     } else if number == libc::SYS_pipe as u64 {
         pipe2(memory, state, args[0], 0)
     } else if number == libc::SYS_pipe2 as u64 {
@@ -673,7 +673,7 @@ fn execute_basic_syscall_inner(
         recvmmsg(memory, state, args)
     } else if number == libc::SYS_ioctl as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        ioctl(memory, state, args, capture_output)
+        ioctl(memory, state, args, capture_metadata)
     } else if number == libc::SYS_dup as u64 {
         duplicate_fd(state, args[0], None, 0, false, capture_metadata)
     } else if number == libc::SYS_dup2 as u64 {
@@ -5485,6 +5485,18 @@ impl ElfExecutor {
                 child_pid,
             });
         }
+        if self.output.is_some() {
+            let files = self
+                .file_table
+                .lock()
+                .expect("KVM file-table lock poisoned");
+            if let Some(guest_fd) = missing_file_table_capture_status(&files) {
+                // Validate the authoritative shared table before wait/accept or
+                // any other syscall-specific path can block, consume state, or
+                // return a guest result.
+                return Err(crate::Error::CapturedOutputStatusMissing(guest_fd));
+            }
+        }
         self.bind_address_space(memory);
         let _retirement = self.state.file_retirement.hold();
         if let Some(result) = self.synchronize_wait4(request) {
@@ -5510,6 +5522,14 @@ impl ElfExecutor {
             .install(&mut self.state)
         {
             return Ok(io_error(error));
+        }
+        if self.output.is_some()
+            && let Some(guest_fd) = missing_capture_status(&self.state)
+        {
+            // No syscall may continue with a partially described captured open
+            // file description. In particular, fcntl/ioctl must never fall
+            // through and mutate a private carrier after metadata corruption.
+            return Err(crate::Error::CapturedOutputStatusMissing(guest_fd));
         }
         // install cloned every fdinfo description Arc while holding the
         // current table. Scalar dispatch below therefore retains its entry
@@ -7198,14 +7218,14 @@ fn lseek(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64 
     }
 }
 
-fn ftruncate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn ftruncate(state: &LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
     let length = args[1] as libc::off_t;
     if length < 0 {
         return negative_errno(libc::EINVAL);
     }
     // Linux syscall argument decoding consumes only the low descriptor word.
     let fd = args[0] as libc::c_int;
-    let Some(host_fd) = host_fd(state, fd) else {
+    let Some(host_fd) = isolated_host_fd(state, fd, capture) else {
         return negative_errno(libc::EBADF);
     };
     let status = match fd_status_flags(host_fd) {
@@ -7286,13 +7306,18 @@ fn truncate(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review host fallocate delegation and flag bounds.
-fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
+fn fallocate(state: &LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
+    let fd = args[0] as libc::c_int;
+    let Some(host_fd) = isolated_host_fd(state, fd, capture) else {
         return negative_errno(libc::EBADF);
     };
-    let Some(host_fd) = host_fd(state, fd) else {
-        return negative_errno(libc::EBADF);
+    let status = match fd_status_flags(host_fd) {
+        Ok(status) => status,
+        Err(error) => return error,
     };
+    if status & libc::O_PATH != 0 {
+        return negative_errno(libc::EBADF);
+    }
     let mode = args[1] as libc::c_int;
     let offset = args[2] as libc::off_t;
     let length = args[3] as libc::off_t;
@@ -7314,11 +7339,14 @@ fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     }
 }
 
-fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
-    let Ok(fd) = i32::try_from(raw_fd) else {
-        return negative_errno(libc::EBADF);
-    };
-    let Some(host_fd) = host_fd(state, fd) else {
+fn sync_file(
+    state: &LoadedStaticElf,
+    raw_fd: u64,
+    data_only: bool,
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    let fd = raw_fd as libc::c_int;
+    let Some(host_fd) = isolated_host_fd(state, fd, capture) else {
         return negative_errno(libc::EBADF);
     };
     // SAFETY: host_fd names a live descriptor. The host syscall validates its type.
@@ -7471,20 +7499,15 @@ fn sync_filesystem_with_operations(
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-227): Review translated host readahead semantics.
-fn readahead(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
-    let Some(host_fd) = host_fd(state, fd) else {
+fn readahead(state: &LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
+    let fd = args[0] as libc::c_int;
+    let Some(host_fd) = isolated_host_fd(state, fd, capture) else {
         return negative_errno(libc::EBADF);
     };
     let offset = args[1] as libc::off64_t;
     let Ok(count) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
-    if offset < 0 {
-        return negative_errno(libc::EINVAL);
-    }
     // SAFETY: host_fd names the guest's live translated descriptor; the call
     // has no guest pointers, and the host kernel validates the descriptor type.
     let result = unsafe { libc::syscall(libc::SYS_readahead, host_fd, offset, count) };
@@ -7497,13 +7520,22 @@ fn readahead(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-227): Review translated host range-sync semantics.
-fn sync_file_range(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
+fn sync_file_range(
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    let fd = args[0] as libc::c_int;
+    let Some(host_fd) = isolated_host_fd(state, fd, capture) else {
         return negative_errno(libc::EBADF);
     };
-    let Some(host_fd) = host_fd(state, fd) else {
-        return negative_errno(libc::EBADF);
+    let status = match fd_status_flags(host_fd) {
+        Ok(status) => status,
+        Err(error) => return error,
     };
+    if status & libc::O_PATH != 0 {
+        return negative_errno(libc::EBADF);
+    }
     let offset = args[1] as libc::off64_t;
     let length = args[2] as libc::off64_t;
     let flags = args[3] as libc::c_uint;
@@ -8984,6 +9016,34 @@ fn initialize_captured_output_status(state: &mut LoadedStaticElf) {
                 .or_insert_with(|| Arc::new(AtomicI32::new(libc::O_WRONLY)));
         }
     }
+}
+
+fn missing_capture_status(state: &LoadedStaticElf) -> Option<libc::c_int> {
+    state
+        .stdout_alias_fds
+        .iter()
+        .chain(&state.stderr_alias_fds)
+        .copied()
+        .chain(
+            [libc::STDOUT_FILENO, libc::STDERR_FILENO]
+                .into_iter()
+                .filter(|fd| is_open_standard(state, *fd)),
+        )
+        .find(|fd| !state.capture_status_flags.contains_key(fd))
+}
+
+fn missing_file_table_capture_status(table: &FileTableState) -> Option<libc::c_int> {
+    table
+        .stdout_alias_fds
+        .iter()
+        .chain(&table.stderr_alias_fds)
+        .copied()
+        .chain(
+            [libc::STDOUT_FILENO, libc::STDERR_FILENO]
+                .into_iter()
+                .filter(|fd| file_table_open_standard(table, *fd)),
+        )
+        .find(|fd| !table.capture_status_flags.contains_key(fd))
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review shared descriptor-object identity allocation.
@@ -13082,9 +13142,9 @@ fn pipe_fionread(
     guest_fd: libc::c_int,
     host_fd: libc::c_int,
     address: u64,
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
-    if capture_output && output_alias(state, guest_fd).is_some() {
+    if capture.is_some() && output_alias(state, guest_fd).is_some() {
         return negative_errno(libc::ENOTTY);
     }
     let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
@@ -13097,24 +13157,15 @@ fn pipe_fionread(
     if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
         return negative_errno(libc::ENOTTY);
     }
-    if capture_output {
+    if let Some(capture) = capture {
         // Received rights lose OutputAlias metadata. Compare actual objects so
-        // a transferred capture backing pipe cannot expose supervisor bytes.
-        // Guest close/dup/exec never close or replace host stdio; those retained
-        // host references keep the identity live even after queued sender close.
-        // As elsewhere in inherited-stdio handling, concurrent external host
-        // replacement of these descriptors is outside the supported lifetime.
-        for standard in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
-            let mut backing = std::mem::MaybeUninit::<libc::stat>::zeroed();
-            // SAFETY: backing has writable storage; fstat checks the descriptor.
-            if unsafe { libc::fstat(standard, backing.as_mut_ptr()) } != 0 {
-                return negative_errno(libc::ENOTTY);
-            }
-            // SAFETY: successful fstat initialized the complete structure.
-            let backing = unsafe { backing.assume_init() };
-            if (stat.st_dev, stat.st_ino) == (backing.st_dev, backing.st_ino) {
-                return negative_errno(libc::ENOTTY);
-            }
+        // a transferred private capture carrier cannot expose its queue depth.
+        // The capture owner keeps both carrier objects live after guest aliases
+        // close, and no inherited supervisor descriptor participates here.
+        match matches_capture_carrier(&stat, capture) {
+            Ok(true) => return negative_errno(libc::ENOTTY),
+            Ok(false) => {}
+            Err(error) => return error,
         }
     }
     let mut count: libc::c_int = 0;
@@ -13129,23 +13180,58 @@ fn pipe_fionread(
     0
 }
 
+fn matches_capture_carrier(candidate: &libc::stat, capture: CaptureMetadata) -> Result<bool, i64> {
+    for alias in [OutputAlias::Stdout, OutputAlias::Stderr] {
+        let mut backing = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        // SAFETY: backing has writable storage and capture metadata keeps each
+        // private pipe carrier live for this syscall.
+        if unsafe { libc::fstat(capture.descriptor_carrier(alias), backing.as_mut_ptr()) } != 0 {
+            return Err(negative_errno(libc::EIO));
+        }
+        // SAFETY: successful fstat initialized the complete structure.
+        let backing = unsafe { backing.assume_init() };
+        if (candidate.st_dev, candidate.st_ino) == (backing.st_dev, backing.st_ino) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn host_is_capture_carrier(host_fd: RawFd, capture: CaptureMetadata) -> Result<bool, i64> {
+    let mut candidate = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: candidate has writable storage and host_fd is live.
+    if unsafe { libc::fstat(host_fd, candidate.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: successful fstat initialized the complete structure.
+    let candidate = unsafe { candidate.assume_init() };
+    matches_capture_carrier(&candidate, capture)
+}
+
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn ioctl(
     memory: &mut GuestMemory,
     state: &mut LoadedStaticElf,
     args: &[u64; 6],
-    capture_output: bool,
+    capture: Option<CaptureMetadata>,
 ) -> i64 {
     let guest_fd = args[0] as libc::c_int;
-    let Some(host_fd) = host_fd(state, guest_fd) else {
+    let Some(host_fd) = isolated_host_fd(state, guest_fd, capture) else {
         return negative_errno(libc::EBADF);
     };
-    // Linux ioctl takes an unsigned-int command even on the 64-bit syscall ABI.
-    // Keep this limited support independent of the other ioctl dispatch arms.
-    if args[1] as u32 == libc::FIONREAD as u32 {
-        return pipe_fionread(memory, state, guest_fd, host_fd, args[2], capture_output);
+    let status = match fd_status_flags(host_fd) {
+        Ok(status) => status,
+        Err(error) => return error,
+    };
+    if status & libc::O_PATH != 0 {
+        return negative_errno(libc::EBADF);
     }
-    match args[1] as libc::c_ulong {
+    // Linux ioctl takes an unsigned-int command even on the 64-bit syscall ABI.
+    let request = args[1] as libc::c_uint as libc::c_ulong;
+    if request == libc::FIONREAD {
+        return pipe_fionread(memory, state, guest_fd, host_fd, args[2], capture);
+    }
+    match request {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-229): Review virtual FIOCLEX/FIONCLEX descriptor flags.
         libc::FIOCLEX => {
@@ -13158,8 +13244,48 @@ fn ioctl(
             state.cloexec_fds.remove(&guest_fd);
             0
         }
+        libc::FIONBIO => {
+            let enabled = match read_guest_struct::<libc::c_int>(memory, args[2]) {
+                Ok(enabled) => enabled != 0,
+                Err(error) => return error,
+            };
+            if capture.is_some() && output_alias(state, guest_fd).is_some() {
+                // Production dispatch rejects missing status as a typed backend
+                // failure before reaching this raw syscall helper.
+                let status = state
+                    .capture_status_flags
+                    .get(&guest_fd)
+                    .expect("captured FIONBIO status validated before dispatch");
+                if enabled {
+                    status.fetch_or(libc::O_NONBLOCK, Ordering::SeqCst);
+                } else {
+                    status.fetch_and(!libc::O_NONBLOCK, Ordering::SeqCst);
+                }
+                0
+            } else {
+                if let Some(capture) = capture {
+                    match host_is_capture_carrier(host_fd, capture) {
+                        Ok(true) => return negative_errno(libc::ENOTTY),
+                        Ok(false) => {}
+                        Err(error) => return error,
+                    }
+                }
+                if !enabled && signalfd_mask(state, guest_fd).is_some() {
+                    // Blocking virtual signalfd waits require scheduler
+                    // ownership. Match F_SETFL and refuse before changing the
+                    // private eventfd open-file description.
+                    return negative_errno(libc::ENOSYS);
+                }
+                let enabled = libc::c_int::from(enabled);
+                // SAFETY: enabled is local initialized storage and host_fd is live.
+                zero_or_errno(unsafe { libc::ioctl(host_fd, request, &enabled) })
+            }
+        }
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-230): Review the no-guest-NIC ioctl model.
+        SIOCETHTOOL if capture.is_some() && output_alias(state, guest_fd).is_some() => {
+            negative_errno(libc::ENOTTY)
+        }
         SIOCETHTOOL => negative_errno(libc::ENODEV),
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-332): Report real terminal state to the guest.
@@ -16239,6 +16365,12 @@ fn fcntl(
     let source_capture_status = state.capture_status_flags.get(&guest_fd).cloned();
     let host_fd = descriptor_creation_host_fd(state, guest_fd, capture);
     let command = args[1] as libc::c_int;
+    if capture.is_some() && source_alias.is_some() && source_capture_status.is_none() {
+        // Production dispatch reports this as CapturedOutputStatusMissing.
+        // Raw unit-test dispatch must not mutate a carrier after bypassing that
+        // typed boundary.
+        panic!("captured fcntl status validated before dispatch");
+    }
     if host_fd.is_none()
         && !(source_capture_status.is_some()
             && matches!(
@@ -16248,10 +16380,38 @@ fn fcntl(
     {
         return negative_errno(libc::EBADF);
     }
-    if matches!(command, libc::F_GETPIPE_SZ | libc::F_SETPIPE_SZ)
-        && let Some(status) = source_capture_status.as_ref()
+    let unlabelled_capture_carrier = match (capture, source_alias, host_fd) {
+        (Some(capture), None, Some(host_fd)) => match host_is_capture_carrier(host_fd, capture) {
+            Ok(matches) => matches,
+            Err(error) => return error,
+        },
+        _ => false,
+    };
+    let unlabelled_capture_status = if unlabelled_capture_carrier {
+        match fd_status_flags(host_fd.expect("capture carrier has a host fd")) {
+            Ok(status) => Some(status),
+            Err(error) => return error,
+        }
+    } else {
+        None
+    };
+    if command == libc::F_SETFL
+        && let Some(status) = unlabelled_capture_status
     {
-        if status.load(Ordering::SeqCst) & libc::O_PATH != 0 {
+        return if status & libc::O_PATH != 0 {
+            negative_errno(libc::EBADF)
+        } else {
+            negative_errno(libc::ENOSYS)
+        };
+    }
+    if matches!(command, libc::F_GETPIPE_SZ | libc::F_SETPIPE_SZ)
+        && (source_capture_status.is_some() || unlabelled_capture_carrier)
+    {
+        if source_capture_status
+            .as_ref()
+            .is_some_and(|status| status.load(Ordering::SeqCst) & libc::O_PATH != 0)
+            || unlabelled_capture_status.is_some_and(|status| status & libc::O_PATH != 0)
+        {
             return negative_errno(libc::EBADF);
         }
         // Captured writes bypass the private identity pipe and append to a
@@ -16366,12 +16526,17 @@ fn fcntl(
                 // reject before changing the shared open-file description.
                 return negative_errno(libc::ENOSYS);
             }
+            if unlabelled_capture_carrier {
+                return negative_errno(libc::ENOSYS);
+            }
             if let Some(status) = source_capture_status {
                 let current = status.load(Ordering::SeqCst);
                 if current & libc::O_PATH != 0 {
                     return negative_errno(libc::EBADF);
                 }
-                status.store((current & !settable) | flags, Ordering::SeqCst);
+                let _ = status.try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    Some((current & !settable) | flags)
+                });
                 0
             } else {
                 // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
@@ -43284,6 +43449,48 @@ mod tests {
                 0,
             );
         }
+        const FIONBIO_VALUE: u64 = 0x180;
+        memory.write(FIONBIO_VALUE, &0_i32.to_ne_bytes()).unwrap();
+        for fd in aliases {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_ioctl,
+                    [
+                        (1_u64 << 32) | fd as u64,
+                        (1_u64 << 32) | libc::FIONBIO,
+                        FIONBIO_VALUE,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                negative_errno(libc::ENOSYS),
+            );
+            for observed in aliases {
+                assert_ne!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_fcntl,
+                        [observed as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+                    ) & i64::from(libc::O_NONBLOCK),
+                    0,
+                    "FIONBIO refusal through alias {fd} changed shared status flags",
+                );
+            }
+        }
+        memory.write(FIONBIO_VALUE, &1_i32.to_ne_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioctl,
+                [alias as u64, libc::FIONBIO, FIONBIO_VALUE, 0, 0, 0,],
+            ),
+            0,
+        );
         for fd in aliases {
             assert_eq!(
                 syscall_result(

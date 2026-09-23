@@ -334,6 +334,10 @@ pub enum Error {
     #[error("no static ELF is installed")]
     StaticElfNotInstalled,
 
+    /// A captured output alias lost the virtual status shared by its open file description.
+    #[error("captured output descriptor {0} has no virtual status state")]
+    CapturedOutputStatusMissing(i32),
+
     /// KVM accepted only part of the long-mode MSR table.
     #[error("KVM installed {actual} of {expected} long-mode MSRs")]
     IncompleteMsrSetup {

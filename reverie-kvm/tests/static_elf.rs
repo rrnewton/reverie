@@ -10620,6 +10620,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "captured_output_statfs_matches_native_and_is_repeatable_on_kvm",
         "captured_aliases_ignore_reused_supervisor_stdio_on_kvm",
         "captured_dirfds_reject_reused_supervisor_directories_on_kvm",
+        "captured_file_operations_ignore_reused_supervisor_files_on_kvm",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
@@ -15165,6 +15166,424 @@ int main(void) {
     assert_eq!(results.1, results.0, "direct KVM result changed");
     assert_eq!(results.2, results.0, "Tool and direct KVM results differ");
     assert_eq!(results.3, results.2, "Tool KVM result changed");
+}
+
+// Captured stdout/stderr are O_WRONLY pipes even if the embedding process has
+// reused physical fd 1/2 for mutable regular files. Exercise direct aliases,
+// duplicates, fresh proc-fd reopens, O_PATH descriptions, and high-word ABI
+// arguments. FIONREAD remains an explicitly fail-closed KVM exception because
+// the in-memory output queue does not model pipe occupancy. This is
+// output/exit/status repeat parity only, not L2-log or record/replay parity.
+#[test]
+fn captured_file_operations_ignore_reused_supervisor_files_on_kvm() {
+    const TEST: &str = "captured_file_operations_ignore_reused_supervisor_files_on_kvm";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "captured-file-operations",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define HIGH_WORD 0x5a5a5a5a00000000ULL
+#define TEST_SIOCETHTOOL 0x8946
+
+static void expect_errno(int *failure, int code, long result, int expected) {
+  int observed = errno;
+  if (*failure == 0 && (result != -1 || observed != expected)) *failure = code;
+}
+
+#define EXPECT_ERR(failure, code, expression, expected) do { \
+  errno = 0; \
+  expect_errno((failure), (code), (expression), (expected)); \
+} while (0)
+
+static void check_writable_pipe_ops(int *failure, int fd, int base) {
+  unsigned long raw_fds[] = {
+      (unsigned int)fd,
+      HIGH_WORD | (unsigned int)fd,
+  };
+  for (unsigned pass = 0; pass < 2; ++pass) {
+    unsigned long raw = raw_fds[pass];
+    int code = base + (int)pass * 16;
+    EXPECT_ERR(failure, code + 1,
+               syscall(SYS_ftruncate, raw, (off_t)0), EINVAL);
+    EXPECT_ERR(failure, code + 2,
+               syscall(SYS_ftruncate, raw, (off_t)-1), EINVAL);
+    EXPECT_ERR(failure, code + 3,
+               syscall(SYS_fallocate, raw, 0, (off_t)0, (off_t)4096),
+               ESPIPE);
+    EXPECT_ERR(failure, code + 4,
+               syscall(SYS_fallocate, raw, 0, (off_t)0, (off_t)0), EINVAL);
+    EXPECT_ERR(failure, code + 5,
+               syscall(SYS_fallocate, raw, 1U << 30, (off_t)0,
+                       (off_t)4096), EOPNOTSUPP);
+    EXPECT_ERR(failure, code + 6, syscall(SYS_fsync, raw), EINVAL);
+    EXPECT_ERR(failure, code + 7, syscall(SYS_fdatasync, raw), EINVAL);
+    EXPECT_ERR(failure, code + 8,
+               syscall(SYS_readahead, raw, (off64_t)0, (size_t)1), EBADF);
+    EXPECT_ERR(failure, code + 9,
+               syscall(SYS_readahead, raw, (off64_t)-1, (size_t)1), EBADF);
+    EXPECT_ERR(failure, code + 10,
+               syscall(SYS_sync_file_range, raw, (off64_t)0, (off64_t)4096,
+                       SYNC_FILE_RANGE_WRITE), ESPIPE);
+    EXPECT_ERR(failure, code + 11,
+               syscall(SYS_sync_file_range, raw, (off64_t)-1, (off64_t)1,
+                       SYNC_FILE_RANGE_WRITE), EINVAL);
+    EXPECT_ERR(failure, code + 12,
+               syscall(SYS_sync_file_range, raw, (off64_t)0, (off64_t)1, 8),
+               EINVAL);
+  }
+}
+
+static void check_path_ops(int *failure, int fd) {
+  unsigned long raw_fds[] = {
+      (unsigned int)fd,
+      HIGH_WORD | (unsigned int)fd,
+  };
+  for (unsigned pass = 0; pass < 2; ++pass) {
+    unsigned long raw = raw_fds[pass];
+    int code = 100 + (int)pass * 16;
+    EXPECT_ERR(failure, code + 1,
+               syscall(SYS_ftruncate, raw, (off_t)0), EBADF);
+    EXPECT_ERR(failure, code + 2,
+               syscall(SYS_ftruncate, raw, (off_t)-1), EINVAL);
+    EXPECT_ERR(failure, code + 3,
+               syscall(SYS_fallocate, raw, 0, (off_t)0, (off_t)4096),
+               EBADF);
+    EXPECT_ERR(failure, code + 4,
+               syscall(SYS_fallocate, raw, 0, (off_t)0, (off_t)0), EBADF);
+    EXPECT_ERR(failure, code + 5,
+               syscall(SYS_fallocate, raw, 1U << 30, (off_t)0,
+                       (off_t)4096), EBADF);
+    EXPECT_ERR(failure, code + 6, syscall(SYS_fsync, raw), EBADF);
+    EXPECT_ERR(failure, code + 7, syscall(SYS_fdatasync, raw), EBADF);
+    EXPECT_ERR(failure, code + 8,
+               syscall(SYS_readahead, raw, (off64_t)0, (size_t)1), EBADF);
+    EXPECT_ERR(failure, code + 9,
+               syscall(SYS_readahead, raw, (off64_t)-1, (size_t)1), EBADF);
+    EXPECT_ERR(failure, code + 10,
+               syscall(SYS_sync_file_range, raw, (off64_t)0, (off64_t)4096,
+                       SYNC_FILE_RANGE_WRITE), EBADF);
+    EXPECT_ERR(failure, code + 11,
+               syscall(SYS_sync_file_range, raw, (off64_t)-1, (off64_t)1, 8),
+               EBADF);
+  }
+}
+
+static void check_ioctls(int *failure, int source, int duplicate,
+                         int reopened, int path_only, int kvm,
+                         int final_nonblock, int final_cloexec) {
+  int one = 1, zero = 0;
+  unsigned long high_duplicate = HIGH_WORD | (unsigned int)duplicate;
+  unsigned long high_source = HIGH_WORD | (unsigned int)source;
+  unsigned long high_request = HIGH_WORD | (unsigned int)FIONBIO;
+  if (syscall(SYS_ioctl, high_duplicate, high_request, &one) != 0)
+    *failure = *failure ? *failure : 160;
+  if (!(fcntl(source, F_GETFL) & O_NONBLOCK) ||
+      !(fcntl(duplicate, F_GETFL) & O_NONBLOCK) ||
+      (fcntl(reopened, F_GETFL) & O_NONBLOCK))
+    *failure = *failure ? *failure : 161;
+  if (ioctl(source, FIONBIO, &zero) != 0 ||
+      (fcntl(source, F_GETFL) & O_NONBLOCK) ||
+      (fcntl(duplicate, F_GETFL) & O_NONBLOCK))
+    *failure = *failure ? *failure : 162;
+  if (ioctl(reopened, FIONBIO, &one) != 0 ||
+      (fcntl(source, F_GETFL) & O_NONBLOCK) ||
+      !(fcntl(reopened, F_GETFL) & O_NONBLOCK))
+    *failure = *failure ? *failure : 163;
+  if (ioctl(reopened, FIONBIO, &zero) != 0)
+    *failure = *failure ? *failure : 164;
+
+  unsigned long high_fioclex = HIGH_WORD | (unsigned int)FIOCLEX;
+  unsigned long high_fionclex = HIGH_WORD | (unsigned int)FIONCLEX;
+  if (syscall(SYS_ioctl, high_source, high_fioclex, 0) != 0 ||
+      !(fcntl(source, F_GETFD) & FD_CLOEXEC))
+    *failure = *failure ? *failure : 165;
+  if (syscall(SYS_ioctl, high_source, high_fionclex, 0) != 0 ||
+      (fcntl(source, F_GETFD) & FD_CLOEXEC))
+    *failure = *failure ? *failure : 166;
+
+  if (final_nonblock) {
+    if (ioctl(source, FIONBIO, &one) != 0)
+      *failure = *failure ? *failure : 167;
+  } else if (ioctl(source, FIONBIO, &zero) != 0) {
+    *failure = *failure ? *failure : 168;
+  }
+  if (final_cloexec) {
+    if (ioctl(source, FIOCLEX) != 0)
+      *failure = *failure ? *failure : 169;
+  } else if (ioctl(source, FIONCLEX) != 0) {
+    *failure = *failure ? *failure : 170;
+  }
+
+  int available = 0x13572468;
+  errno = 0;
+  long fionread = syscall(SYS_ioctl, high_source,
+                          HIGH_WORD | (unsigned int)FIONREAD, &available);
+  if (kvm) {
+    if (fionread != -1 || errno != ENOTTY || available != 0x13572468)
+      *failure = *failure ? *failure : 171;
+  } else if (fionread != 0 || available != 0) {
+    *failure = *failure ? *failure : 172;
+  }
+
+  char buffer[128] = {0};
+  EXPECT_ERR(failure, 173, ioctl(source, TCGETS, buffer), ENOTTY);
+  EXPECT_ERR(failure, 174, ioctl(source, TIOCGWINSZ, buffer), ENOTTY);
+  EXPECT_ERR(failure, 175, ioctl(source, TIOCGPGRP, buffer), ENOTTY);
+  EXPECT_ERR(failure, 176, ioctl(source, TEST_SIOCETHTOOL, buffer), ENOTTY);
+  EXPECT_ERR(failure, 177, ioctl(source, 0xdead, buffer), ENOTTY);
+  EXPECT_ERR(failure, 178, ioctl(path_only, FIONBIO, &one), EBADF);
+  EXPECT_ERR(failure, 179, ioctl(path_only, FIONREAD, &available), EBADF);
+  EXPECT_ERR(failure, 180, ioctl(path_only, FIOCLEX), EBADF);
+}
+
+static int check_stream(int source, int base, int kvm,
+                        int final_nonblock, int final_cloexec) {
+  int failure = 0;
+  int duplicate = dup(source);
+  if (duplicate < 0) return base;
+  char path[64];
+  if (snprintf(path, sizeof(path), "/proc/self/fd/%d", source) >=
+      (int)sizeof(path)) return base + 1;
+  int reopened = open(path, O_WRONLY | O_CLOEXEC);
+  int path_only = open(path, O_PATH | O_CLOEXEC);
+  if (reopened < 0 || path_only < 0) return base + 2;
+  check_writable_pipe_ops(&failure, source, base + 3);
+  check_writable_pipe_ops(&failure, duplicate, base + 35);
+  check_writable_pipe_ops(&failure, reopened, base + 67);
+  check_path_ops(&failure, path_only);
+  check_ioctls(&failure, source, duplicate, reopened, path_only, kvm,
+               final_nonblock, final_cloexec);
+  if (close(duplicate) || close(reopened) || close(path_only))
+    return failure ? failure : base + 99;
+  return failure;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 240;
+  int kvm = !strcmp(argv[1], "kvm");
+  if (!kvm && strcmp(argv[1], "native")) return 241;
+  int result = check_stream(STDOUT_FILENO, 1, kvm, 0, 0);
+  if (result) return result;
+  result = check_stream(STDERR_FILENO, 20, kvm, 1, 1);
+  if (result) return result;
+  if (write(STDOUT_FILENO, "captured-fileops-ok\n", 20) != 20) return 242;
+  if (write(STDERR_FILENO, "captured-fileops-err\n", 21) != 21) return 243;
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable)
+        .arg("native")
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert_eq!(native.stdout, b"captured-fileops-ok\n");
+    assert_eq!(native.stderr, b"captured-fileops-err\n");
+
+    let executable = executable.to_str().unwrap();
+    let run = |with_tool: bool| {
+        let image = std::fs::read(executable).unwrap();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, "kvm"],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        if with_tool {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<CounterTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        }
+    };
+
+    struct RestoreStandardDescriptors {
+        stdout: std::fs::File,
+        stderr: std::fs::File,
+    }
+    impl Drop for RestoreStandardDescriptors {
+        fn drop(&mut self) {
+            use std::os::fd::AsRawFd;
+            assert_eq!(unsafe { libc::dup2(self.stdout.as_raw_fd(), 1) }, 1);
+            assert_eq!(unsafe { libc::dup2(self.stderr.as_raw_fd(), 2) }, 2);
+        }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct AmbientSnapshot {
+        bytes: Vec<u8>,
+        device: u64,
+        inode: u64,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        length: u64,
+        blocks: u64,
+        mtime: i64,
+        mtime_nsec: i64,
+        ctime: i64,
+        ctime_nsec: i64,
+        owner_offset: libc::off_t,
+        raw_offset: libc::off_t,
+        status_flags: libc::c_int,
+        descriptor_flags: libc::c_int,
+        seals: libc::c_int,
+    }
+
+    fn snapshot(file: &std::fs::File, raw_fd: libc::c_int) -> AmbientSnapshot {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = file.metadata().unwrap();
+        AmbientSnapshot {
+            bytes: std::fs::read(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            mode: metadata.mode(),
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            length: metadata.len(),
+            blocks: metadata.blocks(),
+            mtime: metadata.mtime(),
+            mtime_nsec: metadata.mtime_nsec(),
+            ctime: metadata.ctime(),
+            ctime_nsec: metadata.ctime_nsec(),
+            owner_offset: unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR) },
+            raw_offset: unsafe { libc::lseek(raw_fd, 0, libc::SEEK_CUR) },
+            status_flags: unsafe { libc::fcntl(raw_fd, libc::F_GETFL) },
+            descriptor_flags: unsafe { libc::fcntl(raw_fd, libc::F_GETFD) },
+            seals: unsafe { libc::fcntl(raw_fd, libc::F_GET_SEALS) },
+        }
+    }
+
+    let panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let redirected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        use std::io::Write;
+        use std::os::fd::FromRawFd;
+
+        let saved_stdout = unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) };
+        let saved_stderr = unsafe { libc::fcntl(2, libc::F_DUPFD_CLOEXEC, 3) };
+        assert!(saved_stdout >= 3 && saved_stderr >= 3);
+        let restore = RestoreStandardDescriptors {
+            stdout: unsafe { std::fs::File::from_raw_fd(saved_stdout) },
+            stderr: unsafe { std::fs::File::from_raw_fd(saved_stderr) },
+        };
+
+        let mut ambient = Vec::new();
+        for (index, (nonblock, cloexec)) in [(true, true), (false, false)].into_iter().enumerate() {
+            let raw = unsafe {
+                libc::memfd_create(
+                    c"capture-fileops-ambient".as_ptr(),
+                    libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+                )
+            };
+            assert!(raw >= 3, "{}", std::io::Error::last_os_error());
+            let mut file = unsafe { std::fs::File::from_raw_fd(raw) };
+            file.write_all(format!("ambient-{index}-sentinel").as_bytes())
+                .unwrap();
+            assert_eq!(unsafe { libc::lseek(raw, 1, libc::SEEK_SET) }, 1);
+            let flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
+            let requested_flags =
+                flags | libc::O_APPEND | if nonblock { libc::O_NONBLOCK } else { 0 };
+            assert_eq!(
+                unsafe { libc::fcntl(raw, libc::F_SETFL, requested_flags) },
+                0
+            );
+            assert_eq!(
+                unsafe {
+                    libc::fcntl(
+                        raw,
+                        libc::F_ADD_SEALS,
+                        libc::F_SEAL_WRITE
+                            | libc::F_SEAL_GROW
+                            | libc::F_SEAL_SHRINK
+                            | libc::F_SEAL_SEAL,
+                    )
+                },
+                0
+            );
+            let standard = index as libc::c_int + 1;
+            assert_eq!(unsafe { libc::dup2(raw, standard) }, standard);
+            assert_eq!(
+                unsafe {
+                    libc::fcntl(
+                        standard,
+                        libc::F_SETFD,
+                        if cloexec { libc::FD_CLOEXEC } else { 0 },
+                    )
+                },
+                0
+            );
+            ambient.push(file);
+        }
+
+        let expected = [snapshot(&ambient[0], 1), snapshot(&ambient[1], 2)];
+        let mut observed = Vec::new();
+        let mut results = Vec::new();
+        for with_tool in [false, false, true, true] {
+            results.push(run(with_tool));
+            observed.push([snapshot(&ambient[0], 1), snapshot(&ambient[1], 2)]);
+        }
+        drop(restore);
+        (results, expected, observed)
+    }));
+    std::panic::set_hook(panic_hook);
+    let (results, expected_snapshots, observed_snapshots) = match redirected {
+        Ok(results) => results,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            panic!("captured file-operation setup/run panicked: {message}");
+        }
+    };
+
+    for (run_index, observed) in observed_snapshots.iter().enumerate() {
+        assert_eq!(
+            observed, &expected_snapshots,
+            "ambient state changed in run {run_index}"
+        );
+    }
+    for (index, result) in results.iter().enumerate() {
+        assert_eq!(
+            result.0,
+            0,
+            "run {index}: stdout={} stderr={}",
+            String::from_utf8_lossy(&result.1),
+            String::from_utf8_lossy(&result.2)
+        );
+        assert_eq!(result.1, native.stdout, "run {index}");
+        assert_eq!(result.2, native.stderr, "run {index}");
+    }
+    assert_eq!(results[1], results[0], "direct KVM result changed");
+    assert_eq!(results[2], results[0], "Tool and direct KVM results differ");
+    assert_eq!(results[3], results[2], "Tool KVM result changed");
 }
 
 // Anonymous pipe/socket object numbers, including a fresh caller-supplied pipe
