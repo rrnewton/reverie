@@ -123,6 +123,8 @@ fn capture_executor_stat(executor: &mut ElfExecutor, memory: &GuestMemory, fd: i
 
 #[test]
 fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
+    const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
+    const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
     let root = TestDir::new();
     let owner = CapturedOutput::try_new().unwrap();
     let mut state = test_state(&root.0);
@@ -172,12 +174,43 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
     assert_eq!(capture_executor_stat(&mut parent, &memory, 1), stderr);
     assert_eq!(capture_executor_stat(&mut parent, &memory, alias), stdout);
     let mut child = parent.fork_child(3, false, false).unwrap();
+
+    assert_eq!(
+        child.execute(
+            &SyscallRequest::new(
+                libc::SYS_close_range as u64,
+                [
+                    HIGH_WORD | fcntl_alias as u64,
+                    HIGH_WORD | fcntl_alias as u64,
+                    HIGH_WORD | CLOSE_RANGE_CLOEXEC,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            &memory,
+        ),
+        0
+    );
+    assert!(child.state.files.contains_key(&fcntl_alias));
+    assert!(child.state.cloexec_fds.contains(&fcntl_alias));
+    assert!(output_alias(&child.state, fcntl_alias).is_some());
+    assert!(child.state.fd_object_inodes.contains_key(&fcntl_alias));
+    assert!(!child.state.cloexec_fds.contains(&alias));
+
     child.replace_after_exec(test_state(&root.0));
+    assert!(!child.state.files.contains_key(&fcntl_alias));
+    assert!(!child.state.cloexec_fds.contains(&fcntl_alias));
+    assert!(output_alias(&child.state, fcntl_alias).is_none());
+    assert!(!child.state.fd_object_inodes.contains_key(&fcntl_alias));
     assert_eq!(capture_executor_stat(&mut child, &memory, alias), stdout);
     assert_eq!(capture_executor_stat(&mut child, &memory, 1), stderr);
     assert_eq!(
         parent.execute(
-            &SyscallRequest::new(libc::SYS_close as u64, [alias as u64, 0, 0, 0, 0, 0]),
+            &SyscallRequest::new(
+                libc::SYS_close as u64,
+                [HIGH_WORD | alias as u64, 0, 0, 0, 0, 0],
+            ),
             &memory
         ),
         0
