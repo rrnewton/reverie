@@ -6530,12 +6530,9 @@ fn sendfile(
     args: &[u64; 6],
     output: Option<&mut CapturedOutput>,
 ) -> i64 {
-    let Ok(out_fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
-    let Ok(in_fd) = i32::try_from(args[1]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux syscall `int` arguments consume only the low descriptor word.
+    let out_fd = args[0] as libc::c_int;
+    let in_fd = args[1] as libc::c_int;
     // Resolve the input endpoint. sendfile(2) requires an mmap-able input, so a
     // valid-but-non-regular descriptor (a standard stream, pipe, or socket) must
     // fail with ENOSYS to route the caller onto glibc's mediated read()+write()
@@ -6746,9 +6743,8 @@ fn memfd_create(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
 }
 
 fn lseek(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux syscall `int` arguments consume only the low descriptor word.
+    let fd = args[0] as libc::c_int;
     if let Some(description) = state.fdinfo_files.get(&fd) {
         return description.seek(args);
     }
@@ -21045,6 +21041,123 @@ mod tests {
             10
         );
         assert_eq!(std::fs::read(&dst_pos_path).unwrap(), b"abcdefghij");
+    }
+
+    #[test]
+    fn sendfile_and_lseek_consume_low_descriptor_words() {
+        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
+        const SIGNED_LOW_WORD: u64 = HIGH_WORD | 0x8000_0000;
+        const OFFSET: u64 = 0x100;
+
+        let root = TestDir::new();
+        let src_path = root.0.join("src-low-word");
+        let dst_path = root.0.join("dst-low-word");
+        std::fs::write(&src_path, b"abcdefghij").unwrap();
+
+        let mut state = test_state(&root.0);
+        state.files.insert(
+            3,
+            std::fs::OpenOptions::new()
+                .read(true)
+                .open(&src_path)
+                .unwrap(),
+        );
+        state.files.insert(
+            4,
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&dst_path)
+                .unwrap(),
+        );
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        write_struct(&mut memory, OFFSET, &0i64);
+
+        // Exercise each sendfile descriptor decoder independently while using
+        // the same ordinary regular-file routing as an unadorned syscall.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendfile,
+                [HIGH_WORD | 4, 3, OFFSET, 2, 0, 0]
+            ),
+            2
+        );
+        assert_eq!(read_struct::<i64>(&memory, OFFSET), 2);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendfile,
+                [4, HIGH_WORD | 3, OFFSET, 2, 0, 0]
+            ),
+            2
+        );
+        assert_eq!(read_struct::<i64>(&memory, OFFSET), 4);
+        assert_eq!(std::fs::read(&dst_path).unwrap(), b"abcd");
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_lseek,
+                [HIGH_WORD | 3, 6, libc::SEEK_SET as u64, 0, 0, 0]
+            ),
+            6
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_lseek,
+                [3, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+            ),
+            6
+        );
+
+        // A set low-word sign bit still denotes a negative descriptor. Keep
+        // the offset pointer and whence valid so these are fd-only assertions.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendfile,
+                [SIGNED_LOW_WORD | 4, 3, OFFSET, 1, 0, 0]
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendfile,
+                [4, SIGNED_LOW_WORD | 3, OFFSET, 1, 0, 0]
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_lseek,
+                [SIGNED_LOW_WORD | 3, 0, libc::SEEK_SET as u64, 0, 0, 0]
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(read_struct::<i64>(&memory, OFFSET), 4);
+        assert_eq!(std::fs::read(&dst_path).unwrap(), b"abcd");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_lseek,
+                [3, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+            ),
+            6
+        );
     }
 
     #[test]

@@ -16069,6 +16069,139 @@ int main(void) {
 }
 
 #[test]
+fn sendfile_and_lseek_consume_low_descriptor_words_on_kvm() {
+    if !kvm_available("KVM sendfile/lseek low-word argument test") {
+        return;
+    }
+
+    const PAYLOAD: &[u8] = b"sendfile-lseek-low-word-ok\n";
+    let directory = TestDirectory::new();
+    let source = directory.0.join("sendfile-lseek-low-word-source");
+    std::fs::write(&source, PAYLOAD).unwrap();
+    let executable = compile_c_program(
+        &directory.0,
+        "sendfile-lseek-low-word",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define HIGH_WORD UINT64_C(0x5a5a5a5a00000000)
+#define SIGNED_LOW_WORD (HIGH_WORD | UINT64_C(0x80000000))
+#define PAYLOAD "sendfile-lseek-low-word-ok\n"
+
+static int failed_with(long result, int expected) {
+  return result == -1 && errno == expected;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) return 1;
+  int fd = open(argv[1], O_RDONLY);
+  if (fd < 0) return 2;
+
+  off_t offset = 0;
+  errno = 0;
+  if (!failed_with(syscall(SYS_sendfile,
+                           SIGNED_LOW_WORD | (uint32_t)STDOUT_FILENO,
+                           (uint32_t)fd, &offset, 1), EBADF) ||
+      offset != 0) return 3;
+  errno = 0;
+  if (!failed_with(syscall(SYS_sendfile, (uint32_t)STDOUT_FILENO,
+                           SIGNED_LOW_WORD | (uint32_t)fd,
+                           &offset, 1), EBADF) ||
+      offset != 0) return 4;
+
+  // Keep whence valid: this assertion discriminates only fd decoding.
+  errno = 0;
+  if (!failed_with(syscall(SYS_lseek, SIGNED_LOW_WORD | (uint32_t)fd,
+                           0, SEEK_SET), EBADF) ||
+      lseek(fd, 0, SEEK_CUR) != 0) return 5;
+  if (syscall(SYS_lseek, HIGH_WORD | (uint32_t)fd, 3, SEEK_SET) != 3 ||
+      lseek(fd, 0, SEEK_CUR) != 3) return 6;
+
+  // Command::output and KVM capture both expose stdout as a pipe.
+  errno = 0;
+  if (!failed_with(syscall(SYS_lseek,
+                           HIGH_WORD | (uint32_t)STDOUT_FILENO,
+                           0, SEEK_CUR), ESPIPE)) return 7;
+
+  // Split one exact marker so each sendfile fd decoder is exercised alone.
+  offset = 0;
+  const size_t length = sizeof(PAYLOAD) - 1;
+  const size_t split = (sizeof(PAYLOAD) - 1) / 2;
+  if (syscall(SYS_sendfile,
+              HIGH_WORD | (uint32_t)STDOUT_FILENO,
+              (uint32_t)fd, &offset, split) != (long)split ||
+      offset != (off_t)split || lseek(fd, 0, SEEK_CUR) != 3) return 8;
+  if (syscall(SYS_sendfile, (uint32_t)STDOUT_FILENO,
+              HIGH_WORD | (uint32_t)fd, &offset,
+              length - split) != (long)(length - split) ||
+      offset != (off_t)length || lseek(fd, 0, SEEK_CUR) != 3) return 9;
+
+  if (close(fd) != 0) return 10;
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable)
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "native stdout={} stderr={}",
+        String::from_utf8_lossy(&native.stdout),
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(native.stdout, PAYLOAD);
+    assert!(native.stderr.is_empty());
+
+    let image = std::fs::read(&executable).unwrap();
+    for (tool_owned, repetition) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
+        let executable = executable.to_str().unwrap();
+        let source = source.to_str().unwrap();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable, source],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if tool_owned {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(
+            code,
+            0,
+            "tool_owned={tool_owned} repetition={repetition} stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(
+            stdout, native.stdout,
+            "tool_owned={tool_owned} repetition={repetition}"
+        );
+        assert_eq!(
+            stderr, native.stderr,
+            "tool_owned={tool_owned} repetition={repetition}"
+        );
+    }
+}
+
+#[test]
 fn storage_fd_syscalls_consume_low_words_on_kvm() {
     if !kvm_available("KVM storage fd low-word argument test") {
         return;
