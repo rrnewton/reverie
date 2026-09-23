@@ -811,7 +811,7 @@ fn execute_basic_syscall_inner(
         chdir(memory, state, args)
     } else if number == libc::SYS_fchdir as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        fchdir(state, args)
+        fchdir(state, args, capture_metadata)
     } else if number == libc::SYS_getdents64 as u64 {
         getdents64(memory, state, args)
     } else if number == libc::SYS_getpid as u64 {
@@ -15029,27 +15029,39 @@ fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
     set_cwd(state, directory)
 }
 
-fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
+fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
+    // Linux consumes the low 32-bit descriptor word from the syscall register.
+    let fd = args[0] as libc::c_int;
+    let Some(host_fd) = isolated_host_fd(state, fd, capture) else {
         return negative_errno(libc::EBADF);
     };
-    let Some(file) = state.files.get(&fd) else {
-        return negative_errno(libc::EBADF);
-    };
-    // Rejects non-directories (ENOTDIR) and O_PATH descriptors (EBADF), matching
-    // this backend's current readable-directory restriction, not Linux's
-    // O_PATH fchdir behavior.
-    if let Err(error) = ensure_directory(file) {
-        return error;
-    }
     // Reopen the directory itself ("." relative to the guest's own descriptor)
     // as an independent O_PATH cwd handle so a later guest `close(fd)` cannot
-    // invalidate the working directory.
-    let directory = match open_cwd_directory(file.as_raw_fd(), c".") {
+    // invalidate the working directory. Linux permits an O_PATH directory as
+    // the source; openat2 supplies the directory/type validation without
+    // rejecting O_PATH. Capture resolution above also ensures virtual output
+    // FIFOs never consult an unrelated supervisor object in physical fd 1/2.
+    let directory = match validate_and_open_fchdir_directory(host_fd, |host_fd| {
+        open_cwd_directory(host_fd, c".")
+    }) {
         Ok(directory) => directory,
         Err(error) => return error,
     };
     set_cwd(state, directory)
+}
+
+fn validate_and_open_fchdir_directory(
+    host_fd: RawFd,
+    open: impl FnOnce(RawFd) -> Result<std::fs::File, i64>,
+) -> Result<std::fs::File, i64> {
+    // Native fchdir identifies a live non-directory before allocating any new
+    // descriptor. Preserve ENOTDIR even when the supervisor is at its fd limit;
+    // otherwise the reopen could leak host EMFILE for regular files, pipes, or
+    // captured-output FIFOs.
+    if fd_mode(host_fd)? & libc::S_IFMT != libc::S_IFDIR {
+        return Err(negative_errno(libc::ENOTDIR));
+    }
+    open(host_fd)
 }
 
 /// Open `path` (relative to `host_dirfd`) as an `O_PATH|O_DIRECTORY` handle
@@ -20837,6 +20849,32 @@ mod tests {
             reopened >= 0,
             "relative open after close failed: {reopened}"
         );
+    }
+
+    #[test]
+    fn fchdir_rejects_nondirectory_before_fallible_reopen() {
+        let root = TestDir::new();
+        let path = root.0.join("regular");
+        std::fs::write(&path, b"x").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let attempted = std::cell::Cell::new(false);
+        let result = validate_and_open_fchdir_directory(file.as_raw_fd(), |_| {
+            attempted.set(true);
+            Err(negative_errno(libc::EMFILE))
+        });
+        assert_eq!(result.err(), Some(negative_errno(libc::ENOTDIR)));
+        assert!(
+            !attempted.get(),
+            "non-directory reached the allocating reopen"
+        );
+
+        let directory = std::fs::File::open(&root.0).unwrap();
+        let result = validate_and_open_fchdir_directory(directory.as_raw_fd(), |_| {
+            attempted.set(true);
+            Err(negative_errno(libc::EMFILE))
+        });
+        assert_eq!(result.err(), Some(negative_errno(libc::EMFILE)));
+        assert!(attempted.get(), "directory did not reach the reopen");
     }
 
     fn open_with_flags(
