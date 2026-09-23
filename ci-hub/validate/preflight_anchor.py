@@ -21,7 +21,7 @@ WHAT IT DOES. For each required floor in rebase-base-floors.json, decide whether
 the target head CONTAINS the anchor commit:
   * local first: `git -C <checkout> merge-base --is-ancestor <anchor> <head>`
     (rc 0 == head contains anchor). Works whenever the head/ref is known locally.
-  * fallback: `with-proxy gh api repos/<repo>/compare/<anchor>...<head> --jq
+  * fallback: `with-proxy "$FLEET_REAL_GH" api repos/<repo>/compare/<anchor>...<head> --jq
     .status`; status in {ahead, identical} == head contains anchor;
     {behind, diverged} == head PREDATES the anchor.
 If ANY anchor is missing -> exit 2 (REFUSED) with a NAMED reason identifying the
@@ -50,6 +50,8 @@ import json
 import os
 import subprocess
 import sys
+
+import gh_route
 
 DEFAULT_REPO = "rrnewton/hermit"
 DEFAULT_CHECKOUT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "hermit")
@@ -119,10 +121,17 @@ def _run(cmd: list[str], *, timeout: float) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _gh_command(*arguments: str) -> list[str]:
+    try:
+        return gh_route.command(*arguments)
+    except ValueError as error:
+        raise PreflightError(str(error)) from error
+
+
 def resolve_pr_head(repo: str, pr: str) -> tuple[str, str]:
     """(headRefOid, headRefName) for a PR via `gh pr view`."""
-    cp = _run(["with-proxy", "gh", "pr", "view", str(pr), "--repo", repo,
-               "--json", "headRefOid,headRefName"], timeout=NETWORK_TIMEOUT)
+    cp = _run(_gh_command("pr", "view", str(pr), "--repo", repo,
+                          "--json", "headRefOid,headRefName"), timeout=NETWORK_TIMEOUT)
     if cp.returncode != 0:
         raise PreflightError(
             f"gh pr view {pr} failed: {(cp.stderr or cp.stdout).strip()}")
@@ -166,8 +175,8 @@ def _compare_contains(repo: str, anchor: str, head: str) -> bool:
     compare/<anchor>...<head> reports how HEAD relates to BASE=anchor:
     'ahead'/'identical' -> head contains anchor; 'behind'/'diverged' -> not.
     """
-    cp = _run(["with-proxy", "gh", "api",
-               f"repos/{repo}/compare/{anchor}...{head}", "--jq", ".status"],
+    cp = _run(_gh_command("api",
+                         f"repos/{repo}/compare/{anchor}...{head}", "--jq", ".status"),
               timeout=NETWORK_TIMEOUT)
     if cp.returncode != 0:
         raise PreflightError(

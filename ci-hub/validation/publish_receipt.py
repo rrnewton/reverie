@@ -16,7 +16,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import socket
 import subprocess
 import sys
@@ -33,6 +32,7 @@ FOREIGN_HOST_TOKEN = "RECEIPT-ARTIFACT-FOREIGN-HOST"
 # check_outcome.py), one directory above this validation/ package.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import qualifying_receipt  # noqa: E402
+from validate import gh_route  # noqa: E402
 from admission_paths import read_admission_log  # noqa: E402
 
 
@@ -301,7 +301,10 @@ def build_receipt(
 
 
 def gh_command() -> list[str]:
-    return ["with-proxy", "gh"] if shutil.which("with-proxy") else ["gh"]
+    try:
+        return gh_route.command()
+    except ValueError as error:
+        fail(str(error))
 
 
 def gh(

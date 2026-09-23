@@ -1099,7 +1099,7 @@ class RetainedStepProfilesTest(unittest.TestCase):
             wait=7200,
             hold=1200,
             child_deadline=3600,
-            environment=environment or {"HOME": "/home/test", "PATH": "/usr/bin:/bin"},
+            environment={"FLEET_REAL_GH": sys.executable, **(environment or {"HOME": "/home/test", "PATH": "/usr/bin:/bin"})},
             repo=repo,
         )
 
@@ -1174,7 +1174,7 @@ class HermitServiceResourcesTest(unittest.TestCase):
             unit="validate-startup-fixture", record=Path("/state/run.json"),
             log=Path("/state/run.log"), pr=None, validate_args=["quick"],
             wait=120, hold=1200, child_deadline=4800,
-            environment={"HOME": "/home/test", "PATH": "/usr/bin:/bin"},
+            environment={"HOME": "/home/test", "PATH": "/usr/bin:/bin", "FLEET_REAL_GH": sys.executable},
         )
         arguments.update(overrides)
         return start_unit.build_systemd_command(**arguments)
@@ -1276,7 +1276,11 @@ class StartUnitTest(unittest.TestCase):
             "HOME": "/home/test",
             "PATH": "/usr/bin:/bin",
             "XDG_RUNTIME_DIR": str(self.root),
+            "FLEET_REAL_GH": sys.executable,
         }
+        route_patch = mock.patch.dict(os.environ, {"FLEET_REAL_GH": sys.executable})
+        route_patch.start()
+        self.addCleanup(route_patch.stop)
 
     def tearDown(self) -> None:
         start_unit.HOST_TMP_ROOT = self.original_host_tmp_root
@@ -3678,12 +3682,23 @@ class StartUnitTest(unittest.TestCase):
         assert environment is not None
         self.assertEqual(str(self.root), environment["DEV_HERMIT_PARENT"])
         self.assertEqual(str(self.root), environment["DEV_HERMIT_TOOL_ROOT"])
+        self.assertEqual(sys.executable, environment["FLEET_REAL_GH"])
         record = start_unit.run_registry.read_record(
             self.root / "ignored/validate/runs/validate-test.json"
         )
         publication = record["commit_status_publication"]
+        self.assertEqual(sys.executable, record["github_executable"])
         self.assertEqual("published", publication["state"])
         self.assertEqual(SHA, publication["sha"])
+
+    def test_missing_github_route_refuses_before_checkout_or_service_creation(self) -> None:
+        environment = dict(self.environment)
+        environment.pop("FLEET_REAL_GH")
+        rc, _output, error = self.invoke(environment=environment)
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("FLEET_REAL_GH", error)
+        self.assertFalse(any(command[0] == "systemd-run" or wrkslots_action(command, "create")
+                             for command in self.fake.commands))
 
     def test_non_green_validate_records_skip_without_invoking_publisher(self) -> None:
         self.fake.canonical_verdict = "FAILED"
@@ -8698,15 +8713,19 @@ class StartUnitTest(unittest.TestCase):
 
     def test_attach_terminal_materialized_ledger_is_published_once_then_cleaned(self) -> None:
         record, fresh = self.materialized_attach_record()
+        run_registry.update_record(record, github_executable=sys.executable)
         self.fake.scorecard_update = True
         out = io.StringIO()
         err = io.StringIO()
 
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        environment = dict(self.environment)
+        environment.pop("FLEET_REAL_GH")
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.dict(os.environ):
+            os.environ.pop("FLEET_REAL_GH", None)
             rc = start_unit.main(
                 ["--attach", "validate-test"],
                 run=self.fake,
-                environment=self.environment,
+                environment=environment,
                 root=self.root,
                 sleep=lambda _seconds: None,
             )
@@ -8715,6 +8734,10 @@ class StartUnitTest(unittest.TestCase):
         self.assertFalse(fresh.exists())
         self.assertEqual([str(fresh)], self.fake.removed)
         self.assertTrue(start_unit.cell_ledger_published(run_registry.read_record(record)))
+        for command, child_environment in zip(self.fake.commands, self.fake.command_envs):
+            if len(command) > 1 and (command[1].endswith("ci-hub/series/mirror.py")
+                                     or command[1] == "publish-commit-status"):
+                self.assertEqual(sys.executable, child_environment["FLEET_REAL_GH"])
         self.assertFalse(start_unit.scorecard_handoff_path(self.root, "validate-test").exists())
         writer_count = sum(len(c) > 1 and c[1].endswith("ci-hub/series/mirror.py") for c in self.fake.commands)
 
@@ -8737,6 +8760,26 @@ class StartUnitTest(unittest.TestCase):
             sum(len(c) > 1 and c[1].endswith("ci-hub/series/mirror.py") for c in self.fake.commands),
         )
         self.assertTrue(start_unit.cell_ledger_published(run_registry.read_record(record)))
+
+    def test_attach_changed_github_route_retains_verdict_and_unpublished_checkout(self) -> None:
+        record, fresh = self.materialized_attach_record()
+        run_registry.update_record(record, github_executable=sys.executable)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.dict(os.environ, {"FLEET_REAL_GH": "/contradictory/gh"}):
+            rc = start_unit.main(
+                ["--attach", "validate-test"], run=self.fake,
+                environment=self.environment, root=self.root, sleep=lambda _seconds: None,
+            )
+        self.assertEqual(start_unit.EXIT_PASSED, rc, err.getvalue())
+        retained = run_registry.read_record(record)
+        self.assertEqual("VALIDATED", retained["canonical_verdict"])
+        self.assertEqual("failed", retained["ledger_mirror"]["state"])
+        self.assertIn("contradicts", retained["ledger_mirror"]["detail"])
+        self.assertTrue(fresh.exists())
+        self.assertFalse(any(len(c) > 1 and (c[1].endswith("ci-hub/series/mirror.py")
+                                             or c[1] == "publish-commit-status")
+                             for c in self.fake.commands))
 
     def test_historical_schema_three_failure_attach_then_sweep_retires_checkout(
         self,

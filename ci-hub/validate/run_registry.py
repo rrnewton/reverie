@@ -138,6 +138,7 @@ class RunRecord(TypedDict, total=False):
     pr: int | None
     started_at: str
     parent_checkout_head: str | None
+    github_executable: str
     producer: str
     admission: str
     pane_role: str
@@ -309,6 +310,7 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "cargo_home",
         "pr",
         "parent_checkout_head",
+        "github_executable",
         "pane_role",
         "validate_lock_child_deadline_seconds",
         "e2e_result_root",
@@ -909,6 +911,9 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
 
     for field in _OPTIONAL_TEXT_FIELDS & allowed_fields:
         _optional_text(value, field)
+    if "github_executable" in value:
+        if not Path(_required_text(value, "github_executable")).is_absolute():
+            raise _error("github_executable", "must be an absolute executable path")
     for field in _OPTIONAL_INTEGER_FIELDS & allowed_fields:
         _optional_integer(value, field)
     for field in _OPTIONAL_BOOLEAN_FIELDS & allowed_fields:

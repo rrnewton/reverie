@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -19,6 +20,62 @@ SPEC = importlib.util.spec_from_file_location("publish_receipt", SCRIPT)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+
+
+class GitHubRouteTests(unittest.TestCase):
+    def test_publication_uses_recorded_route_for_reads_creation_and_content(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected = root / "selected gh"
+            capture = root / "calls.jsonl"
+            proxy_capture = root / "proxy.txt"
+            selected.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, sys\nfrom pathlib import Path\n"
+                "p=Path(os.environ['ROUTE_CAPTURE'])\n"
+                "index=len(p.read_text().splitlines()) if p.exists() else 0\n"
+                "body=sys.stdin.read() if '--input' in sys.argv else None\n"
+                "with p.open('a') as f: f.write(json.dumps({'argv':sys.argv[1:], 'body':body})+'\\n')\n"
+                "if index in (0,3): raise SystemExit(1)\n"
+                "print(json.dumps({'commit' if index==4 else 'object': {'sha': ('f' if index==4 else 'e')*40}}))\n"
+            )
+            selected.chmod(0o755)
+            proxy = root / "with-proxy"
+            proxy.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "$ROUTE_PROXY"\nexec "$@"\n')
+            proxy.chmod(0o755)
+            decoy = root / "gh"
+            decoy.write_text("#!/bin/sh\nexit 99\n")
+            decoy.chmod(0o755)
+            environment = MODULE.gh_route.recorded_environment(
+                {"github_executable": str(selected)},
+                {"PATH": str(root), "ROUTE_CAPTURE": str(capture), "ROUTE_PROXY": str(proxy_capture)},
+            )
+            body = b'{"receipt":"exact bytes"}\n'
+            with mock.patch.dict(os.environ, environment, clear=True):
+                self.assertEqual(MODULE.publish("owner/repo", "receipts", "r.json", body), "f" * 40)
+            calls = [json.loads(line) for line in capture.read_text().splitlines()]
+            self.assertEqual([call["argv"] for call in calls], [
+                ["api", "repos/owner/repo/git/ref/heads/receipts"],
+                ["api", "repos/owner/repo/git/ref/heads/main"],
+                ["api", "--method", "POST", "repos/owner/repo/git/refs", "-f", "ref=refs/heads/receipts", "-f", "sha=" + "e" * 40],
+                ["api", "repos/owner/repo/contents/r.json?ref=" + "e" * 40],
+                ["api", "--method", "PUT", "repos/owner/repo/contents/r.json", "--input", "-"],
+            ])
+            self.assertEqual(proxy_capture.read_text().splitlines(), [str(selected)] * 5)
+            request = json.loads(calls[-1]["body"])
+            self.assertEqual(base64.b64decode(request["content"]), body)
+            self.assertEqual(request["branch"], "receipts")
+
+    def test_missing_invalid_selection_and_missing_proxy_refuse(self):
+        for selected in (None, "gh", "/nonexistent/explicit-gh"):
+            with self.subTest(selected=selected), mock.patch.dict(os.environ, {}, clear=True):
+                if selected is not None:
+                    os.environ["FLEET_REAL_GH"] = selected
+                with self.assertRaisesRegex(SystemExit, "FLEET_REAL_GH"):
+                    MODULE.gh(["api", "user"])
+        with mock.patch.dict(os.environ, {"FLEET_REAL_GH": sys.executable, "PATH": "/nonexistent"}, clear=True):
+            with self.assertRaises(FileNotFoundError):
+                MODULE.gh(["api", "user"])
 
 
 def make_producer_checkout(root: Path) -> tuple[Path, str, Path]:

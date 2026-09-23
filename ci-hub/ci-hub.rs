@@ -103,6 +103,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
@@ -2146,27 +2147,37 @@ fn gh_config_dir() -> Option<PathBuf> {
     })
 }
 
-/// Build a `gh` invocation, prefixing `with-proxy` for external egress when
-/// available (mirrors the Python health probes' `with-proxy gh` default).
-fn gh_command(root: &Path, args: &[&str]) -> Command {
+/// Build a proxied GitHub invocation with an explicitly selected executable.
+/// A detached validation must not choose a different CLI from its service PATH.
+fn gh_command(root: &Path, args: &[&str]) -> io::Result<Command> {
     assert!(
         !args
             .iter()
             .any(|arg| matches!(*arg, "--who" | "--team" | "--role")),
         "identity-bearing GitHub writes must use the fleet gh wrapper"
     );
-    let mut command = if on_path("with-proxy") {
-        let mut command = Command::new("with-proxy");
-        command.arg("gh");
-        command
-    } else {
-        Command::new("gh")
-    };
-    command.args(args).current_dir(root);
+    let executable = env::var_os("FLEET_REAL_GH")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "FLEET_REAL_GH must name an existing absolute executable; no gh PATH fallback",
+            )
+        })?;
+    let metadata = executable.metadata()?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "FLEET_REAL_GH must name an existing absolute executable",
+        ));
+    }
+    let mut command = Command::new("with-proxy");
+    command.arg(executable).args(args).current_dir(root);
     if let Some(config_dir) = gh_config_dir() {
         command.env("GH_CONFIG_DIR", config_dir);
     }
-    command
+    Ok(command)
 }
 
 /// Build a GitHub command whose prose write must carry fleet attribution.
@@ -2177,13 +2188,8 @@ fn gh_command(root: &Path, args: &[&str]) -> Command {
 /// flags to `gh` itself.
 fn fleet_gh_command(root: &Path, args: &[&str]) -> Command {
     let wrapper = root.join("ci-hub/bin/gh");
-    let mut command = if on_path("with-proxy") {
-        let mut command = Command::new("with-proxy");
-        command.arg(wrapper);
-        command
-    } else {
-        Command::new(wrapper)
-    };
+    let mut command = Command::new("with-proxy");
+    command.arg(wrapper);
     command.args(args).current_dir(root);
     if let Some(config_dir) = gh_config_dir() {
         command.env("GH_CONFIG_DIR", config_dir);
@@ -2300,7 +2306,7 @@ fn reconcile_local_validation_commit_status(
     let target_url = local_validation_status_url(artifact)?;
     let query = format!("repos/{repo}/commits/{sha}/status?per_page=100");
     let existing = gh_command(root, &["api", &query])
-        .bounded_output()
+        .and_then(|mut command| command.bounded_output())
         .map_err(|source| CiHubError::Launch {
             tool: "gh commit status query".into(),
             source,
@@ -2335,7 +2341,7 @@ fn reconcile_local_validation_commit_status(
             &format!("target_url={target_url}"),
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| CiHubError::Launch {
         tool: "gh commit status publish".into(),
         source,
@@ -2362,7 +2368,7 @@ fn read_ci_mode_variable(root: &Path, repo: &str) -> Result<Option<String>, Stri
         root,
         &["variable", "list", "--repo", repo, "--json", "name,value"],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| format!("launch gh: {source}"))?;
     if !output.status.success() {
         return Err(format!(
@@ -2392,7 +2398,7 @@ fn set_ci_mode_variable(root: &Path, repo: &str, value: &str) -> Result<(), Stri
             value,
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| format!("launch gh: {source}"))?;
     if output.status.success() {
         Ok(())
@@ -2658,7 +2664,7 @@ fn ci_mode_fire(root: &Path, args: CiModeFireArgs) -> Result<i32, CiHubError> {
             ".headRefName",
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| CiHubError::Launch {
         tool: "gh pr view".into(),
         source,
@@ -2697,7 +2703,7 @@ fn ci_mode_fire(root: &Path, args: CiModeFireArgs) -> Result<i32, CiHubError> {
             &lane_arg,
         ],
     )
-    .status()
+    .and_then(|mut command| command.status())
     .map_err(|source| CiHubError::Launch {
         tool: "gh workflow run".into(),
         source,
@@ -2762,7 +2768,7 @@ fn ensure_batch_label(root: &Path, repo: &str) -> Result<(), String> {
             "Current GH Actions batch: exempt from constrained-mode gate; gets GH Actions now.",
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| format!("launch gh label create: {source}"))?;
     if output.status.success() {
         return Ok(());
@@ -2794,7 +2800,7 @@ fn edit_batch_label(root: &Path, pr: &BatchPr, add: bool) -> Result<(), String> 
             CI_BATCH_LABEL,
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| format!("launch gh pr edit: {source}"))?;
     if output.status.success() {
         Ok(())
@@ -3177,7 +3183,7 @@ fn qualify_ci_timeout(
             &limit_str,
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| format!("launch gh pr list: {source}"))?;
     if !output.status.success() {
         return Err(format!(
@@ -3232,7 +3238,7 @@ fn qualify_one_pr(
             "10",
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| format!("launch gh run list (pr #{}): {source}", pr.number))?;
     if !output.status.success() {
         return Err(format!(
@@ -3262,7 +3268,7 @@ fn qualify_one_pr(
         root,
         &["run", "view", &run_id_str, "--repo", repo, "--json", "jobs"],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| format!("launch gh run view (pr #{}): {source}", pr.number))?;
     if !jobs_output.status.success() {
         return Err(format!(
@@ -3393,7 +3399,7 @@ fn ensure_fallback_label(root: &Path, repo: &str) -> Result<(), String> {
             "ci-hub cancelled this run to reroute to local validation; autoretry stands down.",
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| format!("launch gh label create: {source}"))?;
     if output.status.success() {
         return Ok(());
@@ -3425,7 +3431,7 @@ fn add_fallback_label(root: &Path, repo: &str, pr: u64) -> Result<(), String> {
             CI_TIMEOUT_FALLBACK_LABEL,
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| format!("launch gh pr edit: {source}"))?;
     if output.status.success() {
         Ok(())
@@ -3443,7 +3449,7 @@ fn add_fallback_label(root: &Path, repo: &str, pr: u64) -> Result<(), String> {
 fn cancel_run(root: &Path, repo: &str, run_id: u64) -> Result<(), String> {
     let id = run_id.to_string();
     let output = gh_command(root, &["run", "cancel", &id, "--repo", repo])
-        .bounded_output()
+        .and_then(|mut command| command.bounded_output())
         .map_err(|source| format!("launch gh run cancel: {source}"))?;
     if output.status.success() {
         Ok(())
@@ -4015,7 +4021,7 @@ fn gh_pr_head(root: &Path, repo: &str, pr: u64) -> Result<String, CiHubError> {
             ".headRefOid",
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| CiHubError::Launch {
         tool: "gh pr view".into(),
         source,
@@ -4059,7 +4065,7 @@ fn gh_pr_head_and_local_label(
             "headRefOid,labels",
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| CiHubError::Launch {
         tool: "gh pr view head and labels".into(),
         source,
@@ -4111,7 +4117,7 @@ fn remove_local_validation_label(root: &Path, repo: &str, pr: u64) -> Result<(),
             LOCALLY_VALIDATED_LABEL,
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| CiHubError::Launch {
         tool: "gh pr edit remove locally-validated".into(),
         source,
@@ -4161,7 +4167,7 @@ fn gh_open_prs(root: &Path, repo: &str) -> Result<Vec<u64>, CiHubError> {
             ".[].number",
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| CiHubError::Launch {
         tool: "gh pr list".into(),
         source,
@@ -10935,7 +10941,7 @@ fn parse_immutable_receipt_reference(
 fn fetch_issue_comments(root: &Path, repo: &str, pr: u64) -> Result<Vec<u8>, CiHubError> {
     let endpoint = format!("repos/{repo}/issues/{pr}/comments?per_page=100");
     let comments = gh_command(root, &["api", "--paginate", "--slurp", &endpoint])
-        .bounded_output()
+        .and_then(|mut command| command.bounded_output())
         .map_err(|source| CiHubError::Launch {
             tool: "gh issue comments".into(),
             source,
@@ -11038,7 +11044,7 @@ fn fetch_and_verify_immutable_receipt(
             &endpoint,
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|error| format!("cannot fetch immutable receipt artifact: {error}"))?;
     if !artifact.status.success() {
         return Err(format!(
@@ -11209,7 +11215,7 @@ fn bind_verified_receipt_to_pr(
             LOCALLY_VALIDATED_LABEL,
         ],
     )
-    .bounded_output()
+    .and_then(|mut command| command.bounded_output())
     .map_err(|source| CiHubError::Launch {
         tool: "gh pr edit locally-validated".into(),
         source,
@@ -11773,6 +11779,111 @@ mod tests {
     }
 
     #[test]
+    fn raw_gh_command_executes_only_the_explicit_proxied_cli() {
+        const CHILD: &str = "CI_HUB_TEST_GH_ROUTE";
+        if let Ok(mode) = env::var(CHILD) {
+            let root = PathBuf::from(env::var_os("CI_HUB_TEST_GH_ROOT").unwrap());
+            if mode == "valid" {
+                for args in [
+                    vec!["api", "repos/owner/repo/commits/abc/status?per_page=100"],
+                    vec![
+                        "api",
+                        "--method",
+                        "POST",
+                        "repos/owner/repo/statuses/abc",
+                        "-f",
+                        "description=two words; $(not-a-shell-command)",
+                    ],
+                ] {
+                    let mut command = gh_command(&root, &args).unwrap();
+                    assert_eq!(command.get_program(), "with-proxy");
+                    assert_eq!(command.get_args().next().unwrap(), root.join("selected gh"));
+                    let output = command.bounded_output().unwrap();
+                    assert!(output.status.success());
+                    let expected: Vec<u8> = args
+                        .iter()
+                        .flat_map(|arg| arg.bytes().chain(std::iter::once(0)))
+                        .collect();
+                    assert_eq!(output.stdout, expected);
+                }
+            } else {
+                let result = gh_command(&root, &["api", "user"])
+                    .and_then(|mut command| command.bounded_output());
+                assert!(
+                    result.is_err(),
+                    "{mode} must refuse without a PATH fallback"
+                );
+            }
+            std::fs::write(root.join(format!("executed-{mode}")), mode.as_bytes()).unwrap();
+            return;
+        }
+
+        let root = env::temp_dir().join(format!(
+            "ci-hub-gh-route-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        for (name, body, mode) in [
+            ("with-proxy", "#!/bin/sh\nexec \"$@\"\n", 0o755),
+            ("selected gh", "#!/bin/sh\nprintf '%s\\0' \"$@\"\n", 0o755),
+            ("gh", "#!/bin/sh\nexit 99\n", 0o755),
+            ("nonexecutable", "not executable\n", 0o644),
+        ] {
+            let path = root.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        for mode in [
+            "valid",
+            "missing",
+            "relative",
+            "absent",
+            "nonexecutable",
+            "no-proxy",
+        ] {
+            let mut child = Command::new(env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "tests::raw_gh_command_executes_only_the_explicit_proxied_cli",
+                ])
+                .env(CHILD, mode)
+                .env("CI_HUB_TEST_GH_ROOT", &root)
+                .env("PATH", &root)
+                .env("FLEET_REAL_GH", root.join("selected gh"));
+            match mode {
+                "missing" => {
+                    child.env_remove("FLEET_REAL_GH");
+                }
+                "relative" => {
+                    child.env("FLEET_REAL_GH", "gh");
+                }
+                "absent" | "nonexecutable" => {
+                    child.env("FLEET_REAL_GH", root.join(mode));
+                }
+                "no-proxy" => {
+                    child.env("PATH", root.join("absent-directory"));
+                }
+                _ => {}
+            }
+            let output = child.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                std::fs::read(root.join(format!("executed-{mode}"))).unwrap(),
+                mode.as_bytes(),
+                "{mode}: child test must execute, not merely exit with zero matched tests"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn raw_gh_command_refuses_fleet_identity_flags() {
         let root = Path::new("/tmp/ci-hub-raw-gh-guard");
         let refused = std::panic::catch_unwind(|| {
@@ -11820,17 +11931,13 @@ mod tests {
             "--body",
             "receipt body",
         ];
-        if program == "with-proxy" {
-            assert_eq!(args.first().map(String::as_str), Some(wrapper.as_str()));
-            assert_eq!(
-                &args[1..],
-                fleet_args,
-                "identity flags must follow the fleet wrapper, not real gh"
-            );
-        } else {
-            assert_eq!(program, wrapper);
-            assert_eq!(args, fleet_args);
-        }
+        assert_eq!(program, "with-proxy");
+        assert_eq!(args.first().map(String::as_str), Some(wrapper.as_str()));
+        assert_eq!(
+            &args[1..],
+            fleet_args,
+            "identity flags must follow the fleet wrapper, not real gh"
+        );
     }
 
     #[test]
@@ -11843,13 +11950,9 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         let wrapper = root.join("ci-hub/bin/gh").display().to_string();
-        let forwarded = if program == "with-proxy" {
-            assert_eq!(args.first().map(String::as_str), Some(wrapper.as_str()));
-            &args[1..]
-        } else {
-            assert_eq!(program, wrapper);
-            &args[..]
-        };
+        assert_eq!(program, "with-proxy");
+        assert_eq!(args.first().map(String::as_str), Some(wrapper.as_str()));
+        let forwarded = &args[1..];
         assert_eq!(
             forwarded,
             [

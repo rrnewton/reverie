@@ -226,6 +226,9 @@ import time
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from validate import gh_route
+
 
 # Scratch refs are namespaced PER PROCESS. A fixed name races: two agents running
 # this concurrently in one repository both fetch into refs/gh-merge-verified/main,
@@ -435,22 +438,14 @@ def cleanup_scratch() -> None:
 
 
 def gh_argv(args: list[str]) -> list[str]:
-    """Route `gh` through `with-proxy` where that wrapper exists.
-
-    ⚠️ WRAPPED HERE RATHER THAN DOCUMENTED. On a proxy-required box a bare `gh`
-    cannot reach api.github.com, so the merge dies with a network error before
-    it has said anything about the pull request -- and a tool that emits
-    "network is unreachable" reads as BROKEN rather than as correctly declining
-    to act. The condition is not rare on these hosts: measured 2026-08-25,
-    `git ls-remote` succeeded against github.com while `curl
-    https://api.github.com` failed outright on the same machine.
-
-    Telling every caller to remember a prefix is the kind of rule that depends
-    on memory, which this file's neighbour argues is a preference rather than a
-    fix. So the wrapper is applied internally, and only when it is actually
-    present, so boxes without it are unaffected.
-    """
-    return ["with-proxy", *args] if shutil.which("with-proxy") else args
+    """Use the explicitly configured executable and mandatory proxy wrapper."""
+    if not args or args[0] != "gh":
+        raise ValueError("internal GitHub command must begin with gh")
+    try:
+        return gh_route.command(*args[1:])
+    except ValueError as error:
+        die(8, f"gh-merge-verified: GitHub route unavailable: {error}",
+            "  NOTHING WAS ATTEMPTED. Configure FLEET_REAL_GH and re-run.")
 
 
 def looks_unreachable(text: str) -> bool:
@@ -688,6 +683,7 @@ def execute_current_main_copy(argv: list[str]) -> None:
             "ci-hub/health/approval_binding.py",
             "ci-hub/lib/bounded_capture.py",
             "ci-hub/lib/ops_state.py",
+            "ci-hub/validate/gh_route.py",
         )
         expected: dict[str, str] = {}
         for relative in support_paths:

@@ -117,6 +117,11 @@ class FleetGhTest(unittest.TestCase):
         (self.root / "ci-hub/closure").mkdir(parents=True)
         (self.root / "ci-hub/health").mkdir(parents=True)
         (self.root / "ci-hub/lib").mkdir(parents=True)
+        (self.root / "ci-hub/validate").mkdir(parents=True)
+        shutil.copy2(
+            ROOT / "ci-hub/validate/gh_route.py",
+            self.root / "ci-hub/validate/gh_route.py",
+        )
         self.shim = self.root / "ci-hub/bin/gh"
         self.printer = self.root / "ci-hub/bin/who-am-i"
         shutil.copy2(SOURCE_SHIM, self.shim)
@@ -178,6 +183,15 @@ class FleetGhTest(unittest.TestCase):
             "sys.stdout.write(os.environ.get('GH_STDOUT', ''))\n"
         )
         self.fake.chmod(0o755)
+        self.proxy_capture = self.root / "proxy-capture.txt"
+        self.proxy = self.root / "with-proxy"
+        self.proxy.write_text(
+            '#!/bin/sh\nprintf "%s\\n" "$1" >> "$GH_PROXY_CAPTURE"\nexec "$@"\n'
+        )
+        self.proxy.chmod(0o755)
+        decoy = self.root / "gh"
+        decoy.write_text("#!/bin/sh\nexit 99\n")
+        decoy.chmod(0o755)
         self.note_capture = self.root / "note-capture.json"
         self.note_writer = self.root / "ci-hub/bin/tg-note-verified"
         self.note_writer.write_text(
@@ -200,6 +214,8 @@ class FleetGhTest(unittest.TestCase):
             GH_CAPTURE=str(self.capture),
             GH_CAPTURE_BODY=str(self.body_capture),
             NOTE_CAPTURE=str(self.note_capture),
+            GH_PROXY_CAPTURE=str(self.proxy_capture),
+            PATH=str(self.root) + os.pathsep + os.environ.get("PATH", ""),
         )
         self.env["DG_AGENT_NAME"] = TEST_AGENT
         # The test process may itself run below Codex, Claude, or another live
@@ -340,6 +356,61 @@ class FleetGhTest(unittest.TestCase):
             f"Unverified --who metadata: {TEST_AGENT}\n"
             "evidence",
         )
+        self.assertEqual(self.proxy_capture.read_text().splitlines(), [str(self.fake)])
+
+    def test_invalid_explicit_route_never_uses_an_installed_fallback(self) -> None:
+        nonexecutable = self.root / "not-executable"
+        nonexecutable.write_text("no execution\n")
+        for selected in (None, "gh", str(self.root / "absent"), str(nonexecutable), str(self.shim)):
+            with self.subTest(selected=selected):
+                environment = dict(self.env)
+                if selected is None:
+                    environment.pop("FLEET_REAL_GH")
+                else:
+                    environment["FLEET_REAL_GH"] = selected
+                result = self.run_shim("api", "user", env=environment)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("FLEET_REAL_GH", result.stderr)
+                self.assertFalse(self.capture.exists())
+                self.assertFalse(self.proxy_capture.exists())
+
+    def test_missing_proxy_refuses_instead_of_invoking_selected_cli_directly(self) -> None:
+        self.proxy.unlink()
+        # Invoke the script with an absolute interpreter so PATH can be empty
+        # without testing the script's /usr/bin/env shebang instead of its route.
+        result = subprocess.run(
+            [sys.executable, str(self.shim), "api", "user"],
+            env=dict(self.env, PATH=str(self.root / "absent")),
+            cwd=self.cwd, text=True, capture_output=True, timeout=5,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("with-proxy", result.stderr)
+        self.assertFalse(self.capture.exists())
+
+    def test_post_write_output_failure_is_not_a_route_refusal(self) -> None:
+        driver = (
+            "import runpy,sys\n"
+            "class BrokenOutput:\n"
+            " def write(self,value): raise BrokenPipeError('fixture post-write pipe')\n"
+            " def flush(self): pass\n"
+            "sys.stdout=BrokenOutput()\n"
+            "sys.argv=sys.argv[1:]\n"
+            "runpy.run_path(sys.argv[0],run_name='__main__')\n"
+        )
+        for operation in (["pr", "comment", "42"], ["pr", "create", "--title", "fixture"]):
+            with self.subTest(operation=operation):
+                result = subprocess.run(
+                    [sys.executable, "-c", driver, str(self.shim), *self.identity(),
+                     "--task", "fixture-task", *operation, "--body", "fixture"],
+                    cwd=self.cwd, env=dict(self.env, GH_STDOUT="https://example.test/posted\n"),
+                    text=True, capture_output=True, timeout=5,
+                )
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertNotEqual(result.returncode, 2, result.stderr)
+                self.assertIn("BrokenPipeError", result.stderr)
+                self.assertNotIn("fleet-gh: REFUSE", result.stderr)
+                self.assertEqual(self.captured()[:2], operation[:2])
+                self.assertFalse(self.note_capture.exists())
 
     def test_full_sha_marker_in_prose_is_a_mention(self) -> None:
         body = (

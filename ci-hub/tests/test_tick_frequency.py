@@ -209,7 +209,7 @@ def test_health_tick_uses_the_installed_immutable_bootstrap() -> None:
         "Environment=PATH=%h/.local/libexec/dev-hermit:%h/bin:%h/.local/bin:"
         in service
     )
-    assert "Environment=FLEET_REAL_GH=%h/.local/libexec/dev-hermit/gh" in service
+    assert "Environment=FLEET_REAL_GH=%h/bin/gh" in service
 
 
 def test_staleness_alarm_preserves_three_missed_tick_threshold() -> None:

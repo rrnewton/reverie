@@ -31,6 +31,7 @@ from typing import Any, TextIO
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import git_env  # noqa: E402
+import gh_route
 import rust_toolchain
 import qualifying_receipt
 import pane_owner
@@ -4477,6 +4478,9 @@ def build_systemd_command(
     if not home or not path:
         raise ValueError("HOME and PATH must be set so cargo/rustup resolve inside the user unit")
     build_budget_env: list[str] = []
+    build_budget_env.extend(
+        ["--setenv", f"FLEET_REAL_GH={gh_route.executable(environment)}"]
+    )
     if measured_rust_toolchain is not None:
         # rust-script invokes Cargo from its generated project directory, where
         # Rustup cannot discover the measured checkout's toolchain file. Keep
@@ -5981,13 +5985,14 @@ def finalize_commit_status_publication(
             "--json",
         ]
         try:
+            environment = gh_route.recorded_environment(record, environment)
             published = run(
                 command,
                 cwd=state_root,
                 env=environment,
                 check=False,
             )
-        except OSError as error:
+        except (OSError, ValueError) as error:
             outcome = {
                 **common,
                 "state": "failed",
@@ -6222,7 +6227,12 @@ def finalize_ledger_mirror(
             if remaining <= 2:
                 raise ValueError("publication lifecycle deadline exhausted before preparation")
             command.extend(["--lifecycle-deadline-ns", str(deadline_ns)])
-            result = run(command, cwd=root, check=False, timeout=remaining)
+            environment = gh_route.recorded_environment(
+                record, git_env.sanitized_git_env()
+            )
+            result = run(
+                command, cwd=root, env=environment, check=False, timeout=remaining
+            )
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             outcome = {
                 "state": "failed",
@@ -6870,6 +6880,11 @@ def parser() -> argparse.ArgumentParser:
             "path is ci-hub validate-lock."
         ),
         epilog=(
+            "Set FLEET_REAL_GH to the absolute GitHub CLI executable before launch.\n"
+            "GitHub calls use with-proxy and never choose gh from PATH. The selected\n"
+            "path is recorded and reused by detached execution and later --attach;\n"
+            "a contradictory setting refuses publication without changing the test verdict.\n"
+            "\n"
             "example, run from the checkout you want validated:\n"
             "  ci-hub validate-run --checkout=\"$PWD\" --agent=human \\\n"
             "                      --target=\"$(git rev-parse HEAD)\" -- full\n"
@@ -7364,6 +7379,7 @@ def main(
             )
 
     try:
+        github_executable = gh_route.executable(environment)
         if FD_TOOL_ROOT_RE.fullmatch(str(tool_root)) is not None:
             tool_authority = read_immutable_tool_authority(
                 tool_root, state_root, environment
@@ -7496,7 +7512,8 @@ def main(
             )
         e2e_result_root, runner_log_dir = _validate_output_paths(state_root, unit)
         output_fields: dict[str, object] = {
-            "validate_lock_child_deadline_seconds": child_deadline
+            "validate_lock_child_deadline_seconds": child_deadline,
+            gh_route.RECORD_KEY: github_executable,
         }
         if repo == "rrnewton/reverie":
             if reverie_node.count_sidecar_path(record_path).exists():

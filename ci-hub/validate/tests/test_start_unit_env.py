@@ -61,7 +61,16 @@ class StartUnitEnvTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
-        self.base_env = {"HOME": "/home/test", "PATH": "/usr/bin"}
+        self.base_env = {
+            "HOME": "/home/test", "PATH": "/usr/bin", "FLEET_REAL_GH": sys.executable,
+        }
+
+    def test_detached_service_has_explicit_github_executable(self) -> None:
+        self.assertEqual(sys.executable, setenvs(build(self.root, self.base_env))["FLEET_REAL_GH"])
+        environment = dict(self.base_env)
+        environment.pop("FLEET_REAL_GH")
+        with self.assertRaisesRegex(ValueError, "FLEET_REAL_GH"):
+            build(self.root, environment)
 
     def test_frozen_private_tool_compiler_does_not_replace_measured_environment(self) -> None:
         measured = "nightly-2026-06-01-x86_64-unknown-linux-gnu"

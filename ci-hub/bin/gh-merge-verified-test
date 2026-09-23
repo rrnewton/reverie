@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 TOOL = Path(__file__).resolve().parent / "gh-merge-verified"
 
@@ -160,6 +161,7 @@ def build_tool_fixture(root: Path) -> Path:
         "ci-hub/health/approval_binding.py",
         "ci-hub/lib/bounded_capture.py",
         "ci-hub/lib/ops_state.py",
+        "ci-hub/validate/gh_route.py",
     ):
         destination = origin / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -231,7 +233,7 @@ def merge_stub_dir(root: Path, target_origin: Path, landed_commit: str) -> tuple
     )
     gh.chmod(0o755)
     with_proxy = bindir / "with-proxy"
-    with_proxy.write_text("#!/bin/bash\nexec \"$@\"\n")
+    with_proxy.write_text('#!/bin/sh\nexec "$@"\n')
     with_proxy.chmod(0o755)
     return bindir, log
 
@@ -251,6 +253,7 @@ def case(landed: str, expect_code: int, expect_text: str, name: str) -> None:
         bindir, log = tripwire_dir(root)
         env = {
             **os.environ,
+            "FLEET_REAL_GH": str(bindir / "gh"),
             "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
             "GH_MERGE_VERIFIED_REMOTE": str(origin),
         }
@@ -333,7 +336,8 @@ def tree_content_cases() -> None:
             receipt = root / "receipt.json"
             env = {
                 **os.environ,
-                "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+                "FLEET_REAL_GH": str(bindir / "gh"),
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
                 "GH_MERGE_VERIFIED_REMOTE": str(origin),
             }
             code, out = run(
@@ -367,7 +371,8 @@ def tree_content_cases() -> None:
                 [sys.executable, str(TOOL), "1", "--repo", "fixture/repo", "--verify-only",
                  "--receipt", str(receipt)], cwd=work, env={
                     **os.environ,
-                    "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+                    "FLEET_REAL_GH": str(bindir / "gh"),
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
                     "GH_MERGE_VERIFIED_REMOTE": str(origin),
                 },
             )
@@ -403,7 +408,8 @@ def tree_content_cases() -> None:
                 [sys.executable, str(TOOL), "1", "--repo", "fixture/repo", "--verify-only",
                  "--receipt", str(receipt)], cwd=work, env={
                     **os.environ,
-                    "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+                    "FLEET_REAL_GH": str(bindir / "gh"),
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
                     "GH_MERGE_VERIFIED_REMOTE": str(origin),
                 },
             )
@@ -440,32 +446,42 @@ def unit_cases() -> None:
     with tempfile.TemporaryDirectory(prefix="gh-merge-verified-proxy-") as tmp:
         root = Path(tmp)
 
-        # with-proxy present -> the gh call is routed through it.
-        fake = root / "withproxy"
-        fake.mkdir()
-        wp = fake / "with-proxy"
-        wp.write_text("#!/bin/bash\nexec \"$@\"\n")
-        wp.chmod(0o755)
-        saved = os.environ.get("PATH", "")
-        try:
-            os.environ["PATH"] = f"{fake}:{saved}"
-            argv = tool.gh_argv(["gh", "pr", "merge", "1"])
-            check(
-                "gh_argv wraps when with-proxy exists",
-                argv[0] == "with-proxy" and argv[1] == "gh",
-                f"got {argv}",
-            )
-
-            # absent -> unchanged, so boxes without the wrapper are unaffected.
-            os.environ["PATH"] = str(root / "empty")
-            argv = tool.gh_argv(["gh", "pr", "merge", "1"])
-            check(
-                "gh_argv is a no-op when with-proxy is absent",
-                argv[0] == "gh",
-                f"got {argv}",
-            )
-        finally:
-            os.environ["PATH"] = saved
+        selected = root / "selected gh"
+        selected.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@"\n')
+        selected.chmod(0o755)
+        proxy = root / "with-proxy"
+        proxy.write_text('#!/bin/sh\nprintf \'proxied\\n\'\nexec "$@"\n')
+        proxy.chmod(0o755)
+        decoy = root / "gh"
+        decoy.write_text('#!/bin/sh\nexit 99\n')
+        decoy.chmod(0o755)
+        with mock.patch.dict(os.environ, PATH=str(root), FLEET_REAL_GH=str(selected)):
+            argv = tool.gh_argv(["gh", "api", "operand with spaces"])
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=2)
+            check("explicit executable/proxy preserve operands",
+                  result.returncode == 0 and result.stdout == "proxied\napi\noperand with spaces\n",
+                  repr(result))
+            for invalid in (None, "", "gh", str(root / "absent"), str(root)):
+                with mock.patch.dict(os.environ):
+                    if invalid is None:
+                        os.environ.pop("FLEET_REAL_GH", None)
+                    else:
+                        os.environ["FLEET_REAL_GH"] = invalid
+                    status = None
+                    try:
+                        tool.gh_argv(["gh", "api", "user"])
+                    except SystemExit as error:
+                        status = error.code
+                    check(f"invalid configured route refuses: {invalid!r}", status == 8,
+                          f"got {status!r}")
+            proxy.unlink()
+            refused = False
+            try:
+                tool.run(tool.gh_argv(["gh", "api", "user"]))
+            except FileNotFoundError as error:
+                refused = error.filename == "with-proxy"
+            check("missing proxy refuses without PATH gh", refused,
+                  "the selected CLI must not execute directly")
 
     # A network fault must not read as a refusal...
     for text in (
@@ -519,6 +535,7 @@ def self_change_cases() -> None:
         bindir, log = merge_stub_dir(root, target_origin, landed_commit)
         env = {
             **os.environ,
+            "FLEET_REAL_GH": str(bindir / "gh"),
             "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
             "GH_MERGE_VERIFIED_REMOTE": str(target_origin),
         }
@@ -654,6 +671,7 @@ def self_change_cases() -> None:
         shutil.copy2(TOOL, legacy_copy)
         legacy_env = {
             **os.environ,
+            "FLEET_REAL_GH": str(legacy_bindir / "gh"),
             "PATH": f"{legacy_bindir}:{os.environ.get('PATH', '')}",
             "GH_MERGE_VERIFIED_REMOTE": str(legacy_origin),
         }
@@ -795,6 +813,7 @@ def race_cases() -> None:
         gh.chmod(0o755)
         env = {
             **os.environ,
+            "FLEET_REAL_GH": str(bindir / "gh"),
             "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
             "GH_MERGE_VERIFIED_REMOTE": str(origin),
             "GH_MERGE_VERIFIED_SELFCHECK": "off",
@@ -838,6 +857,7 @@ def expect_head_cases() -> None:
         bindir, log = tripwire_dir(root)
         env = {
             **os.environ,
+            "FLEET_REAL_GH": str(bindir / "gh"),
             "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
             "GH_MERGE_VERIFIED_REMOTE": str(origin),
             "GH_MERGE_VERIFIED_PR_HEAD_TIMEOUT_S": "2",
@@ -1053,6 +1073,7 @@ def admission_unresolvable_cases() -> None:
         gh.chmod(0o755)
         env = {
             **os.environ,
+            "FLEET_REAL_GH": str(bindir / "gh"),
             "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
             "GH_MERGE_VERIFIED_REMOTE": str(origin),
             "GH_MERGE_VERIFIED_SELFCHECK": "off",
@@ -1152,7 +1173,8 @@ def reviewer_name_metadata_cases() -> None:
             gh.chmod(0o755)
             env = {
                 **os.environ,
-                "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+                "FLEET_REAL_GH": str(bindir / "gh"),
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
                 "GH_MERGE_VERIFIED_REMOTE": str(origin),
                 "GH_MERGE_VERIFIED_SELFCHECK": "off",
                 "GH_MERGE_VERIFIED_ADVANCE_TIMEOUT_S": "20",
@@ -1299,7 +1321,8 @@ raise AssertionError(args)
             (bindir / "with-proxy").chmod(0o755)
             receipt = root / "landing.json"
             extra = {"admin-equals": ["--admin=true"], "auto-equals": ["--auto=true"]}.get(scenario, [])
-            env = {**os.environ, "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+            env = {**os.environ, "FLEET_REAL_GH": str(bindir / "gh"),
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
                    "GH_MERGE_VERIFIED_REMOTE": str(origin), "GH_MERGE_VERIFIED_SELFCHECK": "off",
                    "GIT_ALLOW_PROTOCOL": "file"}
             code, out = run([sys.executable, str(TOOL), "1", "--repo", "fixture/repo", "--expect-head", head,

@@ -8,7 +8,7 @@ Type=oneshot
 # in ExecStart/WorkingDirectory, and a hardcoded owner path fails the parent's
 # portability gate.
 Environment=PATH=%h/.local/libexec/dev-hermit:%h/bin:%h/.local/bin:%h/.cargo/bin:%h/orc-bin:/usr/local/bin:/usr/bin:/bin
-Environment=FLEET_REAL_GH=%h/.local/libexec/dev-hermit/gh
+Environment=FLEET_REAL_GH=%h/bin/gh
 # Coordinator substrate is runtime state, not portable repository policy.  The
 # local file explicitly binds TG_DB_PATH (for example %h/.tg/hermit2.db); when
 # it is absent, TaskGraph consumers retain their existing fail-closed result.

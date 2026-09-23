@@ -6,6 +6,8 @@ verifier is exercised. Its progress reproduces Git's cold submodule output.
 
 from pathlib import Path
 import os
+import json
+import sys
 import re
 import shlex
 import subprocess
@@ -169,7 +171,7 @@ finish_wrapper() { printf 'exit-trap\0' >>"$ENTRY_EFFECTS"; }
                                if instrument else source)
             environment = {
                 "PATH": str(fake_bin), "ENTRY_EFFECTS": str(marker),
-                "ENTRY_EXIT": str(command_exit),
+                "ENTRY_EXIT": str(command_exit), "FLEET_REAL_GH": "/bin/true",
             }
             if with_home:
                 environment["HOME"] = "" if empty_home else str(home)
@@ -232,6 +234,98 @@ finish_wrapper() { printf 'exit-trap\0' >>"$ENTRY_EFFECTS"; }
                     self.assertEqual(result.returncode, status, result.stderr)
                     expected = b"main\0" + b"".join(a.encode() + b"\0" for a in arguments)
                     self.assertEqual(effects, expected + b"exit-trap\0")
+
+
+class OperationalGitHubRouteTests(unittest.TestCase):
+    def test_default_override_and_invalid_routes_through_real_git_credentials(self):
+        source = WRAPPER.read_text()
+        functions = []
+        for name in ("initialize_github_route", "run_git"):
+            match = re.search(rf"^{name}\(\) \{{.*?^\}}$", source, re.MULTILINE | re.DOTALL)
+            self.assertIsNotNone(match)
+            functions.append(match.group(0))
+        with tempfile.TemporaryDirectory(prefix="operational-gh-") as directory:
+            root = Path(directory)
+            home = root / "home"
+            default = home / "bin/gh"
+            default.parent.mkdir(parents=True)
+            override = root / "explicit gh ; literal"
+            calls = root / "calls.jsonl"
+            proxy_calls = root / "proxy.jsonl"
+            program = (
+                f"#!{sys.executable}\n"
+                "import json,os,sys\n"
+                "with open(os.environ['FIXTURE_CALLS'],'a') as f:\n"
+                " json.dump({'argv':sys.argv, 'selected':os.environ.get('FLEET_REAL_GH')},f);f.write('\\n')\n"
+                "assert sys.argv[1:] == ['auth','git-credential','get'], sys.argv\n"
+                "sys.stdin.read()\n"
+                "print('username=fixture-bot\\npassword=fixture-only\\n')\n"
+            )
+            for selected in (default, override):
+                selected.write_text(program)
+                selected.chmod(0o755)
+            proxy = root / "with-proxy"
+            proxy.write_text(
+                f"#!{sys.executable}\nimport json,os,sys\n"
+                "with open(os.environ['FIXTURE_PROXY'],'a') as f:\n"
+                " json.dump(sys.argv[1:],f);f.write('\\n')\n"
+                "os.execvp(sys.argv[1],sys.argv[1:])\n"
+            )
+            proxy.chmod(0o755)
+            script = ("set -uo pipefail\n" + "\n".join(functions)
+                      + "\nGIT_TRANSPORT_ALLOWLIST=https\nTOOL_CACHE=$FIXTURE_ROOT\n"
+                      + 'initialize_github_route || exit $?\n'
+                      + 'run_git --network -C "$FIXTURE_ROOT" credential fill\n')
+            env = os.environ | {
+                "HOME": str(home), "PATH": f"{root}:/usr/bin:/bin",
+                "FIXTURE_ROOT": str(root), "FIXTURE_CALLS": str(calls),
+                "FIXTURE_PROXY": str(proxy_calls),
+                # The production Git scrub must continue to remove this.
+                "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper",
+                "GIT_CONFIG_VALUE_0": "!exit 93",
+            }
+            env.pop("FLEET_REAL_GH", None)
+            for selected in (None, str(override)):
+                with self.subTest(selected=selected):
+                    current = dict(env)
+                    if selected is not None:
+                        current["FLEET_REAL_GH"] = selected
+                    result = subprocess.run(["/bin/bash", "-c", script], env=current,
+                        input="protocol=https\nhost=github.com\n\n", capture_output=True,
+                        text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    rows = [json.loads(line) for line in calls.read_text().splitlines()]
+                    expected = selected or str(default)
+                    self.assertEqual(rows[-1], {"argv": [expected, "auth", "git-credential", "get"],
+                                                "selected": expected})
+                    proxied = [json.loads(line) for line in proxy_calls.read_text().splitlines()]
+                    self.assertEqual(proxied[-1], [expected, "auth", "git-credential", "get"])
+                    self.assertEqual(proxied[-2][0], "git")
+            # A valid PATH gh and a legacy raw helper must not rescue a missing
+            # default, explicit blank/relative value, or a nonexecutable path.
+            (root / "gh").write_text(program)
+            (root / "gh").chmod(0o755)
+            legacy = home / ".local/libexec/dev-hermit/gh"
+            legacy.parent.mkdir(parents=True)
+            legacy.write_text(program)
+            legacy.chmod(0o755)
+            before = calls.read_bytes(), proxy_calls.read_bytes()
+            default.chmod(0o644)
+            for invalid in (None, "", "gh", str(root / "absent"), str(root)):
+                current = dict(env)
+                if invalid is not None:
+                    current["FLEET_REAL_GH"] = invalid
+                with self.subTest(invalid=invalid):
+                    result = subprocess.run(["/bin/bash", "-c", script], env=current,
+                        capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("FLEET_REAL_GH", result.stderr)
+                    self.assertEqual((calls.read_bytes(), proxy_calls.read_bytes()), before)
+            default.unlink()
+            result = subprocess.run(["/bin/bash", "-c", script], env=env,
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual((calls.read_bytes(), proxy_calls.read_bytes()), before)
 
 
 if __name__ == "__main__":

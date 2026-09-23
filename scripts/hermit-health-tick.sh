@@ -29,7 +29,9 @@ operational_tool_usage() {
         'State defaults to DEV_HERMIT_PARENT or HOME/work/dev-hermit for delegation.' \
         'Cache defaults to DEV_HERMIT_TOOL_CACHE, HERMIT_HEALTH_TOOL_CACHE, or' \
         'HOME/.local/state/hermit-health-tool. --tool-parent-sha requires an exact cached' \
-        'parent; identity options bind detached reentry to the recorded DEV:INO pair.'
+        'parent; identity options bind detached reentry to the recorded DEV:INO pair.' \
+        'GitHub uses FLEET_REAL_GH, defaulting only when unset to HOME/bin/gh.' \
+        'The selected path must be absolute and executable; with-proxy is required.'
 }
 
 parse_current_tool_arguments() {
@@ -164,6 +166,18 @@ check_operational_invocation() {
     return 2
 }
 
+initialize_github_route() {
+    # A fixed owner wrapper, never a PATH search or a raw-binary fallback.
+    # An explicitly empty override is invalid, not permission to choose again.
+    local selected=${FLEET_REAL_GH-${HOME:?HOME must be set}/bin/gh}
+    if [[ $selected != /* || ! -f $selected || ! -x $selected ]]; then
+        printf 'operational-tool: FLEET_REAL_GH must name an existing absolute executable (default HOME/bin/gh): %s\n' \
+            "$selected" >&2
+        return 2
+    fi
+    export FLEET_REAL_GH="$selected"
+}
+
 # Sourcing is deliberately limited to the pure parser used by the bounded
 # wrapper. Executing this file keeps the normal operational entry point below.
 if [[ ${BASH_SOURCE[0]} != "$0" ]]; then
@@ -175,6 +189,7 @@ check_operational_invocation "$@" || exit $?
 # portability gate rejects owner-specific paths. A shell DOES expand $HOME
 # (unlike a systemd unit, which needs %h).
 ROOT="${HOME:?HOME must be set}/work/dev-hermit"
+initialize_github_route || exit $?
 FIRED_STATE="$ROOT/.tick-hub/fired-state"
 INVLOG="$HOME/.local/state/hermit-health-tick-invocations.log"
 # ⚠️ THE REPORT MUST EXIST ON DISK BEFORE THE TICK FINISHES, because the tick
@@ -236,7 +251,6 @@ TOOL_CACHE="${DEV_HERMIT_TOOL_CACHE:-${HERMIT_HEALTH_TOOL_CACHE:-$HOME/.local/st
 CANONICAL_REPOSITORY="rrnewton/dev-hermit"
 CANONICAL_REMOTE_URL="https://github.com/rrnewton/dev-hermit.git"
 GIT_TRANSPORT_ALLOWLIST="https"
-GITHUB_CREDENTIAL_HELPER="${HOME:?HOME must be set}/.local/libexec/dev-hermit/gh"
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -2357,20 +2371,15 @@ run_git() {
     clean_env+=(DEV_HERMIT_LOCAL_OBJECT_CLONE="$local_clone")
     local -a command=("${clean_env[@]}")
     if [[ $network -eq 1 ]]; then
-        if [[ -L $GITHUB_CREDENTIAL_HELPER || \
-              ! -f $GITHUB_CREDENTIAL_HELPER || \
-              ! -x $GITHUB_CREDENTIAL_HELPER ]]; then
-            printf 'operational-tool: required GitHub credential helper is unavailable: %s\n' \
-                "$GITHUB_CREDENTIAL_HELPER" >&2
-            return 1
-        fi
         # Global and system Git configuration remain disabled: either may name
         # an arbitrary executable credential helper or rewrite transport URLs.
         # The service still needs credentials for the private canonical GitHub
-        # repository, so install exactly one fixed helper for network calls.
+        # repository, so use only the validated, exported executable for network calls.
+        # Expand its pathname in the credential shell, not as shell source: an
+        # explicit path with spaces/metacharacters must remain one operand.
         git_command+=(
             -c credential.https://github.com.helper=
-            -c "credential.https://github.com.helper=!$GITHUB_CREDENTIAL_HELPER auth git-credential"
+            -c 'credential.https://github.com.helper=!with-proxy "$FLEET_REAL_GH" auth git-credential'
         )
         command+=(with-proxy "${git_command[@]}" "$@")
     else

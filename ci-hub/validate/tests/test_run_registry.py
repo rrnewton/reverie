@@ -109,6 +109,18 @@ def bench_handle(**updates: object) -> dict[str, object]:
 
 
 class RunRegistryContractTests(unittest.TestCase):
+    def test_recorded_github_route_is_optional_but_strictly_absolute(self) -> None:
+        legacy = run_registry.parse_current_record(validation_handle())
+        self.assertNotIn("github_executable", legacy.raw)
+        current = run_registry.parse_current_record(
+            validation_handle(github_executable="/retained/absolute/gh")
+        )
+        self.assertEqual("/retained/absolute/gh", current.raw["github_executable"])
+        # Historical reads do not require an old executable to remain installed.
+        for value in (None, True, 1, "", "gh"):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "github_executable"):
+                run_registry.parse_current_record(validation_handle(github_executable=value))
+
     def test_validation_handle_has_typed_kind_state_and_projection(self) -> None:
         handle = run_registry.parse_current_record(validation_handle())
         self.assertEqual(1, handle.raw["schema_version"])

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import subprocess
 import sys
 import unittest
@@ -33,6 +35,38 @@ def run(
 
 
 class MainHealthTests(unittest.TestCase):
+    def setUp(self) -> None:
+        selected = mock.patch.dict(os.environ, FLEET_REAL_GH=sys.executable)
+        selected.start()
+        self.addCleanup(selected.stop)
+
+    def test_actual_selected_proxy_route_and_refusals(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / "selected gh"
+            selected.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@"\n')
+            selected.chmod(0o755)
+            proxy = root / "with-proxy"
+            proxy.write_text('#!/bin/sh\nprintf \'proxied\\n\'\nexec "$@"\n')
+            proxy.chmod(0o755)
+            decoy = root / "gh"
+            decoy.write_text('#!/bin/sh\nexit 99\n')
+            decoy.chmod(0o755)
+            with mock.patch.dict(os.environ, PATH=str(root), FLEET_REAL_GH=str(selected)):
+                self.assertEqual(github_main_health._run_gh(
+                    ["api", "operand with spaces"], timeout=2),
+                    "proxied\napi\noperand with spaces\n")
+                for invalid in ("", "gh", str(root / "absent"), str(root)):
+                    with self.subTest(invalid=invalid), mock.patch.dict(
+                        os.environ, FLEET_REAL_GH=invalid
+                    ), mock.patch("github_main_health.subprocess.run") as child:
+                        with self.assertRaisesRegex(RuntimeError, "FLEET_REAL_GH"):
+                            github_main_health.fetch_main_sha("fixture/repo", timeout=2)
+                        child.assert_not_called()
+                proxy.unlink()
+                with self.assertRaisesRegex(RuntimeError, "with-proxy"):
+                    github_main_health._run_gh(["api", "user"], timeout=2)
+
     def test_red_wins(self) -> None:
         runs = (
             github_main_health.MainRun(
@@ -190,7 +224,7 @@ class MainHealthTests(unittest.TestCase):
         self.assertEqual(health.state, "green")
         self.assertEqual(len(health.runs), 1)
         for call in run_command.call_args_list:
-            self.assertEqual(call.args[0][:2], ("with-proxy", "gh"))
+            self.assertEqual(call.args[0][:2], ["with-proxy", sys.executable])
         list_command = run_command.call_args_list[1].args[0]
         self.assertIn("--branch", list_command)
         self.assertIn("--event", list_command)

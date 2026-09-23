@@ -18,6 +18,7 @@ CI_HUB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CI_HUB))
 
 from check_outcome import CheckOutcome, classify_check, select_latest_workflow_attempts
+from validate import gh_route
 
 DEFAULT_REPOS = (
     "rrnewton/dev-hermit",
@@ -82,7 +83,11 @@ class RepoUnavailable(RuntimeError):
     """One live GitHub query exceeded its explicit wall-time budget."""
 
 
-def _run_gh(command: Sequence[str], *, timeout: float) -> str:
+def _run_gh(arguments: Sequence[str], *, timeout: float) -> str:
+    try:
+        command = gh_route.command(*arguments)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
     try:
         result = subprocess.run(
             command,
@@ -109,8 +114,6 @@ def _run_gh(command: Sequence[str], *, timeout: float) -> str:
 def fetch_main_sha(repo: str, *, timeout: float = DEFAULT_CALL_TIMEOUT) -> str:
     output = _run_gh(
         (
-            "with-proxy",
-            "gh",
             "api",
             f"repos/{repo}/commits/main",
             "--jq",
@@ -133,8 +136,6 @@ def fetch_main_runs(
 ) -> list[MainRun]:
     output = _run_gh(
         (
-            "with-proxy",
-            "gh",
             "run",
             "list",
             "-R",
@@ -185,8 +186,6 @@ def fetch_run_annotations(repo: str, run_id: str, *, timeout: float) -> list[str
     """
     jobs = _run_gh(
         (
-            "with-proxy",
-            "gh",
             "api",
             f"repos/{repo}/actions/runs/{run_id}/jobs",
             "--jq",
@@ -201,8 +200,6 @@ def fetch_run_annotations(repo: str, run_id: str, *, timeout: float) -> list[str
             continue
         annotations = _run_gh(
             (
-                "with-proxy",
-                "gh",
                 "api",
                 f"repos/{repo}/check-runs/{job_id}/annotations",
                 "--jq",

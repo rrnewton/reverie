@@ -56,6 +56,7 @@ from pathlib import Path as _BootstrapPath
 # the checker that reads it, so neither can drift from the other.
 _bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
 from closure import publication_record  # noqa: E402
+from validate import gh_route  # noqa: E402
 _bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent / "landing"))
 import task_pr_record  # noqa: E402
 
@@ -123,16 +124,22 @@ def die(message: str) -> NoReturn:
     raise SystemExit(2)
 
 
-def real_gh() -> str:
-    configured = os.environ.get("FLEET_REAL_GH")
-    candidates = [configured] if configured else []
-    candidates += ["/usr/local/bin/gh", "/usr/bin/gh"]
-    here = Path(__file__).resolve()
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
-            if Path(candidate).resolve() != here:
-                return candidate
-    die("could not locate the real gh binary (set FLEET_REAL_GH)")
+def gh_command(args: list[str]) -> list[str]:
+    try:
+        command = gh_route.command(*args)
+    except ValueError as error:
+        die(str(error))
+    if Path(command[1]).resolve() == Path(__file__).resolve():
+        die("FLEET_REAL_GH must name the real GitHub CLI, not the fleet wrapper")
+    return command
+
+
+def run_gh(args: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+    command = gh_command(args)
+    try:
+        return subprocess.run(command, **kwargs)
+    except OSError as error:
+        die(f"cannot launch the explicit proxied GitHub CLI: {error}")
 
 
 def _option_value(args: list[str], index: int, name: str) -> tuple[str, int] | None:
@@ -794,7 +801,7 @@ def post_and_record(args: list[str], task: str, actor: str) -> int:
     stderr are re-emitted unmodified so anything parsing this tool's output sees
     what it saw before.
     """
-    result = subprocess.run([real_gh(), *args], capture_output=True, text=True)
+    result = run_gh(args, capture_output=True, text=True)
     if result.stdout:
         sys.stdout.write(result.stdout)
         sys.stdout.flush()
@@ -808,7 +815,7 @@ def post_and_record(args: list[str], task: str, actor: str) -> int:
 
 def create_pr_and_record(args: list[str], task: str, actor: str) -> int:
     """Create one PR, then record the exact URL returned by GitHub on its task."""
-    result = subprocess.run([real_gh(), *args], capture_output=True, text=True)
+    result = run_gh(args, capture_output=True, text=True)
     if result.stdout:
         sys.stdout.write(result.stdout)
         sys.stdout.flush()
@@ -854,7 +861,7 @@ def main() -> int:
     elif task or verdict is not None:
         option = "--task" if task else "--verdict"
         die(f"{option} only applies to a pull-request create or comment write")
-    return subprocess.run([real_gh(), *args]).returncode
+    return run_gh(args).returncode
 
 
 if __name__ == "__main__":

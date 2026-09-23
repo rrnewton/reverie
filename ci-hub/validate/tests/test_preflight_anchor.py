@@ -130,6 +130,11 @@ class SeamRoutingTest(unittest.TestCase):
 class CompareApiSemanticsTest(unittest.TestCase):
     """_compare_contains maps GitHub compare .status correctly, git/gh mocked."""
 
+    def setUp(self):
+        patch = mock.patch.dict(os.environ, {"FLEET_REAL_GH": sys.executable})
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def _with_status(self, status: str):
         def fake_run(cmd, *, timeout):
             return subprocess.CompletedProcess(cmd, 0, stdout=status + "\n",
