@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import os
+import pwd
 import re
 import secrets
 import shlex
@@ -2622,6 +2623,26 @@ def classify_create_journal_scopes(
         ) from error
 
 
+def process_user_cargo_home() -> Path | None:
+    """Canonical shared Cargo home for the effective account, not caller HOME.
+
+    An unmapped effective uid or an unresolvable passwd home must not turn
+    cleanup discovery into a crash.  Returning ``None`` keeps every recorded
+    Cargo path on the ordinary fail-closed cleanup path.
+    """
+    try:
+        raw_home = pwd.getpwuid(os.geteuid()).pw_dir
+        if (
+            not isinstance(raw_home, str)
+            or not raw_home
+            or not Path(raw_home).is_absolute()
+        ):
+            return None
+        return (Path(raw_home) / ".cargo").resolve()
+    except (KeyError, OSError, RuntimeError):
+        return None
+
+
 def classify_retained_current_in_place_record(
     root: Path, record: Mapping[str, Any]
 ) -> tuple[str | None, str | None]:
@@ -2649,12 +2670,16 @@ def classify_retained_current_in_place_record(
     checkout = Path(str(raw_checkout)).resolve()
     if checkout != Path(str(raw_source)).resolve():
         return None, "in-place run record checkout differs from its source checkout"
+    cargo_home = Path(str(raw_cargo)).resolve()
     _cargo_home, cargo_error = classify_recorded_cargo_home(root, record)
-    if cargo_error is not None:
+    shared_cargo_home = process_user_cargo_home()
+    if cargo_error is not None and (
+        shared_cargo_home is None or cargo_home != shared_cargo_home
+    ):
         return None, cargo_error
     # A legitimate cleanup may already have removed Cargo's directory. Still
     # check its recorded path: absence does not make overlapping storage safe.
-    if _paths_overlap(Path(str(raw_cargo)).resolve(), checkout):
+    if _paths_overlap(cargo_home, checkout):
         return None, "in-place run record Cargo home overlaps its source checkout"
     return (
         "non-disposable in-place storage remains untouched; "
@@ -2912,7 +2937,25 @@ def recorded_cleanup_path_exists(root: Path, record: Mapping[str, Any]) -> bool:
             return True
 
     raw_cargo_home = record.get("cargo_home")
-    return isinstance(raw_cargo_home, str) and Path(raw_cargo_home).resolve().exists()
+    if not isinstance(raw_cargo_home, str):
+        return False
+    cargo_home = Path(raw_cargo_home).resolve()
+    shared_cargo_home = process_user_cargo_home()
+    if shared_cargo_home is not None and cargo_home == shared_cargo_home:
+        retained_reason, retained_error = classify_retained_current_in_place_record(
+            root, record
+        )
+    else:
+        retained_reason, retained_error = None, None
+    if retained_reason is not None and retained_error is None:
+        # An in-place control may use the account's long-lived Cargo home
+        # directly instead of allocating disposable validation storage.  It is
+        # not cleanup residue, and classifying it as a private per-run Cargo
+        # home makes that one shared directory block every later validation.
+        # Keep the exception exact: malformed, temporary, overlapping, or
+        # arbitrary external paths remain candidates and fail closed below.
+        return False
+    return cargo_home.exists()
 
 
 def read_cleanup_record_object(path: Path) -> dict[str, Any]:

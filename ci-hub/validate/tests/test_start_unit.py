@@ -2861,6 +2861,155 @@ class StartUnitTest(unittest.TestCase):
             self.assertFalse(cargo_home.exists())
             self.assertTrue(record_path.is_file())
 
+    def test_entry_ignores_only_proven_in_place_shared_cargo_storage(self) -> None:
+        checkout, private_cargo, record_path = self.in_place_cleanup_record(
+            "shared-cargo-control", temporary=False, current=True, state="unknown"
+        )
+        shared_cargo = self.root / "modeled-user-home/.cargo"
+        shared_cargo.mkdir(parents=True)
+        (shared_cargo / "preserved").write_text("shared cache\n")
+        record = start_unit.run_registry.read_record(record_path)
+        record["cargo_home"] = str(shared_cargo)
+        start_unit.run_registry.write_record(record_path, record)
+        shutil.rmtree(private_cargo)
+        before = self.filesystem_snapshot(self.root)
+
+        with mock.patch.object(
+            start_unit, "process_user_cargo_home", return_value=shared_cargo.resolve()
+        ):
+            reason, refusal = start_unit.classify_retained_current_in_place_record(
+                self.root, record
+            )
+            groups, singles, rows, retained, discovery = (
+                start_unit.discover_cleanup_groups(
+                    self.root, self.root / "ignored/validate/runs"
+                )
+            )
+            start_unit.require_validate_entry_cleanup(
+                self.root,
+                prospective_slot="validate-fresh-shared-cargo-control",
+                prospective_checkout=(
+                    self.root
+                    / "worktrees/validate/validate-fresh-shared-cargo-control"
+                ),
+                run=self.fake,
+                tool_root=self.root,
+            )
+            sweep = start_unit.sweep_completed_checkouts(
+                self.root, run=self.fake, tool_root=self.root
+            )
+
+        self.assertEqual(
+            "non-disposable in-place storage remains untouched; "
+            "outcome and process state are unchanged",
+            reason,
+        )
+        self.assertIsNone(refusal)
+        self.assertEqual({}, groups)
+        self.assertEqual([], singles)
+        self.assertEqual([], rows)
+        self.assertEqual([], retained)
+        self.assertEqual(1, discovery["run_handle_candidates"])
+        self.assertEqual([], sweep["removed"])
+        self.assertEqual([], sweep["removed_cargo_homes"])
+        self.assertEqual([], sweep["retained"])
+        self.assertEqual(before, self.filesystem_snapshot(self.root))
+        self.assertEqual(record, start_unit.run_registry.read_record(record_path))
+        self.assertTrue(checkout.is_dir())
+        self.assertTrue(shared_cargo.is_dir())
+        self.assertFalse(any(
+            wrkslots_action(command, action)
+            for command in self.fake.commands
+            for action in (
+                "recover",
+                "recover-ownerless-validate-batch",
+                "remove-validate-batch",
+            )
+        ))
+
+        controls = (
+            (
+                {
+                    "temporary_checkout": True,
+                    "checkout": str(self.root / "absent-temporary-checkout"),
+                    "source_checkout": str(self.root / "absent-temporary-checkout"),
+                },
+                "temporary",
+            ),
+            ({"producer": start_unit.LEGACY_IN_PLACE_PRODUCER}, "legacy"),
+            ({"source_checkout": str(checkout / "other")}, "source-mismatch"),
+            ({"cargo_home": str(self.root / "other-cargo")}, "other-cargo"),
+            ({"schema_version": 999}, "schema"),
+            (
+                {
+                    "checkout": str(shared_cargo),
+                    "source_checkout": str(shared_cargo),
+                },
+                "overlap-shared",
+            ),
+            (
+                {
+                    "checkout": str(shared_cargo / "source"),
+                    "source_checkout": str(shared_cargo / "source"),
+                },
+                "overlap-shared-child",
+            ),
+        )
+        for changes, name in controls:
+            with self.subTest(name=name):
+                candidate = {**record, **changes}
+                cargo = Path(str(candidate["cargo_home"]))
+                cargo.mkdir(parents=True, exist_ok=True)
+                with mock.patch.object(
+                    start_unit,
+                    "process_user_cargo_home",
+                    return_value=shared_cargo.resolve(),
+                ):
+                    self.assertTrue(
+                        start_unit.recorded_cleanup_path_exists(
+                            self.root, candidate
+                        )
+                    )
+
+        shared_alias = self.root / "modeled-user-home/cargo-alias"
+        shared_alias.symlink_to(shared_cargo, target_is_directory=True)
+        with mock.patch.object(
+            start_unit, "process_user_cargo_home", return_value=shared_cargo.resolve()
+        ):
+            self.assertFalse(
+                start_unit.recorded_cleanup_path_exists(
+                    self.root, {**record, "cargo_home": str(shared_alias)}
+                )
+            )
+
+        missing_shared = self.root / "modeled-user-home/missing-cargo"
+        with mock.patch.object(
+            start_unit, "process_user_cargo_home", return_value=missing_shared.resolve()
+        ):
+            self.assertFalse(
+                start_unit.recorded_cleanup_path_exists(
+                    self.root, {**record, "cargo_home": str(missing_shared)}
+                )
+            )
+
+        with mock.patch.object(
+            start_unit.pwd, "getpwuid", side_effect=KeyError("unmapped uid")
+        ):
+            self.assertIsNone(start_unit.process_user_cargo_home())
+            self.assertTrue(
+                start_unit.recorded_cleanup_path_exists(self.root, record)
+            )
+        for invalid_home in ("", "."):
+            with self.subTest(invalid_home=invalid_home), mock.patch.object(
+                start_unit.pwd,
+                "getpwuid",
+                return_value=mock.Mock(pw_dir=invalid_home),
+            ):
+                self.assertIsNone(start_unit.process_user_cargo_home())
+                self.assertTrue(
+                    start_unit.recorded_cleanup_path_exists(self.root, record)
+                )
+
     def test_entry_refuses_ambiguous_current_in_place_storage(self) -> None:
         checkout, cargo_home, record_path = self.in_place_cleanup_record(
             "ambiguous-in-place", temporary=False, current=True, state="unknown"
