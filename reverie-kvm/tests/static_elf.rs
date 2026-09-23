@@ -14432,6 +14432,7 @@ fn captured_aliases_ignore_reused_supervisor_stdio_on_kvm() {
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/epoll.h>
@@ -14441,6 +14442,9 @@ fn captured_aliases_ignore_reused_supervisor_stdio_on_kvm() {
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
+
+#define HIGH_WORD UINT64_C(0x5a5a5a5a00000000)
+#define TEST_CLOSE_RANGE_CLOEXEC (1U << 2)
 
 static int same_object(int left, int right) {
   struct stat a, b;
@@ -14610,18 +14614,55 @@ static int check_stream(int source, int base, const char *first,
   if (writev(reopened, vectors, 2) != (ssize_t)strlen(second))
     return base + 17;
 
-  if (close(source) != 0) return base + 18;
+  // Bounds and flags are unsigned int syscall arguments. The first invalid
+  // range has the opposite raw-u64 order, and neither rejected operation may
+  // touch its candidate aliases.
+  errno = 0;
+  if (syscall(SYS_close_range, dup3_target,
+              HIGH_WORD | (uint32_t)dup2_target, 0) != -1 ||
+      errno != EINVAL || !same_object(source, dup2_target) ||
+      !same_object(source, dup3_target) || !cloexec_is(dup2_target, 0) ||
+      !cloexec_is(dup3_target, 1)) return base + 60;
+  errno = 0;
+  if (syscall(SYS_close_range, HIGH_WORD | (uint32_t)dup2_target,
+              HIGH_WORD | (uint32_t)dup3_target, HIGH_WORD | 1) != -1 ||
+      errno != EINVAL || !same_object(source, dup2_target) ||
+      !same_object(source, dup3_target) || !cloexec_is(dup2_target, 0) ||
+      !cloexec_is(dup3_target, 1)) return base + 61;
+
+  // The raw first value is greater than last, but the low words form the valid
+  // inclusive range. High-only flags decode to zero and both aliases close.
+  if (syscall(SYS_close_range, HIGH_WORD | (uint32_t)dup2_target,
+              (uint32_t)dup3_target, HIGH_WORD) != 0) return base + 62;
+  errno = 0;
+  if (fcntl(dup2_target, F_GETFD) != -1 || errno != EBADF) return base + 63;
+  errno = 0;
+  if (fcntl(dup3_target, F_GETFD) != -1 || errno != EBADF) return base + 64;
+  if (!same_object(source, duplicate)) return base + 65;
+
+  if (syscall(SYS_close_range, HIGH_WORD | (uint32_t)fcntl_duplicate,
+              HIGH_WORD | (uint32_t)fcntl_duplicate,
+              HIGH_WORD | TEST_CLOSE_RANGE_CLOEXEC) != 0 ||
+      !cloexec_is(fcntl_duplicate, 1)) return base + 66;
+
+  if (source == STDOUT_FILENO) {
+    if (syscall(SYS_close, HIGH_WORD | (uint32_t)source) != 0)
+      return base + 18;
+  } else if (syscall(SYS_close_range, HIGH_WORD | (uint32_t)source,
+                     (uint32_t)source, HIGH_WORD) != 0) {
+    return base + 18;
+  }
   errno = 0;
   if (dup(source) != -1 || errno != EBADF) return base + 19;
   errno = 0;
   if (fcntl(source, F_DUPFD, 0) != -1 || errno != EBADF) return base + 20;
   errno = 0;
   if (open(path, O_WRONLY) != -1 || errno != ENOENT) return base + 21;
-  if (!same_object(duplicate, dup2_target)) return base + 22;
+  if (!same_object(duplicate, fcntl_duplicate)) return base + 22;
   *survivor = duplicate;
 
-  if (close(dup2_target) || close(dup3_target) || close(fcntl_duplicate) ||
-      close(fcntl_cloexec) || close(reopened) || close(path_only))
+  if (close(fcntl_duplicate) || close(fcntl_cloexec) || close(reopened) ||
+      close(path_only))
     return base + 23;
   return 0;
 }

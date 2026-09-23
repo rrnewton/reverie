@@ -1508,6 +1508,8 @@ fn missing_captured_status_is_a_typed_backend_failure() {
 
 #[test]
 fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
+    const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
+    const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
     let root = TestDir::new();
     let owner = CapturedOutput::try_new().unwrap();
     let mut state = test_state(&root.0);
@@ -1709,8 +1711,37 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
     });
     stdout_status.store(libc::O_WRONLY, Ordering::SeqCst);
 
+    assert_eq!(
+        child.execute(
+            &SyscallRequest::new(
+                libc::SYS_close_range as u64,
+                [
+                    HIGH_WORD | fcntl_alias as u64,
+                    HIGH_WORD | fcntl_alias as u64,
+                    HIGH_WORD | CLOSE_RANGE_CLOEXEC,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            &memory,
+        ),
+        0
+    );
+    assert!(child.state.files.contains_key(&fcntl_alias));
+    assert!(child.state.cloexec_fds.contains(&fcntl_alias));
+    assert!(output_alias(&child.state, fcntl_alias).is_some());
+    assert!(child.state.capture_status_flags.contains_key(&fcntl_alias));
+    assert!(child.state.fd_object_inodes.contains_key(&fcntl_alias));
+    assert!(!child.state.cloexec_fds.contains(&alias));
+
     let replacement = test_exec_replacement(&root.0, &child.state);
     child.replace_after_exec(replacement);
+    assert!(!child.state.files.contains_key(&fcntl_alias));
+    assert!(!child.state.cloexec_fds.contains(&fcntl_alias));
+    assert!(output_alias(&child.state, fcntl_alias).is_none());
+    assert!(!child.state.capture_status_flags.contains_key(&fcntl_alias));
+    assert!(!child.state.fd_object_inodes.contains_key(&fcntl_alias));
     assert!(Arc::ptr_eq(
         &child.state.capture_status_flags[&alias],
         &stdout_status
@@ -1719,7 +1750,10 @@ fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
     assert_eq!(capture_executor_stat(&mut child, &memory, 1), stderr);
     assert_eq!(
         parent.execute(
-            &SyscallRequest::new(libc::SYS_close as u64, [alias as u64, 0, 0, 0, 0, 0]),
+            &SyscallRequest::new(
+                libc::SYS_close as u64,
+                [HIGH_WORD | alias as u64, 0, 0, 0, 0, 0],
+            ),
             &memory
         ),
         0
