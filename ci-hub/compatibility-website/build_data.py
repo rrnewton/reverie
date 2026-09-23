@@ -76,6 +76,7 @@ _HISTORICAL_SOURCE_FIELDS = frozenset(
     "measured_hermit_commit measured_reverie_commit measurement_host record_id "
     "run_id selected_by_full_cell_count started_at validate_path".split()
 )
+_HISTORICAL_RECORDED_FIELDS = frozenset({"recorded_cell_count", "population_scope", "comparison_authority"})
 _HISTORICAL_PROVENANCE_FIELDS = frozenset(
     (
         *_HISTORICAL_SOURCE_FIELDS,
@@ -501,12 +502,14 @@ def _capture_canonical_input(parent: Path, parent_commit: str, *, series_ref: st
 
 
 def _capture_historical_input(
-    parent: Path, parent_commit: str, record_id: str, run_id: str
+    parent: Path, parent_commit: str, record_id: str, run_id: str,
+    *, series_commit: str | None = None,
 ) -> CapturedJson:
     export_inputs = _modules().export_inputs
     try:
         value = export_inputs.build_historical_export(
-            parent, parent_commit, record_id, run_id
+            parent, parent_commit, record_id, run_id,
+            **({"series_commit": series_commit} if series_commit is not None else {}),
         )
         encoded = export_inputs.render_export(value)
     except (export_inputs.ExportRefused, OSError, ValueError) as error:
@@ -905,6 +908,16 @@ def _require_current_carriers(canonical: Mapping[str, Any], current_rows: Sequen
         for item in proof["manifests"]
     }
     for row in current_rows:
+        if row.get("schema_version") == 5 and row.get("derived_cell_results") is not None:
+            carrier = captured.get((row.get("run_id"), row.get("record_id"), row.get("commit")))
+            evidence = _object(row.get("derived_cell_results"), "derived current cell evidence")
+            if (carrier is None or carrier["artifacts"].get("schema") != 2
+                    or evidence.get("authority") != "writer_verified_raw_census_v1"
+                    or evidence.get("raw_census_sha256") != carrier["artifacts"]["raw_census_sha256"]
+                    or evidence.get("history_binding_sha256") != carrier["artifacts"]["history_binding_sha256"]
+                    or evidence["recorded"]["artifact"].get("sha256") != carrier["artifacts"]["derived_cells"]["sha256"]):
+                raise BuildRefused("current writer-derived evidence differs from its captured carrier")
+            continue
         if row.get("schema_version") != 10:
             continue
         carrier = captured.get((
@@ -920,7 +933,7 @@ def _require_current_carriers(canonical: Mapping[str, Any], current_rows: Sequen
 
 
 def _historical_source(value: Any, label: str) -> dict[str, Any]:
-    source = _exact_object(value, label, required=_HISTORICAL_SOURCE_FIELDS)
+    source = _exact_object(value, label, required=_HISTORICAL_SOURCE_FIELDS, optional=_HISTORICAL_RECORDED_FIELDS)
     for field in (
         "record_id",
         "run_id",
@@ -932,10 +945,16 @@ def _historical_source(value: Any, label: str) -> dict[str, Any]:
         _string(source.get(field), f"{label}.{field}")
     if source.get("validate_path") != "full":
         raise BuildRefused(f"{label}.validate_path must be full")
-    _integer(
-        source.get("selected_by_full_cell_count"),
-        f"{label}.selected_by_full_cell_count",
-    )
+    if source.get("selected_by_full_cell_count") is None:
+        if (not _HISTORICAL_RECORDED_FIELDS.issubset(source)
+                or source.get("population_scope") != "recorded_only"
+                or source.get("comparison_authority") != "writer_verified_raw_census_v1"):
+            raise BuildRefused(f"{label} recorded population lacks writer-derived authority")
+        _integer(source["recorded_cell_count"], f"{label}.recorded_cell_count")
+    else:
+        _integer(source["selected_by_full_cell_count"], f"{label}.selected_by_full_cell_count")
+        if _HISTORICAL_RECORDED_FIELDS.intersection(source):
+            raise BuildRefused(f"{label} mixes planned and recorded-only populations")
     _sha(source.get("measured_hermit_commit"), f"{label}.measured_hermit_commit")
     _sha(
         source.get("measured_reverie_commit"),
@@ -1009,9 +1028,10 @@ def _canonical_provenance(
         raise BuildRefused(
             "live canonical input reader commit must equal the requested parent commit"
         )
-    if ("finalized_proof" in provenance) != (validation_history_commit is not None):
-        raise BuildRefused("fresh validation history requires its captured finalized proof operands")
-    if validation_history_commit is not None:
+    requires_proof = validation_history_commit is not None or (historical and series_fields.issubset(provenance))
+    if ("finalized_proof" in provenance) != requires_proof:
+        raise BuildRefused("immutable cell-ledger history requires its captured finalized proof operands")
+    if requires_proof:
         if provenance.get("published_only") is not True:
             raise BuildRefused("fresh validation history requires published-only inputs")
         try:
@@ -1907,10 +1927,10 @@ def _validate_stage_provenance(
         source = _exact_object(
             item.get("historical"),
             "provenance.historical",
-            required=_HISTORICAL_PROVENANCE_FIELDS,
+            required=_HISTORICAL_PROVENANCE_FIELDS, optional=_HISTORICAL_RECORDED_FIELDS,
         )
         base = _historical_source(
-            {field: source[field] for field in _HISTORICAL_SOURCE_FIELDS},
+            {field: source[field] for field in _HISTORICAL_SOURCE_FIELDS | _HISTORICAL_RECORDED_FIELDS if field in source},
             "provenance.historical",
         )
         if base != _historical_source(
@@ -2257,6 +2277,7 @@ def build_historical_data(
     run_id: str,
     manifest_hermit_value: Path,
     manifest_commit_value: str,
+    *, series_commit: str | None = None,
 ) -> dict[str, Any]:
     """Build from one immutable published ledger snapshot and named HistoryRow."""
     _modules()
@@ -2285,7 +2306,8 @@ def build_historical_data(
         clean=True,
     )
     _require_complete_commit_graph(manifest_hermit)
-    canonical = _capture_historical_input(parent, parent_commit, record_id, run_id)
+    canonical = _capture_historical_input(parent, parent_commit, record_id, run_id,
+                                           **({"series_commit": series_commit} if series_commit is not None else {}))
     manifest = _run_manifest_metadata(manifest_hermit)
     result = _build_from_captured(
         canonical,

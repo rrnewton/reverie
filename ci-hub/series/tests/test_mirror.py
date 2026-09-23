@@ -84,7 +84,7 @@ class DirectLedgerFixture(unittest.TestCase):
             "GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1",
             "WITH_PROXY": "/usr/bin/env", "PYTHONDONTWRITEBYTECODE": "1",
         }))
-        for key in (series.LEDGER_ROOT_ENV, "DEV_HERMIT_TOOL_AUTHORITY"):
+        for key in (series.LEDGER_ROOT_ENV, "DEV_HERMIT_TOOL_AUTHORITY", "CARGO_TARGET_DIR"):
             self.enterContext(mock.patch.dict(os.environ))
             os.environ.pop(key, None)
         self.enterContext(mock.patch.object(
@@ -226,6 +226,39 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual(os.environ["RUSTUP_TOOLCHAIN"], "nightly-2025-01-01")
         self.assertEqual(os.environ["RUSTUP_AUTO_INSTALL"], "1")
         self.assertEqual(git(self.tool, "status", "--porcelain"), "")
+
+    def test_explicit_existing_target_reaches_both_scorecard_preparation_commands(self):
+        target = self.root / "existing-target"
+        target.mkdir()
+        cargo = self.root / "bin/cargo"
+        cargo.write_text(cargo.read_text().replace(str(self.parent / "target"), str(target)))
+        compiler = self.root / "bin/rust-script"
+        compiler.write_text(compiler.read_text().replace(
+            "import os, sys\n", "import os, sys\n"
+            f"assert os.environ['CARGO_TARGET_DIR'] == {str(target)!r}\n"
+            f"open({str(target / 'prepared')!r}, 'w').write('existing target only')\n"))
+        with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}):
+            tool_commit, compiler_name = mirror.prepare_scorecard(
+                self.source, self.target, tool_checkout=self.tool,
+                state_root=self.parent, net_wrapper="/usr/bin/env")
+        self.assertEqual(git(self.tool, "rev-parse", "HEAD"), tool_commit)
+        self.assertEqual("nightly-2026-07-12-x86_64-unknown-linux-gnu", compiler_name)
+        self.assertEqual("existing target only", (target / "prepared").read_text())
+        self.assertFalse((self.parent / "target").exists())
+        self.assertFalse((self.tool / "target").exists())
+
+    def test_invalid_explicit_target_refuses_before_compiler_execution(self):
+        ordinary_file = self.root / "not-a-target"
+        ordinary_file.write_text("preserve")
+        for value in ("", "relative-target", str(self.root / "missing-target"), str(ordinary_file)):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": value}), \
+                    mock.patch.object(mirror, "_network") as compiler, \
+                    self.assertRaisesRegex(mirror.MirrorRefused, "explicit CARGO_TARGET_DIR"):
+                mirror.prepare_scorecard(self.source, self.target, tool_checkout=self.tool,
+                                         state_root=self.parent, net_wrapper="/usr/bin/env")
+            compiler.assert_not_called()
+        self.assertEqual("preserve", ordinary_file.read_text())
+        self.assertFalse((self.root / "missing-target").exists())
 
     def test_unavailable_tool_compiler_keeps_published_rows_and_failed_derivation(self):
         self.append("compiler-unavailable")
@@ -785,6 +818,134 @@ class DirectLedgerFixture(unittest.TestCase):
         finish.assert_not_called()
         self.assertEqual(["native-refusal"], [r["event_id"] for r in self.remote_rows()])
         self.assertEqual("", git(self.remote, "ls-tree", "-r", "main", "--", "scorecard/finalized"))
+
+    def derived_fixture(self):
+        _encoded, selection = self.portable_fixture()
+        selected = selection["row"]
+        selected.update(schema_version=5, cell_results=None, result="fail", validation_complete=False)
+        cell = {"lane": "portable", "category": "c-programs", "test": "fixture",
+                "mode": "verify", "backend": "ptrace"}
+        selected["raw_result_input_census_v1"] = {
+            "schema": 1, "run_id": selected["run_id"], "hermit_sha": selected["commit"],
+            "files": [{"path": "portable/results.jsonl", "bytes": 20, "sha256": "a" * 64,
+                       "rows": [{"line": 1, "cell": cell, "attempt": 1}]}],
+        }
+        value = {"schema": 1, "authority": mirror.finalized_proof.DERIVED_AUTHORITY,
+                 **mirror.finalized_proof.derived_row_binding(selected), "attempts": [{
+                     "input_path": "portable/results.jsonl", "input_line": 1, "cell": cell,
+                     "attempt": 1, "source_row_sha256": "b" * 64, "outcome": "FAIL",
+                     "result": None, "failure_class": None, "ordinary_verdict": {}, "backend_parity": None}]}
+        encoded = mirror.finalized_proof.canonical_bytes(value) + b"\n"
+        prepared = {"selection": selection, "source": self.parent, "artifacts": None,
+                    "objects": None, "parent_tool_commit": "8" * 40}
+        return prepared, encoded
+
+    def test_native_derived_emission_is_explicit_and_failed_child_cannot_stage(self):
+        prepared, encoded = self.derived_fixture()
+        row_before = mirror._row_bytes(prepared["selection"]["row"])
+        calls = []
+
+        def native(command, **kwargs):
+            calls.append(command)
+            self.assertEqual("compatibility-website-derived-census", command[5])
+            self.assertEqual(str(mirror.TOOL_ROOT / "ci-hub/ci-hub.rs"), command[4])
+            self.assertEqual(str(self.parent / "target"), kwargs["environment"]["CARGO_TARGET_DIR"])
+            self.assertEqual(row_before, Path(command[command.index("--row-json") + 1]).read_bytes())
+            Path(command[command.index("--output-json") + 1]).write_bytes(encoded)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(mirror, "_parent_tool_commit", return_value="8" * 40), \
+                mock.patch.object(mirror, "_committed_tool_source", return_value="9" * 40), \
+                mock.patch.object(mirror.rust_toolchain, "selected_toolchain", return_value="fixture-toolchain"), \
+                mock.patch.object(mirror, "_network", side_effect=native):
+            self.assertEqual("9" * 40, mirror.emit_derived_portable_proof(
+                prepared, self.parent, self.root / "results", self.tool, net_wrapper="fixture"))
+        self.assertEqual(1, len(calls))
+        self.assertEqual(2, prepared["artifacts"]["schema"])
+        self.assertEqual(row_before, mirror._row_bytes(prepared["selection"]["row"]))
+        for status in (126, 127):
+            prepared.update(artifacts=None, objects=None)
+            with mock.patch.object(mirror, "_parent_tool_commit", return_value="8" * 40), \
+                    mock.patch.object(mirror, "_committed_tool_source", return_value="9" * 40), \
+                    mock.patch.object(mirror.rust_toolchain, "selected_toolchain", return_value="fixture-toolchain"), \
+                    mock.patch.object(mirror, "_network", side_effect=mirror.MirrorRefused(f"native exit {status}")), \
+                    self.assertRaises(mirror.MirrorRefused):
+                mirror.emit_derived_portable_proof(prepared, self.parent, self.root / "results", self.tool,
+                                                    net_wrapper="fixture")
+            self.assertIsNone(prepared["artifacts"])
+
+    def test_native_derived_emission_preserves_explicit_existing_target(self):
+        prepared, encoded = self.derived_fixture()
+        target = self.root / "existing-target"
+        target.mkdir()
+        calls = []
+
+        def native(command, **kwargs):
+            calls.append(command)
+            self.assertEqual(str(target), kwargs["environment"]["CARGO_TARGET_DIR"])
+            self.assertEqual(str(mirror.TOOL_ROOT / "ci-hub/ci-hub.rs"), command[4])
+            self.assertEqual("compatibility-website-derived-census", command[5])
+            Path(command[command.index("--output-json") + 1]).write_bytes(encoded)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}), \
+                mock.patch.object(mirror, "_parent_tool_commit", return_value="8" * 40), \
+                mock.patch.object(mirror, "_committed_tool_source", return_value="9" * 40), \
+                mock.patch.object(mirror.rust_toolchain, "selected_toolchain", return_value="fixture-toolchain"), \
+                mock.patch.object(mirror, "_network", side_effect=native):
+            self.assertEqual("9" * 40, mirror.emit_derived_portable_proof(
+                prepared, self.parent, self.root / "results", self.tool, net_wrapper="fixture"))
+        self.assertEqual(1, len(calls))
+        self.assertEqual(2, prepared["artifacts"]["schema"])
+        self.assertFalse((self.parent / "target").exists())
+
+    def test_proof_only_attachment_preserves_published_projection_and_requires_new_operands(self):
+        # Native/parent authorities are explicit doubles. This tests real Git
+        # delivery and preservation, not the native comparison verifier.
+        self.append("existing-finalized-cell")
+        original = self.publish()
+        self.assertEqual("published", original["state"], original)
+        before = {path: git(self.remote, "rev-parse", "main:" + path)
+                  for path in ("latest.json", "scorecard/cells.json", "scorecard/SCORECARD.md")}
+        prepared, encoded = self.derived_fixture()
+        selected = prepared["selection"]
+        native_calls = []
+
+        def native(value, *args, **kwargs):
+            native_calls.append(value)
+            value["artifacts"], value["objects"] = mirror.finalized_proof.capture_derived_cells(selected["row"], encoded)
+            return git(self.tool, "rev-parse", "HEAD")
+
+        with mock.patch.object(mirror, "finalized_producer_row", return_value=mirror._row_bytes(selected["row"])), \
+                mock.patch.object(mirror, "prepare_portable_proof", return_value=prepared), \
+                mock.patch.object(mirror, "_parent_tool_commit", return_value="8" * 40), \
+                mock.patch.object(mirror, "_select_published_terminal", return_value=(mock.MagicMock(), selected)), \
+                mock.patch.object(mirror, "emit_derived_portable_proof", side_effect=native), \
+                mock.patch.object(mirror, "build_scorecard") as scorecard:
+            report = self.publish(results=self.root / "results", finalized_run_id=selected["row"]["run_id"],
+                                  portable_proof_only=True)
+        self.assertEqual("published", report["state"], report)
+        self.assertIn("portable_proof", report)
+        self.assertNotIn("scorecard", report)
+        self.assertEqual(1, len(native_calls))
+        scorecard.assert_not_called()
+        self.assertEqual(before, {path: git(self.remote, "rev-parse", "main:" + path) for path in before})
+        self.assertEqual(original["commit"], report["existing_scorecard"]["commit"])
+        self.assertEqual(["existing-finalized-cell"], [value["event_id"] for value in self.remote_rows()])
+        self.assertEqual("fail", selected["row"]["result"])
+        writer = self.parent / mirror.WRITER_RELATIVE
+        snapshot = mirror._published_snapshot(writer)
+        metadata = json.loads((writer / "latest.json").read_bytes())
+        for field, value in (("source_tree", "0" * 40), ("rows_sha256", "0" * 64),
+                             ("scorecard_hermit_commit", "0" * 40)):
+            changed = dict(metadata, **{field: value})
+            (writer / "latest.json").write_text(json.dumps(changed))
+            with self.subTest(field=field), self.assertRaises(mirror.MirrorRefused):
+                mirror.published_scorecard_binding(writer, snapshot, self.target)
+        (writer / "latest.json").write_text(json.dumps(metadata))
+        (writer / "scorecard/cells.json").write_text("changed")
+        with self.assertRaises(mirror.MirrorRefused):
+            mirror.published_scorecard_binding(writer, snapshot, self.target)
 
     def test_scheduled_backlog_retries_failed_push_without_another_validation(self):
         sys.path.insert(0, str(mirror.TOOL_ROOT / "ci-hub/ledger"))

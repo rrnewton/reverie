@@ -5477,3 +5477,37 @@ def test_presentation_names_exact_cell_ledger_separately_from_generator() -> Non
     canonical["series_repository"] = "https://github.com/example/foreign.git"
     with pytest.raises(render_page.RenderRefused, match="cell ledger repository"):
         render_page.validate_presentation(record, data)
+
+
+def test_writer_derived_recorded_population_keeps_failed_run_and_retry_verdicts() -> None:
+    model, kvm = _typed_kvm_model(matched=True, parity=True)
+    row = copy.deepcopy(model.history_rows[0])
+    evidence = row.pop("cell_results")
+    evidence.update(authority="writer_verified_raw_census_v1", population_scope="recorded_only")
+    evidence["selected_by"] = {"recorded": next(iter(evidence["selected_by"].values()))}
+    row.update(schema_version=5, result="fail", validation_complete=False,
+               cell_results=None, derived_cell_results=evidence)
+    recorded = evidence["recorded"]["cells"][1]
+    recorded.update(comparison_authority="writer_verified_raw_census_v1", ordinary_comparison="diverged")
+    recorded["backend_parity"].pop("artifact_verified")
+    recorded["backend_parity"]["derived_operand_verified"] = True
+    recorded["backend_parity"]["clean_match"] = False
+    recorded["backend_parity"]["summary"]["attempts"] = [{"cross": {"state": "diverged"}}, {"cross": {"state": "matched"}}]
+    assert render_page._repeat_state(recorded) == "diverged"
+    assert render_page._parity_state(recorded) == "diverged"
+    page = render_page._run_page(replace(model, history_rows=(row,)), 0, row).decode()
+    assert "Recorded population" in page
+    assert "not the full planned selection" in page
+    assert "private raw bytes" in page
+    assert "Whole-run result</dt><dd>fail" in page
+    assert "Ledger schema</dt><dd>5" in page
+    assert row["cell_results"] is None and row["validation_complete"] is False
+    listing = render_page._run_listing(replace(model, history_rows=(row,)), "runs/index.html")
+    assert "Not recorded" in listing
+    for mutate in (lambda r: r.update(cell_results=evidence),
+                   lambda r: r["derived_cell_results"].update(authority="producer"),
+                   lambda r: r["derived_cell_results"].update(population_scope="full")):
+        bad = copy.deepcopy(row)
+        mutate(bad)
+        with pytest.raises(render_page.RenderRefused):
+            render_page._cell_evidence(bad)

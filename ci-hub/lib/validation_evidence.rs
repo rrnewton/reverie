@@ -218,7 +218,11 @@ fn retained_bytes(
 
 /// Every directory is opened relative to the previously opened descriptor.
 /// A rename after opening cannot redirect the next component to another tree.
-fn open_relative_path(root: &fs::File, path: &Path, final_directory: bool) -> io::Result<fs::File> {
+pub(crate) fn open_relative_path(
+    root: &fs::File,
+    path: &Path,
+    final_directory: bool,
+) -> io::Result<fs::File> {
     let mut current = root.try_clone()?;
     let mut components = path.components().peekable();
     if components.peek().is_none() {

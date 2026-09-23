@@ -190,8 +190,20 @@ def _historical_wording(provenance: Mapping[str, Any]) -> PageWording:
     if any(
         not isinstance(historical.get(field), str) or not historical[field]
         for field in strings
-    ) or not isinstance(historical.get("selected_by_full_cell_count"), int):
+    ):
         raise RenderRefused("historical page provenance is incomplete")
+    selected_count = historical.get("selected_by_full_cell_count")
+    recorded_only = selected_count is None
+    if recorded_only:
+        if (historical.get("comparison_authority") != "writer_verified_raw_census_v1"
+                or historical.get("population_scope") != "recorded_only"
+                or type(historical.get("recorded_cell_count")) is not int
+                or historical["recorded_cell_count"] < 0):
+            raise RenderRefused("historical recorded population lacks writer-derived authority")
+    elif type(selected_count) is not int or selected_count < 0 or any(
+        field in historical for field in ("recorded_cell_count", "population_scope", "comparison_authority")
+    ):
+        raise RenderRefused("historical page mixes planned and recorded-only populations")
     finished_at_label = _historical_finished_at_label(historical["finished_at"])
     canonical = provenance.get("canonical_input_provenance")
     if not isinstance(canonical, Mapping):
@@ -275,8 +287,8 @@ def _historical_wording(provenance: Mapping[str, Any]) -> PageWording:
         ProvenanceFact("Source validation run", str(historical["run_id"])),
         ProvenanceFact("Validate path", str(historical["validate_path"])),
         ProvenanceFact(
-            f"Retained run selected by {historical['validate_path']}",
-            f"{historical['selected_by_full_cell_count']} cells",
+            "Retained recorded population (planned selection unavailable)" if recorded_only else f"Retained run selected by {historical['validate_path']}",
+            f"{historical['recorded_cell_count'] if recorded_only else selected_count} cells",
         ),
         ProvenanceFact(
             "Run started",
@@ -871,7 +883,7 @@ def _site_model(
     selection_run_references: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for row_index in _current_history_indices(history_rows, current):
         row = history_rows[row_index]
-        for path, selection in row["cell_results"]["selected_by"].items():
+        for path, selection in _cell_evidence(row)["selected_by"].items():
             for selected_cell in selection["cells"]:
                 key = (
                     _cell_identity(selected_cell),
@@ -1377,6 +1389,22 @@ def _red_cell_partial_credit(
     }
 
 
+def _cell_evidence(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    original, derived = row.get("cell_results"), row.get("derived_cell_results")
+    if isinstance(original, Mapping) and derived is None:
+        return original
+    if (original is None and isinstance(derived, Mapping)
+            and row.get("schema_version") == 5
+            and derived.get("authority") == "writer_verified_raw_census_v1"
+            and derived.get("population_scope") == "recorded_only"):
+        return derived
+    raise RenderRefused("validation row has conflicting or unrecognized cell authority")
+
+
+def _evidence_path(row: Mapping[str, Any]) -> str:
+    return "recorded" if row.get("derived_cell_results") is not None else str(row["profile"])
+
+
 def _repeat_state(recorded: Mapping[str, Any]) -> str:
     """Interpret only the typed canonical comparison, never an aggregate GREEN."""
     verdict = recorded.get("cell_verdict", {})
@@ -1408,10 +1436,11 @@ def _repeat_state(recorded: Mapping[str, Any]) -> str:
 
 def _parity_state(recorded: Mapping[str, Any]) -> str:
     parity = recorded.get("backend_parity")
-    if (
-        recorded.get("comparison_authority") != "selected-attempt-v1"
-        or not isinstance(parity, Mapping)
-        or parity.get("artifact_verified") is not True
+    if not isinstance(parity, Mapping) or not (
+        (recorded.get("comparison_authority") == "selected-attempt-v1"
+         and parity.get("artifact_verified") is True)
+        or (recorded.get("comparison_authority") == "writer_verified_raw_census_v1"
+            and parity.get("derived_operand_verified") is True)
     ):
         return "unavailable"
     summary = parity.get("summary", {})
@@ -2210,8 +2239,8 @@ def _run_listing(model: SiteModel, page: str, *, show_heading: bool = True) -> s
     correction_partners = _correction_partner_indices(model.history_rows)
     rows = []
     for index, row in enumerate(model.history_rows):
-        results = row["cell_results"]
-        selected = results["selected_by"].get(row["profile"], {"cell_count": 0})
+        results = _cell_evidence(row)
+        selected = results["selected_by"].get(row["profile"], {"cell_count": None})
         record = "current" if index in current else "historical"
         run_number = _positive_run_number(row)
         collection_values = {
@@ -2246,7 +2275,7 @@ def _run_listing(model: SiteModel, page: str, *, show_heading: bool = True) -> s
             f'<tr data-run-row="1" data-run-current="{str(index in current).lower()}" {_collection_item_attributes(filters={"record": record}, sorts=collection_values)}>'
             f'<th scope="row"><a{run_link_attributes} href="{_escape(_href(page, model.history_paths[index]))}">{_escape(run_label)}</a></th>'
             f'<td>{record_label}</td><td>{_escape(row["profile"])}</td>'
-            f'<td>{_escape(selected["cell_count"])}</td><td>{_escape(results["recorded"]["cell_count"])}</td>'
+            f'<td>{_escape(selected["cell_count"] if selected["cell_count"] is not None else "Not recorded")}</td><td>{_escape(results["recorded"]["cell_count"])}</td>'
             f'<td>{_escape(row["result"])}</td><td>{_hermit_commit_link(row["commit"])}</td>'
             f'<td>{_time_element(row["started_at"], "validation run started_at")}</td>'
             f'<td>{_escape(_duration_seconds(row.get("real_seconds"), "validation run real_seconds"))}</td></tr>'
@@ -3184,7 +3213,7 @@ def _never_measured_index(model: SiteModel) -> bytes:
 
 def _selected_groups(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
     sections = []
-    for path, selection in sorted(row["cell_results"]["selected_by"].items()):
+    for path, selection in sorted(_cell_evidence(row)["selected_by"].items()):
         shown = list(selection["cells"])
         published_count = sum(
             _cell_identity(cell) in model.cell_paths for cell in shown
@@ -3223,8 +3252,13 @@ def _selected_groups(model: SiteModel, page: str, row: Mapping[str, Any]) -> str
             ),
             child_limit=SELECTED_GROUP_CHILD_LIMIT,
         )
+        description = (
+            f'<h2>Recorded population</h2><p><strong>{selection["cell_count"]}</strong> cells have writer-verified recorded attempts. This is not the full planned selection or proof that the run completed.</p>'
+            if row.get("derived_cell_results") is not None else
+            f'<h2>Selected by {_escape(path)}</h2><p><strong>{selection["cell_count"]}</strong> cells were selected by {_escape(path)}. Of the selected cells in the manifest, {published_count} have published cell pages. Selected cells with no qualifying admitted row have no cell detail page and are listed as plain text.</p>'
+        )
         sections.append(
-            f'<section id="{_fragment("selected-by", str(path))}"><h2>Selected by {_escape(path)}</h2><p><strong>{selection["cell_count"]}</strong> cells were selected by {_escape(path)}. Of the selected cells in the manifest, {published_count} have published cell pages. Selected cells with no qualifying admitted row have no cell detail page and are listed as plain text.</p>'
+            f'<section id="{_fragment("selected-by", str(path))}">{description}'
             f"{controls}{_grouped_cell_links(model, page, shown, collection_id=collection_id)}</section>"
         )
     return "".join(sections)
@@ -3314,8 +3348,8 @@ def _not_selected_reason(cell: Mapping[str, Any] | None, path: str) -> str:
 
 
 def _recorded_cells(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
-    results = row["cell_results"]
-    path_name = str(row["profile"])
+    results = _cell_evidence(row)
+    path_name = _evidence_path(row)
     selection = results["selected_by"].get(path_name, {"cells": ()})
     selected_identities = {_cell_identity(cell) for cell in selection["cells"]}
     records = []
@@ -3509,7 +3543,7 @@ def _recorded_cells(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
 def _run_page(model: SiteModel, index: int, row: Mapping[str, Any]) -> bytes:
     page = model.history_paths[index]
     current = index in model.current_history_indices
-    results = row["cell_results"]
+    results = _cell_evidence(row)
     run_number = _positive_run_number(row)
     run_number_fact = (
         f"<div><dt>Run number</dt><dd>{run_number}</dd></div>"
@@ -3523,7 +3557,12 @@ def _run_page(model: SiteModel, index: int, row: Mapping[str, Any]) -> bytes:
         if correction_links
         else ""
     )
+    evidence_notice = (
+        '<p>Comparison operands were derived by a writer that verified the complete original raw census. Public readers authenticate this derived view, not private raw bytes. Only recorded cells are shown; the original failed or incomplete run status is unchanged.</p>'
+        if row.get("derived_cell_results") is not None else ""
+    )
     facts = f"""
+    {evidence_notice}
     <section id="run-facts"><h2>Retained validation row</h2>
       <p>{_escape(_ledger_record_explanation(current))}</p><dl class="facts">
       <div><dt>Ledger record</dt><dd>{_ledger_record_label(current)}</dd></div>
@@ -3541,7 +3580,7 @@ def _run_page(model: SiteModel, index: int, row: Mapping[str, Any]) -> bytes:
       <div><dt>History row digest</dt><dd><code>{_escape(row['history_row_sha256'])}</code></dd></div>
       <div><dt>Cell-results run id</dt><dd><code>{_escape(results['run_id'])}</code></dd></div>
       <div><dt>Cell-results Hermit SHA</dt><dd>{_hermit_commit_link(results['hermit_sha'])}</dd></div>
-      <div><dt>Population digest</dt><dd><code>{_escape(results['population_sha256'])}</code></dd></div>
+      <div><dt>{"Raw census digest" if row.get("derived_cell_results") is not None else "Population digest"}</dt><dd><code>{_escape(results['population_sha256'])}</code></dd></div>
       <div><dt>Source tree dirty</dt><dd>{_escape(str(results['source_tree_dirty']).lower())}</dd></div>
     </dl></section>"""
     content = (
@@ -3802,14 +3841,14 @@ def _exact_validation_cell(
     if (
         history.get("run_id") != row.get("run_id")
         or history.get("commit") != series.get("tree")
-        or history.get("profile") != path
+        or _evidence_path(history) != path
         or history.get("history_row_sha256")
         != reference.get("history_row_sha256")
     ):
         return None
     verdict_rows = [
         candidate
-        for candidate in history["cell_results"]["recorded"]["cells"]
+        for candidate in _cell_evidence(history)["recorded"]["cells"]
         if _cell_identity(candidate) == str(cell["cell"])
         and candidate.get("category") == cell.get("category")
         and candidate.get("lane") == cell.get("lane")
@@ -4058,8 +4097,8 @@ def _browser_summary(model: SiteModel, omission_ids: frozenset[str]) -> dict[str
         )
     runs = []
     for index, row in enumerate(model.history_rows):
-        selected = row["cell_results"]["selected_by"].get(
-            row["profile"], {"cell_count": 0}
+        selected = _cell_evidence(row)["selected_by"].get(
+            row["profile"], {"cell_count": None}
         )
         run: dict[str, Any] = {
             "commit": row["commit"],
@@ -4070,7 +4109,7 @@ def _browser_summary(model: SiteModel, omission_ids: frozenset[str]) -> dict[str
             "record": (
                 "current" if index in model.current_history_indices else "historical"
             ),
-            "recorded_cell_count": row["cell_results"]["recorded"]["cell_count"],
+            "recorded_cell_count": _cell_evidence(row)["recorded"]["cell_count"],
             "result": row["result"],
             "run_id": row["run_id"],
             "selected_cell_count": selected["cell_count"],

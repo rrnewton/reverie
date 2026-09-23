@@ -117,6 +117,7 @@ STAGE_1_READER_PATHS = (
     "ci-hub/ledger/validate_rows.py",
     "ci-hub/lib/bounded_capture.py",
     "ci-hub/lib/bounded_output.rs",
+    "ci-hub/lib/compatibility_census.rs",
     "ci-hub/lib/compatibility_website.rs",
     "ci-hub/lib/failure_obligations.rs",
     "ci-hub/lib/history_queries.rs",
@@ -1937,6 +1938,7 @@ def build_historical(
     manifest_hermit: Path,
     manifest_commit: str,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
+    *, series_commit: str | None = None,
 ) -> ValidatedWebsite:
     _output_location(output_root)
     build_started_at = datetime.now(timezone.utc).isoformat()
@@ -1951,6 +1953,7 @@ def build_historical(
                 run_id,
                 manifest_hermit,
                 manifest_commit,
+                **({"series_commit": series_commit} if series_commit is not None else {}),
             )
         except modules.build_data.BuildRefused as error:
             raise WebsiteRefused(
@@ -2106,6 +2109,7 @@ def _parser() -> argparse.ArgumentParser:
         )
         historical.add_argument("--record-id", required=True)
         historical.add_argument("--run-id", required=True)
+        historical.add_argument("--series-commit", help="full immutable hermit_test_ledger commit supplying historical series and finalized proof")
         historical.add_argument(
             "--manifest-hermit",
             required=True,
@@ -2163,6 +2167,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 arguments.manifest_hermit,
                 arguments.manifest_commit,
                 arguments.output_root,
+                **({"series_commit": arguments.series_commit} if arguments.series_commit is not None else {}),
             )
         else:
             website = build(arguments.output_root)

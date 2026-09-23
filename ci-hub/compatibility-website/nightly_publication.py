@@ -196,17 +196,24 @@ def _run(builder: object, state_root: Path) -> int:
         exporter = builder._modules().export_inputs
         exporter._load_authorities()
         ledger = exporter.series_store.ledger_root(state_root)
-        command(["with-proxy", "git", "-C", str(ledger), "fetch", "--no-tags", "origin", "main:refs/remotes/origin/main"])
+        command(["with-proxy", "git", "-C", str(ledger), "fetch", "--no-tags", "--no-recurse-submodules", "origin", "main:refs/remotes/origin/main"])
         ledger_commit = builder._git_oid(ledger, "refs/remotes/origin/main")
         state["ledger_commit"] = ledger_commit
+        command(["with-proxy", "git", "-C", str(state_root), "fetch", "--no-tags", "--no-recurse-submodules", "origin", "main:refs/remotes/origin/main"])
+        history_commit = builder._git_oid(state_root, "refs/remotes/origin/main")
+        state["validation_history_commit"] = history_commit
         # This captures only published bytes at one immutable commit; it never
         # changes a date label over an old source pin or mixes in mutable spools.
-        website = builder.build(output_root, series_ref=ledger_commit, published_only=True, state_root=state_root)
+        website = builder.build(output_root, series_ref=ledger_commit, published_only=True,
+                                state_root=state_root, validation_history_commit=history_commit)
         website.recheck()
         state.update(build_finished_at=now(), identity=website.manifest["freshness_sha256"], reused=website.reused)
         provenance = website.manifest["provenance"]["canonical_input_provenance"]
         if provenance.get("series_commit") != ledger_commit or provenance.get("published_only") is not True:
             raise RuntimeError("built website does not bind the requested published ledger commit")
+        if (provenance.get("parent_commit") != history_commit
+                or provenance.get("reader_commit") != state["builder_commit"]):
+            raise RuntimeError("built website does not bind the captured validation history and reader commits")
         helper = builder.REPOSITORY / "hermit/.github/scripts/publish-compatibility-site.py"
         checked_in = builder.REPOSITORY / "hermit/.github/compatibility-site-releases.json"
         registry = published_registry(helper, checked_in, root)

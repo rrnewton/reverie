@@ -50,6 +50,8 @@
 
 #[path = "lib/bounded_output.rs"]
 mod bounded_output;
+#[path = "lib/compatibility_census.rs"]
+mod compatibility_census;
 #[path = "lib/compatibility_website.rs"]
 mod compatibility_website;
 #[path = "lib/failure_obligations.rs"]
@@ -285,6 +287,8 @@ enum HubCommand {
     ValidationRow(ValidationRowArgs),
     /// Project typed manifest, validation, and series inputs for the website.
     CompatibilityWebsiteProjection(CompatibilityWebsiteProjectionArgs),
+    /// Derive portable comparison operands after verifying an original raw census.
+    CompatibilityWebsiteDerivedCensus(CompatibilityWebsiteDerivedCensusArgs),
     /// Launch a detached validation whose service enters through validate-lock.
     ValidateRun(PassthroughArgs),
     /// Stop detached validate-* user units and verify they terminated.
@@ -701,6 +705,19 @@ struct ValidationRowArgs {
     /// Exact stable validation-run identity to select.
     #[arg(long)]
     run_id: String,
+}
+
+#[derive(Args, Clone, Debug)]
+struct CompatibilityWebsiteDerivedCensusArgs {
+    /// Exact original finalized HistoryRow JSON; never rewritten.
+    #[arg(long)]
+    row_json: PathBuf,
+    /// Root of the producer-bound raw result files; private input only.
+    #[arg(long)]
+    results_root: PathBuf,
+    /// Fresh public derived output; refuses an existing file.
+    #[arg(long)]
+    output_json: PathBuf,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -1469,6 +1486,7 @@ impl HubCommand {
             | Self::ReceiptDigest(_)
             | Self::ValidateEvidence(_)
             | Self::ValidationRow(_)
+            | Self::CompatibilityWebsiteDerivedCensus(_)
             | Self::CompatibilityWebsiteProjection(_)
             | Self::ValidateRun(_)
             | Self::ValidateStop(_)
@@ -1889,6 +1907,11 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
                 .map_err(CiHubError::ValidateStatus)
         }
         HubCommand::ValidationRow(args) => run_validation_row(args),
+        HubCommand::CompatibilityWebsiteDerivedCensus(args) => {
+            compatibility_census::write(&args.row_json, &args.results_root, &args.output_json)
+                .map(|()| 0)
+                .map_err(CiHubError::ValidateStatus)
+        }
         HubCommand::CompatibilityWebsiteProjection(args) => {
             run_compatibility_website_projection(args)
         }
@@ -4600,6 +4623,18 @@ fn validation_row_report(
     record_id: &str,
     run_id: &str,
 ) -> Result<serde_json::Value, String> {
+    validation_row_report_with(input, record_id, run_id, compatibility_census::load)
+}
+
+fn validation_row_report_with(
+    input: &str,
+    record_id: &str,
+    run_id: &str,
+    load: impl Fn(
+        &HistoryRow,
+        &serde_json::Value,
+    ) -> Result<Option<compatibility_census::DerivedCensus>, String>,
+) -> Result<serde_json::Value, String> {
     if record_id.trim().is_empty() || run_id.trim().is_empty() {
         return Err("validation-row record_id and run_id must be nonempty".into());
     }
@@ -4722,27 +4757,48 @@ fn validation_row_report(
                 .into(),
         );
     }
-    let evidence = row
-        .cell_results
-        .as_ref()
-        .and_then(|value| value.typed())
-        .ok_or_else(|| {
-            "validation-row selected row has no supported typed cell_results evidence".to_string()
-        })?;
-    if evidence.run_id != run_id || evidence.hermit_sha != commit {
-        return Err(
-            "validation-row cell_results identity disagrees with the selected HistoryRow".into(),
-        );
-    }
-    if evidence.selected_count != evidence.selected.len() as u64 {
-        return Err(
-            "validation-row selected_count disagrees with the selected cell population".into(),
-        );
-    }
     let (canonical_row, row_sha256) = canonical_row_json_and_sha256(row)
         .ok_or_else(|| "validation-row cannot canonicalize the selected HistoryRow".to_string())?;
     let canonical_value = serde_json::from_str::<serde_json::Value>(&canonical_row)
         .map_err(|error| format!("validation-row canonical row is invalid JSON: {error}"))?;
+    let population = if let Some(evidence) = load(row, &canonical_value)? {
+        evidence.population_metadata()
+    } else {
+        let evidence = row
+            .cell_results
+            .as_ref()
+            .and_then(|value| value.typed())
+            .ok_or_else(|| {
+                "validation-row selected row has no supported typed cell_results evidence"
+                    .to_string()
+            })?;
+        if evidence.run_id != run_id || evidence.hermit_sha != commit {
+            return Err(
+                "validation-row cell_results identity disagrees with the selected HistoryRow"
+                    .into(),
+            );
+        }
+        if evidence.selected_count != evidence.selected.len() as u64 {
+            return Err(
+                "validation-row selected_count disagrees with the selected cell population".into(),
+            );
+        }
+        serde_json::json!({"selected_by_full_cell_count": evidence.selected_count})
+    };
+    let mut source = serde_json::json!({
+        "finished_at": finished_at,
+        "measured_hermit_commit": commit,
+        "record_id": record_id,
+        "run_id": run_id,
+        "started_at": started_at,
+        "validate_path": "full",
+    });
+    source.as_object_mut().expect("constructed source").extend(
+        population
+            .as_object()
+            .expect("constructed population")
+            .clone(),
+    );
     Ok(serde_json::json!({
         "canonicalization": RECEIPT_CANONICALIZATION,
         "canonical_row_json": canonical_row,
@@ -4753,15 +4809,7 @@ fn validation_row_report(
         },
         "row": canonical_value,
         "row_sha256": row_sha256,
-        "source": {
-            "finished_at": finished_at,
-            "measured_hermit_commit": commit,
-            "record_id": record_id,
-            "run_id": run_id,
-            "selected_by_full_cell_count": evidence.selected_count,
-            "started_at": started_at,
-            "validate_path": "full",
-        },
+        "source": source,
     }))
 }
 

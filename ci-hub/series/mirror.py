@@ -317,8 +317,11 @@ def prepare_portable_proof(parent: Path, encoded_row: bytes, *, net_wrapper: str
     No writer clone is created here; unavailable preparation preserves raw rows.
     """
     row = _private_row(encoded_row)
-    if row.get("schema_version") != 10:
+    derived = row.get("schema_version") == 5 and "raw_result_input_census_v1" in row
+    if row.get("schema_version") != 10 and not derived:
         return None
+    if derived:
+        finalized_proof.derived_row_binding(row)
     import publish_backlog
     import validate_rows
     tool_parent = _parent_tool_commit()
@@ -340,9 +343,92 @@ def prepare_portable_proof(parent: Path, encoded_row: bytes, *, net_wrapper: str
     namespace, selected = _select_published_terminal(source, parent, row, net_wrapper=net_wrapper)
     with namespace:
         namespace.verify_origin(selected["parent"], selected["terminal"])
-    artifacts, objects = finalized_proof.capture_artifacts(parent, row)
+    artifacts, objects = ((None, None) if derived else finalized_proof.capture_artifacts(parent, row))
     return {"source": source, "selection": selected, "artifacts": artifacts,
             "objects": objects, "parent_tool_commit": tool_parent}
+
+
+def _cargo_target(state_root: Path | None) -> str | None:
+    explicit = os.environ.get("CARGO_TARGET_DIR")
+    if explicit is None:
+        return str(state_root.resolve() / "target") if state_root is not None else None
+    target = Path(explicit)
+    if not explicit or not target.is_absolute():
+        raise MirrorRefused("explicit CARGO_TARGET_DIR must be an existing absolute directory")
+    try:
+        target = target.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise MirrorRefused(f"explicit CARGO_TARGET_DIR is unavailable: {error}") from error
+    if not target.is_dir():
+        raise MirrorRefused("explicit CARGO_TARGET_DIR must be an existing absolute directory")
+    return str(target)
+
+
+def emit_derived_portable_proof(prepared: dict, parent: Path, results: Path,
+                                tool_checkout: Path | None, *, net_wrapper: str) -> str:
+    """Obtain new typed public operands from the complete private raw census.
+
+    A previously published scorecard is not authority for these operands. The
+    native writer verifies all original raw bytes again before this capture.
+    """
+    tool_checkout = (tool_checkout or TOOL_ROOT / "hermit").resolve()
+    tool_commit = _committed_tool_source(tool_checkout)
+    if _committed_tool_source(TOOL_ROOT / "hermit") != tool_commit:
+        raise MirrorRefused("native derived-census provider differs from --tool-checkout; use the parent's committed Hermit provider")
+    if _parent_tool_commit() != prepared["parent_tool_commit"]:
+        raise MirrorRefused("derived-census producer changed before emission; retry with committed tools")
+    compiler = rust_toolchain.selected_toolchain(tool_checkout)
+    row = prepared["selection"]["row"]
+    with tempfile.TemporaryDirectory(prefix="ledger-derived-census-") as temporary:
+        directory = Path(temporary)
+        row_path, output = directory / "row.json", directory / "derived.json"
+        encoded_row = _row_bytes(row)
+        row_path.write_bytes(encoded_row)
+        _network([
+            "rust-script", "--force", "--toolchain", compiler, str(TOOL_ROOT / "ci-hub/ci-hub.rs"),
+            "compatibility-website-derived-census", "--row-json", str(row_path),
+            "--results-root", str(results.resolve()), "--output-json", str(output),
+        ], cwd=TOOL_ROOT, wrapper=net_wrapper, environment={
+            "RUSTUP_TOOLCHAIN": compiler, "RUSTUP_AUTO_INSTALL": "0",
+            "CARGO_TARGET_DIR": _cargo_target(parent),
+        })
+        if row_path.read_bytes() != encoded_row:
+            raise MirrorRefused("original finalized row changed during derived emission")
+        encoded = finalized_proof._read_local(directory, output.name)
+        artifacts, objects = finalized_proof.capture_derived_cells(row, encoded)
+    if (_parent_tool_commit() != prepared["parent_tool_commit"]
+            or _committed_tool_source(TOOL_ROOT / "hermit") != tool_commit
+            or _committed_tool_source(tool_checkout) != tool_commit):
+        raise MirrorRefused("derived-census producer changed during emission; retain inputs and retry")
+    prepared.update(artifacts=artifacts, objects=objects)
+    return tool_commit
+
+
+def published_scorecard_binding(writer: Path, snapshot: Mapping[str, Any], target: str) -> dict:
+    """Require the existing public projection before a later proof attachment."""
+    encoded = finalized_proof._read_local(writer, "latest.json")
+    value = finalized_proof._json(encoded)
+    if (not isinstance(value, dict) or value.get("schema") != METADATA_SCHEMA
+            or value.get("source_repository") != REMOTE_URL
+            or value.get("scorecard_hermit_commit") != target
+            or value.get("source_tree") != snapshot["source"]["tree"]
+            or value.get("rows_sha256") != snapshot["rows_sha256"]
+            or value.get("rows") != snapshot["rows_read"]):
+        raise MirrorRefused("published scorecard does not bind this measured source and raw series; run ordinary finalized scorecard publication first")
+    source = finalized_proof._hash(value.get("source_commit"), "scorecard source commit", git=True)
+    if value.get("series_commit") != source:
+        raise MirrorRefused("published scorecard source and series commit differ")
+    _git(writer, "merge-base", "--is-ancestor", source, snapshot["source"]["commit"])
+    hashes = value.get("scorecard")
+    if not isinstance(hashes, dict) or not all(path.as_posix() in hashes for path in MIRRORED_SCORECARD_PATHS):
+        raise MirrorRefused("published scorecard omitted its bound files; run ordinary finalized publication first")
+    for path, digest in hashes.items():
+        finalized_proof._relative(path)
+        finalized_proof._hash(digest, "scorecard file digest")
+        if not path.startswith("scorecard/") or hashlib.sha256(finalized_proof._read_local(writer, path)).hexdigest() != digest:
+            raise MirrorRefused("published scorecard bytes differ from metadata; preserve the refusal and regenerate normally")
+    return {"commit": snapshot["source"]["commit"],
+            "latest_sha256": hashlib.sha256(encoded).hexdigest(), "files": hashes}
 
 
 def finish_portable_proof(prepared: Mapping[str, Any], parent: Path, writer: Path,
@@ -388,10 +474,11 @@ def _scorecard_execution(
     environment = {
         "RUSTUP_TOOLCHAIN": compiler, "RUSTUP_AUTO_INSTALL": "0",
     }
-    if state_root is not None:
+    cargo_target = _cargo_target(state_root)
+    if cargo_target is not None:
         # The immutable tool owns code; the existing state target owns mutable
         # Cargo output, shared by recurring publications rather than each run.
-        environment["CARGO_TARGET_DIR"] = str(state_root.resolve() / "target")
+        environment["CARGO_TARGET_DIR"] = cargo_target
     return tool, tool_commit, compiler, environment
 
 
@@ -525,9 +612,12 @@ def mirror(
     scorecard_args: Sequence[str] = (),
     tool_checkout: Path | None = None, finalized_run_id: str | None = None,
     lifecycle_deadline_ns: int | None = None,
+    portable_proof_only: bool = False,
 ) -> dict[str, Any]:
     if remote_url != REMOTE_URL:
         raise MirrorRefused("unexpected ledger repository")
+    if portable_proof_only and (finalized_run_id is None or results is None or publish_only or scorecard_command):
+        raise MirrorRefused("proof-only attachment requires --finalized-run-id/--results and no scorecard override")
     legacy_export = scorecard_command == "export-legacy"
     if not legacy_export:
         # Raw publication and snapshots use a different native package from
@@ -549,7 +639,7 @@ def mirror(
                 publisher.PublishRefused, subprocess.SubprocessError) as error:
             # Raw cell rows still publish through the normal transaction below.
             preparation_error = error
-    if not publish_only and preparation_error is None:
+    if not publish_only and not portable_proof_only and preparation_error is None:
         try:
             if source_checkout is None or target is None:
                 raise MirrorRefused("scorecard preparation requires source checkout and target")
@@ -562,15 +652,17 @@ def mirror(
             # independent, durable raw-row append below.
             tool_preparation_error = error
     with publication_writer(parent, net_wrapper=net_wrapper, lifecycle_deadline_ns=lifecycle_deadline_ns) as (ledger, writer, lock_fd):
-        if legacy_export:
+        if legacy_export or portable_proof_only:
             # Preserving legacy bytes must neither drain unrelated pending rows
             # nor claim that the existing scorecard was regenerated.
             _git(writer, "merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/main")
             _git(writer, "checkout", "--detach", "refs/remotes/origin/main")
             commit = _git(writer, "rev-parse", "HEAD^{commit}")
-            publication = {"published": 0, "attempts": 0, "skipped": "legacy archive only"}
-            snapshot = {"source": {"repository": REMOTE_URL, "commit": commit,
-                                   "tree": series._series_tree_at(writer, commit)}}
+            publication = {"published": 0, "attempts": 0, "skipped":
+                           "portable proof attachment only" if portable_proof_only else "legacy archive only"}
+            snapshot = (_published_snapshot(writer) if portable_proof_only else
+                        {"source": {"repository": REMOTE_URL, "commit": commit,
+                                    "tree": series._series_tree_at(writer, commit)}})
         else:
             publication = publish_series(parent, ledger, writer, net_wrapper=net_wrapper, attempts=attempts)
             snapshot = _published_snapshot(writer)
@@ -587,7 +679,7 @@ def mirror(
             report["rows"] = snapshot["rows_read"]
         if publish_only:
             return report
-        operation = "legacy_export" if legacy_export else "scorecard"
+        operation = "portable_proof" if portable_proof_only else ("legacy_export" if legacy_export else "scorecard")
         try:
             if preparation_error is not None:
                 raise MirrorRefused(f"finalized proof preparation failed: {preparation_error}")
@@ -595,18 +687,34 @@ def mirror(
                 raise MirrorRefused(f"scorecard tool preparation failed: {tool_preparation_error}")
             if source_checkout is None or target is None:
                 raise MirrorRefused("scorecard generation requires source checkout and target")
-            hashes, tool_commit = build_scorecard(
-                source_checkout, target, snapshot, writer, lock_fd=lock_fd,
-                net_wrapper=net_wrapper, results=results,
-                scorecard_command=scorecard_command, scorecard_args=scorecard_args,
-                tool_checkout=tool_checkout, finalized_run_id=finalized_run_id,
-                state_root=parent, prepared_finalized_row=finalized_row,
-                prepared_tool=prepared_tool,
-            )
+            if portable_proof_only:
+                if portable is None or portable["selection"]["row"].get("schema_version") != 5:
+                    raise MirrorRefused("proof-only attachment requires an original schema-5 census terminal")
+                report["existing_scorecard"] = published_scorecard_binding(writer, snapshot, target)
+                hashes = {}
+                tool_commit = emit_derived_portable_proof(portable, parent, results, tool_checkout,
+                                                          net_wrapper=net_wrapper)
+            else:
+                hashes, tool_commit = build_scorecard(
+                    source_checkout, target, snapshot, writer, lock_fd=lock_fd,
+                    net_wrapper=net_wrapper, results=results,
+                    scorecard_command=scorecard_command, scorecard_args=scorecard_args,
+                    tool_checkout=tool_checkout, finalized_run_id=finalized_run_id,
+                    state_root=parent, prepared_finalized_row=finalized_row,
+                    prepared_tool=prepared_tool,
+                )
+                if portable is not None and portable["artifacts"] is None:
+                    derived_tool = emit_derived_portable_proof(portable, parent, results, tool_checkout,
+                                                              net_wrapper=net_wrapper)
+                    if derived_tool != tool_commit:
+                        raise MirrorRefused("derived-census and scorecard tools differ")
             if portable is not None:
                 hashes.update(finish_portable_proof(
                     portable, parent, writer, snapshot, tool_commit, net_wrapper=net_wrapper))
-            if not legacy_export:
+            if portable_proof_only:
+                if published_scorecard_binding(writer, snapshot, target) != report["existing_scorecard"]:
+                    raise MirrorRefused("published scorecard changed during proof-only attachment")
+            elif not legacy_export:
                 write_metadata(writer, snapshot, target, series_commit, hashes, tool_commit)
             # The child has authority only for scorecard output, never code or series.
             changed = _run([
@@ -614,14 +722,15 @@ def mirror(
             ]).stdout
             for line in changed.splitlines():
                 path = line[3:]
-                allowed = path in hashes if legacy_export else (
+                allowed = path in hashes if legacy_export or portable_proof_only else (
                     path == "latest.json" or path.startswith("scorecard/"))
                 if not allowed:
                     raise MirrorRefused(f"scorecard changed an unexpected path: {path}")
             if changed:
-                staged = sorted(hashes) if legacy_export else ["latest.json", "scorecard"]
+                staged = sorted(hashes) if legacy_export or portable_proof_only else ["latest.json", "scorecard"]
                 _git(writer, "add", "--", *staged)
-                message = ("Preserve exact legacy Hermit cell history" if legacy_export
+                message = ("Attach verified finalized comparison operands" if portable_proof_only else
+                           "Preserve exact legacy Hermit cell history" if legacy_export
                            else "Generate scorecard from published cell history")
                 _git(writer, "commit", "--quiet", "-m", message)
                 commit = _git(writer, "rev-parse", "HEAD^{commit}")
@@ -670,6 +779,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--results", type=Path)
     parser.add_argument("--finalized-run-id", help="canonical completed validation run; row and proof are read from STATE")
     parser.add_argument("--publish-only", action="store_true")
+    parser.add_argument("--portable-proof-only", action="store_true",
+                        help="attach newly verified public census operands to an already published scorecard; preserve its files and original validation result")
     parser.add_argument("--scorecard-command", choices=SCORECARD_COMMANDS)
     parser.add_argument("--scorecard-arg", action="append", default=[])
     parser.add_argument("--net-wrapper", default=os.environ.get("WITH_PROXY", "with-proxy"))
@@ -682,6 +793,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("positive attempts and either --publish-only or --source-checkout/--target are required")
     if args.finalized_run_id is not None and (args.results is None or args.publish_only or args.scorecard_command):
         parser.error("--finalized-run-id requires --results and ordinary scorecard publication")
+    if args.portable_proof_only and (args.finalized_run_id is None or args.publish_only or args.scorecard_command):
+        parser.error("--portable-proof-only requires --finalized-run-id/--results without --publish-only or --scorecard-command")
     deadline_ns = min(started_ns + LIFECYCLE_TIMEOUT_SECONDS * 1_000_000_000,
                       args.lifecycle_deadline_ns if args.lifecycle_deadline_ns is not None
                       else started_ns + LIFECYCLE_TIMEOUT_SECONDS * 1_000_000_000)
@@ -706,6 +819,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             scorecard_command=args.scorecard_command, scorecard_args=args.scorecard_arg,
             tool_checkout=args.tool_checkout, finalized_run_id=args.finalized_run_id,
             lifecycle_deadline_ns=deadline_ns,
+            portable_proof_only=args.portable_proof_only,
         )
     except (MirrorRefused, OSError, KeyError, TypeError, series.SeriesError) as error:
         print(f"ledger publication: FAILED: {error}", file=sys.stderr)

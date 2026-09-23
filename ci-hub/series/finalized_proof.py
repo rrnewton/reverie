@@ -2,7 +2,9 @@
 
 These carriers are not validation authority. Callers select the terminal from
 the complete canonical parent history and verify its original Git provenance.
-The unchanged native schema-10 verifier then judges these exact operand bytes.
+The unchanged native schema-10 verifier then judges those exact operand bytes.
+The separate derived-census role carries a native writer's public projection,
+not the private raw preimages that the writer verified before deriving it.
 """
 
 from __future__ import annotations
@@ -22,6 +24,12 @@ PARENT_REPOSITORY = "https://github.com/rrnewton/dev-hermit.git"
 LEDGER_REPOSITORY = "https://github.com/rrnewton/hermit_test_ledger.git"
 PREFIX = "scorecard/finalized"
 ROLES = ("plan", "cells", "tests")
+DERIVED_AUTHORITY = "writer_verified_raw_census_v1"
+HISTORY_BINDING_FIELDS = (
+    "schema_version", "run_id", "record_id", "commit", "tree_dirty", "commit_anchored",
+    "profile", "selection_mode", "started_at", "finished_at", "result", "exit_code",
+    "validation_complete", "raw_result_input_census_v1",
+)
 # Same operational per-row capacity as lib/validation_evidence.rs. Exhaustion
 # is unavailable transport, not a verdict about a valid larger producer record.
 ARTIFACT_BYTES_PER_ROW = 256 * 1024 * 1024
@@ -135,6 +143,37 @@ website-summary forbidden-field rule therefore does not apply to these inputs.
 
 
 def _structured_bytes(encoded: bytes, role: str) -> None:
+    if role == "derived_cells":
+        value = _json(encoded)
+        if encoded != canonical_bytes(value) + b"\n":
+            raise ProofRefused("derived cells must contain one canonical JSON object line")
+        _object(value, "schema authority run_id record_id hermit_sha history_binding_sha256 "
+                "raw_census_sha256 attempts", "derived cells")
+        if type(value["schema"]) is not int or value["schema"] != 1:
+            raise ProofRefused("unsupported derived cells schema")
+        if value["authority"] != DERIVED_AUTHORITY:
+            raise ProofRefused("derived cells lack the explicit writer-derived authority")
+        for key in ("run_id", "record_id"):
+            _text(value[key], "derived " + key)
+        _hash(value["hermit_sha"], "derived Hermit commit", git=True)
+        for key in ("history_binding_sha256", "raw_census_sha256"):
+            _hash(value[key], "derived " + key)
+        if not isinstance(value["attempts"], list):
+            raise ProofRefused("derived attempts must be an array")
+        for attempt in value["attempts"]:
+            _object(attempt, "input_path input_line cell attempt source_row_sha256 "
+                    "outcome result failure_class ordinary_verdict backend_parity", "derived attempt")
+            _relative(attempt["input_path"])
+            for key in ("input_line", "attempt"):
+                if type(attempt[key]) is not int or attempt[key] < 1:
+                    raise ProofRefused("derived attempt needs positive line and attempt identities")
+            _object(attempt["cell"], "lane category test mode backend", "derived cell")
+            for key, item in attempt["cell"].items():
+                _text(item, "derived cell " + key)
+            _hash(attempt["source_row_sha256"], "derived source row digest")
+        _no_raw_derived_fields(value)
+        require_publishable_strings(value)
+        return
     if role == "plan":
         require_publishable_strings(_json(encoded))
         return
@@ -143,6 +182,102 @@ def _structured_bytes(encoded: bytes, role: str) -> None:
     for line in encoded.splitlines():
         if line.strip():
             require_publishable_strings(_json(line))
+
+
+def _no_raw_derived_fields(value: Any) -> None:
+    # Typed comparison interpretation remains native. This separate publication
+    # boundary must never transport invocation streams or raw diagnostic bodies,
+    # even when they contain no owner path or recognizable credential.
+    if isinstance(value, dict):
+        if set(value) & {"stdout", "stderr", "verification_report", "raw_report", "diagnostics",
+                         "error_detail", "argv", "guest_argv", "env", "cwd", "shell_command"}:
+            raise ProofRefused("derived comparison object contains a raw stream or diagnostic field")
+        for item in value.values():
+            _no_raw_derived_fields(item)
+    elif isinstance(value, list):
+        for item in value:
+            _no_raw_derived_fields(item)
+
+
+def artifact_roles(artifacts: Mapping[str, Any]) -> tuple[str, ...]:
+    schema = artifacts.get("schema")
+    if type(schema) is int and schema == 1:
+        return ROLES
+    if type(schema) is int and schema == 2:
+        return ("derived_cells",)
+    raise ProofRefused("unsupported artifact descriptor schema")
+
+
+def derived_row_binding(row: Mapping[str, Any]) -> dict[str, str]:
+    """Bind unchanged path-independent fields; terminal authority binds the full row.
+
+    This does not establish raw validity. Only the native writer with the complete
+    original inputs can produce the separate writer-derived comparison operands.
+    """
+    if type(row.get("schema_version")) is not int or row["schema_version"] != 5:
+        raise ProofRefused("derived census transport requires the original schema-5 row")
+    if row.get("cell_results") is not None:
+        raise ProofRefused("derived census cannot replace original cell result evidence")
+    census = _object(row.get("raw_result_input_census_v1"),
+                     "schema run_id hermit_sha files", "original raw census")
+    if (type(census["schema"]) is not int or census["schema"] != 1
+            or not isinstance(census["files"], list)
+            or "raw_result_input_census_error" in row):
+        raise ProofRefused("original raw census is missing, malformed, or contradicts an error")
+    for field, original in (("run_id", "run_id"), ("hermit_sha", "commit")):
+        if census[field] != row.get(original):
+            raise ProofRefused("original raw census differs from the selected terminal")
+    run_id = _text(row.get("run_id"), "derived run identity")
+    if "/" in run_id or "\\" in run_id or run_id in {".", ".."}:
+        raise ProofRefused("derived run identity is not a safe path component")
+    return {
+        "run_id": run_id,
+        "record_id": _text(row.get("record_id"), "derived record identity"),
+        "hermit_sha": _hash(row.get("commit"), "derived measured source", git=True),
+        "history_binding_sha256": hashlib.sha256(canonical_bytes(
+            {key: row.get(key) for key in HISTORY_BINDING_FIELDS})).hexdigest(),
+        "raw_census_sha256": hashlib.sha256(canonical_bytes(census)).hexdigest(),
+    }
+
+
+def derived_path(binding: Mapping[str, str]) -> str:
+    return _relative("ignored/validate/artifacts/" + binding["run_id"]
+                     + "/website-derived-census-" + binding["raw_census_sha256"]
+                     + "-" + binding["history_binding_sha256"] + ".json",
+                     retained=True)
+
+
+def validate_derived_cells(encoded: bytes, row: Mapping[str, Any]) -> dict:
+    """Join public derived spans to the exact census; do not infer comparisons."""
+    _structured_bytes(encoded, "derived_cells")
+    value = _json(encoded)
+    binding = derived_row_binding(row)
+    if any(value[key] != item for key, item in binding.items()):
+        raise ProofRefused("derived cells differ from the original terminal/census binding")
+    expected = []
+    try:
+        for source in row["raw_result_input_census_v1"]["files"]:
+            for entry in source["rows"]:
+                expected.append((source["path"], entry["line"], entry["cell"], entry["attempt"]))
+    except (KeyError, TypeError) as error:
+        raise ProofRefused("original raw census has malformed attempt spans") from error
+    actual = [(entry["input_path"], entry["input_line"], entry["cell"], entry["attempt"])
+              for entry in value["attempts"]]
+    if actual != expected:
+        raise ProofRefused("derived attempts differ from the complete original census spans")
+    return value
+
+
+def capture_derived_cells(row: Mapping[str, Any], encoded: bytes) -> tuple[dict, dict[str, bytes]]:
+    if len(encoded) > ARTIFACT_BYTES_PER_ROW:
+        raise ProofUnavailable("derived census exceeds existing artifact reader capacity")
+    value = validate_derived_cells(encoded, row)
+    digest = hashlib.sha256(encoded).hexdigest()
+    artifacts = {"schema": 2, "raw_census_sha256": value["raw_census_sha256"],
+                 "history_binding_sha256": value["history_binding_sha256"],
+                 "derived_cells": {"path": derived_path(value), "bytes": len(encoded),
+                                   "sha256": digest}}
+    return artifacts, {object_path(digest): encoded}
 
 
 def row_references(row: Mapping[str, Any]) -> dict[str, dict]:
@@ -185,15 +320,28 @@ def validate_manifest(value: Any) -> dict:
     if re.fullmatch(r"ledger/[^/]+/[^/]+/\d{4}-\d{2}\.jsonl|"
                     r"ledger-recovery/[^/]+/[^/]+/\d{4}-\d{2}/[^/]+\.jsonl", shard) is None:
         raise ProofRefused("carrier parent shard is outside canonical namespaces")
-    artifacts = _object(value["artifacts"], "schema plan cells tests", "artifacts")
-    if type(artifacts["schema"]) is not int or artifacts["schema"] != 1:
-        raise ProofRefused("unsupported artifact descriptor schema")
-    for role in ROLES:
+    artifacts = value["artifacts"]
+    if not isinstance(artifacts, dict):
+        raise ProofRefused("artifacts must be an object")
+    roles = artifact_roles(artifacts)
+    _object(artifacts, "schema plan cells tests" if artifacts["schema"] == 1
+            else "schema raw_census_sha256 history_binding_sha256 derived_cells", "artifacts")
+    if artifacts["schema"] == 2:
+        _hash(artifacts["raw_census_sha256"], "original raw census digest")
+        _hash(artifacts["history_binding_sha256"], "original history binding digest")
+        if any(part in terminal["run_id"] for part in ("/", "\\")) or terminal["run_id"] in {".", ".."}:
+            raise ProofRefused("derived run identity is not a safe path component")
+    for role in roles:
         descriptor = _object(artifacts[role], "path bytes sha256", role)
         _relative(descriptor["path"], retained=True)
         _hash(descriptor["sha256"], role + " digest")
         if type(descriptor["bytes"]) is not int or descriptor["bytes"] < 0:
             raise ProofRefused(f"{role} byte count is invalid")
+    if artifacts["schema"] == 2 and artifacts["derived_cells"]["path"] != derived_path({
+        "run_id": terminal["run_id"], "raw_census_sha256": artifacts["raw_census_sha256"],
+        "history_binding_sha256": artifacts["history_binding_sha256"],
+    }):
+        raise ProofRefused("derived descriptor changes the deterministic census path")
     producer = _object(value["producer"], "parent_commit hermit_tool_commit", "producer")
     for key, item in producer.items():
         _hash(item, "producer " + key, git=True)
@@ -221,6 +369,18 @@ def carrier_identity(value: Mapping[str, Any]) -> tuple[str, ...]:
                  ("repository", "run_id", "record_id", "event_id", "event_sha256"))
 
 
+def validate_artifact_bytes(encoded: bytes, role: str, manifest: Mapping[str, Any]) -> None:
+    _structured_bytes(encoded, role)
+    if role == "derived_cells":
+        value = _json(encoded)
+        terminal = manifest["terminal"]
+        if (any(value[key] != terminal[field] for key, field in
+                (("run_id", "run_id"), ("record_id", "record_id"), ("hermit_sha", "hermit_commit")))
+                or value["raw_census_sha256"] != manifest["artifacts"]["raw_census_sha256"]
+                or value["history_binding_sha256"] != manifest["artifacts"]["history_binding_sha256"]):
+            raise ProofRefused("derived object differs from the carrier terminal/census")
+
+
 def carrier_for_row(index: Mapping[tuple[str, ...], dict], row: Mapping[str, Any],
                     terminal: Mapping[str, Any]) -> dict | None:
     identity = tuple(terminal[key] for key in
@@ -240,6 +400,13 @@ def carrier_for_row(index: Mapping[tuple[str, ...], dict], row: Mapping[str, Any
            (("run_id", "run_id"),
             ("record_id", "record_id"), ("hermit_commit", "commit"))):
         raise ProofRefused("carrier terminal differs from the selected row")
+    if value["artifacts"]["schema"] == 2:
+        binding = derived_row_binding(row)
+        if (value["artifacts"]["raw_census_sha256"] != binding["raw_census_sha256"]
+                or value["artifacts"]["history_binding_sha256"] != binding["history_binding_sha256"]
+                or value["artifacts"]["derived_cells"]["path"] != derived_path(binding)):
+            raise ProofRefused("derived descriptor differs from the original census")
+        return value
     for role, reference in row_references(row).items():
         descriptor = value["artifacts"][role]
         if any(descriptor[key] != reference[key] for key in ("path", "sha256")):
@@ -327,7 +494,7 @@ def read_artifact_objects(ledger: Path, commit: str, manifest: Mapping[str, Any]
     _require_ledger(ledger)
     objects: dict[str, bytes] = {}
     total = 0
-    for role in ROLES:
+    for role in artifact_roles(manifest["artifacts"]):
         descriptor = manifest["artifacts"][role]
         total += descriptor["bytes"]
         if total > ARTIFACT_BYTES_PER_ROW:
@@ -335,7 +502,7 @@ def read_artifact_objects(ledger: Path, commit: str, manifest: Mapping[str, Any]
         encoded = _blob(ledger, commit, object_path(descriptor["sha256"]), descriptor["bytes"])
         if hashlib.sha256(encoded).hexdigest() != descriptor["sha256"]:
             raise ProofRefused("proof object digest differs from descriptor")
-        _structured_bytes(encoded, role)
+        validate_artifact_bytes(encoded, role, manifest)
         path = descriptor["path"]
         if path in objects and objects[path] != encoded:
             raise ProofRefused("original artifact path has conflicting bytes")
@@ -461,14 +628,14 @@ caller must revalidate that original provenance through the canonical query.
             raise ProofRefused("retry changes the same terminal or proof operands")
         manifest = existing
     expected = {}
-    for role in ROLES:
+    for role in artifact_roles(manifest["artifacts"]):
         descriptor = manifest["artifacts"][role]
         path = object_path(descriptor["sha256"])
         encoded = objects.get(path)
         if (encoded is None or len(encoded) != descriptor["bytes"]
                 or hashlib.sha256(encoded).hexdigest() != descriptor["sha256"]):
             raise ProofRefused("staged proof objects differ from the exact carrier")
-        _structured_bytes(encoded, role)
+        validate_artifact_bytes(encoded, role, manifest)
         expected[path] = encoded
     if set(objects) != set(expected):
         raise ProofRefused("unreferenced object supplied for carrier publication")

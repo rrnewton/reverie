@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
@@ -68,6 +69,7 @@ _READER_PATHS = (
     Path("ci-hub/ledger/validate_rows.py"),
     Path("ci-hub/lib/bounded_capture.py"),
     Path("ci-hub/lib/bounded_output.rs"),
+    Path("ci-hub/lib/compatibility_census.rs"),
     Path("ci-hub/lib/compatibility_website.rs"),
     Path("ci-hub/lib/failure_obligations.rs"),
     Path("ci-hub/lib/history_queries.rs"),
@@ -945,7 +947,7 @@ def captured_proof_objects(value: Any) -> dict[str, bytes]:
         events.add(event)
         paths.append(path)
         total = 0
-        for role in proof.ROLES:
+        for role in proof.artifact_roles(manifest["artifacts"]):
             descriptor = manifest["artifacts"][role]
             digest = descriptor["sha256"]
             encoded = blobs.get(digest)
@@ -954,6 +956,7 @@ def captured_proof_objects(value: Any) -> dict[str, bytes]:
             total += len(encoded)
             if total > proof.ARTIFACT_BYTES_PER_ROW:
                 raise ExportRefused("captured proof exceeds the existing aggregate reader limit")
+            proof.validate_artifact_bytes(encoded, role, manifest)
             destination = descriptor["path"]
             if destination in destinations and destinations[destination] != encoded:
                 raise ExportRefused("original artifact path has conflicting captured bytes")
@@ -998,10 +1001,36 @@ def _capture_finalized_proof(namespace: Any, ledger: Path, commit: str) -> dict[
     missing: list[dict] = []
     # Query the complete correction groups first. In particular, a successor
     # with another schema still supersedes an older schema-10 terminal.
-    for selected in namespace.terminals(repo="hermit", schema_version=10):
+    candidates = namespace.terminals(repo="hermit", schema_version=10)
+    # Historical schema-5 absence remains unavailable; it does not acquire a
+    # modern stable-run requirement merely because another run has a census.
+    # Select whole groups only for the new explicit producer claim, and still
+    # let the canonical selector judge every predecessor/opposing successor.
+    rows = [row for row in namespace.rows()
+            if validation_ledger._ledger_team(row.get("repo")) == "hermit"]
+    census_runs = {row.get("run_id") for row in rows if row.get("schema_version") == 5
+                   and "raw_result_input_census_v1" in row}
+    if any(not isinstance(run, str) or not run.strip() for run in census_runs):
+        raise ExportRefused("claimed derived census lacks a stable run identity")
+    for row in validation_ledger.current_validation_run_rows(rows):
+        if row.get("run_id") in census_runs:
+            candidates.append(namespace.select(**{key: row.get(key) for key in
+                ("repo", "run_id", "record_id", "commit", "cwd", "started_at")}))
+    selections = {}
+    for selected in candidates:
+        identity = tuple(selected["terminal"][key] for key in
+                         ("repository", "run_id", "record_id", "event_id", "event_sha256"))
+        if identity in selections and selections[identity] != selected:
+            raise ExportRefused("canonical terminal differs across schema correction groups")
+        selections[identity] = selected
+    for selected in selections.values():
         row, terminal = selected["row"], selected["terminal"]
-        if row.get("schema_version") != 10:
+        if row.get("schema_version") not in (5, 10):
             continue
+        if row.get("schema_version") == 5 and "raw_result_input_census_v1" not in row:
+            continue
+        if row.get("schema_version") == 5:
+            proof.derived_row_binding(row)
         manifest = proof.carrier_for_row(index, row, terminal)
         if manifest is None:
             # Missing transport is not fabricated evidence or a new admission
@@ -1011,6 +1040,8 @@ def _capture_finalized_proof(namespace: Any, ledger: Path, commit: str) -> dict[
             continue
         namespace.verify_origin(manifest["parent"], terminal)
         for encoded in proof.read_artifact_objects(ledger, commit, manifest).values():
+            if manifest["artifacts"]["schema"] == 2:
+                proof.validate_derived_cells(encoded, row)
             digest = _sha256(encoded)
             text = encoded.decode("utf-8", errors="strict")
             if digest in objects and objects[digest] != text:
@@ -1247,8 +1278,9 @@ def build_historical_export(
     published_commit: str,
     record_id: str,
     run_id: str,
+    *, series_commit: str | None = None,
 ) -> dict[str, Any]:
-    """Export one immutable published snapshot and bind its named HistoryRow."""
+    """Export named history and optional cell/proof data at exact immutable commits."""
     _refuse_authority_overrides()
     if _SHA_RE.fullmatch(published_commit) is None:
         raise ExportRefused(
@@ -1262,21 +1294,34 @@ def build_historical_export(
             f"historical published commit resolved to {commit}, expected {published_commit}"
         )
     git_files = _git_input_files(parent, commit)
+    ledger = None
+    if series_commit is not None:
+        if _SHA_RE.fullmatch(series_commit) is None:
+            raise ExportRefused("historical --series-commit must be a full immutable lowercase commit; do not use a moving ref")
+        ledger = series_store.ledger_root(parent)
+        if _resolve_commit(ledger, series_commit) != series_commit:
+            raise ExportRefused("historical cell ledger revision differs from the requested commit")
+        git_files = {path: source for path, source in git_files.items() if source.store != "series"}
+        git_files.update(_git_input_files(ledger, series_commit, ("series",)))
 
     with tempfile.TemporaryDirectory(
         prefix="compatibility-website-historical-inputs-"
-    ) as raw_snapshot:
+    ) as raw_snapshot, ExitStack() as stack:
         snapshot_root = Path(raw_snapshot)
+        namespace = None
+        if ledger is not None:
+            namespace = stack.enter_context(validation_ledger.capture_committed_validation_namespace(
+                parent, commit, state_root=snapshot_root,
+            ))
         for relative, source in git_files.items():
             _write_snapshot_file(snapshot_root, relative, source.data)
 
         published_series_paths = sorted((snapshot_root / "series").glob("*/*/*.jsonl"))
-        validation = _validation_export(snapshot_root, committed_source=(parent, commit))
+        validation = _validation_export(snapshot_root, committed_source=(parent, commit),
+                                        **({"namespace": namespace} if namespace is not None else {}))
         series = _series_export(
-            parent,
-            commit,
-            published_series_paths,
-            [],
+            parent, series_commit or commit, published_series_paths, [],
+            **({"repository": series_store.LEDGER_REPOSITORY} if ledger is not None else {}),
         )
         sources = _provenance_sources(snapshot_root, git_files, [])
         result = {
@@ -1308,6 +1353,13 @@ def build_historical_export(
             "series": series,
             "validation_ledger": validation,
         }
+        if ledger is not None:
+            result["provenance"].update(
+                series_repository=series_store.LEDGER_REPOSITORY,
+                series_commit=series_commit,
+                series_tree=_git(ledger, ["rev-parse", f"{series_commit}:series"]).decode().strip(),
+                finalized_proof=_capture_finalized_proof(namespace, ledger, series_commit),
+            )
     reader_after = _historical_reader_state()
     if _canonical_bytes(reader_before) != _canonical_bytes(reader_after):
         raise ExportRefused("reader commit or files changed during historical export")
@@ -1346,6 +1398,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--run-id", help="unique historical validation run id")
     parser.add_argument("--series-ref", default="refs/remotes/origin/main",
                         help="cell-ledger commit or ref for current exports; resolved once, never fetched")
+    parser.add_argument("--series-commit", help="full immutable cell-ledger commit for historical series and finalized proof; requires --historical")
     parser.add_argument("--published-only", action="store_true",
                         help="exclude all unpublished and retained local spool files")
     parser.add_argument("--state-root", type=Path,
@@ -1360,8 +1413,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 arguments.published_ref,
                 arguments.record_id,
                 arguments.run_id,
+                **({"series_commit": arguments.series_commit} if arguments.series_commit is not None else {}),
             )
         else:
+            if arguments.series_commit is not None:
+                raise ExportRefused("--series-commit requires --historical; use --series-ref for current exports")
             if arguments.record_id is not None or arguments.run_id is not None:
                 raise ExportRefused("--record-id and --run-id require --historical")
             value = build_export(arguments.parent, arguments.published_ref, arguments.series_ref,

@@ -220,6 +220,124 @@ class PortableProofTest(unittest.TestCase):
         with self.assertRaisesRegex(proof.ProofRefused, "unreferenced"):
             proof.stage_carrier(self.writer, self.manifest, extra)
 
+    def derived_fixture(self):
+        # Synthetic transport operands only: real native raw verification has
+        # separate coverage and is required before production emission.
+        self.row.update(schema_version=5, cell_results=None, result="fail",
+                        validation_complete=False)
+        cell = {"lane": "portable", "category": "c-programs", "test": "fixture",
+                "mode": "verify", "backend": "ptrace"}
+        self.row["raw_result_input_census_v1"] = {
+            "schema": 1, "run_id": self.row["run_id"], "hermit_sha": self.row["commit"],
+            "files": [{"path": "empty/results.jsonl", "bytes": 0, "sha256": "a" * 64, "rows": []},
+                      {"path": "portable/results.jsonl", "bytes": 42, "sha256": "b" * 64,
+                       "rows": [{"line": n, "cell": cell, "attempt": n} for n in (1, 2)]}],
+        }
+        value = {"schema": 1, "authority": proof.DERIVED_AUTHORITY,
+                 **proof.derived_row_binding(self.row), "attempts": [
+                     {"input_path": "portable/results.jsonl", "input_line": n,
+                      "cell": cell, "attempt": n, "source_row_sha256": str(n) * 64,
+                      "outcome": "FAIL" if n == 1 else "PASS", "result": None,
+                      "failure_class": None, "ordinary_verdict": {
+                          "verdict": "unavailable_with_reason", "reason": "synthetic transport fixture"},
+                      "backend_parity": None} for n in (1, 2)]}
+        encoded = proof.canonical_bytes(value) + b"\n"
+        self.artifacts, self.objects = proof.capture_derived_cells(self.row, encoded)
+        self.manifest = proof.make_manifest(self.selection, self.artifacts, parent_commit="8" * 40,
+                                            hermit_tool_commit="9" * 40, snapshot=self.snapshot)
+        return value, encoded
+
+    def test_derived_role_preserves_failed_terminal_and_all_census_spans(self):
+        value, encoded = self.derived_fixture()
+        original = copy.deepcopy(self.row)
+        commit = self.publish()
+        index = proof.read_carriers(self.writer, commit)
+        manifest = proof.carrier_for_row(index, self.row, self.selection["terminal"])
+        objects = proof.read_artifact_objects(self.writer, commit, manifest)
+        self.assertEqual({proof.derived_path(value): encoded}, objects)
+        self.assertEqual(value, proof.validate_derived_cells(encoded, self.row))
+        self.assertEqual(original, self.row)
+        self.assertEqual(["FAIL", "PASS"], [attempt["outcome"] for attempt in value["attempts"]])
+        self.assertEqual({"schema", "raw_census_sha256", "history_binding_sha256", "derived_cells"},
+                         set(manifest["artifacts"]))
+        # Existing root rendering never enters the closed history binding.
+        other_root = dict(self.row, cwd="/different/workspace/hermit", log_file="/different/log")
+        self.assertEqual(proof.derived_row_binding(self.row), proof.derived_row_binding(other_root))
+
+    def test_derived_same_census_correction_has_distinct_immutable_destination(self):
+        value, encoded = self.derived_fixture()
+        old_manifest = copy.deepcopy(self.manifest)
+        old_objects = dict(self.objects)
+        self.publish()
+        corrected = dict(self.row, record_id="corrected-record", corrects=self.row["record_id"])
+        newer = dict(value, **proof.derived_row_binding(corrected))
+        newer_encoded = proof.canonical_bytes(newer) + b"\n"
+        self.artifacts, self.objects = proof.capture_derived_cells(corrected, newer_encoded)
+        selection = copy.deepcopy(self.selection)
+        selection["row"] = corrected
+        selection["terminal"].update(record_id="corrected-record", event_id="corrected-event", event_sha256="f" * 64)
+        self.manifest = proof.make_manifest(selection, self.artifacts, parent_commit="8" * 40,
+                                            hermit_tool_commit="9" * 40, snapshot=self.snapshot)
+        commit = self.publish()
+        self.assertNotEqual(proof.derived_path(value), proof.derived_path(newer))
+        self.assertEqual(value["raw_census_sha256"], newer["raw_census_sha256"])
+        self.assertEqual(encoded, proof.read_artifact_objects(self.writer, commit, old_manifest)[proof.derived_path(value)])
+        self.assertEqual(newer_encoded, proof.read_artifact_objects(self.writer, commit, self.manifest)[proof.derived_path(newer)])
+        output = self.root / "both-corrections"
+        output.mkdir()
+        proof.stage_artifacts(output, {proof.derived_path(value): encoded, proof.derived_path(newer): newer_encoded})
+        for path, data in old_objects.items():
+            self.assertEqual(data, (self.writer / path).read_bytes())
+
+    def test_derived_role_refuses_missing_extra_reordered_or_changed_binding(self):
+        value, _encoded = self.derived_fixture()
+        for mutate in (
+            lambda d: d["attempts"].pop(),
+            lambda d: d["attempts"].append(copy.deepcopy(d["attempts"][0])),
+            lambda d: d["attempts"].reverse(),
+            lambda d: d["attempts"][0].update(input_line=3),
+            lambda d: d.update(authority="raw_preimage_verified"),
+            lambda d: d.update(history_binding_sha256="c" * 64),
+            lambda d: d.update(raw_census_sha256="d" * 64),
+            lambda d: d.update(run_id="another-run"),
+            lambda d: d["attempts"][0].update(stdout="must not be a public operand"),
+        ):
+            bad = copy.deepcopy(value)
+            mutate(bad)
+            with self.subTest(bad=bad), self.assertRaises(proof.ProofRefused):
+                proof.capture_derived_cells(self.row, proof.canonical_bytes(bad) + b"\n")
+        for field, changed in (("result", "pass"), ("validation_complete", True),
+                               ("commit", "f" * 40)):
+            row = dict(self.row, **{field: changed})
+            with self.subTest(field=field), self.assertRaises(proof.ProofRefused):
+                proof.validate_derived_cells(proof.canonical_bytes(value) + b"\n", row)
+        self.row["raw_result_input_census_v1"]["files"][0]["sha256"] = "e" * 64
+        with self.assertRaises(proof.ProofRefused):
+            proof.carrier_for_row({proof.carrier_identity(self.manifest): self.manifest},
+                                  self.row, self.selection["terminal"])
+
+    def test_derived_descriptor_and_publicability_refuse(self):
+        value, encoded = self.derived_fixture()
+        for mutate in (
+            lambda d: d["artifacts"].update(schema=True),
+            lambda d: d["artifacts"].update(derived_cells=None),
+            lambda d: d["artifacts"]["derived_cells"].update(path="ignored/validate/artifacts/other.json"),
+            lambda d: d["artifacts"].update(raw_census_sha256="z" * 64),
+        ):
+            bad = copy.deepcopy(self.manifest)
+            mutate(bad)
+            with self.subTest(bad=bad), self.assertRaises(proof.ProofRefused):
+                proof.validate_manifest(bad)
+        for reason in ("/home/private/file", "Authorization: Bearer fixture"):
+            value["attempts"][0]["ordinary_verdict"]["reason"] = reason
+            with self.assertRaises(proof.ProofRefused):
+                proof.capture_derived_cells(self.row, proof.canonical_bytes(value) + b"\n")
+        value["attempts"][0]["ordinary_verdict"] = {"nested": {"stdout": "safe-looking raw body"}}
+        with self.assertRaisesRegex(proof.ProofRefused, "raw stream"):
+            proof.capture_derived_cells(self.row, proof.canonical_bytes(value) + b"\n")
+        with self.assertRaises(proof.ProofRefused):
+            proof.capture_derived_cells(self.row, encoded.rstrip())
+
 
 if __name__ == "__main__":
     unittest.main()

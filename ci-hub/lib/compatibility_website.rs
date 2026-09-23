@@ -4,6 +4,7 @@
 //! module owns only the deliberately lossy website view; it never stores cell
 //! state or a measured/not-measured flag.
 
+use crate::compatibility_census::DerivedCensus;
 use crate::failure_obligations::{self, CellResultsForWebsite};
 use crate::records::{
     CellIdentity, CellResult, CellResultsArtifact, CellResultsEvidence, CellVerdict,
@@ -57,6 +58,7 @@ struct HistoryProjection {
     selections: BTreeMap<String, ValidationSelection>,
     exclusion_counts: BTreeMap<(String, String), (u64, u64)>,
     historical: Option<Value>,
+    derived: BTreeMap<String, DerivedCensus>,
 }
 
 #[derive(Debug)]
@@ -132,6 +134,7 @@ where
         selections: _,
         exclusion_counts: history_exclusion_counts,
         historical,
+        derived: _,
     } = history;
     let SeriesProjection {
         rows: series_rows,
@@ -688,6 +691,14 @@ fn project_history(
     rows: &[Parsed<HistoryRow>],
     historical_identity: Option<(&str, &str)>,
 ) -> Result<HistoryProjection, String> {
+    project_history_with(rows, historical_identity, crate::compatibility_census::load)
+}
+
+fn project_history_with(
+    rows: &[Parsed<HistoryRow>],
+    historical_identity: Option<(&str, &str)>,
+    load: impl Fn(&HistoryRow, &Value) -> Result<Option<DerivedCensus>, String>,
+) -> Result<HistoryProjection, String> {
     let typed_rows = rows
         .iter()
         .map(|parsed| parsed.typed.clone())
@@ -695,10 +706,16 @@ fn project_history(
     let terminal = crate::current_validation_run_indices(&typed_rows)?;
     let terminal_set = terminal.iter().copied().collect::<BTreeSet<_>>();
     let mut history = Vec::new();
+    let mut derived = BTreeMap::new();
     let mut admitted_by_source_ordinal = BTreeMap::new();
     let mut exclusion_counts: BTreeMap<(String, String), (u64, u64)> = BTreeMap::new();
     for (index, parsed) in rows.iter().enumerate() {
-        let reasons = history_exclusion_reasons(&parsed.typed)?;
+        let operand = load(&parsed.typed, &parsed.raw)?;
+        let reasons = if operand.is_some() {
+            Vec::new()
+        } else {
+            history_exclusion_reasons(&parsed.typed)?
+        };
         if !reasons.is_empty() {
             let schema = parsed
                 .typed
@@ -714,18 +731,33 @@ fn project_history(
             }
             continue;
         }
-        let public = project_history_row(&parsed.typed, &parsed.raw)?;
+        let public = if let Some(operand) = operand {
+            let mut public =
+                project_history_row_with_derived(&parsed.typed, &parsed.raw, Some(&operand))?;
+            public["validation_complete"] = parsed
+                .raw
+                .get("validation_complete")
+                .cloned()
+                .unwrap_or(Value::Null);
+            if derived.insert(operand.run_id.clone(), operand).is_some() {
+                return Err("derived history repeats its run identity".into());
+            }
+            public
+        } else {
+            project_history_row(&parsed.typed, &parsed.raw)?
+        };
         admitted_by_source_ordinal.insert(index, public.clone());
         history.push(public);
     }
     let (current, selections) =
-        project_terminal_history(rows, &admitted_by_source_ordinal, &terminal_set)?;
+        project_terminal_history(rows, &admitted_by_source_ordinal, &terminal_set, &derived)?;
     let historical = historical_identity
         .map(|(record_id, run_id)| {
             historical_source(
                 rows,
                 &terminal,
                 &admitted_by_source_ordinal,
+                &derived,
                 record_id,
                 run_id,
             )
@@ -737,6 +769,7 @@ fn project_history(
         selections,
         exclusion_counts,
         historical,
+        derived,
     })
 }
 
@@ -789,6 +822,7 @@ fn project_terminal_history(
     rows: &[Parsed<HistoryRow>],
     public_rows: &BTreeMap<usize, Value>,
     terminal: &BTreeSet<usize>,
+    derived: &BTreeMap<String, DerivedCensus>,
 ) -> Result<(Vec<Value>, BTreeMap<String, ValidationSelection>), String> {
     let mut current = Vec::new();
     let mut selections = BTreeMap::new();
@@ -810,12 +844,20 @@ fn project_terminal_history(
         if !current_run_ids.insert(run_id.to_owned()) {
             return Err(format!("terminal validation rows repeat run_id {run_id:?}"));
         }
-        let CellResultsForWebsite::Complete(evidence) =
-            failure_obligations::cell_results_for_website(&row.typed)?
-        else {
-            unreachable!("admitted HistoryRow has complete cell_results")
+        let selection = if let Some(operand) = derived.get(run_id) {
+            ValidationSelection {
+                commit: operand.hermit_sha.clone(),
+                path: "recorded".into(),
+                selected_cells: operand.selected_cells()?,
+            }
+        } else {
+            let CellResultsForWebsite::Complete(evidence) =
+                failure_obligations::cell_results_for_website(&row.typed)?
+            else {
+                unreachable!("admitted HistoryRow has complete cell_results")
+            };
+            validation_selection(&row.typed, evidence.as_ref())?
         };
-        let selection = validation_selection(&row.typed, evidence.as_ref())?;
         selections.insert(run_id.to_owned(), selection);
     }
     Ok((current, selections))
@@ -825,6 +867,7 @@ fn historical_source(
     rows: &[Parsed<HistoryRow>],
     terminal: &[usize],
     admitted_by_source_ordinal: &BTreeMap<usize, Value>,
+    derived: &BTreeMap<String, DerivedCensus>,
     record_id: &str,
     run_id: &str,
 ) -> Result<Value, String> {
@@ -885,16 +928,21 @@ fn historical_source(
         measured_reverie_commit,
         "historical measured Reverie commit",
     )?;
-    let evidence = match failure_obligations::cell_results_for_website(row)? {
-        CellResultsForWebsite::Complete(evidence) => evidence,
-        CellResultsForWebsite::Absent
-        | CellResultsForWebsite::Schema6WithoutLaterComparisonFields
-        | CellResultsForWebsite::UnsupportedSchema(_)
-        | CellResultsForWebsite::Unavailable(_) => {
-            return Err("historical selected row has no complete cell_results evidence".into());
-        }
+    let population = if let Some(evidence) = derived.get(run_id) {
+        evidence.population_metadata()
+    } else {
+        let evidence = match failure_obligations::cell_results_for_website(row)? {
+            CellResultsForWebsite::Complete(evidence) => evidence,
+            CellResultsForWebsite::Absent
+            | CellResultsForWebsite::Schema6WithoutLaterComparisonFields
+            | CellResultsForWebsite::UnsupportedSchema(_)
+            | CellResultsForWebsite::Unavailable(_) => {
+                return Err("historical selected row has no complete cell_results evidence".into());
+            }
+        };
+        serde_json::json!({"selected_by_full_cell_count": evidence.selected_count})
     };
-    Ok(serde_json::json!({
+    let mut source = serde_json::json!({
         "finished_at": finished_at,
         "history_row_sha256": history_row_digest(&rows[index].raw)?,
         "measurement_host": measurement_host,
@@ -902,10 +950,16 @@ fn historical_source(
         "measured_reverie_commit": measured_reverie_commit,
         "record_id": record_id,
         "run_id": run_id,
-        "selected_by_full_cell_count": evidence.selected_count,
         "started_at": started_at,
         "validate_path": "full",
-    }))
+    });
+    source.as_object_mut().expect("constructed source").extend(
+        population
+            .as_object()
+            .expect("constructed population")
+            .clone(),
+    );
+    Ok(source)
 }
 
 fn bind_historical_measurement_environment(
@@ -996,6 +1050,14 @@ fn bind_historical_measurement_environment(
 }
 
 fn project_history_row(row: &HistoryRow, raw: &Value) -> Result<Value, String> {
+    project_history_row_with_derived(row, raw, None)
+}
+
+fn project_history_row_with_derived(
+    row: &HistoryRow,
+    raw: &Value,
+    derived: Option<&DerivedCensus>,
+) -> Result<Value, String> {
     let digest = history_row_digest(raw)?;
     let raw = raw
         .as_object()
@@ -1004,7 +1066,12 @@ fn project_history_row(row: &HistoryRow, raw: &Value) -> Result<Value, String> {
     project_history_tree_and_nodes(row, raw, schema, &mut public)?;
     project_history_extensions(row, &mut public)?;
     project_history_gates(row, raw, &mut public)?;
-    project_history_cell_results(row, &mut public)?;
+    if let Some(derived) = derived {
+        public.insert("cell_results".into(), Value::Null);
+        public.insert("derived_cell_results".into(), derived.public_view()?);
+    } else {
+        project_history_cell_results(row, &mut public)?;
+    }
     public.insert("history_row_sha256".into(), Value::String(digest));
     Ok(Value::Object(public))
 }
@@ -1769,6 +1836,7 @@ where
 {
     let allowed_cells = manifest_cell_identities(manifest)?;
     validate_history_selections(&history.selections, &allowed_cells)?;
+    validate_derived_series(rows, &history.derived)?;
     let physical_row_count = rows.len();
     let accumulation = accumulate_series(rows, history)?;
     let ancestry = series_ancestry(&accumulation.prepared, current_main_ancestry)?;
@@ -1798,6 +1866,86 @@ where
         admitted_represented_run_count,
         exclusion_counts: excluded,
     })
+}
+
+/// Join every public event span to the already authenticated original census.
+/// Interval membership alone is not coverage: sparse, overlapping, omitted or
+/// contradictory attempts refuse, including losslessly compressed retries.
+fn validate_derived_series(
+    rows: &[Parsed<SeriesRow>],
+    derived: &BTreeMap<String, DerivedCensus>,
+) -> Result<(), String> {
+    for (run_id, evidence) in derived {
+        let mut remaining = evidence
+            .attempts
+            .iter()
+            .map(|a| {
+                (
+                    (
+                        format!("{}/{}/{}", a.cell.test, a.cell.mode, a.cell.backend),
+                        a.attempt,
+                    ),
+                    a,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        if remaining.len() != evidence.attempts.len() {
+            return Err("derived census repeats a cell attempt".into());
+        }
+        for parsed in rows
+            .iter()
+            .filter(|r| r.typed.producer == SeriesProducer::Validate && &r.typed.run_id == run_id)
+        {
+            let row = &parsed.typed;
+            row.validate_for_read()?;
+            row.validate_for_projection()?;
+            let span = &row.series;
+            if row.schema != SeriesSchema::V3
+                || span.tree != evidence.hermit_sha
+                || span.source_tree_dirty
+            {
+                return Err("derived current series has a different source identity".into());
+            }
+            let last = span.last_run_index.map(Ok).unwrap_or_else(|| {
+                span.run_index
+                    .checked_add(span.num_runs)
+                    .and_then(|v| v.checked_sub(1))
+                    .ok_or("derived series span overflow")
+            })?;
+            if last
+                .checked_sub(span.run_index)
+                .and_then(|n| n.checked_add(1))
+                != Some(span.num_runs)
+                || span
+                    .attempt
+                    .is_some_and(|a| span.num_runs != 1 || a != span.run_index)
+            {
+                return Err(
+                    "derived current series has sparse or contradictory attempt span".into(),
+                );
+            }
+            let matched = remaining
+                .range((span.cell.clone(), span.run_index)..=(span.cell.clone(), last))
+                .map(|(key, value)| (key.clone(), *value))
+                .collect::<Vec<_>>();
+            if matched.len() as u64 != span.num_runs {
+                return Err("derived current series omits or overlaps original attempts".into());
+            }
+            for (key, attempt) in matched {
+                if span.result != attempt.result || span.failure_class != attempt.failure_class {
+                    return Err(
+                        "derived current series changes original attempt outcome/classification"
+                            .into(),
+                    );
+                }
+                remaining.remove(&key);
+            }
+        }
+        if !remaining.is_empty() {
+            return Err("public series omits derived original attempts".into());
+        }
+    }
+    Ok(())
 }
 
 fn manifest_cell_identities(manifest: &Value) -> Result<BTreeSet<String>, String> {
@@ -3193,6 +3341,164 @@ mod tests {
         assert!(verdict.get("bitwise_parity").is_none());
         assert!(verdict.get("compared_log_messages").is_none());
         assert!(projected.exclusion_counts.is_empty());
+    }
+
+    #[test]
+    fn writer_derived_historical_selectors_preserve_failed_record_and_authority() {
+        // Synthetic authenticated transport operands, not a product execution.
+        // The same real derived-file reader serves both selectors and normal history.
+        let commit = "f".repeat(40);
+        let mut row = history_row(8, "record-five", "run-five", &commit);
+        row["schema_version"] = 5.into();
+        row["commit_anchored"] = true.into();
+        row["result"] = "fail".into();
+        row["exit_code"] = 1.into();
+        row["validation_complete"] = false.into();
+        row["cell_results"] = Value::Null;
+        let cell = cell_identity();
+        let census = serde_json::json!({
+            "schema": 1, "run_id": "run-five", "hermit_sha": commit,
+            "files": [{"path": "portable/results.jsonl", "bytes": 10, "sha256": "a".repeat(64),
+                "rows": [{"line": 1, "cell": cell, "attempt": 1},
+                         {"line": 2, "cell": cell, "attempt": 2}]}],
+        });
+        row["raw_result_input_census_v1"] = census.clone();
+        let binding_fields = [
+            "schema_version",
+            "run_id",
+            "record_id",
+            "commit",
+            "tree_dirty",
+            "commit_anchored",
+            "profile",
+            "selection_mode",
+            "started_at",
+            "finished_at",
+            "result",
+            "exit_code",
+            "validation_complete",
+            "raw_result_input_census_v1",
+        ];
+        let binding = binding_fields
+            .into_iter()
+            .map(|key| (key.to_owned(), row[key].clone()))
+            .collect::<Map<_, _>>();
+        let attempt = |number: u64, matched: bool| {
+            serde_json::json!({
+                "input_path": "portable/results.jsonl", "input_line": number, "cell": cell,
+                "attempt": number, "source_row_sha256": "b".repeat(64),
+                "outcome": if matched { "PASS" } else { "FAIL" },
+                "result": if matched { "pass" } else { "determinism-failure" },
+                "failure_class": if matched { Value::Null } else { "product_failure".into() },
+                "ordinary_verdict": {"state": if matched { "compared-and-matched" } else { "compared-and-diverged" },
+                    "comparison_tier": "canonical-bitwise", "comparison": comparison(),
+                    "bitwise_parity": matched, "compared_log_messages": {"left": 3, "right": 3}},
+                "backend_parity": null,
+            })
+        };
+        let operand = serde_json::json!({
+            "schema": 1, "authority": "writer_verified_raw_census_v1", "run_id": "run-five",
+            "record_id": "record-five", "hermit_sha": commit,
+            "raw_census_sha256": sha256(&canonical_bytes(&census)),
+            "history_binding_sha256": sha256(&canonical_bytes(&Value::Object(binding))),
+            "attempts": [attempt(1, false), attempt(2, true)],
+        });
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-derived-selectors-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let path = root.join(format!(
+            "ignored/validate/artifacts/run-five/website-derived-census-{}-{}.json",
+            operand["raw_census_sha256"].as_str().unwrap(),
+            operand["history_binding_sha256"].as_str().unwrap()
+        ));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let write = |value: &Value| {
+            let mut bytes = canonical_bytes(value);
+            bytes.push(b'\n');
+            std::fs::write(&path, bytes).unwrap();
+        };
+        let load = |row: &HistoryRow, raw: &Value| {
+            crate::compatibility_census::load_at(row, raw, Some(&root))
+        };
+        let input = jsonl(&[row.clone()]);
+        let parsed = parse_jsonl::<HistoryRow>(&input, "HistoryRow").unwrap();
+        write(&operand);
+        let normal = project_history_with(&parsed, None, load).unwrap();
+        let historical =
+            project_history_with(&parsed, Some(("record-five", "run-five")), load).unwrap();
+        let selected =
+            crate::validation_row_report_with(&input, "record-five", "run-five", load).unwrap();
+        assert_eq!(normal.history, historical.history);
+        assert_eq!(normal.current, historical.current);
+        for source in [historical.historical.as_ref().unwrap(), &selected["source"]] {
+            assert!(source["selected_by_full_cell_count"].is_null());
+            assert_eq!(source["recorded_cell_count"], 1);
+            assert_eq!(source["population_scope"], "recorded_only");
+            assert_eq!(
+                source["comparison_authority"],
+                "writer_verified_raw_census_v1"
+            );
+        }
+        for preserved in [&normal.history[0], &selected["row"]] {
+            assert_eq!(preserved["schema_version"], 5);
+            assert_eq!(preserved["result"], "fail");
+            assert_eq!(preserved["exit_code"], 1);
+            assert_eq!(preserved["validation_complete"], false);
+            assert!(preserved["cell_results"].is_null());
+        }
+        let evidence = &normal.history[0]["derived_cell_results"];
+        assert_eq!(
+            evidence["recorded"]["cells"][0]["ordinary_comparison"],
+            "diverged"
+        );
+        assert_eq!(evidence["attempts"].as_array().unwrap().len(), 2);
+        for field in ["record_id", "run_id"] {
+            let mut bad = operand.clone();
+            bad[field] = "foreign".into();
+            write(&bad);
+            assert!(project_history_with(&parsed, None, load)
+                .unwrap_err()
+                .contains("differs from its original terminal/census"));
+            assert!(
+                project_history_with(&parsed, Some(("record-five", "run-five")), load)
+                    .unwrap_err()
+                    .contains("differs from its original terminal/census")
+            );
+            assert!(
+                crate::validation_row_report_with(&input, "record-five", "run-five", load)
+                    .unwrap_err()
+                    .contains("differs from its original terminal/census")
+            );
+        }
+        write(&operand);
+        assert!(
+            project_history_with(&parsed, Some(("wrong-record", "run-five")), load)
+                .unwrap_err()
+                .contains("matched 0 terminal rows")
+        );
+        assert!(
+            crate::validation_row_report_with(&input, "record-five", "wrong-run", load)
+                .unwrap_err()
+                .contains("matched 0 terminal rows")
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(project_history_with(&parsed, None, load)
+            .unwrap()
+            .history
+            .is_empty());
+        assert!(
+            project_history_with(&parsed, Some(("record-five", "run-five")), load)
+                .unwrap_err()
+                .contains("does not satisfy")
+        );
+        assert!(
+            crate::validation_row_report_with(&input, "record-five", "run-five", load)
+                .unwrap_err()
+                .contains("no supported typed cell_results")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

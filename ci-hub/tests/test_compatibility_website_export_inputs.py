@@ -1564,7 +1564,14 @@ class TransportNamespace:
 
     def terminals(self, *, repo, schema_version):
         assert (repo, schema_version) == ("hermit", 10)
-        return [self.selection]
+        return [self.selection] if schema_version == self.selection["row"]["schema_version"] else []
+
+    def rows(self):
+        return [self.selection["row"], {"repo": "hermit", "schema_version": 5}]
+
+    def select(self, **selector):
+        assert all(self.selection["row"].get(key) == value for key, value in selector.items())
+        return self.selection
 
     def verify_origin(self, parent, terminal):
         assert parent == self.selection["parent"] and terminal == self.selection["terminal"]
@@ -1610,6 +1617,57 @@ def test_portable_capture_present_object_tampering_refuses(tmp_path: Path):
     git(ledger, "commit", "-qm", "Tampered fixture object")
     with pytest.raises(proof.ProofRefused, match="length"):
         export_inputs._capture_finalized_proof(TransportNamespace(selected), ledger, git(ledger, "rev-parse", "HEAD"))
+
+
+def test_derived_capture_stages_exact_public_object_without_raw_streams(tmp_path: Path):
+    proof, ledger, _commit, selected, _manifest, _objects = portable_capture_fixture(tmp_path)
+    row = selected["row"]
+    row.update(schema_version=5, cell_results=None, result="fail", validation_complete=False)
+    cell = {"lane": "portable", "category": "c-programs", "test": "fixture",
+            "mode": "verify", "backend": "ptrace"}
+    row["raw_result_input_census_v1"] = {
+        "schema": 1, "run_id": row["run_id"], "hermit_sha": row["commit"],
+        "files": [{"path": "portable/results.jsonl", "bytes": 12, "sha256": "a" * 64,
+                   "rows": [{"line": 1, "cell": cell, "attempt": 1}]}],
+    }
+    value = {"schema": 1, "authority": proof.DERIVED_AUTHORITY,
+             **proof.derived_row_binding(row), "attempts": [{
+                 "input_path": "portable/results.jsonl", "input_line": 1, "cell": cell,
+                 "attempt": 1, "source_row_sha256": "b" * 64, "outcome": "FAIL",
+                 "result": None, "failure_class": None, "ordinary_verdict": {}, "backend_parity": None}]}
+    encoded = proof.canonical_bytes(value) + b"\n"
+    artifacts, objects = proof.capture_derived_cells(row, encoded)
+    # A distinct canonical event has the new explicit role, never a rewrite of
+    # the existing schema-10 carrier used above.
+    selected["terminal"].update(event_id="derived-event", event_sha256="c" * 64)
+    manifest = proof.make_manifest(selected, artifacts, parent_commit="5" * 40,
+        hermit_tool_commit="6" * 40,
+        snapshot={"source": {"commit": "7" * 40, "tree": "8" * 40}, "rows_sha256": "9" * 64})
+    proof.stage_carrier(ledger, manifest, objects)
+    git(ledger, "add", "--", "scorecard")
+    git(ledger, "commit", "-qm", "Synthetic derived transport")
+    namespace = TransportNamespace(selected)
+    captured = export_inputs._capture_finalized_proof(namespace, ledger, git(ledger, "rev-parse", "HEAD"))
+    assert captured["manifests"] == [manifest] and namespace.verified == ["derived-event"]
+    assert export_inputs.captured_proof_objects(captured) == {proof.derived_path(value): encoded}
+    assert row["schema_version"] == 5 and row["cell_results"] is None and row["result"] == "fail"
+    corrected = json.loads(json.dumps(selected))
+    corrected["row"].update(schema_version=6, record_id="corrected-record", corrects=row["record_id"])
+    del corrected["row"]["raw_result_input_census_v1"]
+    corrected["terminal"].update(record_id="corrected-record", event_id="corrected-event", event_sha256="d" * 64)
+    later = TransportNamespace(corrected)
+    later.rows = lambda: [row, corrected["row"], {"repo": "hermit", "schema_version": 5}]
+    absent = export_inputs._capture_finalized_proof(later, ledger, git(ledger, "rev-parse", "HEAD"))
+    assert absent["manifests"] == [] and absent["objects"] == {} and later.verified == []
+    malformed = json.loads(json.dumps(selected))
+    malformed["row"]["raw_result_input_census_v1"] = None
+    malformed["terminal"].update(event_id="new-malformed-event", event_sha256="e" * 64)
+    with pytest.raises(proof.ProofRefused, match="raw census"):
+        export_inputs._capture_finalized_proof(TransportNamespace(malformed), ledger,
+                                              git(ledger, "rev-parse", "HEAD"))
+    row["raw_result_input_census_v1"]["files"][0]["rows"].append({"line": 2, "cell": cell, "attempt": 2})
+    with pytest.raises(proof.ProofRefused):
+        export_inputs._capture_finalized_proof(namespace, ledger, git(ledger, "rev-parse", "HEAD"))
 
 
 @pytest.mark.parametrize("mutation", ["unknown", "boolean", "length", "unicode", "unused", "path"])
@@ -1691,3 +1749,73 @@ def test_fresh_history_capture_uses_real_state_after_public_ledger(tmp_path, mon
         "schema": 1, "manifests": [], "objects": {}, "missing_current_terminals": []}
     assert output["validation_ledger"]["history_row_count"] == 0
     assert not (tool / "hermit_test_ledger").exists()
+
+
+def test_historical_export_captures_schema5_proof_from_the_selected_ledger_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real immutable repositories, canonical terminal selection, carrier, and
+    # object bytes. These synthetic operands establish transport, not execution.
+    monkeypatch.delenv("CI_HUB_LEDGER_EVENT_CHECKER", raising=False)
+    monkeypatch.setattr(export_inputs, "_historical_reader_state", lambda: TEST_READER_STATE)
+    proof = export_inputs._proof_reader()
+    event = validation_event()
+    row = event["legacy_row"]
+    cell = {"lane": "portable", "category": "c-programs", "test": "fixture",
+            "mode": "verify", "backend": "ptrace"}
+    row.update(schema_version=5, profile="full", selection_mode="full", tree_dirty=False,
+               commit_anchored=True, result="fail", exit_code=1, validation_complete=False,
+               cell_results=None, raw_result_input_census_v1={
+                   "schema": 1, "run_id": row["run_id"], "hermit_sha": row["commit"],
+                   "files": [{"path": "portable/results.jsonl", "bytes": 12, "sha256": "a" * 64,
+                              "rows": [{"line": 1, "cell": cell, "attempt": 1}]}]})
+    event["outcome"] = "fail"
+    series_path = "series/hermit/hosta/2026-08.jsonl"
+    repo, parent_commit = repository(tmp_path, {
+        "ledger/hermit/hosta/2026-08.jsonl": proof.canonical_bytes(event) + b"\n",
+        series_path: proof.canonical_bytes(series_row()) + b"\n",
+    })
+    git(repo, "remote", "add", "origin", export_inputs.validation_ledger.CANONICAL_PARENT_REPOSITORY)
+    git(repo, "update-ref", "refs/remotes/origin/main", parent_commit)
+    ledger = repo / "hermit_test_ledger"
+    with export_inputs.validation_ledger.capture_committed_validation_namespace(repo, parent_commit) as namespace:
+        canonical_row = namespace.rows()[0]
+        selected = namespace.select(**{key: canonical_row[key] for key in
+            ("repo", "record_id", "run_id", "commit", "cwd", "started_at")})
+    value = {"schema": 1, "authority": proof.DERIVED_AUTHORITY,
+             **proof.derived_row_binding(selected["row"]), "attempts": [{
+                 "input_path": "portable/results.jsonl", "input_line": 1, "cell": cell,
+                 "attempt": 1, "source_row_sha256": "b" * 64, "outcome": "FAIL",
+                 "result": None, "failure_class": None, "ordinary_verdict": {}, "backend_parity": None}]}
+    encoded = proof.canonical_bytes(value) + b"\n"
+    artifacts, objects = proof.capture_derived_cells(selected["row"], encoded)
+    manifest = proof.make_manifest(selected, artifacts, parent_commit=parent_commit,
+        hermit_tool_commit="6" * 40,
+        snapshot={"source": {"commit": "7" * 40, "tree": "8" * 40}, "rows_sha256": "9" * 64})
+    proof.stage_carrier(ledger, manifest, objects)
+    git(ledger, "add", "scorecard")
+    git(ledger, "commit", "-qm", "Synthetic historical proof")
+    ledger_commit = git(ledger, "rev-parse", "HEAD")
+    # Later HEAD and working-tree data cannot supply a missing historical proof.
+    git(ledger, "rm", "-qr", "scorecard")
+    (ledger / series_path).write_bytes(proof.canonical_bytes(series_row(event_id="later-event")) + b"\n")
+    git(ledger, "add", "series")
+    git(ledger, "commit", "-qm", "Later independent ledger state")
+    later = git(ledger, "rev-parse", "HEAD")
+    captured = export_inputs.build_historical_export(repo, parent_commit, row["record_id"], row["run_id"],
+                                                    series_commit=ledger_commit)
+    provenance = captured["provenance"]
+    assert provenance["parent_commit"] == parent_commit
+    assert provenance["series_commit"] == ledger_commit != later
+    assert provenance["series_tree"] == git(ledger, "rev-parse", f"{ledger_commit}:series")
+    assert provenance["finalized_proof"]["manifests"] == [manifest]
+    assert export_inputs.captured_proof_objects(provenance["finalized_proof"]) == {proof.derived_path(value): encoded}
+    selected_row = json.loads(captured["validation_ledger"]["history_rows_jsonl"])
+    assert selected_row["schema_version"] == 5 and selected_row["result"] == "fail"
+    assert selected_row["validation_complete"] is False and selected_row["cell_results"] is None
+    assert "later-event" not in json.dumps(captured["series"])
+    absent = export_inputs.build_historical_export(repo, parent_commit, row["record_id"], row["run_id"],
+                                                  series_commit=later)["provenance"]["finalized_proof"]
+    assert absent["objects"] == {} and absent["missing_current_terminals"] == [selected["terminal"]]
+    with pytest.raises(export_inputs.ExportRefused, match="full immutable"):
+        export_inputs.build_historical_export(repo, parent_commit, row["record_id"], row["run_id"], series_commit="HEAD")

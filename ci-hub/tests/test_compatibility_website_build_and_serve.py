@@ -875,14 +875,16 @@ def test_stage_1_reader_inventory_matches_the_exporter_exactly() -> None:
     assert website.STAGE_1_READER_PATHS == declared
 
 
+@pytest.mark.parametrize("series_commit", [None, "c" * 40])
 def test_historical_build_uses_only_the_separate_source_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, series_commit: str | None,
 ) -> None:
     data = historical_build_data(tmp_path, monkeypatch)
     modules = website._modules()
     calls: list[tuple[Any, ...]] = []
 
-    def source(*arguments: Any) -> dict[str, Any]:
+    def source(*arguments: Any, **keywords: Any) -> dict[str, Any]:
+        assert keywords == ({"series_commit": series_commit} if series_commit else {})
         calls.append(arguments)
         return copy.deepcopy(data)
 
@@ -900,10 +902,12 @@ def test_historical_build_uses_only_the_separate_source_path(
         *,
         wording: str,
         verify_sources: Any,
+        presentation: dict[str, Any],
     ) -> object:
         assert value == data
         assert output_root == tmp_path / "site"
         assert wording == "historical"
+        assert modules.renderer.validate_presentation(presentation, data) == presentation
         verify_sources()
         return expected
 
@@ -916,6 +920,7 @@ def test_historical_build_uses_only_the_separate_source_path(
         tmp_path / "manifest-hermit",
         "b" * 40,
         tmp_path / "site",
+        **({"series_commit": series_commit} if series_commit else {}),
     )
 
     assert result is expected
@@ -3287,6 +3292,8 @@ def test_historical_parser_requires_all_immutable_source_coordinates() -> None:
             "build-historical",
             "--parent-commit",
             "a" * 40,
+            "--series-commit",
+            "c" * 40,
             "--record-id",
             "record-1",
             "--run-id",
@@ -3300,9 +3307,35 @@ def test_historical_parser_requires_all_immutable_source_coordinates() -> None:
 
     assert arguments.command == "build-historical"
     assert arguments.parent_commit == "a" * 40
+    assert arguments.series_commit == "c" * 40
     assert arguments.record_id == "record-1"
     assert arguments.run_id == "run-1"
     assert arguments.manifest_commit == "b" * 40
+
+
+def test_historical_recorded_only_population_never_claims_planned_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = historical_build_data(tmp_path, monkeypatch)
+    for source in (data["provenance"]["historical"],
+                   data["provenance"]["canonical_input_provenance"]["historical"]):
+        source.update(selected_by_full_cell_count=None, recorded_cell_count=1,
+                      population_scope="recorded_only",
+                      comparison_authority="writer_verified_raw_census_v1")
+    checked = website._modules().build_data.validate_build_data(data)
+    _manifest, files = website.compose(checked, wording="historical")
+    html = files["index.html"].decode()
+    assert "Retained recorded population (planned selection unavailable)" in html
+    assert "Selected by full" not in html
+    for field, value in (("comparison_authority", "summary"),
+                         ("population_scope", "full"),
+                         ("recorded_cell_count", True)):
+        bad = copy.deepcopy(data)
+        for source in (bad["provenance"]["historical"],
+                       bad["provenance"]["canonical_input_provenance"]["historical"]):
+            source[field] = value
+        with pytest.raises(website._modules().build_data.BuildRefused):
+            website._modules().build_data.validate_build_data(bad)
 
 
 @pytest.mark.parametrize(

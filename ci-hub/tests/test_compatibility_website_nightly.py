@@ -149,9 +149,66 @@ def test_nightly_build_uses_explicit_state_not_immutable_tool_cache(tmp_path: Pa
         nightly.run(builder, state)
     expected_output = tmp_path / f"hermit-compatibility-website-{os.geteuid()}" / "builds"
     assert calls[0][0] == expected_output
-    assert calls[0][1] == {"series_ref": "b" * 40, "published_only": True, "state_root": state}
+    assert calls[0][1] == {"series_ref": "b" * 40, "published_only": True, "state_root": state,
+                           "validation_history_commit": "b" * 40}
     receipt = json.loads((state / "ignored/ci-hub/compatibility-website/nightly/state.json").read_bytes())
     assert receipt["output_root"] == str(expected_output)
+
+
+@pytest.mark.parametrize("contradiction", [None, "parent_commit", "reader_commit", "series_commit", "published_only"])
+def test_nightly_binds_captured_history_before_any_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contradiction: str | None,
+) -> None:
+    tool, state, ledger = (tmp_path / name for name in ("tool", "state", "ledger"))
+    state.mkdir()
+    reader, history, cells = "a" * 40, "b" * 40, "c" * 40
+    refs = {(tool, "HEAD"): reader, (state, "refs/remotes/origin/main"): history,
+            (ledger, "refs/remotes/origin/main"): cells}
+    calls, closed = [], []
+    exporter = SimpleNamespace(_load_authorities=lambda: None,
+                               series_store=SimpleNamespace(ledger_root=lambda _: ledger))
+
+    def build(_output, **kwargs):
+        assert calls == [
+            ["with-proxy", "git", "-C", str(path), "fetch", "--no-tags", "--no-recurse-submodules",
+             "origin", "main:refs/remotes/origin/main"] for path in (ledger, state)]
+        assert kwargs == {"series_ref": cells, "published_only": True, "state_root": state,
+                          "validation_history_commit": history}
+        # A later ref advancement cannot silently replace either captured input.
+        refs[(state, "refs/remotes/origin/main")] = "d" * 40
+        refs[(ledger, "refs/remotes/origin/main")] = "e" * 40
+        provenance = {"series_commit": cells, "published_only": True,
+                      "parent_commit": history, "reader_commit": reader}
+        if contradiction:
+            provenance[contradiction] = False if contradiction == "published_only" else "f" * 40
+        return SimpleNamespace(recheck=lambda: None, reused=False,
+                               manifest={"freshness_sha256": "0" * 64,
+                                         "provenance": {"canonical_input_provenance": provenance}},
+                               close=lambda: closed.append(True))
+
+    builder = SimpleNamespace(REPOSITORY=tool, _git_oid=lambda path, ref: refs[(path, ref)],
+                              _modules=lambda: SimpleNamespace(export_inputs=exporter), build=build,
+                              _output_location=real_builder._output_location)
+    monkeypatch.setattr(nightly.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(nightly, "floor", lambda _: None)
+    monkeypatch.setattr(nightly, "command", lambda argv, **_: calls.append(argv) or b"")
+    monkeypatch.setattr(nightly, "gh", lambda *_: pytest.fail("must not publish in this control"))
+    def reached_registry(*_args):
+        assert contradiction is None, "contradictory provenance reached publication"
+        raise RuntimeError("captured inputs reached publication boundary")
+    monkeypatch.setattr(nightly, "published_registry", reached_registry)
+    reason = ("captured inputs reached publication boundary" if contradiction is None else
+              "requested published ledger commit" if contradiction in {"series_commit", "published_only"} else
+              "captured validation history and reader commits")
+    with pytest.raises(RuntimeError, match=reason):
+        nightly.run(builder, state)
+    receipt = json.loads((state / "ignored/ci-hub/compatibility-website/nightly/state.json").read_bytes())
+    assert receipt["validation_history_commit"] == history
+    assert receipt["ledger_commit"] == cells
+    assert receipt["builder_commit"] == reader
+    assert receipt["status"] == "failed"
+    assert "verified_at" not in receipt
+    assert closed == [True]
 
 
 def test_nightly_artifacts_stay_outside_git_managed_home_and_reuse_directory(
