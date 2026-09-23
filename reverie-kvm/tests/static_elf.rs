@@ -10049,6 +10049,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes",
         "kvm_direct_and_tool_match_prctl_identity_cell",
         "kvm_direct_and_tool_match_thp_disable_cell",
+        "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
@@ -16260,6 +16261,152 @@ int main(int argc, char **argv) {
             stderr, native.stderr,
             "tool_owned={tool_owned} repetition={repetition}"
         );
+    }
+}
+
+#[test]
+fn fstat_and_fstatfs_consume_low_descriptor_words_on_kvm() {
+    const TEST: &str = "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+
+    fn expected_transcript(guest: bool) -> String {
+        let upper_words = [0_u64, 1 << 32, 1 << 63, 0xffff_ffff_0000_0000];
+        let mut expected = String::new();
+        let mut row = |operation: &str, object: &str, upper: u64, badptr: u8, error: i32| {
+            let result = if error == 0 { 0 } else { -1 };
+            expected.push_str(&format!(
+                "{operation} object={object} upper={upper:016x} badptr={badptr} result={result} errno={error}\n"
+            ));
+        };
+        for (operation, objects) in [
+            (
+                "fstat",
+                &[
+                    "stdout",
+                    "stdout-alias",
+                    "stderr",
+                    "file",
+                    "directory",
+                    "proc-root",
+                    "proc-uptime",
+                    "fdinfo",
+                ][..],
+            ),
+            ("fstatfs", &["file", "directory"][..]),
+        ] {
+            for object in objects {
+                for upper in upper_words {
+                    row(operation, object, upper, 0, 0);
+                    row(operation, object, upper, 1, libc::EFAULT);
+                }
+            }
+        }
+        for operation in ["fstat", "fstatfs"] {
+            for object in ["int-max", "int-min", "minus-one", "closed"] {
+                for upper in upper_words {
+                    for badptr in [0, 1] {
+                        row(operation, object, upper, badptr, libc::EBADF);
+                    }
+                }
+            }
+        }
+        expected.push_str("proc-policy\n");
+        for (object, refusal) in [("proc-root", libc::EACCES), ("fdinfo", libc::ENOSYS)] {
+            for upper in upper_words {
+                for badptr in [0, 1] {
+                    let error = if guest {
+                        refusal
+                    } else if badptr == 1 {
+                        libc::EFAULT
+                    } else {
+                        0
+                    };
+                    let result = if error == 0 { 0 } else { -1 };
+                    expected.push_str(&format!(
+                        "fstatfs object={object} upper={upper:016x} badptr={badptr} result={result} errno={error}\n"
+                    ));
+                }
+            }
+        }
+        expected
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program_with_args(
+        &directory.0,
+        "fstat-fd-width",
+        include_str!("fixtures/fstat_fd_width.c"),
+        &["-std=c11", "-Wall", "-Wextra", "-Werror"],
+    );
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(&executable)
+        .arg("native")
+        .arg(directory.0.join("native-fstat-fd-width"))
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "native fixture: {native:?}");
+    let native_stdout = std::str::from_utf8(&native.stdout).unwrap();
+    assert_eq!(native_stdout.lines().count(), 161);
+    assert_eq!(native_stdout, expected_transcript(false));
+    assert!(native.stderr.is_empty());
+    let (native_common, _) = native_stdout.split_once("proc-policy\n").unwrap();
+
+    let image = std::fs::read(&executable).unwrap();
+    let expected_guest = expected_transcript(true);
+    let mut first_guest = None;
+    for (tool_owned, repetition) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
+        let guest_path = directory
+            .0
+            .join(format!("guest-fstat-fd-width-{tool_owned}-{repetition}"));
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[
+                    executable.to_str().unwrap(),
+                    "guest",
+                    guest_path.to_str().unwrap(),
+                ],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if tool_owned {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(
+            code,
+            0,
+            "tool_owned={tool_owned} repetition={repetition} stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(
+            stdout,
+            expected_guest.as_bytes(),
+            "tool_owned={tool_owned} repetition={repetition}"
+        );
+        assert_eq!(stderr, native.stderr);
+        let (guest_common, _) = std::str::from_utf8(&stdout)
+            .unwrap()
+            .split_once("proc-policy\n")
+            .unwrap();
+        assert_eq!(guest_common, native_common);
+        if let Some(first) = &first_guest {
+            assert_eq!(&stdout, first);
+        } else {
+            first_guest = Some(stdout);
+        }
     }
 }
 
