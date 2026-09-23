@@ -226,10 +226,14 @@ int main(int argc, char **argv) {
   CHECK(strcmp(argv[1], "native") == 0 || strcmp(argv[1], "guest") == 0);
   int guest = strcmp(argv[1], "guest") == 0;
   char base[PATH_MAX];
-  CHECK(getcwd(base, sizeof(base)) != NULL);
-  write_marker("marker", base_marker, sizeof(base_marker) - 1);
   int saved = open(".", O_RDONLY | O_DIRECTORY);
   CHECK(saved > 0);
+  // Establish the canonical cwd before capturing expectations: the initial
+  // guest context may spell TMPDIR through a symlink, whereas fchdir resolves
+  // the directory handle. Keep every later cwd and content comparison exact.
+  CHECK(fchdir(saved) == 0);
+  CHECK(getcwd(base, sizeof(base)) != NULL);
+  write_marker("marker", base_marker, sizeof(base_marker) - 1);
   // Clearing bit 31 of INT_MIN would resolve to this live directory and must
   // be detected as incorrect success, rather than another EBADF by accident.
   CHECK(dup2(saved, STDIN_FILENO) == STDIN_FILENO);

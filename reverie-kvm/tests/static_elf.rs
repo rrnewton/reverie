@@ -16346,6 +16346,8 @@ fn fchdir_consumes_low_descriptor_words_on_kvm() {
     let image = std::fs::read(&executable).unwrap();
     let expected_guest = expected_transcript(true);
     let mut first_guest = None;
+    // Direct runs retain raw upper fd bits. StraceTool reinjects typed Fchdir
+    // arguments, so its runs check parity after descriptor normalization.
     for (tool_owned, repetition) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
         let guest_directory = directory
             .0

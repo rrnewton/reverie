@@ -12621,6 +12621,8 @@ fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
 
 fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     // Linux consumes the low descriptor word, ignoring the upper register bits.
+    // Allocated guest fds are in 0..GUEST_NOFILE_LIMIT, so signed-negative low
+    // words miss this table just like Linux's out-of-range unsigned descriptors.
     let fd = args[0] as libc::c_int;
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
@@ -17723,6 +17725,8 @@ mod tests {
                 (0xffff_ffff, libc::EBADF),
                 (libc::AT_FDCWD as u32, libc::EBADF),
                 (6, libc::ENOTDIR),
+                // Existing backend policy: Linux accepts O_PATH directories
+                // and reports ENOTDIR for O_PATH regular files.
                 (7, libc::EBADF),
                 (8, libc::EBADF),
                 (9, libc::EACCES),
