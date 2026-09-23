@@ -40,6 +40,8 @@ tempfile = "3.27.0"
 tracing = "0.1.41"
 
 [dev-dependencies]
+safeptrace = { version = "0.2.0", path = "../safeptrace" }
+sha2 = "0.10.9"
 tokio = { version = "1.52.4", features = ["test-util"] }
 tracing-subscriber = "0.3.23"
 
