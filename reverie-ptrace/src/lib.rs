@@ -47,6 +47,8 @@ mod perf;
 pub mod regs;
 mod stack;
 mod stats;
+#[cfg(target_arch = "x86_64")]
+pub mod target_loader;
 mod task;
 pub mod testing;
 mod timer;
