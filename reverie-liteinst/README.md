@@ -165,6 +165,23 @@ counted separately. Seven refusals, one cancellation, and four native controls
 remain mandatory. This qualifies the initialization and dispatch boundary; full
 Hermit determinism and general workload parity remain separate requirements.
 
+The ordinary ptrace backend now preserves timers armed in `handle_post_exec`:
+its former extra single-step consumed an event transition and cancelled the
+first deadline. This changes where a consumer such as Hermit can first preempt
+after exec. Preemption traces recorded before this fix are not qualified for
+replay with it; record new traces with the consuming Hermit/Reverie revisions.
+The ptrace-local tests cover ordinary post-exec resume and an exact hardware
+deadline independently of the LiteInst DSO. These Reverie tests establish L0
+evidence only. A consuming Hermit pin must separately qualify strict execution,
+strict verification and record/replay at its exact Hermit/Reverie revisions;
+this change does not establish L1 or L2 assurance.
+
+Hardware CI explicitly runs both real-DSO integrations and the ptrace timer
+regression. The DSO runners share a cached release/no-default-feature target
+directory while keeping those artifacts separate from workspace all-features
+builds. Build/test subprocess bounds and the ten-minute hardware job limit
+remain enforced, including on a cold cache; a timeout is a retained failure.
+
 ### Shared `reverie-preload` built-in tools
 
 The single `REVERIE_LITEINST_TOOL` selector is a superset of the

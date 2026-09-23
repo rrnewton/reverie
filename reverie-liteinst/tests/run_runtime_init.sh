@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repository=$(cd "$(dirname "$0")/../.." && pwd -P)
-target_dir=${CARGO_TARGET_DIR:-"$repository/target/runtime-init-conformance"}
+target_dir=${CARGO_TARGET_DIR:-"$repository/target/liteinst-conformance"}
 mkdir -p "$target_dir"
 target_dir=$(cd "$target_dir" && pwd -P)
 

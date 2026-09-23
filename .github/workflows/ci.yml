@@ -162,7 +162,15 @@ jobs:
           sudo apt-get install -y libunwind-dev liblzma-dev cmake zlib1g-dev
         fi
     - name: Rust toolchain
+      id: toolchain
       uses: dtolnay/rust-toolchain@nightly
+    - name: Cache constructor-disabled LiteInst conformance artifacts
+      uses: actions/cache@v4
+      with:
+        # Keep release/no-default artifacts separate from all-features builds.
+        # Cargo still verifies source, dependency and compiler fingerprints.
+        path: target/liteinst-conformance
+        key: liteinst-conformance-${{ github.job }}-release-no-default-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
     - name: Host-dependent workspace tests
       env:
         REVERIE_REQUIRE_KVM: "1"
@@ -186,8 +194,18 @@ jobs:
         kill "$watchdog" 2>/dev/null || true
         wait "$watchdog" 2>/dev/null || true
         exit "$status"
+    - name: Plain ptrace post-exec timer conformance
+      env:
+        CARGO_TARGET_DIR: target/liteinst-conformance
+      run: reverie-ptrace/tests/run_post_exec_timer.sh
+    - name: LiteInst real target-loader conformance
+      env:
+        CARGO_TARGET_DIR: target/liteinst-conformance
+      run: reverie-liteinst/tests/run_target_loader_conformance.sh
     - name: LiteInst explicit runtime initialization conformance
       # This test requires ptrace and a working PMU. The runner builds and binds
       # the constructor-disabled DSO, explicitly runs the ignored test, and
       # rejects a missing artifact, zero selected tests, or an incomplete matrix.
+      env:
+        CARGO_TARGET_DIR: target/liteinst-conformance
       run: reverie-liteinst/tests/run_runtime_init.sh
