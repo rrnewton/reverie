@@ -641,6 +641,25 @@ def coordinator_binding(tmp_path: Path) -> producer.Bindings:
     )
 
 
+def native_goal(
+    session_id: str,
+    objective: str,
+    status: str,
+    *,
+    source: str = "native",
+) -> dict[str, object]:
+    return {
+        "source": source,
+        "native_status": status,
+        "goal": objective,
+        "native": {
+            "threadId": session_id,
+            "status": status,
+            "objective": objective,
+        },
+    }
+
+
 @pytest.mark.parametrize(
     "goal",
     [
@@ -650,26 +669,9 @@ def coordinator_binding(tmp_path: Path) -> producer.Bindings:
             "goal": None,
             "native": None,
         },
-        {
-            "source": "native",
-            "native_status": "active",
-            "goal": "Coordinate Hermit",
-            "native": {
-                "threadId": "coordinator-session",
-                "status": "active",
-                "objective": "Coordinate Hermit",
-            },
-        },
-        {
-            "source": "native",
-            "native_status": "paused",
-            "goal": "Coordinate Hermit",
-            "native": {
-                "threadId": "coordinator-session",
-                "status": "paused",
-                "objective": "Coordinate Hermit",
-            },
-        },
+        native_goal("coordinator-session", "Coordinate Hermit", "active"),
+        native_goal("coordinator-session", "Coordinate Hermit", "blocked"),
+        native_goal("coordinator-session", "Coordinate Hermit", "paused"),
     ],
 )
 def test_coordinator_accepts_only_an_exact_bound_native_session(
@@ -688,49 +690,129 @@ def test_coordinator_accepts_only_an_exact_bound_native_session(
             "goal": None,
             "native": None,
         },
+        native_goal("replacement-session", "Coordinate Hermit", "active"),
         {
             "source": "native",
             "native_status": "active",
             "goal": "Coordinate Hermit",
             "native": {
-                "threadId": "replacement-session",
+                "threadId": "coordinator-session",
+                "objective": "Coordinate Hermit",
+            },
+        },
+        {
+            **native_goal("coordinator-session", "Coordinate Hermit", "active"),
+            "goal": "Replacement objective",
+        },
+        native_goal("coordinator-session", "Coordinate Hermit", "complete"),
+        native_goal("coordinator-session", "Coordinate Hermit", "usageLimited"),
+        native_goal("coordinator-session", "Coordinate Hermit", "budgetLimited"),
+        {
+            "source": "native",
+            "native_status": [],
+            "goal": "Coordinate Hermit",
+            "native": {
+                "threadId": "coordinator-session",
                 "status": "active",
                 "objective": "Coordinate Hermit",
             },
         },
     ],
 )
-def test_coordinator_refuses_unverified_or_reassigned_native_session(
+def test_coordinator_refuses_terminal_limited_unverified_or_mismatched_state(
     tmp_path: Path, monkeypatch, goal: dict[str, object],
 ) -> None:
     monkeypatch.setattr(producer, "read_agentctl", lambda *_args: goal)
     with pytest.raises(
         producer.SnapshotUnavailable,
-        match="exact absent, active, or paused",
+        match="exact absent, active, blocked, or paused",
     ):
         producer.verify_agentctl_goals(
             coordinator_binding(tmp_path), Path("agentctl")
         )
 
 
-def test_worker_paused_goal_does_not_retain_claim_authority(
-    tmp_path: Path, monkeypatch,
+@pytest.mark.parametrize("native_status", ("active", "blocked", "paused"))
+def test_worker_exact_live_or_waiting_goal_retains_claim_authority(
+    tmp_path: Path, monkeypatch, native_status: str,
 ) -> None:
     monkeypatch.setattr(
         producer,
         "read_agentctl",
-        lambda *_args: {
+        lambda *_args: native_goal(
+            "native-session", "Drive the KVM lane", native_status
+        ),
+    )
+    producer.verify_agentctl_goals(binding(tmp_path), Path("agentctl"))
+
+
+@pytest.mark.parametrize(
+    "native_status", ("complete", "usageLimited", "budgetLimited")
+)
+def test_worker_terminal_or_limited_goal_does_not_retain_claim_authority(
+    tmp_path: Path, monkeypatch, native_status: str,
+) -> None:
+    monkeypatch.setattr(
+        producer,
+        "read_agentctl",
+        lambda *_args: native_goal(
+            "native-session", "Drive the KVM lane", native_status
+        ),
+    )
+    with pytest.raises(producer.SnapshotUnavailable, match="exact bound objective"):
+        producer.verify_agentctl_goals(binding(tmp_path), Path("agentctl"))
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        {
             "source": "native",
-            "native_status": "paused",
+            "native_status": "absent",
+            "goal": None,
+            "native": None,
+        },
+        native_goal(
+            "native-session", "Drive the KVM lane", "active", source="requested"
+        ),
+        native_goal("replacement-session", "Drive the KVM lane", "active"),
+        native_goal("native-session", "Replacement objective", "active"),
+        {
+            "source": "native",
+            "native_status": "active",
             "goal": "Drive the KVM lane",
             "native": {
                 "threadId": "native-session",
-                "status": "paused",
                 "objective": "Drive the KVM lane",
             },
         },
-    )
-    with pytest.raises(producer.SnapshotUnavailable, match="exact active objective"):
+        {
+            "source": "native",
+            "native_status": "blocked",
+            "goal": "Drive the KVM lane",
+            "native": {
+                "threadId": "native-session",
+                "status": "active",
+                "objective": "Drive the KVM lane",
+            },
+        },
+        {
+            "source": "native",
+            "native_status": [],
+            "goal": "Drive the KVM lane",
+            "native": {
+                "threadId": "native-session",
+                "status": "active",
+                "objective": "Drive the KVM lane",
+            },
+        },
+    ],
+)
+def test_worker_unverified_mismatched_or_missing_goal_state_refuses(
+    tmp_path: Path, monkeypatch, goal: dict[str, object],
+) -> None:
+    monkeypatch.setattr(producer, "read_agentctl", lambda *_args: goal)
+    with pytest.raises(producer.SnapshotUnavailable, match="exact bound objective"):
         producer.verify_agentctl_goals(binding(tmp_path), Path("agentctl"))
 
 
@@ -890,7 +972,7 @@ def test_claimed_task_with_another_bound_owner_refuses_publication(
     ("failure", "message"),
     [
         ("token", "token"),
-        ("goal", "exact active objective"),
+        ("goal", "exact bound objective"),
         ("owner", "outside the complete bound fleet"),
     ],
 )
@@ -986,7 +1068,7 @@ def test_native_goal_is_revalidated_on_both_sides_of_collection(
 
     monkeypatch.setattr(producer, "read_agentctl", read)
     monkeypatch.setattr(producer, "read_herdr", lambda _bin: herdr(tmp_path))
-    with pytest.raises(producer.SnapshotUnavailable, match="exact active objective"):
+    with pytest.raises(producer.SnapshotUnavailable, match="exact bound objective"):
         producer.collect_snapshot(
             binding(tmp_path),
             agentctl_bin=Path("agentctl"),

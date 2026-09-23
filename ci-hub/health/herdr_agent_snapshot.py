@@ -78,6 +78,9 @@ STATUS_MAP = {
 }
 
 AGENTCTL_HERDR_ADAPTERS = frozenset({"herdr", "herdr-pane", "herdr-foreign"})
+# A live exact session retains ownership while waiting for input or paused.
+# Terminal and resource-limited native states remain outside this set.
+BOUND_NATIVE_GOAL_STATUSES = frozenset({"active", "blocked", "paused"})
 PANE = re.compile(r"w[A-Za-z0-9]+:p[A-Za-z0-9]+")
 WORKSPACE = re.compile(r"w[A-Za-z0-9]+")
 HARNESS = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
@@ -383,28 +386,30 @@ def verify_agentctl_goals(bindings: Bindings, agentctl_bin: Path) -> None:
                 f"agentctl goal for {binding.agentctl_name!r} is not an object"
             )
         native = goal.get("native")
+        native_status = goal.get("native_status")
         if binding.role == "worker" and (
             goal.get("source") != "native"
-            or goal.get("native_status") != "active"
+            or not isinstance(native_status, str)
+            or native_status not in BOUND_NATIVE_GOAL_STATUSES
             or goal.get("goal") != binding.expected_goal
             or not isinstance(native, dict)
             or native.get("threadId") != binding.agentctl_session_id
-            or native.get("status") != "active"
+            or native.get("status") != native_status
             or native.get("objective") != binding.expected_goal
         ):
             raise SnapshotUnavailable(
                 f"agentctl goal for {binding.agentctl_name!r} does not prove "
-                "the exact active objective"
+                "the exact bound objective in an active, blocked, or paused session"
             )
         if binding.role == "coordinator":
-            native_status = goal.get("native_status")
             absent = (
                 native_status == "absent"
                 and goal.get("goal") is None
                 and native is None
             )
             bound_session = (
-                native_status in ("active", "paused")
+                isinstance(native_status, str)
+                and native_status in BOUND_NATIVE_GOAL_STATUSES
                 and isinstance(goal.get("goal"), str)
                 and bool(goal.get("goal"))
                 and isinstance(native, dict)
@@ -415,7 +420,8 @@ def verify_agentctl_goals(bindings: Bindings, agentctl_bin: Path) -> None:
             if goal.get("source") != "native" or not (absent or bound_session):
                 raise SnapshotUnavailable(
                     f"agentctl coordinator {binding.agentctl_name!r} native "
-                    "goal state is not one exact absent, active, or paused session: "
+                    "goal state is not one exact absent, active, blocked, or paused "
+                    "session: "
                     f"source={goal.get('source')!r}, "
                     f"status={native_status!r}"
                 )
