@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import shutil
 import subprocess
 import sys
 import unittest
@@ -66,6 +67,70 @@ class MainHealthTests(unittest.TestCase):
                 proxy.unlink()
                 with self.assertRaisesRegex(RuntimeError, "with-proxy"):
                     github_main_health._run_gh(["api", "user"], timeout=2)
+
+    def test_shell_default_survives_cost_reentry_and_preserves_explicit_route(self) -> None:
+        source = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("ci-hub/bin/main-health", "ci-hub/health/github_main_health.py",
+                         "ci-hub/check_outcome.py", "ci-hub/validate/gh_route.py"):
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source / name, target)
+            bindir = root / "bin"
+            bindir.mkdir()
+            (bindir / "python3").symlink_to(sys.executable)
+            (bindir / "git").write_text('#!/bin/sh\nprintf \'%s\\n\' "$FIXTURE_ROOT"\n')
+            (bindir / "git").chmod(0o755)
+            (bindir / "with-proxy").write_text('#!/bin/sh\nexec "$@"\n')
+            (bindir / "with-proxy").chmod(0o755)
+            cost = root / "ci-hub/bin/tool-cost"
+            cost.write_text(
+                f"#!{sys.executable}\nimport os,sys,json\n"
+                "from pathlib import Path\n"
+                "Path(os.environ['FIXTURE_COST']).write_text(json.dumps([os.environ['FLEET_REAL_GH'],os.environ['CI_HUB_TOOL_COST_ACTIVE']]))\n"
+                "argv=sys.argv[sys.argv.index('--')+1:];os.execv(argv[0],argv)\n"
+            )
+            cost.chmod(0o755)
+            default = root / "home/bin/gh"
+            default.parent.mkdir(parents=True)
+            override = root / "explicit gh"
+            cli = (f"#!{sys.executable}\nimport os,sys,json\n"
+                   "with open(os.environ['FIXTURE_CALLS'],'a') as f: json.dump([sys.argv[0],sys.argv[1:]],f);f.write('\\n')\n"
+                   "if sys.argv[1]=='api': print('a'*40)\n"
+                   "else: print(json.dumps([{'workflowName':'ci','headSha':'a'*40,'status':'completed','conclusion':'success','databaseId':1,'createdAt':'2026-09-23T00:00:00Z'}]))\n")
+            for selected in (default, override):
+                selected.write_text(cli)
+                selected.chmod(0o755)
+            calls = root / "calls"
+            cost_record = root / "cost"
+            env = dict(os.environ, HOME=str(root / "home"), PATH=f"{bindir}:/usr/bin:/bin",
+                       FIXTURE_ROOT=str(root), FIXTURE_CALLS=str(calls), FIXTURE_COST=str(cost_record))
+            env.pop("FLEET_REAL_GH", None)
+            env.pop("CI_HUB_TOOL_COST_ACTIVE", None)
+            argv = [str(root / "ci-hub/bin/main-health"), "--repo", "fixture/repo", "--json"]
+            for configured in (None, str(override)):
+                current = dict(env)
+                if configured is not None:
+                    current['FLEET_REAL_GH'] = configured
+                result = subprocess.run(argv, env=current, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)['state'], 'green')
+                expected = configured or str(default)
+                self.assertEqual(json.loads(cost_record.read_text()), [expected, '1'])
+                recent = [json.loads(line) for line in calls.read_text().splitlines()][-2:]
+                self.assertEqual([row[0] for row in recent], [expected, expected])
+                self.assertEqual(recent[0][1], ['api', 'repos/fixture/repo/commits/main', '--jq', '.sha'])
+            before = calls.read_bytes()
+            default.chmod(0o644)
+            for configured in (None, '', 'gh', str(root / 'absent')):
+                current = dict(env)
+                if configured is not None:
+                    current['FLEET_REAL_GH'] = configured
+                result = subprocess.run(argv, env=current, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('FLEET_REAL_GH', result.stdout)
+                self.assertEqual(calls.read_bytes(), before)
 
     def test_red_wins(self) -> None:
         runs = (

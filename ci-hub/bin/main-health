@@ -4,6 +4,9 @@ ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/../.." rev-parse --show-topleve
 case ${1:-} in
     help|-h|--help) exec python3 "$ROOT/ci-hub/health/github_main_health.py" "$@" ;;
 esac
+# Legacy hook callers use the fixed owner wrapper; explicit empty/invalid
+# selections survive for the shared strict constructor to refuse before API use.
+export FLEET_REAL_GH="${FLEET_REAL_GH-${HOME:?HOME must be set}/bin/gh}"
 if [[ -z ${CI_HUB_TOOL_COST_ACTIVE:-} ]]; then
     repo_count=0
     previous=""
