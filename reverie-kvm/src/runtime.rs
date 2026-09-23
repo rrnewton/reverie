@@ -3128,22 +3128,26 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
     };
     // Worker hooks precede the leader. Owner hooks precede independent forks
     // that may need the parent's deregistration/accounting to finish.
-    let owner = notify_tool_exit_with_panics(
-        tool,
-        pid,
-        tid,
-        global_state,
-        config,
-        thread_state,
-        ToolExit {
-            status,
-            process_exited: pid == tid,
-        },
-        failure,
-        panics,
-    )
-    .await
-    .map_err(|error| report("owner exit", error));
+    let owner = if pid != tid && panics.has_pending() {
+        Ok(())
+    } else {
+        notify_tool_exit_with_panics(
+            tool,
+            pid,
+            tid,
+            global_state,
+            config,
+            thread_state,
+            ToolExit {
+                status,
+                process_exited: pid == tid,
+            },
+            failure,
+            panics,
+        )
+        .await
+        .map_err(|error| report("owner exit", error))
+    };
     // Consuming hooks may use retained memory. Route their newly captured
     // obligation before any physical child join, outside all callback scopes.
     let entry = match backend {

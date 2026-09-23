@@ -195,6 +195,7 @@ fn assert_panic_cleanup(error: &Error, expected_phase: &str) {
 #[test]
 fn real_error_effects_and_two_exact_payloads_keep_their_original_ownership() {
     let owner = Arc::new(ToolPanics::default());
+    assert!(!owner.has_pending());
     let drops = Arc::new(Mutex::new(Vec::new()));
     let (poll, poll_address) = payload(&owner, &drops, "poll");
     let (destroy, destroy_address) = payload(&owner, &drops, "drop");
@@ -214,6 +215,7 @@ fn real_error_effects_and_two_exact_payloads_keep_their_original_ownership() {
             "callback completion",
         )
         .unwrap_err();
+    assert!(owner.has_pending());
     assert!(std::ptr::eq(error.primary(), cause.as_ref()));
     assert!(
         matches!(error.primary(), Error::HostIo(error) if error.raw_os_error() == Some(libc::EIO))
@@ -231,6 +233,7 @@ fn real_error_effects_and_two_exact_payloads_keep_their_original_ownership() {
     }
     assert!(drops.lock().unwrap().is_empty());
     let retained = owner.take();
+    assert!(!owner.has_pending());
     assert_payloads(
         &retained,
         &[("poll", poll_address), ("drop", destroy_address)],

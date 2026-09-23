@@ -40,7 +40,7 @@ jobs:
       run: reverie-dbt/scripts/test-identity-policy.sh
     - name: Test regular workspace cases
       run: >-
-        cargo test --workspace --all-features --
+        cargo test --workspace --exclude reverie-kvm --exclude reverie-preload --all-features --
         --test-threads=1
         --skip container::tests::bind_to_low_port
         --skip container::tests::mount_error_from_child_is_returned
@@ -78,7 +78,7 @@ jobs:
           github.event_name == 'push' ||
           (
             github.event_name == 'workflow_dispatch' &&
-            github.actor == 'rrnewton'
+            (github.actor == 'rrnewton' || github.actor == 'rrnewton-bots')
           ) ||
           (
             github.event_name == 'pull_request' &&

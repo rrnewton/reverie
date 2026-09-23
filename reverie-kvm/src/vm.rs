@@ -457,6 +457,17 @@ pub(crate) fn finish_host_worker_outcome<R>(
     result
 }
 
+fn deferred_tool_panic(error: &Error) -> Option<&Arc<Error>> {
+    match error {
+        Error::SharedFailure(error) => deferred_tool_panic(error),
+        Error::Cleanup {
+            phase: "Tool callback",
+            error,
+        } if matches!(error.primary(), Error::GuestWorkerPanic) => Some(error),
+        _ => None,
+    }
+}
+
 /// Finish the already caught worker panic. This is not a general unwind guard:
 /// callback state may already have unwound, so no consuming hook is invented.
 #[cfg(test)]
@@ -2336,7 +2347,8 @@ impl KvmBackend {
                     .backend
                     .set_operation_origin(self.memory.entry_origin().operation);
                 child.executor.bind_address_space(&child.backend.memory);
-                let result = child.backend.run_static_elf_process(&mut child.executor);
+                let result =
+                    Box::pin(child.backend.run_static_elf_process(&mut child.executor)).await;
                 let result = match result {
                     Ok((status, stdout, stderr)) => self
                         .finish_forked_process_inner(executor, &mut child, status, stdout, stderr),
@@ -2467,7 +2479,9 @@ impl KvmBackend {
                             child_executor.bind_address_space(&child.memory);
                             let execution =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    let result = child.run_static_elf_process(&mut child_executor);
+                                    let result = futures::executor::block_on(
+                                        child.run_static_elf_process(&mut child_executor),
+                                    );
                                     child.restore_entry_origin();
                                     child_executor.bind_address_space(&child.memory);
                                     let result = futures::executor::block_on(
@@ -2797,20 +2811,16 @@ impl KvmBackend {
 
     /// Runs one process action and restores the completed syscall transport
     /// exactly when the action returns to the original image.
-    pub(crate) fn run_process_action_at_boundary(
+    pub(crate) async fn run_process_action_at_boundary(
         &mut self,
         executor: &mut ElfExecutor,
         action: ProcessAction,
         continuation: ProcessActionContinuation,
     ) -> Result<ProcessActionOutcome> {
         let mut stop = std::pin::pin!(std::future::pending());
-        let result = futures::executor::block_on(self.run_process_action_inner(
-            executor,
-            action,
-            true,
-            None,
-            stop.as_mut(),
-        ));
+        let result = self
+            .run_process_action_inner(executor, action, true, None, stop.as_mut())
+            .await;
         continuation.finish(self, result)
     }
 
@@ -3324,6 +3334,7 @@ impl KvmBackend {
                                         child.thread_group.record_worker_failure(child_tid);
                                     }
                                     if let Err(error) = &result
+                                        && deferred_tool_panic(error).is_none()
                                         && !peer_cancelled
                                         && child.thread_group.take_worker_error_report(child_tid)
                                     {
@@ -4210,7 +4221,8 @@ impl KvmBackend {
     pub fn run_static_elf(&mut self) -> Result<i32> {
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         let mut executor = ElfExecutor::with_output(loaded, None);
-        let (status, _, _) = self.run_static_elf_process(&mut executor)?;
+        let (status, _, _) =
+            futures::executor::block_on(self.run_static_elf_process(&mut executor))?;
         Ok(conventional_exit_code(status))
     }
 
@@ -4221,7 +4233,8 @@ impl KvmBackend {
         let capture_owner = self.prepare_captured_output(true)?;
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
-        let (status, stdout, stderr) = self.run_static_elf_process(&mut executor)?;
+        let (status, stdout, stderr) =
+            futures::executor::block_on(self.run_static_elf_process(&mut executor))?;
         Ok((conventional_exit_code(status), stdout, stderr))
     }
 
@@ -4238,7 +4251,7 @@ impl KvmBackend {
             .map_err(Into::into)
     }
 
-    fn run_static_elf_process(
+    async fn run_static_elf_process(
         &mut self,
         executor: &mut ElfExecutor,
     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
@@ -4303,7 +4316,7 @@ impl KvmBackend {
             let vcpu_exit = match self.vcpu.run() {
                 Ok(Some(exit)) => exit,
                 Ok(None) => {
-                    futures::executor::block_on(futures::future::select(changed, cancelled));
+                    futures::future::select(changed, cancelled).await;
                     continue;
                 }
                 Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
@@ -4409,11 +4422,13 @@ impl KvmBackend {
                 })
                 .transpose()?;
             if let Some(action) = process_action {
-                let outcome = self.run_process_action_at_boundary(
-                    executor,
-                    action,
-                    continuation.expect("a process action has a continuation policy"),
-                )?;
+                let outcome = self
+                    .run_process_action_at_boundary(
+                        executor,
+                        action,
+                        continuation.expect("a process action has a continuation policy"),
+                    )
+                    .await?;
                 if outcome.cancelled {
                     let exit = match self.guest_thread_group_exit_status() {
                         Some(status) => ProcessExit {
@@ -4548,8 +4563,13 @@ impl KvmBackend {
         let Some(original) = payloads.next() else {
             return result;
         };
+        let error = result.err().unwrap_or(Error::GuestWorkerPanic);
+        let error = deferred_tool_panic(&error)
+            .cloned()
+            .map(Error::SharedFailure)
+            .unwrap_or(error);
         let record = WorkerPanicRecord {
-            error: Arc::new(result.err().unwrap_or(Error::GuestWorkerPanic)),
+            error: Arc::new(error),
             _cleanup_panics: payloads.collect(),
             _join_payload: None,
         };
@@ -7155,9 +7175,7 @@ mod tests {
             ))
             .unwrap()
         } else {
-            child
-                .backend
-                .run_static_elf_process(&mut child.executor)
+            futures::executor::block_on(child.backend.run_static_elf_process(&mut child.executor))
                 .unwrap()
         };
         let mut before_wrapper = [0; 4096];
@@ -7406,9 +7424,7 @@ mod tests {
             ))
             .unwrap()
         } else {
-            child
-                .backend
-                .run_static_elf_process(&mut child.executor)
+            futures::executor::block_on(child.backend.run_static_elf_process(&mut child.executor))
                 .unwrap()
         };
         let mut before_wrapper = [0; 4096];
