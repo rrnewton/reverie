@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -369,7 +370,7 @@ def launch(
         return 1 if prior else 0
 
 
-def remove_worktree(root: Path, slot: str) -> str | None:
+def remove_worktree(root: Path, slot: str, machine: str) -> str | None:
     try:
         completed = subprocess.run(
             [
@@ -378,6 +379,8 @@ def remove_worktree(root: Path, slot: str) -> str | None:
                 # --project-root below keeps all mutable worktree state in root.
                 "--project-root",
                 str(root),
+                "--machine",
+                machine,
                 "--allow-existing-unregistered-worktrees",
                 "remove",
                 slot,
@@ -403,6 +406,10 @@ def remove_worktree(root: Path, slot: str) -> str | None:
 
 
 def run_campaign(target: str, record: Path, root: Path = STATE_ROOT) -> int:
+    # Bind creation and retirement to one identity.  Letting wrkslots derive
+    # the machine independently at either boundary can strand the slot when
+    # hostname presentation changes between a short name and an FQDN.
+    machine = socket.gethostname().split(".", 1)[0]
     durable = run_registry.read_record(record)
     raw_checkout = durable.get("checkout")
     if not isinstance(raw_checkout, str):
@@ -432,6 +439,8 @@ def run_campaign(target: str, record: Path, root: Path = STATE_ROOT) -> int:
             str(SOURCE_ROOT / "ci-hub/bin/wrkslots"),
             "--project-root",
             str(root),
+            "--machine",
+            machine,
             "--allow-existing-unregistered-worktrees",
             "create",
             slot,
@@ -499,7 +508,7 @@ def run_campaign(target: str, record: Path, root: Path = STATE_ROOT) -> int:
     except Exception as error:
         state.update(state="failed", finished_at=utc_now(), detail=str(error))
     finally:
-        cleanup_error = remove_worktree(root, slot)
+        cleanup_error = remove_worktree(root, slot, machine)
         if cleanup_error:
             state["cleanup_error"] = cleanup_error
             state["state"] = "failed"

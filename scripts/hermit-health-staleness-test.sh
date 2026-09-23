@@ -26,15 +26,16 @@ ok()   { PASS=$(( PASS + 1 )); }
 check() { if [ "$1" = "yes" ]; then ok; else fail "$2" "${3:-}"; fi; }
 
 # A fake `systemctl` whose answers are scripted per case. It handles exactly the
-# two queries the alarm makes, and fails loudly on anything else so a future
+# three queries the alarm makes, and fails loudly on anything else so a future
 # query cannot silently read as "absent".
-make_systemctl() { # <dir> <last-trigger-date-or-empty> <is-active-state>
-    local dir=$1 trigger=$2 state=$3
+make_systemctl() { # <dir> <last-trigger-date-or-empty> <is-active-state> [active-enter-date]
+    local dir=$1 trigger=$2 state=$3 active_enter=${4:-}
     cat > "$dir/systemctl" <<EOF
 #!/usr/bin/env bash
 for a in "\$@"; do
   case "\$a" in
     LastTriggerUSec) printf '%s\n' '$trigger'; exit 0 ;;
+    ActiveEnterTimestamp) printf '%s\n' '$active_enter'; exit 0 ;;
     is-active)       printf '%s\n' '$state';   exit 0 ;;
   esac
 done
@@ -45,12 +46,12 @@ EOF
 }
 
 # Run the alarm against a fixture. Echoes the alarm log it produced.
-#   run_case <heartbeat-age-s|missing> <productive-age-s> <trigger-date|""> <state> [heartbeat-last-line] [stat-shim]
+#   run_case <heartbeat-age-s|missing> <productive-age-s> <trigger-date|""> <state> [heartbeat-last-line] [stat-shim] [active-enter-date]
 run_case() {
-    local hb_age=$1 pr_age=$2 trigger=$3 state=$4 hb_line=${5:-} stat_shim=${6:-}
+    local hb_age=$1 pr_age=$2 trigger=$3 state=$4 hb_line=${5:-} stat_shim=${6:-} active_enter=${7:-}
     local d; d="$(mktemp -d)"
     mkdir -p "$d/bin"
-    make_systemctl "$d/bin" "$trigger" "$state"
+    make_systemctl "$d/bin" "$trigger" "$state" "$active_enter"
     : > "$d/orc-msg"; chmod +x "$d/orc-msg"   # stub: never pushes anywhere
     printf '#!/usr/bin/env bash\nexit %s\n' "${CASE_ORC_RC:-0}" > "$d/orc-msg"
     chmod +x "$d/orc-msg"
@@ -160,10 +161,38 @@ check "$([[ $out == *"TIMER DEAD"* ]] && echo yes || echo no)" \
 check "$([[ $out == *"NEVER"* ]] && echo yes || echo no)" \
       "never-fired timer: says NEVER rather than a bogus age"
 
-# --- 6. Missing heartbeat log is unchanged -----------------------------------
+# --- 6. Missing heartbeat does not race first activation ---------------------
+recent_active="$(date -d @$(( $(date +%s) - 30 )))"
+out="$(run_case missing "$stale_age" "" inactive "" "" "$recent_active")"
+check "$([[ $out == *"BOOTSTRAP-GRACE"* ]] && echo yes || echo no)" \
+      "first activation: bounded grace is explicit" "got: $out"
+check "$([[ $out != *"ALARM"* ]] && echo yes || echo no)" \
+      "first activation: watchdog cannot beat initial tick and page"
+
+out="$(run_case missing "$stale_age" "" activating)"
+check "$([[ $out == *"BOOTSTRAP-GRACE"* ]] && echo yes || echo no)" \
+      "initial tick running: bounded grace is explicit" "got: $out"
+check "$([[ $out != *"ALARM"* ]] && echo yes || echo no)" \
+      "initial tick running: missing heartbeat does not page"
+
+# Once all live/bootstrap evidence is older than the threshold, a missing
+# heartbeat remains a real alarm. The grace must not weaken the detector.
+out="$(run_case missing "$stale_age" "" inactive "" "" "$old")"
+check "$([[ $out == *"heartbeat log MISSING"* ]] && echo yes || echo no)" \
+      "expired first-activation grace: still alarms" "got: $out"
+
+# A recurring timer that keeps firing must not renew bootstrap grace forever.
+# Once the timer itself has been active longer than the grace window, a recent
+# trigger plus no heartbeat is failed work, not initialization and not silence.
+out="$(run_case missing "$stale_age" "$recent" inactive "" "" "$old")"
+check "$([[ $out == *"ALARM: TICKS NOT COMPLETING"* ]] && echo yes || echo no)" \
+      "missing heartbeat after bootstrap: recent trigger still alarms" "got: $out"
+check "$([[ $out != *"TIMER DEAD"* ]] && echo yes || echo no)" \
+      "missing heartbeat after bootstrap: live timer is not mislabeled dead"
+
 out="$(run_case missing "$stale_age" "$old" inactive)"
 check "$([[ $out == *"heartbeat log MISSING"* ]] && echo yes || echo no)" \
-      "missing heartbeat: preserved behaviour" "got: $out"
+      "missing heartbeat after grace: still alarms" "got: $out"
 
 # --- 7. SELF-CORRECTION: premise withdrawn between observation and decision --
 # A `stat` shim that reports the heartbeat STALE on its first call and FRESH

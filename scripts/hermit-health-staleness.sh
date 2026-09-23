@@ -8,11 +8,11 @@
 # silence is as invisible as the 38h gap that motivated it.
 #
 # WHAT WAKES THIS ALARM (the recursive question): an INDEPENDENT trigger —
-# hermit-health-staleness.timer (systemd --user, OnUnitActiveSec=10min), which
-# re-arms off its OWN last activation, NOT off the tick service. A stopped
-# tick-hub therefore does NOT stop this watchdog; they do not share fate at the
-# application layer. The only common substrate is the systemd --user manager
-# itself (Linger=yes survives reboot, Persistent=true catches up missed runs).
+# hermit-health-staleness.timer (systemd --user, OnCalendar every 10 minutes).
+# A stopped tick-hub therefore does NOT stop this watchdog; they do not share
+# fate at the application layer. The only common substrate is the systemd
+# --user manager itself (Linger=yes survives reboot, Persistent=true catches up
+# one missed calendar run).
 #
 # ---------------------------------------------------------------------------
 # TWO FILES, TWO FACTS. Watching the wrong one makes the alarm useless.
@@ -123,6 +123,17 @@ timer_last_trigger_epoch() {
     date -d "$raw" +%s 2>/dev/null || echo 0
 }
 
+# When the monitored timer entered its current active state. This supplies the
+# bounded origin for a first-install grace period before any tick has fired.
+# Without it, a persistent watchdog timer can catch up immediately and mistake
+# "the health timer has only just been enabled" for "the health timer is dead".
+timer_active_enter_epoch() {
+    local raw
+    raw="$("$SYSTEMCTL" --user show "$TIMER_UNIT" -p ActiveEnterTimestamp --value 2>/dev/null)"
+    [ -n "$raw" ] || { echo 0; return; }
+    date -d "$raw" +%s 2>/dev/null || echo 0
+}
+
 # Whether a tick is executing RIGHT NOW. `activating` is included deliberately:
 # a Type=oneshot service sits in `activating/start` for its entire run, so
 # omitting it would miss exactly the long-running case this exists to catch.
@@ -136,7 +147,9 @@ service_is_running() {
 }
 
 service_state_text() {
-    "$SYSTEMCTL" --user is-active "$SERVICE_UNIT" 2>/dev/null || echo unknown
+    local state
+    state="$("$SYSTEMCTL" --user is-active "$SERVICE_UNIT" 2>/dev/null)" || true
+    printf '%s\n' "${state:-unknown}"
 }
 
 # The last INVOCATION RECORD, not merely the last line. The heartbeat file also
@@ -233,6 +246,21 @@ pr_mt="$(stat -c %Y "$PRODUCTIVE" 2>/dev/null || echo 0)"
 
 # ---- PRIMARY: is the monitor ALIVE? (the real 38h-silence detector) ---------
 if [ "$hb_mt" -eq 0 ]; then
+    trig="$(timer_last_trigger_epoch)"
+    active_since="$(timer_active_enter_epoch)"
+    svc="$(service_state_text)"
+    trig_age=$(( trig > 0 ? now - trig : THRESH + 1 ))
+    active_age=$(( active_since > 0 ? now - active_since : THRESH + 1 ))
+    if [ "$svc" = active ] || [ "$svc" = activating ] || [ "$svc" = reloading ] \
+       || { [ "$active_since" -gt 0 ] && [ "$active_age" -ge 0 ] && [ "$active_age" -le "$THRESH" ]; }; then
+        echo "$(ts) BOOTSTRAP-GRACE: heartbeat log is not present yet; ${SERVICE_UNIT}=${svc}, ${TIMER_UNIT} last_trigger_age=${trig_age}s active_age=${active_age}s. Waiting through the ${THRESH}s initialization window before declaring the timer dead." >>"$LOG"
+        exit 0
+    fi
+    if [ "$trig" -gt 0 ] && [ "$trig_age" -ge 0 ] && [ "$trig_age" -le "$THRESH" ]; then
+        page "$COOLDOWN_STAMP" "$COOLDOWN" \
+            "ALARM: TICKS NOT COMPLETING (timer is ALIVE): heartbeat log MISSING ($HEARTBEAT), but ${TIMER_UNIT} last fired ${trig_age}s ago and ${SERVICE_UNIT} is ${svc}. The bootstrap grace has expired, so the timer is firing and the work is failing before its first invocation record. Diagnose: systemctl --user status ${SERVICE_UNIT}; journalctl --user -u ${SERVICE_UNIT} -n 50."
+        exit 0
+    fi
     page "$COOLDOWN_STAMP" "$COOLDOWN" \
         "ALARM: TIMER DEAD — heartbeat log MISSING ($HEARTBEAT). No tick has EVER been observed: tick-hub state is UNKNOWN, NOT healthy (absence of a tick is not proof of health — UNKNOWN and HEALTHY are different). This alarm could not verify the monitor is alive. The operational health tick is not running at all (the 38h-silence failure mode). Diagnose: systemctl --user status hermit-health-tick.timer hermit-health-tick.service."
     exit 0

@@ -5,12 +5,15 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 libexec_dir=$HOME/.local/libexec/dev-hermit
 bootstrap=$libexec_dir/operational-tool
+staleness_watchdog=$libexec_dir/health-staleness
 install_label=wrkslots-audit
 github_helper=$libexec_dir/gh
 service=hermit-wrkslots-audit.service
 timer=hermit-wrkslots-audit.timer
 health_service=hermit-health-tick.service
 health_timer=hermit-health-tick.timer
+staleness_service=hermit-health-staleness.service
+staleness_timer=hermit-health-staleness.timer
 start=0
 
 if [[ ${1:-} == --start ]]; then
@@ -82,7 +85,8 @@ fi
 
 install -d -m 0755 "$unit_dir" "$libexec_dir"
 github_helper_staging=$(mktemp "$libexec_dir/.gh.XXXXXX")
-trap '[[ -z ${github_helper_staging:-} ]] || rm -f -- "$github_helper_staging"' EXIT
+staleness_staging=
+trap '[[ -z ${github_helper_staging:-} ]] || rm -f -- "$github_helper_staging"; [[ -z ${staleness_staging:-} ]] || rm -f -- "$staleness_staging"' EXIT
 install -m 0555 "$github_helper_source_fd" "$github_helper_staging"
 cmp --silent "$github_helper_source_fd" "$github_helper_staging" || {
     printf 'wrkslots-audit install: staged GitHub credential helper differs from source\n' >&2
@@ -90,11 +94,21 @@ cmp --silent "$github_helper_source_fd" "$github_helper_staging" || {
 }
 mv -fT -- "$github_helper_staging" "$github_helper"
 github_helper_staging=
+staleness_staging=$(mktemp "$libexec_dir/.health-staleness.XXXXXX")
+install -m 0555 "$root/scripts/hermit-health-staleness.sh" "$staleness_staging"
+cmp --silent "$root/scripts/hermit-health-staleness.sh" "$staleness_staging" || {
+    printf 'wrkslots-audit install: staged staleness watchdog differs from source\n' >&2
+    exit 1
+}
+mv -fT -- "$staleness_staging" "$staleness_watchdog"
+staleness_staging=
 install -m 0555 "$root/scripts/hermit-health-tick.sh" "$bootstrap"
 install -m 0644 "$root/scripts/systemd/$service" "$unit_dir/"
 install -m 0644 "$root/scripts/systemd/$timer" "$unit_dir/"
 install -m 0644 "$root/scripts/systemd/$health_service" "$unit_dir/"
 install -m 0644 "$root/scripts/systemd/$health_timer" "$unit_dir/"
+install -m 0644 "$root/scripts/systemd/$staleness_service" "$unit_dir/"
+install -m 0644 "$root/scripts/systemd/$staleness_timer" "$unit_dir/"
 
 cmp --silent "$root/scripts/hermit-health-tick.sh" "$bootstrap" || {
     printf 'wrkslots-audit install: installed operational bootstrap differs from source\n' >&2
@@ -109,6 +123,14 @@ cmp --silent "$github_helper_source_fd" "$github_helper" || {
     exit 1
 }
 exec {github_helper_fd}<&-
+[[ ! -L $staleness_watchdog && -f $staleness_watchdog && -x $staleness_watchdog ]] || {
+    printf 'wrkslots-audit install: installed staleness watchdog is not a regular executable\n' >&2
+    exit 1
+}
+cmp --silent "$root/scripts/hermit-health-staleness.sh" "$staleness_watchdog" || {
+    printf 'wrkslots-audit install: installed staleness watchdog differs from source\n' >&2
+    exit 1
+}
 grep -Fq \
     'ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool' \
     "$unit_dir/$service" || {
@@ -141,15 +163,35 @@ grep -Fxq 'Persistent=true' "$unit_dir/$timer" || {
     printf 'wrkslots-audit install: timer lacks persistent catch-up\n' >&2
     exit 1
 }
+grep -Fq \
+    'ExecStart=%h/.local/libexec/dev-hermit/health-staleness' \
+    "$unit_dir/$staleness_service" || {
+    printf 'wrkslots-audit install: staleness service does not execute the tracked watchdog\n' >&2
+    exit 1
+}
+grep -Fxq 'Unit=hermit-health-staleness.service' "$unit_dir/$staleness_timer" || {
+    printf 'wrkslots-audit install: staleness timer does not target its service\n' >&2
+    exit 1
+}
+grep -Fxq 'OnCalendar=*:0/10' "$unit_dir/$staleness_timer" || {
+    printf 'wrkslots-audit install: staleness timer does not carry the 10-minute calendar cadence\n' >&2
+    exit 1
+}
+grep -Fxq 'Persistent=true' "$unit_dir/$staleness_timer" || {
+    printf 'wrkslots-audit install: staleness timer lacks persistent catch-up\n' >&2
+    exit 1
+}
 
 systemctl --user daemon-reload
-systemctl --user enable "$timer" "$health_timer"
+systemctl --user enable "$timer" "$health_timer" "$staleness_timer"
 
 source_head=$(git -C "$root" rev-parse --verify 'HEAD^{commit}')
 bootstrap_sha=$(sha256sum -- "$bootstrap" | awk '{print $1}')
+staleness_watchdog_sha=$(sha256sum -- "$staleness_watchdog" | awk '{print $1}')
 github_helper_sha=$(sha256sum -- "$github_helper" | awk '{print $1}')
-printf 'wrkslots-audit install: source_parent_sha=%s bootstrap_sha256=%s bootstrap=%s github_helper_source=%s github_helper_sha256=%s github_helper=%s\n' \
-    "$source_head" "$bootstrap_sha" "$bootstrap" "$github_helper_source" \
+printf 'wrkslots-audit install: source_parent_sha=%s bootstrap_sha256=%s bootstrap=%s staleness_watchdog_sha256=%s staleness_watchdog=%s github_helper_source=%s github_helper_sha256=%s github_helper=%s\n' \
+    "$source_head" "$bootstrap_sha" "$bootstrap" \
+    "$staleness_watchdog_sha" "$staleness_watchdog" "$github_helper_source" \
     "$github_helper_sha" "$github_helper"
 
 if [[ $start -eq 1 ]]; then
@@ -158,8 +200,8 @@ if [[ $start -eq 1 ]]; then
     # `start` is a no-op for an active timer: after the hourly wrkslots timer was
     # changed from OnActiveSec to OnCalendar, it stayed active with Trigger=n/a
     # until explicitly restarted.
-    systemctl --user restart "$timer" "$health_timer"
-    systemctl --user status --no-pager "$timer" "$health_timer"
+    systemctl --user restart "$timer" "$health_timer" "$staleness_timer"
+    systemctl --user status --no-pager "$timer" "$health_timer" "$staleness_timer"
 else
     printf 'wrkslots-audit install: timers enabled but not started; rerun with --start after verifying the installed units\n'
 fi

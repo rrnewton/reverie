@@ -12,11 +12,12 @@ Type=oneshot
 # in ExecStart/WorkingDirectory, and a hardcoded owner path fails the parent's
 # portability gate.
 Environment=PATH=%h/.cargo/bin:%h/orc-bin:/usr/local/bin:/usr/bin:/bin
-WorkingDirectory=%h/work/dev-hermit
-# Runs the VERSION-CONTROLLED copy directly. It previously ran an untracked
-# script under ~/.local/bin, so the thing executing was not the thing reviewed
-# and could drift from the repository silently.
-ExecStart=%h/work/dev-hermit/scripts/hermit-health-staleness.sh
+WorkingDirectory=%h
+# The installer atomically publishes a read-only, byte-verified copy here. Do
+# not execute through the shared parent checkout: it can be dirty, stale, or
+# absent, and none of those states may substitute different watchdog code for
+# the version the installer reviewed.
+ExecStart=%h/.local/libexec/dev-hermit/health-staleness
 TimeoutStartSec=120
 
 [Install]

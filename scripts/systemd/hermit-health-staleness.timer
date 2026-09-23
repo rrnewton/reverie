@@ -1,14 +1,16 @@
 [Unit]
 Description=Check dev-hermit health-tick liveness every 10 minutes
 Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/hermit-health-staleness.sh
+# Ordering is not a dependency: if both timers are started in one transaction,
+# make the monitored timer active first so the watchdog can measure its bounded
+# bootstrap grace. The watchdog still runs when health-tick is absent or dead.
+After=hermit-health-tick.timer
 
 [Timer]
-OnBootSec=8min
-# Re-arms off THIS timer's own last activation, not off hermit-health-tick. A
-# stopped tick therefore does not stop the alarm that watches it; the two share
-# no fate at the application layer.
-OnUnitActiveSec=10min
-# Run a missed check after suspend/downtime instead of silently skipping it.
+# A real calendar schedule makes Persistent=true meaningful: systemd runs one
+# missed check after downtime. This schedule is independent of health-tick, so
+# a stopped tick cannot stop the alarm that watches it.
+OnCalendar=*:0/10
 Persistent=true
 AccuracySec=1min
 Unit=hermit-health-staleness.service

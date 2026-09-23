@@ -370,16 +370,25 @@ class PressureScheduleTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             with mock.patch.object(
+                pressure_schedule.socket,
+                "gethostname",
+                return_value="devbig030.facebook.com",
+            ) as gethostname, mock.patch.object(
                 pressure_schedule.subprocess, "run", side_effect=run
             ):
                 self.assertEqual(
                     pressure_schedule.run_campaign("a" * 40, record, root), 0
                 )
+            gethostname.assert_called_once_with()
             self.assertTrue(calls[0][0].endswith("ci-hub/bin/wrkslots"))
             self.assertTrue(
                 calls[0][0].startswith(str(pressure_schedule.SOURCE_ROOT))
             )
             self.assertIn("create", calls[0])
+            self.assertLess(calls[0].index("--machine"), calls[0].index("create"))
+            self.assertEqual(
+                calls[0][calls[0].index("--machine") + 1], "devbig030"
+            )
             self.assertIn("--slot-type", calls[0])
             self.assertIn("validate", calls[0])
             self.assertIn("submodule", calls[1])
@@ -394,6 +403,10 @@ class PressureScheduleTest(unittest.TestCase):
             self.assertIn("bench", calls[2])
             self.assertTrue(calls[3][0].endswith("ci-hub/bin/wrkslots"))
             self.assertIn("remove", calls[3])
+            self.assertLess(calls[3].index("--machine"), calls[3].index("remove"))
+            self.assertEqual(
+                calls[3][calls[3].index("--machine") + 1], "devbig030"
+            )
             self.assertIn("--validate-complete", calls[3])
             finished = pressure_schedule.run_registry.read_record(record)
             self.assertEqual(finished["state"], "completed")
