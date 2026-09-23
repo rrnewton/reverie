@@ -3502,6 +3502,123 @@ mod tests {
     }
 
     #[test]
+    fn missing_derived_proof_keeps_mixed_history_exclusions_and_present_refusals() {
+        let commit = "f".repeat(40);
+        let ordinary = history_row(8, "ordinary-record", "ordinary-run", &commit);
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-derived-lookup-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let load = |row: &HistoryRow, raw: &Value| {
+            crate::compatibility_census::load_at(row, raw, Some(&root))
+        };
+        let baseline =
+            parse_jsonl::<HistoryRow>(&jsonl(std::slice::from_ref(&ordinary)), "HistoryRow")
+                .unwrap();
+        let expected = project_history_with(&baseline, None, load).unwrap();
+        for (field, value, refusal) in [
+            (
+                "profile",
+                "only-hosted-portable".into(),
+                "original terminal clean schema-5 full run",
+            ),
+            (
+                "selection_mode",
+                "only".into(),
+                "original terminal clean schema-5 full run",
+            ),
+            (
+                "tree_dirty",
+                true.into(),
+                "original terminal clean schema-5 full run",
+            ),
+            (
+                "finished_at",
+                Value::Null,
+                "original terminal clean schema-5 full run",
+            ),
+            (
+                "raw_result_input_census_v1",
+                Value::Null,
+                "invalid raw result census",
+            ),
+        ] {
+            let mut row = history_row(5, "unproved-record", "unproved-run", &commit);
+            row["commit_anchored"] = true.into();
+            row["cell_results"] = Value::Null;
+            row["raw_result_input_census_v1"] = serde_json::json!({
+                "schema": 1, "run_id": "unproved-run", "hermit_sha": commit,
+                "files": [{"path": "portable/results.jsonl", "bytes": 10, "sha256": "a".repeat(64),
+                    "rows": [{"line": 1, "cell": cell_identity(), "attempt": 1}]}],
+            });
+            row[field] = value;
+            let binding = [
+                "schema_version",
+                "run_id",
+                "record_id",
+                "commit",
+                "tree_dirty",
+                "commit_anchored",
+                "profile",
+                "selection_mode",
+                "started_at",
+                "finished_at",
+                "result",
+                "exit_code",
+                "validation_complete",
+                "raw_result_input_census_v1",
+            ]
+            .into_iter()
+            .map(|key| (key.to_owned(), row[key].clone()))
+            .collect::<Map<_, _>>();
+            let raw_digest = sha256(&canonical_bytes(&row["raw_result_input_census_v1"]));
+            let binding_digest = sha256(&canonical_bytes(&Value::Object(binding)));
+            let path = root.join(format!(
+                "ignored/validate/artifacts/unproved-run/website-derived-census-{raw_digest}-{binding_digest}.json"
+            ));
+            let parsed =
+                parse_jsonl::<HistoryRow>(&jsonl(&[ordinary.clone(), row]), "HistoryRow").unwrap();
+            let absent = project_history_with(&parsed, None, load).unwrap();
+            assert_eq!(absent.history, expected.history, "{field}");
+            assert_eq!(absent.current, expected.current, "{field}");
+            assert!(!absent.exclusion_counts.is_empty(), "{field}");
+
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            // Neither a malformed operand nor a non-ENOENT lookup error is absence.
+            std::fs::write(&path, b"{}\n").unwrap();
+            assert!(project_history_with(&parsed, None, load)
+                .unwrap_err()
+                .contains("missing field"));
+            std::fs::remove_file(&path).unwrap();
+            std::os::unix::fs::symlink("missing-target", &path).unwrap();
+            assert!(project_history_with(&parsed, None, load)
+                .unwrap_err()
+                .contains("cannot open derived census"));
+            std::fs::remove_file(&path).unwrap();
+
+            let operand = serde_json::json!({
+                "schema": 1, "authority": "writer_verified_raw_census_v1", "run_id": "unproved-run",
+                "record_id": "unproved-record", "hermit_sha": commit,
+                "raw_census_sha256": raw_digest, "history_binding_sha256": binding_digest,
+                "attempts": [],
+            });
+            let mut bytes = canonical_bytes(&operand);
+            bytes.push(b'\n');
+            std::fs::write(&path, bytes).unwrap();
+            assert!(
+                project_history_with(&parsed, None, load)
+                    .unwrap_err()
+                    .contains(refusal),
+                "{field}"
+            );
+            std::fs::remove_file(&path).unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn historical_source_requires_an_admitted_terminal_row() {
         let commit = "f".repeat(40);
         let row = history_row(8, "record-eight", "run-eight", &commit);

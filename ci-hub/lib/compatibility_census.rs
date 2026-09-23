@@ -401,13 +401,22 @@ pub(crate) fn load_at(
     if row.schema_version != Some(5) || raw.get("raw_result_input_census_v1").is_none() {
         return Ok(None);
     }
-    let census = original_census(row)?;
     let Some(root) = root else {
         return Ok(None);
     };
+    // Discover the retained operand before applying its admission contract.
+    // Ordinary history also contains schema-5 subset runs without this proof.
+    // A present operand still reaches the unchanged strict validation below.
+    let run_id = row_identity(raw, "run_id")?;
+    if run_id.trim().is_empty()
+        || run_id.contains(['/', '\\', '\0'])
+        || matches!(run_id.as_str(), "." | "..")
+    {
+        return Err("derived run identity is not a safe path component".into());
+    }
     let relative = format!(
         "ignored/validate/artifacts/{}/website-derived-census-{}-{}.json",
-        census.run_id,
+        run_id,
         json_digest(&raw["raw_result_input_census_v1"]),
         json_digest(&history_binding(raw))
     );
