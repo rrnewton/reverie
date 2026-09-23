@@ -110,6 +110,20 @@ impl ThreadOwnership {
     }
 }
 
+/// One backend-internal request for deterministic bootstrap entropy.
+///
+/// This is not a guest syscall event. A backend may use it only after
+/// [`Tool::handle_post_exec`] has initialized the existing thread state and
+/// before ordinary guest execution begins. The narrow request lets a backend
+/// reproduce unavoidable libc bootstrap state without consulting host entropy
+/// or exposing controller work to the Tool's syscall scheduler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum BackendBootstrapEntropy {
+    /// The eight-byte glibc `ptmalloc` tcache double-free key.
+    PtmallocTcacheKey,
+}
+
 /// The global half of a complete Reverie tool.
 ///
 /// One global instance of this type will exist at runtime (singleton). This
@@ -490,6 +504,22 @@ pub trait Tool: Send + Sync + Default {
     /// times a process successfully calls `execve`.
     async fn handle_post_exec<T: Guest<Self>>(&self, _guest: &mut T) -> Result<(), Errno> {
         Ok(())
+    }
+
+    /// Supplies deterministic bytes for one authenticated backend bootstrap
+    /// operation without manufacturing a guest syscall callback.
+    ///
+    /// Implementations must use only deterministic Tool state and must define
+    /// state consumption consistently across in-scope backends. Returning an
+    /// error refuses the backend operation. The default is fail-closed because
+    /// substituting host randomness, wall-clock data, or fixed bytes can make a
+    /// run repeatable while still breaking ptrace parity.
+    fn handle_backend_bootstrap_entropy(
+        &self,
+        _thread_state: &mut Self::ThreadState,
+        _request: BackendBootstrapEntropy,
+    ) -> Result<[u8; 8], Errno> {
+        Err(Errno::ENOSYS)
     }
 
     /// The tool receives an event from the guest, via the Reverie program

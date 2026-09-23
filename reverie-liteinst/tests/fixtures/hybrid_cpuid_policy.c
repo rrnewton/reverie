@@ -52,17 +52,27 @@ static count_fn load_count(const char *name) {
 
 static guest_fn fallback_guest(size_t page, void **mapping_out,
                                uint64_t *site_out) {
-  unsigned char *mapping = mmap(NULL, page, PROT_READ | PROT_WRITE | PROT_EXEC,
+  unsigned char *mapping = mmap(NULL, page, PROT_READ | PROT_WRITE,
                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (mapping == MAP_FAILED) {
     return NULL;
   }
-  unsigned char *site = mapping + page - 7;
-  const unsigned char code[] = {0xb8, 0x27, 0x00, 0x00, 0x00,
-                                0x0f, 0x05, 0xc3};
+  unsigned char *site = mapping + page - 32;
+  // The jump is executable guest control flow. The helper's authenticated
+  // eight-byte scanner instead reaches reserved 0f 04 at source offset four,
+  // after it has saved and must restore the disabled CPUID policy.
+  const unsigned char code[] = {
+      0xb8, 0x27, 0x00, 0x00, 0x00, 0x0f, 0x05, 0xeb, 0x0c,
+      0x0f, 0x04, 0x0f, 0x04, 0x0f, 0x04, 0x0f, 0x04, 0x0f, 0x04,
+      0x0f, 0x04, 0xc3,
+  };
   unsigned char *entry = site - 5;
   memcpy(entry, code, sizeof(code));
   __builtin___clear_cache((char *)entry, (char *)entry + sizeof(code));
+  if (mprotect(mapping, page, PROT_READ | PROT_EXEC) != 0) {
+    munmap(mapping, page);
+    return NULL;
+  }
   *mapping_out = mapping;
   *site_out = (uint64_t)(uintptr_t)site;
   return (guest_fn)entry;

@@ -7,6 +7,7 @@ use std::io;
 use std::sync::OnceLock;
 
 use liteinst2::trampoline::HookContext;
+use liteinst2::trampoline::SavedExtendedStateDescriptor;
 use reverie_preload::trap::frame::FrameError;
 use reverie_preload::trap::frame::SavedState;
 use reverie_preload::trap::frame::SignalFrame;
@@ -19,7 +20,7 @@ static SAVE_CONFIG: OnceLock<Result<(), &'static str>> = OnceLock::new();
 static CALLBACK_MXCSR: u32 = 0x1f80;
 
 const _: () = {
-    assert!(core::mem::size_of::<HookContext>() == 144);
+    assert!(core::mem::size_of::<HookContext>() == 176);
     assert!(core::mem::offset_of!(HookContext, r11) == 48);
     assert!(core::mem::offset_of!(HookContext, rflags) == 136);
 };
@@ -183,9 +184,9 @@ pub(crate) fn initialize() -> io::Result<()> {
         let owner = Box::new(Continuation {
             stack,
             saved,
-            // HookContext is exclusively integer fields; zero is a valid
-            // preparation value, overwritten by the actual first signal.
-            context: unsafe { core::mem::zeroed() },
+            // A fallback-created context has no trampoline-owned saved-state
+            // image. Default makes that unavailable descriptor explicit.
+            context: HookContext::default(),
             owner_tid: current_tid(),
             generation: 0,
             phase: Phase::Idle,
@@ -247,26 +248,30 @@ pub(crate) fn prepare_signal(
 
 fn context_from_image(saved: &SavedState, instruction: u64) -> HookContext {
     let r = &saved.registers;
-    HookContext {
-        instruction_pointer: instruction,
-        stack_pointer: r[libc::REG_RSP as usize] as u64,
-        rax: r[libc::REG_RAX as usize] as u64,
-        rbx: r[libc::REG_RBX as usize] as u64,
-        rcx: r[libc::REG_RCX as usize] as u64,
-        rdx: r[libc::REG_RDX as usize] as u64,
-        rsi: r[libc::REG_RSI as usize] as u64,
-        rdi: r[libc::REG_RDI as usize] as u64,
-        rbp: r[libc::REG_RBP as usize] as u64,
-        r8: r[libc::REG_R8 as usize] as u64,
-        r9: r[libc::REG_R9 as usize] as u64,
-        r10: r[libc::REG_R10 as usize] as u64,
-        r11: r[libc::REG_R11 as usize] as u64,
-        r12: r[libc::REG_R12 as usize] as u64,
-        r13: r[libc::REG_R13 as usize] as u64,
-        r14: r[libc::REG_R14 as usize] as u64,
-        r15: r[libc::REG_R15 as usize] as u64,
-        rflags: r[libc::REG_EFL as usize] as u64,
-    }
+    let mut context = HookContext::default();
+    context.instruction_pointer = instruction;
+    context.stack_pointer = r[libc::REG_RSP as usize] as u64;
+    context.rax = r[libc::REG_RAX as usize] as u64;
+    context.rbx = r[libc::REG_RBX as usize] as u64;
+    context.rcx = r[libc::REG_RCX as usize] as u64;
+    context.rdx = r[libc::REG_RDX as usize] as u64;
+    context.rsi = r[libc::REG_RSI as usize] as u64;
+    context.rdi = r[libc::REG_RDI as usize] as u64;
+    context.rbp = r[libc::REG_RBP as usize] as u64;
+    context.r8 = r[libc::REG_R8 as usize] as u64;
+    context.r9 = r[libc::REG_R9 as usize] as u64;
+    context.r10 = r[libc::REG_R10 as usize] as u64;
+    context.r11 = r[libc::REG_R11 as usize] as u64;
+    context.r12 = r[libc::REG_R12 as usize] as u64;
+    context.r13 = r[libc::REG_R13 as usize] as u64;
+    context.r14 = r[libc::REG_R14 as usize] as u64;
+    context.r15 = r[libc::REG_R15 as usize] as u64;
+    context.rflags = r[libc::REG_EFL as usize] as u64;
+    debug_assert_eq!(
+        context.saved_extended_state(),
+        SavedExtendedStateDescriptor::UNAVAILABLE
+    );
+    context
 }
 
 fn commit_context(owner: &mut Continuation) -> Result<(), FrameError> {

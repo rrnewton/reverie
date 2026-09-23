@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["preload-constructor"]
 preload-constructor = []
+liteinst-after-loader-experiment = ["reverie-ptrace/liteinst-after-loader-experiment"]
 
 [[bin]]
 name = "reverie-liteinst-strace"
@@ -29,7 +30,7 @@ path = "src/bin/lifecycle_guest.rs"
 [dependencies]
 bincode = { version = "2", features = ["serde"] }
 libc = "0.2.186"
-liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "4dab7f01d4d6d394e968fbfad842019f72743c81" }
+liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "9d8ab600159c9be040e0adff4d12c686ad35aee8" }
 reverie = { version = "0.2.0", path = "../reverie", package = "reverie-core" }
 reverie-preload = { version = "0.2.0", path = "../reverie-preload", default-features = false, features = ["coordinator-rpc"] }
 reverie-ptrace = { version = "0.2.0", path = "../reverie-ptrace" }
@@ -40,6 +41,8 @@ tempfile = "3.27.0"
 tracing = "0.1.41"
 
 [dev-dependencies]
+goblin = { version = "0.10.7", features = ["elf32", "elf64", "endian_fd"] }
+sha2 = "0.10.9"
 tokio = { version = "1.52.4", features = ["test-util"] }
 tracing-subscriber = "0.3.23"
 
@@ -70,3 +73,13 @@ path = "tests/rpc_tool.rs"
 [[test]]
 name = "lifecycle"
 path = "tests/lifecycle.rs"
+
+[[test]]
+name = "after_loader"
+path = "tests/after_loader.rs"
+required-features = ["liteinst-after-loader-experiment"]
+
+[[test]]
+name = "preparation_allocator"
+path = "tests/preparation_allocator.rs"
+harness = false

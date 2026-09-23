@@ -40,7 +40,7 @@ jobs:
       run: reverie-dbt/scripts/test-identity-policy.sh
     - name: Test regular workspace cases
       run: >-
-        cargo test --workspace --all-features --
+        cargo test --workspace --all-features --exclude reverie-liteinst --
         --test-threads=1
         --skip container::tests::bind_to_low_port
         --skip container::tests::mount_error_from_child_is_returned
@@ -62,10 +62,26 @@ jobs:
         --skip tests::port_isolation
         --skip tests::seccomp_notify
         --skip tests::uid_namespace
+    - name: Test LiteInst constructor mode
+      run: cargo test -p reverie-liteinst -- --test-threads=1
+    - name: Verify LiteInst test inventory and after-loader compile
+      run: scripts/check-liteinst-after-loader-test-inventory.sh
+    - name: Test LiteInst after-loader exact comparator
+      run: >-
+        cargo test -p reverie-liteinst --release --test after_loader
+        --no-default-features --features liteinst-after-loader-experiment --
+        exact_clock_trajectory_comparator_refuses_mutation_loss_duplication_and_reordering
+        --exact
     - name: Documentation tests
       run: cargo test --workspace --doc
     - name: Clippy
-      run: cargo clippy --workspace --all-targets --all-features
+      run: cargo clippy --workspace --all-targets --all-features --exclude reverie-liteinst
+    - name: Clippy LiteInst constructor mode
+      run: cargo clippy -p reverie-liteinst --all-targets
+    - name: Clippy LiteInst after-loader mode
+      run: >-
+        cargo clippy -p reverie-liteinst --all-targets
+        --no-default-features --features liteinst-after-loader-experiment
     - name: Format
       run: cargo fmt --all -- --check
 
@@ -168,8 +184,12 @@ jobs:
           --soft-deadline 300 --hard-box 540 &
         watchdog=$!
         set +e
-        cargo test --workspace --all-features -- --test-threads=1
+        cargo test --workspace --all-features --exclude reverie-liteinst -- --test-threads=1
         status=$?
+        if [ "$status" -eq 0 ]; then
+          cargo test -p reverie-liteinst -- --test-threads=1
+          status=$?
+        fi
         kill "$watchdog" 2>/dev/null || true
         wait "$watchdog" 2>/dev/null || true
         exit "$status"

@@ -30,6 +30,8 @@
 #![cfg(target_os = "linux")]
 #![feature(internal_output_capture)]
 
+#[cfg(target_arch = "x86_64")]
+mod after_loader;
 mod backend;
 mod children;
 mod cp;
@@ -38,6 +40,8 @@ mod cp;
 mod debug;
 #[cfg(target_arch = "x86_64")]
 pub mod decoder;
+#[cfg(target_arch = "x86_64")]
+mod entry_call;
 mod error;
 mod gdbstub;
 mod in_guest;
@@ -47,6 +51,7 @@ mod perf;
 pub mod regs;
 mod stack;
 mod stats;
+pub mod target_loader;
 mod task;
 pub mod testing;
 mod timer;
@@ -54,7 +59,21 @@ mod tracer;
 mod validation;
 mod vdso;
 
+#[cfg(target_arch = "x86_64")]
+pub use after_loader::LiteinstAfterLoaderConfig;
+#[cfg(target_arch = "x86_64")]
+pub use after_loader::LiteinstAfterLoaderProfile;
+#[cfg(target_arch = "x86_64")]
+pub use after_loader::LiteinstCallerDiagnostics;
+#[cfg(target_arch = "x86_64")]
+pub use after_loader::LiteinstCallerImage;
+#[cfg(target_arch = "x86_64")]
+pub use after_loader::LiteinstCallerObservation;
 pub use backend::PtraceBackend;
+#[cfg(target_arch = "x86_64")]
+pub use error::LiteinstAfterLoaderAuthenticationFailure;
+#[cfg(target_arch = "x86_64")]
+pub use error::LiteinstAfterLoaderAuthenticationStage;
 pub use in_guest::InGuestRcbCounter;
 pub use injected_syscall::InjectedSyscallFrame;
 pub use liteinst_stats::LiteinstInstrumentationStats;
@@ -70,5 +89,9 @@ pub use tracer::Tracer;
 pub use tracer::TracerBuilder;
 pub use tracer::spawn_fn;
 pub use tracer::spawn_fn_with_config;
+#[cfg(target_arch = "x86_64")]
+pub use vdso::CurrentVdsoPatch;
 pub use vdso::VdsoSyscallSite;
 pub use vdso::patch_current_vdso;
+#[cfg(target_arch = "x86_64")]
+pub use vdso::patch_current_vdso_transaction;

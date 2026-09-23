@@ -216,6 +216,14 @@ pub unsafe extern "C" fn reverie_liteinst_initialize() {
 /// Version of the explicit host-runtime configuration layout.
 pub const HOST_RUNTIME_CONFIG_VERSION: u64 = 1;
 
+/// Version of the controller-serviced Begin/Ready and install-result ABI.
+///
+/// This version is independent of [`HOST_RUNTIME_CONFIG_VERSION`]. Version 12
+/// adds authenticated install entry, callback-stack geometry, and saved-XSTATE
+/// layout fields; controllers for an earlier handshake must be updated rather
+/// than interpreting its frame as a prefix-compatible layout.
+pub const HOST_RUNTIME_HANDSHAKE_VERSION: u64 = 12;
+
 /// Configuration for controller-owned host-runtime initialization.
 ///
 /// This selects the existing ptrace host runtime, not an in-process Tool. The
@@ -244,19 +252,24 @@ impl Default for HostRuntimeConfig {
 
 /// Initializes the host runtime from explicit controller configuration.
 ///
-/// Returns zero after the existing Begin/Ready handshake and instrumentation
+/// Returns zero after the version-12 Begin/Ready handshake and instrumentation
 /// preparation, or a negative errno on failure. Null or unsupported-version
 /// configuration is rejected before initialization starts. A repeated or
 /// reentrant valid host attempt returns `-EALREADY`, including after a preparation
 /// failure: partially published runtime state cannot be rolled back here.
 /// The existing constructor continues to select behavior from the environment.
+/// Explicit host preparation and every later site publication are quiescent:
+/// this path does not install the concurrent SIGTRAP router. A request for
+/// concurrent publication after explicit initialization is rejected.
 ///
 /// # Safety
 ///
 /// A non-null `config` must point to a readable, aligned [`HostRuntimeConfig`]
 /// for this call. The runtime must already be loaded and its TLS usable. The
 /// caller must keep other application threads stopped or absent, have no other
-/// runtime mode installed, and service the exact existing host handshake traps.
+/// runtime mode installed, and service the exact version-12 host handshake traps.
+/// Every later site installation must preserve that quiescence, including
+/// exclusion of signal handlers and other code writers from the patch window.
 /// This neither loads the runtime nor transfers an in-process Tool or scheduler.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_liteinst_initialize_host(

@@ -34,10 +34,17 @@
 //! # Coverage boundaries
 //!
 //! Established by the `research-ldpreload-derisking` task and enforced here:
-//! this runtime is for **trusted, dynamically linked, non-`AT_SECURE`, no-exec**
-//! x86-64 guests. It does not cover vDSO fast paths, the ~40 loader/startup
-//! syscalls before the constructor runs, static binaries, or `execve`. `fork`
-//! *is* fully covered because the kernel inherits the filter atomically.
+//! this runtime is for **trusted, glibc-linked, non-`AT_SECURE`, no-exec**
+//! x86-64 guests whose libc uses the canonical nine-byte
+//! `mov $SYS_rt_sigreturn,%rax; syscall` restorer. An unsupported libc encoding
+//! fails installation before SIGSYS disposition or seccomp is changed. The
+//! runtime does not cover vDSO fast paths, the ~40 loader/startup syscalls before
+//! the constructor runs, static binaries, or `execve`. `fork` *is* fully
+//! covered because the kernel inherits the filter atomically.
+//! "Trusted" includes control flow: a guest must not jump into the runtime's
+//! private syscall or signal-restorer instructions. Seccomp's exact-IP rules
+//! are dispatch gates, not causal authentication or control-flow integrity;
+//! ordinary guest syscall and custom-restorer sites remain intercepted.
 //!
 //! # Two ways to use it
 //!
@@ -151,7 +158,7 @@ impl SyscallDispatcher for SpoofGetpidDispatcher {
 /// # Safety
 ///
 /// Installs process-global, irreversible state. Call exactly once, before
-/// untrusted application threads start.
+/// creating any other thread and before untrusted application code starts.
 pub unsafe fn install(
     dispatcher: Box<dyn SyscallDispatcher>,
     controller: &dyn LifecycleController,
@@ -175,6 +182,9 @@ pub unsafe fn install_builtin(tool: BuiltinTool) -> io::Result<()> {
 ///
 /// Absent env var → the preload is inert (returns `Ok(())`), so an unrelated
 /// process that happens to have the `.so` on `LD_PRELOAD` is unaffected.
+/// When the variable is present, this must run from the dynamic-loader
+/// constructor while the process contains exactly the calling thread; the
+/// lifecycle-specific libc-restorer probe is not safe after thread creation.
 pub fn initialize_from_environment() -> io::Result<()> {
     let Some(value) = env::var_os(TOOL_ENV) else {
         return Ok(());
@@ -243,7 +253,8 @@ pub fn configure_command(command: &mut Command, tool: BuiltinTool) -> io::Result
 ///
 /// # Safety
 ///
-/// The loader must call this exactly once before application threads start.
+/// The loader must call this exactly once while the process contains only the
+/// calling thread and before application code starts.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_preload_initialize() {
     if let Err(error) = initialize_from_environment() {

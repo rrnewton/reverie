@@ -45,6 +45,323 @@ pub struct InjectedSyscallFrame {
     rip: u64,
 }
 
+const _: () = assert!(core::mem::size_of::<InjectedSyscallFrame>() == 18 * 8);
+const _: () = assert!(core::mem::offset_of!(InjectedSyscallFrame, flags) == 0);
+const _: () = assert!(core::mem::offset_of!(InjectedSyscallFrame, rax) == 15 * 8);
+const _: () = assert!(core::mem::offset_of!(InjectedSyscallFrame, rip) == 17 * 8);
+
+/// Stable LiteInst wire tag for a trampoline-owned extended-state image.
+///
+/// This remains an integer newtype so reading an untrusted tracee record never
+/// constructs an invalid Rust enum discriminant.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(transparent)]
+pub(crate) struct LiteinstSavedXstateFormat(u64);
+
+impl LiteinstSavedXstateFormat {
+    pub(crate) const UNAVAILABLE: Self = Self(0);
+    pub(crate) const FXSAVE64: Self = Self(1);
+    pub(crate) const XSAVE64_STANDARD: Self = Self(2);
+
+    pub(crate) const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn raw(self) -> u64 {
+        self.0
+    }
+
+    pub(crate) const fn required_alignment(self) -> Option<u64> {
+        if self.0 == Self::FXSAVE64.0 {
+            Some(16)
+        } else if self.0 == Self::XSAVE64_STANDARD.0 {
+            Some(64)
+        } else {
+            None
+        }
+    }
+}
+
+pub(crate) const LITEINST_SAVED_XSTATE_COMPONENT_CAPACITY: usize = 8;
+
+/// One authenticated non-legacy component in a standard XSAVE image.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+pub(crate) struct LiteinstSavedXstateComponent {
+    xfeature: u64,
+    offset: u64,
+    size: u64,
+}
+
+impl LiteinstSavedXstateComponent {
+    pub(crate) const UNAVAILABLE: Self = Self {
+        xfeature: 0,
+        offset: 0,
+        size: 0,
+    };
+
+    #[cfg(test)]
+    pub(crate) const fn from_raw(xfeature: u64, offset: u64, size: u64) -> Self {
+        Self {
+            xfeature,
+            offset,
+            size,
+        }
+    }
+
+    pub(crate) const fn xfeature(self) -> u64 {
+        self.xfeature
+    }
+
+    pub(crate) const fn offset(self) -> u64 {
+        self.offset
+    }
+
+    pub(crate) const fn size(self) -> u64 {
+        self.size
+    }
+}
+
+/// Address-independent saved-state layout authenticated at hook installation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+pub(crate) struct LiteinstSavedXstateLayout {
+    allocation_len: u64,
+    image_len: u64,
+    mask: u64,
+    format: LiteinstSavedXstateFormat,
+    component_count: u64,
+    components: [LiteinstSavedXstateComponent; LITEINST_SAVED_XSTATE_COMPONENT_CAPACITY],
+}
+
+impl LiteinstSavedXstateLayout {
+    pub(crate) const UNAVAILABLE: Self = Self {
+        allocation_len: 0,
+        image_len: 0,
+        mask: 0,
+        format: LiteinstSavedXstateFormat::UNAVAILABLE,
+        component_count: 0,
+        components: [LiteinstSavedXstateComponent::UNAVAILABLE;
+            LITEINST_SAVED_XSTATE_COMPONENT_CAPACITY],
+    };
+
+    pub(crate) const fn from_raw(
+        allocation_len: u64,
+        image_len: u64,
+        mask: u64,
+        format: u64,
+        component_count: u64,
+        components: [LiteinstSavedXstateComponent; LITEINST_SAVED_XSTATE_COMPONENT_CAPACITY],
+    ) -> Self {
+        Self {
+            allocation_len,
+            image_len,
+            mask,
+            format: LiteinstSavedXstateFormat::from_raw(format),
+            component_count,
+            components,
+        }
+    }
+
+    pub(crate) const fn len(self) -> u64 {
+        self.allocation_len
+    }
+
+    pub(crate) const fn is_empty(self) -> bool {
+        self.allocation_len == 0
+    }
+
+    pub(crate) const fn image_len(self) -> u64 {
+        self.image_len
+    }
+
+    pub(crate) const fn mask(self) -> u64 {
+        self.mask
+    }
+
+    pub(crate) const fn format(self) -> LiteinstSavedXstateFormat {
+        self.format
+    }
+
+    pub(crate) fn components(&self) -> Option<&[LiteinstSavedXstateComponent]> {
+        let count = usize::try_from(self.component_count).ok()?;
+        self.components.get(..count)
+    }
+
+    /// Rejects malformed wire layouts using only authenticated tracee metadata.
+    pub(crate) fn is_well_formed(self) -> bool {
+        if self.format.0 == LiteinstSavedXstateFormat::FXSAVE64.0 {
+            self.allocation_len == 512
+                && self.image_len == 512
+                && self.mask == 0b11
+                && self.component_count == 0
+                && self
+                    .components
+                    .iter()
+                    .all(|component| *component == LiteinstSavedXstateComponent::UNAVAILABLE)
+        } else if self.format.0 == LiteinstSavedXstateFormat::XSAVE64_STANDARD.0 {
+            let Some(rounded_image_len) = self.image_len.checked_add(63).map(|value| value & !63)
+            else {
+                return false;
+            };
+            if self.image_len < 576
+                || self.allocation_len != rounded_image_len
+                || self.mask & 0b11 != 0b11
+            {
+                return false;
+            }
+            let Some(components) = self.components() else {
+                return false;
+            };
+            if self.components[components.len()..]
+                .iter()
+                .any(|component| *component != LiteinstSavedXstateComponent::UNAVAILABLE)
+            {
+                return false;
+            }
+            let mut seen = 0_u64;
+            let mut extent = 576_u64;
+            let mut previous_xfeature = 0_u64;
+            for (index, component) in components.iter().enumerate() {
+                if !component.xfeature.is_power_of_two()
+                    || component.xfeature & 0b11 != 0
+                    || component.xfeature & self.mask == 0
+                    || seen & component.xfeature != 0
+                    || component.xfeature <= previous_xfeature
+                    || component.offset < 576
+                    || component.size == 0
+                {
+                    return false;
+                }
+                let Some(end) = component.offset.checked_add(component.size) else {
+                    return false;
+                };
+                if end > self.image_len
+                    || components[..index].iter().any(|prior| {
+                        let prior_end = prior.offset + prior.size;
+                        component.offset < prior_end && prior.offset < end
+                    })
+                {
+                    return false;
+                }
+                seen |= component.xfeature;
+                previous_xfeature = component.xfeature;
+                extent = extent.max(end);
+            }
+            seen == self.mask & !0b11 && extent == self.image_len
+        } else {
+            self.allocation_len == 0
+                && self.image_len == 0
+                && self.mask == 0
+                && self.format.0 == LiteinstSavedXstateFormat::UNAVAILABLE.0
+                && self.component_count == 0
+                && self
+                    .components
+                    .iter()
+                    .all(|component| *component == LiteinstSavedXstateComponent::UNAVAILABLE)
+        }
+    }
+
+    /// Computes `align_down(live_r12, alignment) - len` with checked arithmetic.
+    pub(crate) fn expected_address(self, live_r12: u64) -> Option<u64> {
+        if !self.is_well_formed() || self.is_empty() {
+            return None;
+        }
+        let alignment = self.format.required_alignment()?;
+        let aligned = live_r12 & !(alignment - 1);
+        aligned.checked_sub(self.allocation_len)
+    }
+}
+
+/// One LiteInst invocation's tracee-addressed saved extended-state image.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+pub(crate) struct LiteinstSavedXstateDescriptor {
+    address: u64,
+    len: u64,
+    mask: u64,
+    format: LiteinstSavedXstateFormat,
+}
+
+impl LiteinstSavedXstateDescriptor {
+    #[cfg(test)]
+    pub(crate) const UNAVAILABLE: Self = Self {
+        address: 0,
+        len: 0,
+        mask: 0,
+        format: LiteinstSavedXstateFormat::UNAVAILABLE,
+    };
+
+    pub(crate) const fn address(self) -> u64 {
+        self.address
+    }
+
+    pub(crate) const fn len(self) -> u64 {
+        self.len
+    }
+
+    pub(crate) const fn is_empty(self) -> bool {
+        self.len == 0
+    }
+
+    /// Requires both the authenticated hook layout and the live R12 geometry.
+    pub(crate) fn matches(self, expected: LiteinstSavedXstateLayout, live_r12: u64) -> bool {
+        expected.is_well_formed()
+            && self.len == expected.len()
+            && self.mask == expected.mask()
+            && self.format == expected.format()
+            && expected.expected_address(live_r12) == Some(self.address)
+    }
+}
+
+/// LiteInst's extension of the legacy 144-byte injected-syscall frame.
+///
+/// The frame remains at offset zero for e9 ABI compatibility. Only LiteInst
+/// callers may read the descriptor tail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub(crate) struct LiteinstInjectedSyscallEnvelope {
+    frame: InjectedSyscallFrame,
+    saved_xstate: LiteinstSavedXstateDescriptor,
+}
+
+impl LiteinstInjectedSyscallEnvelope {
+    pub(crate) const fn frame(&self) -> &InjectedSyscallFrame {
+        &self.frame
+    }
+
+    #[cfg(test)]
+    pub(crate) fn frame_mut(&mut self) -> &mut InjectedSyscallFrame {
+        &mut self.frame
+    }
+
+    pub(crate) const fn saved_xstate(&self) -> LiteinstSavedXstateDescriptor {
+        self.saved_xstate
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<LiteinstSavedXstateFormat>() == 8);
+const _: () = assert!(core::mem::size_of::<LiteinstSavedXstateComponent>() == 24);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateComponent, xfeature) == 0);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateComponent, offset) == 8);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateComponent, size) == 16);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateLayout, allocation_len) == 0);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateLayout, image_len) == 8);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateLayout, mask) == 16);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateLayout, format) == 24);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateLayout, component_count) == 32);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateLayout, components) == 40);
+const _: () = assert!(core::mem::size_of::<LiteinstSavedXstateLayout>() == 232);
+const _: () = assert!(core::mem::size_of::<LiteinstSavedXstateDescriptor>() == 32);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateDescriptor, address) == 0);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateDescriptor, len) == 8);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateDescriptor, mask) == 16);
+const _: () = assert!(core::mem::offset_of!(LiteinstSavedXstateDescriptor, format) == 24);
+const _: () = assert!(core::mem::offset_of!(LiteinstInjectedSyscallEnvelope, frame) == 0);
+const _: () = assert!(core::mem::offset_of!(LiteinstInjectedSyscallEnvelope, saved_xstate) == 144);
+const _: () = assert!(core::mem::size_of::<LiteinstInjectedSyscallEnvelope>() == 176);
+
 impl InjectedSyscallFrame {
     const FLAGS_OF: u64 = 0x0001;
     const FLAGS_CF: u64 = 0x0100;
@@ -73,6 +390,15 @@ impl InjectedSyscallFrame {
     /// trampoline stacks.
     pub fn syscall_number(&self) -> Sysno {
         Sysno::from(self.rax as i32)
+    }
+
+    /// Returns the unvalidated Linux syscall number from the runtime frame.
+    ///
+    /// Strict all-syscall filters must classify unknown and x32 values before
+    /// calling [`Self::syscall_number`], whose legacy typed conversion panics
+    /// for values absent from `Sysno`.
+    pub fn raw_syscall_number(&self) -> u64 {
+        self.rax
     }
 
     /// Decodes the syscall stored in this e9tool frame.
@@ -271,12 +597,115 @@ mod tests {
         }
     }
 
+    fn standard_xsave_layout() -> LiteinstSavedXstateLayout {
+        let mut components =
+            [LiteinstSavedXstateComponent::UNAVAILABLE; LITEINST_SAVED_XSTATE_COMPONENT_CAPACITY];
+        for (destination, component) in components.iter_mut().zip([
+            LiteinstSavedXstateComponent::from_raw(1 << 2, 576, 256),
+            LiteinstSavedXstateComponent::from_raw(1 << 5, 1_088, 64),
+            LiteinstSavedXstateComponent::from_raw(1 << 6, 1_152, 512),
+            LiteinstSavedXstateComponent::from_raw(1 << 7, 1_664, 1_024),
+            LiteinstSavedXstateComponent::from_raw(1 << 9, 2_688, 8),
+        ]) {
+            *destination = component;
+        }
+        LiteinstSavedXstateLayout::from_raw(
+            2_752,
+            2_696,
+            0x2e7,
+            LiteinstSavedXstateFormat::XSAVE64_STANDARD.raw(),
+            5,
+            components,
+        )
+    }
+
     #[test]
     fn frame_matches_e9tool_state_layout() {
         assert_eq!(core::mem::size_of::<InjectedSyscallFrame>(), 18 * 8);
         assert_eq!(core::mem::offset_of!(InjectedSyscallFrame, rax), 15 * 8);
         assert_eq!(core::mem::offset_of!(InjectedSyscallFrame, rip), 17 * 8);
         assert_eq!(frame().syscall_number(), Sysno::write);
+    }
+
+    #[test]
+    fn liteinst_envelope_preserves_prefix_and_checked_xstate_geometry() {
+        let layout = standard_xsave_layout();
+        let descriptor = LiteinstSavedXstateDescriptor {
+            address: 0x7fff_e500,
+            len: layout.len(),
+            mask: layout.mask(),
+            format: layout.format(),
+        };
+        let mut envelope = LiteinstInjectedSyscallEnvelope {
+            frame: frame(),
+            saved_xstate: descriptor,
+        };
+        assert_eq!(envelope.frame().instruction_pointer(), 0x401000);
+        envelope.frame_mut().set_result(7);
+        assert_eq!(envelope.frame().raw_syscall_number(), 7);
+        assert_eq!(envelope.saved_xstate(), descriptor);
+        assert!(descriptor.matches(layout, 0x7fff_eff8));
+        assert!(!descriptor.matches(layout, 0x7fff_efbf));
+        assert!(
+            !LiteinstSavedXstateDescriptor::UNAVAILABLE
+                .matches(LiteinstSavedXstateLayout::UNAVAILABLE, 0x7fff_eff8)
+        );
+    }
+
+    #[test]
+    fn liteinst_xstate_wire_admission_rejects_every_noncanonical_shape() {
+        let valid = standard_xsave_layout();
+        assert!(valid.is_well_formed());
+
+        let mut out_of_order = valid;
+        out_of_order.components.swap(0, 1);
+        assert!(!out_of_order.is_well_formed());
+
+        let mut missing_coverage = valid;
+        missing_coverage.component_count = 4;
+        missing_coverage.components[4] = LiteinstSavedXstateComponent::UNAVAILABLE;
+        assert!(!missing_coverage.is_well_formed());
+
+        let mut duplicate = valid;
+        duplicate.components[1] = duplicate.components[0];
+        assert!(!duplicate.is_well_formed());
+
+        let mut overlap = valid;
+        overlap.components[1].offset = 600;
+        assert!(!overlap.is_well_formed());
+
+        let mut nonzero_unused_tail = valid;
+        nonzero_unused_tail.components[5] =
+            LiteinstSavedXstateComponent::from_raw(1 << 10, 2_696, 8);
+        assert!(!nonzero_unused_tail.is_well_formed());
+
+        let mut count_overflow = valid;
+        count_overflow.component_count = LITEINST_SAVED_XSTATE_COMPONENT_CAPACITY as u64 + 1;
+        assert!(!count_overflow.is_well_formed());
+
+        let mut rounded_length_mismatch = valid;
+        rounded_length_mismatch.allocation_len -= 64;
+        assert!(!rounded_length_mismatch.is_well_formed());
+
+        let mut rounding_overflow = valid;
+        rounding_overflow.image_len = u64::MAX;
+        assert!(!rounding_overflow.is_well_formed());
+
+        let mut unavailable_contamination = LiteinstSavedXstateLayout::UNAVAILABLE;
+        unavailable_contamination.components[0] =
+            LiteinstSavedXstateComponent::from_raw(1 << 2, 576, 256);
+        assert!(!unavailable_contamination.is_well_formed());
+
+        let descriptor = LiteinstSavedXstateDescriptor {
+            address: 0x7fff_e500,
+            len: valid.len(),
+            mask: valid.mask(),
+            format: valid.format(),
+        };
+        assert!(!descriptor.matches(valid, valid.len() - 1));
+        let mut mismatched_address = descriptor;
+        mismatched_address.address += 1;
+        assert!(!mismatched_address.matches(valid, 0x7fff_eff8));
     }
 
     #[test]

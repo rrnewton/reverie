@@ -1,0 +1,11 @@
+[package]
+name = "liteinst-after-loader-stage-generator"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+reverie-ptrace = { path = "../../../reverie-ptrace" }
+sha2 = "0.10.9"

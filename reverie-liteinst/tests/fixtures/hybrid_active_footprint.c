@@ -65,8 +65,8 @@ static uintptr_t writable_alias(uintptr_t trampoline) {
     if (sscanf(line, "%lx-%lx %7s %lx %31s %lu", &start, &end,
                permissions, &offset, device, &inode) == 6 &&
         executable_inode != 0 && inode == executable_inode &&
-        strcmp(device, executable_device) == 0 && permissions[1] == 'w' &&
-        permissions[2] != 'x') {
+        strcmp(device, executable_device) == 0 && offset == 0 &&
+        strcmp(permissions, "---s") == 0) {
       result = (uintptr_t)start;
       break;
     }
