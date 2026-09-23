@@ -750,6 +750,11 @@ readonly -a REGULAR_TEST_SKIP_ARGS=(
 
 run_check "Cross-client skill discovery" "$ROOT_DIR/scripts/check-skill-discovery.rs"
 run_check "Build workspace" cargo build --workspace --all-features
+# The real release artifact is intentionally ignored by the all-features test
+# harness. Its runner binds the DSO and requires exactly one executed test.
+run_check "LiteInst real target-loader conformance" \
+    env CARGO_TARGET_DIR="$ROOT_DIR/target/liteinst-conformance" \
+    "$ROOT_DIR/reverie-liteinst/tests/run_target_loader_conformance.sh"
 run_check "DBT virtual identity and pidfd_open policy" \
     "$ROOT_DIR/reverie-dbt/scripts/test-identity-policy.sh"
 run_test_check "Test regular workspace cases" cargo test --workspace --all-features \

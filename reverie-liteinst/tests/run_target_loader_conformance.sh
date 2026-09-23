@@ -2,11 +2,16 @@
 set -euo pipefail
 
 repository=$(cd "$(dirname "$0")/../.." && pwd -P)
-target_dir=${CARGO_TARGET_DIR:-"$repository/target/target-loader-conformance"}
+target_dir=${CARGO_TARGET_DIR:-"$repository/target/liteinst-conformance"}
 mkdir -p "$target_dir"
 target_dir=$(cd "$target_dir" && pwd -P)
 
-cargo build \
+if [[ ! -f "$repository/Cargo.lock" ]]; then
+  timeout --kill-after=5s 60s cargo generate-lockfile \
+    --manifest-path "$repository/Cargo.toml" --offline
+fi
+
+timeout --kill-after=5s 180s cargo build \
   --manifest-path "$repository/Cargo.toml" \
   --target-dir "$target_dir" \
   --locked \
@@ -25,7 +30,7 @@ trap 'rm -f "$test_log"' EXIT
 set +e
 REVERIE_LITEINST_CONFORMANCE_DSO="$runtime" \
 REVERIE_LITEINST_CONFORMANCE_SHA256="$digest" \
-cargo test \
+timeout --kill-after=5s 300s cargo test \
   --manifest-path "$repository/Cargo.toml" \
   --target-dir "$target_dir" \
   --locked \
@@ -46,7 +51,7 @@ if [[ $test_status -ne 0 ]]; then
   exit "$test_status"
 fi
 
-result_count=$(rg -c \
+result_count=$(grep -c \
   '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' \
   "$test_log") || result_count=0
 if [[ $result_count -ne 1 ]]; then
