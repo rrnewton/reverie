@@ -12620,9 +12620,8 @@ fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
 }
 
 fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux consumes the low descriptor word, ignoring the upper register bits.
+    let fd = args[0] as libc::c_int;
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -17576,6 +17575,271 @@ mod tests {
             reopened >= 0,
             "relative open after close failed: {reopened}"
         );
+    }
+
+    fn assert_fchdir_location(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        path: &Path,
+        contents: &[u8],
+    ) {
+        assert_eq!(current_directory(memory, state), path);
+        let expected = std::fs::metadata(path).unwrap();
+        let actual = state.cwd_fd.metadata().unwrap();
+        assert_eq!(
+            (actual.dev(), actual.ino()),
+            (expected.dev(), expected.ino())
+        );
+        let fd = open_readonly(memory, state, "marker");
+        assert!(fd >= 0, "relative open failed: {fd}");
+        assert!(contents.len() < 32);
+        memory.write(0x500, &[0xa5; 32]).unwrap();
+        assert_eq!(
+            syscall_result(
+                memory,
+                state,
+                libc::SYS_read,
+                [fd as u64, 0x500, 32, 0, 0, 0]
+            ),
+            contents.len() as i64
+        );
+        let mut bytes = [0; 32];
+        memory.read(0x500, &mut bytes).unwrap();
+        assert_eq!(&bytes[..contents.len()], contents);
+        assert!(bytes[contents.len()..].iter().all(|byte| *byte == 0xa5));
+        assert_eq!(
+            syscall_result(memory, state, libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]),
+            0
+        );
+    }
+
+    #[test]
+    fn fchdir_consumes_low_descriptor_words() {
+        let root = TestDir::new();
+        for (name, contents) in [("left", b"left"), ("right", b"rite")] {
+            std::fs::create_dir(root.0.join(name)).unwrap();
+            std::fs::write(root.0.join(name).join("marker"), contents).unwrap();
+        }
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+        state.files.insert(4, std::fs::File::open(&root.0).unwrap());
+        // The injected INT_MAX slot tests guest-table translation at the signed
+        // boundary; ordinary Linux allocation of such a descriptor is not assumed.
+        for (fd, name) in [
+            (0, "left"),
+            (3, "left"),
+            (257, "right"),
+            (i32::MAX, "right"),
+        ] {
+            state
+                .files
+                .insert(fd, std::fs::File::open(root.0.join(name)).unwrap());
+        }
+        for upper in [
+            0,
+            1_u64 << 32,
+            1_u64 << 63,
+            0x5a5a_5a5a_0000_0000,
+            0xffff_ffff_0000_0000,
+        ] {
+            for (fd, name, contents) in [
+                (0, "left", b"left"),
+                (3, "left", b"left"),
+                (257, "right", b"rite"),
+                (i32::MAX, "right", b"rite"),
+            ] {
+                for unused in [0, u64::MAX] {
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_fchdir,
+                            [4, 0, 0, 0, 0, 0]
+                        ),
+                        0
+                    );
+                    let sentinel = [0xa5; 0x2000];
+                    memory.write(0, &sentinel).unwrap();
+                    let raw = upper | fd as u64;
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_fchdir,
+                            [raw, unused, unused, unused, unused, unused]
+                        ),
+                        0,
+                        "fd={raw:#x} unused={unused:#x}"
+                    );
+                    let mut actual = [0; 0x2000];
+                    memory.read(0, &mut actual).unwrap();
+                    assert_eq!(actual, sentinel, "fchdir has no guest-memory operand");
+                    assert_fchdir_location(&mut memory, &mut state, &root.0.join(name), contents);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fchdir_low_words_preserve_cwd_on_refusal() {
+        let root = TestDir::new();
+        std::fs::write(root.0.join("marker"), b"base").unwrap();
+        std::fs::create_dir(root.0.join("target")).unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+        // These live low slots make stripping bit 31 an observable wrong success.
+        for fd in [0, 3, 5] {
+            state
+                .files
+                .insert(fd, std::fs::File::open(root.0.join("target")).unwrap());
+        }
+        state
+            .files
+            .insert(6, std::fs::File::open(root.0.join("marker")).unwrap());
+        for (fd, path) in [(7, root.0.join("target")), (8, root.0.join("marker"))] {
+            state.files.insert(
+                fd,
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_PATH)
+                    .open(path)
+                    .unwrap(),
+            );
+        }
+        state.files.insert(9, std::fs::File::open("/proc").unwrap());
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_close, [5, 0, 0, 0, 0, 0]),
+            0
+        );
+        let cwd_fd = state.cwd_fd.as_raw_fd();
+        let keys = state.files.keys().copied().collect::<Vec<_>>();
+        for upper in [0, 1_u64 << 32, 1_u64 << 63, 0xffff_ffff_0000_0000] {
+            for (low, error) in [
+                (5, libc::EBADF),
+                (99, libc::EBADF),
+                (0x7fff_ffff, libc::EBADF),
+                (0x8000_0000, libc::EBADF),
+                (0x8000_0003, libc::EBADF),
+                (0xffff_ffff, libc::EBADF),
+                (libc::AT_FDCWD as u32, libc::EBADF),
+                (6, libc::ENOTDIR),
+                (7, libc::EBADF),
+                (8, libc::EBADF),
+                (9, libc::EACCES),
+            ] {
+                for unused in [0, u64::MAX] {
+                    let sentinel = [0xa5; 0x2000];
+                    memory.write(0, &sentinel).unwrap();
+                    let raw = upper | u64::from(low);
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_fchdir,
+                            [raw, unused, unused, unused, unused, unused]
+                        ),
+                        negative_errno(error),
+                        "fd={raw:#x} unused={unused:#x}"
+                    );
+                    let mut actual = [0; 0x2000];
+                    memory.read(0, &mut actual).unwrap();
+                    assert_eq!(actual, sentinel);
+                    assert_eq!(state.cwd_fd.as_raw_fd(), cwd_fd);
+                    assert_eq!(state.files.keys().copied().collect::<Vec<_>>(), keys);
+                    assert_fchdir_location(&mut memory, &mut state, &root.0, b"base");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fchdir_low_words_preserve_descriptor_identity_and_cursor() {
+        let root = TestDir::new();
+        let original = root.0.join("original");
+        let moved = root.0.join("moved");
+        std::fs::create_dir(&original).unwrap();
+        std::fs::write(original.join("marker"), b"target").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let fd = open_with_flags(
+            &mut memory,
+            &mut state,
+            "original",
+            libc::O_RDONLY | libc::O_DIRECTORY,
+        );
+        assert!((3..257).contains(&fd));
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup2,
+                [fd as u64, 257, 0, 0, 0, 0]
+            ),
+            257
+        );
+        // Obtain an actual opaque directory cursor instead of inventing offsets.
+        assert!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getdents64,
+                [fd as u64, 0x1000, 0x1000, 0, 0, 0]
+            ) > 0
+        );
+        let cursor = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_lseek,
+            [fd as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0],
+        );
+        assert!(cursor > 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [fd as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        std::fs::rename(&original, &moved).unwrap();
+        std::fs::create_dir(&original).unwrap();
+        std::fs::write(original.join("marker"), b"decoy").unwrap();
+        for upper in [0, 1_u64 << 32, 1_u64 << 63, 0xffff_ffff_0000_0000] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_fchdir,
+                    [upper | 257, u64::MAX, 0, 0, 0, 0]
+                ),
+                0
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_lseek,
+                    [257, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+                ),
+                cursor
+            );
+            assert_fchdir_location(&mut memory, &mut state, &moved, b"target");
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [257, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // Reuse the source guest slot for the decoy; cwd must retain its own handle.
+        state
+            .files
+            .insert(257, std::fs::File::open(&original).unwrap());
+        assert_fchdir_location(&mut memory, &mut state, &moved, b"target");
     }
 
     fn open_with_flags(

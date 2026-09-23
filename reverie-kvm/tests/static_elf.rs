@@ -10049,6 +10049,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes",
         "kvm_direct_and_tool_match_prctl_identity_cell",
         "kvm_direct_and_tool_match_thp_disable_cell",
+        "fchdir_consumes_low_descriptor_words_on_kvm",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
@@ -16260,6 +16261,138 @@ int main(int argc, char **argv) {
             stderr, native.stderr,
             "tool_owned={tool_owned} repetition={repetition}"
         );
+    }
+}
+
+#[test]
+fn fchdir_consumes_low_descriptor_words_on_kvm() {
+    const TEST: &str = "fchdir_consumes_low_descriptor_words_on_kvm";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+
+    fn expected_transcript(guest: bool) -> String {
+        fn row(output: &mut String, object: &str, upper: u64, unused: u8, error: i32, state: &str) {
+            let result = if error == 0 { 0 } else { -1 };
+            output.push_str(&format!(
+                "fchdir object={object} upper={upper:016x} unused={unused} result={result} errno={error} state={state}\n"
+            ));
+        }
+
+        let upper_words = [0_u64, 1 << 32, 1 << 63, 0xffff_ffff_0000_0000];
+        let mut expected = String::new();
+        for (object, error, state) in [
+            ("directory", 0, "target"),
+            ("dup", 0, "target"),
+            ("fd257", 0, "target"),
+            ("closed", libc::EBADF, "base"),
+            ("regular-file", libc::ENOTDIR, "base"),
+            ("int-max", libc::EBADF, "base"),
+            ("int-min", libc::EBADF, "base"),
+            ("minus-one", libc::EBADF, "base"),
+            ("at-fdcwd", libc::EBADF, "base"),
+        ] {
+            for upper in upper_words {
+                for unused in [0, 1] {
+                    row(&mut expected, object, upper, unused, error, state);
+                }
+            }
+        }
+        expected.push_str("policy\n");
+        for (object, refusal, native_state) in [
+            ("opath-directory", libc::EBADF, "target"),
+            ("proc-root", libc::EACCES, "proc"),
+        ] {
+            for upper in upper_words {
+                for unused in [0, 1] {
+                    row(
+                        &mut expected,
+                        object,
+                        upper,
+                        unused,
+                        if guest { refusal } else { 0 },
+                        if guest { "base" } else { native_state },
+                    );
+                }
+            }
+        }
+        expected
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program_with_args(
+        &directory.0,
+        "fchdir-fd-width",
+        include_str!("fixtures/fchdir_fd_width.c"),
+        &["-std=c11", "-Wall", "-Wextra", "-Werror"],
+    );
+    let native_directory = directory.0.join("native-fchdir");
+    std::fs::create_dir(&native_directory).unwrap();
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(&executable)
+        .arg("native")
+        .current_dir(&native_directory)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "native fixture: {native:?}");
+    let native_stdout = std::str::from_utf8(&native.stdout).unwrap();
+    assert_eq!(native_stdout.lines().count(), 89);
+    assert_eq!(native_stdout, expected_transcript(false));
+    assert!(native.stderr.is_empty());
+    let (native_common, _) = native_stdout.split_once("policy\n").unwrap();
+    assert_eq!(native_common.lines().count(), 72);
+
+    let image = std::fs::read(&executable).unwrap();
+    let expected_guest = expected_transcript(true);
+    let mut first_guest = None;
+    for (tool_owned, repetition) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
+        let guest_directory = directory
+            .0
+            .join(format!("guest-fchdir-{tool_owned}-{repetition}"));
+        std::fs::create_dir(&guest_directory).unwrap();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable.to_str().unwrap(), "guest"],
+                &["PATH=/usr/bin:/bin"],
+                &guest_directory,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if tool_owned {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(
+            code,
+            0,
+            "tool_owned={tool_owned} repetition={repetition} stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(
+            stdout,
+            expected_guest.as_bytes(),
+            "tool_owned={tool_owned} repetition={repetition}"
+        );
+        assert_eq!(stderr, native.stderr);
+        let (guest_common, _) = std::str::from_utf8(&stdout)
+            .unwrap()
+            .split_once("policy\n")
+            .unwrap();
+        assert_eq!(guest_common, native_common);
+        let result = (code, stdout, stderr);
+        if let Some(first) = &first_guest {
+            assert_eq!(&result, first);
+        } else {
+            first_guest = Some(result);
+        }
     }
 }
 
