@@ -10049,6 +10049,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes",
         "kvm_direct_and_tool_match_prctl_identity_cell",
         "kvm_direct_and_tool_match_thp_disable_cell",
+        "getdents64_consumes_low_descriptor_words_on_kvm",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
@@ -16137,6 +16138,161 @@ int main(int argc, char **argv) {
         assert_eq!(
             stderr, native.stderr,
             "tool_owned={tool_owned} repetition={repetition}"
+        );
+    }
+}
+
+#[test]
+fn getdents64_consumes_low_descriptor_words_on_kvm() {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    const TEST: &str = "getdents64_consumes_low_descriptor_words_on_kvm";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let primary = directory.0.join("getdents-primary");
+    let decoy = directory.0.join("getdents-decoy");
+    std::fs::create_dir(&primary).unwrap();
+    std::fs::create_dir(&decoy).unwrap();
+    std::fs::create_dir(primary.join("nested")).unwrap();
+    let regular = primary.join("alpha");
+    std::fs::write(&regular, b"alpha\n").unwrap();
+    std::fs::write(primary.join("beta-long"), b"beta\n").unwrap();
+    std::fs::write(decoy.join("decoy-only"), b"decoy\n").unwrap();
+    let executable = compile_c_program_with_args(
+        &directory.0,
+        "getdents64-fd-width",
+        include_str!("fixtures/getdents64_fd_width.c"),
+        &["-std=c11", "-Wall", "-Wextra", "-Werror"],
+    );
+
+    let proc_path_stdin = || {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open("/proc")
+            .unwrap()
+    };
+    let mut common = String::from("getdents64 inherited-proc-opath fd=301 identity=preserved\n");
+    for fd in [0, 3, 257] {
+        for upper in [
+            0_u64,
+            1_u64 << 32,
+            1_u64 << 63,
+            0x5a5a_5a5a_0000_0000,
+            0xffff_ffff_0000_0000,
+        ] {
+            let names = if fd == 257 {
+                ".,..,decoy-only"
+            } else {
+                ".,..,alpha,beta-long,nested"
+            };
+            common.push_str(&format!(
+                "getdents64 fd={fd} upper={upper:016x} exact={names}\n"
+            ));
+        }
+    }
+    common.push_str("getdents64 error-order rows=500 buffers=unchanged\n");
+    for fd in [0, 3, 257] {
+        common.push_str(&format!(
+            "getdents64 cursor fd={fd} rows=80 short=EINVAL fault=unchanged \
+             dup=shared rewind=fresh eof=zero\n"
+        ));
+    }
+    common.push_str("getdents64 canonical-count boundary=16777216,16777217 guards=unchanged\n");
+    // The controlled directories have one common native/KVM oracle. Synthetic
+    // proc deliberately differs; require its exact policy row separately.
+    let native_expected = format!(
+        "{common}getdents64 policy=native-proc-opath open=success\n\
+         getdents64 policy=native-proc rows=100 records-and-errors checked\n\
+         getdents64 checked calls=874\n"
+    );
+    let guest_expected = format!(
+        "{common}getdents64 policy=synthetic-proc-opath open=EINVAL\n\
+         getdents64 policy=synthetic-proc rows=100 zero-before-buffer unchanged\n\
+         getdents64 checked calls=874\n"
+    );
+
+    let start = std::time::Instant::now();
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(&executable)
+        .arg("native")
+        .args([&primary, &decoy, &regular])
+        .stdin(std::process::Stdio::from(proc_path_stdin()))
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "native fixture failed: {native:?}");
+    assert_eq!(native.stdout, native_expected.as_bytes());
+    assert!(native.stderr.is_empty(), "{native:?}");
+    eprintln!(
+        "getdents64 native calls=874 seconds={} stdout={}",
+        start.elapsed().as_secs_f64(),
+        String::from_utf8_lossy(&native.stdout)
+    );
+
+    let image = std::fs::read(&executable).unwrap();
+    for (tool_owned, repetition) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
+        let start = std::time::Instant::now();
+        let mut backend =
+            KvmBackend::new_with_stdin(256 * 1024 * 1024, Some(proc_path_stdin())).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[
+                    executable.to_str().unwrap(),
+                    "kvm",
+                    primary.to_str().unwrap(),
+                    decoy.to_str().unwrap(),
+                    regular.to_str().unwrap(),
+                ],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        // Getdents64's typed Tool argument is u32, so reinjection already
+        // narrows it. The direct runs must independently catch the raw-register
+        // decoder defect; successful Tool runs alone cannot establish that.
+        let (code, stdout, stderr, tool_calls) = if tool_owned {
+            let (log, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            let calls = log
+                .entries()
+                .iter()
+                .filter(|entry| entry.name == "getdents64")
+                .count();
+            (code, stdout, stderr, Some(calls))
+        } else {
+            let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+            (code, stdout, stderr, None)
+        };
+        assert_eq!(
+            code,
+            0,
+            "tool_owned={tool_owned} repetition={repetition} stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(
+            stdout,
+            guest_expected.as_bytes(),
+            "tool_owned={tool_owned} repetition={repetition}"
+        );
+        assert!(
+            stderr.is_empty(),
+            "tool_owned={tool_owned} repetition={repetition}: {stderr:?}"
+        );
+        if let Some(calls) = tool_calls {
+            assert_eq!(calls, 874, "actual getdents64 Tool callbacks");
+        }
+        eprintln!(
+            "getdents64 tool_owned={tool_owned} repetition={repetition} \
+             calls=874 tool_calls={tool_calls:?} seconds={} stdout={}",
+            start.elapsed().as_secs_f64(),
+            String::from_utf8_lossy(&stdout)
         );
     }
 }
