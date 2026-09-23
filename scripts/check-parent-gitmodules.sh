@@ -9,7 +9,7 @@ for arg in "$@"; do
 check-parent-gitmodules.sh — verify .gitmodules matches the pinned parent submodule policy
 
 USAGE:
-  scripts/check-parent-gitmodules.sh            check three product gitlinks and agent-utils symlink
+  scripts/check-parent-gitmodules.sh            check four pinned gitlinks and agent-utils symlink
   scripts/check-parent-gitmodules.sh -h|--help  show this help and exit (no side effects)
 
 Exit 0 when policy holds, 1 on any mismatch. Takes no other arguments.
@@ -26,6 +26,7 @@ expected=(
     "hermit|hermit|https://github.com/rrnewton/hermit.git|checkout"
     "reverie|reverie|https://github.com/rrnewton/reverie.git|checkout"
     "liteinst2|liteinst2|https://github.com/rrnewton/liteinst2.git|checkout"
+    "hermit_test_ledger|hermit_test_ledger|https://github.com/rrnewton/hermit_test_ledger.git|checkout"
 )
 
 mapfile -t configured < <(git config -f .gitmodules --get-regexp '^submodule\..*\.path$')
@@ -79,4 +80,4 @@ agent_utils_target=$(git cat-file -p :agent-utils 2>/dev/null || true)
     exit 1
 }
 
-echo "Parent submodule policy is valid: three product gitlinks plus agent-utils -> hermit/agent-utils."
+echo "Parent submodule policy is valid: four pinned gitlinks plus agent-utils -> hermit/agent-utils."
