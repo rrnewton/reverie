@@ -15875,5 +15875,132 @@ fn timestamp_single_step_reports_the_retired_instruction_boundary() {
     }
 }
 
+#[test]
+fn close_and_close_range_consume_low_words_on_kvm() {
+    if !kvm_available("KVM close low-word argument test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "close-low-word",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define HIGH_WORD UINT64_C(0x5a5a5a5a00000000)
+#define TEST_CLOSE_RANGE_CLOEXEC (1U << 2)
+
+static int fd_flags_are(int fd, int expected) {
+  return fcntl(fd, F_GETFD) == expected;
+}
+
+int main(void) {
+  int direct = dup(STDOUT_FILENO);
+  if (direct < 0) return 1;
+  if (syscall(SYS_close, HIGH_WORD | (uint32_t)direct) != 0) return 2;
+  errno = 0;
+  if (fcntl(direct, F_GETFD) != -1 || errno != EBADF) return 3;
+
+  int low = dup2(STDOUT_FILENO, 100);
+  int high = dup3(STDERR_FILENO, 101, O_CLOEXEC);
+  if (low != 100 || high != 101) return 4;
+
+  // Bounds are compared after truncation. Raw-u64 ordering is the opposite,
+  // and the rejected call must not mutate either descriptor.
+  errno = 0;
+  if (syscall(SYS_close_range, (uint32_t)high,
+              HIGH_WORD | (uint32_t)low, 0) != -1 ||
+      errno != EINVAL || !fd_flags_are(low, 0) ||
+      !fd_flags_are(high, FD_CLOEXEC)) return 5;
+
+  // Unknown low flag bits remain invalid despite unrelated high bits.
+  errno = 0;
+  if (syscall(SYS_close_range, HIGH_WORD | (uint32_t)low,
+              HIGH_WORD | (uint32_t)high, HIGH_WORD | 1) != -1 ||
+      errno != EINVAL || !fd_flags_are(low, 0) ||
+      !fd_flags_are(high, FD_CLOEXEC)) return 6;
+
+  // High-only flag bits decode to zero, so the inclusive low-word range closes.
+  if (syscall(SYS_close_range, HIGH_WORD | (uint32_t)low,
+              HIGH_WORD | (uint32_t)high, HIGH_WORD) != 0) return 7;
+  errno = 0;
+  if (fcntl(low, F_GETFD) != -1 || errno != EBADF) return 8;
+  errno = 0;
+  if (fcntl(high, F_GETFD) != -1 || errno != EBADF) return 9;
+
+  int cloexec = fcntl(STDOUT_FILENO, F_DUPFD, 100);
+  if (cloexec != 100 || !fd_flags_are(cloexec, 0)) return 10;
+  if (syscall(SYS_close_range, HIGH_WORD | (uint32_t)cloexec,
+              HIGH_WORD | (uint32_t)cloexec,
+              HIGH_WORD | TEST_CLOSE_RANGE_CLOEXEC) != 0) return 11;
+  if (fcntl(cloexec, F_GETFD) != FD_CLOEXEC) return 12;
+
+  if (syscall(SYS_close_range, HIGH_WORD | UINT32_MAX, UINT32_MAX,
+              HIGH_WORD) != 0 || !fd_flags_are(cloexec, FD_CLOEXEC)) return 13;
+  if (close(cloexec) != 0) return 14;
+
+  puts("low-word-close-ok");
+  return 0;
+}
+"#,
+    );
+
+    let native = std::process::Command::new(&executable).output().unwrap();
+    assert_eq!(
+        native.status.code(),
+        Some(0),
+        "native stdout={} stderr={}",
+        String::from_utf8_lossy(&native.stdout),
+        String::from_utf8_lossy(&native.stderr)
+    );
+    assert_eq!(native.stdout, b"low-word-close-ok\n");
+    assert!(native.stderr.is_empty());
+
+    let image = std::fs::read(&executable).unwrap();
+    for (tool_owned, repetition) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
+        let executable = executable.to_str().unwrap();
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if tool_owned {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(
+            code,
+            0,
+            "tool_owned={tool_owned} repetition={repetition} stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(
+            stdout, native.stdout,
+            "tool_owned={tool_owned} repetition={repetition}"
+        );
+        assert_eq!(
+            stderr, native.stderr,
+            "tool_owned={tool_owned} repetition={repetition}"
+        );
+    }
+}
+
 #[path = "support/natural_retirement.rs"]
 mod natural_retirement;

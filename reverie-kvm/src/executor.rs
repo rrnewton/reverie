@@ -13706,9 +13706,9 @@ fn host_dirfd_and_path(
 fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
     let transaction = state.signal_transaction.clone();
     let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-    let Ok(fd) = i32::try_from(raw_fd) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux consumes the low unsigned-int descriptor word from the syscall
+    // register. The guest table uses c_int keys, so preserve those exact bits.
+    let fd = raw_fd as libc::c_int;
     if let Some(retired) = state.remove_file(fd) {
         state.cloexec_fds.remove(&fd);
         state.random_device_fds.remove(&fd);
@@ -13746,12 +13746,13 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#340): close_range(2) closes every open guest
 // descriptor in the inclusive interval [first, last]. The KVM guest owns one
-// logical descriptor table per process, so CLOSE_RANGE_UNSHARE (unshare-then-
-// close) is observationally equivalent to closing the range for the caller and
-// is accepted as a precondition; CLOSE_RANGE_CLOEXEC marks the range close-on-
-// exec instead of closing it. The scan is bounded to the descriptors actually
-// open (keys of `state.files` plus any open standard fd), so a `last == U32::MAX`
-// request never walks a four-billion-wide interval.
+// logical descriptor table per process. CLOSE_RANGE_UNSHARE is currently
+// accepted as a process-wide approximation, not Linux per-caller unsharing; a
+// live CLONE_FILES sibling therefore remains an explicit unsupported parity
+// case. CLOSE_RANGE_CLOEXEC marks the range close-on-exec instead of closing it.
+// The scan is bounded to the descriptors actually open (keys of `state.files`
+// plus any open standard fd), so a `last == U32::MAX` request never walks a
+// four-billion-wide interval.
 /// Deterministic `seccomp(2)` result, mirroring detcore's reviewed
 /// `seccomp_result` (hermit `detcore/src/syscalls/misc.rs`). Hermit cannot
 /// enforce a guest-installed BPF policy across every backend, so any operation
@@ -13794,12 +13795,14 @@ fn seccomp(args: &[u64; 6]) -> i64 {
 }
 
 fn close_range(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    const CLOSE_RANGE_UNSHARE: u64 = 1 << 1;
-    const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
+    const CLOSE_RANGE_UNSHARE: u32 = 1 << 1;
+    const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;
 
-    let first = args[0];
-    let last = args[1];
-    let flags = args[2];
+    // All three syscall arguments are unsigned int on Linux. Ignore register
+    // high bits before validating bounds and flags or selecting descriptors.
+    let first = args[0] as u32;
+    let last = args[1] as u32;
+    let flags = args[2] as u32;
     if first > last {
         return negative_errno(libc::EINVAL);
     }
@@ -13808,7 +13811,7 @@ fn close_range(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     }
 
     let in_range = |fd: libc::c_int| {
-        let fd = u64::from(fd as u32);
+        let fd = fd as u32;
         first <= fd && fd <= last
     };
     let mut targets: Vec<libc::c_int> = state
@@ -17663,24 +17666,40 @@ mod tests {
 
     #[test]
     fn close_range_closes_the_inclusive_descriptor_span() {
+        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
 
-        // Three live guest descriptors: 3, 4, 5.
+        // Four live guest descriptors: 3, 4, 5, 6.
         let low = open_readonly(&mut memory, &mut state, "/proc/uptime");
         let mid = open_readonly(&mut memory, &mut state, "/proc/uptime");
         let high = open_readonly(&mut memory, &mut state, "/proc/uptime");
-        assert_eq!([low, mid, high], [3, 4, 5]);
+        let direct = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        assert_eq!([low, mid, high, direct], [3, 4, 5, 6]);
 
-        // close_range over [4, U32::MAX] closes 4 and 5 but leaves 3 open, and
-        // the open-ended upper bound must not iterate a four-billion-wide span.
+        // close consumes only the low descriptor word and removes the complete
+        // synthetic-proc identity attached to the selected guest slot.
+        assert_eq!(close(&mut state, HIGH_WORD | direct as u64), 0);
+        assert!(!state.files.contains_key(&(direct as i32)));
+        assert!(!state.proc_files.contains_key(&(direct as i32)));
+
+        // close_range over [4, U32::MAX] closes both 4 and 5 but leaves 3 open.
+        // High bits in both bounds and a high-only flags word are ignored, and
+        // the open-ended bound must not iterate a four-billion-wide span.
         assert_eq!(
             syscall_result(
                 &mut memory,
                 &mut state,
                 libc::SYS_close_range,
-                [mid as u64, u64::from(u32::MAX), 0, 0, 0, 0],
+                [
+                    HIGH_WORD | mid as u64,
+                    HIGH_WORD | u64::from(u32::MAX),
+                    HIGH_WORD,
+                    0,
+                    0,
+                    0,
+                ],
             ),
             0
         );
@@ -17691,13 +17710,14 @@ mod tests {
         // same signal the syscall-quick-wins corpus cell probes via fcntl.
         assert_eq!(close(&mut state, mid as u64), negative_errno(libc::EBADF));
 
-        // A well-formed single-fd range closes exactly that descriptor.
+        // Truncation precedes bounds validation: this raw first value is greater
+        // than last, but the low words are the same single-fd range.
         assert_eq!(
             syscall_result(
                 &mut memory,
                 &mut state,
                 libc::SYS_close_range,
-                [low as u64, low as u64, 0, 0, 0, 0],
+                [HIGH_WORD | low as u64, low as u64, 0, 0, 0, 0],
             ),
             0
         );
@@ -17706,49 +17726,124 @@ mod tests {
 
     #[test]
     fn close_range_validates_bounds_and_flags() {
+        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
         const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
 
-        // first > last is rejected with EINVAL.
+        let low = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        let high = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        assert_eq!([low, high], [3, 4]);
+
+        // Bounds are compared after truncation. Raw u64 ordering says the last
+        // value is larger, but its low word is smaller, so neither live target
+        // may be closed.
+        let cloexec_before_invalid_order = state.cloexec_fds.clone();
         assert_eq!(
             syscall_result(
                 &mut memory,
                 &mut state,
                 libc::SYS_close_range,
-                [5, 4, 0, 0, 0, 0],
+                [high as u64, HIGH_WORD | low as u64, 0, 0, 0, 0],
             ),
             negative_errno(libc::EINVAL)
         );
-        // An unknown flag bit is rejected with EINVAL.
+        assert!(state.files.contains_key(&(low as i32)));
+        assert!(state.files.contains_key(&(high as i32)));
+        assert_eq!(state.cloexec_fds, cloexec_before_invalid_order);
+
+        // An unknown low flag bit is rejected despite unrelated high bits, and
+        // the rejected operation leaves every candidate descriptor untouched.
+        let cloexec_before_invalid_flags = state.cloexec_fds.clone();
         assert_eq!(
             syscall_result(
                 &mut memory,
                 &mut state,
                 libc::SYS_close_range,
-                [0, 0, 1, 0, 0, 0],
+                [
+                    HIGH_WORD | low as u64,
+                    HIGH_WORD | high as u64,
+                    HIGH_WORD | 1,
+                    0,
+                    0,
+                    0,
+                ],
             ),
             negative_errno(libc::EINVAL)
         );
+        assert!(state.files.contains_key(&(low as i32)));
+        assert!(state.files.contains_key(&(high as i32)));
+        assert_eq!(state.cloexec_fds, cloexec_before_invalid_flags);
+
+        // A high-only flags word is zero after unsigned-int decoding.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close_range,
+                [
+                    HIGH_WORD | low as u64,
+                    HIGH_WORD | low as u64,
+                    HIGH_WORD,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert!(!state.files.contains_key(&(low as i32)));
+        assert!(state.files.contains_key(&(high as i32)));
 
         // CLOSE_RANGE_CLOEXEC marks the span close-on-exec instead of closing it.
-        let fd = open_readonly(&mut memory, &mut state, "/proc/uptime");
-        assert_eq!(fd, 3);
         assert_eq!(
             syscall_result(
                 &mut memory,
                 &mut state,
                 libc::SYS_close_range,
-                [fd as u64, fd as u64, CLOSE_RANGE_CLOEXEC, 0, 0, 0],
+                [
+                    HIGH_WORD | high as u64,
+                    HIGH_WORD | high as u64,
+                    HIGH_WORD | CLOSE_RANGE_CLOEXEC,
+                    0,
+                    0,
+                    0,
+                ],
             ),
             0
         );
         assert!(
-            state.files.contains_key(&(fd as i32)),
+            state.files.contains_key(&(high as i32)),
             "CLOSE_RANGE_CLOEXEC must not close the descriptor"
         );
-        assert!(state.cloexec_fds.contains(&(fd as i32)));
+        assert!(state.cloexec_fds.contains(&(high as i32)));
+
+        // UINT_MAX..UINT_MAX is a valid empty range, including with high aliases.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close_range,
+                [
+                    HIGH_WORD | u64::from(u32::MAX),
+                    u64::from(u32::MAX),
+                    HIGH_WORD,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert!(
+            state.files.contains_key(&(high as i32)),
+            "an empty UINT_MAX range must not close another descriptor"
+        );
+        assert!(
+            state.cloexec_fds.contains(&(high as i32)),
+            "an empty UINT_MAX range must not clear an existing CLOEXEC mark"
+        );
     }
 
     #[test]
@@ -30334,6 +30429,7 @@ mod tests {
 
     #[test]
     fn descriptor_retirement_close_and_dup_release_both_guards() {
+        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
         for number in [
             libc::SYS_close,
             libc::SYS_close_range,
@@ -30350,8 +30446,10 @@ mod tests {
             let old_entry = f.executor.state.fd_entry_ids[&(target as i32)].clone();
             let observed = observe_unlocked_retirement(&f.executor);
             let args = match number {
-                libc::SYS_close => [target as u64, 0, 0, 0, 0, 0],
-                libc::SYS_close_range => [target as u64, target as u64, 0, 0, 0, 0],
+                libc::SYS_close => [HIGH_WORD | target as u64, 0, 0, 0, 0, 0],
+                libc::SYS_close_range => {
+                    [HIGH_WORD | target as u64, target as u64, HIGH_WORD, 0, 0, 0]
+                }
                 libc::SYS_dup2 => [source as u64, target as u64, 0, 0, 0, 0],
                 libc::SYS_dup3 => [
                     source as u64,
