@@ -32,6 +32,16 @@ from scripts import test_parent_main_write as parent_main_tests  # noqa: E402
 SHA = "a" * 40
 HERMIT_SHA = "b" * 40
 AGENT_UTILS_SHA = "c" * 40
+WRKSLOTS_ACTIONS = (
+    "classify-create-journals",
+    "classify-ownerless-validate-batch",
+    "create",
+    "recover",
+    "recover-ownerless-validate-batch",
+    "remove",
+    "remove-validate-batch",
+    "status",
+)
 
 
 def completed(command: list[str], rc: int = 0, stdout: str = "", stderr: str = ""):
@@ -41,6 +51,16 @@ def completed(command: list[str], rc: int = 0, stdout: str = "", stderr: str = "
 def wrkslots_action(command: list[str], action: str) -> bool:
     return command[0].endswith("ci-hub/bin/wrkslots") and action in command
 
+
+def assert_local_wrkslots_machine(command: list[str]) -> None:
+    if not command[0].endswith("ci-hub/bin/wrkslots"):
+        return
+    assert command.count("--machine") == 1, command
+    machine_index = command.index("--machine")
+    assert command[machine_index + 1] == start_unit.WRKSLOTS_MACHINE, command
+    actions = [action for action in WRKSLOTS_ACTIONS if action in command]
+    assert len(actions) == 1, command
+    assert machine_index < command.index(actions[0]), command
 
 
 def publication_report(target: str) -> dict:
@@ -181,6 +201,7 @@ class FakeRun:
 
     def __call__(self, command: list[str], **kwargs: object):
         self.commands.append(command)
+        assert_local_wrkslots_machine(command)
         # THE REMOVAL PATH NOW ASKS THE TREE ABOUT ITSELF, so the fake must be
         # able to answer. These fixtures deliberately model a checkout as a
         # directory rather than paying for a real linked worktree, and the two
@@ -10246,6 +10267,47 @@ class StartUnitTest(unittest.TestCase):
             create[create.index("--project-root") + 1],
             "exact tooling must still mutate only the canonical project registry",
         )
+
+    def test_every_wrkslots_action_has_one_global_local_machine_option(self) -> None:
+        tool_root = self.root / "worktrees/slots/linked-parent"
+        for action in WRKSLOTS_ACTIONS:
+            with self.subTest(action=action):
+                command = start_unit.wrkslots_command(
+                    tool_root,
+                    self.root,
+                    action,
+                    "argument",
+                )
+                self.assertEqual(
+                    [
+                        str(tool_root / "ci-hub/bin/wrkslots"),
+                        "--project-root",
+                        str(self.root),
+                        "--machine",
+                        start_unit.WRKSLOTS_MACHINE,
+                        "--allow-existing-unregistered-worktrees",
+                        action,
+                        "argument",
+                    ],
+                    command,
+                )
+                assert_local_wrkslots_machine(command)
+
+    def test_executable_wrkslots_path_is_centralized_in_command_builder(self) -> None:
+        import ast
+
+        tree = ast.parse(Path(start_unit.__file__).read_text())
+        literal_owners = {
+            function.name
+            for function in ast.walk(tree)
+            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(
+                isinstance(node, ast.Constant)
+                and node.value == "ci-hub/bin/wrkslots"
+                for node in ast.walk(function)
+            )
+        }
+        self.assertEqual({"wrkslots_command"}, literal_owners)
 
     def test_crate_without_runner_executable_is_not_usable(self) -> None:
         self.fake.fresh_runner_executable = False

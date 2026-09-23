@@ -14,6 +14,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import stat
 import subprocess
 import tempfile
@@ -65,6 +66,32 @@ HOST_TMP_ROOT = Path("/tmp").resolve()
 # current temporary socket fixture appends 77 bytes including its separator.
 MAX_RUNTIME_ROOT_BYTES = 30
 VALIDATE_CLEANUP_BATCH_LIMIT = 8
+WRKSLOTS_MACHINE = socket.gethostname().split(".", 1)[0]
+
+
+def wrkslots_command(
+    tool_root: Path,
+    state_root: Path,
+    *arguments: str,
+) -> list[str]:
+    """Build one locally-sharded wrkslots command.
+
+    Validation creation, observation, and cleanup must all address the same
+    machine shard. In particular, the project configuration may name a
+    different default machine than the host running this detached service.
+    Derive the short local hostname once and place ``--machine`` among the
+    provider's global options, before every subcommand.
+    """
+
+    return [
+        str(tool_root / "ci-hub/bin/wrkslots"),
+        "--project-root",
+        str(state_root),
+        "--machine",
+        WRKSLOTS_MACHINE,
+        "--allow-existing-unregistered-worktrees",
+        *arguments,
+    ]
 
 
 def parent_checkout_head(tool_root: Path = ROOT) -> str | None:
@@ -1555,11 +1582,9 @@ def prepare_fresh_checkout(
                     check=True,
                 )
             created = run(
-                [
-                    str(tool_root / "ci-hub/bin/wrkslots"),
-                    "--project-root",
-                    str(state_root),
-                    "--allow-existing-unregistered-worktrees",
+                wrkslots_command(
+                    tool_root,
+                    state_root,
                     "--wait-lock",
                     str(WRKSLOTS_CREATE_LOCK_WAIT_SECONDS),
                     "create",
@@ -1585,7 +1610,7 @@ def prepare_fresh_checkout(
                     f"checkout={target}",
                     "--format",
                     "json",
-                ],
+                ),
                 check=False,
             )
             if created.returncode != 0:
@@ -1698,11 +1723,9 @@ def remove_fresh_checkout(
         if validate_parent == state_root / "worktrees" / "validate":
             if wrkslots is None or wrkslots.slot != fresh.name:
                 raise RuntimeError("managed validation checkout has no matching identity")
-            command = [
-                str(tool_root / "ci-hub/bin/wrkslots"),
-                "--project-root",
-                str(state_root),
-                "--allow-existing-unregistered-worktrees",
+            command = wrkslots_command(
+                tool_root,
+                state_root,
                 "remove",
                 fresh.name,
                 "--validate-complete",
@@ -1710,7 +1733,7 @@ def remove_fresh_checkout(
                 str(os.getpid()),
                 "--expected-generation",
                 str(wrkslots.generation),
-            ]
+            )
         elif validate_parent == state_root / "ignored":
             if completed_record is None:
                 raise RuntimeError(
@@ -1730,11 +1753,9 @@ def remove_fresh_checkout(
                 raise RuntimeError(
                     "historical checkout repository is outside the project root"
                 ) from error
-            command = [
-                str(tool_root / "ci-hub/bin/wrkslots"),
-                "--project-root",
-                str(state_root),
-                "--allow-existing-unregistered-worktrees",
+            command = wrkslots_command(
+                tool_root,
+                state_root,
                 "recover",
                 "--coordinator-authorized",
                 "--coordinator-pid",
@@ -1745,7 +1766,7 @@ def remove_fresh_checkout(
                 record_relative.as_posix(),
                 "--repository",
                 repository_relative.as_posix(),
-            ]
+            )
         elif (
             (fresh / ".git").is_dir()
             and validate_parent == frozen_checkout_parent(state_root)
@@ -1761,11 +1782,9 @@ def remove_fresh_checkout(
                 raise RuntimeError(
                     "frozen checkout record or source repository is outside the project root"
                 ) from error
-            command = [
-                str(tool_root / "ci-hub/bin/wrkslots"),
-                "--project-root",
-                str(state_root),
-                "--allow-existing-unregistered-worktrees",
+            command = wrkslots_command(
+                tool_root,
+                state_root,
                 "recover",
                 "--coordinator-authorized",
                 "--coordinator-pid",
@@ -1776,7 +1795,7 @@ def remove_fresh_checkout(
                 record_relative.as_posix(),
                 "--repository",
                 repository_relative.as_posix(),
-            ]
+            )
         else:
             raise RuntimeError(
                 f"checkout is outside the managed or frozen validation roots: {fresh}"
@@ -1845,17 +1864,15 @@ def observe_fresh_checkout_cleanup(
         )
         return path, row
 
-    command = [
-        str(tool_root / "ci-hub/bin/wrkslots"),
-        "--project-root",
-        str(root.resolve()),
-        "--allow-existing-unregistered-worktrees",
+    command = wrkslots_command(
+        tool_root,
+        root.resolve(),
         "status",
         "--slot",
         wrkslots.slot,
         "--format",
         "json",
-    ]
+    )
     try:
         result = run(command, check=False)
     except (OSError, RuntimeError) as error:
@@ -1962,13 +1979,12 @@ def remove_fresh_checkouts_batch(
         ):
             raise ValueError(f"invalid validation cleanup identity for {path}")
         requested[(identity.slot, generation)] = path
-    command = [
-        str(tool_root / "ci-hub/bin/wrkslots"),
-        "--project-root", str(root.resolve()),
-        "--allow-existing-unregistered-worktrees",
+    command = wrkslots_command(
+        tool_root,
+        root.resolve(),
         "remove-validate-batch", "--coordinator-authorized",
         "--coordinator-pid", str(os.getpid()),
-    ]
+    )
     for slot, generation in requested:
         command.extend(("--slot", f"{slot}={generation}"))
     result = run([*command, "--format", "json"], check=False)
@@ -2101,12 +2117,11 @@ def remove_ownerless_checkouts_batch(
         if classify_only
         else "recover-ownerless-validate-batch"
     )
-    command = [
-        str(tool_root / "ci-hub/bin/wrkslots"),
-        "--project-root", str(state_root),
-        "--allow-existing-unregistered-worktrees",
+    command = wrkslots_command(
+        tool_root,
+        state_root,
         action,
-    ]
+    )
     if not classify_only:
         command.extend(
             ("--coordinator-authorized", "--coordinator-pid", str(os.getpid()))
@@ -2404,11 +2419,9 @@ def classify_create_journal_scopes(
     ).resolve()
     requested_agent = f"validate-{prospective_slot}"
     result = run(
-        [
-            str(tool_root / "ci-hub/bin/wrkslots"),
-            "--project-root",
-            str(state_root),
-            "--allow-existing-unregistered-worktrees",
+        wrkslots_command(
+            tool_root,
+            state_root,
             "classify-create-journals",
             prospective_slot,
             "--slot-type",
@@ -2417,7 +2430,7 @@ def classify_create_journal_scopes(
             requested_agent,
             "--format",
             "json",
-        ],
+        ),
         check=False,
     )
     if result.returncode != 0:
@@ -2859,11 +2872,9 @@ def cleanup_recorded_cargo_home(
             "recorded Cargo home or completed record is outside the project root"
         ) from error
     removal = run(
-        [
-            str(tool_root / "ci-hub/bin/wrkslots"),
-            "--project-root",
-            str(state_root),
-            "--allow-existing-unregistered-worktrees",
+        wrkslots_command(
+            tool_root,
+            state_root,
             "recover",
             "--coordinator-authorized",
             "--coordinator-pid",
@@ -2872,7 +2883,7 @@ def cleanup_recorded_cargo_home(
             private_relative.as_posix(),
             "--completed-record",
             record_relative.as_posix(),
-        ],
+        ),
         check=False,
     )
     if removal.returncode != 0:
@@ -3216,17 +3227,15 @@ def sweep_completed_checkouts(
             return registration_status
         try:
             result = run(
-                [
-                    str(tool_root / "ci-hub/bin/wrkslots"),
-                    "--project-root",
-                    str(root.resolve()),
-                    "--allow-existing-unregistered-worktrees",
+                wrkslots_command(
+                    tool_root,
+                    root.resolve(),
                     "--wait-lock",
                     str(WRKSLOTS_STATUS_LOCK_WAIT_SECONDS),
                     "status",
                     "--format",
                     "json",
-                ],
+                ),
                 check=False,
             )
             if result.returncode != 0:
@@ -5341,17 +5350,15 @@ def require_live_scorecard_checkout(
         )
     if registration_status is None:
         result = run(
-            [
-                str(tool_root / "ci-hub/bin/wrkslots"),
-                "--project-root",
-                str(root.resolve()),
-                "--allow-existing-unregistered-worktrees",
+            wrkslots_command(
+                tool_root,
+                root.resolve(),
                 "status",
                 "--slot",
                 wrkslots.slot,
                 "--format",
                 "json",
-            ],
+            ),
             check=False,
         )
         if result.returncode != 0:
