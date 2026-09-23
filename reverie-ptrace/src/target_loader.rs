@@ -906,7 +906,7 @@ fn resolve<F: FnMut(u64, &mut [u8]) -> io::Result<()>>(
             let address = add(bias, provider.symbol.st_value)?;
             let mapping = memory.mapping(address)?;
             if !mapping.execute || mapping.write || !mapping.private {
-                return Err(invalid("dlopen entry is not private executable memory"));
+                return Err(invalid("selected entry is not private executable memory"));
             }
             let identity = mapping.identity;
             selected = Some(TargetDlopen {
