@@ -947,6 +947,96 @@ class DirectLedgerFixture(unittest.TestCase):
         with self.assertRaises(mirror.MirrorRefused):
             mirror.published_scorecard_binding(writer, snapshot, self.target)
 
+    def test_proof_only_attachment_after_raw_append_keeps_both_source_bindings(self):
+        # As above, native authority is an explicit double; Git, the historical
+        # source binding and the current-series carrier transaction are real.
+        self.append("frozen-scorecard-cell")
+        original = self.publish()
+        self.assertEqual("published", original["state"], original)
+        before = {path: git(self.remote, "rev-parse", "main:" + path)
+                  for path in ("latest.json", "scorecard/cells.json", "scorecard/SCORECARD.md")}
+        self.append("later-raw-cell")
+        appended = self.publish(publish_only=True)
+        self.assertEqual("published", appended["state"], appended)
+        self.assertNotEqual(original["commit"], appended["commit"])
+        current_rows = self.remote_rows()
+        self.assertEqual({"frozen-scorecard-cell", "later-raw-cell"},
+                         {value["event_id"] for value in current_rows})
+        prepared, encoded = self.derived_fixture()
+        selected = prepared["selection"]
+
+        def native(value, *args, **kwargs):
+            value["artifacts"], value["objects"] = mirror.finalized_proof.capture_derived_cells(selected["row"], encoded)
+            return git(self.tool, "rev-parse", "HEAD")
+
+        with mock.patch.object(mirror, "finalized_producer_row", return_value=mirror._row_bytes(selected["row"])), \
+                mock.patch.object(mirror, "prepare_portable_proof", return_value=prepared), \
+                mock.patch.object(mirror, "_parent_tool_commit", return_value="8" * 40), \
+                mock.patch.object(mirror, "_select_published_terminal", return_value=(mock.MagicMock(), selected)), \
+                mock.patch.object(mirror, "emit_derived_portable_proof", side_effect=native), \
+                mock.patch.object(mirror, "build_scorecard") as scorecard:
+            report = self.publish(results=self.root / "results", finalized_run_id=selected["row"]["run_id"],
+                                  portable_proof_only=True)
+        self.assertEqual("published", report["state"], report)
+        scorecard.assert_not_called()
+        self.assertEqual(before, {path: git(self.remote, "rev-parse", "main:" + path) for path in before})
+        self.assertEqual(current_rows, self.remote_rows())
+        self.assertEqual(appended["commit"], report["series_commit"])
+        carrier_paths = [path for path in report["portable_proof"]["files"]
+                         if path.startswith("scorecard/finalized/runs/")]
+        self.assertEqual(1, len(carrier_paths))
+        carrier = json.loads(git(self.remote, "show", "main:" + carrier_paths[0]))
+        self.assertEqual(appended["commit"], carrier["series"]["commit"])
+        self.assertEqual(selected["terminal"], carrier["terminal"])
+        self.assertEqual(5, selected["row"]["schema_version"])
+        self.assertEqual("fail", selected["row"]["result"])
+        self.assertFalse(selected["row"]["validation_complete"])
+        self.assertIsNone(selected["row"]["cell_results"])
+
+    def test_historical_scorecard_refuses_unbound_source_and_changed_original_events(self):
+        self.append("original-cell")
+        self.assertEqual("published", self.publish()["state"])
+        self.append("later-cell")
+        self.assertEqual("published", self.publish(publish_only=True)["state"])
+        writer = self.parent / mirror.WRITER_RELATIVE
+        snapshot = mirror._published_snapshot(writer)
+        metadata_path = writer / "latest.json"
+        encoded = metadata_path.read_bytes()
+        metadata = json.loads(encoded)
+        mirror.published_scorecard_binding(writer, snapshot, self.target)
+        for field, value in (("source_tree", "0" * 40), ("rows_sha256", "0" * 64),
+                             ("rows", metadata["rows"] + 1), ("series_commit", "0" * 40)):
+            metadata_path.write_text(json.dumps(dict(metadata, **{field: value})))
+            with self.subTest(field=field), self.assertRaises(mirror.MirrorRefused):
+                mirror.published_scorecard_binding(writer, snapshot, self.target)
+        # Even a real commit with identical source bytes is not authority when
+        # it is outside the admitted publication's ancestry.
+        orphan = git(writer, "commit-tree", git(writer, "rev-parse", metadata["source_commit"] + "^{tree}"),
+                     "-m", "unrelated source with identical tree")
+        metadata_path.write_text(json.dumps(dict(metadata, source_commit=orphan, series_commit=orphan)))
+        with self.assertRaises(mirror.MirrorRefused):
+            mirror.published_scorecard_binding(writer, snapshot, self.target)
+        # Naming the current source must not silently rebind the old digest.
+        metadata_path.write_text(json.dumps(dict(metadata, source_commit=snapshot["source"]["commit"],
+                                                series_commit=snapshot["source"]["commit"])))
+        with self.assertRaisesRegex(mirror.MirrorRefused, "immutable raw source"):
+            mirror.published_scorecard_binding(writer, snapshot, self.target)
+        metadata_path.write_bytes(encoded)
+        scorecard = writer / "scorecard/cells.json"
+        scorecard_bytes = scorecard.read_bytes()
+        scorecard.write_bytes(scorecard_bytes + b" ")
+        with self.assertRaisesRegex(mirror.MirrorRefused, "bytes differ"):
+            mirror.published_scorecard_binding(writer, snapshot, self.target)
+        scorecard.write_bytes(scorecard_bytes)
+        shard = writer / "series/hermit/fixture/2026-09.jsonl"
+        for original_rows in ([row("original-cell", "diverged")], []):
+            shard.write_text("".join(json.dumps(value) + "\n" for value in [*original_rows, row("later-cell")]))
+            git(writer, "add", "series")
+            git(writer, "commit", "-qm", "invalid mutation of historical cohort")
+            with self.subTest(original_rows=original_rows), \
+                    self.assertRaisesRegex(mirror.MirrorRefused, "changed or removed"):
+                mirror.published_scorecard_binding(writer, mirror._published_snapshot(writer), self.target)
+
     def test_scheduled_backlog_retries_failed_push_without_another_validation(self):
         sys.path.insert(0, str(mirror.TOOL_ROOT / "ci-hub/ledger"))
         import publish_backlog

@@ -201,8 +201,8 @@ def publish_series(parent: Path, ledger: Path, writer: Path, *, net_wrapper: str
             raise MirrorRefused(str(error)) from error
 
 
-def _published_snapshot(writer: Path) -> dict[str, Any]:
-    commit = _git(writer, "rev-parse", "HEAD^{commit}")
+def _published_snapshot(writer: Path, ref: str = "HEAD") -> dict[str, Any]:
+    commit = _git(writer, "rev-parse", f"{ref}^{{commit}}")
     published = series._published_snapshot_at_repo(writer, commit, repository=REMOTE_URL)
     rows = published.rows
     return {
@@ -410,15 +410,23 @@ def published_scorecard_binding(writer: Path, snapshot: Mapping[str, Any], targe
     value = finalized_proof._json(encoded)
     if (not isinstance(value, dict) or value.get("schema") != METADATA_SCHEMA
             or value.get("source_repository") != REMOTE_URL
-            or value.get("scorecard_hermit_commit") != target
-            or value.get("source_tree") != snapshot["source"]["tree"]
-            or value.get("rows_sha256") != snapshot["rows_sha256"]
-            or value.get("rows") != snapshot["rows_read"]):
+            or value.get("scorecard_hermit_commit") != target):
         raise MirrorRefused("published scorecard does not bind this measured source and raw series; run ordinary finalized scorecard publication first")
     source = finalized_proof._hash(value.get("source_commit"), "scorecard source commit", git=True)
     if value.get("series_commit") != source:
         raise MirrorRefused("published scorecard source and series commit differ")
     _git(writer, "merge-base", "--is-ancestor", source, snapshot["source"]["commit"])
+    # Raw publication can advance independently of the frozen scorecard. Bind
+    # that projection to its own immutable input, then require every original
+    # event to survive unchanged in the current proof attachment's input.
+    projected = _published_snapshot(writer, source)
+    if (value.get("source_tree") != projected["source"]["tree"]
+            or value.get("rows_sha256") != projected["rows_sha256"]
+            or value.get("rows") != projected["rows_read"]):
+        raise MirrorRefused("published scorecard metadata differs from its immutable raw source")
+    current_rows = {row["event_id"]: row for row in snapshot["rows"]}
+    if any(current_rows.get(row["event_id"]) != row for row in projected["rows"]):
+        raise MirrorRefused("published scorecard source events were changed or removed from current raw series")
     hashes = value.get("scorecard")
     if not isinstance(hashes, dict) or not all(path.as_posix() in hashes for path in MIRRORED_SCORECARD_PATHS):
         raise MirrorRefused("published scorecard omitted its bound files; run ordinary finalized publication first")
