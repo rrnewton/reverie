@@ -173,3 +173,8 @@ jobs:
         kill "$watchdog" 2>/dev/null || true
         wait "$watchdog" 2>/dev/null || true
         exit "$status"
+    - name: LiteInst explicit runtime initialization conformance
+      # This test requires ptrace and a working PMU. The runner builds and binds
+      # the constructor-disabled DSO, explicitly runs the ignored test, and
+      # rejects a missing artifact, zero selected tests, or an incomplete matrix.
+      run: reverie-liteinst/tests/run_runtime_init.sh

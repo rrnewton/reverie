@@ -1979,6 +1979,77 @@ pub struct TracerBuilder<T: Tool + 'static> {
     clock_test_launcher_branches: u64,
 }
 
+fn validate_runtime_init_environment(command: &Command) -> Result<(), Error> {
+    // Validate the effective bytes, including inherited values. Command's
+    // serializer accepts '=' inside keys, which could otherwise turn an empty
+    // value into a nonempty loader assignment.
+    for (variable, value) in command.get_captured_envs() {
+        let name = variable.as_encoded_bytes();
+        if name.is_empty() || name.contains(&b'=') || name.contains(&0) {
+            return Err(Error::Tool(anyhow::anyhow!(
+                "LiteInst runtime initialization refuses malformed environment variable name"
+            )));
+        }
+        if !value.is_empty() && (name.starts_with(b"LD_") || name == b"GLIBC_TUNABLES") {
+            return Err(Error::Tool(anyhow::anyhow!(
+                "LiteInst runtime initialization refuses loader environment variable {}",
+                variable.to_string_lossy(),
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod runtime_init_environment_tests {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    use super::*;
+
+    #[test]
+    fn rejects_loader_values_but_accepts_empty_and_removed_selectors() {
+        let mut command = Command::new("/bin/true");
+        command.env_clear().env("ORDINARY_VALUE", "preserved");
+        assert!(validate_runtime_init_environment(&command).is_ok());
+        for key in [
+            "LD_PRELOAD",
+            "LD_AUDIT",
+            "LD_FUTURE_OPTION",
+            "GLIBC_TUNABLES",
+        ] {
+            command.env(key, "value");
+            assert!(
+                validate_runtime_init_environment(&command).is_err(),
+                "{key}"
+            );
+            command.env(key, "");
+            assert!(validate_runtime_init_environment(&command).is_ok(), "{key}");
+            command.env_remove(key);
+            assert!(validate_runtime_init_environment(&command).is_ok(), "{key}");
+        }
+        assert_eq!(
+            command.get_env("ORDINARY_VALUE").as_deref(),
+            Some(std::ffi::OsStr::new("preserved"))
+        );
+    }
+
+    #[test]
+    fn rejects_serialized_loader_key_bypass_and_non_utf8_loader_names() {
+        let mut command = Command::new("/bin/true");
+        command.env_clear().env("LD_PRELOAD=/tmp/guest.so", "");
+        assert!(validate_runtime_init_environment(&command).is_err());
+        command
+            .env_clear()
+            .env("GLIBC_TUNABLES=glibc.malloc.check", "");
+        assert!(validate_runtime_init_environment(&command).is_err());
+        command
+            .env_clear()
+            .env(OsString::from_vec(b"LD_\xff".to_vec()), "value");
+        assert!(validate_runtime_init_environment(&command).is_err());
+    }
+}
+
 impl<T: Tool + 'static> TracerBuilder<T> {
     /// Creates the builder with the given command.
     pub fn new(command: Command) -> Self {
@@ -2087,6 +2158,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     ) -> Self {
         self.liteinst_runtime = Some(LiteinstRuntimeConfig {
             preload: preload.into(),
+            initialization: None,
             begin_marker,
             ready_marker,
             helper_return_marker,
@@ -2140,6 +2212,40 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             force_private_stub_mutation_once: None,
         });
         self
+    }
+
+    /// Loads and initializes a bound LiteInst host runtime at executable entry.
+    ///
+    /// The tracer stages the validated runtime bytes in a sealed target memfd
+    /// after the original loader has finished and before the executable starts.
+    /// It retains the existing Tool and GlobalTool and does not add preload or
+    /// Tool selectors to the command environment. Runtime initialization must
+    /// complete the authenticated Begin/Ready handshake before guest execution
+    /// continues. The dynamic runtime's single-task hook-installation and
+    /// fail-closed lifecycle restrictions still apply.
+    pub fn liteinst_runtime_init(
+        self,
+        init: crate::LiteinstRuntimeInit,
+        begin_marker: u64,
+        ready_marker: u64,
+        helper_return_marker: u64,
+        syscall_marker: u64,
+        stats_request: BackendStatsRequest,
+    ) -> Self {
+        let mut builder = self.liteinst_runtime_with_stats(
+            init.mapping_path.clone(),
+            begin_marker,
+            ready_marker,
+            helper_return_marker,
+            syscall_marker,
+            stats_request,
+        );
+        builder
+            .liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime config was just constructed")
+            .initialization = Some(Arc::new(init));
+        builder
     }
 
     #[cfg(test)]
@@ -2385,6 +2491,13 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                 "LiteInst runtime activation with a GDB server is unsupported ({}): both controllers would own the executable-entry software breakpoint",
                 Errno::ENOTSUPP
             )));
+        }
+        if self
+            .liteinst_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.initialization.is_some())
+        {
+            validate_runtime_init_environment(&self.command)?;
         }
         let backend_stats = PtraceBackendStatsSource::from_request(self.backend_stats_request);
         let mut command = self.command;

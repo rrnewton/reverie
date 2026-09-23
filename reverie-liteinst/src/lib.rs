@@ -216,6 +216,18 @@ pub unsafe extern "C" fn reverie_liteinst_initialize() {
 /// Version of the explicit host-runtime configuration layout.
 pub const HOST_RUNTIME_CONFIG_VERSION: u64 = 1;
 
+/// Constructor-disabled explicit host-runtime ABI supported by this image.
+///
+/// Controllers require the read-only exported value to equal one before
+/// loading the image explicitly. Constructor-enabled builds export zero and
+/// remain available through the existing preload launch path.
+#[unsafe(no_mangle)]
+pub static reverie_liteinst_host_runtime_abi: u64 = if cfg!(feature = "preload-constructor") {
+    0
+} else {
+    HOST_RUNTIME_CONFIG_VERSION
+};
+
 /// Configuration for controller-owned host-runtime initialization.
 ///
 /// This selects the existing ptrace host runtime, not an in-process Tool. The

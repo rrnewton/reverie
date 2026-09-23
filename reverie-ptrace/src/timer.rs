@@ -34,7 +34,11 @@
 use std::cmp::Ordering::Equal;
 use std::cmp::Ordering::Greater;
 use std::cmp::Ordering::Less;
+use std::ops::Deref;
+use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use reverie::Errno;
 use reverie::Pid;
@@ -42,6 +46,8 @@ use reverie::RegDisplay;
 use reverie::RegDisplayOptions;
 use reverie::Signal;
 use reverie::Tid;
+#[cfg(target_arch = "x86_64")]
+use reverie::syscalls::MemoryAccess;
 use safeptrace::Error as TraceError;
 use safeptrace::Event as TraceEvent;
 use safeptrace::Running;
@@ -252,7 +258,7 @@ impl PmuConfig {
     /// then return `true`. A non-overshoot (`rcb_actual <= rcb_target`) records
     /// nothing and returns `false`.
     ///
-    /// [`Self::attempt_single_step`]'s late-delivery guard is the sole runtime
+    /// `TimerImpl::handle_signal`'s late-delivery guard is the sole runtime
     /// caller, so a unit test that drives real `(actual, target)` pairs through
     /// this method exercises exactly the behaviour the supervisor runs — a
     /// genuine overshoot causes exactly one witness record — without needing a
@@ -359,6 +365,19 @@ pub(crate) fn has_precise_ip() -> bool {
 #[derive(Debug)]
 pub struct Timer {
     inner: Option<TimerImpl>,
+    controller_suspension: Option<Arc<()>>,
+}
+
+/// Permission to restore the counters of one suspended timer.
+///
+/// Dropping this token does not resume counting. The caller must terminate the
+/// tracee if it cannot restore the original guest context and consume the token.
+#[derive(Debug)]
+#[must_use = "resume this timer only after restoring guest context, or terminate the tracee"]
+pub(crate) struct ControllerTimerSuspension {
+    owner: Arc<()>,
+    clock_enabled: bool,
+    notification_enabled: bool,
 }
 
 /// Data requires to request a timer event
@@ -380,8 +399,8 @@ pub enum HandleFailure {
     #[error(transparent)]
     TraceError(#[from] TraceError),
 
-    #[error("Unexpected event while single stepping")]
-    Event(Wait),
+    #[error("Interrupted while single stepping")]
+    Event(Wait, PreciseStepContinuation),
 
     /// The timer signal was for a timer event that was otherwise cancelled. The
     /// task is returned unchanged.
@@ -392,6 +411,65 @@ pub enum HandleFailure {
     /// this timer. The task is returned unchanged.
     #[error("Pending signal was not for this timer")]
     ImproperSignal(Stopped),
+}
+
+/// The original deadline and progress of a precise event whose step stopped
+/// before completion. Only controller-owned stops may resume this continuation;
+/// a Tool-visible event cancels it through the ordinary event path.
+#[derive(Debug, Eq, PartialEq)]
+pub struct PreciseStepContinuation {
+    current: ClockCounter,
+    target_instr: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PreciseStepResume {
+    /// An owned breakpoint was removed and the original instruction restored.
+    #[cfg(target_arch = "x86_64")]
+    RetryInstruction,
+    /// The interrupted guest syscall has now reached its syscall-exit stop.
+    CompletedInstruction,
+}
+
+impl PreciseStepContinuation {
+    fn resume(&mut self, completion: PreciseStepResume, clock: u64) {
+        if matches!(completion, PreciseStepResume::CompletedInstruction) {
+            self.current.single_step_with_clock(clock);
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+struct SingleStepProvenance {
+    rip: u64,
+    opcode: Option<[u8; 2]>,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl SingleStepProvenance {
+    fn capture(task: &Stopped) -> Result<Self, TraceError> {
+        let rip = task.getregs()?.rip;
+        let mut opcode = [0; 2];
+        // A faulting instruction may be unreadable. That must still execute to
+        // its ordinary fault stop; it simply cannot authenticate a syscall trap.
+        let opcode = task
+            .read_exact(rip as usize, &mut opcode)
+            .ok()
+            .map(|()| opcode);
+        Ok(Self { rip, opcode })
+    }
+
+    fn completes(&self, si_signo: i32, si_code: i32, rip: u64) -> bool {
+        // Linux may report syscall or int $0x80 single-step completion as
+        // TRAP_BRKPT, with RIP advanced over the two-byte instruction.
+        // Neither a guest int3 nor an externally delivered SIGTRAP proves
+        // that the original instruction completed.
+        si_signo == libc::SIGTRAP
+            && (si_code == libc::TRAP_TRACE
+                || (si_code == libc::TRAP_BRKPT
+                    && matches!(self.opcode, Some([0x0f, 0x05] | [0xcd, 0x80]))
+                    && self.rip.checked_add(2) == Some(rip)))
+    }
 }
 
 impl Timer {
@@ -409,6 +487,7 @@ impl Timer {
         // bullet-proof, and if it wasn't, consumers wouldn't be able to
         // meaningfully handle the error anyway.
         Self {
+            controller_suspension: None,
             inner: if is_perf_supported() {
                 Some(
                     TimerImpl::new(guest_pid, guest_tid, initial_command).unwrap_or_else(|err| {
@@ -436,10 +515,99 @@ impl Timer {
         self.inner.as_mut()
     }
 
+    /// Stop both counters while a stopped tracee executes controller-owned
+    /// helpers. This neither resets counts nor changes an outstanding deadline,
+    /// its cancellation status, or its pending artificial notification.
+    ///
+    /// The caller must keep the tracee stopped during both transitions, preserve
+    /// pending timer signals, and exclude private helper stops from
+    /// `observe_event`. Suspension before ordinary post-exec timing is unsupported.
+    /// After any error that leaves this timer suspended, the caller must terminate
+    /// the tracee; ordinary timer operations cannot continue.
+    pub(crate) fn suspend_for_controller(&mut self) -> Result<ControllerTimerSuspension, Errno> {
+        if self.controller_suspension.is_some() {
+            return Err(Errno::EBUSY);
+        }
+        if self
+            .inner_noinit()
+            .is_some_and(|timer| timer.initial_command != InitialCommand::Ordinary)
+        {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        let token = ControllerTimerSuspension {
+            owner: Arc::new(()),
+            clock_enabled: self
+                .inner_noinit()
+                .is_some_and(|timer| timer.clock.is_enabled()),
+            notification_enabled: self
+                .inner_noinit()
+                .is_some_and(|timer| timer.timer.is_enabled()),
+        };
+        // Set the guard before any ioctl. A partial failure cannot accidentally
+        // return the timer to normal service or mint a restoration token.
+        self.controller_suspension = Some(Arc::clone(&token.owner));
+        if let Some(timer) = self.inner_noinit() {
+            // Attempt both even when the first ioctl fails. Neither operation
+            // resets its counter or withdraws a signal already pending in Linux.
+            let notification_result = timer.timer.disable();
+            let clock_result = timer.clock.disable();
+            notification_result?;
+            clock_result?;
+        }
+        Ok(token)
+    }
+
+    /// Restore exactly the enable states captured by `suspend_for_controller`.
+    ///
+    /// The original guest context and signal mask must already be restored, and
+    /// the tracee must still be stopped. A failed restoration retains the
+    /// suspension and requires tracee termination. A token from another timer is
+    /// rejected without changing this timer; no error authorizes guest resume.
+    pub(crate) fn resume_from_controller(
+        &mut self,
+        token: ControllerTimerSuspension,
+    ) -> Result<(), Errno> {
+        if !self
+            .controller_suspension
+            .as_ref()
+            .is_some_and(|owner| Arc::ptr_eq(owner, &token.owner))
+        {
+            return Err(Errno::EINVAL);
+        }
+        if let Some(timer) = self.inner_noinit() {
+            let result = (|| {
+                if token.clock_enabled {
+                    timer.clock.enable()?;
+                }
+                if token.notification_enabled {
+                    timer.timer.enable()?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                // The tracee is stopped. Best-effort disable both, retain the
+                // guard, and require terminal cleanup even if disabling fails.
+                let _ = timer.timer.disable();
+                let _ = timer.clock.disable();
+                return Err(error);
+            }
+        }
+        self.controller_suspension = None;
+        Ok(())
+    }
+
+    fn assert_not_suspended(&self) {
+        assert!(
+            self.controller_suspension.is_none(),
+            "normal timer operation during controller suspension"
+        );
+    }
+
     /// Both ordinary and injected initial exec stops use this transition.
     /// The kernel has already started the clock, but notifications remain held
     /// through the backend's existing post-exec initialization.
     pub(crate) fn begin_initial_exec(&mut self) {
+        self.assert_not_suspended();
         if let Some(timer) = self.inner_mut_noinit() {
             timer.begin_initial_exec();
         }
@@ -448,6 +616,7 @@ impl Timer {
     /// Release the notification hold before the first Tool post-exec callback.
     /// No pre-exec request is replayed or physically armed here.
     pub(crate) fn finish_initial_exec(&mut self) {
+        self.assert_not_suspended();
         if let Some(timer) = self.inner_mut_noinit() {
             timer.finish_initial_exec();
         }
@@ -480,6 +649,9 @@ impl Timer {
     /// This is *not* idempotent and will replace the outstanding request. If it
     /// is called repeatedly no events will be delivered.
     pub fn request_event(&mut self, evt: TimerEventRequest) -> Result<(), Errno> {
+        if self.controller_suspension.is_some() {
+            return Err(Errno::EBUSY);
+        }
         self.inner_mut_noinit()
             .ok_or(Errno::ENODEV)?
             .request_event(evt)
@@ -489,6 +661,7 @@ impl Timer {
     /// ensures proper cancellation semantics are observed. See the internal
     /// `timer::EventStatus` type for details.
     pub fn observe_event(&mut self) {
+        self.assert_not_suspended();
         if let Some(t) = self.inner_mut_noinit() {
             t.observe_event();
         }
@@ -511,6 +684,7 @@ impl Timer {
     /// signal.
     #[allow(dead_code)]
     pub fn schedule_cancellation(&mut self) {
+        self.assert_not_suspended();
         if let Some(t) = self.inner_mut_noinit() {
             t.schedule_cancellation();
         }
@@ -529,6 +703,9 @@ impl Timer {
     /// method.
     #[allow(dead_code)]
     pub fn cancel(&self) -> Result<(), Errno> {
+        if self.controller_suspension.is_some() {
+            return Err(Errno::EBUSY);
+        }
         self.inner_noinit().map(|t| t.cancel()).unwrap_or(Ok(()))
     }
 
@@ -539,6 +716,7 @@ impl Timer {
     /// Currently, this will, if necessary, `tgkill` a timer signal to the guest
     /// thread.
     pub fn finalize_requests(&self) {
+        self.assert_not_suspended();
         if let Some(t) = self.inner_noinit() {
             t.finalize_requests();
         }
@@ -566,6 +744,9 @@ impl Timer {
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
+        if self.controller_suspension.is_some() {
+            return Err(HandleFailure::TraceError(Errno::EBUSY.into()));
+        }
         match self.inner_mut_noinit() {
             Some(t) => t.handle_signal(task, step, observe).await,
             None => {
@@ -574,16 +755,99 @@ impl Timer {
             }
         }
     }
+
+    /// Continue the same precise event after servicing a controller-only stop.
+    /// This neither arms a notification nor reinterprets the absolute deadline
+    /// as a new relative request. The tracee must still be stopped.
+    pub(crate) async fn resume_precise_step(
+        &mut self,
+        task: Stopped,
+        mut continuation: PreciseStepContinuation,
+        completion: PreciseStepResume,
+        step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
+        observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+    ) -> Result<Stopped, HandleFailure> {
+        self.assert_not_suspended();
+        let timer = self.inner();
+        if timer.timer_status != EventStatus::Armed
+            || timer.event
+                != (ActiveEvent::Precise {
+                    clock_target: continuation.current.target_rcb,
+                    offset: continuation.target_instr,
+                })
+        {
+            return Err(HandleFailure::TraceError(Errno::EINVAL.into()));
+        }
+        continuation.resume(completion, timer.read_clock());
+        timer
+            .attempt_single_step(task, continuation, step, observe)
+            .await
+    }
+}
+
+/// Tracks successful enable/disable ioctls, independently of event cancellation.
+/// In particular an armed artificial notification has no enabled sample counter.
+#[derive(Debug)]
+struct TimerCounter {
+    counter: PerfCounter,
+    enabled: AtomicBool,
+    #[cfg(test)]
+    fail_next_transition: std::sync::Mutex<Option<Errno>>,
+}
+
+impl TimerCounter {
+    fn new(counter: PerfCounter) -> Self {
+        Self {
+            counter,
+            enabled: AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_transition: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    fn set_enabled(&self, enabled: bool) -> Result<(), Errno> {
+        #[cfg(test)]
+        if let Some(error) = self.fail_next_transition.lock().unwrap().take() {
+            return Err(error);
+        }
+        if enabled {
+            self.counter.enable()?;
+        } else {
+            self.counter.disable()?;
+        }
+        self.enabled.store(enabled, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn enable(&self) -> Result<(), Errno> {
+        self.set_enabled(true)
+    }
+
+    fn disable(&self) -> Result<(), Errno> {
+        self.set_enabled(false)
+    }
+}
+
+impl Deref for TimerCounter {
+    type Target = PerfCounter;
+
+    fn deref(&self) -> &Self::Target {
+        &self.counter
+    }
 }
 
 /// The lazy-initialized part of a `Timer` that holds the functionality.
 #[derive(Debug)]
 struct TimerImpl {
     /// A non-resetting counter functioning as a thread-local clock.
-    clock: PerfCounter,
+    clock: TimerCounter,
 
     /// A separate counter used to generate signals for timer events
-    timer: PerfCounter,
+    timer: TimerCounter,
 
     /// Information about the active timer event, including expected counter
     /// values.
@@ -776,7 +1040,7 @@ impl TimerImpl {
             builder.precise_ip(1);
         }
 
-        let timer = builder.check_for_pmu_bugs().create()?;
+        let timer = TimerCounter::new(builder.check_for_pmu_bugs().create()?);
         timer.set_signal_delivery(guest_tid, MARKER_SIGNAL)?;
         timer.reset()?;
         // measure the target tid irrespective of CPU
@@ -789,7 +1053,7 @@ impl TimerImpl {
         if initial_command {
             clock_builder.enable_on_exec();
         }
-        let clock = clock_builder.create()?;
+        let clock = TimerCounter::new(clock_builder.create()?);
         clock.reset()?;
         if !initial_command {
             clock.enable()?;
@@ -882,6 +1146,8 @@ impl TimerImpl {
 
     fn begin_initial_exec(&mut self) {
         if self.initial_command == InitialCommand::WaitingForExec {
+            // PERF_ATTR.enable_on_exec enabled the clock at the observed exec.
+            self.clock.enabled.store(true, Ordering::Relaxed);
             self.retire_initial_event();
             self.initial_command = InitialCommand::InitializingExec;
         }
@@ -1019,7 +1285,25 @@ impl TimerImpl {
                 clock_target,
                 offset,
             } => {
-                self.attempt_single_step(task, ctr, clock_target, offset, step, observe)
+                // A late interrupt cannot be undone by single stepping. Keep
+                // the existing overshoot report and observed-counter delivery.
+                if get_pmu_config().record_overshoot_if_past_target(ctr, clock_target) {
+                    warn!(
+                        "Precise timer interrupt arrived after target: actual {} > target {}; \
+                         delivering timer event at the observed counter",
+                        ctr, clock_target
+                    );
+                    return Ok(task);
+                }
+                let continuation = PreciseStepContinuation {
+                    current: ClockCounter::new(ctr, 0, clock_target),
+                    target_instr: offset,
+                };
+                debug!(
+                    "Timer will single-step from ctr {} to {}",
+                    continuation.current, clock_target
+                );
+                self.attempt_single_step(task, continuation, step, observe)
                     .await
             }
             ActiveEvent::Imprecise { clock_min } => {
@@ -1036,45 +1320,25 @@ impl TimerImpl {
     async fn attempt_single_step(
         &self,
         task: Stopped,
-        ctr_initial: u64,
-        target_rcb: u64,
-        target_instr: u64,
+        mut continuation: PreciseStepContinuation,
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
-        // The perf interrupt can arrive *past* the target when descheduling or
-        // migration delays signal handling long enough for the actual skid to
-        // exceed the margin. Single stepping cannot move the guest backward, so
-        // record the overshoot and deliver the timer event at the observed
-        // counter. The Tool can then account for the late event and either end
-        // the timeslice or re-arm the next timer through its normal callback.
-        if get_pmu_config().record_overshoot_if_past_target(ctr_initial, target_rcb) {
-            warn!(
-                "Precise timer interrupt arrived after target: actual {} > target {}; \
-                 delivering timer event at the observed counter",
-                ctr_initial, target_rcb
-            );
-            return Ok(task);
-        }
-        let mut current = ClockCounter::new(ctr_initial, 0, target_rcb);
+        let target_rcb = continuation.current.target_rcb;
         let max_single_step_count = get_pmu_config().max_single_step_count();
         assert!(
-            target_rcb - current.rcbs() <= max_single_step_count,
+            target_rcb - continuation.current.rcbs() <= max_single_step_count,
             "Single steps from {} to {} requested ({} steps), but that exceeds the skid margin + minimum perf timer steps ({}). \
                 This probably indicates a bug",
-            current.rcbs(),
+            continuation.current.rcbs(),
             target_rcb,
-            (target_rcb - current.rcbs()),
+            (target_rcb - continuation.current.rcbs()),
             max_single_step_count
-        );
-        debug!(
-            "Timer will single-step from ctr {} to {}",
-            current, target_rcb
         );
         let mut task = task;
         loop {
-            if !current
-                .is_behind(target_rcb, target_instr)
+            if !continuation.current
+                .is_behind(target_rcb, continuation.target_instr)
                 .expect("counter should increase monotonically and stay at target_rcb until equal. This is most likely a BUG with counter tracking")
             {
                 break;
@@ -1086,14 +1350,33 @@ impl TimerImpl {
                 task.getregs()?
                     .display_with_options(RegDisplayOptions { multiline: true })
             );
+            #[cfg(target_arch = "x86_64")]
+            let provenance = SingleStepProvenance::capture(&task)?;
             let wait = step(task)?.next_state().await?;
             observe(&wait)?;
             task = match wait {
-                // a successful single step results in SIGTRAP stop
-                Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => new_task,
-                wait => return Err(HandleFailure::Event(wait)),
+                Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => {
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        let signal = new_task.getsiginfo()?;
+                        if !provenance.completes(
+                            signal.si_signo,
+                            signal.si_code,
+                            new_task.getregs()?.rip,
+                        ) {
+                            return Err(HandleFailure::Event(
+                                Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)),
+                                continuation,
+                            ));
+                        }
+                    }
+                    new_task
+                }
+                wait => return Err(HandleFailure::Event(wait, continuation)),
             };
-            current.single_step_with_clock(self.read_clock());
+            continuation
+                .current
+                .single_step_with_clock(self.read_clock());
         }
         Ok(task)
     }
@@ -1165,6 +1448,281 @@ mod tests {
     use super::ClockCounter;
     #[cfg(target_arch = "x86_64")]
     use super::PmuConfig;
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn precise_step_traps_require_instruction_completion_provenance() {
+        let ordinary = super::SingleStepProvenance {
+            rip: 0x1fff,
+            // Also represents an unavailable two-byte opcode snapshot at the
+            // end of a mapped page. A one-byte instruction can still complete.
+            opcode: None,
+        };
+        assert!(ordinary.completes(libc::SIGTRAP, libc::TRAP_TRACE, 0x2000));
+        assert!(!ordinary.completes(libc::SIGUSR1, libc::TRAP_TRACE, 0x2000));
+        for code in [
+            libc::TRAP_BRKPT,
+            libc::SI_KERNEL,
+            libc::SI_USER,
+            libc::SI_TKILL,
+        ] {
+            assert!(!ordinary.completes(libc::SIGTRAP, code, 0x2000));
+        }
+
+        for opcode in [[0x0f, 0x05], [0xcd, 0x80]] {
+            let syscall = super::SingleStepProvenance {
+                rip: 0x4000,
+                opcode: Some(opcode),
+            };
+            assert!(syscall.completes(libc::SIGTRAP, libc::TRAP_TRACE, 0x4002));
+            assert!(syscall.completes(libc::SIGTRAP, libc::TRAP_BRKPT, 0x4002));
+            assert!(!syscall.completes(libc::SIGUSR1, libc::TRAP_BRKPT, 0x4002));
+            assert!(!syscall.completes(libc::SIGTRAP, libc::TRAP_BRKPT, 0x4000));
+            assert!(!syscall.completes(libc::SIGTRAP, libc::TRAP_BRKPT, 0x4001));
+            assert!(!syscall.completes(libc::SIGTRAP, libc::SI_KERNEL, 0x4002));
+            assert!(!syscall.completes(libc::SIGTRAP, libc::SI_TKILL, 0x4002));
+        }
+        for opcode in [[0xcc, 0x90], [0xcd, 0x03], [0x90, 0x90]] {
+            let breakpoint = super::SingleStepProvenance {
+                rip: 0x4000,
+                opcode: Some(opcode),
+            };
+            for rip in [0x4001, 0x4002] {
+                assert!(!breakpoint.completes(libc::SIGTRAP, libc::TRAP_BRKPT, rip));
+                assert!(!breakpoint.completes(libc::SIGTRAP, libc::SI_KERNEL, rip));
+            }
+        }
+        assert!(
+            !super::SingleStepProvenance {
+                rip: u64::MAX,
+                opcode: Some([0x0f, 0x05]),
+            }
+            .completes(libc::SIGTRAP, libc::TRAP_BRKPT, 1)
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn precise_continuation_preserves_deadline_and_accumulated_instruction_offset() {
+        use super::PreciseStepResume;
+
+        let mut continuation = super::PreciseStepContinuation {
+            current: ClockCounter::new(40, 0, 41),
+            target_instr: 12,
+        };
+        continuation.current.single_step_with_clock(41);
+        for _ in 0..4 {
+            continuation.current.single_step_with_clock(41);
+        }
+        continuation.resume(PreciseStepResume::RetryInstruction, 41);
+        assert_eq!(continuation.current, ClockCounter::new(41, 4, 41));
+        assert_eq!(continuation.target_instr, 12);
+
+        continuation.resume(PreciseStepResume::CompletedInstruction, 41);
+        assert_eq!(continuation.current, ClockCounter::new(41, 5, 41));
+        for _ in 0..6 {
+            continuation.current.single_step_with_clock(41);
+        }
+        assert_eq!(continuation.current.is_behind(41, 12), Some(true));
+        continuation.current.single_step_with_clock(41);
+        assert_eq!(continuation.current, ClockCounter::new(41, 12, 41));
+        assert_eq!(continuation.current.is_behind(41, 12), Some(false));
+        assert_eq!(continuation.target_instr, 12);
+    }
+
+    fn controller_test_timer(initial_command: bool) -> super::Timer {
+        let pid = reverie::Pid::from_raw(unsafe { libc::getpid() });
+        let tid = reverie::Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        super::Timer {
+            inner: Some(
+                super::TimerImpl::new(pid, tid, initial_command)
+                    .expect("controller suspension control requires a working PMU"),
+            ),
+            controller_suspension: None,
+        }
+    }
+
+    #[inline(never)]
+    fn controller_test_branches() {
+        let mut remaining = std::hint::black_box(100_000_u64);
+        while remaining != 0 {
+            std::hint::black_box(remaining);
+            remaining -= 1;
+        }
+    }
+
+    #[test]
+    fn controller_suspension_freezes_both_counters_and_preserves_active_deadline() {
+        let mut timer = controller_test_timer(false);
+        timer
+            .request_event(super::TimerEventRequest::PreciseInstruction(1 << 50, 17))
+            .unwrap();
+        timer.observe_event();
+        let event = timer.inner().event;
+        assert_eq!(timer.inner().timer_status, super::EventStatus::Armed);
+        assert!(timer.inner().clock.is_enabled());
+        assert!(timer.inner().timer.is_enabled());
+        controller_test_branches();
+
+        let token = timer.suspend_for_controller().unwrap();
+        let clock = timer.read_clock();
+        let notification = timer.inner().timer.ctr_value().unwrap();
+        assert!(clock > 0);
+        assert!(notification > 0);
+        assert!(!timer.inner().clock.is_enabled());
+        assert!(!timer.inner().timer.is_enabled());
+        controller_test_branches();
+        assert_eq!(timer.read_clock(), clock);
+        assert_eq!(timer.inner().timer.ctr_value().unwrap(), notification);
+        assert_eq!(timer.inner().event, event);
+        assert_eq!(timer.inner().timer_status, super::EventStatus::Armed);
+        assert!(!timer.inner().send_artificial_signal);
+        assert_eq!(
+            timer.request_event(super::TimerEventRequest::Precise(1)),
+            Err(reverie::Errno::EBUSY)
+        );
+        assert_eq!(timer.cancel(), Err(reverie::Errno::EBUSY));
+        assert!(matches!(
+            timer.suspend_for_controller(),
+            Err(reverie::Errno::EBUSY)
+        ));
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| timer.observe_event()))
+                .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| timer.finalize_requests()))
+                .is_err()
+        );
+        assert_eq!(timer.inner().timer_status, super::EventStatus::Armed);
+
+        timer.resume_from_controller(token).unwrap();
+        assert!(timer.inner().clock.is_enabled());
+        assert!(timer.inner().timer.is_enabled());
+        // A reset on restoration must fail even if counting subsequently works.
+        assert!(timer.read_clock() >= clock);
+        assert!(timer.inner().timer.ctr_value().unwrap() >= notification);
+        assert_eq!(timer.inner().event, event);
+        assert_eq!(timer.inner().timer_status, super::EventStatus::Armed);
+        controller_test_branches();
+        assert!(timer.read_clock() > clock);
+        assert!(timer.inner().timer.ctr_value().unwrap() > notification);
+        timer.cancel().unwrap();
+    }
+
+    #[test]
+    fn controller_suspension_preserves_disabled_and_artificial_notifications() {
+        let mut timer = controller_test_timer(false);
+        timer
+            .request_event(super::TimerEventRequest::Imprecise(1 << 50))
+            .unwrap();
+        timer.cancel().unwrap();
+        let cancelled_event = timer.inner().event;
+        let token = timer.suspend_for_controller().unwrap();
+        timer.resume_from_controller(token).unwrap();
+        assert!(timer.inner().clock.is_enabled());
+        assert!(!timer.inner().timer.is_enabled());
+        assert_eq!(timer.inner().event, cancelled_event);
+        assert_eq!(timer.inner().timer_status, super::EventStatus::Scheduled);
+
+        timer
+            .request_event(super::TimerEventRequest::Precise(1))
+            .unwrap();
+        let artificial_event = timer.inner().event;
+        assert!(timer.inner().send_artificial_signal);
+        let token = timer.suspend_for_controller().unwrap();
+        timer.resume_from_controller(token).unwrap();
+        assert!(timer.inner().clock.is_enabled());
+        assert!(!timer.inner().timer.is_enabled());
+        assert!(timer.inner().send_artificial_signal);
+        assert_eq!(timer.inner().event, artificial_event);
+        assert_eq!(timer.inner().timer_status, super::EventStatus::Scheduled);
+        // Do not finalize: this unit test verifies preservation, not delivery to
+        // an untraced test thread. The stopped-target bracket owns delivery.
+    }
+
+    #[test]
+    fn controller_suspension_rejects_initial_exec_boundary_without_effects() {
+        let mut timer = controller_test_timer(true);
+        for initializing in [false, true] {
+            if initializing {
+                timer.begin_initial_exec();
+            }
+            let event = timer.inner().event;
+            let clock = timer.inner().clock.is_enabled();
+            assert!(matches!(
+                timer.suspend_for_controller(),
+                Err(reverie::Errno::EOPNOTSUPP)
+            ));
+            assert!(timer.controller_suspension.is_none());
+            assert_eq!(timer.inner().event, event);
+            assert_eq!(timer.inner().clock.is_enabled(), clock);
+            assert!(!timer.inner().timer.is_enabled());
+        }
+    }
+
+    #[test]
+    fn controller_suspension_failure_still_attempts_both_disables() {
+        let mut timer = controller_test_timer(false);
+        timer
+            .request_event(super::TimerEventRequest::Imprecise(1 << 50))
+            .unwrap();
+        *timer.inner().timer.fail_next_transition.lock().unwrap() = Some(reverie::Errno::EIO);
+        assert!(matches!(
+            timer.suspend_for_controller(),
+            Err(reverie::Errno::EIO)
+        ));
+        assert!(timer.controller_suspension.is_some());
+        assert!(timer.inner().timer.is_enabled());
+        assert!(!timer.inner().clock.is_enabled());
+        assert_eq!(timer.cancel(), Err(reverie::Errno::EBUSY));
+    }
+
+    #[test]
+    fn controller_resume_failure_disables_counters_and_retains_guard() {
+        let mut timer = controller_test_timer(false);
+        timer
+            .request_event(super::TimerEventRequest::Imprecise(1 << 50))
+            .unwrap();
+        let event = timer.inner().event;
+        let token = timer.suspend_for_controller().unwrap();
+        *timer.inner().timer.fail_next_transition.lock().unwrap() = Some(reverie::Errno::EIO);
+        assert_eq!(
+            timer.resume_from_controller(token),
+            Err(reverie::Errno::EIO)
+        );
+        assert!(timer.controller_suspension.is_some());
+        assert!(!timer.inner().timer.is_enabled());
+        assert!(!timer.inner().clock.is_enabled());
+        assert_eq!(timer.inner().event, event);
+        assert_eq!(timer.inner().timer_status, super::EventStatus::Scheduled);
+        assert_eq!(timer.cancel(), Err(reverie::Errno::EBUSY));
+    }
+
+    #[test]
+    fn controller_suspension_tokens_are_bound_and_drop_does_not_resume() {
+        let mut first = super::Timer {
+            inner: None,
+            controller_suspension: None,
+        };
+        let mut second = super::Timer {
+            inner: None,
+            controller_suspension: None,
+        };
+        let first_token = first.suspend_for_controller().unwrap();
+        let second_token = second.suspend_for_controller().unwrap();
+        assert_eq!(
+            second.resume_from_controller(first_token),
+            Err(reverie::Errno::EINVAL)
+        );
+        assert_eq!(first.cancel(), Err(reverie::Errno::EBUSY));
+        assert_eq!(second.cancel(), Err(reverie::Errno::EBUSY));
+        second.resume_from_controller(second_token).unwrap();
+        assert_eq!(second.cancel(), Ok(()));
+        let token = second.suspend_for_controller().unwrap();
+        drop(token);
+        assert_eq!(second.cancel(), Err(reverie::Errno::EBUSY));
+    }
 
     #[test]
     fn initial_command_requests_retire_without_physical_notification() {
@@ -1331,7 +1889,7 @@ mod tests {
     fn overshoot_decision_records_witness_counts_and_attributes_per_run() {
         // Drives real (rcb_actual, rcb_target) pairs through the *same*
         // decision-and-record method the supervisor calls in
-        // `attempt_single_step`, and observes the process-global witness
+        // `handle_signal`, and observes the process-global witness
         // counter — proving the behaviour (a genuine overshoot is recorded),
         // not merely the marker arithmetic. This test is the only writer of the
         // witness counter in this test binary, so draining residue first makes

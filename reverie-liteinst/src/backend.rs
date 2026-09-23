@@ -358,6 +358,54 @@ impl LiteinstBackend {
         ))
     }
 
+    /// Loads a bound host runtime at executable entry, captures output and statistics.
+    ///
+    /// Ptrace owns the sole Tool and GlobalTool throughout the run. The runtime
+    /// is loaded from validated bytes in a sealed target memfd and explicitly
+    /// initialized after the original loader finishes. This does not add
+    /// `LD_PRELOAD` or LiteInst selectors to the command environment. The same
+    /// hook-installation and lifecycle restrictions as the host hybrid apply.
+    pub async fn run_host_with_output_and_runtime_init_and_stats<T>(
+        mut command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        init: reverie_ptrace::LiteinstRuntimeInit,
+    ) -> Result<
+        (
+            ReverieOutput,
+            T::GlobalState,
+            crate::LiteinstBackendStatsSource,
+        ),
+        Error,
+    >
+    where
+        T: Tool + 'static,
+    {
+        command
+            .stdout(ReverieStdio::piped())
+            .stderr(ReverieStdio::piped());
+        let tracer = TracerBuilder::<T>::new(command)
+            .config(config)
+            .liteinst_runtime_init(
+                init,
+                crate::runtime::HOST_BEGIN_MARKER,
+                crate::runtime::HOST_READY_MARKER,
+                crate::runtime::HOST_HELPER_RETURN_MARKER,
+                crate::runtime::HOST_SYSCALL_MARKER,
+                BackendStatsRequest::ENABLED,
+            )
+            .spawn()
+            .await?;
+        let stats = tracer
+            .liteinst_instrumentation_stats()
+            .expect("LiteInst runtime tracer must expose instrumentation statistics");
+        let (output, global) = tracer.wait_with_output().await?;
+        Ok((
+            output,
+            global,
+            crate::LiteinstBackendStatsSource::from_ptrace_host_hybrid(stats.snapshot()),
+        ))
+    }
+
     /// Runs a tool using an explicit tool-specific preload library.
     ///
     /// This path dispatches patchable syscalls in the guest and keeps the
