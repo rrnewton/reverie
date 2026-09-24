@@ -16355,6 +16355,20 @@ int main(int argc, char **argv) {
       {"normal zero count", 2, 0, 0, EBADF},
       {"null", 2, 2, 2, EBADF},
       {"null zero count", 2, 0, 2, EBADF},
+      {"above supervisor cap overflow", INT64_MAX - 20000000, 100000000, 0, EINVAL},
+      {"above supervisor cap valid", INT64_MAX - 20000000, 20000000, 0, EBADF},
+      {"above kernel cap overflow", INT64_MAX - UINT64_C(0x7ffff000),
+       UINT64_C(0x7ffff001), 0, EINVAL},
+      {"kernel cap boundary valid", INT64_MAX - UINT64_C(0x7ffff000),
+       UINT64_C(0x7ffff000), 0, EBADF},
+      {"signed count maximum valid", 0, INT64_MAX, 0, EBADF},
+      {"signed count bit", 0, UINT64_C(1) << 63, 0, EINVAL},
+      {"unsigned count maximum", 0, UINT64_MAX, 0, EINVAL},
+      {"inaccessible oversized count", 2, UINT64_MAX, 1, EFAULT},
+      {"null oversized valid", 2, 100000000, 2, EBADF},
+      {"null signed range overflow", 2, INT64_MAX, 2, EINVAL},
+      {"null signed count bit", 2, UINT64_C(1) << 63, 2, EINVAL},
+      {"null unsigned count maximum", 2, UINT64_MAX, 2, EINVAL},
   };
   const unsigned char source_bytes[] = "abcdef";
   const unsigned char output_bytes[] = "unchanged-output\n";
@@ -16420,7 +16434,7 @@ int main(int argc, char **argv) {
       }
     }
   }
-  if (rows != 156 || failures) return 6;
+  if (rows != 300 || failures) return 6;
   if (close(source) || close(readonly_output) ||
       close(output_pipe[0]) || close(output_pipe[1])) return 7;
   const char marker[] = "sendfile-bad-output-offsets-ok\n";

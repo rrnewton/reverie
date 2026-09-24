@@ -6600,24 +6600,36 @@ fn sendfile(
     let Ok(count) = usize::try_from(args[3]) else {
         return negative_errno(libc::EINVAL);
     };
-    let count = count.min(MAX_HOST_IO);
     let offset_ptr = args[2];
     if let Some(error) = output_error {
         // Copying the explicit offset and verifying its signed input range
         // precede output access rejection on Linux. Preserve those errors for
         // supported readable inputs without probing or consuming any bytes.
-        // Other endpoints keep the existing error order and count cap.
-        if offset_ptr != 0 {
-            let offset = match read_sendfile_offset(memory, offset_ptr) {
+        // Linux validates the original guest count before either transfer cap.
+        // A null offset uses the input cursor, which this query leaves intact.
+        let offset = if offset_ptr != 0 {
+            match read_sendfile_offset(memory, offset_ptr) {
                 Ok(offset) => offset,
                 Err(error) => return error,
-            };
-            if offset < 0 || offset.checked_add(count as i64).is_none() {
-                return negative_errno(libc::EINVAL);
             }
+        } else {
+            // SAFETY: in_host is a live readable regular-file descriptor. This
+            // queries its current position without changing it or reading bytes.
+            let offset = unsafe { libc::lseek(in_host, 0, libc::SEEK_CUR) };
+            if offset < 0 {
+                return io_error(std::io::Error::last_os_error());
+            }
+            offset
+        };
+        let Ok(count) = i64::try_from(count) else {
+            return negative_errno(libc::EINVAL);
+        };
+        if offset < 0 || offset.checked_add(count).is_none() {
+            return negative_errno(libc::EINVAL);
         }
         return error;
     }
+    let count = count.min(MAX_HOST_IO);
 
     // Fast path: a regular/memfd output that lives in the guest file table can be
     // copied with the host's zero-copy sendfile directly, preserving kernel
@@ -21709,6 +21721,60 @@ mod tests {
                     ("normal zero count", OFFSET, 2, 0, libc::EBADF),
                     ("null", 0, 2, 2, libc::EBADF),
                     ("null zero count", 0, 2, 0, libc::EBADF),
+                    (
+                        "above supervisor cap overflow",
+                        OFFSET,
+                        i64::MAX - 20_000_000,
+                        100_000_000,
+                        libc::EINVAL,
+                    ),
+                    (
+                        "above supervisor cap valid",
+                        OFFSET,
+                        i64::MAX - 20_000_000,
+                        20_000_000,
+                        libc::EBADF,
+                    ),
+                    (
+                        "above kernel cap overflow",
+                        OFFSET,
+                        i64::MAX - MAX_RW_COUNT as i64,
+                        MAX_RW_COUNT as u64 + 1,
+                        libc::EINVAL,
+                    ),
+                    (
+                        "kernel cap boundary valid",
+                        OFFSET,
+                        i64::MAX - MAX_RW_COUNT as i64,
+                        MAX_RW_COUNT as u64,
+                        libc::EBADF,
+                    ),
+                    (
+                        "signed count maximum valid",
+                        OFFSET,
+                        0,
+                        i64::MAX as u64,
+                        libc::EBADF,
+                    ),
+                    ("signed count bit", OFFSET, 0, 1_u64 << 63, libc::EINVAL),
+                    ("unsigned count maximum", OFFSET, 0, u64::MAX, libc::EINVAL),
+                    (
+                        "inaccessible oversized count",
+                        INACCESSIBLE,
+                        2,
+                        u64::MAX,
+                        libc::EFAULT,
+                    ),
+                    ("null oversized valid", 0, 2, 100_000_000, libc::EBADF),
+                    (
+                        "null signed range overflow",
+                        0,
+                        2,
+                        i64::MAX as u64,
+                        libc::EINVAL,
+                    ),
+                    ("null signed count bit", 0, 2, 1_u64 << 63, libc::EINVAL),
+                    ("null unsigned count maximum", 0, 2, u64::MAX, libc::EINVAL),
                 ] {
                     write_struct(&mut memory, OFFSET, &offset);
                     let result = syscall_result(
