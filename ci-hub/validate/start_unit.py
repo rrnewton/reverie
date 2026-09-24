@@ -3010,33 +3010,67 @@ def discover_cleanup_groups(
     discovery_counts: dict[str, int] = {
         "json_files_seen": 0,
         "framework_result_sidecars_skipped": 0,
+        "reverie_count_sidecars_skipped": 0,
         "run_handle_candidates": 0,
     }
     for path in sorted(runs.glob("*.json")):
         discovery_counts["json_files_seen"] += 1
-        # ⚠️ A FRAMEWORK RESULT SIDECAR IS NOT A RUN HANDLE. Both live here and
-        # both end `.json`, so this glob sees them; parsing one as a handle
-        # reports it as an unsupported schema and the gate goes red on a file
-        # that is exactly what it should be. Measured 2026-09-03: 98 of the 111
-        # failures this gate reported were this and nothing else.
+        # ⚠️ A VALIDATION COMPANION SIDECAR IS NOT A RUN HANDLE. Both live
+        # here and both end `.json`, so this glob sees them; parsing one as a
+        # handle reports it as an unsupported schema and the gate goes red on a
+        # file that is exactly what it should be. Measured 2026-09-03: 98 of
+        # the 111 failures this gate reported were framework-result sidecars.
         #
-        # NARROW ON PURPOSE. This skips the ONE name the producer constructs --
-        # service_result.result_path is the other direction of the same rule --
-        # and only when the run handle it names is actually present. A sidecar
-        # with no handle is orphaned rather than expected, so it stays visible
-        # instead of being quietly dropped, and a genuinely malformed or
-        # unsupported handle is untouched by any of this.
+        # NARROW ON PURPOSE. This recognizes only the exact names the producers
+        # construct -- service_result.result_path and
+        # reverie_node.count_sidecar_path are the other directions of the same
+        # rules -- and only when the run handle a name maps to is actually
+        # present. A sidecar with no handle is orphaned rather than expected, so
+        # it stays visible instead of being quietly dropped, and a genuinely
+        # malformed or unsupported handle is untouched by any of this.
+        sidecar_kind = "framework result"
         handle = service_result.handle_path_for_result(path)
+        if handle is None:
+            count_handle = reverie_node.handle_path_for_count_sidecar(path)
+            if count_handle is not None:
+                try:
+                    candidate = read_cleanup_record_object(path)
+                    # Preserve the cleanup reader's existing compatibility:
+                    # every supported handle schema, including a legacy
+                    # producer, remains a run-handle candidate when its name
+                    # happens to end in the count-sidecar suffix.
+                    path_is_run_handle = run_registry.is_current_schema_version(
+                        candidate.get("schema_version")
+                    )
+                except (RuntimeError, TypeError, ValueError):
+                    path_is_run_handle = False
+                if not path_is_run_handle:
+                    if not count_handle.exists():
+                        sidecar_kind = "Reverie count"
+                        handle = count_handle
+                    else:
+                        try:
+                            owner = read_cleanup_record_object(count_handle)
+                        except RuntimeError:
+                            owner = None
+                        if reverie_node.is_current_count_handle(owner, count_handle):
+                            sidecar_kind = "Reverie count"
+                            handle = count_handle
         if handle is not None:
             if handle.exists():
-                discovery_counts["framework_result_sidecars_skipped"] += 1
+                field = (
+                    "framework_result_sidecars_skipped"
+                    if sidecar_kind == "framework result"
+                    else "reverie_count_sidecars_skipped"
+                )
+                discovery_counts[field] += 1
                 continue
             retained.append(
                 {
                     "checkout": str(path),
                     "cleanup_failed": True,
                     "reason": (
-                        "framework result sidecar has no run handle at "
+                        f"{sidecar_kind} sidecar has no run handle at "
                         f"{handle}; it is not a candidate and not expected"
                     ),
                 }
@@ -3321,6 +3355,7 @@ def sweep_completed_checkouts(
             "discovery": {
                 "json_files_seen": 0,
                 "framework_result_sidecars_skipped": 0,
+                "reverie_count_sidecars_skipped": 0,
                 "run_handle_candidates": 0,
             },
         }

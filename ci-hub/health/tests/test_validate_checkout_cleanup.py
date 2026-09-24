@@ -155,6 +155,28 @@ def test_cleanup_attempt_error_is_not_reported_as_a_refusal() -> None:
     assert "/candidate: cleanup provider returned no result" in fields["summary"]
 
 
+def test_companion_sidecar_discovery_counts_remain_separate() -> None:
+    code, fields = run_with(
+        {
+            "removed": [],
+            "removed_cargo_homes": [],
+            "retained": [],
+            "deferred": [],
+            "bookkeeping_errors": [],
+            "discovery": {
+                "json_files_seen": 8,
+                "framework_result_sidecars_skipped": 2,
+                "reverie_count_sidecars_skipped": 3,
+                "run_handle_candidates": 3,
+            },
+        }
+    )
+
+    assert code == 0
+    assert fields["framework_result_sidecars_skipped"] == "2"
+    assert fields["reverie_count_sidecars_skipped"] == "3"
+
+
 def test_sweep_error_remains_nonzero_and_could_not_determine() -> None:
     output = io.StringIO()
     with (

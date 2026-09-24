@@ -13,6 +13,7 @@ remains queried by the original validated SHA.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -32,6 +33,7 @@ sys.path.insert(0, str(CI_HUB / "series"))
 sys.path.insert(0, str(CI_HUB / "validate"))
 
 import ledger as ledger_store  # noqa: E402
+import reverie_node  # noqa: E402
 import run_registry  # noqa: E402
 import series as canonical_series  # noqa: E402
 import service_result  # noqa: E402
@@ -1184,6 +1186,46 @@ def _candidate_validation_service_result(
     return evidence, None
 
 
+def _candidate_reverie_count_sidecar(
+    root: Path,
+    path: Path,
+    payload: bytes,
+    raw: Mapping[str, Any],
+) -> tuple[bool, str | None]:
+    """Classify one authenticated count sidecar without hiding run handles."""
+    sibling = reverie_node.handle_path_for_count_sidecar(path)
+    if sibling is None:
+        return False, None
+    handle_error = _run_handle_candidate_error(root, path, raw)
+    try:
+        sibling_raw = run_registry.read_record(sibling)
+    except RuntimeError:
+        return False, handle_error
+    if not reverie_node.is_current_count_handle(sibling_raw, sibling):
+        return False, handle_error
+    try:
+        count, digest, _generation = reverie_node.read_count_sidecar(path)
+    except (
+        OSError,
+        reverie_node.Refusal,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as error:
+        # Legacy projection is intentionally permissive.  As with the
+        # framework-result classifier above, a file which is independently a
+        # usable handle wins when the purported companion cannot be
+        # authenticated.
+        return (False, None) if handle_error is None else (False, str(error))
+    if digest != hashlib.sha256(payload).hexdigest():
+        return False, "Reverie count sidecar changed during classification"
+    try:
+        reverie_node.validate_count_binding(count, sibling_raw, sibling)
+    except (reverie_node.Refusal, RuntimeError, TypeError, ValueError) as error:
+        return (False, None) if handle_error is None else (False, str(error))
+    return True, None
+
+
 def _is_admitted_pre_plan_no_result(
     root: Path,
     path: Path,
@@ -1320,6 +1362,20 @@ def run_handle_report(
                 "path": str(path),
                 "error": candidate_handle_error,
             })
+            continue
+        count_sidecar, count_sidecar_error = _candidate_reverie_count_sidecar(
+            root, path, payload, raw_json
+        )
+        if count_sidecar:
+            continue
+        if count_sidecar_error is not None:
+            unreadable.append(
+                {
+                    "path": str(path),
+                    "source": "reverie-count-sidecar",
+                    "error": count_sidecar_error,
+                }
+            )
             continue
         try:
             raw_target = _run_handle_target(raw_json)
@@ -1626,6 +1682,11 @@ def reconcile(report: Mapping[str, Any]) -> list[str]:
         if handle.get("source") == "validation-service-result":
             issues.append(
                 "validation service result is unreadable or mismatched: "
+                f"{handle.get('path')}: {handle.get('error')}"
+            )
+        elif handle.get("source") == "reverie-count-sidecar":
+            issues.append(
+                "Reverie count sidecar is unreadable or mismatched: "
                 f"{handle.get('path')}: {handle.get('error')}"
             )
         else:

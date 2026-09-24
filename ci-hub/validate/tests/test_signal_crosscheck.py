@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import copy
 import importlib.util
 import io
 import json
@@ -2033,6 +2034,182 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertNotIn(
             "source",
             unreadable["validate-malformed-handle.service-result.json"],
+        )
+
+    def test_run_handle_report_authenticates_reverie_count_sidecars(self) -> None:
+        from test_reverie_validate import count_transport_fixture
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "ignored/validate/runs"
+            run_root.mkdir(parents=True)
+            record_path, record, binding = count_transport_fixture(run_root)
+            signal_crosscheck.run_registry.write_record(record_path, record)
+            sidecar = signal_crosscheck.reverie_node.count_sidecar_path(record_path)
+            signal_crosscheck.reverie_node.publish_count_sidecar(sidecar, binding)
+
+            accepted = signal_crosscheck.run_handle_report(
+                root, "a" * 40, "rrnewton/reverie", []
+            )
+            self.assertEqual([], accepted["unreadable_handles"])
+            self.assertEqual([], accepted["matching_handles"])
+
+            changed = copy.deepcopy(binding)
+            changed["run_id"] = "different-run"
+            sidecar.write_bytes(signal_crosscheck.reverie_node.count_json(changed))
+            refused = signal_crosscheck.run_handle_report(
+                root, "a" * 40, "rrnewton/reverie", []
+            )
+
+        self.assertEqual(1, len(refused["unreadable_handles"]))
+        self.assertEqual(
+            "reverie-count-sidecar",
+            refused["unreadable_handles"][0]["source"],
+        )
+        self.assertIn(
+            "count source/final event or measured checkout does not match",
+            refused["unreadable_handles"][0]["error"],
+        )
+        report = base_report()
+        report["run_handles"] = refused
+        self.assertTrue(
+            any(
+                issue.startswith("Reverie count sidecar is unreadable or mismatched")
+                for issue in signal_crosscheck.reconcile(report)
+            )
+        )
+
+    def test_run_handle_report_preserves_count_name_handle_collisions(self) -> None:
+        from test_reverie_validate import count_transport_fixture
+
+        unit = "validate-count.json.reverie-count"
+        for producer in (
+            signal_crosscheck.run_registry.PRODUCER,
+            "ci-hub/validate/legacy_launcher.py",
+        ):
+            with self.subTest(producer=producer):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    run_root = root / "ignored/validate/runs"
+                    run_root.mkdir(parents=True)
+                    owner_path, owner, _binding = count_transport_fixture(run_root)
+                    signal_crosscheck.run_registry.write_record(owner_path, owner)
+                    collision = current_validation_handle(unit)
+                    collision["producer"] = producer
+                    collision_path = run_root / f"{unit}.json"
+                    collision_path.write_text(json.dumps(collision))
+
+                    report = signal_crosscheck.run_handle_report(
+                        root, "a" * 40, "rrnewton/hermit", []
+                    )
+
+                self.assertIn(
+                    f"{unit}.service",
+                    {row["unit"] for row in report["matching_handles"]},
+                )
+                self.assertFalse(
+                    any(
+                        row.get("path") == str(collision_path)
+                        for row in report["unreadable_handles"]
+                    ),
+                    report["unreadable_handles"],
+                )
+
+    def test_run_handle_report_requires_an_exact_count_owner(self) -> None:
+        from test_reverie_validate import count_transport_fixture
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "ignored/validate/runs"
+            run_root.mkdir(parents=True)
+            _original_path, record, binding = count_transport_fixture(run_root)
+            record_path = run_root / "validate-elsewhere.json"
+            binding["context"] = signal_crosscheck.reverie_node.count_context(
+                record, record_path
+            )
+            signal_crosscheck.run_registry.write_record(record_path, record)
+            sidecar = signal_crosscheck.reverie_node.count_sidecar_path(record_path)
+            signal_crosscheck.reverie_node.publish_count_sidecar(sidecar, binding)
+
+            report = signal_crosscheck.run_handle_report(
+                root, "a" * 40, "rrnewton/reverie", []
+            )
+
+        self.assertTrue(
+            any(
+                row.get("path") == str(sidecar)
+                and row.get("source") == "reverie-count-sidecar"
+                for row in report["unreadable_handles"]
+            ),
+            report["unreadable_handles"],
+        )
+
+    def test_run_handle_report_uses_the_hardened_count_reader(self) -> None:
+        from test_reverie_validate import count_transport_fixture
+
+        for variant in ("missing-newline", "symlink"):
+            with self.subTest(variant=variant):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    run_root = root / "ignored/validate/runs"
+                    run_root.mkdir(parents=True)
+                    record_path, record, binding = count_transport_fixture(run_root)
+                    signal_crosscheck.run_registry.write_record(record_path, record)
+                    sidecar = signal_crosscheck.reverie_node.count_sidecar_path(
+                        record_path
+                    )
+                    raw = signal_crosscheck.reverie_node.count_json(binding)
+                    if variant == "missing-newline":
+                        sidecar.write_bytes(raw.rstrip(b"\n"))
+                    else:
+                        target = run_root / "count-sidecar-target.json"
+                        target.write_bytes(raw)
+                        sidecar.symlink_to(target)
+
+                    report = signal_crosscheck.run_handle_report(
+                        root, "a" * 40, "rrnewton/reverie", []
+                    )
+
+                self.assertTrue(
+                    any(
+                        row.get("path") == str(sidecar)
+                        and row.get("source") == "reverie-count-sidecar"
+                        for row in report["unreadable_handles"]
+                    ),
+                    report["unreadable_handles"],
+                )
+
+    def test_run_handle_report_refuses_a_count_sidecar_read_race(self) -> None:
+        from test_reverie_validate import count_transport_fixture
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "ignored/validate/runs"
+            run_root.mkdir(parents=True)
+            record_path, record, binding = count_transport_fixture(run_root)
+            signal_crosscheck.run_registry.write_record(record_path, record)
+            sidecar = signal_crosscheck.reverie_node.count_sidecar_path(record_path)
+            signal_crosscheck.reverie_node.publish_count_sidecar(sidecar, binding)
+            observed = signal_crosscheck.reverie_node.read_count_sidecar(sidecar)
+            replaced = (observed[0], "0" * 64, observed[2])
+
+            with mock.patch.object(
+                signal_crosscheck.reverie_node,
+                "read_count_sidecar",
+                return_value=replaced,
+            ):
+                report = signal_crosscheck.run_handle_report(
+                    root, "a" * 40, "rrnewton/reverie", []
+                )
+
+        self.assertEqual(1, len(report["unreadable_handles"]))
+        self.assertEqual(
+            "reverie-count-sidecar",
+            report["unreadable_handles"][0].get("source"),
+        )
+        self.assertIn(
+            "changed during classification",
+            report["unreadable_handles"][0].get("error", ""),
         )
 
     def test_schema4_pre_plan_sidecar_survives_classification_and_crosscheck(

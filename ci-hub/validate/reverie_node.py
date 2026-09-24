@@ -103,6 +103,7 @@ COUNT_CLEANUP_SECONDS = 2
 COUNT_READ_BYTES = 64 * 1024
 COUNT_MAX_ANCESTORS = 128
 COUNT_HANDLE_ENV = "CI_HUB_REVERIE_COUNT_HANDLE"
+COUNT_SIDECAR_SUFFIX = ".reverie-count.json"
 COUNT_SOURCE_PATHS = (
     "ci-hub/validate/start_unit.py", "ci-hub/validate/run_registry.py",
     "ci-hub/validate/reverie_node.py", "ci-hub/ledger/validate_rows.py",
@@ -161,7 +162,45 @@ def validate_count_request(value: object) -> None:
 
 
 def count_sidecar_path(record_path: Path) -> Path:
-    return record_path.with_name(record_path.name + ".reverie-count.json")
+    return record_path.with_name(record_path.name + COUNT_SIDECAR_SUFFIX)
+
+
+def handle_path_for_count_sidecar(sidecar_path: Path) -> Path | None:
+    """Return the run handle named by a count sidecar, if this is one.
+
+    Keep this inverse beside ``count_sidecar_path``: both files live in the
+    validation-runs directory and both end in ``.json``.  Requiring the
+    recovered handle name to end in ``.json`` matches the run-record input used
+    by the producer and leaves a simple suffix lookalike visible to discovery.
+    """
+    if not sidecar_path.name.endswith(COUNT_SIDECAR_SUFFIX):
+        return None
+    handle_name = sidecar_path.name.removesuffix(COUNT_SIDECAR_SUFFIX)
+    if not handle_name.endswith(".json"):
+        return None
+    return sidecar_path.with_name(handle_name)
+
+
+def is_current_count_handle(record: object, record_path: Path) -> bool:
+    """Whether one current Reverie run handle owns a count sidecar name."""
+    if not isinstance(record, dict):
+        return False
+    # Import lazily because run_registry imports this module for the count
+    # fields on its typed handle.
+    import run_registry
+
+    try:
+        handle = run_registry.parse_current_record(record)
+        validate_count_request(record.get("reverie_count_request"))
+    except (Refusal, RuntimeError, TypeError, ValueError):
+        return False
+    # parse_current_record currently implies this when a count request is
+    # present.  Keep the kind check explicit here because this predicate owns
+    # the narrower sidecar-name contract even if the general parser evolves.
+    return (
+        handle.kind is run_registry.RunKind.REVERIE_VALIDATE
+        and record_path.name == f"{handle.unit.removesuffix('.service')}.json"
+    )
 
 
 def count_context(record: dict[str, Any], record_path: Path) -> dict[str, Any]:

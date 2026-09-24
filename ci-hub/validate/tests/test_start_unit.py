@@ -5817,8 +5817,177 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertNotIn(str(sidecar), reasons, report["retained"])
         self.assertEqual(1, report["discovery"]["framework_result_sidecars_skipped"])
+        self.assertEqual(0, report["discovery"]["reverie_count_sidecars_skipped"])
         self.assertEqual(1, report["discovery"]["run_handle_candidates"])
         self.assertEqual(2, report["discovery"]["json_files_seen"])
+
+    def test_a_reverie_count_sidecar_is_not_a_run_handle(self) -> None:
+        from test_reverie_validate import count_transport_fixture
+
+        runs = self.root / "ignored/validate/runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        record_path, record, binding = count_transport_fixture(runs)
+        start_unit.run_registry.write_record(record_path, record)
+        sidecar = start_unit.reverie_node.count_sidecar_path(record_path)
+        start_unit.reverie_node.publish_count_sidecar(sidecar, binding)
+
+        _groups, _singles, _rows, retained, discovery = (
+            start_unit.discover_cleanup_groups(self.root, runs)
+        )
+
+        reasons = " ".join(
+            str(row.get("reason", "")) for row in retained
+        )
+        self.assertNotIn(str(sidecar), reasons, retained)
+        self.assertEqual(0, discovery["framework_result_sidecars_skipped"])
+        self.assertEqual(1, discovery["reverie_count_sidecars_skipped"])
+        self.assertEqual(1, discovery["run_handle_candidates"])
+        self.assertEqual(2, discovery["json_files_seen"])
+
+    def test_a_current_handle_wins_a_reverie_count_name_collision(self) -> None:
+        from test_reverie_validate import count_transport_fixture
+
+        runs = self.root / "ignored/validate/runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        owner_path, owner, _binding = count_transport_fixture(runs)
+        start_unit.run_registry.write_record(owner_path, owner)
+        _fresh, collision = self.current_unknown_cleanup_record(
+            "count.json.reverie-count",
+            {
+                "state": "admitted",
+                "recorded_at": "2026-09-04T12:00:01+00:00",
+                "run_number": 7,
+            },
+        )
+        collision_path = runs / "validate-count.json.reverie-count.json"
+        start_unit.run_registry.write_current_record(collision_path, collision)
+
+        _groups, _singles, _rows, retained, discovery = (
+            start_unit.discover_cleanup_groups(self.root, runs)
+        )
+
+        self.assertEqual([], retained)
+        self.assertEqual(0, discovery["reverie_count_sidecars_skipped"])
+        self.assertEqual(2, discovery["run_handle_candidates"])
+        self.assertEqual(2, discovery["json_files_seen"])
+
+    def test_a_legacy_handle_wins_a_reverie_count_name_collision(self) -> None:
+        from test_reverie_validate import count_transport_fixture
+        from test_signal_crosscheck import current_validation_handle
+
+        unit = "validate-count.json.reverie-count"
+        for owner_present, expected_candidates in ((False, 1), (True, 2)):
+            with self.subTest(owner_present=owner_present):
+                case_root = self.root / f"legacy-collision-{owner_present}"
+                runs = case_root / "ignored/validate/runs"
+                runs.mkdir(parents=True)
+                if owner_present:
+                    owner_path, owner, _binding = count_transport_fixture(runs)
+                    start_unit.run_registry.write_record(owner_path, owner)
+                legacy = current_validation_handle(unit)
+                legacy["producer"] = "ci-hub/validate/legacy_launcher.py"
+                collision_path = runs / f"{unit}.json"
+                collision_path.write_text(json.dumps(legacy))
+
+                _groups, _singles, _rows, retained, discovery = (
+                    start_unit.discover_cleanup_groups(case_root, runs)
+                )
+
+                self.assertEqual([], retained)
+                self.assertEqual(
+                    0, discovery["reverie_count_sidecars_skipped"]
+                )
+                self.assertEqual(
+                    expected_candidates, discovery["run_handle_candidates"]
+                )
+
+    def test_reverie_count_sidecar_requires_an_exact_current_owner(self) -> None:
+        from test_reverie_validate import count_transport_fixture
+
+        for variant in ("missing-request", "wrong-kind", "path-mismatch"):
+            with self.subTest(variant=variant):
+                case_root = self.root / f"count-owner-{variant}"
+                runs = case_root / "ignored/validate/runs"
+                runs.mkdir(parents=True)
+                record_path, record, binding = count_transport_fixture(runs)
+                if variant == "missing-request":
+                    record.pop("reverie_count_request")
+                elif variant == "wrong-kind":
+                    record.pop("reverie_count_request")
+                    record.update(
+                        kind="validate",
+                        repo="rrnewton/hermit",
+                        e2e_result_root=str(case_root / "ignored/validate/e2e"),
+                        safe_ci_dag_runner_log_dir=str(
+                            case_root / "ignored/validate/dag"
+                        ),
+                        hermit_run_timeout_seconds=3300,
+                    )
+                else:
+                    record_path = runs / "validate-elsewhere.json"
+                    binding["context"] = start_unit.reverie_node.count_context(
+                        record, record_path
+                    )
+                start_unit.run_registry.write_record(record_path, record)
+                sidecar = start_unit.reverie_node.count_sidecar_path(record_path)
+                start_unit.reverie_node.publish_count_sidecar(sidecar, binding)
+
+                _groups, _singles, _rows, retained, discovery = (
+                    start_unit.discover_cleanup_groups(case_root, runs)
+                )
+
+                self.assertEqual(
+                    0, discovery["reverie_count_sidecars_skipped"]
+                )
+                self.assertTrue(
+                    any(row.get("checkout") == str(sidecar) for row in retained),
+                    retained,
+                )
+
+    def test_an_orphan_reverie_count_sidecar_is_reported(self) -> None:
+        orphan = (
+            self.root
+            / "ignored/validate/runs/validate-gone.json.reverie-count.json"
+        )
+        orphan.parent.mkdir(parents=True, exist_ok=True)
+        orphan.write_text(json.dumps({"schema": "reverie-count-handoff/v2"}))
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        targets = " ".join(
+            str(row.get("checkout", "")) for row in report["retained"]
+        )
+        reasons = " ".join(
+            str(row.get("reason", "")) for row in report["retained"]
+        )
+        self.assertIn(str(orphan), targets, report["retained"])
+        self.assertIn("Reverie count sidecar has no run handle", reasons)
+        self.assertEqual(0, report["discovery"]["framework_result_sidecars_skipped"])
+        self.assertEqual(0, report["discovery"]["reverie_count_sidecars_skipped"])
+        self.assertEqual(1, report["discovery"]["json_files_seen"])
+
+    def test_a_reverie_count_suffix_without_json_handle_prefix_stays_loud(self) -> None:
+        near_miss = (
+            self.root / "ignored/validate/runs/validate-near.reverie-count.json"
+        )
+        near_miss.parent.mkdir(parents=True, exist_ok=True)
+        near_miss.write_text(json.dumps({"schema": "reverie-count-handoff/v2"}))
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        reasons = " ".join(
+            str(row.get("reason", "")) for row in report["retained"]
+        )
+        self.assertIn(str(near_miss), reasons, report["retained"])
+        self.assertIn("unsupported schema", reasons)
+        self.assertEqual(0, report["discovery"]["framework_result_sidecars_skipped"])
+        self.assertEqual(0, report["discovery"]["reverie_count_sidecars_skipped"])
+        self.assertEqual(1, report["discovery"]["run_handle_candidates"])
+        self.assertEqual(1, report["discovery"]["json_files_seen"])
 
     def test_a_malformed_run_handle_is_still_loud(self) -> None:
         """The other direction, and the one that makes the exclusion narrow
@@ -5837,6 +6006,7 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertIn(str(broken), reasons, report["retained"])
         self.assertEqual(0, report["discovery"]["framework_result_sidecars_skipped"])
+        self.assertEqual(0, report["discovery"]["reverie_count_sidecars_skipped"])
         self.assertEqual(1, report["discovery"]["json_files_seen"])
         # Seen but not a usable candidate, and that distinction is the report:
         # it was looked at and it could not be read.
@@ -5863,8 +6033,9 @@ class StartUnitTest(unittest.TestCase):
             str(row.get("reason", "")) for row in report["retained"]
         )
         self.assertIn(str(orphan), targets, report["retained"])
-        self.assertIn("has no run handle", reasons)
+        self.assertIn("framework result sidecar has no run handle", reasons)
         self.assertEqual(0, report["discovery"]["framework_result_sidecars_skipped"])
+        self.assertEqual(0, report["discovery"]["reverie_count_sidecars_skipped"])
         self.assertEqual(1, report["discovery"]["json_files_seen"])
 
     def test_discovery_reports_what_it_looked_at(self) -> None:
@@ -5881,6 +6052,7 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(6, report["discovery"]["json_files_seen"])
         self.assertEqual(3, report["discovery"]["framework_result_sidecars_skipped"])
+        self.assertEqual(0, report["discovery"]["reverie_count_sidecars_skipped"])
         self.assertEqual(3, report["discovery"]["run_handle_candidates"])
 
     def test_sweep_bounds_backlog_and_advances_on_the_next_batch(self) -> None:

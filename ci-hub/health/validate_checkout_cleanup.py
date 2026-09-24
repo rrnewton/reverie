@@ -168,6 +168,9 @@ def report_output(
             "framework_result_sidecars_skipped": discovery.get(
                 "framework_result_sidecars_skipped"
             ),
+            "reverie_count_sidecars_skipped": discovery.get(
+                "reverie_count_sidecars_skipped"
+            ),
             "run_handle_candidates": discovery.get("run_handle_candidates"),
             "removed": report.get("removed", []),
             "removed_cargo_homes": report.get("removed_cargo_homes", []),
