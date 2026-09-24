@@ -43,10 +43,10 @@ cat >"$tmp/producer-registry.json" <<REG
 REG
 export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry.json
 
-# Exact landed production primary under review. The independent literal below
-# binds all 23 paths and blobs, including the complete key set. Finalization
-# leaves no half-applied transition. Historical maps remain planted negatives
-# at the current commit and positives only at their exact bounded commits.
+# Exact landed production primary under review. The independent literals below
+# bind all 23 primary paths and blobs plus the exact staged PR 3212 transition.
+# Historical maps remain planted negatives at the current commit and positives
+# only at their exact bounded commits.
 # The synthetic repository below retains all transition lifecycle controls.
 production_registry=$script_dir/../validate/producer-definition.json
 production_repo=$root/hermit
@@ -79,6 +79,47 @@ production_definition=$(cat <<'PRODUCTION_DEFINITION'
 }
 PRODUCTION_DEFINITION
 )
+production_transition=$(cat <<'PRODUCTION_TRANSITION'
+{
+  "id": "rrnewton-hermit-pr-3212",
+  "registered_at": "5066b0a5b73d54c2c6709c8344cec6f3eb84a917",
+  "provenance": {
+    "repository": "rrnewton/hermit",
+    "pull_request": 3212,
+    "head": "5066b0a5b73d54c2c6709c8344cec6f3eb84a917"
+  },
+  "finalize_after": "2026-09-24T15:30:00Z",
+  "expires_at": "2026-09-25T15:30:00Z",
+  "candidate_coverage_status": "complete",
+  "added_paths": [],
+  "candidate": {
+    ".config/nextest.toml": "b409b5170b8d6b9aecb1c35707aa1bd6f10045c0",
+    ".github/workflows/ci-portable.yml": "a4a487afc421501837f4ac027ab83942cfe52e5e",
+    "ci/manifest-plan/src/bin/nextest-cpu-wrapper.rs": "40561f929a199c853dd5c00f190d3542b08efae6",
+    "ci/manifest-plan/src/ledger.rs": "0b36d76824b0b345ef9129f8d15f822eb38ac7f9",
+    "ci/manifest-plan/src/lib.rs": "9e343ba1f12d04fc0cadde246a9c49dd74cb5600",
+    "ci/manifest-plan/src/nextest_binaries.rs": "6d39d8ab9a225cecb044cbfbca7773513e32cfc6",
+    "ci/manifest-plan/src/nextest_cpu.rs": "f06d6cd11c3c5bffbab0a7d9267b1ede4af49f76",
+    "ci/manifest-plan/src/runner.rs": "a960679a6a61deb371071dc001a7d7d8bde347f4",
+    "ci/manifest-plan/src/service_result.rs": "b138f1937c2af8269755cfeb3311c4f2dec3c8b8",
+    "ci/manifest-plan/src/timeouts.rs": "65ecae4916d76749f0970b077e9399a3a4355776",
+    "ci/nextest-binaries.rs": "6ca925dd2d7eac953e85f9c48796c8baee58220c",
+    "ci/nextest-test-results.rs": "f5a10d1f2c42d6b0a4077dc7118293aa3183af11",
+    "ci/nextest-timeout-config.rs": "74e194d8762b744d77a16479b76373ed3a400173",
+    "ci/run-nextest-counted.sh": "9b29439ffbd6746c86235ca374d9eee19ecc9ea1",
+    "hermit-cli/src/canonical_verdict.rs": "5d39822bf1423357679960246df31096da5d2549",
+    "scripts/lib/safe_ci_scope.rs": "8f3f95f7fc56a3a9540545391e65c32101632f21",
+    "scripts/lib/validate_cell_results.rs": "f7203f6264dbe9596b357f00905d2d528a79b481",
+    "scripts/lib/validate_classification.rs": "00cc70dd305b05a817a1e28ad389d50177f72a3f",
+    "scripts/lib/validate_history.rs": "ad3779e49e86947680a6f0c08466710c4e9817e9",
+    "scripts/lib/validate_plan.rs": "700967d9658feeed252830e3ece377d7fedf8e2c",
+    "scripts/lib/validate_receipt.rs": "f497e377622d5440e6ad904ff4b183aee2b5f833",
+    "scripts/lib/validate_runtime.rs": "4e6e4e0ab5d73ef0780b4411e1978c11db57506a",
+    "scripts/validate.rs": "457d150a400252a0e92a245fdadb1e71315be66a"
+  }
+}
+PRODUCTION_TRANSITION
+)
 outgoing_registered_at=2d3876bdf5d310eb4cd55e7a3613d3dbc39bdc5c
 outgoing_rust=5c72a835bd766af63e35b9219eac077c1b927db7
 outgoing_history=fb5bda65ac9ceb16bd7ded72c4f8f1b1b1615bde
@@ -92,12 +133,13 @@ previous_rust=15879c97c0ddcfeafaed18deaab0cba2fab30312
 previous_portable=0fb49d65b8b6571a681b253d076f57a82f2edb55
 if ! jq -e \
     --arg at "$production_registered_at" \
-    --argjson definition "$production_definition" '
+    --argjson definition "$production_definition" \
+    --argjson transition "$production_transition" '
       .registered_at == $at
       and .registered_coverage_status == "complete"
       and (has("registered_valid_commits") | not)
-      and (has("transition") | not)
       and .registered == $definition
+      and .transition == $transition
     ' "$production_registry" >/dev/null; then
     echo "FAIL: production producer-definition registry does not match the audited primary" >&2
     exit 1

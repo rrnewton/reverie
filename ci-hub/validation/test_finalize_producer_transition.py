@@ -99,6 +99,46 @@ LIVE_CANDIDATE = {
     "scripts/lib/validate_runtime.rs": "4e6e4e0ab5d73ef0780b4411e1978c11db57506a",
     "scripts/validate.rs": "33b4f778185b4d572c423291d5290be93763d937",
 }
+PR_3212_HEAD = "5066b0a5b73d54c2c6709c8344cec6f3eb84a917"
+PR_3212_CANDIDATE = {
+    ".config/nextest.toml": "b409b5170b8d6b9aecb1c35707aa1bd6f10045c0",
+    ".github/workflows/ci-portable.yml": "a4a487afc421501837f4ac027ab83942cfe52e5e",
+    "ci/manifest-plan/src/bin/nextest-cpu-wrapper.rs": "40561f929a199c853dd5c00f190d3542b08efae6",
+    "ci/manifest-plan/src/ledger.rs": "0b36d76824b0b345ef9129f8d15f822eb38ac7f9",
+    "ci/manifest-plan/src/lib.rs": "9e343ba1f12d04fc0cadde246a9c49dd74cb5600",
+    "ci/manifest-plan/src/nextest_binaries.rs": "6d39d8ab9a225cecb044cbfbca7773513e32cfc6",
+    "ci/manifest-plan/src/nextest_cpu.rs": "f06d6cd11c3c5bffbab0a7d9267b1ede4af49f76",
+    "ci/manifest-plan/src/runner.rs": "a960679a6a61deb371071dc001a7d7d8bde347f4",
+    "ci/manifest-plan/src/service_result.rs": "b138f1937c2af8269755cfeb3311c4f2dec3c8b8",
+    "ci/manifest-plan/src/timeouts.rs": "65ecae4916d76749f0970b077e9399a3a4355776",
+    "ci/nextest-binaries.rs": "6ca925dd2d7eac953e85f9c48796c8baee58220c",
+    "ci/nextest-test-results.rs": "f5a10d1f2c42d6b0a4077dc7118293aa3183af11",
+    "ci/nextest-timeout-config.rs": "74e194d8762b744d77a16479b76373ed3a400173",
+    "ci/run-nextest-counted.sh": "9b29439ffbd6746c86235ca374d9eee19ecc9ea1",
+    "hermit-cli/src/canonical_verdict.rs": "5d39822bf1423357679960246df31096da5d2549",
+    "scripts/lib/safe_ci_scope.rs": "8f3f95f7fc56a3a9540545391e65c32101632f21",
+    "scripts/lib/validate_cell_results.rs": "f7203f6264dbe9596b357f00905d2d528a79b481",
+    "scripts/lib/validate_classification.rs": "00cc70dd305b05a817a1e28ad389d50177f72a3f",
+    "scripts/lib/validate_history.rs": "ad3779e49e86947680a6f0c08466710c4e9817e9",
+    "scripts/lib/validate_plan.rs": "700967d9658feeed252830e3ece377d7fedf8e2c",
+    "scripts/lib/validate_receipt.rs": "f497e377622d5440e6ad904ff4b183aee2b5f833",
+    "scripts/lib/validate_runtime.rs": "4e6e4e0ab5d73ef0780b4411e1978c11db57506a",
+    "scripts/validate.rs": "457d150a400252a0e92a245fdadb1e71315be66a",
+}
+PR_3212_TRANSITION = {
+    "id": "rrnewton-hermit-pr-3212",
+    "registered_at": PR_3212_HEAD,
+    "provenance": {
+        "repository": "rrnewton/hermit",
+        "pull_request": 3212,
+        "head": PR_3212_HEAD,
+    },
+    "finalize_after": "2026-09-24T15:30:00Z",
+    "expires_at": "2026-09-25T15:30:00Z",
+    "candidate_coverage_status": "complete",
+    "added_paths": [],
+    "candidate": PR_3212_CANDIDATE,
+}
 LIVE_ADDED_PATHS = [
     "ci/manifest-plan/src/bin/nextest-cpu-wrapper.rs",
     "ci/manifest-plan/src/ledger.rs",
@@ -151,7 +191,8 @@ def pre_finalized_stage_registry():
     registry = json.loads(LIVE_REGISTRY.read_text())
     assert registry["registered_at"] == PR_3018_MERGE
     assert registry["registered"] == LIVE_CANDIDATE
-    assert "transition" not in registry
+    assert registry.pop("transition") == PR_3212_TRANSITION
+    registry.pop("_transition_2026_09_24_pr3212")
     assert registry["legacy"][-1] == {
         "id": "pre-rrnewton-hermit-pr-3018",
         "registered_at": "4d8f866102882b6eeabdf99cc7e81433cc3c95c5",
@@ -172,14 +213,14 @@ def pre_finalized_stage_registry():
     return registry
 
 
-def test_live_registry_finalizes_pr_3018_without_half_applied_transition():
+def test_live_registry_finalizes_pr_3018_and_stages_exact_pr_3212_transition():
     registry = json.loads(LIVE_REGISTRY.read_text())
 
     assert registry["registered_at"] == PR_3018_MERGE
     assert registry["registered_coverage_status"] == "complete"
     assert registry["registered"] == LIVE_CANDIDATE
 
-    assert "transition" not in registry
+    assert registry["transition"] == PR_3212_TRANSITION
     assert "registered_valid_commits" not in registry
     assert len(registry["legacy"]) == 19
     assert (
@@ -231,23 +272,25 @@ def check_live_definition(
     )
 
 
-def test_live_candidate_requires_every_added_path_and_one_whole_map(tmp_path):
-    qualifying = check_live_definition(tmp_path, LIVE_CANDIDATE)
+def test_live_candidate_requires_every_path_and_one_whole_map(tmp_path):
+    qualifying = check_live_definition(tmp_path, PR_3212_CANDIDATE, sha=PR_3212_HEAD)
     assert qualifying.returncode == 0, qualifying.stderr
-    for missing in LIVE_ADDED_PATHS:
+    for missing in PR_3212_CANDIDATE:
         partial = {
-            key: value for key, value in LIVE_CANDIDATE.items() if key != missing
+            key: value for key, value in PR_3212_CANDIDATE.items() if key != missing
         }
-        assert len(partial) == len(LIVE_CANDIDATE) - 1
-        assert check_live_definition(tmp_path, partial).returncode == 1, missing
+        assert len(partial) == len(PR_3212_CANDIDATE) - 1
+        assert (
+            check_live_definition(tmp_path, partial, sha=PR_3212_HEAD).returncode == 1
+        ), missing
     crossed = {
-        **LIVE_CANDIDATE,
-        "scripts/validate.rs": STAGED_PRIMARY["scripts/validate.rs"],
+        **PR_3212_CANDIDATE,
+        "scripts/validate.rs": LIVE_CANDIDATE["scripts/validate.rs"],
     }
-    assert crossed != LIVE_CANDIDATE
-    assert check_live_definition(tmp_path, crossed).returncode == 1
-    extra = {**LIVE_CANDIDATE, "unregistered-producer.rs": "a" * 40}
-    assert check_live_definition(tmp_path, extra).returncode == 1
+    assert crossed != PR_3212_CANDIDATE
+    assert check_live_definition(tmp_path, crossed, sha=PR_3212_HEAD).returncode == 1
+    extra = {**PR_3212_CANDIDATE, "unregistered-producer.rs": "a" * 40}
+    assert check_live_definition(tmp_path, extra, sha=PR_3212_HEAD).returncode == 1
 
 
 def test_live_candidate_expiry_and_provenance_refuse_without_losing_primary(tmp_path):
