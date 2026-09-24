@@ -603,8 +603,10 @@ def build_plan(
 ) -> dict[str, Any]:
     roots = load_roots(state_root, owner_state_dir)
     # Owner-watch production holds this outer lock while its validate-run child
-    # uses the run-population writer lock. Keep that order here: no cleanup path
-    # takes the owner lock, so owner-state -> run-population cannot cycle.
+    # takes generation -> population. Keep that order here: no cleanup path
+    # takes the owner lock, so owner-state -> generation -> population cannot
+    # cycle. Ordinary writers take generation -> population -> run-number ->
+    # record and never acquire owner-state.
     with run_registry.owner_watch_population_lock(roots.owner_state_dir):
         with run_registry.run_population_lock(
             roots.state_root, reject_same_process=True
@@ -1169,7 +1171,7 @@ def _apply_plan_under_population_lock(
     before_commit: Callable[[], None] | None,
     replace: Replacer,
 ) -> dict[str, Any]:
-    """Apply while caller holds owner-state then stable run-population authority."""
+    """Apply under owner-state -> generation -> stable population authority."""
 
     recover_pending_transaction(roots, replace=replace)
     initial = _build_plan(roots, expected_count=expected_count, run=run)

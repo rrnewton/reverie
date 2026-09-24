@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, TypedDict, cast
+from typing import Any, Callable, Mapping, TypedDict, cast
 
 import service_result
 import reverie_node
@@ -1292,8 +1292,58 @@ def read_record(path: Path) -> dict[str, Any]:
     if state_root is not None:
         require_no_owner_watch_correction(state_root)
     try:
-        value = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
+        if state_root is None:
+            payload = path.read_bytes()
+        else:
+            before = os.lstat(path)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise RuntimeError(
+                    "canonical validation handle is not a regular single-link "
+                    f"file: {path}"
+                )
+            flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(path, flags)
+            try:
+                opened_before = os.fstat(descriptor)
+                chunks: list[bytes] = []
+                offset = 0
+                while True:
+                    chunk = os.pread(descriptor, 1024 * 1024, offset)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    offset += len(chunk)
+                opened_after = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            after = os.lstat(path)
+            identities = {
+                (
+                    item.st_dev,
+                    item.st_ino,
+                    item.st_mode,
+                    item.st_uid,
+                    item.st_gid,
+                    item.st_nlink,
+                    item.st_size,
+                    item.st_mtime_ns,
+                    item.st_ctime_ns,
+                )
+                for item in (before, opened_before, opened_after, after)
+            }
+            if (
+                not stat.S_ISREG(opened_before.st_mode)
+                or opened_before.st_nlink != 1
+                or len(identities) != 1
+            ):
+                raise RuntimeError(
+                    f"canonical validation handle changed while it was read: {path}"
+                )
+            payload = b"".join(chunks)
+        value = json.loads(payload)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"cannot read validation handle {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise RuntimeError(f"validation handle {path} is not an object")
@@ -1332,6 +1382,28 @@ class RunPopulationAuthority:
     descriptor: int
     identity: tuple[int, ...]
     owner_pid: int
+    generation_authority: RunWriterGenerationAuthority
+    active: bool = True
+
+
+@dataclass
+class RunWriterGenerationAuthority:
+    """A rollout-generation lock shared by writers and exclusive to cleanup.
+
+    This lock is deliberately distinct from the population lock.  A launcher
+    holds the shared side while it creates storage and its first run record;
+    every current writer also takes the shared side before the population
+    lock.  A future cleanup enablement must hold the exclusive side before it
+    takes population/row authority.  That closes the pre-record launch window
+    once every supported launcher has deployed this protocol.
+    """
+
+    state_root: Path
+    path: Path
+    descriptor: int
+    identity: tuple[int, ...]
+    exclusive: bool
+    owner_pid: int
     active: bool = True
 
 
@@ -1346,11 +1418,170 @@ _RUN_POPULATION_CONDITION = threading.Condition()
 # canonical root -> (PID, owning thread, reject every tokenless local waiter)
 _RUN_POPULATION_ACTIVE: dict[Path, tuple[int, int, bool]] = {}
 
+RUN_WRITER_GENERATION_LOCK = Path(
+    "ignored/validate/run-writer-generation-v1.lock"
+)
+RUN_WRITER_GENERATION_IDENTITY_FIELDS = (
+    "st_dev",
+    "st_ino",
+    "st_mode",
+    "st_uid",
+    "st_gid",
+    "st_nlink",
+)
+_RUN_WRITER_GENERATION_CONDITION = threading.Condition()
+# canonical root -> [(PID, thread, exclusive, unique local reservation)]
+_RUN_WRITER_GENERATION_ACTIVE: dict[
+    Path, list[tuple[int, int, bool, object]]
+] = {}
+
 
 def _directory_identity(metadata: os.stat_result) -> tuple[int, ...]:
     return tuple(
         int(getattr(metadata, field)) for field in RUN_POPULATION_IDENTITY_FIELDS
     )
+
+
+def _writer_generation_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return tuple(
+        int(getattr(metadata, field))
+        for field in RUN_WRITER_GENERATION_IDENTITY_FIELDS
+    )
+
+
+def require_run_writer_generation_authority(
+    root: Path,
+    authority: RunWriterGenerationAuthority,
+    *,
+    exclusive: bool | None = None,
+) -> None:
+    """Require the named lock file to remain the authority's opened inode."""
+
+    canonical = root.resolve(strict=True)
+    if (
+        not authority.active
+        or authority.owner_pid != os.getpid()
+        or authority.state_root != canonical
+        or (exclusive is not None and authority.exclusive is not exclusive)
+    ):
+        raise RuntimeError(
+            "run-writer generation authority is absent or belongs elsewhere"
+        )
+    opened = os.fstat(authority.descriptor)
+    named = os.lstat(authority.path)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or _writer_generation_identity(opened) != authority.identity
+        or _writer_generation_identity(named) != authority.identity
+    ):
+        raise RuntimeError(
+            "run-writer generation lock changed while authority was held"
+        )
+
+
+@contextmanager
+def run_writer_generation_lock(
+    root: Path,
+    *,
+    exclusive: bool = False,
+    blocking: bool = True,
+):
+    """Hold the outer writer-generation lock for launch or cleanup.
+
+    Lock order is owner-state (only for owner-watch correction), then this
+    generation lock, then population, then run-number (writers only), then
+    sorted record locks.  Shared acquisitions may nest or coexist.  An
+    exclusive acquisition conflicting with any same-process holder, or a
+    shared acquisition conflicting with a same-process exclusive holder, fails
+    immediately so a callback cannot deadlock its owner.  A no-exec fork also
+    fails closed because it inherited the parent's open lock description.
+    """
+
+    canonical = root.resolve(strict=True)
+    lock_path = canonical / RUN_WRITER_GENERATION_LOCK
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    owner_pid = os.getpid()
+    thread_id = threading.get_ident()
+    reservation = object()
+    with _RUN_WRITER_GENERATION_CONDITION:
+        active = _RUN_WRITER_GENERATION_ACTIVE.setdefault(canonical, [])
+        if any(pid != owner_pid for pid, _thread, _exclusive, _token in active):
+            raise RecordLocked(
+                "forked process inherited run-writer generation authority for "
+                f"{canonical}; exec before writing run records"
+            )
+        if exclusive and active:
+            raise RecordLocked(
+                "this process already holds run-writer generation authority for "
+                f"{canonical}"
+            )
+        if not exclusive and any(item[2] for item in active):
+            raise RecordLocked(
+                "this process already holds exclusive run-writer generation "
+                f"authority for {canonical}; run-population authority is "
+                "unavailable to a callback writer"
+            )
+        active.append((owner_pid, thread_id, exclusive, reservation))
+
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    authority: RunWriterGenerationAuthority | None = None
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+        opened_before = os.fstat(descriptor)
+        named_before = os.lstat(lock_path)
+        identity = _writer_generation_identity(opened_before)
+        if (
+            not stat.S_ISREG(opened_before.st_mode)
+            or opened_before.st_nlink != 1
+            or _writer_generation_identity(named_before) != identity
+        ):
+            raise RuntimeError(
+                f"run-writer generation lock is not canonical: {lock_path}"
+            )
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if not blocking:
+            mode |= fcntl.LOCK_NB
+        try:
+            fcntl.flock(descriptor, mode)
+        except BlockingIOError as error:
+            raise RecordLocked(
+                "another process holds incompatible run-writer generation "
+                f"authority for {canonical}"
+            ) from error
+        authority = RunWriterGenerationAuthority(
+            canonical,
+            lock_path,
+            descriptor,
+            identity,
+            exclusive,
+            owner_pid,
+        )
+        require_run_writer_generation_authority(
+            canonical, authority, exclusive=exclusive
+        )
+        yield authority
+        require_run_writer_generation_authority(
+            canonical, authority, exclusive=exclusive
+        )
+    finally:
+        if authority is not None:
+            authority.active = False
+        if descriptor is not None:
+            with suppress(OSError):
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+        with _RUN_WRITER_GENERATION_CONDITION:
+            active = _RUN_WRITER_GENERATION_ACTIVE.get(canonical, [])
+            active = [item for item in active if item[3] is not reservation]
+            if active:
+                _RUN_WRITER_GENERATION_ACTIVE[canonical] = active
+            else:
+                _RUN_WRITER_GENERATION_ACTIVE.pop(canonical, None)
+            _RUN_WRITER_GENERATION_CONDITION.notify_all()
 
 
 def require_run_population_authority(
@@ -1365,6 +1596,9 @@ def require_run_population_authority(
         or authority.state_root != canonical
     ):
         raise RuntimeError("run-population authority is absent or belongs elsewhere")
+    require_run_writer_generation_authority(
+        canonical, authority.generation_authority
+    )
     opened = os.fstat(authority.descriptor)
     current = os.stat(canonical, follow_symlinks=False)
     if (
@@ -1383,19 +1617,37 @@ def run_population_lock(
     *,
     blocking: bool = True,
     reject_same_process: bool = False,
+    _generation_authority: RunWriterGenerationAuthority | None = None,
 ):
     """Serialize every run-handle writer with population-wide cleanup.
 
-    Ordinary writers take population -> run-number (when applicable) -> record.
+    Ordinary writers take generation -> population -> run-number (when
+    applicable) -> record.
     Owner-watch correction is the one deliberate outer-lock exception: its
     producer already holds owner-state while a validate-run child writes, so
-    correction takes owner-state -> population -> records. Cleanup never takes
-    owner-state, which keeps that order acyclic. Cleanup/correction callers set
-    ``reject_same_process`` while invoking callbacks: a tokenless writer on
-    *any* thread then fails rather than waiting for the callback that is waiting
-    for it. Ordinary writers serialize threads locally and processes through
-    ``flock``.
+    correction takes owner-state -> generation -> population -> records.
+    Cleanup never takes owner-state, which keeps that order acyclic. Cleanup
+    will take the exclusive generation side before population once its rollout
+    fence is discharged. Cleanup/correction callers set ``reject_same_process``
+    while invoking callbacks: a tokenless writer on *any* thread then fails
+    rather than waiting for the callback that is waiting for it. Ordinary
+    writers serialize threads locally and processes through ``flock``.
     """
+
+    if _generation_authority is None:
+        with run_writer_generation_lock(
+            root, exclusive=False, blocking=blocking
+        ) as generation_authority:
+            with run_population_lock(
+                root,
+                blocking=blocking,
+                reject_same_process=reject_same_process,
+                _generation_authority=generation_authority,
+            ) as authority:
+                yield authority
+        return
+
+    require_run_writer_generation_authority(root, _generation_authority)
 
     canonical = root.resolve(strict=True)
     owner_pid = os.getpid()
@@ -1405,12 +1657,17 @@ def run_population_lock(
             active_pid, owner_thread, owner_rejects_waiters = (
                 _RUN_POPULATION_ACTIVE[canonical]
             )
-            # A fork inherits Python memory but not the identity of the process
-            # that populated it. The inherited descriptor's flock still supplies
-            # the kernel-level exclusion; discard only this stale local marker.
+            # A fork inherits both this marker and the open file description
+            # carrying the parent's flock. Opening a second descriptor and
+            # waiting on it can therefore deadlock the child against a lock it
+            # inherited itself. A forked process must exec (O_CLOEXEC releases
+            # the inherited descriptor) before it may become an independent
+            # writer; without exec it fails closed here.
             if active_pid != owner_pid:
-                del _RUN_POPULATION_ACTIVE[canonical]
-                continue
+                raise RecordLocked(
+                    "forked process inherited run-population authority for "
+                    f"{canonical}; exec before writing run records"
+                )
             if owner_thread == thread_id or owner_rejects_waiters or not blocking:
                 raise RecordLocked(
                     "this process already holds run-population authority for "
@@ -1451,8 +1708,11 @@ def run_population_lock(
             descriptor,
             _directory_identity(opened),
             os.getpid(),
+            _generation_authority,
         )
+        require_run_writer_generation_authority(root, _generation_authority)
         yield authority
+        require_run_writer_generation_authority(root, _generation_authority)
     finally:
         if authority is not None:
             authority.active = False
@@ -1495,9 +1755,12 @@ def _record_population_authority(
 def owner_watch_population_lock(owner_state_dir: Path):
     """Serialize owner-watch production with evidence-bound corrections.
 
-    Owner watch holds this while its validate-run subprocess uses the separate
-    run-population lock. A correction needing both therefore takes this lock
-    first; cleanup never takes it, so that exceptional ordering stays acyclic.
+    Owner watch holds this while its validate-run subprocess takes the writer
+    generation lock and then the separate run-population lock. A correction
+    needing all three therefore takes owner-state -> generation -> population;
+    cleanup never takes owner-state, so that exceptional ordering stays
+    acyclic. Ordinary writers instead take generation -> population ->
+    run-number (when needed) -> record.
     """
 
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
@@ -1552,12 +1815,31 @@ def exclusive_record(path: Path, *, blocking: bool = True):
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
-def _write_unlocked(path: Path, value: Mapping[str, Any]) -> None:
+def _write_unlocked(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    _replacement_observer: Callable[[int], None] | None = None,
+) -> None:
     if not is_current_schema_version(value.get("schema_version")):
         raise RuntimeError(f"validation handle {path} has an unsupported schema")
     if value.get("producer") == PRODUCER:
         parse_current_record(value)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    # A destructive-cleanup bookkeeper must bind its continuing authority to
+    # the exact inode it is about to install, not reopen the pathname after the
+    # rename.  Keep a private description of the temporary inode across
+    # os.replace and lend it to the observer only for the duration of the
+    # callback.  Ordinary writers pay no extra descriptor cost.
+    try:
+        replacement_descriptor = (
+            os.dup(fd) if _replacement_observer is not None else None
+        )
+    except BaseException:
+        os.close(fd)
+        with suppress(FileNotFoundError):
+            os.unlink(temporary)
+        raise
     try:
         with os.fdopen(fd, "w") as stream:
             json.dump(dict(value), stream, indent=2, sort_keys=True)
@@ -1565,7 +1847,12 @@ def _write_unlocked(path: Path, value: Mapping[str, Any]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        if _replacement_observer is not None:
+            assert replacement_descriptor is not None
+            _replacement_observer(replacement_descriptor)
     finally:
+        if replacement_descriptor is not None:
+            os.close(replacement_descriptor)
         try:
             os.unlink(temporary)
         except FileNotFoundError:
@@ -1637,6 +1924,8 @@ def update_record(
     blocking: bool = True,
     _population_authority: RunPopulationAuthority | None = None,
     _record_lock_held: bool = False,
+    _replacement_observer: Callable[[int], None] | None = None,
+    _locked_base_record: Mapping[str, Any] | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
     # The caller and the observer finish at nearly the same time. Serialize the
@@ -1644,7 +1933,11 @@ def update_record(
     # vice versa) while retaining atomic replacement for readers.
     def update_locked() -> dict[str, Any]:
         nonlocal fields
-        value = read_record(path)
+        value = (
+            read_record(path)
+            if _locked_base_record is None
+            else dict(_locked_base_record)
+        )
         if "reverie_count_request" in value:
             # Generic terminal observers have no exact-event count authority.
             fields = {
@@ -1653,7 +1946,9 @@ def update_record(
                 if key not in {"executed_nodes", "executed_tests", "passed_tests"}
             }
         value.update(fields)
-        _write_unlocked(path, value)
+        _write_unlocked(
+            path, value, _replacement_observer=_replacement_observer
+        )
         return value
 
     if _record_lock_held:
@@ -1665,6 +1960,10 @@ def update_record(
             path, blocking=blocking, authority=_population_authority
         ):
             return update_locked()
+    if _locked_base_record is not None:
+        raise RuntimeError(
+            "a descriptor-bound base record requires an already-held record lock"
+        )
     with _record_population_authority(
         path, blocking=blocking, authority=_population_authority
     ):

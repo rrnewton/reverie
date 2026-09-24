@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
+import select
 import subprocess
 import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from pathlib import Path
 from unittest import mock
 
@@ -958,6 +961,24 @@ class RunRegistryContractTests(unittest.TestCase):
             path.write_text(json.dumps(legacy))
             self.assertEqual(legacy, run_registry.read_record(path))
 
+    def test_canonical_run_reader_rejects_symlink_and_hardlink_handles(self) -> None:
+        for mutation in ("symlink", "hardlink"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                path = root / "ignored/validate/runs/validate-linked.json"
+                run_registry.create_current_record(path, validation_handle())
+                external = root / f"outside-{mutation}.json"
+                if mutation == "symlink":
+                    path.rename(external)
+                    path.symlink_to(external)
+                else:
+                    os.link(path, external)
+
+                with self.assertRaisesRegex(
+                    RuntimeError, "regular single-link"
+                ):
+                    run_registry.read_record(path)
+
     def test_historical_schema_one_kind_remains_readable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "manual-bench.json"
@@ -1281,6 +1302,150 @@ else:
 
             self.assertEqual(0, child.returncode, child.stderr)
             self.assertEqual("blocked", child.stdout.strip())
+            self.assertNotIn("detail", run_registry.read_record(path))
+
+    def test_cleanup_generation_authority_blocks_external_writer(self) -> None:
+        """The rollout boundary is a kernel lock, not process-local state."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "ignored/validate/runs/validate-generation.json"
+            run_registry.create_current_record(path, validation_handle())
+            program = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import run_registry
+try:
+    run_registry.update_record(Path(sys.argv[2]), blocking=False, detail='external')
+except run_registry.RecordLocked:
+    print('blocked')
+else:
+    raise SystemExit('external writer escaped generation authority')
+"""
+            with run_registry.run_writer_generation_lock(
+                root, exclusive=True, blocking=False
+            ):
+                child = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        program,
+                        str(ROOT / "ci-hub" / "validate"),
+                        str(path),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+
+            self.assertEqual(0, child.returncode, child.stderr)
+            self.assertEqual("blocked", child.stdout.strip())
+            self.assertNotIn("detail", run_registry.read_record(path))
+
+    @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork")
+    def test_cleanup_population_authority_rejects_forked_writer(self) -> None:
+        """A no-exec child fails closed instead of waiting on its inherited flock."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "ignored/validate/runs/validate-fork.json"
+            run_registry.create_current_record(path, validation_handle())
+            read_fd, write_fd = os.pipe()
+            child: int | None = None
+            try:
+                with run_registry.run_population_lock(
+                    root, reject_same_process=True
+                ):
+                    child = os.fork()
+                    if child == 0:
+                        os.close(read_fd)
+                        try:
+                            run_registry.update_record(path, detail="fork child")
+                        except BaseException as error:
+                            os.write(
+                                write_fd,
+                                f"error:{type(error).__name__}".encode(),
+                            )
+                        else:
+                            os.write(write_fd, b"completed")
+                        finally:
+                            os._exit(0)
+                    os.close(write_fd)
+                    ready, _writable, _exceptional = select.select(
+                        [read_fd], [], [], 1.0
+                    )
+                    self.assertEqual(
+                        [read_fd], ready, "forked callback writer deadlocked"
+                    )
+                    message = os.read(read_fd, 1024).decode()
+                    waited, status = os.waitpid(child, 0)
+                    child = None
+                    self.assertGreater(waited, 0)
+                    self.assertEqual(0, os.waitstatus_to_exitcode(status))
+                    self.assertEqual("error:RecordLocked", message)
+            finally:
+                if child is not None:
+                    os.kill(child, 9)
+                    os.waitpid(child, 0)
+                with suppress(OSError):
+                    os.close(read_fd)
+                with suppress(OSError):
+                    os.close(write_fd)
+            self.assertNotIn("detail", run_registry.read_record(path))
+
+    @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX fork")
+    def test_cleanup_generation_authority_rejects_forked_writer(self) -> None:
+        """The outer cleanup lock also rejects a no-exec child without hanging."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "ignored/validate/runs/validate-generation-fork.json"
+            run_registry.create_current_record(path, validation_handle())
+            read_fd, write_fd = os.pipe()
+            child: int | None = None
+            try:
+                with run_registry.run_writer_generation_lock(
+                    root, exclusive=True
+                ):
+                    child = os.fork()
+                    if child == 0:
+                        os.close(read_fd)
+                        try:
+                            run_registry.update_record(
+                                path, detail="generation fork child"
+                            )
+                        except BaseException as error:
+                            os.write(
+                                write_fd,
+                                f"error:{type(error).__name__}".encode(),
+                            )
+                        else:
+                            os.write(write_fd, b"completed")
+                        finally:
+                            os._exit(0)
+                    os.close(write_fd)
+                    ready, _writable, _exceptional = select.select(
+                        [read_fd], [], [], 1.0
+                    )
+                    self.assertEqual(
+                        [read_fd], ready, "forked generation writer deadlocked"
+                    )
+                    message = os.read(read_fd, 1024).decode()
+                    waited, status = os.waitpid(child, 0)
+                    child = None
+                    self.assertGreater(waited, 0)
+                    self.assertEqual(0, os.waitstatus_to_exitcode(status))
+                    self.assertEqual("error:RecordLocked", message)
+            finally:
+                if child is not None:
+                    os.kill(child, 9)
+                    os.waitpid(child, 0)
+                with suppress(OSError):
+                    os.close(read_fd)
+                with suppress(OSError):
+                    os.close(write_fd)
             self.assertNotIn("detail", run_registry.read_record(path))
 
     def test_admitted_result_accepts_an_absent_run_number_but_checks_one_present(self) -> None:

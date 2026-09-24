@@ -14,7 +14,9 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import pathlib
+import pytest
 import runpy
 import unittest
 from unittest import mock
@@ -44,6 +46,22 @@ WRKSLOTS_ACTIONS = (
     "remove-validate-batch",
     "status",
 )
+PRE_POPULATION_WRITER_COMMIT = "4037baed51b52942b570c66718f8d0bfccf63a03"
+PRODUCTION_CLEANUP_ROLLOUT_ENABLED = (
+    start_unit.DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED
+)
+
+
+@pytest.fixture(autouse=True)
+def exercise_post_quiescence_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise deletion mechanics without changing the production source fence.
+
+    External probes that merely import this module receive the real fail-closed
+    setting; only pytest-managed test cases opt into the hypothetical second
+    rollout stage.  Dedicated fence tests override this fixture back to false.
+    """
+
+    monkeypatch.setattr(start_unit, "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED", True)
 
 
 def completed(command: list[str], rc: int = 0, stdout: str = "", stderr: str = ""):
@@ -1290,6 +1308,44 @@ class StartUnitTest(unittest.TestCase):
         start_unit.HOST_TMP_ROOT = self.original_host_tmp_root
         self.temporary.cleanup()
 
+    def historical_module(
+        self,
+        relative: str,
+        name: str,
+        *,
+        run_registry_module: types.ModuleType | None = None,
+    ) -> types.ModuleType:
+        source = subprocess.run(
+            [
+                "git",
+                "show",
+                f"{PRE_POPULATION_WRITER_COMMIT}:{relative}",
+            ],
+            cwd=Path(__file__).resolve().parents[3],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        module = types.ModuleType(name)
+        module.__file__ = str(Path(__file__).resolve().parents[3] / relative)
+        previous = sys.modules.get("run_registry")
+        previous_named = sys.modules.get(name)
+        try:
+            sys.modules[name] = module
+            if run_registry_module is not None:
+                sys.modules["run_registry"] = run_registry_module
+            exec(compile(source, module.__file__, "exec"), module.__dict__)
+        finally:
+            if previous_named is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous_named
+            if previous is None:
+                sys.modules.pop("run_registry", None)
+            else:
+                sys.modules["run_registry"] = previous
+        return module
+
     def invoke(
         self,
         extra: list[str] | None = None,
@@ -1911,6 +1967,96 @@ class StartUnitTest(unittest.TestCase):
             },
         )
         return fresh, record_path
+
+    def frozen_cleanup_record(self, suffix: str) -> tuple[Path, Path]:
+        fresh = (
+            start_unit.frozen_checkout_parent(self.root)
+            / f"validate-fresh-{suffix}"
+        )
+        (fresh / ".git").mkdir(parents=True)
+        self.addCleanup(
+            shutil.rmtree, start_unit.frozen_checkout_parent(self.root), True
+        )
+        record_path = (
+            self.root / "ignored/validate/runs" / f"validate-{suffix}.json"
+        )
+        start_unit.run_registry.write_record(
+            record_path,
+            {
+                "schema_version": 1,
+                "unit": f"validate-{suffix}.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+        return fresh, record_path
+
+    def cleanup_route_fixture(
+        self, route: str, suffix: str
+    ) -> tuple[Path, Path, dict[str, object]]:
+        if route == "managed":
+            target, record = self.managed_cleanup_record(suffix)
+        elif route == "ownerless":
+            target, record = self.ownerless_cleanup_record(suffix)
+        elif route == "frozen":
+            target, record = self.frozen_cleanup_record(suffix)
+        elif route == "direct":
+            target, record = self.managed_cleanup_record(suffix)
+            self.fake.fresh = target
+            self.fake.registered_validate_slots.add(
+                (target.name, self.fake.wrkslots_generation)
+            )
+        elif route == "cargo":
+            _checkout, target, record = self.in_place_cleanup_record(
+                suffix, temporary=False, current=True
+            )
+        else:
+            raise AssertionError(route)
+        return target, record, start_unit.read_cleanup_record_object(record)
+
+    def run_cleanup_route(
+        self,
+        route: str,
+        target: Path,
+        record: Path,
+        payload: dict[str, object],
+        run: start_unit.Runner | None = None,
+    ) -> bool:
+        runner = run or self.fake
+        if route in {"managed", "ownerless", "frozen"}:
+            report = start_unit.sweep_completed_checkouts(
+                self.root, run=runner, tool_root=self.root
+            )
+            return str(target) in report["removed"]
+        if route == "direct":
+            removed, _archived, _reason = start_unit.cleanup_recorded_checkout(
+                self.root,
+                payload,
+                record_path=record,
+                unit=record.stem,
+                run=runner,
+                tool_root=self.root,
+                wrkslots=start_unit.WrkslotsIdentity(
+                    target.name, self.fake.wrkslots_generation
+                ),
+            )
+            return removed
+        if route == "cargo":
+            removed, _reason = start_unit.cleanup_recorded_cargo_home(
+                self.root,
+                payload,
+                record_path=record,
+                run=runner,
+                tool_root=self.root,
+            )
+            return removed
+        raise AssertionError(route)
 
     def assert_provider_parent_replacement_is_serialized(
         self,
@@ -7050,6 +7196,693 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual([], report["removed"])
         self.assertTrue(any("registry shape refused" in row["reason"] for row in report["retained"]))
         self.assertTrue(fresh.exists())
+
+    def test_every_record_backed_cleanup_route_has_a_positive_control(self) -> None:
+        for route in ("managed", "ownerless", "frozen", "direct", "cargo"):
+            with self.subTest(route=route):
+                target, record, payload = self.cleanup_route_fixture(
+                    route, f"record-authority-positive-{route}"
+                )
+                self.assertTrue(
+                    self.run_cleanup_route(route, target, record, payload)
+                )
+                self.assertFalse(target.exists())
+                durable = start_unit.run_registry.read_record(record)
+                stamp = (
+                    "cargo_home_removed_at"
+                    if route == "cargo"
+                    else "checkout_removed_at"
+                )
+                self.assertIsInstance(durable.get(stamp), str)
+                record.unlink()
+
+    def test_every_cleanup_route_rejects_symlink_and_hardlink_records(self) -> None:
+        routes = ("managed", "ownerless", "frozen", "direct", "cargo")
+        for route in routes:
+            for mutation in ("symlink", "hardlink"):
+                with self.subTest(route=route, mutation=mutation):
+                    target, record, payload = self.cleanup_route_fixture(
+                        route, f"record-authority-{mutation}-{route}"
+                    )
+                    external = self.root / f"outside-{mutation}-{route}.json"
+                    if mutation == "symlink":
+                        record.rename(external)
+                        record.symlink_to(external)
+                    else:
+                        os.link(record, external)
+                    command_count = len(self.fake.commands)
+
+                    removed = self.run_cleanup_route(
+                        route, target, record, payload
+                    )
+
+                    self.assertFalse(removed)
+                    self.assertTrue(target.exists() or target.is_symlink())
+                    self.assertTrue(external.exists())
+                    if mutation == "symlink":
+                        self.assertTrue(record.is_symlink())
+                    else:
+                        self.assertEqual(2, os.lstat(record).st_nlink)
+                    durable = json.loads(external.read_text())
+                    self.assertNotIn("checkout_removed_at", durable)
+                    self.assertNotIn("cargo_home_removed_at", durable)
+                    commands = self.fake.commands[command_count:]
+                    self.assertFalse(
+                        any(
+                            "remove-validate-batch" in command
+                            or "recover-ownerless-validate-batch" in command
+                            or "--ownerless-validate-cargo-home" in command
+                            or "remove" in command
+                            and command[0].endswith("ci-hub/bin/wrkslots")
+                            for command in commands
+                        ),
+                        commands,
+                    )
+                    if record.is_symlink():
+                        record.unlink()
+                    else:
+                        record.unlink(missing_ok=True)
+                    external.unlink(missing_ok=True)
+                    if target.is_symlink():
+                        target.unlink()
+                    else:
+                        shutil.rmtree(target, ignore_errors=True)
+
+    def test_every_cleanup_route_rejects_record_replacement_before_provider(
+        self,
+    ) -> None:
+        routes = ("managed", "ownerless", "frozen", "direct", "cargo")
+        for route in routes:
+            with self.subTest(route=route):
+                target, record, payload = self.cleanup_route_fixture(
+                    route, f"record-authority-replaced-{route}"
+                )
+                real_read = start_unit.read_authorized_cleanup_record
+                replaced = False
+
+                def replace_after_descriptor_read(
+                    authority: start_unit.CleanupRecordAuthority,
+                ) -> dict[str, object]:
+                    nonlocal replaced
+                    durable = real_read(authority)
+                    if authority.path == record and not replaced:
+                        replacement = record.with_name(f".{record.name}.replacement")
+                        replacement.write_bytes(record.read_bytes())
+                        os.replace(replacement, record)
+                        replaced = True
+                    return durable
+
+                command_count = len(self.fake.commands)
+                with mock.patch.object(
+                    start_unit,
+                    "read_authorized_cleanup_record",
+                    side_effect=replace_after_descriptor_read,
+                ):
+                    removed = self.run_cleanup_route(
+                        route, target, record, payload
+                    )
+
+                self.assertTrue(replaced)
+                self.assertFalse(removed)
+                self.assertTrue(target.exists() or target.is_symlink())
+                durable = json.loads(record.read_text())
+                self.assertNotIn("checkout_removed_at", durable)
+                self.assertNotIn("cargo_home_removed_at", durable)
+                commands = self.fake.commands[command_count:]
+                self.assertFalse(
+                    any(
+                        "remove-validate-batch" in command
+                        or "recover-ownerless-validate-batch" in command
+                        or "--ownerless-validate-cargo-home" in command
+                        or "remove" in command
+                        and command[0].endswith("ci-hub/bin/wrkslots")
+                        for command in commands
+                    ),
+                    commands,
+                )
+                record.unlink()
+                if target.is_symlink():
+                    target.unlink()
+                else:
+                    shutil.rmtree(target, ignore_errors=True)
+
+    def test_every_cleanup_route_detects_record_replacement_during_provider(
+        self,
+    ) -> None:
+        routes = ("managed", "ownerless", "frozen", "direct", "cargo")
+        for route in routes:
+            with self.subTest(route=route):
+                target, record, payload = self.cleanup_route_fixture(
+                    route, f"record-authority-provider-replaced-{route}"
+                )
+                provider_reached = False
+                provider_succeeded = False
+
+                def replace_inside_provider(
+                    command: list[str], **_kwargs: object
+                ) -> subprocess.CompletedProcess[str]:
+                    nonlocal provider_reached, provider_succeeded
+                    is_provider = (
+                        "remove-validate-batch" in command
+                        or "recover-ownerless-validate-batch" in command
+                        or "--ownerless-validate-cargo-home" in command
+                        or (
+                            "remove" in command
+                            and command[0].endswith("ci-hub/bin/wrkslots")
+                        )
+                    )
+                    if not is_provider:
+                        return self.fake(command, **_kwargs)
+                    provider_reached = True
+                    replacement = record.with_name(f".{record.name}.provider")
+                    replacement.write_bytes(record.read_bytes())
+                    os.replace(replacement, record)
+                    result = self.fake(command, **_kwargs)
+                    provider_succeeded = result.returncode == 0
+                    return result
+
+                removed = self.run_cleanup_route(
+                    route,
+                    target,
+                    record,
+                    payload,
+                    run=replace_inside_provider,
+                )
+
+                self.assertTrue(provider_reached)
+                self.assertTrue(provider_succeeded)
+                self.assertFalse(removed)
+                # A record mutation from outside the writer protocol can land
+                # while an opaque provider call is already deleting.  The
+                # descriptor check cannot undo that provider action, but it
+                # must detect the authority loss and refuse to report or stamp
+                # success.  Returning a provider refusal here would make this
+                # test pass even if the post-provider identity check vanished.
+                self.assertFalse(target.exists() or target.is_symlink())
+                durable = json.loads(record.read_text())
+                self.assertNotIn("checkout_removed_at", durable)
+                self.assertNotIn("cargo_home_removed_at", durable)
+                record.unlink()
+                if target.is_symlink():
+                    target.unlink()
+                else:
+                    shutil.rmtree(target, ignore_errors=True)
+
+    def test_every_cleanup_route_detects_record_replacement_during_bookkeeping(
+        self,
+    ) -> None:
+        routes = ("managed", "ownerless", "frozen", "direct", "cargo")
+        real_update = start_unit.run_registry.update_record
+        for route in routes:
+            with self.subTest(route=route):
+                target, record, payload = self.cleanup_route_fixture(
+                    route, f"record-authority-bookkeeping-replaced-{route}"
+                )
+                replaced = False
+
+                def replace_after_trusted_update(
+                    path: Path, *, blocking: bool = True, **fields: object
+                ) -> dict[str, object]:
+                    nonlocal replaced
+                    updated = real_update(path, blocking=blocking, **fields)
+                    if Path(path) == record and (
+                        "checkout_removed_at" in fields
+                        or "cargo_home_removed_at" in fields
+                    ):
+                        replacement = record.with_name(
+                            f".{record.name}.bookkeeping"
+                        )
+                        # Preserve the writer's exact bytes.  A pathname reopen
+                        # plus byte comparison would accept this replacement;
+                        # only the descriptor opened before os.replace can
+                        # distinguish the inode that bookkeeping actually wrote.
+                        replacement.write_bytes(record.read_bytes())
+                        os.replace(replacement, record)
+                        replaced = True
+                    return updated
+
+                with mock.patch.object(
+                    start_unit.run_registry,
+                    "update_record",
+                    side_effect=replace_after_trusted_update,
+                ):
+                    removed = self.run_cleanup_route(
+                        route, target, record, payload
+                    )
+
+                self.assertTrue(replaced)
+                self.assertFalse(removed)
+                self.assertFalse(target.exists() or target.is_symlink())
+                durable = json.loads(record.read_text())
+                stamp = (
+                    "cargo_home_removed_at"
+                    if route == "cargo"
+                    else "checkout_removed_at"
+                )
+                self.assertIsInstance(durable.get(stamp), str)
+                record.unlink()
+
+    def test_rollout_fence_blocks_exact_4037_public_writer_race(self) -> None:
+        old_registry = self.historical_module(
+            "ci-hub/validate/run_registry.py", "legacy_4037_run_registry"
+        )
+        _checkout, cargo_home, record = self.in_place_cleanup_record(
+            "rollout-old-public-writer", temporary=False, current=True
+        )
+        second = record.with_name("validate-rollout-old-public-writer-second.json")
+        writer_ready = threading.Event()
+        writer_continue = threading.Event()
+        writer_errors: list[BaseException] = []
+        real_write = old_registry._write_unlocked
+
+        def delayed_write(path: Path, value: dict[str, object]) -> None:
+            writer_ready.set()
+            if not writer_continue.wait(timeout=2):
+                raise RuntimeError("test did not release exact 4037 writer")
+            real_write(path, value)
+
+        old_registry._write_unlocked = delayed_write
+
+        def write_old_owner() -> None:
+            try:
+                old_registry.write_record(
+                    second,
+                    {
+                        "schema_version": 1,
+                        "unit": "validate-rollout-old-public-writer-second.service",
+                        "source_checkout": str(self.checkout),
+                        "cargo_home": str(cargo_home),
+                        "repo": "rrnewton/hermit",
+                        "state": "running",
+                    },
+                )
+            except BaseException as error:
+                writer_errors.append(error)
+
+        writer = threading.Thread(target=write_old_owner, daemon=True)
+        writer.start()
+        self.assertTrue(writer_ready.wait(timeout=1), "exact 4037 writer did not start")
+        provider_called = False
+
+        def provider(command: list[str], **kwargs: object):
+            nonlocal provider_called
+            provider_called = True
+            return self.fake(command, **kwargs)
+
+        try:
+            with mock.patch.object(
+                start_unit, "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED", False
+            ):
+                cleaned, reason = start_unit.cleanup_recorded_cargo_home(
+                    self.root,
+                    start_unit.run_registry.read_record(record),
+                    record_path=record,
+                    run=provider,
+                    tool_root=self.root,
+                )
+        finally:
+            writer_continue.set()
+            writer.join(timeout=2)
+
+        self.assertFalse(writer.is_alive(), "exact 4037 writer deadlocked")
+        self.assertEqual([], writer_errors)
+        self.assertTrue(second.exists())
+        self.assertFalse(cleaned)
+        self.assertIn("rollout-fenced", reason or "")
+        self.assertFalse(provider_called)
+        self.assertTrue(cargo_home.exists())
+        self.assertNotIn(
+            "cargo_home_removed_at", start_unit.run_registry.read_record(record)
+        )
+
+    def test_source_rollout_fence_disables_every_record_backed_cleanup_route(
+        self,
+    ) -> None:
+        self.assertIs(PRODUCTION_CLEANUP_ROLLOUT_ENABLED, False)
+        marker = self.root / "ignored/validate/cleanup-rollout-enabled"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("enabled\n")
+        for route in ("managed", "ownerless", "frozen", "direct", "cargo"):
+            with self.subTest(route=route):
+                target, record, payload = self.cleanup_route_fixture(
+                    route, f"rollout-source-fence-{route}"
+                )
+                command_count = len(self.fake.commands)
+                with mock.patch.object(
+                    start_unit, "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED", False
+                ):
+                    removed = self.run_cleanup_route(
+                        route, target, record, payload
+                    )
+
+                self.assertFalse(removed)
+                self.assertTrue(target.exists() or target.is_symlink())
+                commands = self.fake.commands[command_count:]
+                self.assertFalse(
+                    any(
+                        "remove-validate-batch" in command
+                        or "recover-ownerless-validate-batch" in command
+                        or "--ownerless-validate-cargo-home" in command
+                        or (
+                            "remove" in command
+                            and command[0].endswith("ci-hub/bin/wrkslots")
+                        )
+                        for command in commands
+                    ),
+                    commands,
+                )
+                durable = start_unit.run_registry.read_record(record)
+                self.assertNotIn("checkout_removed_at", durable)
+                self.assertNotIn("cargo_home_removed_at", durable)
+                record.unlink()
+                if target.is_symlink():
+                    target.unlink()
+                else:
+                    shutil.rmtree(target, ignore_errors=True)
+
+    def test_rollout_fence_covers_exact_4037_pressure_launch_call_path(
+        self,
+    ) -> None:
+        old_registry = self.historical_module(
+            "ci-hub/validate/run_registry.py", "legacy_4037_pressure_registry"
+        )
+        old_pressure = self.historical_module(
+            "ci-hub/series/pressure_schedule.py",
+            "legacy_4037_pressure_schedule",
+            run_registry_module=old_registry,
+        )
+        _checkout, cargo_home, record = self.in_place_cleanup_record(
+            "rollout-old-pressure", temporary=False, current=True
+        )
+        writer_ready = threading.Event()
+        writer_continue = threading.Event()
+        writer_errors: list[BaseException] = []
+        launcher_results: list[int] = []
+        real_write = old_registry._write_unlocked
+        delayed_once = False
+
+        def delayed_write(path: Path, value: dict[str, object]) -> None:
+            nonlocal delayed_once
+            if not delayed_once:
+                delayed_once = True
+                writer_ready.set()
+                if not writer_continue.wait(timeout=2):
+                    raise RuntimeError("test did not release exact 4037 launcher")
+            real_write(path, value)
+
+        old_registry._write_unlocked = delayed_write
+
+        def launch_run(
+            command: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            if command[0].endswith("systemctl"):
+                return completed(command, rc=3)
+            if command[-2:] == ["rev-parse", "origin/main"]:
+                return completed(command, stdout=f"{SHA}\n")
+            return completed(command)
+
+        def launch_old_pressure() -> None:
+            try:
+                launcher_results.append(old_pressure.launch(self.root, run=launch_run))
+            except BaseException as error:
+                writer_errors.append(error)
+
+        with mock.patch.object(
+            old_pressure.shutil,
+            "which",
+            side_effect=lambda name: f"/usr/bin/{name}",
+        ):
+            launcher = threading.Thread(target=launch_old_pressure, daemon=True)
+            launcher.start()
+            self.assertTrue(
+                writer_ready.wait(timeout=1),
+                "exact 4037 pressure launcher did not reach its record writer",
+            )
+            try:
+                with mock.patch.object(
+                    start_unit, "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED", False
+                ):
+                    cleaned, reason = start_unit.cleanup_recorded_cargo_home(
+                        self.root,
+                        start_unit.run_registry.read_record(record),
+                        record_path=record,
+                        run=self.fake,
+                        tool_root=self.root,
+                    )
+            finally:
+                writer_continue.set()
+                launcher.join(timeout=2)
+
+        self.assertFalse(launcher.is_alive(), "exact 4037 pressure launcher deadlocked")
+        self.assertEqual([], writer_errors)
+        self.assertEqual([0], launcher_results)
+        self.assertTrue(
+            old_registry.record_path(self.root, old_pressure.UNIT).exists()
+        )
+        self.assertFalse(cleaned)
+        self.assertIn("rollout-fenced", reason or "")
+        self.assertTrue(cargo_home.exists())
+
+    def test_rollout_fence_covers_exact_4037_start_unit_create_path(self) -> None:
+        old_registry = self.historical_module(
+            "ci-hub/validate/run_registry.py", "legacy_4037_start_registry"
+        )
+        old_start = self.historical_module(
+            "ci-hub/validate/start_unit.py",
+            "legacy_4037_start_unit",
+            run_registry_module=old_registry,
+        )
+        _checkout, cargo_home, record = self.in_place_cleanup_record(
+            "rollout-old-start", temporary=False, current=True
+        )
+        old_runtime = self.root / "old-start-runtime"
+        old_runtime.mkdir()
+        old_cargo = (
+            self.root
+            / "ignored/validate/cargo-homes/validate-cargo-old-start-unit"
+        )
+        old_cargo.mkdir(parents=True)
+        writer_ready = threading.Event()
+        writer_continue = threading.Event()
+        writer_errors: list[BaseException] = []
+        launcher_results: list[int] = []
+        real_create = old_registry.create_current_record
+
+        def delayed_create(path: Path, value: dict[str, object]) -> None:
+            writer_ready.set()
+            if not writer_continue.wait(timeout=2):
+                raise RuntimeError("test did not release exact 4037 start-unit")
+            real_create(path, value)
+            raise RuntimeError("stop exact 4037 launch after its production create")
+
+        def launch_old_start_unit() -> None:
+            try:
+                launcher_results.append(
+                    old_start.main(
+                        [
+                            "--checkout",
+                            str(self.checkout),
+                            "--agent",
+                            "old-start-test",
+                            "--target",
+                            SHA,
+                            "--unit",
+                            "validate-old-start-unit",
+                            "--in-place",
+                            "--",
+                            "quick",
+                        ],
+                        run=self.fake,
+                        environment=self.environment,
+                        root=self.root,
+                        sleep=lambda _seconds: None,
+                    )
+                )
+            except BaseException as error:
+                writer_errors.append(error)
+
+        patches = [
+            mock.patch.object(
+                old_start, "validate_checkout", return_value=self.checkout
+            ),
+            mock.patch.object(
+                old_start, "source_checkout_branch", return_value="old-branch"
+            ),
+            mock.patch.object(old_start, "preflight", return_value=None),
+            mock.patch.object(
+                old_start, "prepare_runtime_root", return_value=old_runtime
+            ),
+            mock.patch.object(
+                old_start, "prepare_private_cargo_home", return_value=old_cargo
+            ),
+            mock.patch.object(
+                old_start, "build_systemd_command", return_value=["systemd-run"]
+            ),
+            mock.patch.object(old_start, "detached_tool_prefix", return_value=None),
+            mock.patch.object(old_start, "parent_checkout_head", return_value=SHA),
+            mock.patch.object(
+                old_start.gh_route, "executable", return_value=sys.executable
+            ),
+            mock.patch.object(
+                old_registry, "create_current_record", side_effect=delayed_create
+            ),
+        ]
+        for patcher in patches:
+            patcher.start()
+        try:
+            launcher = threading.Thread(target=launch_old_start_unit, daemon=True)
+            launcher.start()
+            self.assertTrue(
+                writer_ready.wait(timeout=1),
+                "exact 4037 start_unit did not reach its production record create",
+            )
+            with mock.patch.object(
+                start_unit, "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED", False
+            ):
+                cleaned, reason = start_unit.cleanup_recorded_cargo_home(
+                    self.root,
+                    start_unit.run_registry.read_record(record),
+                    record_path=record,
+                    run=self.fake,
+                    tool_root=self.root,
+                )
+        finally:
+            writer_continue.set()
+            if "launcher" in locals():
+                launcher.join(timeout=2)
+            for patcher in reversed(patches):
+                patcher.stop()
+
+        self.assertFalse(launcher.is_alive(), "exact 4037 start_unit deadlocked")
+        self.assertEqual([], writer_errors)
+        self.assertEqual([start_unit.EXIT_REFUSED], launcher_results)
+        self.assertTrue(
+            old_registry.record_path(self.root, "validate-old-start-unit").exists()
+        )
+        self.assertFalse(cleaned)
+        self.assertIn("rollout-fenced", reason or "")
+        self.assertTrue(cargo_home.exists())
+        # The supported old launcher allocated its own unique Cargo directory;
+        # that target-specific fact narrows exposure but cannot fence arbitrary
+        # old public writers, which the preceding regression exercises.
+        self.assertNotEqual(cargo_home, old_cargo)
+
+    def test_generation_lock_excludes_cleanup_until_launcher_releases(self) -> None:
+        _checkout, cargo_home, record = self.in_place_cleanup_record(
+            "launcher-generation-lock", temporary=False, current=True
+        )
+        payload = start_unit.run_registry.read_record(record)
+        with start_unit.run_registry.run_writer_generation_lock(self.root):
+            cleaned, reason = start_unit.cleanup_recorded_cargo_home(
+                self.root,
+                payload,
+                record_path=record,
+                run=self.fake,
+                tool_root=self.root,
+            )
+        self.assertFalse(cleaned)
+        self.assertIn("run-writer generation authority", reason or "")
+        self.assertTrue(cargo_home.exists())
+
+        cleaned, reason = start_unit.cleanup_recorded_cargo_home(
+            self.root,
+            payload,
+            record_path=record,
+            run=self.fake,
+            tool_root=self.root,
+        )
+        self.assertTrue(cleaned, reason)
+        self.assertFalse(cargo_home.exists())
+
+    def test_start_unit_bridges_storage_creation_to_initial_record_with_generation_lock(
+        self,
+    ) -> None:
+        runtime = self.root / "launcher-generation-runtime"
+        runtime.mkdir()
+        cargo = (
+            self.root
+            / "ignored/validate/cargo-homes/validate-cargo-launcher-generation"
+        )
+        cargo.mkdir(parents=True)
+        real_create = start_unit.run_registry.create_current_record
+        blocked_during_storage = False
+        blocked_during_create = False
+        exclusive_after_create = False
+
+        def allocate_while_shared(*_args: object, **_kwargs: object) -> Path:
+            nonlocal blocked_during_storage
+            with self.assertRaises(start_unit.run_registry.RecordLocked):
+                with start_unit.run_registry.run_writer_generation_lock(
+                    self.root, exclusive=True, blocking=False
+                ):
+                    pass
+            blocked_during_storage = True
+            return cargo
+
+        def create_while_shared(path: Path, value: dict[str, object]) -> None:
+            nonlocal blocked_during_create
+            with self.assertRaises(start_unit.run_registry.RecordLocked):
+                with start_unit.run_registry.run_writer_generation_lock(
+                    self.root, exclusive=True, blocking=False
+                ):
+                    pass
+            blocked_during_create = True
+            real_create(path, value)
+
+        def reserve_after_release(_path: Path) -> None:
+            nonlocal exclusive_after_create
+            with start_unit.run_registry.run_writer_generation_lock(
+                self.root, exclusive=True, blocking=False
+            ):
+                exclusive_after_create = True
+            raise RuntimeError("stop after observing launcher-generation release")
+
+        with (
+            mock.patch.object(
+                start_unit, "validate_checkout", return_value=self.checkout
+            ),
+            mock.patch.object(
+                start_unit, "source_checkout_branch", return_value="branch"
+            ),
+            mock.patch.object(start_unit, "preflight", return_value=None),
+            mock.patch.object(
+                start_unit, "prepare_runtime_root", return_value=runtime
+            ),
+            mock.patch.object(
+                start_unit,
+                "prepare_private_cargo_home",
+                side_effect=allocate_while_shared,
+            ),
+            mock.patch.object(
+                start_unit, "build_systemd_command", return_value=["systemd-run"]
+            ),
+            mock.patch.object(start_unit, "detached_tool_prefix", return_value=None),
+            mock.patch.object(start_unit, "parent_checkout_head", return_value=SHA),
+            mock.patch.object(
+                start_unit.gh_route, "executable", return_value=sys.executable
+            ),
+            mock.patch.object(
+                start_unit.service_result, "schema_for_checkout", return_value=None
+            ),
+            mock.patch.object(
+                start_unit.run_registry,
+                "create_current_record",
+                side_effect=create_while_shared,
+            ),
+            mock.patch.object(
+                start_unit.run_registry,
+                "reserve_log",
+                side_effect=reserve_after_release,
+            ),
+        ):
+            rc, _output, error = self.invoke(
+                ["--in-place", "--", "quick"], unit="validate-generation-window"
+            )
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
+        self.assertTrue(blocked_during_storage)
+        self.assertTrue(blocked_during_create)
+        self.assertTrue(exclusive_after_create)
 
     def test_managed_population_authority_survives_runs_replacement(self) -> None:
         fresh, record = self.managed_cleanup_record(
