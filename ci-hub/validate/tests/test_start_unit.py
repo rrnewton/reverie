@@ -3135,6 +3135,148 @@ class StartUnitTest(unittest.TestCase):
             )
         return error.getvalue()
 
+    def test_sweep_retains_cargo_home_named_by_multiple_run_records(self) -> None:
+        first_checkout, first_cargo, _first_record = self.in_place_cleanup_record(
+            "shared-cargo-first", temporary=False, current=True
+        )
+        _second_checkout, second_cargo, second_record = self.in_place_cleanup_record(
+            "shared-cargo-second", temporary=False, current=True
+        )
+        shutil.rmtree(second_cargo)
+        second = start_unit.run_registry.read_record(second_record)
+        second["cargo_home"] = str(first_cargo)
+        start_unit.run_registry.write_record(second_record, second)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed_cargo_homes"])
+        self.assertTrue(first_checkout.exists())
+        self.assertTrue(first_cargo.exists())
+        self.assertTrue(
+            any(
+                row.get("cleanup_failed") is True
+                and "multiple validation handles" in row["reason"]
+                for row in report["retained"]
+            ),
+            report,
+        )
+
+    def test_unsupported_handle_still_vetoes_shared_cargo_home_cleanup(self) -> None:
+        _checkout, cargo_home, record = self.in_place_cleanup_record(
+            "shared-cargo-current", temporary=False, current=True
+        )
+        unsupported = (
+            self.root
+            / "ignored/validate/runs/validate-shared-cargo-unsupported.json"
+        )
+        unsupported.write_text(
+            json.dumps(
+                {
+                    "schema_version": 999,
+                    "cargo_home": str(cargo_home),
+                    "state": "completed",
+                }
+            )
+            + "\n"
+        )
+
+        cleaned, reason = start_unit.cleanup_recorded_cargo_home(
+            self.root,
+            start_unit.run_registry.read_record(record),
+            record_path=record,
+            run=self.fake,
+            tool_root=self.root,
+        )
+
+        self.assertFalse(cleaned)
+        self.assertIn("not owned exclusively", reason or "")
+        self.assertTrue(cargo_home.exists())
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed_cargo_homes"])
+        self.assertTrue(cargo_home.exists())
+        self.assertTrue(
+            any(
+                row.get("cleanup_failed") is True
+                and "multiple validation handles" in row["reason"]
+                for row in report["retained"]
+            ),
+            report,
+        )
+
+    def test_sweep_retains_cargo_when_recorded_checkout_is_unclassifiable(self) -> None:
+        checkout, cargo_home, _record = self.in_place_cleanup_record(
+            "unclassifiable-checkout-cargo",
+            temporary=True,
+            current=True,
+        )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed_cargo_homes"])
+        self.assertTrue(checkout.exists())
+        self.assertTrue(cargo_home.exists())
+        self.assertTrue(
+            any(
+                row["checkout"] == str(cargo_home)
+                and "associated validation checkout" in row["reason"]
+                for row in report["deferred"]
+            ),
+            report,
+        )
+
+    def test_direct_cargo_cleanup_retains_while_checkout_still_exists(self) -> None:
+        checkout = (
+            self.root
+            / "worktrees/validate/validate-fresh-direct-cargo-coupling"
+        )
+        checkout.mkdir(parents=True)
+        cargo_home = (
+            self.root
+            / "ignored/validate/cargo-homes/validate-cargo-direct-coupling"
+        )
+        cargo_home.mkdir(parents=True)
+        record_path = (
+            self.root
+            / "ignored/validate/runs/validate-direct-cargo-coupling.json"
+        )
+        record = {
+            "schema_version": 1,
+            "checkout": str(checkout),
+            "temporary_checkout": True,
+            "cargo_home": str(cargo_home),
+            "state": "completed",
+            "exit_code": 0,
+            "final_validate_status": "PASSED",
+        }
+        start_unit.run_registry.write_record(record_path, record)
+
+        removed, reason = start_unit.cleanup_recorded_cargo_home(
+            self.root,
+            record,
+            record_path=record_path,
+            run=self.fake,
+            tool_root=self.root,
+        )
+
+        self.assertFalse(removed)
+        self.assertIn("associated validation checkout still exists", reason or "")
+        self.assertTrue(checkout.exists())
+        self.assertTrue(cargo_home.exists())
+        self.assertFalse(
+            any(
+                "--ownerless-validate-cargo-home" in command
+                for command in self.fake.commands
+            )
+        )
+
     def test_entry_cleanup_classifies_every_read_only_backlog_page(self) -> None:
         stale = [
             self.managed_cleanup_record(f"entry-backlog-{index:03d}")[0]
@@ -5491,6 +5633,29 @@ class StartUnitTest(unittest.TestCase):
         # so are the two paths that exist nowhere else.
         self.assertTrue(fresh.exists())
 
+    def test_sweep_preserves_cleanup_failure_for_unreadable_authored_work(self) -> None:
+        fresh, _record = self.managed_cleanup_record("unreadable-authored-work")
+
+        with mock.patch.object(
+            start_unit.tree_disposition, "authored_work", return_value=None
+        ):
+            report = start_unit.sweep_completed_checkouts(
+                self.root, run=self.fake, tool_root=self.root
+            )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.exists())
+        self.assertEqual(
+            [
+                {
+                    "checkout": str(fresh),
+                    "cleanup_failed": True,
+                    "reason": "authored-work state could not be read",
+                }
+            ],
+            report["retained"],
+        )
+
     def test_sweep_retains_a_terminal_checkout_whose_commits_reach_no_remote(self) -> None:
         fresh = self.root / "worktrees" / "validate" / "validate-fresh-sweep"
         receipt = fresh / "reports" / "result.jsonl"
@@ -7026,6 +7191,41 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("wrkslots retained the Cargo home", reason or "")
         self.assertTrue(cargo_home.is_dir())
 
+    def test_cargo_cleanup_refuses_an_unreadable_handle_census(self) -> None:
+        cargo_home = (
+            self.root
+            / "ignored/validate/cargo-homes/validate-cargo-census-unreadable"
+        )
+        cargo_home.mkdir(parents=True)
+        record = self.root / "ignored/validate/runs/validate-census-owner.json"
+        durable = {
+            "schema_version": 1,
+            "cargo_home": str(cargo_home),
+            "state": "completed",
+            "exit_code": 0,
+            "final_validate_status": "PASSED",
+        }
+        start_unit.run_registry.write_record(record, durable)
+        (record.parent / "validate-unreadable.json").write_text("{")
+
+        removed, reason = start_unit.cleanup_recorded_cargo_home(
+            self.root,
+            durable,
+            record_path=record,
+            run=self.fake,
+            tool_root=self.root,
+        )
+
+        self.assertFalse(removed)
+        self.assertIn("cannot read validation handle", reason or "")
+        self.assertTrue(cargo_home.exists())
+        self.assertFalse(
+            any(
+                "--ownerless-validate-cargo-home" in command
+                for command in self.fake.commands
+            )
+        )
+
     def test_sweep_completed_removes_legacy_checkout_under_ignored(self) -> None:
         fresh = self.root / "ignored" / "validate-fresh-legacy"
         receipt = fresh / "reports" / "result.jsonl"
@@ -7184,6 +7384,152 @@ class StartUnitTest(unittest.TestCase):
             self.assertIn(
                 "checkout_removed_at", start_unit.run_registry.read_record(record)
             )
+
+    def test_sweep_holds_ownerless_record_lock_through_batch_removal(self) -> None:
+        fresh, record = self.ownerless_cleanup_record("ownerless-locked-through-remove")
+        observed_locked = False
+
+        def run(command: list[str], **kwargs: object):
+            nonlocal observed_locked
+            if wrkslots_action(command, "recover-ownerless-validate-batch"):
+                with self.assertRaises(start_unit.run_registry.RecordLocked):
+                    with start_unit.run_registry.exclusive_record(
+                        record, blocking=False
+                    ):
+                        pass
+                observed_locked = True
+            return self.fake(command, **kwargs)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+
+        self.assertTrue(observed_locked)
+        self.assertEqual([str(fresh)], report["removed"], report)
+        self.assertFalse(fresh.exists())
+
+    def test_ownerless_batch_blocks_contradictory_writer_and_honors_refusal(self) -> None:
+        fresh, record = self.ownerless_cleanup_record(
+            "ownerless-contended-provider-refusal"
+        )
+        relative = fresh.relative_to(self.root).as_posix()
+        self.fake.ownerless_batch_retained[relative] = "fixture ownership refusal"
+        writer_blocked = False
+
+        def run(command: list[str], **kwargs: object):
+            nonlocal writer_blocked
+            if wrkslots_action(command, "recover-ownerless-validate-batch"):
+                with self.assertRaises(start_unit.run_registry.RecordLocked):
+                    start_unit.run_registry.update_record(
+                        record, blocking=False, exit_code=0
+                    )
+                writer_blocked = True
+            return self.fake(command, **kwargs)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+
+        self.assertTrue(writer_blocked)
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.exists())
+        self.assertTrue(
+            any("fixture ownership refusal" in row["reason"] for row in report["retained"]),
+            report,
+        )
+
+    def test_ownerless_sweep_rejects_replaced_run_record_parent(self) -> None:
+        fresh, record = self.ownerless_cleanup_record("ownerless-parent-replaced")
+        real_exclusive = start_unit.run_registry.exclusive_record
+        runs = record.parent
+        displaced = runs.with_name("runs.ownerless-displaced")
+
+        @contextlib.contextmanager
+        def replace_parent_after_lock(path: Path, *, blocking: bool = True):
+            with real_exclusive(path, blocking=blocking):
+                if Path(path) == record:
+                    os.rename(runs, displaced)
+                    shutil.copytree(displaced, runs)
+                yield
+
+        with mock.patch.object(
+            start_unit.run_registry,
+            "exclusive_record",
+            side_effect=replace_parent_after_lock,
+        ):
+            report = start_unit.sweep_completed_checkouts(
+                self.root, run=self.fake, tool_root=self.root
+            )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.exists())
+        self.assertTrue(
+            any("parent changed" in row["reason"] for row in report["retained"]),
+            report,
+        )
+        self.assertFalse(
+            any(
+                wrkslots_action(command, "recover-ownerless-validate-batch")
+                for command in self.fake.commands
+            )
+        )
+
+    def test_ownerless_checkout_refusal_retains_associated_cargo_home(self) -> None:
+        fresh, record = self.ownerless_cleanup_record("ownerless-partial-cargo")
+        cargo_home = (
+            self.root
+            / "ignored/validate/cargo-homes"
+            / "validate-cargo-ownerless-partial"
+        )
+        cargo_home.mkdir(parents=True)
+        durable = start_unit.run_registry.read_record(record)
+        durable["cargo_home"] = str(cargo_home)
+        start_unit.run_registry.write_record(record, durable)
+        self.fake.ownerless_batch_retained[
+            fresh.relative_to(self.root).as_posix()
+        ] = "fixture ownership refusal"
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertEqual([], report["removed_cargo_homes"])
+        self.assertTrue(fresh.exists())
+        self.assertTrue(cargo_home.exists())
+        self.assertTrue(
+            any(
+                row["checkout"] == str(cargo_home)
+                and "associated validation checkout" in row["reason"]
+                for row in report["deferred"]
+            ),
+            report,
+        )
+
+    def test_ownerless_checkout_removal_allows_cargo_home_on_next_sweep(self) -> None:
+        fresh, record = self.ownerless_cleanup_record("ownerless-complete-cargo")
+        cargo_home = (
+            self.root
+            / "ignored/validate/cargo-homes"
+            / "validate-cargo-ownerless-complete"
+        )
+        cargo_home.mkdir(parents=True)
+        durable = start_unit.run_registry.read_record(record)
+        durable["cargo_home"] = str(cargo_home)
+        start_unit.run_registry.write_record(record, durable)
+
+        first = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+        second = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([str(fresh)], first["removed"], first)
+        self.assertEqual([], first["removed_cargo_homes"])
+        self.assertFalse(fresh.exists())
+        self.assertEqual([str(cargo_home)], second["removed_cargo_homes"], second)
+        self.assertFalse(cargo_home.exists())
 
     def test_ownerless_batch_retains_held_checkout_and_removes_unheld_peer(self) -> None:
         held, held_record = self.ownerless_cleanup_record("ownerless-held")
@@ -7662,6 +8008,210 @@ class StartUnitTest(unittest.TestCase):
         report = json.loads(out.getvalue())
         self.assertEqual([str(fresh)], report["removed"])
         self.assertFalse(fresh.exists())
+
+    def test_sweep_holds_frozen_record_lock_through_batch_removal(self) -> None:
+        fresh = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-frozen-lock-through-remove"
+        )
+        (fresh / ".git").mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, start_unit.frozen_checkout_parent(self.root), True)
+        record = (
+            self.root
+            / "ignored/validate/runs/validate-frozen-lock-through-remove.json"
+        )
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "unit": "validate-frozen-lock-through-remove.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+        observed_locked = False
+
+        def run(command: list[str], **kwargs: object):
+            nonlocal observed_locked
+            if wrkslots_action(command, "recover-ownerless-validate-batch"):
+                with self.assertRaises(start_unit.run_registry.RecordLocked):
+                    with start_unit.run_registry.exclusive_record(
+                        record, blocking=False
+                    ):
+                        pass
+                observed_locked = True
+            return self.fake(command, **kwargs)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+
+        self.assertTrue(observed_locked)
+        self.assertEqual([str(fresh)], report["removed"], report)
+        self.assertFalse(fresh.exists())
+
+    def test_frozen_batch_blocks_contradictory_writer_and_honors_refusal(self) -> None:
+        fresh = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-frozen-contended-provider-refusal"
+        )
+        (fresh / ".git").mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, start_unit.frozen_checkout_parent(self.root), True)
+        record = (
+            self.root
+            / "ignored/validate/runs/validate-frozen-contended-provider-refusal.json"
+        )
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "unit": "validate-frozen-contended-provider-refusal.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+        self.fake.ownerless_batch_retained[str(fresh)] = "fixture ownership refusal"
+        writer_blocked = False
+
+        def run(command: list[str], **kwargs: object):
+            nonlocal writer_blocked
+            if wrkslots_action(command, "recover-ownerless-validate-batch"):
+                with self.assertRaises(start_unit.run_registry.RecordLocked):
+                    start_unit.run_registry.update_record(
+                        record, blocking=False, exit_code=1
+                    )
+                writer_blocked = True
+            return self.fake(command, **kwargs)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+
+        self.assertTrue(writer_blocked)
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.exists())
+        self.assertTrue(
+            any("fixture ownership refusal" in row["reason"] for row in report["retained"]),
+            report,
+        )
+
+    def test_frozen_sweep_rejects_replaced_run_record_parent(self) -> None:
+        fresh = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-frozen-parent-replaced"
+        )
+        (fresh / ".git").mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, start_unit.frozen_checkout_parent(self.root), True)
+        record = self.root / "ignored/validate/runs/validate-frozen-parent-replaced.json"
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "unit": "validate-frozen-parent-replaced.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+        real_exclusive = start_unit.run_registry.exclusive_record
+        runs = record.parent
+        displaced = runs.with_name("runs.frozen-displaced")
+
+        @contextlib.contextmanager
+        def replace_parent_after_lock(path: Path, *, blocking: bool = True):
+            with real_exclusive(path, blocking=blocking):
+                if Path(path) == record:
+                    os.rename(runs, displaced)
+                    shutil.copytree(displaced, runs)
+                yield
+
+        with mock.patch.object(
+            start_unit.run_registry,
+            "exclusive_record",
+            side_effect=replace_parent_after_lock,
+        ):
+            report = start_unit.sweep_completed_checkouts(
+                self.root, run=self.fake, tool_root=self.root
+            )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.exists())
+        self.assertTrue(
+            any("parent changed" in row["reason"] for row in report["retained"]),
+            report,
+        )
+        self.assertFalse(
+            any(
+                wrkslots_action(command, "recover-ownerless-validate-batch")
+                for command in self.fake.commands
+            )
+        )
+
+    def test_frozen_checkout_refusal_retains_associated_cargo_home(self) -> None:
+        fresh = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-frozen-partial-cargo"
+        )
+        (fresh / ".git").mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, start_unit.frozen_checkout_parent(self.root), True)
+        cargo_home = (
+            self.root
+            / "ignored/validate/cargo-homes"
+            / "validate-cargo-frozen-partial"
+        )
+        cargo_home.mkdir(parents=True)
+        record = self.root / "ignored/validate/runs/validate-frozen-partial.json"
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "unit": "validate-frozen-partial.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "cargo_home": str(cargo_home),
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+        self.fake.ownerless_batch_retained[str(fresh)] = "fixture ownership refusal"
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertEqual([], report["removed_cargo_homes"])
+        self.assertTrue(fresh.exists())
+        self.assertTrue(cargo_home.exists())
+        self.assertTrue(
+            any(
+                row["checkout"] == str(cargo_home)
+                and "associated validation checkout" in row["reason"]
+                for row in report["deferred"]
+            ),
+            report,
+        )
 
     def test_sweep_completed_retains_frozen_checkout_when_use_is_unknown(self) -> None:
         fresh = (
@@ -8256,7 +8806,15 @@ class StartUnitTest(unittest.TestCase):
             [],
             list((self.root / "worktrees/validate").glob("validate-cargo-*")),
         )
-        self.assertEqual([], list(self.root.glob("v*")))
+        self.assertTrue(
+            (
+                self.root
+                / "ignored/validate/cargo-homes/validate-cargo-abcd1234"
+            ).is_dir()
+        )
+        runtime_roots = list(self.root.glob("v*"))
+        self.assertEqual(1, len(runtime_roots), runtime_roots)
+        self.assertTrue(runtime_roots[0].is_dir())
 
     def test_materialized_dry_run_reports_retained_path_and_row(self) -> None:
         self.assert_materialized_dry_run_cleanup_observation(
@@ -8430,6 +8988,32 @@ class StartUnitTest(unittest.TestCase):
         self.assertTrue(Path(record["checkout"]).is_dir())
         self.assertTrue(Path(record["cargo_home"]).is_dir())
         self.assertNotIn(str(record["checkout"]), self.fake.removed)
+
+    def test_terminal_record_update_failure_retains_private_resources(self) -> None:
+        update_record = start_unit.run_registry.update_record
+
+        def fail_terminal_observation(
+            path: Path, *, blocking: bool = True, **fields: object
+        ) -> dict[str, object]:
+            if "finished_at" in fields:
+                raise RuntimeError("injected terminal-observation write failure")
+            return update_record(path, blocking=blocking, **fields)
+
+        with mock.patch.object(
+            start_unit.run_registry,
+            "update_record",
+            side_effect=fail_terminal_observation,
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("could not record the terminal observation", error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertTrue(Path(record["checkout"]).is_dir())
+        self.assertTrue(Path(record["cargo_home"]).is_dir())
+        self.assertEqual([], self.removed_temporary_paths())
 
     def test_dirty_checkout_is_refused_before_admission(self) -> None:
         self.fake.dirty = " M scripts/validate.rs\n"
@@ -9816,6 +10400,35 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertNotIn("ledger_mirror", start_unit.run_registry.read_record(record))
 
+    def test_refused_admission_marker_sync_failure_reports_visible_marker(self) -> None:
+        _fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-marker-sync-report", state="running"
+        )
+        durable = start_unit.run_registry.read_record(record)
+        error = io.StringIO()
+
+        with mock.patch.object(
+            start_unit,
+            "_fsync_directory",
+            side_effect=OSError(errno.EIO, "fixture directory sync failure"),
+        ), contextlib.redirect_stderr(error):
+            returned = start_unit.finalize_ledger_mirror(
+                self.root,
+                self.root,
+                record,
+                record=durable,
+                run=self.fake,
+            )
+
+        persisted = start_unit.run_registry.read_record(record)
+        self.assertEqual(
+            start_unit.LEDGER_MIRROR_NOT_APPLICABLE,
+            persisted["ledger_mirror"]["state"],
+        )
+        self.assertEqual(persisted["ledger_mirror"], returned["ledger_mirror"])
+        self.assertIn("marker is visible in the current namespace", error.getvalue())
+        self.assertIn("grants no cleanup authority", error.getvalue())
+
     def test_attach_typed_refusal_skips_canonical_and_mirror_queries(self) -> None:
         fresh, _record = self.refused_admission_cleanup_record(
             "admission-refused-attach"
@@ -9964,6 +10577,36 @@ class StartUnitTest(unittest.TestCase):
         self.assertTrue(cargo_home.is_dir())
         self.assertIn("Cargo home RETAINED", error.getvalue())
         self.assertNotIn(cargo_home, self.removed_temporary_paths())
+
+    def test_attach_retains_cargo_when_checkout_classification_refuses(self) -> None:
+        record_path = self.root / "ignored/validate/runs/validate-attach-malformed.json"
+        record = {
+            "checkout": str(self.root / "missing-malformed-checkout"),
+            "cargo_home": str(
+                self.root
+                / "ignored/validate/cargo-homes/validate-cargo-attach-malformed"
+            ),
+        }
+        error = io.StringIO()
+
+        with mock.patch.object(
+            start_unit,
+            "cleanup_recorded_checkout",
+            return_value=(False, [], "fixture checkout classification refusal"),
+        ), mock.patch.object(
+            start_unit, "cleanup_recorded_cargo_home"
+        ) as cargo_cleanup, contextlib.redirect_stderr(error):
+            start_unit.cleanup_after_attach(
+                self.root,
+                record_path,
+                record,
+                unit="validate-attach-malformed",
+                run=self.fake,
+                tool_root=self.root,
+            )
+
+        cargo_cleanup.assert_not_called()
+        self.assertIn("checkout cleanup did not complete", error.getvalue())
 
     def test_attach_refusal_removes_cargo_after_checkout_removal(self) -> None:
         fresh, record = self.refused_admission_cleanup_record(
@@ -10167,6 +10810,49 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual([str(fresh)], report["removed"], report)
         self.assertFalse(fresh.exists())
 
+    def test_sweep_rejects_run_record_parent_replaced_after_lock(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-parent-replaced",
+            legacy_ledger_noop=True,
+        )
+        real_exclusive = start_unit.run_registry.exclusive_record
+        runs = record.parent
+        displaced = runs.with_name("runs.displaced")
+        record_lock_entries = 0
+        parent_replaced = False
+
+        @contextlib.contextmanager
+        def replace_parent_after_lock(path: Path, *, blocking: bool = True):
+            nonlocal record_lock_entries, parent_replaced
+            with real_exclusive(path, blocking=blocking):
+                if Path(path) == record:
+                    record_lock_entries += 1
+                    if record_lock_entries == 2:
+                        os.rename(runs, displaced)
+                        shutil.copytree(displaced, runs)
+                        parent_replaced = True
+                yield
+
+        with mock.patch.object(
+            start_unit.run_registry,
+            "exclusive_record",
+            side_effect=replace_parent_after_lock,
+        ):
+            report = start_unit.sweep_completed_checkouts(
+                self.root, run=self.fake, tool_root=self.root
+            )
+
+        self.assertTrue(parent_replaced)
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.exists())
+        self.assertTrue(
+            any("parent changed" in row["reason"] for row in report["retained"]),
+            report,
+        )
+        self.assertFalse(
+            any(wrkslots_action(command, "remove-validate-batch") for command in self.fake.commands)
+        )
+
     def test_sweep_retains_legacy_refusal_during_owner_watch_correction(self) -> None:
         fresh, _record = self.refused_admission_cleanup_record(
             "admission-refused-owner-watch",
@@ -10247,6 +10933,10 @@ class StartUnitTest(unittest.TestCase):
             "scorecard-writeback",
             "scorecard-files",
             "scorecard-handoff",
+            "qualifying-receipt",
+            "malformed-qualifying-receipt",
+            "archived-receipt",
+            "malformed-archived-receipt",
             "service-result-sidecar",
             "broken-sidecar-symlink",
             "admitted",
@@ -10318,6 +11008,16 @@ class StartUnitTest(unittest.TestCase):
                     durable["scorecard_handoff"] = str(
                         self.root / "ignored/validate/scorecard-handoffs/forged"
                     )
+                elif case == "qualifying-receipt":
+                    durable["qualifying_receipt"] = True
+                elif case == "malformed-qualifying-receipt":
+                    durable["qualifying_receipt"] = []
+                elif case == "archived-receipt":
+                    durable["archived_orphaned_receipts"] = [
+                        str(self.root / "ignored/validate/orphaned-receipts/result.jsonl")
+                    ]
+                elif case == "malformed-archived-receipt":
+                    durable["archived_orphaned_receipts"] = "result.jsonl"
                 elif case == "service-result-sidecar":
                     start_unit.service_result.result_path(record).write_text("{}\n")
                 elif case == "broken-sidecar-symlink":
@@ -10338,6 +11038,45 @@ class StartUnitTest(unittest.TestCase):
                     )
                 )
                 self.assertTrue(fresh.is_dir())
+
+    def test_legacy_refusal_with_checkout_local_jsonl_remains_retained(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "legacy-refusal-local-jsonl", legacy_ledger_noop=True
+        )
+        (fresh / "result.jsonl").write_text('{"result":"evidence"}\n')
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.exists())
+        self.assertFalse(
+            start_unit.cell_ledger_retirement_ready(
+                self.root, record, start_unit.run_registry.read_record(record)
+            )
+        )
+
+    def test_legacy_refusal_with_unreadable_checkout_scan_remains_retained(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "legacy-refusal-unreadable-checkout", legacy_ledger_noop=True
+        )
+
+        with mock.patch.object(
+            start_unit.os,
+            "walk",
+            side_effect=OSError(errno.EACCES, "fixture checkout scan failure"),
+        ):
+            report = start_unit.sweep_completed_checkouts(
+                self.root, run=self.fake, tool_root=self.root
+            )
+            retirement_ready = start_unit.cell_ledger_retirement_ready(
+                self.root, record, start_unit.run_registry.read_record(record)
+            )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.exists())
+        self.assertFalse(retirement_ready)
 
     def test_sweep_removes_materialized_checkout_after_refused_admission(self) -> None:
         fresh, record = self.managed_cleanup_record(
@@ -12438,10 +13177,13 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("ORPHANED-RECEIPT", error)
         self.assertIn("scan failed", error)
         self.assertEqual([], self.fake.removed)
-        self.assertIn(
-            self.root / "ignored/validate/cargo-homes/validate-cargo-abcd1234",
-            self.removed_temporary_paths(),
+        self.assertTrue(
+            (
+                self.root
+                / "ignored/validate/cargo-homes/validate-cargo-abcd1234"
+            ).is_dir()
         )
+        self.assertEqual([], self.removed_temporary_paths())
 
     def test_a_row_for_the_same_sha_from_a_DIFFERENT_run_does_not_satisfy_it(self) -> None:
         """Identity binding, not a correlated proxy.
