@@ -6556,11 +6556,67 @@ fn read_sendfile_offset(memory: &GuestMemory, offset_ptr: u64) -> Result<libc::o
     Ok(i64::from_ne_bytes(raw))
 }
 
+fn validate_sendfile_range(offset: libc::off_t, count: u64) -> Result<(), i64> {
+    let count = i64::try_from(count).map_err(|_| negative_errno(libc::EINVAL))?;
+    if offset < 0 || offset.checked_add(count).is_none() {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    Ok(())
+}
+
+// An unusable output still follows input access, explicit-offset seekability,
+// and range errors on Linux. Check only these rejection conditions; unsupported
+// inputs never reach a host transfer, and procfs keeps its mediated boundary.
+fn validate_sendfile_rejected_input(
+    state: &LoadedStaticElf,
+    in_fd: libc::c_int,
+    offset: Option<libc::off_t>,
+    count: u64,
+) -> Result<(), i64> {
+    let Some(file) = state.files.get(&in_fd) else {
+        return Ok(());
+    };
+    if ensure_fd_not_procfs(file.as_raw_fd()).is_err() {
+        return Ok(());
+    }
+    // In particular, a pipe write end and O_PATH must fail access before the
+    // explicit-offset check. Directories need access, not ensure_readable's
+    // scalar-read EISDIR rejection, before validating their signed range.
+    ensure_read_access(file)?;
+    match file_mode(file)? & libc::S_IFMT {
+        libc::S_IFIFO | libc::S_IFSOCK => {
+            if offset.is_some() {
+                return Err(negative_errno(libc::ESPIPE));
+            }
+            // These streams have no advancing file position. Linux still
+            // validates the original signed count before rejecting the output;
+            // querying lseek instead would incorrectly reject null offsets.
+            validate_sendfile_range(0, count)
+        }
+        libc::S_IFDIR => {
+            let offset = match offset {
+                Some(offset) => offset,
+                None => {
+                    // SAFETY: file is a live readable directory. A zero
+                    // SEEK_CUR query observes its cursor without changing it.
+                    let offset = unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR) };
+                    if offset < 0 {
+                        return Err(io_error(std::io::Error::last_os_error()));
+                    }
+                    offset
+                }
+            };
+            validate_sendfile_range(offset, count)
+        }
+        _ => Ok(()),
+    }
+}
+
 // TODO-HUMAN-REVIEW(#322): Review sendfile forward-to-host semantics, the
 // procfs-input refusal, the regular/memfd endpoint gate, and the guest offset
-// read-back. Mirrors detcore::handle_sendfile: a procfs input or a
-// non-regular/non-memfd endpoint returns ENOSYS so glibc falls back to the
-// deterministic mediated read()/write() path.
+// read-back. After preceding pointer, access, offset and output errors, procfs
+// and non-regular/non-memfd inputs retain the ENOSYS mediated fallback rather
+// than forwarding an unsupported transfer to the host.
 fn sendfile(
     memory: &mut GuestMemory,
     state: &LoadedStaticElf,
@@ -6569,8 +6625,8 @@ fn sendfile(
 ) -> i64 {
     // Linux syscall `int` arguments consume only the low descriptor word.
     let out_fd = args[0] as libc::c_int;
-    // Validate outputs before unsupported-input routing, but retain readable
-    // regular-input explicit-offset errors before rejecting an unusable output.
+    // Remember output errors before unsupported-input routing, but preserve
+    // input pointer, access, seekability and range errors before returning them.
     let (out_file, output_error) = if out_fd < 0 {
         (None, Some(negative_errno(libc::EBADF)))
     } else {
@@ -6594,7 +6650,25 @@ fn sendfile(
     let in_fd = args[1] as libc::c_int;
     let in_file = match resolve_sendfile_input(state, in_fd) {
         Ok(file) => file,
-        Err(error) => return output_error.unwrap_or(error),
+        Err(error) => {
+            // Linux copies a nonnull offset before resolving either descriptor,
+            // including zero-count calls. Do not validate its value before
+            // input access: a readable negative offset with a bad input is EBADF.
+            let offset = if args[2] != 0 {
+                match read_sendfile_offset(memory, args[2]) {
+                    Ok(offset) => Some(offset),
+                    Err(error) => return error,
+                }
+            } else {
+                None
+            };
+            if output_error.is_some()
+                && let Err(error) = validate_sendfile_rejected_input(state, in_fd, offset, args[3])
+            {
+                return error;
+            }
+            return output_error.unwrap_or(error);
+        }
     };
     let in_host = in_file.as_raw_fd();
     let Ok(count) = usize::try_from(args[3]) else {
@@ -6621,11 +6695,8 @@ fn sendfile(
             }
             offset
         };
-        let Ok(count) = i64::try_from(count) else {
-            return negative_errno(libc::EINVAL);
-        };
-        if offset < 0 || offset.checked_add(count).is_none() {
-            return negative_errno(libc::EINVAL);
+        if let Err(error) = validate_sendfile_range(offset, args[3]) {
+            return error;
         }
         return error;
     }
@@ -21864,6 +21935,340 @@ mod tests {
                     assert_eq!(std::fs::read(&source).unwrap(), b"abcdef");
                     assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn sendfile_input_errors_preserve_explicit_offset_precedence() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        const OFFSET: u64 = 0x200;
+        const INACCESSIBLE: u64 = 0xffff_ffff_ffff_f000;
+        const HIGH: u64 = 0x5a5a_5a5a_0000_0000;
+        const SIGN_EXTENDED: u64 = 0xffff_ffff_0000_0000;
+        let root = TestDir::new();
+        let source = root.0.join("source");
+        let destination = root.0.join("output");
+        std::fs::write(&source, b"abcdef").unwrap();
+        std::fs::write(&destination, b"unchanged-output\n").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
+        for address in [0x100, 0x120] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_pipe2,
+                    [address, libc::O_NONBLOCK as u64, 0, 0, 0, 0],
+                ),
+                0
+            );
+        }
+        let input_pipe: [libc::c_int; 2] = read_struct(&memory, 0x100);
+        let output_pipe: [libc::c_int; 2] = read_struct(&memory, 0x120);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    (libc::SOCK_STREAM | libc::SOCK_NONBLOCK) as u64,
+                    0,
+                    0x140,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let socket: [libc::c_int; 2] = read_struct(&memory, 0x140);
+        state
+            .files
+            .insert(20, std::fs::File::open(&source).unwrap());
+        state.files.insert(
+            21,
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&source)
+                .unwrap(),
+        );
+        state.files.insert(
+            22,
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH)
+                .open(&source)
+                .unwrap(),
+        );
+        state
+            .files
+            .insert(23, std::fs::File::open(&root.0).unwrap());
+        state
+            .files
+            .insert(24, std::fs::File::open(&destination).unwrap());
+        state.stdin = Some(std::fs::File::open(&destination).unwrap());
+        for fd in [30, 31] {
+            state
+                .files
+                .insert(fd, std::fs::File::open(&source).unwrap());
+            assert_eq!(close(&mut state, fd as u64), 0);
+        }
+        let mut calls = 0;
+        // Decode each argument independently, with ordinary, nonzero and
+        // sign-extended upper words. Every previous test remains unchanged.
+        for (out_high, in_high) in [
+            (0, 0),
+            (HIGH, 0),
+            (0, HIGH),
+            (SIGN_EXTENDED, 0),
+            (0, SIGN_EXTENDED),
+        ] {
+            for out_fd in [31_i32, 24, output_pipe[0], 0] {
+                for (name, in_fd, positive_error, negative_error) in [
+                    ("closed", 30, libc::EBADF, libc::EBADF),
+                    ("negative", -1, libc::EBADF, libc::EBADF),
+                    ("read-only regular", 20, libc::EBADF, libc::EINVAL),
+                    ("write-only regular", 21, libc::EBADF, libc::EBADF),
+                    ("O_PATH", 22, libc::EBADF, libc::EBADF),
+                    ("pipe read end", input_pipe[0], libc::ESPIPE, libc::ESPIPE),
+                    ("pipe write end", input_pipe[1], libc::EBADF, libc::EBADF),
+                    ("socket", socket[0], libc::ESPIPE, libc::ESPIPE),
+                    ("directory", 23, libc::EBADF, libc::EINVAL),
+                ] {
+                    for (pointer, offset) in
+                        [(INACCESSIBLE, 2_i64), (OFFSET, 2), (OFFSET, -1), (0, 2)]
+                    {
+                        for count in [2, 0] {
+                            for (fd, position) in [(20, 1), (21, 1), (23, 0), (24, 2)] {
+                                state
+                                    .files
+                                    .get_mut(&fd)
+                                    .unwrap()
+                                    .seek(std::io::SeekFrom::Start(position))
+                                    .unwrap();
+                            }
+                            state
+                                .stdin
+                                .as_mut()
+                                .unwrap()
+                                .seek(std::io::SeekFrom::Start(3))
+                                .unwrap();
+                            for (writer, sentinel) in [
+                                (input_pipe[1], b'I'),
+                                (output_pipe[1], b'O'),
+                                (socket[1], b'S'),
+                            ] {
+                                state
+                                    .files
+                                    .get_mut(&writer)
+                                    .unwrap()
+                                    .write_all(&[sentinel])
+                                    .unwrap();
+                            }
+                            write_struct(&mut memory, OFFSET, &offset);
+                            let result = syscall_result(
+                                &mut memory,
+                                &mut state,
+                                libc::SYS_sendfile,
+                                [
+                                    out_high | u64::from(out_fd as u32),
+                                    in_high | u64::from(in_fd as u32),
+                                    pointer,
+                                    count,
+                                    0,
+                                    0,
+                                ],
+                            );
+                            let expected = if pointer == INACCESSIBLE {
+                                libc::EFAULT
+                            } else if pointer == 0 {
+                                libc::EBADF
+                            } else if offset < 0 {
+                                negative_error
+                            } else {
+                                positive_error
+                            };
+                            assert_eq!(
+                                result,
+                                negative_errno(expected),
+                                "{name} out={out_fd} out_high={out_high:#x} in_high={in_high:#x} pointer={pointer:#x} offset={offset} count={count}"
+                            );
+                            assert_eq!(read_struct::<i64>(&memory, OFFSET), offset);
+                            for (fd, position) in [(20, 1), (21, 1), (23, 0), (24, 2)] {
+                                assert_eq!(
+                                    state.files.get_mut(&fd).unwrap().stream_position().unwrap(),
+                                    position
+                                );
+                            }
+                            assert_eq!(state.stdin.as_mut().unwrap().stream_position().unwrap(), 3);
+                            assert_eq!(std::fs::read(&source).unwrap(), b"abcdef");
+                            assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged-output\n");
+                            for (reader, sentinel) in [
+                                (input_pipe[0], b'I'),
+                                (output_pipe[0], b'O'),
+                                (socket[0], b'S'),
+                            ] {
+                                let file = state.files.get_mut(&reader).unwrap();
+                                let mut bytes = [0; 2];
+                                assert_eq!(file.read(&mut bytes).unwrap(), 1);
+                                assert_eq!(bytes[0], sentinel);
+                                assert_eq!(
+                                    file.read(&mut bytes).unwrap_err().kind(),
+                                    std::io::ErrorKind::WouldBlock
+                                );
+                            }
+                            assert!(!state.files.contains_key(&30));
+                            assert!(!state.files.contains_key(&31));
+                            calls += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(calls, 1440);
+    }
+
+    #[test]
+    fn sendfile_writable_output_retains_unsupported_input_fallback() {
+        const OFFSET: u64 = 0x200;
+        const INACCESSIBLE: u64 = 0xffff_ffff_ffff_f000;
+        let root = TestDir::new();
+        let destination = root.0.join("output");
+        std::fs::write(&destination, b"unchanged").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [0x100, libc::O_NONBLOCK as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let pipe: [libc::c_int; 2] = read_struct(&memory, 0x100);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    (libc::SOCK_STREAM | libc::SOCK_NONBLOCK) as u64,
+                    0,
+                    0x120,
+                    0,
+                    0
+                ],
+            ),
+            0
+        );
+        let socket: [libc::c_int; 2] = read_struct(&memory, 0x120);
+        state
+            .files
+            .insert(20, std::fs::File::open(&root.0).unwrap());
+        state.files.insert(
+            21,
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&destination)
+                .unwrap(),
+        );
+        for writer in [pipe[1], socket[1]] {
+            state
+                .files
+                .get_mut(&writer)
+                .unwrap()
+                .write_all(b"S")
+                .unwrap();
+        }
+        for input in [pipe[0], socket[0], 20] {
+            for (pointer, offset, count, expected) in [
+                (0, 2_i64, 2, libc::ENOSYS),
+                (OFFSET, 2, 2, libc::ENOSYS),
+                (OFFSET, -1, 0, libc::ENOSYS),
+                (INACCESSIBLE, 2, 2, libc::EFAULT),
+                (INACCESSIBLE, 2, 0, libc::EFAULT),
+            ] {
+                write_struct(&mut memory, OFFSET, &offset);
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_sendfile,
+                        [21, input as u64, pointer, count, 0, 0],
+                    ),
+                    negative_errno(expected),
+                    "input={input} pointer={pointer:#x} offset={offset} count={count}"
+                );
+                assert_eq!(read_struct::<i64>(&memory, OFFSET), offset);
+                assert_eq!(
+                    state.files.get_mut(&21).unwrap().stream_position().unwrap(),
+                    0
+                );
+                assert_eq!(
+                    state.files.get_mut(&20).unwrap().stream_position().unwrap(),
+                    0
+                );
+                assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged");
+            }
+        }
+        for reader in [pipe[0], socket[0]] {
+            let file = state.files.get_mut(&reader).unwrap();
+            let mut bytes = [0; 2];
+            assert_eq!(file.read(&mut bytes).unwrap(), 1);
+            assert_eq!(bytes[0], b'S');
+            assert_eq!(
+                file.read(&mut bytes).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+    }
+
+    #[test]
+    fn sendfile_directory_null_offset_uses_current_position() {
+        let root = TestDir::new();
+        let destination = root.0.join("output");
+        std::fs::write(&destination, b"unchanged").unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(3, std::fs::File::open(&root.0).unwrap());
+        state
+            .files
+            .insert(4, std::fs::File::open(&destination).unwrap());
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        for position in [0_u64, 3] {
+            state
+                .files
+                .get_mut(&3)
+                .unwrap()
+                .seek(std::io::SeekFrom::Start(position))
+                .unwrap();
+            for (count, expected) in [
+                (i64::MAX as u64 - position, libc::EBADF),
+                (i64::MAX as u64 - position + 1, libc::EINVAL),
+            ] {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_sendfile,
+                        [4, 3, 0, count, 0, 0],
+                    ),
+                    negative_errno(expected),
+                    "directory position={position} count={count}"
+                );
+                assert_eq!(
+                    state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+                    position
+                );
+                assert_eq!(
+                    state.files.get_mut(&4).unwrap().stream_position().unwrap(),
+                    0
+                );
+                assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged");
             }
         }
     }
