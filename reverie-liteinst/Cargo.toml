@@ -29,7 +29,7 @@ path = "src/bin/lifecycle_guest.rs"
 [dependencies]
 bincode = { version = "2", features = ["serde"] }
 libc = "0.2.186"
-liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "9d8ab600159c9be040e0adff4d12c686ad35aee8" }
+liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "81984c5255af08899f02cf1bca083009c9dd100a" }
 reverie = { version = "0.2.0", path = "../reverie", package = "reverie-core" }
 reverie-preload = { version = "0.2.0", path = "../reverie-preload", default-features = false, features = ["coordinator-rpc"] }
 reverie-ptrace = { version = "0.2.0", path = "../reverie-ptrace" }
