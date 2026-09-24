@@ -2157,6 +2157,22 @@ class StartUnitTest(unittest.TestCase):
             if command[:2] == ["rm", "-rf"]
         ]
 
+    def private_cargo_home(self) -> Path:
+        return (
+            self.root
+            / "ignored/validate/cargo-homes/validate-cargo-abcd1234"
+        )
+
+    def assert_main_checkout_and_cargo_removed(
+        self, checkout: Path | None = None
+    ) -> None:
+        selected_checkout = checkout if checkout is not None else self.fake.fresh
+        self.assertIsNotNone(selected_checkout)
+        self.assertEqual(
+            [str(selected_checkout), str(self.private_cargo_home())],
+            self.fake.removed,
+        )
+
     def plant_per_cell_results(self, unit: str = "validate-test") -> Path:
         results = self.root / "ignored/validate/artifacts" / unit / "e2e"
         result_file = results / "portable" / "results.jsonl"
@@ -9835,7 +9851,7 @@ class StartUnitTest(unittest.TestCase):
             / "ignored/validate/orphaned-receipts/validate-test/signal/result.jsonl"
         )
         self.assertTrue(archived.is_file(), "signal cleanup must preserve run evidence")
-        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed()
 
     def test_exit_zero_without_status_is_unknown(self) -> None:
         self.fake.actual_exit = 0
@@ -10515,6 +10531,14 @@ class StartUnitTest(unittest.TestCase):
             any(wrkslots_action(command, "remove") for command in self.fake.commands),
             "refused no-evidence checkout must still use liveness-checked cleanup",
         )
+        for field in (
+            "checkout_removed_at",
+            "cargo_home_removed_at",
+            "runtime_root_removed_at",
+        ):
+            self.assertIn(field, record)
+        self.assert_main_checkout_and_cargo_removed()
+        self.assertEqual([Path(record["runtime_root"])], self.removed_temporary_paths())
 
     def test_typed_refusal_retains_private_roots_when_checkout_removal_refuses(self) -> None:
         self.fake.typed_admission_refusal = "stale-base"
@@ -12564,7 +12588,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(self.root / "worktrees/validate", exact_checkout.parent)
         self.assertEqual(target, self.fake.systemd_checkout_head)
         self.assertFalse(exact_checkout.exists())
-        self.assertEqual([str(exact_checkout)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed(exact_checkout)
         self.assertTrue(start_unit.cell_ledger_published(run_registry.read_record(
             self.root / "ignored/validate/runs/validate-test.json")))
         self.assertFalse(start_unit.scorecard_handoff_path(self.root, "validate-test").exists())
@@ -12699,7 +12723,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(str(exact_checkout), record["checkout"])
         self.assertTrue(record["materialized_target"])
         self.assertNotIn("branch", record)
-        self.assertEqual([str(exact_checkout)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed(exact_checkout)
         self.assertFalse(exact_checkout.exists())
         self.assertTrue(start_unit.cell_ledger_published(run_registry.read_record(
             self.root / "ignored/validate/runs/validate-test.json")))
@@ -12713,7 +12737,7 @@ class StartUnitTest(unittest.TestCase):
         exact_checkout = self.fake.fresh
         self.assertIsNotNone(exact_checkout)
         self.assertEqual(before, self.worktree_bytes(self.checkout))
-        self.assertEqual([str(exact_checkout)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed(exact_checkout)
         self.assertFalse(exact_checkout.exists())
         self.assertFalse(start_unit.scorecard_handoff_path(self.root, "validate-test").exists())
         record = run_registry.read_record(self.root / "ignored/validate/runs/validate-test.json")
@@ -12848,7 +12872,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(start_unit.EXIT_PASSED, rc, error)
         self.assertEqual("old handoff evidence\n", handoff.read_text())
         self.assertFalse(self.fake.fresh.exists())
-        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed()
         self.assertTrue(start_unit.cell_ledger_published(run_registry.read_record(
             self.root / "ignored/validate/runs/validate-test.json")))
 
@@ -13337,6 +13361,11 @@ class StartUnitTest(unittest.TestCase):
                 self.assertTrue(
                     any(command[-1] == f"{SHA}^{{commit}}" for command in source_commands)
                 )
+                # FakeRun deterministically reuses one Cargo path, unlike
+                # production mktemp.  Remove the completed fixture handle so
+                # the next subcase does not manufacture a second historical
+                # owner for that reused path.
+                run_registry.record_path(self.root, unit).unlink()
                 self.fake.fresh = None
 
     def test_materialize_target_refuses_dirty_fresh_checkout(self) -> None:
@@ -13411,9 +13440,19 @@ class StartUnitTest(unittest.TestCase):
         self.assertIsNotNone(exact_checkout)
         assert exact_checkout is not None
         self.assertEqual(self.root / "worktrees/validate", exact_checkout.parent)
-        self.assertEqual([str(exact_checkout)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed(exact_checkout)
         self.assertEqual("d" * 40, self.fake.source_head)
         self.assertEqual(before, self.worktree_bytes(self.checkout))
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        for field in (
+            "checkout_removed_at",
+            "cargo_home_removed_at",
+            "runtime_root_removed_at",
+        ):
+            self.assertIn(field, record)
+        self.assertEqual([Path(record["runtime_root"])], self.removed_temporary_paths())
 
     def test_materialize_target_rc75_archives_receipt_before_cleanup(self) -> None:
         self.fake.source_head = "d" * 40
@@ -13440,7 +13479,7 @@ class StartUnitTest(unittest.TestCase):
             / "ignored/validate/orphaned-receipts/validate-test/.hermit-validate-ledger.jsonl"
         )
         self.assertTrue(archived.is_file())
-        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed()
         self.assertEqual("d" * 40, self.fake.source_head)
         self.assertEqual(before, self.worktree_bytes(self.checkout))
 
@@ -13702,7 +13741,7 @@ class StartUnitTest(unittest.TestCase):
             or wrkslots_action(command, "remove")
         ]
         self.assertEqual(["status", "identity", "remove"], kinds)
-        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed()
 
     @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
     def test_post_run_uses_tool_root_readers_with_state_root_authority(
@@ -14183,7 +14222,240 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("verdict=NEEDS-RERUN", output)
         self.assertNotIn("RECEIPT-NOT-CANONICAL", error)
         self.assertNotIn("ORPHANED-RECEIPT", error)
-        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed()
+
+    def test_main_success_couples_durable_checkout_cargo_and_runtime_cleanup(
+        self,
+    ) -> None:
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        record_path = run_registry.record_path(self.root, "validate-test")
+        record = run_registry.read_record(record_path)
+        checkout = Path(record["checkout"])
+        cargo_home = Path(record["cargo_home"])
+        runtime_root = Path(record["runtime_root"])
+        for path in (checkout, cargo_home, runtime_root):
+            self.assertFalse(path.exists() or path.is_symlink(), path)
+        for field in (
+            "checkout_removed_at",
+            "cargo_home_removed_at",
+            "runtime_root_removed_at",
+        ):
+            self.assertIn(field, record)
+        self.assert_main_checkout_and_cargo_removed(checkout)
+        self.assertEqual([runtime_root], self.removed_temporary_paths())
+        checkout_provider = next(
+            index
+            for index, command in enumerate(self.fake.commands)
+            if wrkslots_action(command, "remove")
+        )
+        cargo_provider = next(
+            index
+            for index, command in enumerate(self.fake.commands)
+            if "--ownerless-validate-cargo-home" in command
+        )
+        runtime_provider = next(
+            index
+            for index, command in enumerate(self.fake.commands)
+            if command[:2] == ["rm", "-rf"] and Path(command[-1]) == runtime_root
+        )
+        self.assertLess(checkout_provider, cargo_provider)
+        self.assertLess(cargo_provider, runtime_provider)
+
+    def test_main_refuses_mismatched_durable_cargo_target_before_any_cleanup(
+        self,
+    ) -> None:
+        real_finalize = start_unit.finalize_commit_status_publication
+        wrong_cargo = self.private_cargo_home().with_name(
+            "validate-cargo-durable-mismatch"
+        )
+        wrong_cargo.mkdir(parents=True)
+
+        def tamper_after_publication(*args: object, **kwargs: object):
+            updated = real_finalize(*args, **kwargs)
+            record_path = args[2]
+            assert isinstance(record_path, Path)
+            run_registry.update_record(record_path, cargo_home=str(wrong_cargo))
+            return updated
+
+        with mock.patch.object(
+            start_unit,
+            "finalize_commit_status_publication",
+            side_effect=tamper_after_publication,
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn("durable run record cargo_home", error)
+        self.assertIn("does not match this launch", error)
+        self.assertIsNotNone(self.fake.fresh)
+        assert self.fake.fresh is not None
+        self.assertTrue(self.fake.fresh.is_dir())
+        self.assertTrue(self.private_cargo_home().is_dir())
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        self.assertTrue(Path(record["runtime_root"]).is_dir())
+        self.assertEqual([], self.fake.removed)
+        self.assertFalse(
+            any(
+                field in record
+                for field in (
+                    "checkout_removed_at",
+                    "cargo_home_removed_at",
+                    "runtime_root_removed_at",
+                )
+            )
+        )
+
+    def test_main_refuses_mismatched_durable_checkout_before_any_cleanup(
+        self,
+    ) -> None:
+        real_finalize = start_unit.finalize_commit_status_publication
+        wrong_checkout = (
+            self.root
+            / "worktrees/validate/validate-fresh-durable-mismatch"
+        )
+        wrong_checkout.mkdir(parents=True)
+
+        def tamper_after_publication(*args: object, **kwargs: object):
+            updated = real_finalize(*args, **kwargs)
+            record_path = args[2]
+            assert isinstance(record_path, Path)
+            run_registry.update_record(record_path, checkout=str(wrong_checkout))
+            return updated
+
+        with mock.patch.object(
+            start_unit,
+            "finalize_commit_status_publication",
+            side_effect=tamper_after_publication,
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn("durable run record checkout", error)
+        self.assertIn("does not match this launch", error)
+        self.assertIsNotNone(self.fake.fresh)
+        assert self.fake.fresh is not None
+        self.assertTrue(self.fake.fresh.is_dir())
+        self.assertTrue(self.private_cargo_home().is_dir())
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        self.assertTrue(Path(record["runtime_root"]).is_dir())
+        self.assertEqual([], self.fake.removed)
+        self.assertFalse(
+            any(
+                field in record
+                for field in (
+                    "checkout_removed_at",
+                    "cargo_home_removed_at",
+                    "runtime_root_removed_at",
+                )
+            )
+        )
+
+    def test_main_fresh_cargo_census_retains_second_owner_between_legs(
+        self,
+    ) -> None:
+        second = run_registry.record_path(self.root, "validate-second-owner")
+        injected = False
+        protocol_writer_rejected = False
+
+        def add_owner_after_checkout(command: list[str], **kwargs: object):
+            nonlocal injected, protocol_writer_rejected
+            result = self.fake(command, **kwargs)
+            if not injected and wrkslots_action(command, "remove"):
+                injected = True
+                try:
+                    run_registry.write_record(
+                        second,
+                        {
+                            "schema_version": run_registry.SCHEMA_VERSION,
+                            "cargo_home": str(self.private_cargo_home()),
+                        },
+                    )
+                except run_registry.RecordLocked:
+                    protocol_writer_rejected = True
+                else:
+                    self.fail("a current writer entered during main cleanup")
+                # Model an unsupported pre-protocol writer bypassing the lock.
+                # The fresh in-transaction census is a second line of defence:
+                # it must observe the owner and retain the shared target.
+                second.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": run_registry.SCHEMA_VERSION,
+                            "cargo_home": str(self.private_cargo_home()),
+                        }
+                    )
+                    + "\n"
+                )
+            return result
+
+        rc, _output, error = self.invoke(["--", "full"], run=add_owner_after_checkout)
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertTrue(injected)
+        self.assertTrue(protocol_writer_rejected)
+        self.assertIn("not owned exclusively", error)
+        self.assertTrue(self.private_cargo_home().is_dir())
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        self.assertIn("checkout_removed_at", record)
+        self.assertNotIn("cargo_home_removed_at", record)
+        self.assertNotIn("runtime_root_removed_at", record)
+        self.assertTrue(Path(record["runtime_root"]).is_dir())
+        self.assertEqual([str(Path(record["checkout"]))], self.fake.removed)
+        self.assertFalse(
+            any(
+                "--ownerless-validate-cargo-home" in command
+                for command in self.fake.commands
+            )
+        )
+
+    def test_main_cargo_provider_failure_retains_cargo_and_runtime(self) -> None:
+        self.fake.ownerless_cargo_recovery_rc = 3
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn("ownerless validation recovery refused", error)
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        self.assertFalse(Path(record["checkout"]).exists())
+        self.assertTrue(self.private_cargo_home().is_dir())
+        self.assertTrue(Path(record["runtime_root"]).is_dir())
+        self.assertIn("checkout_removed_at", record)
+        self.assertNotIn("cargo_home_removed_at", record)
+        self.assertNotIn("runtime_root_removed_at", record)
+        self.assertEqual([str(Path(record["checkout"]))], self.fake.removed)
+
+    def test_main_cargo_success_with_dangling_path_is_not_removal(self) -> None:
+        def leave_dangling_cargo(command: list[str], **kwargs: object):
+            result = self.fake(command, **kwargs)
+            if "--ownerless-validate-cargo-home" in command:
+                self.private_cargo_home().symlink_to(
+                    self.root / "missing-cargo-target",
+                    target_is_directory=True,
+                )
+            return result
+
+        rc, _output, error = self.invoke(["--", "full"], run=leave_dangling_cargo)
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn("Cargo home still exists", error)
+        self.assertTrue(self.private_cargo_home().is_symlink())
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        self.assertIn("checkout_removed_at", record)
+        self.assertNotIn("cargo_home_removed_at", record)
+        self.assertNotIn("runtime_root_removed_at", record)
+        self.assertTrue(Path(record["runtime_root"]).is_dir())
 
     def test_child_exit_zero_cannot_override_canonical_not_validated(self) -> None:
         """Live #2087 regression: 57/57 nodes passed but authority refused it."""
@@ -14235,16 +14507,19 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", error)
         self.assertIn("ORPHANED-RECEIPT", error)
-        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed()
         archived = (
             self.root
             / "ignored/validate/orphaned-receipts/validate-test/.hermit-validate-ledger.jsonl"
         )
         self.assertTrue(archived.is_file(), "evidence must survive checkout removal")
-        self.assertIn(
-            self.root / "ignored/validate/cargo-homes/validate-cargo-abcd1234",
-            self.removed_temporary_paths(),
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
         )
+        self.assertEqual(
+            [Path(record["runtime_root"])], self.removed_temporary_paths()
+        )
+        self.assertNotIn(self.private_cargo_home(), self.removed_temporary_paths())
 
     def plant_orphan_receipt(self, rel: str = ".hermit-validate-ledger.jsonl") -> None:
         """Have the run write its receipt inside its own temp checkout."""
@@ -14261,7 +14536,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("NO-RECEIPT-PRODUCED", error)
         self.assertNotIn("ORPHANED-RECEIPT", error)
-        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed()
 
     def test_a_receipt_under_an_UNANTICIPATED_name_is_archived(self) -> None:
         """Why the test is SHAPE, not a whitelist of ledger filenames.
@@ -14277,7 +14552,7 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("ORPHANED-RECEIPT", error)
-        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed()
         self.assertTrue(
             (
                 self.root
@@ -14297,7 +14572,7 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("NO-RECEIPT-PRODUCED", error)
-        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed()
 
     def test_a_TRACKED_jsonl_in_a_submodule_is_not_an_orphan(self) -> None:
         """Trackedness belongs to the nested repository, not its parent.
@@ -14316,7 +14591,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("NO-RECEIPT-PRODUCED", error)
         self.assertNotIn("ORPHANED-RECEIPT", error)
-        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed()
 
     def test_a_scan_that_cannot_look_retains_rather_than_reclaims(self) -> None:
         """Fail-closed. A NO-RESULT is not a negative: if the tree cannot be
@@ -14361,7 +14636,7 @@ class StartUnitTest(unittest.TestCase):
         # satisfy the check. Retention is a separate question: this run left no
         # receipt in its own tree, so there is nothing to preserve and the tree
         # is reclaimed. Asserting retention here conflated the two.
-        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assert_main_checkout_and_cargo_removed()
 
 
 class RunCommandCheckKwarg(unittest.TestCase):

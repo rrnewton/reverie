@@ -135,6 +135,7 @@ class RunRecord(TypedDict, total=False):
     materialized_target: bool
     temporary_checkout: bool
     cargo_home: str
+    runtime_root: str
     log: str
     agent: str
     pr: int | None
@@ -191,6 +192,7 @@ class RunRecord(TypedDict, total=False):
     wrkslots_generation: int
     archived_orphaned_receipts: list[str]
     cargo_home_removed_at: str
+    runtime_root_removed_at: str
     host: str
     results: str
     cleanup_error: str | None
@@ -310,6 +312,7 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "branch",
         "temporary_checkout",
         "cargo_home",
+        "runtime_root",
         "pr",
         "parent_checkout_head",
         "github_executable",
@@ -354,6 +357,7 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "wrkslots_generation",
         "archived_orphaned_receipts",
         "cargo_home_removed_at",
+        "runtime_root_removed_at",
         "host",
         "termination_requests",
     }
@@ -366,6 +370,7 @@ _OPTIONAL_TEXT_FIELDS = frozenset(
         "source_checkout",
         "branch",
         "cargo_home",
+        "runtime_root",
         "parent_checkout_head",
         "pane_role",
         "e2e_result_root",
@@ -389,6 +394,7 @@ _OPTIONAL_TEXT_FIELDS = frozenset(
         "checkout_removed_at",
         "wrkslots_slot",
         "cargo_home_removed_at",
+        "runtime_root_removed_at",
         "host",
         "results",
         "cleanup_error",
