@@ -9362,6 +9362,132 @@ class StartUnitTest(unittest.TestCase):
             report["retained"],
         )
 
+    def test_sweep_removes_materialized_checkout_after_refused_admission(self) -> None:
+        fresh, record = self.managed_cleanup_record(
+            "materialized-admission-refused", state="unknown"
+        )
+        durable = start_unit.run_registry.read_record(record)
+        durable.update(
+            kind="validate",
+            target=SHA,
+            materialized_target=True,
+            agent="owner-checkout-watch",
+            started_at="2026-08-28T07:00:00+00:00",
+            producer=start_unit.run_registry.PRODUCER,
+            admission="ci-hub validate-lock",
+            pane_role="observer-only",
+            parent_checkout_head=None,
+            validate_lock_child_deadline_seconds=3600,
+            e2e_result_root=str(
+                self.root
+                / "ignored/validate/artifacts/materialized-admission-refused/e2e"
+            ),
+            safe_ci_dag_runner_log_dir=str(
+                self.root
+                / "ignored/validate/artifacts/materialized-admission-refused/dag"
+            ),
+            hermit_run_timeout_seconds=3239,
+            log=str(self.root / "ignored/validate/materialized-admission-refused.log"),
+            cargo_home=str(
+                self.root
+                / "ignored/validate/cargo-homes/validate-cargo-admission-refused"
+            ),
+            result="unknown",
+            detail="validation payload did not start",
+            exit_code=None,
+            final_validate_status=None,
+            admission_result={
+                "state": "refused",
+                "recorded_at": "2026-08-28T07:00:01+00:00",
+                "reason": "stale-base",
+                "exit_code": 3,
+            },
+        )
+        start_unit.run_registry.write_record(record, durable)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([str(fresh)], report["removed"], report)
+        self.assertFalse(fresh.exists())
+        self.assertEqual([], report["scorecard_handoffs"])
+        self.assertFalse(
+            start_unit.scorecard_handoff_path(
+                self.root, "validate-materialized-admission-refused"
+            ).exists()
+        )
+        self.assertIsInstance(
+            start_unit.run_registry.read_record(record).get("checkout_removed_at"),
+            str,
+        )
+
+    def test_sweep_retains_refused_admission_with_incomplete_cell_ledger(self) -> None:
+        fresh, record = self.managed_cleanup_record(
+            "materialized-admission-refused-ledger", state="unknown"
+        )
+        durable = start_unit.run_registry.read_record(record)
+        durable.update(
+            kind="validate",
+            target=SHA,
+            materialized_target=True,
+            agent="owner-checkout-watch",
+            started_at="2026-08-28T07:00:00+00:00",
+            producer=start_unit.run_registry.PRODUCER,
+            admission="ci-hub validate-lock",
+            pane_role="observer-only",
+            parent_checkout_head=None,
+            validate_lock_child_deadline_seconds=3600,
+            e2e_result_root=str(
+                self.root
+                / "ignored/validate/artifacts/materialized-admission-refused-ledger/e2e"
+            ),
+            safe_ci_dag_runner_log_dir=str(
+                self.root
+                / "ignored/validate/artifacts/materialized-admission-refused-ledger/dag"
+            ),
+            hermit_run_timeout_seconds=3239,
+            log=str(
+                self.root
+                / "ignored/validate/materialized-admission-refused-ledger.log"
+            ),
+            cargo_home=str(
+                self.root
+                / "ignored/validate/cargo-homes/validate-cargo-admission-refused-ledger"
+            ),
+            result="unknown",
+            detail="validation payload did not start",
+            exit_code=None,
+            final_validate_status=None,
+            admission_result={
+                "state": "refused",
+                "recorded_at": "2026-08-28T07:00:01+00:00",
+                "reason": "stale-base",
+                "exit_code": 3,
+            },
+            ledger_mirror={
+                "state": "failed",
+                "recorded_at": "2026-08-28T07:00:02+00:00",
+                "detail": "contradictory fixture must remain fail-closed",
+                "repository": start_unit.CELL_LEDGER_REPOSITORY,
+            },
+        )
+        start_unit.run_registry.write_record(record, durable)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(
+            any(
+                "cell ledger publication is incomplete" in row["reason"]
+                for row in report["retained"]
+            ),
+            report["retained"],
+        )
+
     def test_attach_after_inactive_sweep_retains_completion_then_publishes_ledger(self) -> None:
         record, fresh = self.materialized_attach_record()
         self.plant_completed_materialized_service_result(record)

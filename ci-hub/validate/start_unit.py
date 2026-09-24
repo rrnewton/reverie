@@ -5725,6 +5725,14 @@ def publish_recorded_scorecard_handoff(
         # result proves that no ledger row applies. Neither has a new local
         # scorecard file set to copy; older records retain their original path.
         return None
+    if cleanup_record_allows_removal_attempt(record, unit_absent=False):
+        # A typed admission refusal proves that the validation payload never
+        # started. A materialized checkout may already exist at that point,
+        # but there can be no generated scorecard to hand off. Requiring a
+        # writeback from an execution that admission prevented makes these
+        # disposable trees permanently unretirable. Keep this after the cell
+        # ledger branch so even a contradictory record remains fail-closed.
+        return None
     target = record.get("target")
     if not isinstance(target, str):
         raise RuntimeError("materialized scorecard handoff has no target commit")
