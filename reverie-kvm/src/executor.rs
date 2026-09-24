@@ -6569,35 +6569,32 @@ fn sendfile(
 ) -> i64 {
     // Linux syscall `int` arguments consume only the low descriptor word.
     let out_fd = args[0] as libc::c_int;
-    // Reject unusable outputs before unsupported-input routing. For modeled
-    // stdin, retain regular-input explicit-offset errors before returning EBADF.
-    if out_fd < 0 {
-        return negative_errno(libc::EBADF);
-    }
-    let mut stdin_error = None;
-    let out_file = match state.files.get(&out_fd) {
-        Some(file) => {
-            if let Err(error) = ensure_writable(file) {
-                return error;
+    // Validate outputs before unsupported-input routing, but retain readable
+    // regular-input explicit-offset errors before rejecting an unusable output.
+    let (out_file, output_error) = if out_fd < 0 {
+        (None, Some(negative_errno(libc::EBADF)))
+    } else {
+        match state.files.get(&out_fd) {
+            Some(file) => (Some(file), ensure_writable(file).err()),
+            None if is_open_standard(state, out_fd) => {
+                let error = if out_fd == libc::STDIN_FILENO {
+                    let stdin = state
+                        .stdin
+                        .as_ref()
+                        .expect("open standard input disappeared");
+                    ensure_writable(stdin).err()
+                } else {
+                    None
+                };
+                (None, error)
             }
-            Some(file)
+            None => (None, Some(negative_errno(libc::EBADF))),
         }
-        None if is_open_standard(state, out_fd) => {
-            if out_fd == libc::STDIN_FILENO {
-                let stdin = state
-                    .stdin
-                    .as_ref()
-                    .expect("open standard input disappeared");
-                stdin_error = ensure_writable(stdin).err();
-            }
-            None
-        }
-        None => return negative_errno(libc::EBADF),
     };
     let in_fd = args[1] as libc::c_int;
     let in_file = match resolve_sendfile_input(state, in_fd) {
         Ok(file) => file,
-        Err(error) => return stdin_error.unwrap_or(error),
+        Err(error) => return output_error.unwrap_or(error),
     };
     let in_host = in_file.as_raw_fd();
     let Ok(count) = usize::try_from(args[3]) else {
@@ -6605,7 +6602,7 @@ fn sendfile(
     };
     let count = count.min(MAX_HOST_IO);
     let offset_ptr = args[2];
-    if let Some(error) = stdin_error {
+    if let Some(error) = output_error {
         // Copying the explicit offset and verifying its signed input range
         // precede output access rejection on Linux. Preserve those errors for
         // supported readable inputs without probing or consuming any bytes.
@@ -21623,6 +21620,141 @@ mod tests {
             }
         }
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn sendfile_bad_outputs_preserve_regular_input_offset_errors() {
+        const OFFSET: u64 = 0x100;
+        const PIPE_FDS: u64 = 0x180;
+        const AVAILABLE: u64 = 0x200;
+        const INACCESSIBLE: u64 = 0xffff_ffff_ffff_f000;
+        const SENTINEL: &[u8] = b"output-sentinel";
+        let root = TestDir::new();
+        let source = root.0.join("source");
+        let destination = root.0.join("readonly-output");
+        std::fs::write(&source, b"abcdefghij").unwrap();
+        std::fs::write(&destination, b"unchanged").unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(3, std::fs::File::open(&source).unwrap());
+        state
+            .files
+            .insert(4, std::fs::File::open(&destination).unwrap());
+        state
+            .files
+            .get_mut(&3)
+            .unwrap()
+            .seek(std::io::SeekFrom::Start(3))
+            .unwrap();
+        state
+            .files
+            .get_mut(&4)
+            .unwrap()
+            .seek(std::io::SeekFrom::Start(2))
+            .unwrap();
+        // read_fd_to_end uses a buffer in the second guest page.
+        let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, libc::O_NONBLOCK as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let pipe: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        state
+            .files
+            .get_mut(&pipe[1])
+            .unwrap()
+            .write_all(SENTINEL)
+            .unwrap();
+        assert_eq!(close(&mut state, pipe[1] as u64), 0);
+        state
+            .files
+            .insert(90, std::fs::File::open(&destination).unwrap());
+        assert_eq!(close(&mut state, 90), 0);
+
+        for (out_fd, kind) in [
+            (90_i32, "closed"),
+            (4, "read-only regular"),
+            (pipe[0], "pipe read end"),
+            (-1, "negative descriptor"),
+        ] {
+            for high_word in [0, 0x5a5a_5a5a_0000_0000, 0xffff_ffff_0000_0000] {
+                let raw_output = high_word | u64::from(out_fd as u32);
+                for (name, pointer, offset, count, error) in [
+                    ("inaccessible", INACCESSIBLE, 2, 2, libc::EFAULT),
+                    ("inaccessible zero count", INACCESSIBLE, 2, 0, libc::EFAULT),
+                    ("negative", OFFSET, -1, 2, libc::EINVAL),
+                    ("minimum", OFFSET, i64::MIN, 2, libc::EINVAL),
+                    ("maximum overflow", OFFSET, i64::MAX, 1, libc::EINVAL),
+                    (
+                        "maximum minus one overflow",
+                        OFFSET,
+                        i64::MAX - 1,
+                        2,
+                        libc::EINVAL,
+                    ),
+                    (
+                        "maximum minus one valid",
+                        OFFSET,
+                        i64::MAX - 1,
+                        1,
+                        libc::EBADF,
+                    ),
+                    ("maximum zero count", OFFSET, i64::MAX, 0, libc::EBADF),
+                    ("negative zero count", OFFSET, -1, 0, libc::EINVAL),
+                    ("normal", OFFSET, 0, 2, libc::EBADF),
+                    ("normal zero count", OFFSET, 2, 0, libc::EBADF),
+                    ("null", 0, 2, 2, libc::EBADF),
+                    ("null zero count", 0, 2, 0, libc::EBADF),
+                ] {
+                    write_struct(&mut memory, OFFSET, &offset);
+                    let result = syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_sendfile,
+                        [raw_output, 3, pointer, count, 0, 0],
+                    );
+                    assert_eq!(
+                        state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+                        3,
+                        "{kind} {raw_output:#x} {name}: input cursor"
+                    );
+                    assert_eq!(
+                        state.files.get_mut(&4).unwrap().stream_position().unwrap(),
+                        2,
+                        "{kind} {raw_output:#x} {name}: output cursor"
+                    );
+                    assert_eq!(read_struct::<i64>(&memory, OFFSET), offset);
+                    assert_eq!(std::fs::read(&source).unwrap(), b"abcdefghij");
+                    assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged");
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_ioctl,
+                            [pipe[0] as u64, libc::FIONREAD, AVAILABLE, 0, 0, 0],
+                        ),
+                        0
+                    );
+                    assert_eq!(
+                        read_struct::<libc::c_int>(&memory, AVAILABLE),
+                        SENTINEL.len() as i32
+                    );
+                    assert_eq!(
+                        result,
+                        negative_errno(error),
+                        "{kind} {raw_output:#x} {name}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            read_fd_to_end(&mut memory, &mut state, pipe[0] as i64),
+            SENTINEL
+        );
     }
 
     #[test]
