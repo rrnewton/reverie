@@ -16279,6 +16279,211 @@ int main(int argc, char **argv) {
 }
 
 #[test]
+fn sendfile_readonly_stdin_matches_native_on_kvm() {
+    sendfile_stdin_matches_native_on_kvm(false);
+}
+
+#[test]
+fn sendfile_writable_stdin_matches_native_on_kvm() {
+    sendfile_stdin_matches_native_on_kvm(true);
+}
+
+fn sendfile_stdin_matches_native_on_kvm(writable: bool) {
+    use std::os::fd::AsRawFd;
+
+    let test = if writable {
+        "sendfile_writable_stdin_matches_native_on_kvm"
+    } else {
+        "sendfile_readonly_stdin_matches_native_on_kvm"
+    };
+    // Pin only this subprocess's raw fd 0. Configured writable guest stdin must
+    // be a different descriptor; an accidental host_write(0) must fail safely.
+    if std::env::var("REVERIE_SENDFILE_STDIN_CHILD").as_deref() != Ok(test) {
+        let mut statuses = Vec::new();
+        // Execute both independently even if one fails, retaining each exact
+        // native/KVM comparator and its diagnostic in the child output.
+        for runtime in ["direct", "tool"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([test, "--exact", "--test-threads=1", "--nocapture"])
+                .env("REVERIE_SENDFILE_STDIN_CHILD", test)
+                .env("REVERIE_SENDFILE_STDIN_RUNTIME", runtime)
+                .stdin(std::fs::File::open("/dev/null").unwrap())
+                .output()
+                .unwrap();
+            eprintln!("{runtime}: {}", String::from_utf8_lossy(&output.stderr));
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+            statuses.push(output.status.code());
+        }
+        assert_eq!(statuses, [Some(0), Some(0)], "isolated {test}");
+        return;
+    }
+    let tool_owned = match std::env::var("REVERIE_SENDFILE_STDIN_RUNTIME")
+        .unwrap()
+        .as_str()
+    {
+        "direct" => false,
+        "tool" => true,
+        runtime => panic!("unknown isolated runtime {runtime}"),
+    };
+    if !kvm_available("KVM sendfile modeled stdin test") {
+        return;
+    }
+    // SAFETY: F_GETFL only reads the subprocess's inherited descriptor flags.
+    assert_eq!(
+        unsafe { libc::fcntl(0, libc::F_GETFL) } & libc::O_ACCMODE,
+        libc::O_RDONLY
+    );
+    let directory = TestDirectory::new();
+    let source = directory.0.join("source");
+    let destination = directory.0.join("stdin");
+    std::fs::write(&source, b"abcdef").unwrap();
+    let executable = compile_c_program(
+        &directory.0,
+        "sendfile-stdin",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <sys/socket.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc != 3) return 1;
+  int writable = argv[2][0] == 'w';
+  int access = fcntl(0, F_GETFL);
+  if (access < 0 || (access & O_ACCMODE) != (writable ? O_RDWR : O_RDONLY))
+    return 2;
+  int source = open(argv[1], O_RDONLY);
+  if (source < 0) return 3;
+  const uint64_t outputs[] = {
+      UINT64_C(0x5a5a5a5a00000000), UINT64_C(0xffffffff00000000)};
+  if (!writable) {
+    int pipes[2], sockets[2];
+    if (pipe2(pipes, O_NONBLOCK) != 0 ||
+        socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sockets) != 0)
+      return 4;
+    int directory = open(".", O_RDONLY | O_DIRECTORY);
+    int proc = open("/proc/self/status", O_RDONLY);
+    if (directory < 0 || proc < 0) return 5;
+    const int inputs[] = {pipes[0], sockets[0], directory, STDOUT_FILENO, proc};
+    const int writers[] = {pipes[1], sockets[1], -1, -1, -1};
+    for (unsigned encoding = 0; encoding < 2; ++encoding) {
+      for (unsigned input = 0; input < 5; ++input) {
+        unsigned char sentinel = (unsigned char)(1 + encoding * 5 + input);
+        if (writers[input] >= 0 && write(writers[input], &sentinel, 1) != 1)
+          return 6;
+        errno = 0;
+        long result = syscall(SYS_sendfile, outputs[encoding],
+                              (uint32_t)inputs[input], NULL, 1);
+        int error = errno;
+        if (writers[input] >= 0) {
+          unsigned char observed = 0;
+          if (read(inputs[input], &observed, 1) != 1 || observed != sentinel)
+            return 7;
+        }
+        if (result != -1 || error != EBADF) return 20 + encoding * 5 + input;
+      }
+      for (unsigned explicit_offset = 0; explicit_offset < 2; ++explicit_offset) {
+        off_t offset = 2;
+        if (lseek(source, 1, SEEK_SET) != 1) return 8;
+        errno = 0;
+        long result = syscall(SYS_sendfile, outputs[encoding], (uint32_t)source,
+                              explicit_offset ? &offset : NULL, 2);
+        int error = errno;
+        if (lseek(source, 0, SEEK_CUR) != 1 || offset != 2) return 30 + encoding;
+        if (result != -1 || error != EBADF) return 32 + encoding;
+      }
+    }
+    if (close(pipes[0]) || close(pipes[1]) || close(sockets[0]) ||
+        close(sockets[1]) || close(directory) || close(proc)) return 9;
+  } else {
+    for (unsigned encoding = 0; encoding < 2; ++encoding) {
+      off_t offset = 2;
+      if (lseek(source, 1, SEEK_SET) != 1) return 10;
+      if (syscall(SYS_sendfile, outputs[encoding], (uint32_t)source,
+                  &offset, 3) != 3 || offset != 5 ||
+          lseek(source, 0, SEEK_CUR) != 1) return 40 + encoding;
+      if (syscall(SYS_sendfile, outputs[encoding], (uint32_t)source,
+                  NULL, 2) != 2 || lseek(source, 0, SEEK_CUR) != 3)
+        return 42 + encoding;
+    }
+  }
+  if (close(source)) return 11;
+  const char marker[] = "sendfile-stdin-ok\n";
+  if (write(1, marker, sizeof(marker)-1) != sizeof(marker)-1) return 12;
+  return 0;
+}
+"#,
+    );
+    if let Some(artifacts) = std::env::var_os("PR628_FD0_ARTIFACT_DIR") {
+        let artifacts = PathBuf::from(artifacts);
+        std::fs::create_dir_all(&artifacts).unwrap();
+        let name = format!("{test}-tool-{tool_owned}");
+        std::fs::copy(&executable, artifacts.join(&name)).unwrap();
+        std::fs::copy(
+            executable.with_extension("c"),
+            artifacts.join(format!("{name}.c")),
+        )
+        .unwrap();
+    }
+    let stdin = || {
+        std::fs::write(&destination, b"").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(writable)
+            .open(&destination)
+            .unwrap();
+        assert_ne!(file.as_raw_fd(), libc::STDIN_FILENO);
+        file
+    };
+    let mode = if writable { "writable" } else { "readonly" };
+    let expected_destination: &[u8] = if writable { b"cdebccdebc" } else { b"" };
+    let native = std::process::Command::new(&executable)
+        .arg(&source)
+        .arg(mode)
+        .current_dir(&directory.0)
+        .stdin(stdin())
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "native {mode}: {native:?}");
+    assert_eq!(native.stdout, b"sendfile-stdin-ok\n");
+    assert!(native.stderr.is_empty());
+    assert_eq!(std::fs::read(&destination).unwrap(), expected_destination);
+    eprintln!("native {mode} passed");
+    let image = std::fs::read(&executable).unwrap();
+    for repetition in 0..2 {
+        let mut backend = KvmBackend::new_with_stdin(256 * 1024 * 1024, Some(stdin())).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable.to_str().unwrap(), source.to_str().unwrap(), mode],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if tool_owned {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(
+            code, 0,
+            "{mode} tool_owned={tool_owned} repetition={repetition} stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert_eq!(stdout, native.stdout);
+        assert_eq!(stderr, native.stderr);
+        assert_eq!(std::fs::read(&destination).unwrap(), expected_destination);
+        eprintln!("{mode} tool_owned={tool_owned} repetition={repetition} passed");
+    }
+}
+
+#[test]
 fn storage_fd_syscalls_consume_low_words_on_kvm() {
     if !kvm_available("KVM storage fd low-word argument test") {
         return;

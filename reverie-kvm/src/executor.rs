@@ -6544,7 +6544,18 @@ fn sendfile(
             }
             Some(file)
         }
-        None if is_open_standard(state, out_fd) => None,
+        None if is_open_standard(state, out_fd) => {
+            if out_fd == libc::STDIN_FILENO {
+                let stdin = state
+                    .stdin
+                    .as_ref()
+                    .expect("open standard input disappeared");
+                if let Err(error) = ensure_writable(stdin) {
+                    return error;
+                }
+            }
+            None
+        }
         None => return negative_errno(libc::EBADF),
     };
     let in_fd = args[1] as libc::c_int;
@@ -6636,11 +6647,9 @@ fn sendfile(
         return copied as i64;
     }
 
-    // The output is not in the guest file table. A standard stream (stdout/
-    // stderr) is a legitimate sendfile target, but under KVM it has no host
-    // descriptor to hand the kernel: writes to it must flow through the same
-    // captured-output/host routing as write(2) so replay verification observes
-    // the bytes. Read the input here and re-emit through that mediated path.
+    // The output is a standard stream outside the guest file table. Route
+    // stdout/stderr through capture and stdin through its modeled descriptor,
+    // as write(2) does. Read the input and re-emit through that mediated path.
     // Anything that is neither a modeled fd nor a standard stream is EBADF.
     if !is_open_standard(state, out_fd) {
         return negative_errno(libc::EBADF);
@@ -6693,7 +6702,15 @@ fn sendfile(
                 host_write(out_fd, &bytes)
             }
         }
-        None => host_write(out_fd, &bytes),
+        None => {
+            let mut stdin = state
+                .stdin
+                .as_ref()
+                .expect("open standard input disappeared");
+            stdin
+                .write(&bytes)
+                .map_or_else(io_error, |count| count as i64)
+        }
     };
     if written < 0 {
         return written;
@@ -21405,6 +21422,170 @@ mod tests {
             "the writable-pipe fallback must not consume its input"
         );
         assert_eq!(close(&mut state, output_pipe[1] as u64), 0);
+    }
+
+    #[test]
+    fn sendfile_readonly_stdin_precedes_unsupported_input_routing() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [0x100, libc::O_NONBLOCK as u64, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let pipe: [libc::c_int; 2] = read_struct(&memory, 0x100);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    (libc::SOCK_STREAM | libc::SOCK_NONBLOCK) as u64,
+                    0,
+                    0x120,
+                    0,
+                    0,
+                ]
+            ),
+            0
+        );
+        let socket: [libc::c_int; 2] = read_struct(&memory, 0x120);
+        state
+            .files
+            .insert(20, std::fs::File::open(&root.0).unwrap());
+        state
+            .files
+            .insert(21, std::fs::File::open("/proc/self/status").unwrap());
+        for writer in [pipe[1], socket[1]] {
+            state
+                .files
+                .get_mut(&writer)
+                .unwrap()
+                .write_all(b"sentinel")
+                .unwrap();
+            assert_eq!(close(&mut state, writer as u64), 0);
+        }
+        assert_eq!(
+            ensure_writable(state.stdin.as_ref().unwrap()),
+            Err(negative_errno(libc::EBADF))
+        );
+        for raw_stdin in [0x5a5a_5a5a_0000_0000, 0xffff_ffff_0000_0000] {
+            for (input, kind) in [
+                (pipe[0], "pipe"),
+                (socket[0], "socket"),
+                (20, "directory"),
+                (libc::STDOUT_FILENO, "stdout"),
+                (21, "procfs"),
+            ] {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_sendfile,
+                        [raw_stdin, input as u64, 0, 1, 0, 0]
+                    ),
+                    negative_errno(libc::EBADF),
+                    "read-only stdin {raw_stdin:#x} with {kind} input"
+                );
+            }
+        }
+        for reader in [pipe[0], socket[0]] {
+            assert_eq!(
+                read_fd_to_end(&mut memory, &mut state, reader as i64),
+                b"sentinel"
+            );
+        }
+        assert_eq!(
+            state.files.get_mut(&21).unwrap().stream_position().unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn sendfile_readonly_stdin_preserves_regular_input_cursor() {
+        let root = TestDir::new();
+        let source = root.0.join("source");
+        std::fs::write(&source, b"abcdef").unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(3, std::fs::File::open(source).unwrap());
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        for raw_stdin in [0x5a5a_5a5a_0000_0000, 0xffff_ffff_0000_0000] {
+            for offset in [0, 0x100] {
+                state
+                    .files
+                    .get_mut(&3)
+                    .unwrap()
+                    .seek(std::io::SeekFrom::Start(1))
+                    .unwrap();
+                write_struct(&mut memory, 0x100, &2_i64);
+                let result = syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_sendfile,
+                    [raw_stdin, 3, offset, 2, 0, 0],
+                );
+                assert_eq!(
+                    state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+                    1,
+                    "read-only stdin {raw_stdin:#x} must reject before consuming regular input"
+                );
+                assert_eq!(read_struct::<i64>(&memory, 0x100), 2);
+                assert_eq!(result, negative_errno(libc::EBADF));
+            }
+        }
+    }
+
+    #[test]
+    fn sendfile_writable_stdin_routes_to_modeled_descriptor() {
+        let root = TestDir::new();
+        let source = root.0.join("source");
+        let destination = root.0.join("modeled-stdin");
+        std::fs::write(&source, b"abcdef").unwrap();
+        for capture in [false, true] {
+            let mut state = test_state(&root.0);
+            state.files.insert(3, std::fs::File::open(&source).unwrap());
+            state.stdin = Some(std::fs::File::create(&destination).unwrap());
+            assert_ne!(
+                state.stdin.as_ref().unwrap().as_raw_fd(),
+                libc::STDIN_FILENO
+            );
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let mut output = CapturedOutput::default();
+            for raw_stdin in [0x5a5a_5a5a_0000_0000, 0xffff_ffff_0000_0000] {
+                state
+                    .files
+                    .get_mut(&3)
+                    .unwrap()
+                    .seek(std::io::SeekFrom::Start(1))
+                    .unwrap();
+                write_struct(&mut memory, 0x100, &2_i64);
+                for (offset, count) in [(0x100, 3), (0, 2)] {
+                    assert_eq!(
+                        sendfile(
+                            &mut memory,
+                            &state,
+                            &[raw_stdin, 3, offset, count, 0, 0],
+                            capture.then_some(&mut output),
+                        ),
+                        count as i64,
+                        "writable stdin {raw_stdin:#x}, capture={capture}, offset={offset:#x}"
+                    );
+                    assert_eq!(read_struct::<i64>(&memory, 0x100), 5);
+                    assert_eq!(
+                        state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+                        if offset == 0 { 3 } else { 1 }
+                    );
+                }
+            }
+            assert_eq!(std::fs::read(&destination).unwrap(), b"cdebccdebc");
+            assert_eq!(output.take(), (Vec::new(), Vec::new()));
+        }
     }
 
     #[test]
