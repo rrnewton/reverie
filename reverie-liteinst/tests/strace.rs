@@ -170,6 +170,85 @@ fn first_sigsys_installs_a_hook_for_later_calls() {
     assert_eq!(output.stdout, b"calls=32 traps=1 hooks=32\n");
 }
 
+fn run_pc_relative_guest(hooked: bool) -> Output {
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-trap-count-guest");
+    let directory = tempfile::tempdir().unwrap();
+    let mut command = if hooked {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-strace"));
+        command.arg(binary).arg("pc-relative-hooked");
+        command.env("REVERIE_LITEINST_PRELOAD", preload_path());
+        enable_concurrent_patch_testing(&mut command);
+        command
+    } else {
+        let mut command = Command::new(binary);
+        command.arg("pc-relative-native");
+        command
+    };
+    command
+        .env_remove("LD_PRELOAD")
+        .env_remove("REVERIE_LITEINST_HOST_RUNTIME")
+        .env_remove("REVERIE_LITEINST_TOOL")
+        .env_remove("REVERIE_PRELOAD_TOOL")
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(File::create(directory.path().join("stdout")).unwrap())
+        .stderr(File::create(directory.path().join("stderr")).unwrap());
+    // SAFETY: only async-signal-safe setrlimit calls run between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            for (resource, value) in [(libc::RLIMIT_CORE, 0), (libc::RLIMIT_FSIZE, 1024 * 1024)] {
+                let limit = libc::rlimit {
+                    rlim_cur: value,
+                    rlim_max: value,
+                };
+                if libc::setrlimit(resource, &limit) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            result => {
+                // SAFETY: the live child's dedicated process group is ours.
+                unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+                let _ = child.wait();
+                panic!(
+                    "pc-relative guest exceeded its deadline or could not be waited: {result:?}"
+                );
+            }
+        }
+    };
+    Output {
+        status,
+        stdout: std::fs::read(directory.path().join("stdout")).unwrap(),
+        stderr: std::fs::read(directory.path().join("stderr")).unwrap(),
+    }
+}
+
+#[test]
+fn syscall_hook_preserves_displaced_self_relative_address() {
+    let native = run_pc_relative_guest(false);
+    assert!(native.status.success(), "native oracle: {native:?}");
+    assert_eq!(native.stderr, b"");
+    assert_eq!(
+        native.stdout,
+        b"pc-relative native: calls=32 addresses=32\n"
+    );
+
+    let hooked = run_pc_relative_guest(true);
+    assert!(hooked.status.success(), "hooked guest: {hooked:?}");
+    assert_eq!(
+        hooked.stdout,
+        b"pc-relative hooked: calls=32 addresses=32 traps=1 hooks=32\n"
+    );
+}
+
 #[test]
 fn compatibility_tool_emits_stable_events() {
     let first = run_compat_guest("/bin/echo", &["hello"]);
