@@ -1,0 +1,18 @@
+{
+  "schema": "deep-research-trust-gate-result/v1",
+  "timestamp": "2026-09-24T23:37:07Z",
+  "threshold": 0.95,
+  "verified_pct": 1.0,
+  "coverage": 1.0,
+  "blocked": false,
+  "reasons": ["pass"],
+  "failed_findings": [],
+  "finding_count": 38,
+  "evidence_item_count": 67,
+  "actionable_inventory_rows": 28,
+  "design_sha256": "2c443f583faf18e2baa54345536b101f5ec1b91ed393788c3a716576c2e89e72",
+  "findings_sha256": "b9a00bca41937b9e0f9770fdf04042a5dae2d36495d59adae035da57e67bde38",
+  "verification_sha256": "899c545fad45b83dcb978a4926a80066da2b8e7bb697902697797179e750be49",
+  "actionable_inventory_sha256": "a72d2c1d22ce3203fc016fcd85186568967197c55e7bdbcb9cbe50ac4fae0b4b",
+  "command": "TRUST_GATE_TEAM_DIR=experiments/narf-hermit-poc-design-20260924/evidence bash /home/newton/.llms/skills/claude-templates/deep-research/references/scripts/trust_gate.sh experiments/narf-hermit-poc-design-20260924/design.md --eval-mode"
+}
