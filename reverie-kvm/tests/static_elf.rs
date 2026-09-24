@@ -16493,6 +16493,491 @@ int main(int argc, char **argv) {
 }
 
 #[test]
+fn sendfile_input_offset_errors_match_native_on_direct_kvm() {
+    sendfile_input_offset_errors_match_native_on_kvm(false);
+}
+
+#[test]
+fn sendfile_input_offset_errors_match_native_on_tool_kvm() {
+    sendfile_input_offset_errors_match_native_on_kvm(true);
+}
+
+fn sendfile_input_offset_errors_match_native_on_kvm(tool_owned: bool) {
+    assert!(
+        kvm_available("KVM sendfile input/offset error precedence"),
+        "the complete sendfile input/offset matrix requires usable KVM"
+    );
+
+    let directory = TestDirectory::new();
+    let source = directory.0.join("source");
+    let destination = directory.0.join("readonly-output");
+    let input_directory = directory.0.join("input-directory");
+    std::fs::create_dir(&input_directory).unwrap();
+    std::fs::write(&source, b"abcdef").unwrap();
+    std::fs::write(&destination, b"unchanged-output\n").unwrap();
+    let executable = compile_c_program(
+        &directory.0,
+        "sendfile-input-offset-errors",
+        r#"#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+_Static_assert(sizeof(long)==8 && sizeof(off_t)==8,"x86-64 sendfile ABI required");
+enum ptrkind { CELL, BAD, NULLPTR };
+struct row { const char *name; enum ptrkind kind; int64_t offset; size_t count; };
+static const struct row rows[]={
+    {"inaccessible-two",BAD,2,2},
+    {"inaccessible-zero",BAD,2,0},
+    {"valid-two",CELL,2,2},
+    {"valid-zero",CELL,2,0},
+    {"negative-range-two",CELL,-1,2},
+    {"negative-range-zero",CELL,-1,0},
+    {"null-two",NULLPTR,2,2},
+    {"null-zero",NULLPTR,2,0},
+};
+static int exact_file(int fd,const char *expected) {
+    char bytes[32];
+    size_t n=strlen(expected);
+    ssize_t got=pread(fd,bytes,sizeof(bytes),0);
+    return got==(ssize_t)n && memcmp(bytes,expected,n)==0;
+}
+static int consume_sentinel(int fd,char expected) {
+    char first=0,extra=0;
+    ssize_t got=read(fd,&first,1);
+    errno=0;
+    ssize_t tail=read(fd,&extra,1);
+    int saved=errno;
+    return got==1 && first==expected && tail==-1 && saved==EAGAIN;
+}
+static int closed(int fd) {
+    errno=0;
+    int rc=fcntl(fd,F_GETFD);
+    int saved=errno;
+    return rc==-1 && saved==EBADF;
+}
+int main(int argc,char **argv) {
+    if(argc!=4) return 90;
+    int rd=open(argv[1],O_RDONLY|O_CLOEXEC);
+    int wr=open(argv[1],O_WRONLY|O_CLOEXEC);
+    int path=open(argv[1],O_PATH|O_CLOEXEC);
+    int ro=open(argv[2],O_RDONLY|O_CLOEXEC);
+    int directory=open(argv[3],O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+    int inp[2],outp[2],socks[2];
+    if(rd<0||wr<0||path<0||ro<0||directory<0||
+       pipe2(inp,O_CLOEXEC|O_NONBLOCK)<0||pipe2(outp,O_CLOEXEC|O_NONBLOCK)<0||
+       socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0,socks)<0) {
+        perror("setup");return 91;
+    }
+    int badin=dup(rd),badout=dup(ro);
+    if(badin<0||badout<0||close(badin)<0||close(badout)<0) return 92;
+    int inputs[]={badin,-1,rd,wr,path,inp[0],inp[1],socks[0],directory};
+    const char *input_names[]={"closed-positive","negative","readonly-regular","writeonly-regular","opath-regular","pipe-read","pipe-write","socket","directory"};
+    int outputs[]={badout,ro,outp[0]};
+    const char *output_names[]={"closed-positive","readonly-regular","pipe-read"};
+    unsigned total=0,invariant_failures=0;
+    for(size_t i=0;i<sizeof(inputs)/sizeof(inputs[0]);i++) {
+        for(size_t o=0;o<sizeof(outputs)/sizeof(outputs[0]);o++) {
+            for(size_t r=0;r<sizeof(rows)/sizeof(rows[0]);r++) {
+                const struct row *row=&rows[r];
+                int64_t cell=row->offset;
+                uintptr_t ptr=row->kind==CELL?(uintptr_t)&cell:row->kind==BAD?2:0;
+                if(lseek(rd,1,SEEK_SET)!=1||lseek(wr,1,SEEK_SET)!=1||lseek(ro,2,SEEK_SET)!=2||
+                   lseek(directory,0,SEEK_SET)!=0||write(inp[1],"I",1)!=1||
+                   write(outp[1],"O",1)!=1||write(socks[1],"S",1)!=1) return 93;
+                errno=0;
+                long result=syscall(SYS_sendfile,(long)outputs[o],(long)inputs[i],ptr,row->count);
+                int saved_errno=errno;
+                off_t rdpos=lseek(rd,0,SEEK_CUR),wrpos=lseek(wr,0,SEEK_CUR);
+                off_t ropos=lseek(ro,0,SEEK_CUR),dirpos=lseek(directory,0,SEEK_CUR);
+                int pipe_input_unchanged=consume_sentinel(inp[0],'I');
+                int pipe_output_unchanged=consume_sentinel(outp[0],'O');
+                int socket_unchanged=consume_sentinel(socks[0],'S');
+                int unchanged=rdpos==1&&wrpos==1&&ropos==2&&dirpos==0&&cell==row->offset&&
+                    exact_file(rd,"abcdef")&&exact_file(ro,"unchanged-output\n")&&
+                    pipe_input_unchanged&&pipe_output_unchanged&&socket_unchanged&&
+                    closed(badin)&&closed(badout);
+                total++;
+                invariant_failures+=!(result==-1&&unchanged);
+                printf("{\"input\":\"%s\",\"output\":\"%s\",\"case\":\"%s\","
+                       "\"pointer_kind\":\"%s\",\"offset\":%" PRId64 ",\"count\":%zu,"
+                       "\"result\":%ld,\"errno\":%d,\"unchanged\":%s}\n",
+                       input_names[i],output_names[o],row->name,
+                       row->kind==CELL?"cell":row->kind==BAD?"inaccessible":"null",
+                       row->offset,row->count,result,saved_errno,unchanged?"true":"false");
+            }
+        }
+    }
+    printf("{\"summary\":true,\"total\":%u,\"invariant_failures\":%u}\n",total,invariant_failures);
+    return invariant_failures?1:0;
+}
+"#,
+    );
+    let route = if tool_owned { "tool" } else { "direct" };
+    let artifacts = std::env::var_os("PR628_F2_ARTIFACT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| directory.0.join("observed"));
+    std::fs::create_dir_all(&artifacts).unwrap();
+    std::fs::copy(&executable, artifacts.join(format!("{route}.elf"))).unwrap();
+    std::fs::copy(
+        executable.with_extension("c"),
+        artifacts.join(format!("{route}.c")),
+    )
+    .unwrap();
+    let save = |name: &str, code: Option<i32>, stdout: &[u8], stderr: &[u8]| {
+        std::fs::write(artifacts.join(format!("{route}.{name}.stdout")), stdout).unwrap();
+        std::fs::write(artifacts.join(format!("{route}.{name}.stderr")), stderr).unwrap();
+        std::fs::write(
+            artifacts.join(format!("{route}.{name}.exit-code")),
+            format!("{code:?}\n"),
+        )
+        .unwrap();
+    };
+    let native = std::process::Command::new(&executable)
+        .arg(&source)
+        .arg(&destination)
+        .arg(&input_directory)
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    save(
+        "native",
+        native.status.code(),
+        &native.stdout,
+        &native.stderr,
+    );
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert!(native.stderr.is_empty());
+    assert_eq!(
+        native
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .count(),
+        217
+    );
+    assert!(
+        native
+            .stdout
+            .ends_with(b"{\"summary\":true,\"total\":216,\"invariant_failures\":0}\n")
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), b"abcdef");
+    assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged-output\n");
+
+    let image = std::fs::read(&executable).unwrap();
+    for repetition in 0..2 {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[
+                    executable.to_str().unwrap(),
+                    source.to_str().unwrap(),
+                    destination.to_str().unwrap(),
+                    input_directory.to_str().unwrap(),
+                ],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr, callbacks) = if tool_owned {
+            let (log, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            let calls = log
+                .syscalls()
+                .iter()
+                .filter(|name| name.as_str() == "sendfile")
+                .count();
+            (code, stdout, stderr, Some(calls))
+        } else {
+            let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+            (code, stdout, stderr, None)
+        };
+        save(&format!("guest-{repetition}"), Some(code), &stdout, &stderr);
+        if let Some(calls) = callbacks {
+            std::fs::write(
+                artifacts.join(format!("{route}.guest-{repetition}.sendfile-callbacks")),
+                format!("{calls}\n"),
+            )
+            .unwrap();
+            assert_eq!(calls, 216, "repetition={repetition}");
+        }
+        assert_eq!(
+            code, 0,
+            "{route} repetition={repetition} stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert_eq!(stdout, native.stdout, "{route} repetition={repetition}");
+        assert_eq!(stderr, native.stderr, "{route} repetition={repetition}");
+        assert_eq!(std::fs::read(&source).unwrap(), b"abcdef");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged-output\n");
+    }
+}
+
+#[test]
+fn sendfile_unsupported_offset_ranges_match_native_on_direct_kvm() {
+    sendfile_unsupported_offset_ranges_match_native_on_kvm(false);
+}
+
+#[test]
+fn sendfile_unsupported_offset_ranges_match_native_on_tool_kvm() {
+    sendfile_unsupported_offset_ranges_match_native_on_kvm(true);
+}
+
+fn sendfile_unsupported_offset_ranges_match_native_on_kvm(tool_owned: bool) {
+    assert!(
+        kvm_available("KVM sendfile unsupported-input offset/count precedence"),
+        "the complete sendfile unsupported-input range matrix requires usable KVM"
+    );
+
+    let directory = TestDirectory::new();
+    let source = directory.0.join("source");
+    let destination = directory.0.join("readonly-output");
+    let input_directory = directory.0.join("input-directory");
+    std::fs::create_dir(&input_directory).unwrap();
+    std::fs::write(&source, b"abcdef").unwrap();
+    std::fs::write(&destination, b"unchanged-output\n").unwrap();
+    let executable = compile_c_program(
+        &directory.0,
+        "sendfile-unsupported-offset-ranges",
+        r#"#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+_Static_assert(sizeof(long) == 8 && sizeof(off_t) == 8 && sizeof(size_t) == 8,
+               "64-bit Linux sendfile ABI required");
+enum ptrkind { CELL, BAD, NULLPTR };
+struct row { const char *name; enum ptrkind kind; int64_t offset; uint64_t count; };
+#define FOUR_OFFSETS(label, count_value) \
+    {"negative-" label, CELL, -1, count_value}, \
+    {"zero-" label, CELL, 0, count_value}, \
+    {"two-" label, CELL, 2, count_value}, \
+    {"max-" label, CELL, INT64_MAX, count_value}
+static const struct row rows[] = {
+    FOUR_OFFSETS("count-zero", UINT64_C(0)),
+    FOUR_OFFSETS("count-two", UINT64_C(2)),
+    FOUR_OFFSETS("count-int64-max", (uint64_t)INT64_MAX),
+    FOUR_OFFSETS("count-uint64-max", UINT64_MAX),
+    {"null-count-zero", NULLPTR, 2, 0},
+    {"null-count-two", NULLPTR, 2, 2},
+    {"null-count-int64-max", NULLPTR, 2, (uint64_t)INT64_MAX},
+    {"null-count-uint64-max", NULLPTR, 2, UINT64_MAX},
+    {"inaccessible-count-zero", BAD, 2, 0},
+    {"inaccessible-count-two", BAD, 2, 2},
+    {"inaccessible-count-int64-max", BAD, 2, (uint64_t)INT64_MAX},
+    {"inaccessible-count-uint64-max", BAD, 2, UINT64_MAX},
+};
+_Static_assert(sizeof(rows)/sizeof(rows[0]) == 24, "matrix must retain every row");
+static int exact_file(int fd, const char *expected) {
+    char bytes[32];
+    size_t n = strlen(expected);
+    ssize_t got = pread(fd, bytes, sizeof(bytes), 0);
+    return got == (ssize_t)n && memcmp(bytes, expected, n) == 0;
+}
+static int consume_sentinel(int fd, char expected) {
+    char first = 0, extra = 0;
+    ssize_t got = read(fd, &first, 1);
+    errno = 0;
+    ssize_t tail = read(fd, &extra, 1);
+    int saved = errno;
+    return got == 1 && first == expected && tail == -1 && saved == EAGAIN;
+}
+static int closed_fd(int fd) {
+    errno = 0;
+    int result = fcntl(fd, F_GETFD);
+    int saved = errno;
+    return result == -1 && saved == EBADF;
+}
+static const char *truth(int value) { return value ? "true" : "false"; }
+int main(int argc, char **argv) {
+    if (argc != 4) return 90;
+    int rd = open(argv[1], O_RDONLY | O_CLOEXEC);
+    int ro = open(argv[2], O_RDONLY | O_CLOEXEC);
+    int directory = open(argv[3], O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int directory_path = open(argv[3], O_PATH | O_DIRECTORY | O_CLOEXEC);
+    int inp[2], outp[2], socks[2];
+    if (rd < 0 || ro < 0 || directory < 0 || directory_path < 0 ||
+        pipe2(inp, O_CLOEXEC | O_NONBLOCK) < 0 ||
+        pipe2(outp, O_CLOEXEC | O_NONBLOCK) < 0 ||
+        socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, socks) < 0) {
+        perror("setup"); return 91;
+    }
+    int badout = dup(ro);
+    struct stat path_before;
+    int path_flags = fcntl(directory_path, F_GETFL);
+    if (badout < 0 || close(badout) < 0 || path_flags < 0 ||
+        fstat(directory_path, &path_before) < 0) return 92;
+    const int inputs[] = {directory, directory_path, inp[0], socks[0]};
+    const char *input_names[] = {"directory-readonly", "directory-opath", "pipe-read", "socket"};
+    const int outputs[] = {badout, ro, outp[0]};
+    const char *output_names[] = {"closed-positive", "readonly-regular", "pipe-read"};
+    unsigned total = 0, invariant_failures = 0;
+    for (size_t i = 0; i < sizeof(inputs)/sizeof(inputs[0]); ++i) {
+        for (size_t o = 0; o < sizeof(outputs)/sizeof(outputs[0]); ++o) {
+            for (size_t r = 0; r < sizeof(rows)/sizeof(rows[0]); ++r) {
+                const struct row *row = &rows[r];
+                int64_t cell = row->offset;
+                uintptr_t ptr = row->kind == CELL ? (uintptr_t)&cell : row->kind == BAD ? 2 : 0;
+                if (lseek(rd, 1, SEEK_SET) != 1 || lseek(ro, 2, SEEK_SET) != 2 ||
+                    lseek(directory, 0, SEEK_SET) != 0 || write(inp[1], "I", 1) != 1 ||
+                    write(outp[1], "O", 1) != 1 || write(socks[1], "S", 1) != 1) return 93;
+                errno = 0;
+                long result = syscall(SYS_sendfile, (long)outputs[o], (long)inputs[i], ptr, row->count);
+                int saved_errno = errno;
+                off_t rdpos = lseek(rd, 0, SEEK_CUR), ropos = lseek(ro, 0, SEEK_CUR);
+                off_t dirpos = lseek(directory, 0, SEEK_CUR);
+                int pipe_input_unchanged = consume_sentinel(inp[0], 'I');
+                int pipe_output_unchanged = consume_sentinel(outp[0], 'O');
+                int socket_unchanged = consume_sentinel(socks[0], 'S');
+                struct stat path_after;
+                int path_unchanged = fstat(directory_path, &path_after) == 0 &&
+                    path_after.st_dev == path_before.st_dev && path_after.st_ino == path_before.st_ino &&
+                    path_after.st_mode == path_before.st_mode && fcntl(directory_path, F_GETFL) == path_flags;
+                int files_unchanged = exact_file(rd, "abcdef") && exact_file(ro, "unchanged-output\n");
+                int cursors_unchanged = rdpos == 1 && ropos == 2 && dirpos == 0;
+                int cell_unchanged = cell == row->offset;
+                int closed_unchanged = closed_fd(badout);
+                int unchanged = cursors_unchanged && cell_unchanged && files_unchanged && path_unchanged &&
+                    pipe_input_unchanged && pipe_output_unchanged && socket_unchanged && closed_unchanged;
+                ++total;
+                invariant_failures += !(result == -1 && unchanged);
+                printf("{\"input\":\"%s\",\"output\":\"%s\",\"case\":\"%s\","
+                       "\"pointer_kind\":\"%s\",\"offset\":%" PRId64 ",\"count\":%" PRIu64 ","
+                       "\"result\":%ld,\"errno\":%d,\"unchanged\":%s,"
+                       "\"cursors_unchanged\":%s,\"cell_unchanged\":%s,\"files_unchanged\":%s,"
+                       "\"opath_identity_unchanged\":%s,\"closed_output_unchanged\":%s,"
+                       "\"pipe_input_unchanged\":%s,\"pipe_output_unchanged\":%s,\"socket_unchanged\":%s}\n",
+                       input_names[i], output_names[o], row->name,
+                       row->kind == CELL ? "cell" : row->kind == BAD ? "inaccessible" : "null",
+                       row->offset, row->count, result, saved_errno, truth(unchanged),
+                       truth(cursors_unchanged), truth(cell_unchanged), truth(files_unchanged),
+                       truth(path_unchanged), truth(closed_unchanged), truth(pipe_input_unchanged),
+                       truth(pipe_output_unchanged), truth(socket_unchanged));
+            }
+        }
+    }
+    printf("{\"summary\":true,\"total\":%u,\"invariant_failures\":%u}\n", total, invariant_failures);
+    return invariant_failures || total != 288 ? 1 : 0;
+}
+"#,
+    );
+    let route = if tool_owned { "tool" } else { "direct" };
+    let artifacts = std::env::var_os("PR628_F2_ARTIFACT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| directory.0.join("observed"))
+        .join("unsupported-offset-ranges");
+    std::fs::create_dir_all(&artifacts).unwrap();
+    std::fs::copy(&executable, artifacts.join(format!("{route}.elf"))).unwrap();
+    std::fs::copy(
+        executable.with_extension("c"),
+        artifacts.join(format!("{route}.c")),
+    )
+    .unwrap();
+    let save = |name: &str, code: Option<i32>, stdout: &[u8], stderr: &[u8]| {
+        std::fs::write(artifacts.join(format!("{route}.{name}.stdout")), stdout).unwrap();
+        std::fs::write(artifacts.join(format!("{route}.{name}.stderr")), stderr).unwrap();
+        std::fs::write(
+            artifacts.join(format!("{route}.{name}.exit-code")),
+            format!("{code:?}\n"),
+        )
+        .unwrap();
+    };
+    let native = std::process::Command::new(&executable)
+        .arg(&source)
+        .arg(&destination)
+        .arg(&input_directory)
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    save(
+        "native",
+        native.status.code(),
+        &native.stdout,
+        &native.stderr,
+    );
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert!(native.stderr.is_empty());
+    assert_eq!(
+        native
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .count(),
+        289
+    );
+    assert!(
+        native
+            .stdout
+            .ends_with(b"{\"summary\":true,\"total\":288,\"invariant_failures\":0}\n")
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), b"abcdef");
+    assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged-output\n");
+
+    let image = std::fs::read(&executable).unwrap();
+    for repetition in 0..2 {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[
+                    executable.to_str().unwrap(),
+                    source.to_str().unwrap(),
+                    destination.to_str().unwrap(),
+                    input_directory.to_str().unwrap(),
+                ],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr, callbacks) = if tool_owned {
+            let (log, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            let calls = log
+                .syscalls()
+                .iter()
+                .filter(|name| name.as_str() == "sendfile")
+                .count();
+            (code, stdout, stderr, Some(calls))
+        } else {
+            let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+            (code, stdout, stderr, None)
+        };
+        save(&format!("guest-{repetition}"), Some(code), &stdout, &stderr);
+        if let Some(calls) = callbacks {
+            std::fs::write(
+                artifacts.join(format!("{route}.guest-{repetition}.sendfile-callbacks")),
+                format!("{calls}\n"),
+            )
+            .unwrap();
+            assert_eq!(calls, 288, "repetition={repetition}");
+        }
+        assert_eq!(
+            code, 0,
+            "{route} repetition={repetition} stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert_eq!(stdout, native.stdout, "{route} repetition={repetition}");
+        assert_eq!(stderr, native.stderr, "{route} repetition={repetition}");
+        assert_eq!(std::fs::read(&source).unwrap(), b"abcdef");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged-output\n");
+    }
+}
+
+#[test]
 fn sendfile_readonly_stdin_matches_native_on_kvm() {
     sendfile_stdin_matches_native_on_kvm(false);
 }
