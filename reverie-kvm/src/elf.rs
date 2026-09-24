@@ -765,6 +765,10 @@ pub(crate) struct LoadedStaticElf {
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-228): Review caller-provided deterministic random seed state.
     pub random_seed: u64,
+    /// Position in this task's deterministic getrandom byte stream. A new
+    /// fork/thread starts at zero under its own virtual TID; exec preserves
+    /// the caller's position. Only successful copyout advances the stream.
+    pub getrandom_offset: u64,
     /// Linux task name (`comm`), including the terminating NUL byte.
     ///
     /// This is per-thread state: fork and clone inherit the caller's value,
@@ -951,6 +955,7 @@ impl LoadedStaticElf {
             logical_clock_ns: self.logical_clock_ns,
             umask: self.umask,
             random_seed: self.random_seed,
+            getrandom_offset: 0,
             thread_name: self.thread_name,
             thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(self.thread_name)),
             thp_disabled: std::sync::Arc::new(AtomicU8::new(
@@ -1147,6 +1152,7 @@ impl LoadedStaticElf {
         self.signal_dequeue_failure = previous.signal_dequeue_failure;
         self.umask = previous.umask;
         self.random_seed = previous.random_seed;
+        self.getrandom_offset = previous.getrandom_offset;
         // `thread_name` intentionally remains the replacement image's name.
         self.thp_disabled = thp_disabled;
         self.keep_capabilities = false;
@@ -1523,6 +1529,7 @@ fn load_executable(
         logical_clock_ns: 0,
         umask: 0o022,
         random_seed: 0,
+        getrandom_offset: 0,
         thread_name,
         thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(thread_name)),
         thp_disabled: std::sync::Arc::new(AtomicU8::new(0)),

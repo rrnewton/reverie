@@ -1759,13 +1759,15 @@ impl KvmBackend {
 
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-228): Review the KVM random-seed configuration API.
-    /// Configure the deterministic seed used by virtual random devices.
+    /// Configure the deterministic seed used by getrandom and virtual random devices.
+    /// Configuring an installed image starts its getrandom stream at byte zero.
     pub fn set_random_seed(&mut self, seed: u64) -> Result<()> {
         let loaded = self
             .static_elf
             .as_mut()
             .ok_or(Error::StaticElfNotInstalled)?;
         loaded.random_seed = seed;
+        loaded.getrandom_offset = 0;
         Ok(())
     }
 
@@ -2328,15 +2330,23 @@ impl KvmBackend {
                 else {
                     return Ok(ProcessActionOutcome::cancelled());
                 };
-                // This fork runs on the parent's call stack, including during
-                // injection. It is nested work, not an independent driver
+                // This direct fork runs on the parent's call stack.
+                // It is nested work, not an independent driver
                 // that can await the parent's terminal publication.
                 child.backend.entry_driver = self.entry_driver_owner();
                 child
                     .backend
                     .set_operation_origin(self.memory.entry_origin().operation);
                 child.executor.bind_address_space(&child.backend.memory);
-                let result = child.backend.run_static_elf_process(&mut child.executor);
+                // Inline descendants share this executor with their parent.
+                // Boxing breaks the recursive future type without entering a
+                // second LocalPool or moving guest work to another host thread.
+                let result = Box::pin(
+                    child
+                        .backend
+                        .run_static_elf_process_inner(&mut child.executor),
+                )
+                .await;
                 let result = match result {
                     Ok((status, stdout, stderr)) => self
                         .finish_forked_process_inner(executor, &mut child, status, stdout, stderr),
@@ -2544,6 +2554,7 @@ impl KvmBackend {
                                     child_tid,
                                     payload,
                                     Some(driver),
+                                    |_| Ok(()),
                                 ),
                             }
                         };
@@ -2797,20 +2808,16 @@ impl KvmBackend {
 
     /// Runs one process action and restores the completed syscall transport
     /// exactly when the action returns to the original image.
-    pub(crate) fn run_process_action_at_boundary(
+    pub(crate) async fn run_process_action_at_boundary(
         &mut self,
         executor: &mut ElfExecutor,
         action: ProcessAction,
         continuation: ProcessActionContinuation,
     ) -> Result<ProcessActionOutcome> {
         let mut stop = std::pin::pin!(std::future::pending());
-        let result = futures::executor::block_on(self.run_process_action_inner(
-            executor,
-            action,
-            true,
-            None,
-            stop.as_mut(),
-        ));
+        let result = self
+            .run_process_action_inner(executor, action, true, None, stop.as_mut())
+            .await;
         continuation.finish(self, result)
     }
 
@@ -3326,6 +3333,7 @@ impl KvmBackend {
                                     if let Err(error) = &result
                                         && !peer_cancelled
                                         && child.thread_group.take_worker_error_report(child_tid)
+                                        && !child.tool_panic_owner().worker_execution_panicked()
                                     {
                                         eprintln!(
                                             "reverie-kvm guest thread {child_tid} tool loop failed: {error}"
@@ -3336,6 +3344,7 @@ impl KvmBackend {
                             ));
                             match execution {
                                 Ok(result) => {
+                                    let result = child.finish_worker_configuration(result, config);
                                     let result = child.finish_entry_driver(driver, result).map_err(
                                         |error| {
                                             child.report_tool_failure(
@@ -3351,6 +3360,12 @@ impl KvmBackend {
                                     child_tid,
                                     payload,
                                     Some(driver),
+                                    |panics| {
+                                        panics.drop_value(
+                                            config,
+                                            "Tool worker configuration destruction",
+                                        )
+                                    },
                                 ),
                             }
                         };
@@ -3398,6 +3413,7 @@ impl KvmBackend {
                             let result = child
                                 .tool_panic_owner()
                                 .finish(caught, "unstarted thread owner");
+                            let result = child.finish_worker_configuration(result, config);
                             child.restore_entry_origin();
                             child_executor.bind_address_space(&child.memory);
                             let result = child.route_entry_outcome(result).await;
@@ -4242,6 +4258,21 @@ impl KvmBackend {
         &mut self,
         executor: &mut ElfExecutor,
     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+        let mut driver = std::pin::pin!(self.run_static_elf_process_inner(executor));
+        // Preserve synchronous runs that complete without parking, including
+        // callers already inside a LocalPool. Poll only a borrowed pin: Pending
+        // must leave the same driver alive for block_on to install its waker.
+        // Inline fork descendants await this driver instead of entering a pool.
+        if let Some(result) = driver.as_mut().now_or_never() {
+            return result;
+        }
+        futures::executor::block_on(driver)
+    }
+
+    async fn run_static_elf_process_inner(
+        &mut self,
+        executor: &mut ElfExecutor,
+    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
         // This loop never dispatches Tool events, including Host-owned workers.
         self.set_rdtsc_interception(false)?;
         self.set_cpuid_interception(false)?;
@@ -4303,7 +4334,7 @@ impl KvmBackend {
             let vcpu_exit = match self.vcpu.run() {
                 Ok(Some(exit)) => exit,
                 Ok(None) => {
-                    futures::executor::block_on(futures::future::select(changed, cancelled));
+                    futures::future::select(changed, cancelled).await;
                     continue;
                 }
                 Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
@@ -4409,11 +4440,13 @@ impl KvmBackend {
                 })
                 .transpose()?;
             if let Some(action) = process_action {
-                let outcome = self.run_process_action_at_boundary(
-                    executor,
-                    action,
-                    continuation.expect("a process action has a continuation policy"),
-                )?;
+                let outcome = self
+                    .run_process_action_at_boundary(
+                        executor,
+                        action,
+                        continuation.expect("a process action has a continuation policy"),
+                    )
+                    .await?;
                 if outcome.cancelled {
                     let exit = match self.guest_thread_group_exit_status() {
                         Some(status) => ProcessExit {
@@ -4522,6 +4555,21 @@ impl KvmBackend {
         self.tool_panics.clone()
     }
 
+    pub(crate) fn is_tool_guest_worker(&self) -> bool {
+        self.is_guest_thread && self.thread_ownership.executes_on_tool()
+    }
+
+    fn finish_worker_configuration<R, C>(&self, result: Result<R>, config: C) -> Result<R> {
+        let cleanup = self
+            .tool_panics
+            .drop_value(config, "Tool worker configuration destruction");
+        match (result, cleanup) {
+            (result, Ok(())) => result,
+            (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(cleanup)) => Err(error.with_cleanup(vec![cleanup])),
+        }
+    }
+
     pub(crate) fn finish_public_tool_panic<R>(
         &self,
         result: Result<R>,
@@ -4563,6 +4611,10 @@ impl KvmBackend {
             previous.is_none(),
             "KVM worker panic recorded twice for tid {tid}"
         );
+        // A configuration or entry-cleanup panic can arise after the normal
+        // worker failure check. Wake a natural join before resuming it, so an
+        // earlier live sibling cannot hide this completed failure.
+        self.thread_group.record_worker_failure(tid);
         std::panic::resume_unwind(original)
     }
 
@@ -4684,7 +4736,7 @@ impl KvmBackend {
         tid: i32,
         payload: Box<dyn std::any::Any + Send>,
     ) -> ! {
-        self.finish_panicked_guest_worker_with_entry(executor, tid, payload, None)
+        self.finish_panicked_guest_worker_with_entry(executor, tid, payload, None, |_| Ok(()))
     }
 
     fn finish_panicked_guest_worker_with_entry(
@@ -4693,6 +4745,7 @@ impl KvmBackend {
         tid: i32,
         payload: Box<dyn std::any::Any + Send>,
         driver: Option<crate::entry::owner::DriverScope>,
+        drop_owner: impl FnOnce(&crate::failure::tool_panics::ToolPanics) -> Result<()>,
     ) -> ! {
         // The callback and its borrowed Tool references have already unwound.
         // Keep the original JoinHandle panic while releasing this worker's
@@ -4711,6 +4764,10 @@ impl KvmBackend {
         let error = futures::executor::block_on(self.route_entry_outcome::<()>(Err(error)))
             .expect_err("caught worker panic must remain a failure");
         let error = publish_caught_worker_panic(failure.as_ref(), tid, error);
+        // Configuration belongs to the worker closure, outside the interrupted
+        // callback. Its destructor runs after the original payload is retained
+        // and published, under a separate catch rather than during resumption.
+        let owner_cleanup = drop_owner(&self.tool_panics);
         // The previous executor has already unwound out of block_on. Each
         // retained child now gets its own polling and destruction catch, while
         // the remaining children stay owned outside that catch.
@@ -4722,9 +4779,14 @@ impl KvmBackend {
         executor.release_files_on_exit();
         self.release_stdin_on_exit();
         executor.transfer_child_processes_to_owner();
-        let result = futures::executor::block_on(self.route_entry_outcome::<()>(Err(
-            error.with_cleanup(cleanup.err().into_iter().collect()),
-        )));
+        let result = futures::executor::block_on(
+            self.route_entry_outcome::<()>(Err(error.with_cleanup(
+                [owner_cleanup, cleanup]
+                    .into_iter()
+                    .filter_map(Result::err)
+                    .collect(),
+            ))),
+        );
         let result = match driver {
             Some(driver) => self.finish_entry_driver(driver, result),
             None => result,

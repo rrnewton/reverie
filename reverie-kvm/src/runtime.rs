@@ -2708,6 +2708,25 @@ struct ToolExit {
     status: ExitStatus,
     process_exited: bool,
 }
+
+/// Execution panic may bypass the affected worker's consuming hook. Destroy
+/// each remaining owner separately: neither destructor may unwind through the
+/// other owner or replace the retained execution error and original payload.
+fn drop_panicked_worker_tool<T: Tool>(
+    tool: Arc<T>,
+    thread_state: T::ThreadState,
+    panics: &crate::failure::tool_panics::ToolPanics,
+) -> Result<()> {
+    let thread = panics.drop_value(thread_state, "panicked worker thread-state destruction");
+    let process = panics.drop_value(tool, "panicked worker Tool destruction");
+    Error::combine(
+        [thread, process]
+            .into_iter()
+            .filter_map(Result::err)
+            .collect(),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn notify_tool_exit_with_panics<T: Tool>(
     tool: Arc<T>,
@@ -3128,21 +3147,28 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
     };
     // Worker hooks precede the leader. Owner hooks precede independent forks
     // that may need the parent's deregistration/accounting to finish.
-    let owner = notify_tool_exit_with_panics(
-        tool,
-        pid,
-        tid,
-        global_state,
-        config,
-        thread_state,
-        ToolExit {
-            status,
-            process_exited: pid == tid,
-        },
-        failure,
-        panics,
-    )
-    .await
+    let owner = if pid != tid && panics.worker_execution_panicked() {
+        // An execution panic is not an ordinary returned runtime error. The
+        // Tool API permits this worker's own hook to be bypassed; independently
+        // retained children still completed their consuming cleanup above.
+        drop_panicked_worker_tool(tool, thread_state, panics)
+    } else {
+        notify_tool_exit_with_panics(
+            tool,
+            pid,
+            tid,
+            global_state,
+            config,
+            thread_state,
+            ToolExit {
+                status,
+                process_exited: pid == tid,
+            },
+            failure,
+            panics,
+        )
+        .await
+    }
     .map_err(|error| report("owner exit", error));
     // Consuming hooks may use retained memory. Route their newly captured
     // obligation before any physical child join, outside all callback scopes.
@@ -3490,6 +3516,19 @@ mod unstarted_cleanup_panic_tests {
 }
 
 impl KvmBackend {
+    fn finish_tool_execution_completion<R>(
+        &self,
+        caught: crate::failure::owned_future::CaughtFuture<Result<R>>,
+        phase: &'static str,
+    ) -> Result<R> {
+        let panics = self.tool_panic_owner();
+        if self.is_tool_guest_worker() {
+            panics.finish_worker_execution(caught, phase)
+        } else {
+            panics.finish(caught, phase)
+        }
+    }
+
     /// The callback borrow scope has ended. Keep its selected error and panic
     /// until this concrete owner's outer cleanup and publication have finished.
     fn finish_handler_completion<T, E>(
@@ -3517,15 +3556,12 @@ impl KvmBackend {
             Some(HandlerOutcome::RunFailed) => Some(Err(Error::RunAborted)),
             _ => None,
         };
+        let caught = CaughtFuture {
+            output: original,
+            panics: completion.panics,
+        };
         let error = self
-            .tool_panic_owner()
-            .finish::<()>(
-                CaughtFuture {
-                    output: original,
-                    panics: completion.panics,
-                },
-                "Tool callback",
-            )
+            .finish_tool_execution_completion::<()>(caught, "Tool callback")
             .expect_err("callback panic must remain fatal");
         Ok(HandlerOutcome::RuntimeError(
             error.with_cleanup(hidden.err().into_iter().collect()),
@@ -3566,15 +3602,14 @@ impl KvmBackend {
                             .err()
                             .into_iter()
                             .collect();
-                    self.tool_panic_owner()
-                        .finish::<()>(
-                            crate::failure::owned_future::CaughtFuture {
-                                output: Some(Err(entry)),
-                                panics,
-                            },
-                            "Tool callback result",
-                        )
-                        .unwrap_err()
+                    self.finish_tool_execution_completion::<()>(
+                        crate::failure::owned_future::CaughtFuture {
+                            output: Some(Err(entry)),
+                            panics,
+                        },
+                        "Tool callback result",
+                    )
+                    .unwrap_err()
                 }
                 outcome => {
                     // Preserve the actual nonlocal continuation and its settlement
@@ -4684,7 +4719,6 @@ impl KvmBackend {
         let handler_signal = Arc::new(Mutex::new(None));
         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
         let mut _process_completed = false;
-        let panics = self.tool_panic_owner();
         let execution = async {
             // Each actual Tool consumer admits its own subscription before
             // any user instruction. New fork/thread vCPUs start unarmed; the
@@ -5799,10 +5833,9 @@ impl KvmBackend {
                 }
             }
         };
-        let outcome: Result<ToolProcessExit> = panics.finish(
-            crate::failure::owned_future::catch_owned_future(execution).await,
-            "Tool execution",
-        );
+        let caught = crate::failure::owned_future::catch_owned_future(execution).await;
+        let outcome: Result<ToolProcessExit> =
+            self.finish_tool_execution_completion(caught, "Tool execution");
         self.restore_entry_origin();
         executor.bind_address_space(&self.memory);
         let outcome = self.route_entry_outcome(outcome).await;
@@ -7013,6 +7046,9 @@ mod signal_cleanup_completion_tests;
 
 #[cfg(test)]
 mod consuming_panic_tests;
+
+#[cfg(test)]
+mod worker_execution_panic_tests;
 
 #[cfg(test)]
 mod entry_owner_tests;

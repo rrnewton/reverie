@@ -419,3 +419,123 @@ fn take_transfers_only_pending_payloads_once_and_accepts_a_later_batch() {
     assert_eq!(*drops.lock().unwrap(), vec!["earlier", "caught", "later"]);
     assert_panic_cleanup(&error, "poll failure");
 }
+
+#[test]
+fn worker_execution_panic_keeps_its_original_payload_and_bare_primary() {
+    let owner = Arc::new(ToolPanics::default());
+    let drops = Arc::new(Mutex::new(Vec::new()));
+    let (poll, poll_address) = payload(&owner, &drops, "worker poll");
+    let (destroy, destroy_address) = payload(&owner, &drops, "worker drop");
+    let error = owner
+        .finish_worker_execution::<()>(
+            CaughtFuture {
+                output: None,
+                panics: vec![poll, destroy],
+            },
+            "Tool callback",
+        )
+        .unwrap_err();
+    assert!(owner.worker_execution_panicked());
+    let Error::WithCleanup { primary, cleanup } = &error else {
+        panic!("worker execution lost its secondary destruction panic");
+    };
+    assert!(matches!(primary.as_ref(), Error::GuestWorkerPanic));
+    assert_eq!(cleanup.len(), 1);
+    assert_panic_cleanup(&cleanup[0], "Tool callback");
+    let retained = owner.take();
+    assert_payloads(
+        &retained,
+        &[
+            ("worker poll", poll_address),
+            ("worker drop", destroy_address),
+        ],
+    );
+    assert!(drops.lock().unwrap().is_empty());
+    drop(retained);
+    assert_eq!(*drops.lock().unwrap(), vec!["worker poll", "worker drop"]);
+}
+
+#[test]
+fn worker_execution_panic_preserves_a_prior_real_error_and_abort_effects() {
+    for abort in [false, true] {
+        let owner = Arc::new(ToolPanics::default());
+        let drops = Arc::new(Mutex::new(Vec::new()));
+        let (panic, address) = payload(&owner, &drops, "execution");
+        let cause = Arc::new(if abort {
+            Error::RunAborted
+        } else {
+            Error::HostIo(std::io::Error::from_raw_os_error(libc::EIO))
+        });
+        let retained_effects = effects(cause.clone());
+        let error = owner
+            .finish_worker_execution::<()>(
+                CaughtFuture {
+                    output: Some(Err(Error::SharedFailure(retained_effects.clone()))),
+                    panics: vec![panic],
+                },
+                "Tool callback",
+            )
+            .unwrap_err();
+        assert!(owner.worker_execution_panicked());
+        assert_eq!(references(&error, &retained_effects), 1);
+        assert_effects(&retained_effects);
+        if abort {
+            let Error::WithCleanup { primary, cleanup } = &error else {
+                panic!("worker panic lost its original cancellation effects");
+            };
+            assert!(matches!(primary.as_ref(), Error::GuestWorkerPanic));
+            assert_eq!(cleanup.len(), 1);
+        } else {
+            assert!(std::ptr::eq(error.primary(), cause.as_ref()));
+            let Error::WithCleanup { cleanup, .. } = &error else {
+                panic!("worker lost its secondary execution panic");
+            };
+            assert_eq!(cleanup.len(), 1);
+            assert_panic_cleanup(&cleanup[0], "Tool callback");
+        }
+        let retained = owner.take();
+        assert_payloads(&retained, &[("execution", address)]);
+        assert!(drops.lock().unwrap().is_empty());
+        drop(retained);
+        assert_eq!(*drops.lock().unwrap(), vec!["execution"]);
+    }
+}
+
+#[test]
+fn transferred_and_consuming_panics_do_not_mark_local_worker_execution() {
+    let owner = Arc::new(ToolPanics::default());
+    let drops = Arc::new(Mutex::new(Vec::new()));
+    let (child, child_address) = payload(&owner, &drops, "child");
+    owner.append(vec![child]);
+    let returned = owner
+        .finish_worker_execution::<()>(
+            CaughtFuture {
+                output: Some(Err(Error::RunAborted)),
+                panics: Vec::new(),
+            },
+            "Tool execution",
+        )
+        .unwrap_err();
+    assert!(matches!(returned, Error::RunAborted));
+    assert!(!owner.worker_execution_panicked());
+    let (cleanup, cleanup_address) = payload(&owner, &drops, "exit hook");
+    let error = owner
+        .finish::<()>(
+            CaughtFuture {
+                output: None,
+                panics: vec![cleanup],
+            },
+            "thread exit hook",
+        )
+        .unwrap_err();
+    assert_panic_cleanup(&error, "thread exit hook");
+    assert!(!owner.worker_execution_panicked());
+    let retained = owner.take();
+    assert_payloads(
+        &retained,
+        &[("child", child_address), ("exit hook", cleanup_address)],
+    );
+    assert!(drops.lock().unwrap().is_empty());
+    drop(retained);
+    assert_eq!(*drops.lock().unwrap(), vec!["child", "exit hook"]);
+}
