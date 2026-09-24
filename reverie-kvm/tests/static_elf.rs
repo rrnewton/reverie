@@ -16279,6 +16279,206 @@ int main(int argc, char **argv) {
 }
 
 #[test]
+fn sendfile_bad_output_offsets_match_native_on_direct_kvm() {
+    sendfile_bad_output_offsets_match_native_on_kvm(false);
+}
+
+#[test]
+fn sendfile_bad_output_offsets_match_native_on_tool_kvm() {
+    sendfile_bad_output_offsets_match_native_on_kvm(true);
+}
+
+fn sendfile_bad_output_offsets_match_native_on_kvm(tool_owned: bool) {
+    if !kvm_available("KVM sendfile bad-output offset precedence") {
+        return;
+    }
+
+    const SOURCE: &[u8] = b"abcdef";
+    const DESTINATION: &[u8] = b"unchanged-output\n";
+    const MARKER: &[u8] = b"sendfile-bad-output-offsets-ok\n";
+    let directory = TestDirectory::new();
+    let source = directory.0.join("source");
+    let destination = directory.0.join("readonly-output");
+    std::fs::write(&source, SOURCE).unwrap();
+    std::fs::write(&destination, DESTINATION).unwrap();
+    let executable = compile_c_program(
+        &directory.0,
+        "sendfile-bad-output-offsets",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc != 3) return 1;
+  int source = open(argv[1], O_RDONLY);
+  int readonly_output = open(argv[2], O_RDONLY);
+  int output_pipe[2];
+  if (source < 0 || readonly_output < 0 ||
+      pipe2(output_pipe, O_NONBLOCK) != 0) return 2;
+  // Allocate all live descriptors before closing this positive output. No
+  // descriptor is allocated during the matrix, so its number stays closed.
+  int closed_output = dup(readonly_output);
+  if (closed_output <= 2 || close(closed_output) != 0) return 3;
+  const struct {
+    const char *name;
+    int fd;
+  } outputs[] = {
+      {"closed", closed_output}, {"readonly regular", readonly_output},
+      {"pipe read end", output_pipe[0]}, {"negative", -1},
+  };
+  const uint64_t high_words[] = {
+      0, UINT64_C(0x5a5a5a5a00000000), UINT64_C(0xffffffff00000000)};
+  const struct {
+    const char *name;
+    off_t offset;
+    size_t count;
+    int pointer_kind; // 0: valid; 1: inaccessible; 2: NULL.
+    int error;
+  } cases[] = {
+      {"inaccessible", 2, 2, 1, EFAULT},
+      {"inaccessible zero count", 2, 0, 1, EFAULT},
+      {"negative", -1, 2, 0, EINVAL},
+      {"minimum", INT64_MIN, 2, 0, EINVAL},
+      {"maximum overflow", INT64_MAX, 1, 0, EINVAL},
+      {"maximum minus one overflow", INT64_MAX - 1, 2, 0, EINVAL},
+      {"maximum minus one valid", INT64_MAX - 1, 1, 0, EBADF},
+      {"maximum zero count", INT64_MAX, 0, 0, EBADF},
+      {"negative zero count", -1, 0, 0, EINVAL},
+      {"normal", 2, 2, 0, EBADF},
+      {"normal zero count", 2, 0, 0, EBADF},
+      {"null", 2, 2, 2, EBADF},
+      {"null zero count", 2, 0, 2, EBADF},
+  };
+  const unsigned char source_bytes[] = "abcdef";
+  const unsigned char output_bytes[] = "unchanged-output\n";
+  const unsigned char sentinel[] = "pipe-sentinel";
+  unsigned rows = 0;
+  int failures = 0;
+  for (unsigned output = 0; output < sizeof(outputs) / sizeof(outputs[0]); ++output) {
+    for (unsigned encoding = 0; encoding < 3; ++encoding) {
+      for (unsigned row = 0; row < sizeof(cases) / sizeof(cases[0]); ++row) {
+        if (lseek(source, 1, SEEK_SET) != 1 ||
+            lseek(readonly_output, 2, SEEK_SET) != 2) return 4;
+        if (write(output_pipe[1], sentinel, sizeof(sentinel) - 1) !=
+            (ssize_t)(sizeof(sentinel) - 1)) return 5;
+        off_t offset = cases[row].offset;
+        off_t *pointer = cases[row].pointer_kind == 1
+            ? (off_t *)(uintptr_t)UINT64_C(0xfffffffffffff000)
+            : cases[row].pointer_kind == 2 ? NULL : &offset;
+        uint64_t raw_output = high_words[encoding] | (uint32_t)outputs[output].fd;
+        errno = 0;
+        long result = syscall(SYS_sendfile, raw_output, (uint32_t)source,
+                              pointer, cases[row].count);
+        int error = errno;
+        off_t source_position = lseek(source, 0, SEEK_CUR);
+        off_t output_position = lseek(readonly_output, 0, SEEK_CUR);
+        unsigned char observed_source[sizeof(source_bytes) - 1];
+        unsigned char observed_output[sizeof(output_bytes) - 1];
+        unsigned char observed_sentinel[sizeof(sentinel) - 1];
+        unsigned char extra;
+        ssize_t source_count = pread(source, observed_source, sizeof(observed_source), 0);
+        ssize_t output_count = pread(readonly_output, observed_output, sizeof(observed_output), 0);
+        ssize_t source_eof = pread(source, &extra, 1, sizeof(observed_source));
+        ssize_t output_eof = pread(readonly_output, &extra, 1, sizeof(observed_output));
+        ssize_t pipe_count = read(output_pipe[0], observed_sentinel, sizeof(observed_sentinel));
+        errno = 0;
+        ssize_t pipe_extra = read(output_pipe[0], &extra, 1);
+        int pipe_error = errno;
+        errno = 0;
+        int closed_result = fcntl(closed_output, F_GETFD);
+        int closed_error = errno;
+        int unchanged = source_position == 1 && output_position == 2 &&
+            offset == cases[row].offset &&
+            source_count == (ssize_t)sizeof(observed_source) &&
+            memcmp(observed_source, source_bytes, sizeof(observed_source)) == 0 &&
+            output_count == (ssize_t)sizeof(observed_output) &&
+            memcmp(observed_output, output_bytes, sizeof(observed_output)) == 0 &&
+            source_eof == 0 && output_eof == 0 &&
+            pipe_count == (ssize_t)sizeof(observed_sentinel) &&
+            memcmp(observed_sentinel, sentinel, sizeof(observed_sentinel)) == 0 &&
+            pipe_extra == -1 && pipe_error == EAGAIN &&
+            closed_result == -1 && closed_error == EBADF;
+        if (result != -1 || error != cases[row].error || !unchanged) {
+          fprintf(stderr,
+                  "output=%s encoding=%u raw=%#" PRIx64 " case=%s count=%zu "
+                  "result=%ld errno=%d expected=%d unchanged=%d "
+                  "input_pos=%jd output_pos=%jd offset=%jd pipe_count=%zd\n",
+                  outputs[output].name, encoding, raw_output, cases[row].name,
+                  cases[row].count, result, error, cases[row].error, unchanged,
+                  (intmax_t)source_position, (intmax_t)output_position,
+                  (intmax_t)offset, pipe_count);
+          ++failures;
+        }
+        ++rows;
+      }
+    }
+  }
+  if (rows != 156 || failures) return 6;
+  if (close(source) || close(readonly_output) ||
+      close(output_pipe[0]) || close(output_pipe[1])) return 7;
+  const char marker[] = "sendfile-bad-output-offsets-ok\n";
+  if (write(1, marker, sizeof(marker) - 1) != sizeof(marker) - 1) return 8;
+  return 0;
+}
+"#,
+    );
+    let native = std::process::Command::new(&executable)
+        .arg(&source)
+        .arg(&destination)
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
+    assert_eq!(native.stdout, MARKER);
+    assert!(native.stderr.is_empty());
+    assert_eq!(std::fs::read(&source).unwrap(), SOURCE);
+    assert_eq!(std::fs::read(&destination).unwrap(), DESTINATION);
+
+    // Regular inputs only: nonnull offsets on unsupported inputs keep their
+    // separately documented mediated-fallback boundary.
+    let image = std::fs::read(&executable).unwrap();
+    for repetition in 0..2 {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[
+                    executable.to_str().unwrap(),
+                    source.to_str().unwrap(),
+                    destination.to_str().unwrap(),
+                ],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if tool_owned {
+            let (_, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(
+            code, 0,
+            "tool_owned={tool_owned} repetition={repetition} stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert_eq!(stdout, native.stdout);
+        assert_eq!(stderr, native.stderr);
+        assert_eq!(std::fs::read(&source).unwrap(), SOURCE);
+        assert_eq!(std::fs::read(&destination).unwrap(), DESTINATION);
+    }
+}
+
+#[test]
 fn sendfile_readonly_stdin_matches_native_on_kvm() {
     sendfile_stdin_matches_native_on_kvm(false);
 }
