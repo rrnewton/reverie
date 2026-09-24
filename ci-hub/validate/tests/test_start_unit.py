@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import hashlib
 import io
@@ -2464,7 +2465,9 @@ class StartUnitTest(unittest.TestCase):
                     return self.fake(command, **kwargs)
 
                 before = self.filesystem_snapshot(self.root)
-                observation = start_unit.terminal_cleanup_unit(record_path, record, run=run)
+                observation = start_unit.terminal_cleanup_unit(
+                    self.root, record_path, record, run=run
+                )
                 self.assertTrue(observation.blocks_entry)
                 self.assertEqual(expected_reason, observation.reason)
                 report = start_unit.sweep_completed_checkouts(
@@ -7781,41 +7784,25 @@ class StartUnitTest(unittest.TestCase):
 
     def test_cleanup_accepts_collected_current_run_with_typed_admission(self) -> None:
         self.fake.collected_unit = True
-        for suffix, admission in (
-            (
-                "admitted",
-                {
-                    "state": "admitted",
-                    "recorded_at": "2026-09-04T12:00:00+00:00",
-                    "run_number": 7,
-                },
-            ),
-            (
-                "refused",
-                {
-                    "state": "refused",
-                    "recorded_at": "2026-09-04T12:00:00+00:00",
-                    "reason": "stale-base",
-                    "exit_code": 3,
-                },
-            ),
-        ):
-            with self.subTest(admission=admission["state"]):
-                _fresh, record = self.current_unknown_cleanup_record(
-                    suffix, admission
-                )
-                observation = start_unit.terminal_cleanup_unit(
-                    self.root / f"validate-{suffix}.json",
-                    record,
-                    run=self.fake,
-                )
-                self.assertEqual(f"validate-{suffix}", observation.unit)
-                self.assertEqual(
-                    start_unit.CleanupUnitState.TERMINAL, observation.state
-                )
-                self.assertIsNone(observation.reason)
-                self.assertEqual("unknown", record["state"])
-                self.assertEqual("unknown", record["result"])
+        _fresh, record = self.current_unknown_cleanup_record(
+            "admitted",
+            {
+                "state": "admitted",
+                "recorded_at": "2026-09-04T12:00:00+00:00",
+                "run_number": 7,
+            },
+        )
+        observation = start_unit.terminal_cleanup_unit(
+            self.root,
+            self.root / "validate-admitted.json",
+            record,
+            run=self.fake,
+        )
+        self.assertEqual("validate-admitted", observation.unit)
+        self.assertEqual(start_unit.CleanupUnitState.TERMINAL, observation.state)
+        self.assertIsNone(observation.reason)
+        self.assertEqual("unknown", record["state"])
+        self.assertEqual("unknown", record["result"])
 
     def test_cleanup_retains_unknown_run_when_unit_query_fails(self) -> None:
         _fresh, record = self.current_unknown_cleanup_record(
@@ -7831,6 +7818,7 @@ class StartUnitTest(unittest.TestCase):
             return completed(command, rc=1, stderr="systemd unavailable")
 
         observation = start_unit.terminal_cleanup_unit(
+            self.root,
             self.root / "validate-query-failed.json", record, run=failed_query
         )
 
@@ -7843,7 +7831,7 @@ class StartUnitTest(unittest.TestCase):
             observation.reason,
         )
 
-    def test_cleanup_allows_refused_admission_when_unit_query_fails(self) -> None:
+    def test_cleanup_retains_undisposed_refusal_when_unit_query_fails(self) -> None:
         _fresh, record = self.current_unknown_cleanup_record(
             "refused-query-failed",
             {
@@ -7858,16 +7846,20 @@ class StartUnitTest(unittest.TestCase):
             return completed(command, rc=1, stderr="systemd unavailable")
 
         observation = start_unit.terminal_cleanup_unit(
+            self.root,
             self.root / "validate-refused-query-failed.json",
             record,
             run=failed_query,
         )
 
-        self.assertEqual("validate-refused-query-failed", observation.unit)
+        self.assertIsNone(observation.unit)
         self.assertEqual(
-            start_unit.CleanupUnitState.TERMINAL, observation.state
+            start_unit.CleanupUnitState.INDETERMINATE, observation.state
         )
-        self.assertIsNone(observation.reason)
+        self.assertEqual(
+            "unit state unavailable and run record is not terminal",
+            observation.reason,
+        )
         self.assertEqual("unknown", record["state"])
         self.assertEqual("unknown", record["result"])
 
@@ -7883,6 +7875,7 @@ class StartUnitTest(unittest.TestCase):
         )
 
         observation = start_unit.terminal_cleanup_unit(
+            self.root,
             self.root / "validate-malformed-admission.json",
             record,
             run=self.fake,
@@ -7913,6 +7906,7 @@ class StartUnitTest(unittest.TestCase):
         record.pop("finished_at")
 
         observation = start_unit.terminal_cleanup_unit(
+            self.root,
             self.root / "validate-running.json", record, run=self.fake
         )
 
@@ -7947,6 +7941,7 @@ class StartUnitTest(unittest.TestCase):
             )
 
         observation = start_unit.terminal_cleanup_unit(
+            self.root,
             self.root / "validate-still-running.json", record, run=active_unit
         )
 
@@ -8804,6 +8799,58 @@ class StartUnitTest(unittest.TestCase):
             "refused no-evidence checkout must still use liveness-checked cleanup",
         )
 
+    def test_typed_refusal_retains_private_roots_when_checkout_removal_refuses(self) -> None:
+        self.fake.typed_admission_refusal = "stale-base"
+        self.fake.final_validate_status = None
+        self.fake.executed_nodes = None
+        self.fake.executed_tests = None
+        self.fake.write_service_result = False
+        self.fake.ledger_rows = []
+        self.fake.wrkslots_remove_rc = 3
+        self.fake.wrkslots_remove_stderr = "fixture ownership refusal"
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("no-evidence checkout was retained", error)
+        self.assertIsNotNone(self.fake.fresh)
+        assert self.fake.fresh is not None
+        self.assertTrue(self.fake.fresh.is_dir())
+        private_cargo = (
+            self.root / "ignored/validate/cargo-homes/validate-cargo-abcd1234"
+        )
+        self.assertTrue(private_cargo.is_dir())
+        self.assertNotIn(private_cargo, self.removed_temporary_paths())
+        self.assertEqual([], self.removed_temporary_paths())
+
+    def test_typed_refusal_with_completed_payload_retains_all_storage(self) -> None:
+        self.fake.typed_admission_refusal = "stale-base"
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("contradicts terminal or product evidence", error)
+        record_path = self.root / "ignored/validate/runs/validate-test.json"
+        durable = start_unit.run_registry.read_record(record_path)
+        self.assertEqual("completed", durable["state"])
+        self.assertEqual("PASSED", durable["final_validate_status"])
+        self.assertIsNotNone(self.fake.fresh)
+        assert self.fake.fresh is not None
+        self.assertTrue(self.fake.fresh.is_dir())
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+        self.assertFalse(
+            any(
+                len(command) > 1
+                and (
+                    command[1].endswith("ci-hub/series/mirror.py")
+                    or command[1:3] == ["validate-status", "--sha"]
+                )
+                for command in self.fake.commands
+            )
+        )
+
     def test_visibility_failure_does_not_stop_accepted_validation_service(self) -> None:
         self.fake.herdr_status_rc = 1
 
@@ -9580,6 +9627,718 @@ class StartUnitTest(unittest.TestCase):
             report["retained"],
         )
 
+    def refused_admission_cleanup_record(
+        self,
+        suffix: str,
+        *,
+        state: str = "unknown",
+        legacy_ledger_noop: bool = False,
+    ) -> tuple[Path, Path]:
+        fresh, record = self.managed_cleanup_record(suffix, state=state)
+        durable = start_unit.run_registry.read_record(record)
+        durable.update(
+            kind="validate",
+            target=SHA,
+            materialized_target=True,
+            agent="owner-checkout-watch",
+            started_at="2026-08-28T07:00:00+00:00",
+            producer=start_unit.run_registry.PRODUCER,
+            admission="ci-hub validate-lock",
+            pane_role="observer-only",
+            parent_checkout_head=SHA,
+            validate_lock_child_deadline_seconds=3600,
+            e2e_result_root=str(
+                self.root / "ignored/validate/artifacts" / suffix / "e2e"
+            ),
+            safe_ci_dag_runner_log_dir=str(
+                self.root / "ignored/validate/artifacts" / suffix / "dag"
+            ),
+            hermit_run_timeout_seconds=3239,
+            log=str(self.root / "ignored/validate" / f"{suffix}.log"),
+            cargo_home=str(
+                self.root / "ignored/validate/cargo-homes" / f"cargo-{suffix}"
+            ),
+            service_result_schema=start_unit.service_result.SCHEMA_VERSION,
+            result="unknown",
+            result_source="validation-service-result",
+            detail="validation payload did not start",
+            exit_code=None,
+            executed_nodes=None,
+            executed_tests=None,
+            passed_tests=None,
+            final_validate_status=None,
+            scorecard_writeback=None,
+            admission_result={
+                "state": "refused",
+                "recorded_at": "2026-08-28T07:00:01+00:00",
+                "reason": "stale-base",
+                "exit_code": 3,
+            },
+        )
+        if legacy_ledger_noop:
+            ledger_commit = "b" * 40
+            durable["ledger_mirror"] = {
+                "commit": ledger_commit,
+                "detail": start_unit.LEGACY_ADMISSION_REFUSAL_LEDGER_ERROR,
+                "raw_publication": {
+                    "attempts": 0,
+                    "commit": None,
+                    "published": 0,
+                    "reaped_retained": 0,
+                    "shards": [],
+                },
+                "recorded_at": "2026-08-28T07:00:02+00:00",
+                "repository": start_unit.CELL_LEDGER_REPOSITORY,
+                "rows": 90962,
+                "scorecard": {
+                    "error": start_unit.LEGACY_ADMISSION_REFUSAL_LEDGER_ERROR,
+                    "state": "failed",
+                },
+                "series_commit": ledger_commit,
+                "source_commit": ledger_commit,
+                "source_repository": start_unit.CELL_LEDGER_REPOSITORY,
+                "source_tree": "c" * 40,
+                "state": "derived-failed",
+            }
+        start_unit.run_registry.write_record(record, durable)
+        start_unit.run_registry.parse_current_record(durable)
+        return fresh, record
+
+    def test_refused_admission_finalizer_records_no_payload_disposition(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-stop-post", state="running"
+        )
+        before = len(self.fake.commands)
+        error = io.StringIO()
+
+        with contextlib.redirect_stderr(error):
+            updated = start_unit.finalize_ledger_mirror(
+                self.root,
+                self.root,
+                record,
+                record=start_unit.run_registry.read_record(record),
+                run=self.fake,
+            )
+
+        self.assertTrue(fresh.is_dir())
+        self.assertEqual(before, len(self.fake.commands))
+        self.assertEqual(
+            start_unit.LEDGER_MIRROR_NOT_APPLICABLE,
+            updated["ledger_mirror"]["state"],
+        )
+        self.assertEqual(
+            start_unit.ADMISSION_REFUSAL_NO_PAYLOAD_DETAIL,
+            updated["ledger_mirror"]["detail"],
+        )
+        self.assertIn("CELL LEDGER NOT APPLICABLE", error.getvalue())
+        self.assertTrue(
+            start_unit.cell_ledger_retirement_ready(self.root, record, updated)
+        )
+
+    def test_retire_unit_removes_typed_refusal_without_invoking_mirror(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-retire", state="running"
+        )
+
+        rc, error = self.retire("admission-refused-retire")
+
+        self.assertEqual(0, rc, error)
+        self.assertFalse(fresh.exists())
+        self.assertEqual([str(fresh)], self.fake.removed)
+        self.assertFalse(
+            any(
+                len(command) > 1
+                and command[1].endswith("ci-hub/series/mirror.py")
+                for command in self.fake.commands
+            )
+        )
+        durable = start_unit.run_registry.read_record(record)
+        self.assertEqual(
+            start_unit.ADMISSION_REFUSAL_NO_PAYLOAD_DETAIL,
+            durable["ledger_mirror"]["detail"],
+        )
+
+    def test_refused_admission_marker_lock_contention_retains_checkout(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-contended", state="running"
+        )
+        update_record = start_unit.run_registry.update_record
+
+        def contended_update(
+            path: Path, *, blocking: bool = True, **fields: object
+        ) -> dict[str, object]:
+            if "ledger_mirror" in fields:
+                self.assertFalse(blocking)
+                raise start_unit.run_registry.RecordLocked(
+                    "fixture holds admission refusal marker lock"
+                )
+            return update_record(path, blocking=blocking, **fields)
+
+        with mock.patch.object(
+            start_unit.run_registry,
+            "update_record",
+            side_effect=contended_update,
+        ):
+            rc, error = self.retire("admission-refused-contended")
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("RUN-RECORD NOT UPDATED", error)
+        self.assertIn("RETIRE-REFUSED", error)
+        self.assertTrue(fresh.is_dir())
+        self.assertNotIn(
+            "ledger_mirror", start_unit.run_registry.read_record(record)
+        )
+        self.assertFalse(
+            any("remove-validate-batch" in command for command in self.fake.commands)
+        )
+
+    def test_refused_admission_marker_fsync_failure_retains_checkout(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-fsync", state="running"
+        )
+        real_fsync = os.fsync
+
+        def refuse_directory_sync(descriptor: int) -> None:
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise OSError(errno.EIO, "fixture directory sync failure")
+            real_fsync(descriptor)
+
+        with mock.patch.object(start_unit.os, "fsync", side_effect=refuse_directory_sync):
+            rc, error = self.retire("admission-refused-fsync")
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("not the durable canonical handle", error)
+        self.assertIn("direct cell-ledger publication is incomplete", error)
+        self.assertIn("RETIRE-REFUSED", error)
+        self.assertTrue(fresh.is_dir())
+        self.assertFalse(
+            any("remove-validate-batch" in command for command in self.fake.commands)
+        )
+        self.assertNotIn("ledger_mirror", start_unit.run_registry.read_record(record))
+
+    def test_attach_typed_refusal_skips_canonical_and_mirror_queries(self) -> None:
+        fresh, _record = self.refused_admission_cleanup_record(
+            "admission-refused-attach"
+        )
+        self.fake.fresh = fresh
+        output = io.StringIO()
+        error = io.StringIO()
+
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            rc = start_unit.main(
+                ["--attach", "validate-admission-refused-attach"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, error.getvalue())
+        self.assertFalse(fresh.exists(), error.getvalue())
+        self.assertIn("typed admission refused (stale-base)", error.getvalue())
+        self.assertFalse(
+            any(
+                len(command) > 1
+                and (
+                    command[1].endswith("ci-hub/series/mirror.py")
+                    or command[1:3] == ["validate-status", "--sha"]
+                )
+                for command in self.fake.commands
+            )
+        )
+
+    def test_attach_refusal_with_published_status_retains_checkout(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-attach-published-status"
+        )
+        durable = start_unit.run_registry.read_record(record)
+        durable["commit_status_publication"] = {
+            "state": "published",
+            "recorded_at": "2026-08-28T07:00:03+00:00",
+            "repository": "rrnewton/hermit",
+            "sha": SHA,
+            "description": "fixture publication",
+            "receipt_commit": "d" * 40,
+            "receipt_path": "ignored/validate/receipts/fixture.json",
+        }
+        start_unit.run_registry.write_record(record, durable)
+        self.fake.fresh = fresh
+        error = io.StringIO()
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(error):
+            rc = start_unit.main(
+                [
+                    "--attach",
+                    "validate-admission-refused-attach-published-status",
+                ],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn(
+            "contradicts terminal or product evidence", error.getvalue()
+        )
+        self.assertTrue(fresh.is_dir())
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+        self.assertFalse(
+            any(
+                len(command) > 1
+                and (
+                    command[1].endswith("ci-hub/series/mirror.py")
+                    or command[1:3] == ["validate-status", "--sha"]
+                )
+                for command in self.fake.commands
+            )
+        )
+
+    def test_attach_refusal_marker_lock_contention_retains_checkout(self) -> None:
+        fresh, _record = self.refused_admission_cleanup_record(
+            "admission-refused-attach-contended"
+        )
+        self.fake.fresh = fresh
+        update_record = start_unit.run_registry.update_record
+
+        def contended_update(
+            path: Path, *, blocking: bool = True, **fields: object
+        ) -> dict[str, object]:
+            if "ledger_mirror" in fields:
+                self.assertFalse(blocking)
+                raise start_unit.run_registry.RecordLocked("fixture contention")
+            return update_record(path, blocking=blocking, **fields)
+
+        with mock.patch.object(
+            start_unit.run_registry,
+            "update_record",
+            side_effect=contended_update,
+        ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            rc = start_unit.main(
+                ["--attach", "validate-admission-refused-attach-contended"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertTrue(fresh.is_dir())
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_attach_refusal_retains_cargo_when_checkout_removal_refuses(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-attach-partial"
+        )
+        durable = start_unit.run_registry.read_record(record)
+        cargo_home = (
+            self.root
+            / "ignored/validate/cargo-homes"
+            / "validate-cargo-admission-refused-attach-partial"
+        )
+        durable["cargo_home"] = str(cargo_home)
+        start_unit.run_registry.write_record(record, durable)
+        cargo_home.mkdir(parents=True)
+        self.fake.fresh = fresh
+        self.fake.wrkslots_remove_rc = 3
+        self.fake.wrkslots_remove_stderr = "fixture ownership refusal"
+        error = io.StringIO()
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(error):
+            rc = start_unit.main(
+                ["--attach", "validate-admission-refused-attach-partial"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(cargo_home.is_dir())
+        self.assertIn("Cargo home RETAINED", error.getvalue())
+        self.assertNotIn(cargo_home, self.removed_temporary_paths())
+
+    def test_attach_refusal_removes_cargo_after_checkout_removal(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-attach-complete"
+        )
+        durable = start_unit.run_registry.read_record(record)
+        cargo_home = (
+            self.root
+            / "ignored/validate/cargo-homes"
+            / "validate-cargo-admission-refused-attach-complete"
+        )
+        durable["cargo_home"] = str(cargo_home)
+        start_unit.run_registry.write_record(record, durable)
+        cargo_home.mkdir(parents=True)
+        self.fake.fresh = fresh
+
+        error = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+            error
+        ):
+            rc = start_unit.main(
+                ["--attach", "validate-admission-refused-attach-complete"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertFalse(fresh.exists())
+        self.assertFalse(cargo_home.exists(), error.getvalue())
+        updated = start_unit.run_registry.read_record(record)
+        self.assertIsInstance(updated.get("checkout_removed_at"), str)
+        self.assertIsInstance(updated.get("cargo_home_removed_at"), str)
+
+    def test_sweep_removes_legacy_refusal_mirror_that_published_zero_rows(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "materialized-admission-refused-legacy-ledger",
+            legacy_ledger_noop=True,
+        )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([str(fresh)], report["removed"], report)
+        self.assertFalse(fresh.exists())
+        self.assertEqual([], report["scorecard_handoffs"])
+        durable = start_unit.run_registry.read_record(record)
+        self.assertEqual("derived-failed", durable["ledger_mirror"]["state"])
+        self.assertIsInstance(durable.get("checkout_removed_at"), str)
+
+    def test_sweep_retains_legacy_refusal_with_framework_sidecar(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-legacy-sidecar",
+            legacy_ledger_noop=True,
+        )
+        start_unit.service_result.result_path(record).write_text("{}\n")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(
+            any(
+                row["checkout"] == str(fresh)
+                and "cell ledger publication is incomplete" in row["reason"]
+                for row in report["retained"]
+            ),
+            report,
+        )
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_sweep_retains_legacy_refusal_from_symlinked_run_handle(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-legacy-symlink",
+            legacy_ledger_noop=True,
+        )
+        external = self.root / "external-refusal-record.json"
+        external.write_bytes(record.read_bytes())
+        record.unlink()
+        record.symlink_to(external)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(record.is_symlink())
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_sweep_retains_legacy_refusal_when_run_handle_is_replaced(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-legacy-replaced",
+            legacy_ledger_noop=True,
+        )
+        real_stat = start_unit.os.stat
+        record_observations = 0
+
+        def changing_stat(
+            path: os.PathLike[str] | str, *args: object, **kwargs: object
+        ) -> os.stat_result:
+            nonlocal record_observations
+            observed = real_stat(path, *args, **kwargs)
+            if Path(path).name == record.name and kwargs.get("dir_fd") is not None:
+                record_observations += 1
+                if record_observations >= 2:
+                    fields = list(observed)
+                    fields[1] += 1
+                    return os.stat_result(fields)
+            return observed
+
+        with mock.patch.object(start_unit.os, "stat", side_effect=changing_stat):
+            report = start_unit.sweep_completed_checkouts(
+                self.root, run=self.fake, tool_root=self.root
+            )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertGreaterEqual(record_observations, 2)
+        self.assertTrue(fresh.is_dir())
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_sweep_retains_legacy_refusal_when_run_handle_open_fails(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-legacy-open-error",
+            legacy_ledger_noop=True,
+        )
+        real_open = start_unit.os.open
+
+        def failing_open(
+            path: os.PathLike[str] | str, flags: int, *args: object, **kwargs: object
+        ) -> int:
+            if (
+                Path(path).name == record.name
+                and kwargs.get("dir_fd") is not None
+                and flags & os.O_NOFOLLOW
+            ):
+                raise OSError(errno.EIO, "fixture read failure", path)
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(start_unit.os, "open", side_effect=failing_open):
+            report = start_unit.sweep_completed_checkouts(
+                self.root, run=self.fake, tool_root=self.root
+            )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.is_dir())
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_sweep_retains_legacy_refusal_while_record_lock_is_held(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-legacy-locked",
+            legacy_ledger_noop=True,
+        )
+
+        with start_unit.run_registry.exclusive_record(record):
+            report = start_unit.sweep_completed_checkouts(
+                self.root, run=self.fake, tool_root=self.root
+            )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.is_dir())
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_sweep_holds_refusal_record_lock_through_batch_removal(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-legacy-lock-through-remove",
+            legacy_ledger_noop=True,
+        )
+        observed_locked = False
+
+        def run(command: list[str], **kwargs: object):
+            nonlocal observed_locked
+            if wrkslots_action(command, "remove-validate-batch"):
+                with self.assertRaises(start_unit.run_registry.RecordLocked):
+                    with start_unit.run_registry.exclusive_record(
+                        record, blocking=False
+                    ):
+                        pass
+                observed_locked = True
+            return self.fake(command, **kwargs)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+
+        self.assertTrue(observed_locked)
+        self.assertEqual([str(fresh)], report["removed"], report)
+        self.assertFalse(fresh.exists())
+
+    def test_sweep_retains_legacy_refusal_during_owner_watch_correction(self) -> None:
+        fresh, _record = self.refused_admission_cleanup_record(
+            "admission-refused-owner-watch",
+            legacy_ledger_noop=True,
+        )
+        transaction = start_unit.run_registry.owner_watch_correction_transaction(
+            self.root
+        )
+        transaction.write_text("fixture correction in progress\n")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.is_dir())
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_sweep_retains_legacy_refusal_with_any_outer_exit(self) -> None:
+        for index, value in enumerate((0, 1, 137)):
+            with self.subTest(exit_code=value):
+                fresh, record = self.refused_admission_cleanup_record(
+                    f"admission-refused-outer-exit-{index}",
+                    legacy_ledger_noop=True,
+                )
+                durable = start_unit.run_registry.read_record(record)
+                durable["exit_code"] = value
+                start_unit.run_registry.write_record(record, durable)
+
+                report = start_unit.sweep_completed_checkouts(
+                    self.root, run=self.fake, tool_root=self.root
+                )
+
+                self.assertNotIn(str(fresh), report["removed"], report)
+                self.assertTrue(fresh.is_dir())
+        self.assertFalse(
+            any(wrkslots_action(command, "remove") for command in self.fake.commands)
+        )
+
+    def test_sweep_retains_dangling_run_handle_symlink(self) -> None:
+        fresh, record = self.refused_admission_cleanup_record(
+            "admission-refused-legacy-dangling",
+            legacy_ledger_noop=True,
+        )
+        record.unlink()
+        record.symlink_to(self.root / "missing-external-record.json")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(record.is_symlink())
+
+    def test_legacy_refusal_mirror_near_misses_remain_retained(self) -> None:
+        cases = (
+            "attempted",
+            "attempted-bool",
+            "published",
+            "shard",
+            "raw-commit",
+            "wrong-detail",
+            "wrong-scorecard",
+            "different-ledger-heads",
+            "reaped-retained",
+            "extra-publication-field",
+            "published-ledger",
+            "unchanged-ledger",
+            "published-ledger-extra-field",
+            "payload-result",
+            "outer-exit-zero",
+            "outer-exit-one",
+            "outer-exit-signal",
+            "commit-status",
+            "scorecard-writeback",
+            "scorecard-files",
+            "scorecard-handoff",
+            "service-result-sidecar",
+            "broken-sidecar-symlink",
+            "admitted",
+            "wrong-refusal-code",
+        )
+        for index, case in enumerate(cases):
+            with self.subTest(case=case):
+                fresh, record = self.refused_admission_cleanup_record(
+                    f"legacy-refusal-near-miss-{index}",
+                    legacy_ledger_noop=True,
+                )
+                durable = start_unit.run_registry.read_record(record)
+                publication = durable["ledger_mirror"]
+                if case == "attempted":
+                    publication["raw_publication"]["attempts"] = 1
+                elif case == "attempted-bool":
+                    publication["raw_publication"]["attempts"] = False
+                elif case == "published":
+                    publication["raw_publication"]["published"] = 1
+                elif case == "shard":
+                    publication["raw_publication"]["shards"] = ["2026-08.jsonl"]
+                elif case == "raw-commit":
+                    publication["raw_publication"]["commit"] = "d" * 40
+                elif case == "wrong-detail":
+                    publication["detail"] = "different derived failure"
+                elif case == "wrong-scorecard":
+                    publication["scorecard"]["error"] = "different derived failure"
+                elif case == "different-ledger-heads":
+                    publication["series_commit"] = "d" * 40
+                elif case == "reaped-retained":
+                    publication["raw_publication"]["reaped_retained"] = 1
+                elif case == "extra-publication-field":
+                    publication["unexpected"] = "must refuse"
+                elif case in {
+                    "published-ledger",
+                    "unchanged-ledger",
+                    "published-ledger-extra-field",
+                }:
+                    publication = publication_report(SHA)
+                    publication["state"] = (
+                        "unchanged" if case == "unchanged-ledger" else "published"
+                    )
+                    publication["recorded_at"] = "2026-08-28T07:00:02+00:00"
+                    if case == "published-ledger-extra-field":
+                        publication["unexpected"] = "must refuse"
+                    durable["ledger_mirror"] = publication
+                elif case == "payload-result":
+                    durable.update(
+                        result="failure",
+                        exit_code=1,
+                        executed_nodes=1,
+                        executed_tests=1,
+                        passed_tests=0,
+                        final_validate_status="FAILED",
+                    )
+                elif case == "outer-exit-zero":
+                    durable["exit_code"] = 0
+                elif case == "outer-exit-one":
+                    durable["exit_code"] = 1
+                elif case == "outer-exit-signal":
+                    durable["exit_code"] = 137
+                elif case == "commit-status":
+                    durable["commit_status_publication"] = {"state": "failed"}
+                elif case == "scorecard-writeback":
+                    durable["scorecard_writeback"] = {"status": "completed"}
+                elif case == "scorecard-files":
+                    durable["scorecard_writeback_files"] = []
+                elif case == "scorecard-handoff":
+                    durable["scorecard_handoff"] = str(
+                        self.root / "ignored/validate/scorecard-handoffs/forged"
+                    )
+                elif case == "service-result-sidecar":
+                    start_unit.service_result.result_path(record).write_text("{}\n")
+                elif case == "broken-sidecar-symlink":
+                    start_unit.service_result.result_path(record).symlink_to("missing")
+                elif case == "admitted":
+                    durable["admission_result"] = {
+                        "state": "admitted",
+                        "recorded_at": "2026-08-28T07:00:01+00:00",
+                        "run_number": 1,
+                    }
+                elif case == "wrong-refusal-code":
+                    durable["admission_result"]["exit_code"] = 0
+                record.write_text(json.dumps(durable, sort_keys=True) + "\n")
+
+                self.assertFalse(
+                    start_unit.cell_ledger_retirement_ready(
+                        self.root, record, durable
+                    )
+                )
+                self.assertTrue(fresh.is_dir())
+
     def test_sweep_removes_materialized_checkout_after_refused_admission(self) -> None:
         fresh, record = self.managed_cleanup_record(
             "materialized-admission-refused", state="unknown"
@@ -9622,6 +10381,17 @@ class StartUnitTest(unittest.TestCase):
             },
         )
         start_unit.run_registry.write_record(record, durable)
+        durable = start_unit.finalize_ledger_mirror(
+            self.root,
+            self.root,
+            record,
+            record=durable,
+            run=self.fake,
+        )
+        self.assertEqual(
+            start_unit.LEDGER_MIRROR_NOT_APPLICABLE,
+            durable["ledger_mirror"]["state"],
+        )
 
         report = start_unit.sweep_completed_checkouts(
             self.root, run=self.fake, tool_root=self.root
@@ -11845,6 +12615,8 @@ class CleanupRecordAdmissionTests(unittest.TestCase):
     """
 
     SHA = "a" * 40
+    ROOT = Path("/tmp/cleanup-record-admission-tests")
+    RECORD = ROOT / "ignored/validate/runs/validate-test.service.json"
 
     def handle(self, **updates):
         value = {
@@ -11890,7 +12662,7 @@ class CleanupRecordAdmissionTests(unittest.TestCase):
             with self.subTest(unit_absent=unit_absent):
                 self.assertFalse(
                     start_unit.cleanup_record_allows_removal_attempt(
-                        record, unit_absent=unit_absent
+                        self.ROOT, self.RECORD, record, unit_absent=unit_absent
                     )
                 )
 
@@ -11899,10 +12671,12 @@ class CleanupRecordAdmissionTests(unittest.TestCase):
         record = self.terminal(admission_result=None)
         self.assertIn("admission_result", record)
         self.assertFalse(
-            start_unit.cleanup_record_allows_removal_attempt(record, unit_absent=True)
+            start_unit.cleanup_record_allows_removal_attempt(
+                self.ROOT, self.RECORD, record, unit_absent=True
+            )
         )
 
-    def test_refused_admission_permits_the_attempt(self):
+    def test_refused_admission_without_durable_disposition_is_refused(self):
         record = self.terminal(
             admission_result={
                 "state": "refused",
@@ -11911,8 +12685,10 @@ class CleanupRecordAdmissionTests(unittest.TestCase):
                 "exit_code": 3,
             }
         )
-        self.assertTrue(
-            start_unit.cleanup_record_allows_removal_attempt(record, unit_absent=False)
+        self.assertFalse(
+            start_unit.cleanup_record_allows_removal_attempt(
+                self.ROOT, self.RECORD, record, unit_absent=False
+            )
         )
 
     def test_admitted_admission_needs_the_unit_to_be_absent(self):
@@ -11924,10 +12700,14 @@ class CleanupRecordAdmissionTests(unittest.TestCase):
             }
         )
         self.assertTrue(
-            start_unit.cleanup_record_allows_removal_attempt(record, unit_absent=True)
+            start_unit.cleanup_record_allows_removal_attempt(
+                self.ROOT, self.RECORD, record, unit_absent=True
+            )
         )
         self.assertFalse(
-            start_unit.cleanup_record_allows_removal_attempt(record, unit_absent=False)
+            start_unit.cleanup_record_allows_removal_attempt(
+                self.ROOT, self.RECORD, record, unit_absent=False
+            )
         )
 
     def test_a_record_that_is_not_terminal_is_refused(self):
@@ -11939,7 +12719,9 @@ class CleanupRecordAdmissionTests(unittest.TestCase):
             }
         )
         self.assertFalse(
-            start_unit.cleanup_record_allows_removal_attempt(record, unit_absent=True)
+            start_unit.cleanup_record_allows_removal_attempt(
+                self.ROOT, self.RECORD, record, unit_absent=True
+            )
         )
 
 

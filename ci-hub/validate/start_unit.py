@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 import sys
 import time
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -2802,7 +2802,7 @@ def classify_recorded_checkout(
     return None, None
 
 
-def cleanup_recorded_checkout(
+def _cleanup_recorded_checkout_impl(
     root: Path,
     record: Mapping[str, Any],
     *,
@@ -2811,8 +2811,23 @@ def cleanup_recorded_checkout(
     run: Runner,
     tool_root: Path = ROOT,
     wrkslots: WrkslotsIdentity | None = None,
+    record_lock_held: bool = False,
 ) -> tuple[bool, list[str], str | None]:
     """Archive local receipt evidence and remove one terminal temp checkout."""
+    if record_claims_refused_admission(record) and not (
+        refused_admission_ledger_retirement_ready(
+            root,
+            record_path,
+            record,
+            record_lock_held=record_lock_held,
+        )
+    ):
+        return (
+            False,
+            [],
+            "typed admission refusal is not a durable, canonical no-payload "
+            "record with a retirement-ready ledger disposition",
+        )
     checkout, reason = classify_recorded_checkout(root, record)
     if reason is not None:
         return False, [], reason
@@ -2820,7 +2835,7 @@ def cleanup_recorded_checkout(
         return False, [], None
     if not checkout.exists():
         return False, [], None
-    if cell_ledger_attempted(record):
+    if cell_ledger_attempted(record) and not record_claims_refused_admission(record):
         publish_recorded_scorecard_handoff(
             root, record_path, record, checkout, unit, run=run, tool_root=tool_root,
         )
@@ -2856,6 +2871,44 @@ def cleanup_recorded_checkout(
     )
 
 
+def cleanup_recorded_checkout(
+    root: Path,
+    record: Mapping[str, Any],
+    *,
+    record_path: Path,
+    unit: str,
+    run: Runner,
+    tool_root: Path = ROOT,
+    wrkslots: WrkslotsIdentity | None = None,
+) -> tuple[bool, list[str], str | None]:
+    """Remove a refused checkout only while its durable record is write-locked."""
+
+    if not record_claims_refused_admission(record):
+        return _cleanup_recorded_checkout_impl(
+            root,
+            record,
+            record_path=record_path,
+            unit=unit,
+            run=run,
+            tool_root=tool_root,
+            wrkslots=wrkslots,
+        )
+    try:
+        with run_registry.exclusive_record(record_path, blocking=False):
+            return _cleanup_recorded_checkout_impl(
+                root,
+                record,
+                record_path=record_path,
+                unit=unit,
+                run=run,
+                tool_root=tool_root,
+                wrkslots=wrkslots,
+                record_lock_held=True,
+            )
+    except run_registry.RecordLocked as error:
+        return False, [], f"run record is being updated; retained: {error}"
+
+
 def classify_recorded_cargo_home(
     root: Path, record: Mapping[str, Any]
 ) -> tuple[Path | None, str | None]:
@@ -2878,15 +2931,29 @@ def classify_recorded_cargo_home(
     return (private, None) if private.exists() else (None, None)
 
 
-def cleanup_recorded_cargo_home(
+def _cleanup_recorded_cargo_home_impl(
     root: Path,
     record: Mapping[str, Any],
     *,
     record_path: Path,
     run: Runner,
     tool_root: Path = ROOT,
+    record_lock_held: bool = False,
 ) -> tuple[bool, str | None]:
     """Recover one recorded per-run Cargo home after its unit is terminal."""
+    if record_claims_refused_admission(record) and not (
+        refused_admission_ledger_retirement_ready(
+            root,
+            record_path,
+            record,
+            record_lock_held=record_lock_held,
+        )
+    ):
+        return (
+            False,
+            "typed admission refusal is not a durable, canonical no-payload "
+            "record with a retirement-ready ledger disposition",
+        )
     private, reason = classify_recorded_cargo_home(root, record)
     if reason is not None:
         return False, reason
@@ -2923,6 +2990,38 @@ def cleanup_recorded_cargo_home(
     if private.exists():
         return False, "wrkslots reported success but the Cargo home still exists"
     return True, None
+
+
+def cleanup_recorded_cargo_home(
+    root: Path,
+    record: Mapping[str, Any],
+    *,
+    record_path: Path,
+    run: Runner,
+    tool_root: Path = ROOT,
+) -> tuple[bool, str | None]:
+    """Remove a refused Cargo home only while its run record is write-locked."""
+
+    if not record_claims_refused_admission(record):
+        return _cleanup_recorded_cargo_home_impl(
+            root,
+            record,
+            record_path=record_path,
+            run=run,
+            tool_root=tool_root,
+        )
+    try:
+        with run_registry.exclusive_record(record_path, blocking=False):
+            return _cleanup_recorded_cargo_home_impl(
+                root,
+                record,
+                record_path=record_path,
+                run=run,
+                tool_root=tool_root,
+                record_lock_held=True,
+            )
+    except run_registry.RecordLocked as error:
+        return False, f"run record is being updated; retained: {error}"
 
 
 def recorded_cleanup_path_exists(root: Path, record: Mapping[str, Any]) -> bool:
@@ -3185,7 +3284,7 @@ def discover_cleanup_groups(
 
 
 def terminal_cleanup_unit(
-    path: Path, record: Mapping[str, Any], *, run: Runner
+    root: Path, path: Path, record: Mapping[str, Any], *, run: Runner
 ) -> CleanupUnitObservation:
     try:
         unit = sanitize_unit(str(record.get("unit", path.stem)))
@@ -3204,7 +3303,7 @@ def terminal_cleanup_unit(
         properties is None
         and not service_result.is_evidenced_terminal(record)
         and not cleanup_record_allows_removal_attempt(
-            record, unit_absent=unit_absent
+            root, path, record, unit_absent=unit_absent
         )
     ):
         return CleanupUnitObservation(
@@ -3233,7 +3332,7 @@ def preflight_cleanup_group(
         return [hold]
     identities: set[WrkslotsIdentity] = set()
     for row in group.rows:
-        observation = terminal_cleanup_unit(row.path, row.record, run=run)
+        observation = terminal_cleanup_unit(root, row.path, row.record, run=run)
         row.unit = observation.unit
         if observation.reason is not None and not (
             read_only_ownerless and not group.managed
@@ -3443,7 +3542,7 @@ def sweep_completed_checkouts(
     for row in singles:
         if budget is not None:
             budget.remaining(f"classifying {row.path}")
-        observation = terminal_cleanup_unit(row.path, row.record, run=run)
+        observation = terminal_cleanup_unit(root, row.path, row.record, run=run)
         row.unit = observation.unit
         if (
             not classify_ownerless_only
@@ -3819,6 +3918,7 @@ def sweep_completed_checkouts(
                 removed.append(str(group.checkout))
 
     batch_groups = [group for group in prepared if group.managed and group.identity is not None]
+    defer_cargo_for_managed_batch = bool(batch_groups)
     # ⚠️ AUTHORISATION, WHICH IS A DIFFERENT QUESTION FROM THE CLASSIFICATION
     # THAT SELECTED THESE. Everything above decides which trees this sweep
     # MANAGES. This decides whether each may actually be REMOVED. A tree can be
@@ -3831,48 +3931,6 @@ def sweep_completed_checkouts(
     # A refusal is reported as a retention carrying its reason, the way every
     # other non-removal here already is, rather than aborting -- one protected
     # tree must not stop its peers being cleaned.
-    if batch_groups and not classify_ownerless_only:
-        # ONLY THE AUTHORED-WORK HALF IS ASKED HERE, deliberately. The other
-        # half -- is this tree a disposable validate slot -- is already settled
-        # upstream: `batch_groups` is filtered to groups that are `managed` and
-        # carry a wrkslots `identity`, which is what makes them validate slots.
-        # Re-deriving the kind from the registry at this point would ask a
-        # question already answered and would refuse any tree whose row the
-        # caller had not written, which is a property of the caller rather than
-        # of the tree.
-        authorised = []
-        for group in batch_groups:
-            measured = tree_disposition.authored_work(group.checkout, run=run)
-            if measured is None:
-                retained.append(
-                    {
-                        "checkout": str(group.checkout),
-                        "cleanup_failed": True,
-                        "reason": "authored-work state could not be read",
-                    }
-                )
-                continue
-            dirty, unpushed = measured
-            if dirty:
-                retained.append(
-                    {
-                        "checkout": str(group.checkout),
-                        "reason": f"holds {dirty} uncommitted path(s)",
-                    }
-                )
-            elif unpushed:
-                retained.append(
-                    {
-                        "checkout": str(group.checkout),
-                        "reason": (
-                            f"{unpushed} commit(s) reach no remote ref; preserve "
-                            "them to a rescue ref before removing"
-                        ),
-                    }
-                )
-            else:
-                authorised.append(group)
-        batch_groups = authorised
     if batch_groups:
         if classify_ownerless_only:
             retained.extend(
@@ -3887,20 +3945,95 @@ def sweep_completed_checkouts(
                 for group in batch_groups
             )
         else:
-            outcomes = remove_fresh_checkouts_batch(
-                root,
-                [(group.checkout, group.identity) for group in batch_groups],
-                run=run,
-                tool_root=tool_root,
-            )
-            for group in batch_groups:
-                reason = outcomes.get(str(group.checkout))
-                if reason is not None:
-                    retained.append(
-                        {"checkout": str(group.checkout), "reason": reason}
+            # The preflight above selects candidates, but it is not deletion
+            # authority: a waiter or owner-watch repair can still update a run
+            # handle after that read. Hold every exact run-record lock from a
+            # fresh byte-for-byte read through the provider's destructive
+            # batch. A contended or changed group is retained without keeping
+            # unrelated groups from making progress.
+            with ExitStack() as held_group_locks:
+                authorised: list[CleanupGroup] = []
+                for group in batch_groups:
+                    group_locks = ExitStack()
+                    try:
+                        for row in sorted(group.rows, key=lambda item: str(item.path)):
+                            group_locks.enter_context(
+                                run_registry.exclusive_record(
+                                    row.path, blocking=False
+                                )
+                            )
+                        for row in group.rows:
+                            durable = run_registry.read_record(row.path)
+                            if durable != row.record:
+                                raise RuntimeError(
+                                    "run record changed after cleanup preflight"
+                                )
+                            if record_claims_refused_admission(durable) and not (
+                                cell_ledger_retirement_ready(
+                                    root,
+                                    row.path,
+                                    durable,
+                                    record_lock_held=True,
+                                )
+                            ):
+                                raise RuntimeError(
+                                    "typed admission refusal lost its durable "
+                                    "no-payload cleanup authority"
+                                )
+                        # ONLY THE AUTHORED-WORK HALF IS ASKED HERE. The group
+                        # is already a registered validate slot; re-deriving
+                        # that kind would reject trees based on caller shape.
+                        measured = tree_disposition.authored_work(
+                            group.checkout, run=run
+                        )
+                        if measured is None:
+                            raise RuntimeError(
+                                "authored-work state could not be read"
+                            )
+                        dirty, unpushed = measured
+                        if dirty:
+                            raise RuntimeError(
+                                f"holds {dirty} uncommitted path(s)"
+                            )
+                        if unpushed:
+                            raise RuntimeError(
+                                f"{unpushed} commit(s) reach no remote ref; "
+                                "preserve them to a rescue ref before removing"
+                            )
+                    except (OSError, RuntimeError, ValueError) as error:
+                        group_locks.close()
+                        retained.append(
+                            {
+                                "checkout": str(group.checkout),
+                                "reason": str(error),
+                            }
+                        )
+                        continue
+                    held_group_locks.callback(group_locks.close)
+                    authorised.append(group)
+
+                outcomes = (
+                    remove_fresh_checkouts_batch(
+                        root,
+                        [
+                            (group.checkout, group.identity)
+                            for group in authorised
+                            if group.identity is not None
+                        ],
+                        run=run,
+                        tool_root=tool_root,
                     )
-                else:
-                    removed.append(str(group.checkout))
+                    if authorised
+                    else {}
+                )
+                for group in authorised:
+                    reason = outcomes.get(str(group.checkout))
+                    if reason is not None:
+                        retained.append(
+                            {"checkout": str(group.checkout), "reason": reason}
+                        )
+                    else:
+                        removed.append(str(group.checkout))
 
     cargo_candidates: dict[str, tuple[Path, list[CleanupRow]]] = {}
     for row in singles + [row for group in selected for row in group.rows]:
@@ -3931,7 +4064,7 @@ def sweep_completed_checkouts(
                 }
             )
             continue
-        if batch_groups:
+        if defer_cargo_for_managed_batch:
             deferred.append(
                 {
                     "checkout": str(cargo_home),
@@ -4970,13 +5103,18 @@ def service_properties(
 
 
 def cleanup_record_allows_removal_attempt(
-    record: Mapping[str, Any], *, unit_absent: bool
+    root: Path,
+    record_path: Path,
+    record: Mapping[str, Any],
+    *,
+    unit_absent: bool,
 ) -> bool:
     """Allow the downstream liveness-checked removal without changing a verdict.
 
-    Refused admission proves that no validation payload started, but the
-    validate-lock supervisor may still be returning.  The wrkslots removal
-    path remains responsible for proving that no process uses the target.
+    Refused admission authorizes an attempt only after the durable canonical
+    handle also carries the exact no-payload ledger disposition. The
+    validate-lock supervisor may still be returning, so wrkslots remains
+    responsible for proving that no process uses the target.
     """
 
     try:
@@ -4989,7 +5127,7 @@ def cleanup_record_allows_removal_attempt(
     if admission is None:
         return False
     if admission.state is run_registry.AdmissionState.REFUSED:
-        return True
+        return refused_admission_ledger_retirement_ready(root, record_path, record)
     return unit_absent and admission.state is run_registry.AdmissionState.ADMITTED
 
 
@@ -5810,7 +5948,9 @@ def publish_recorded_scorecard_handoff(
         # result proves that no ledger row applies. Neither has a new local
         # scorecard file set to copy; older records retain their original path.
         return None
-    if cleanup_record_allows_removal_attempt(record, unit_absent=False):
+    if cleanup_record_allows_removal_attempt(
+        root, record_path, record, unit_absent=False
+    ):
         # A typed admission refusal proves that the validation payload never
         # started. A materialized checkout may already exist at that point,
         # but there can be no generated scorecard to hand off. Requiring a
@@ -5973,6 +6113,13 @@ LEDGER_MIRROR_NOT_APPLICABLE = "not-applicable"
 PRE_DAG_NO_RESULT_DETAIL = (
     "authoritative schema-5 COULD_NOT_RUN executed zero nodes and tests"
 )
+ADMISSION_REFUSAL_NO_PAYLOAD_DETAIL = (
+    "typed admission refusal proves the validation payload never started"
+)
+LEGACY_ADMISSION_REFUSAL_LEDGER_ERROR = (
+    "finalized proof preparation failed: finalized producer run has no unique "
+    "canonical terminal"
+)
 CELL_LEDGER_REPOSITORY = "https://github.com/rrnewton/hermit_test_ledger.git"
 
 
@@ -5994,6 +6141,299 @@ def cell_ledger_published(record: Mapping[str, Any]) -> bool:
         and publication["scorecard"].get("state") == "published"
         and publication["scorecard"].get("hermit_commit") == record.get("target")
     )
+
+
+def typed_admission_refusal(
+    record: Mapping[str, Any],
+) -> run_registry.RunHandle | None:
+    """Return the current typed handle only when validate-lock refused it."""
+
+    try:
+        handle = run_registry.parse_current_record(record)
+    except (RuntimeError, TypeError, ValueError):
+        return None
+    admission = handle.admission_result
+    if (
+        handle.kind is not run_registry.RunKind.VALIDATE
+        or admission is None
+        or admission.state is not run_registry.AdmissionState.REFUSED
+    ):
+        return None
+    return handle
+
+
+def record_claims_refused_admission(record: Mapping[str, Any]) -> bool:
+    """Fail closed before generic ledger handling when a refusal is malformed."""
+
+    admission = record.get("admission_result")
+    return isinstance(admission, dict) and admission.get("state") == "refused"
+
+
+def admission_refusal_has_no_payload_evidence(record: Mapping[str, Any]) -> bool:
+    """Reject any refused handle that also claims product execution or output."""
+
+    handle = typed_admission_refusal(record)
+    if (
+        handle is None
+        or handle.repo != "rrnewton/hermit"
+        or handle.state
+        not in {
+            run_registry.RunState.LAUNCHING,
+            run_registry.RunState.RUNNING,
+            run_registry.RunState.UNKNOWN,
+        }
+        or handle.raw.get("result") not in {None, "unknown"}
+    ):
+        return False
+    return all(
+        handle.raw.get(field) is None
+        for field in (
+            "exit_code",
+            "executed_nodes",
+            "executed_tests",
+            "passed_tests",
+            "final_validate_status",
+            "canonical_verdict",
+            "wrapper_exit_code",
+            "measured_result",
+            "commit_status_publication",
+            "signal",
+            "scorecard_writeback",
+            "scorecard_writeback_files",
+            "scorecard_handoff",
+        )
+    )
+
+
+def refusal_wait_observation_has_no_payload(
+    record: Mapping[str, Any], final: Mapping[str, Any]
+) -> bool:
+    """Classify a waiter's terminal wrapper observation without persisting it.
+
+    ``wait_for_unit`` always reports the service wrapper's exit code, including
+    when validate-lock refused before starting the product payload. That
+    ephemeral wrapper status is not product evidence, but a durable exit code
+    already present in the handle remains a contradiction. Ignore only the
+    newly observed wrapper exit while requiring every product field to retain
+    the strict no-payload shape.
+    """
+
+    if record.get("exit_code") is not None:
+        return False
+    candidate = {**record, **final, "exit_code": None}
+    return admission_refusal_has_no_payload_evidence(candidate)
+
+
+def _admission_refusal_is_authoritative_locked(
+    root: Path, record_path: Path, record: Mapping[str, Any]
+) -> bool:
+    """Verify refusal evidence while the caller holds the run-record lock."""
+
+    if not admission_refusal_has_no_payload_evidence(record):
+        return False
+    handle = typed_admission_refusal(record)
+    assert handle is not None
+    record_identity_fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_uid",
+        "st_gid",
+        "st_nlink",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    )
+    directory_identity_fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_uid",
+        "st_gid",
+    )
+    try:
+        canonical_root = root.resolve(strict=True)
+        run_registry.require_no_owner_watch_correction(canonical_root)
+        expected = run_registry.record_path(canonical_root, handle.unit)
+        lexical = Path(os.path.abspath(os.fspath(record_path)))
+        if lexical != expected:
+            return False
+        parent = expected.parent
+        if parent.resolve(strict=True) != parent:
+            return False
+        parent_descriptor = os.open(
+            parent,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+        try:
+            parent_before = os.fstat(parent_descriptor)
+            parent_path_before = os.lstat(parent)
+            if not stat.S_ISDIR(parent_before.st_mode):
+                return False
+            before = os.stat(
+                expected.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                return False
+            descriptor = os.open(
+                expected.name,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=parent_descriptor,
+            )
+            try:
+                opened_before = os.fstat(descriptor)
+                with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                    payload = stream.read()
+                opened_after = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            after = os.stat(
+                expected.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            result_path = service_result.result_path(expected)
+            if result_path.parent != parent:
+                return False
+            try:
+                os.stat(
+                    result_path.name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                return False
+            os.fsync(parent_descriptor)
+            final = os.stat(
+                expected.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            parent_after = os.fstat(parent_descriptor)
+            parent_path_after = os.lstat(parent)
+            run_registry.require_no_owner_watch_correction(canonical_root)
+        finally:
+            os.close(parent_descriptor)
+    except (FileNotFoundError, NotADirectoryError, OSError, RuntimeError, ValueError):
+        return False
+    if any(
+        getattr(before, field) != getattr(opened_before, field)
+        or getattr(opened_before, field) != getattr(opened_after, field)
+        or getattr(opened_after, field) != getattr(after, field)
+        or getattr(after, field) != getattr(final, field)
+        for field in record_identity_fields
+    ) or any(
+        getattr(parent_before, field) != getattr(parent_path_before, field)
+        or getattr(parent_path_before, field) != getattr(parent_after, field)
+        or getattr(parent_after, field) != getattr(parent_path_after, field)
+        for field in directory_identity_fields
+    ):
+        return False
+    try:
+        durable = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+    if not isinstance(durable, dict):
+        return False
+    return durable == dict(record) and admission_refusal_has_no_payload_evidence(durable)
+
+
+def admission_refusal_is_authoritative(
+    root: Path, record_path: Path, record: Mapping[str, Any]
+) -> bool:
+    """Bind no-payload evidence under the canonical run-record writer lock."""
+
+    try:
+        with run_registry.exclusive_record(record_path, blocking=False):
+            return _admission_refusal_is_authoritative_locked(
+                root, record_path, record
+            )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def legacy_refused_admission_ledger_noop(publication: object) -> bool:
+    """Recognize the exact old mirror failure that provably published zero rows."""
+
+    if not isinstance(publication, dict) or set(publication) != {
+        "commit",
+        "detail",
+        "raw_publication",
+        "recorded_at",
+        "repository",
+        "rows",
+        "scorecard",
+        "series_commit",
+        "source_commit",
+        "source_repository",
+        "source_tree",
+        "state",
+    }:
+        return False
+    commits = tuple(
+        publication.get(field)
+        for field in ("commit", "series_commit", "source_commit")
+    )
+    raw_publication = publication.get("raw_publication")
+    zero_raw_publication = (
+        isinstance(raw_publication, dict)
+        and set(raw_publication)
+        == {"attempts", "commit", "published", "reaped_retained", "shards"}
+        and all(
+            type(raw_publication.get(field)) is int
+            and raw_publication[field] == 0
+            for field in ("attempts", "published", "reaped_retained")
+        )
+        and raw_publication.get("commit") is None
+        and raw_publication.get("shards") == []
+    )
+    return (
+        publication.get("state") == "derived-failed"
+        and publication.get("repository") == CELL_LEDGER_REPOSITORY
+        and publication.get("source_repository") == CELL_LEDGER_REPOSITORY
+        and publication.get("detail") == LEGACY_ADMISSION_REFUSAL_LEDGER_ERROR
+        and publication.get("scorecard")
+        == {"state": "failed", "error": LEGACY_ADMISSION_REFUSAL_LEDGER_ERROR}
+        and zero_raw_publication
+        and isinstance(publication.get("recorded_at"), str)
+        and bool(publication["recorded_at"].strip())
+        and isinstance(publication.get("rows"), int)
+        and not isinstance(publication.get("rows"), bool)
+        and publication["rows"] >= 0
+        and all(isinstance(value, str) and SHA_RE.fullmatch(value) for value in commits)
+        and len(set(commits)) == 1
+        and isinstance(publication.get("source_tree"), str)
+        and SHA_RE.fullmatch(publication["source_tree"]) is not None
+    )
+
+
+def refused_admission_ledger_retirement_ready(
+    root: Path,
+    record_path: Path,
+    record: Mapping[str, Any],
+    *,
+    record_lock_held: bool = False,
+) -> bool:
+    publication = record.get("ledger_mirror")
+    marker = (
+        isinstance(publication, dict)
+        and set(publication)
+        == {"state", "recorded_at", "repository", "detail"}
+        and publication.get("state") == LEDGER_MIRROR_NOT_APPLICABLE
+        and publication.get("repository") == CELL_LEDGER_REPOSITORY
+        and publication.get("detail") == ADMISSION_REFUSAL_NO_PAYLOAD_DETAIL
+        and isinstance(publication.get("recorded_at"), str)
+        and bool(publication["recorded_at"].strip())
+    )
+    if not marker and not legacy_refused_admission_ledger_noop(publication):
+        return False
+    if record_lock_held:
+        return _admission_refusal_is_authoritative_locked(root, record_path, record)
+    return admission_refusal_is_authoritative(root, record_path, record)
 
 
 def pre_dag_no_result_is_authoritative(
@@ -6054,9 +6494,23 @@ def pre_dag_no_result_is_authoritative(
 
 
 def cell_ledger_retirement_ready(
-    root: Path, record_path: Path, record: Mapping[str, Any]
+    root: Path,
+    record_path: Path,
+    record: Mapping[str, Any],
+    *,
+    record_lock_held: bool = False,
 ) -> bool:
     """Accept publication, or a durable proof that no ledger row can exist."""
+    # A typed admission refusal and a published ledger result are mutually
+    # exclusive claims about this attempt. Do not let the generic publication
+    # branch turn that contradiction into deletion authority.
+    if record_claims_refused_admission(record):
+        return refused_admission_ledger_retirement_ready(
+            root,
+            record_path,
+            record,
+            record_lock_held=record_lock_held,
+        )
     if cell_ledger_published(record):
         return True
     publication = record.get("ledger_mirror")
@@ -6329,13 +6783,66 @@ def finalize_ledger_mirror(
     run: Runner,
     lifecycle_deadline_ns: int | None = None,
 ) -> dict[str, Any]:
-    """Publish directly to the cell ledger after the validation verdict exists."""
+    """Publish a verdict, or durably record why no ledger row can exist."""
     started_ns = time.monotonic_ns()
     deadline_ns = min(started_ns + 1800 * 1_000_000_000,
                       lifecycle_deadline_ns if lifecycle_deadline_ns is not None
                       else started_ns + 1800 * 1_000_000_000)
     if cell_ledger_retirement_ready(root, record_path, record):
         return dict(record)
+    if record_claims_refused_admission(record):
+        # validate-lock is the admission boundary for the product payload. Its
+        # typed refusal is immutable, so attempting to derive a ledger row here
+        # is both unnecessary and misleading. Historical versions did exactly
+        # that and produced a derived-failed mirror record over an otherwise
+        # evidence-free checkout. Preserve any contradictory evidence rather
+        # than overwriting it, and mark only the exact durable/no-sidecar shape.
+        if not admission_refusal_is_authoritative(root, record_path, record):
+            print(
+                "validate-run: CELL LEDGER NOT ATTEMPTED: typed admission refusal "
+                "conflicts with payload evidence or is not the durable canonical "
+                "handle; original results retained.",
+                file=sys.stderr,
+            )
+            return dict(record)
+        if "ledger_mirror" in record:
+            print(
+                "validate-run: CELL LEDGER NOT ATTEMPTED: typed admission refusal "
+                "already carries a non-retirement-ready ledger disposition; original "
+                "results retained.",
+                file=sys.stderr,
+            )
+            return dict(record)
+        outcome = {
+            "state": LEDGER_MIRROR_NOT_APPLICABLE,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "repository": CELL_LEDGER_REPOSITORY,
+            "detail": ADMISSION_REFUSAL_NO_PAYLOAD_DETAIL,
+        }
+        print(
+            "validate-run: CELL LEDGER NOT APPLICABLE: "
+            f"{ADMISSION_REFUSAL_NO_PAYLOAD_DETAIL}; no row was published.",
+            file=sys.stderr,
+        )
+        updated = bookkeep_record(
+            record_path,
+            base_record=record,
+            ledger_mirror=outcome,
+        )
+        # ``update_record`` fsyncs the replacement file before rename. The
+        # directory sync is the durability boundary for that new name and must
+        # complete before any caller may use the marker to delete its source
+        # checkout or Cargo/runtime storage.
+        try:
+            _fsync_directory(record_path.parent)
+        except OSError as error:
+            print(
+                "validate-run: CELL LEDGER NOT APPLICABLE marker is not "
+                f"directory-durable: {error}; original results retained.",
+                file=sys.stderr,
+            )
+            return dict(record)
+        return updated
     # Historical reattachment reads its existing handoff. It must not turn an
     # old/retired source checkout into a new publication observation.
     if record.get("state") == "unknown" and record.get("service_result_schema") in {
@@ -6537,6 +7044,7 @@ def cleanup_after_attach(
     retain_checkout_reason: str | None = None,
 ) -> None:
     """Finish cleanup owned by a caller that previously stopped waiting."""
+    associated_cleanup_allowed = not record_claims_refused_admission(record)
     if retain_checkout_reason is not None:
         print(
             "validate-run: completed checkout RETAINED at "
@@ -6561,7 +7069,8 @@ def cleanup_after_attach(
             )
         else:
             if cleaned:
-                bookkeep_record(
+                associated_cleanup_allowed = True
+                record = bookkeep_record(
                     record_path,
                     checkout_removed_at=datetime.now(timezone.utc).isoformat(),
                     archived_orphaned_receipts=archived,
@@ -6571,6 +7080,17 @@ def cleanup_after_attach(
                     f"validate-run: completed checkout RETAINED: {reason}",
                     file=sys.stderr,
                 )
+            else:
+                # No removable checkout was present. There is no partial
+                # cleanup whose evidence must remain coupled to the Cargo home.
+                associated_cleanup_allowed = True
+    if not associated_cleanup_allowed:
+        print(
+            "validate-run: completed Cargo home RETAINED with its refused "
+            "checkout because checkout cleanup did not complete",
+            file=sys.stderr,
+        )
+        return
     try:
         cargo_cleaned, cargo_reason = cleanup_recorded_cargo_home(
             root,
@@ -6671,10 +7191,11 @@ def retire_unit_after_writeback(
     unit = sanitize_unit(raw_unit)
     record_path = run_registry.record_path(root, unit)
     if not record_path.exists():
-        # A unit refused at admission never writes a handle, and ExecStopPost
-        # runs for it all the same. There is nothing to retire and nothing has
-        # gone wrong; exiting non-zero here would put a failing teardown in the
-        # journal of every refused launch and train readers to ignore it.
+        # A refusal before the launcher creates its handle can still reach
+        # ExecStopPost. (A later validate-lock refusal does have a typed handle
+        # and is handled below.) There is nothing to retire and nothing has gone
+        # wrong; exiting non-zero here would put a failing teardown in the
+        # journal of every pre-handle refusal and train readers to ignore it.
         print(
             f"validate-run: RETIRE-SKIPPED {unit}: no run handle at {record_path}, "
             "so this unit recorded no checkout to retire.",
@@ -6717,58 +7238,95 @@ def retire_unit_after_writeback(
         lifecycle_deadline_ns=lifecycle_deadline_ns,
     )
 
-    checkout = Path(raw_checkout)
-    if not cell_ledger_retirement_ready(root, record_path, record):
-        print(
-            f"validate-run: RETIRE-REFUSED {unit}: direct cell-ledger publication "
-            "is incomplete; original results and checkout are retained.",
-            file=sys.stderr,
-        )
-        return EXIT_COULD_NOT_DETERMINE
-    handoff = (
-        f"{CELL_LEDGER_REPOSITORY}@{record['ledger_mirror']['commit']}"
-        if cell_ledger_published(record)
-        else "cell ledger not applicable for typed pre-DAG no-result"
-    )
+    def finish_retirement(
+        current: Mapping[str, Any], *, record_lock_held: bool
+    ) -> int:
+        current_checkout = current.get("checkout")
+        if not isinstance(current_checkout, str):
+            print(
+                f"validate-run: RETIRE-REFUSED {unit}: durable record lost its "
+                "checkout path; original results retained.",
+                file=sys.stderr,
+            )
+            return EXIT_COULD_NOT_DETERMINE
+        checkout = Path(current_checkout)
+        if not cell_ledger_retirement_ready(
+            root,
+            record_path,
+            current,
+            record_lock_held=record_lock_held,
+        ):
+            print(
+                f"validate-run: RETIRE-REFUSED {unit}: direct cell-ledger "
+                "publication is incomplete; original results and checkout are "
+                "retained.",
+                file=sys.stderr,
+            )
+            return EXIT_COULD_NOT_DETERMINE
+        if cell_ledger_published(current):
+            handoff = f"{CELL_LEDGER_REPOSITORY}@{current['ledger_mirror']['commit']}"
+        elif (
+            current["ledger_mirror"].get("detail")
+            == ADMISSION_REFUSAL_NO_PAYLOAD_DETAIL
+        ):
+            handoff = "cell ledger not applicable for typed admission refusal"
+        elif legacy_refused_admission_ledger_noop(current["ledger_mirror"]):
+            handoff = "legacy admission-refusal mirror published zero rows"
+        else:
+            handoff = "cell ledger not applicable for typed pre-DAG no-result"
 
-    identity = recorded_wrkslots_identity(record, checkout)
-    if identity is None:
-        print(
-            f"validate-run: RETIRE-REFUSED {unit}: no exact wrkslots identity, so "
-            "the checkout cannot be retired by identity.",
-            file=sys.stderr,
+        identity = recorded_wrkslots_identity(current, checkout)
+        if identity is None:
+            print(
+                f"validate-run: RETIRE-REFUSED {unit}: no exact wrkslots "
+                "identity, so the checkout cannot be retired by identity.",
+                file=sys.stderr,
+            )
+            return EXIT_COULD_NOT_DETERMINE
+        if not checkout.exists():
+            print(
+                f"validate-run: RETIRE-ALREADY-ABSENT {unit}: {checkout}; "
+                f"retirement evidence {handoff} is durable and no path was removed.",
+                file=sys.stderr,
+            )
+            return 0
+
+        # THE SAME AUTHORISATION THE SWEEP APPLIES, because this path removes
+        # too and must not become the way around it. A checkout holding
+        # uncommitted paths is retained whatever its record says.
+        measured = tree_disposition.authored_work(checkout, run=run)
+        if measured is None or measured[0]:
+            print(
+                f"validate-run: RETIRE-REFUSED {unit}: the checkout holds "
+                "authored work or its state could not be read; the retirement "
+                "evidence is durable and the checkout is retained.",
+                file=sys.stderr,
+            )
+            return EXIT_COULD_NOT_DETERMINE
+
+        outcomes = remove_fresh_checkouts_batch(
+            root, [(checkout, identity)], run=run, tool_root=tool_root
         )
-        return EXIT_COULD_NOT_DETERMINE
-    if not checkout.exists():
-        print(
-            f"validate-run: RETIRE-ALREADY-ABSENT {unit}: {checkout}; "
-            f"retirement evidence {handoff} is durable and no path was removed.",
-            file=sys.stderr,
-        )
+        reason = outcomes.get(str(checkout))
+        if reason is not None:
+            print(f"validate-run: RETIRE-RETAINED {unit}: {reason}", file=sys.stderr)
+            return EXIT_COULD_NOT_DETERMINE
+        print(f"validate-run: RETIRED {unit}: handoff {handoff}", file=sys.stderr)
         return 0
 
-    # THE SAME AUTHORISATION THE SWEEP APPLIES, because this path removes too and
-    # must not become the way around it. A checkout holding uncommitted paths is
-    # retained whatever its record says.
-    measured = tree_disposition.authored_work(checkout, run=run)
-    if measured is None or measured[0]:
+    if not record_claims_refused_admission(record):
+        return finish_retirement(record, record_lock_held=False)
+    try:
+        with run_registry.exclusive_record(record_path, blocking=False):
+            durable = run_registry.read_record(record_path)
+            return finish_retirement(durable, record_lock_held=True)
+    except (run_registry.RecordLocked, RuntimeError) as error:
         print(
-            f"validate-run: RETIRE-REFUSED {unit}: the checkout holds authored work "
-            "or its state could not be read; the retirement evidence is durable and the "
-            "checkout is retained.",
+            f"validate-run: RETIRE-REFUSED {unit}: cannot hold durable refusal "
+            f"authority through cleanup: {error}; original results retained.",
             file=sys.stderr,
         )
         return EXIT_COULD_NOT_DETERMINE
-
-    outcomes = remove_fresh_checkouts_batch(
-        root, [(checkout, identity)], run=run, tool_root=tool_root
-    )
-    reason = outcomes.get(str(checkout))
-    if reason is not None:
-        print(f"validate-run: RETIRE-RETAINED {unit}: {reason}", file=sys.stderr)
-        return EXIT_COULD_NOT_DETERMINE
-    print(f"validate-run: RETIRED {unit}: handoff {handoff}", file=sys.stderr)
-    return 0
 
 
 def attach(
@@ -6799,7 +7357,62 @@ def attach(
         poll_seconds=poll_seconds,
         sleep=sleep,
     )
-    updated = bookkeep_record(record_path, base_record=record, **final)
+    try:
+        latest = run_registry.read_record(record_path)
+    except RuntimeError as error:
+        return could_not_determine(
+            f"durable run handle unavailable after wait: {error}; checkout and "
+            "Cargo home retained",
+            "repair the run-handle authority before retrying",
+        )
+    if record_claims_refused_admission(latest):
+        # An attached waiter has the same typed admission evidence as the direct
+        # waiter. Do not query the canonical result ledger for a payload that
+        # validate-lock proved never started. A service wrapper exit observed
+        # while waiting is intentionally not persisted as a product exit. Any
+        # other terminal/product evidence is preserved and blocks cleanup.
+        if not refusal_wait_observation_has_no_payload(latest, final):
+            bookkeep_record(record_path, base_record=latest, **final)
+            return could_not_determine(
+                "typed admission refusal contradicts terminal or product "
+                "evidence; checkout and Cargo home retained",
+                "inspect the durable run handle and framework result sidecar "
+                "before retrying",
+            )
+        updated = finalize_ledger_mirror(
+            root,
+            tool_root,
+            record_path,
+            record=latest,
+            run=run,
+        )
+        refused = typed_admission_refusal(updated)
+        if refused is None or not cell_ledger_retirement_ready(
+            root, record_path, updated
+        ):
+            return could_not_determine(
+                "typed admission refusal is malformed, contradicts payload "
+                "evidence, or is not the durable canonical handle; checkout "
+                "and Cargo home retained",
+                "inspect the durable run handle and framework result sidecar "
+                "before retrying",
+            )
+        cleanup_after_attach(
+            root,
+            record_path,
+            updated,
+            unit=unit,
+            run=run,
+            tool_root=tool_root,
+        )
+        reason = refused.admission_result.reason
+        return could_not_determine(
+            f"typed admission refused ({reason.value if reason else 'unknown'}); "
+            "the validation payload never ran and no verdict exists",
+            "correct the admission condition and retry; do not treat this attempt "
+            "as either pass or failure",
+        )
+    updated = bookkeep_record(record_path, base_record=latest, **final)
     updated = finalize_reverie_counts(root, tool_root, record_path, record=updated)
     if record.get("validation_kind") == FROZEN_VALIDATE_KIND:
         try:
@@ -8024,7 +8637,7 @@ def main(
             sleep=sleep,
             stream=None if args.json else LogTail(log),
         )
-        updated = run_registry.update_record(record_path, **final)
+        latest = run_registry.read_record(record_path)
     except RuntimeError as error:
         # The run OUTLIVES this waiter by design, so its temp checkout must too:
         # removing it here would delete the tree out from under a live validate.
@@ -8041,32 +8654,65 @@ def main(
             "to resume watching it, or read its log directly",
         )
 
-    try:
-        completed_handle = run_registry.parse_current_record(updated)
-    except RuntimeError:
-        # Malformed or missing admission evidence is handled by the existing
-        # canonical-evidence path below, which remains fail closed.
-        completed_handle = None
-    if (
-        completed_handle is not None
-        and completed_handle.admission_result is not None
-        and completed_handle.admission_result.state
-        is run_registry.AdmissionState.REFUSED
-    ):
+    if record_claims_refused_admission(latest):
         # The producer has proved that validate-lock never admitted the product
         # payload. There can be no result for this attempt, so querying or
         # publishing the canonical ledger would only conflate a prior commit
-        # verdict with this rejected run. The cleanup helper still performs the
-        # normal receipt inventory plus wrkslots liveness checks before removal.
-        cleanup = cleanup_current_fresh_preserving_receipts()
-        report_inner_refusal_cleanup(cleanup)
-        remove_private_cargo_home(private_cargo_home, run=run)
-        remove_runtime_root(runtime_root, run=run)
+        # verdict with this rejected run. Bind the claim to the durable canonical
+        # handle and a no-ledger disposition before any cleanup. Contradictory or
+        # malformed refusal records retain all storage and never reach the
+        # canonical query.
+        if not refusal_wait_observation_has_no_payload(latest, final):
+            bookkeep_record(record_path, base_record=latest, **final)
+            return could_not_determine(
+                "typed admission refusal contradicts terminal or product "
+                "evidence; checkout, Cargo home, and runtime root retained",
+                "inspect the durable run handle and framework result sidecar "
+                "before retrying",
+            )
+        updated = finalize_ledger_mirror(
+            state_root,
+            tool_root,
+            record_path,
+            record=latest,
+            run=run,
+        )
+        try:
+            with run_registry.exclusive_record(record_path, blocking=False):
+                durable = run_registry.read_record(record_path)
+                completed_handle = typed_admission_refusal(durable)
+                if completed_handle is None or not cell_ledger_retirement_ready(
+                    state_root,
+                    record_path,
+                    durable,
+                    record_lock_held=True,
+                ):
+                    return could_not_determine(
+                        "typed admission refusal is malformed, contradicts payload "
+                        "evidence, or is not the durable canonical handle; checkout, "
+                        "Cargo home, and runtime root retained",
+                        "inspect the durable run handle and framework result sidecar "
+                        "before retrying",
+                    )
+                cleanup = cleanup_current_fresh_preserving_receipts()
+                report_inner_refusal_cleanup(cleanup)
+                if cleanup.removed:
+                    remove_private_cargo_home(private_cargo_home, run=run)
+                    remove_runtime_root(runtime_root, run=run)
+        except (OSError, RuntimeError, ValueError) as error:
+            return could_not_determine(
+                f"typed admission refusal cleanup could not hold its durable "
+                f"run-record authority: {error}; checkout, Cargo home, and "
+                "runtime root retained",
+                "retry only after the run-record writer finishes",
+            )
         refusal = completed_handle.admission_result.reason
-        if cleanup.error is not None:
+        if not cleanup.removed:
+            cleanup_detail = cleanup.error or "checkout removal did not complete"
             return could_not_determine(
                 f"typed admission refused ({refusal.value if refusal else 'unknown'}), "
-                f"and no-evidence cleanup could not be established: {cleanup.error}",
+                "but the no-evidence checkout was retained: "
+                f"{cleanup_detail}",
                 f"inspect the retained checkout at {fresh_checkout} before retrying",
             )
         return could_not_determine(
@@ -8075,6 +8721,8 @@ def main(
             "correct the admission condition and retry; do not treat this attempt "
             "as either pass or failure",
         )
+
+    updated = run_registry.update_record(record_path, **final)
 
     updated = finalize_reverie_counts(state_root, tool_root, record_path, record=updated)
     if args.frozen_validate:
