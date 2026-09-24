@@ -16279,9 +16279,81 @@ fn sendfile_stdin_matches_native_on_kvm(writable: bool) {
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+
+static int readonly_offset_checks(int source, const char *source_path) {
+  const uint64_t outputs[] = {
+      0, UINT64_C(0x5a5a5a5a00000000), UINT64_C(0xffffffff00000000)};
+  const struct {
+    const char *name;
+    off_t offset;
+    size_t count;
+    int pointer_kind; // 0: valid; 1: inaccessible; 2: NULL.
+    int error;
+  } cases[] = {
+      {"inaccessible", 2, 2, 1, EFAULT},
+      {"inaccessible zero count", 2, 0, 1, EFAULT},
+      {"negative", -1, 2, 0, EINVAL},
+      {"minimum", INT64_MIN, 2, 0, EINVAL},
+      {"maximum overflow", INT64_MAX, 1, 0, EINVAL},
+      {"maximum minus one overflow", INT64_MAX - 1, 2, 0, EINVAL},
+      {"maximum minus one valid", INT64_MAX - 1, 1, 0, EBADF},
+      {"maximum zero count", INT64_MAX, 0, 0, EBADF},
+      {"negative zero count", -1, 0, 0, EINVAL},
+      {"normal", 0, 2, 0, EBADF},
+      {"normal zero count", 2, 0, 0, EBADF},
+      {"null", 2, 2, 2, EBADF},
+      {"null zero count", 2, 0, 2, EBADF},
+  };
+  int failures = 0;
+  for (unsigned encoding = 0; encoding < 3; ++encoding) {
+    for (unsigned row = 0; row < sizeof(cases) / sizeof(cases[0]); ++row) {
+      off_t offset = cases[row].offset;
+      off_t *pointer = cases[row].pointer_kind == 1
+          ? (off_t *)(uintptr_t)UINT64_C(0xfffffffffffff000)
+          : cases[row].pointer_kind == 2 ? NULL : &offset;
+      if (lseek(source, 1, SEEK_SET) != 1) return 60;
+      errno = 0;
+      long result = syscall(SYS_sendfile, outputs[encoding], (uint32_t)source,
+                            pointer, cases[row].count);
+      int error = errno;
+      if (lseek(source, 0, SEEK_CUR) != 1 || offset != cases[row].offset) return 61;
+      if (result != -1 || error != cases[row].error) {
+        fprintf(stderr, "offset encoding=%u case=%s result=%ld errno=%d expected=%d\n",
+                encoding, cases[row].name, result, error, cases[row].error);
+        ++failures;
+      }
+    }
+  }
+  int write_only = open(source_path, O_WRONLY);
+  int closed = dup(source);
+  if (write_only < 0 || closed < 0 || close(closed)) return 62;
+  const int bad_inputs[] = {write_only, closed};
+  for (unsigned encoding = 0; encoding < 3; ++encoding) {
+    for (unsigned input = 0; input < 2; ++input) {
+      // The four negative/overflow rows must not hide invalid input access.
+      for (unsigned row = 2; row < 6; ++row) {
+        off_t offset = cases[row].offset;
+        errno = 0;
+        long result = syscall(SYS_sendfile, outputs[encoding],
+                              (uint32_t)bad_inputs[input], &offset, cases[row].count);
+        int error = errno;
+        if (offset != cases[row].offset || lseek(source, 0, SEEK_CUR) != 1 ||
+            lseek(write_only, 0, SEEK_CUR) != 0) return 63;
+        if (result != -1 || error != EBADF) {
+          fprintf(stderr, "input guard encoding=%u input=%u row=%u result=%ld errno=%d\n",
+                  encoding, input, row, result, error);
+          ++failures;
+        }
+      }
+    }
+  }
+  if (close(write_only)) return 64;
+  return failures ? 65 : 0;
+}
 
 int main(int argc, char **argv) {
   if (argc != 3) return 1;
@@ -16332,6 +16404,8 @@ int main(int argc, char **argv) {
     }
     if (close(pipes[0]) || close(pipes[1]) || close(sockets[0]) ||
         close(sockets[1]) || close(directory) || close(proc)) return 9;
+    int offset_checks = readonly_offset_checks(source, argv[1]);
+    if (offset_checks) return offset_checks;
   } else {
     for (unsigned encoding = 0; encoding < 2; ++encoding) {
       off_t offset = 2;

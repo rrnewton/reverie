@@ -6519,6 +6519,43 @@ fn is_regular_host_file(file: &std::fs::File) -> Result<bool, i64> {
     Ok(file_mode(file)? & libc::S_IFMT == libc::S_IFREG)
 }
 
+fn resolve_sendfile_input(
+    state: &LoadedStaticElf,
+    in_fd: libc::c_int,
+) -> Result<&std::fs::File, i64> {
+    // A live unsupported endpoint takes the mediated fallback. A descriptor
+    // absent from the guest model is EBADF, as in detcore::handle_sendfile.
+    let Some(in_file) = state.files.get(&in_fd) else {
+        return Err(if is_open_standard(state, in_fd) {
+            negative_errno(libc::ENOSYS)
+        } else {
+            negative_errno(libc::EBADF)
+        });
+    };
+    // Procfs can look regular, but forwarding it would bypass its deterministic
+    // snapshot. Refuse it before the regular/memfd gate, as before.
+    if ensure_fd_not_procfs(in_file.as_raw_fd()).is_err() {
+        return Err(negative_errno(libc::ENOSYS));
+    }
+    if !is_regular_host_file(in_file)? {
+        return Err(negative_errno(libc::ENOSYS));
+    }
+    ensure_readable(in_file)?;
+    Ok(in_file)
+}
+
+fn read_sendfile_offset(memory: &GuestMemory, offset_ptr: u64) -> Result<libc::off_t, i64> {
+    if !range_is_valid(memory, offset_ptr, 8) {
+        return Err(negative_errno(libc::EFAULT));
+    }
+    let mut raw = [0u8; 8];
+    memory
+        .user()
+        .read(offset_ptr, &mut raw)
+        .map_err(|_| negative_errno(libc::EFAULT))?;
+    Ok(i64::from_ne_bytes(raw))
+}
+
 // TODO-HUMAN-REVIEW(#322): Review sendfile forward-to-host semantics, the
 // procfs-input refusal, the regular/memfd endpoint gate, and the guest offset
 // read-back. Mirrors detcore::handle_sendfile: a procfs input or a
@@ -6532,11 +6569,12 @@ fn sendfile(
 ) -> i64 {
     // Linux syscall `int` arguments consume only the low descriptor word.
     let out_fd = args[0] as libc::c_int;
-    // Linux rejects an unusable output descriptor before sendfile's input
-    // classification can route an otherwise-live unsupported input to ENOSYS.
+    // Reject unusable outputs before unsupported-input routing. For modeled
+    // stdin, retain regular-input explicit-offset errors before returning EBADF.
     if out_fd < 0 {
         return negative_errno(libc::EBADF);
     }
+    let mut stdin_error = None;
     let out_file = match state.files.get(&out_fd) {
         Some(file) => {
             if let Err(error) = ensure_writable(file) {
@@ -6550,53 +6588,39 @@ fn sendfile(
                     .stdin
                     .as_ref()
                     .expect("open standard input disappeared");
-                if let Err(error) = ensure_writable(stdin) {
-                    return error;
-                }
+                stdin_error = ensure_writable(stdin).err();
             }
             None
         }
         None => return negative_errno(libc::EBADF),
     };
     let in_fd = args[1] as libc::c_int;
-    // Resolve the input endpoint. sendfile(2) requires an mmap-able input, so a
-    // valid-but-non-regular descriptor (a standard stream, pipe, or socket) must
-    // fail with ENOSYS to route the caller onto glibc's mediated read()+write()
-    // fallback; only a descriptor the guest does not model at all is EBADF. This
-    // mirrors detcore::handle_sendfile, which returns ENOSYS unless the input
-    // classifies as Regular/Memfd.
-    let Some(in_file) = state.files.get(&in_fd) else {
-        return if is_open_standard(state, in_fd) {
-            negative_errno(libc::ENOSYS)
-        } else {
-            negative_errno(libc::EBADF)
-        };
+    let in_file = match resolve_sendfile_input(state, in_fd) {
+        Ok(file) => file,
+        Err(error) => return stdin_error.unwrap_or(error),
     };
-    // Refuse a procfs input: a procfs fd is a regular file, so it would pass the
-    // endpoint gate below and copy live kernel bytes straight to the output,
-    // bypassing the deterministic procfs snapshot the mediated read()/write()
-    // path applies. Fail closed with ENOSYS (NOT the EACCES that
-    // ensure_fd_not_procfs reports) so glibc takes that mediated fallback, exactly
-    // as detcore::handle_sendfile does.
-    if ensure_fd_not_procfs(in_file.as_raw_fd()).is_err() {
-        return negative_errno(libc::ENOSYS);
-    }
-    // Require a regular/memfd input; ENOSYS routes sockets and pipes to the
-    // mediated fallback, which the scheduler can order and block.
-    match is_regular_host_file(in_file) {
-        Ok(true) => {}
-        Ok(false) => return negative_errno(libc::ENOSYS),
-        Err(error) => return error,
-    }
-    if let Err(error) = ensure_readable(in_file) {
-        return error;
-    }
     let in_host = in_file.as_raw_fd();
     let Ok(count) = usize::try_from(args[3]) else {
         return negative_errno(libc::EINVAL);
     };
     let count = count.min(MAX_HOST_IO);
     let offset_ptr = args[2];
+    if let Some(error) = stdin_error {
+        // Copying the explicit offset and verifying its signed input range
+        // precede output access rejection on Linux. Preserve those errors for
+        // supported readable inputs without probing or consuming any bytes.
+        // Other endpoints keep the existing error order and count cap.
+        if offset_ptr != 0 {
+            let offset = match read_sendfile_offset(memory, offset_ptr) {
+                Ok(offset) => offset,
+                Err(error) => return error,
+            };
+            if offset < 0 || offset.checked_add(count as i64).is_none() {
+                return negative_errno(libc::EINVAL);
+            }
+        }
+        return error;
+    }
 
     // Fast path: a regular/memfd output that lives in the guest file table can be
     // copied with the host's zero-copy sendfile directly, preserving kernel
@@ -6623,14 +6647,10 @@ fn sendfile(
         // The guest supplied an explicit input offset; forward through a host
         // off_t and write the kernel-advanced value back so the guest observes
         // faithful sendfile semantics. off_t is i64 on x86_64.
-        if !range_is_valid(memory, offset_ptr, 8) {
-            return negative_errno(libc::EFAULT);
-        }
-        let mut raw = [0u8; 8];
-        if memory.user().read(offset_ptr, &mut raw).is_err() {
-            return negative_errno(libc::EFAULT);
-        }
-        let mut host_offset: libc::off_t = i64::from_ne_bytes(raw);
+        let mut host_offset = match read_sendfile_offset(memory, offset_ptr) {
+            Ok(offset) => offset,
+            Err(error) => return error,
+        };
         // SAFETY: both descriptors are live and host_offset is a valid writable
         // off_t that the kernel updates in place with the new input offset.
         let copied = unsafe { libc::sendfile(out_host, in_host, &mut host_offset, count) };
@@ -6662,14 +6682,10 @@ fn sendfile(
         // SAFETY: in_host is live and bytes is a writable host buffer of `count`.
         unsafe { libc::read(in_host, bytes.as_mut_ptr().cast::<libc::c_void>(), count) }
     } else {
-        if !range_is_valid(memory, offset_ptr, 8) {
-            return negative_errno(libc::EFAULT);
-        }
-        let mut raw = [0u8; 8];
-        if memory.user().read(offset_ptr, &mut raw).is_err() {
-            return negative_errno(libc::EFAULT);
-        }
-        let host_offset: libc::off_t = i64::from_ne_bytes(raw);
+        let host_offset = match read_sendfile_offset(memory, offset_ptr) {
+            Ok(offset) => offset,
+            Err(error) => return error,
+        };
         // SAFETY: in_host is live, bytes is a writable host buffer of `count`,
         // and pread does not disturb in_fd's own file position.
         unsafe {
@@ -6718,11 +6734,10 @@ fn sendfile(
     // sendfile advances the explicit input offset by the number of bytes moved
     // to the output; write it back so the guest observes faithful semantics.
     if offset_ptr != 0 {
-        let mut raw = [0u8; 8];
-        if memory.user().read(offset_ptr, &mut raw).is_err() {
-            return negative_errno(libc::EFAULT);
-        }
-        let advanced = i64::from_ne_bytes(raw).saturating_add(written);
+        let advanced = match read_sendfile_offset(memory, offset_ptr) {
+            Ok(offset) => offset.saturating_add(written),
+            Err(error) => return error,
+        };
         if memory
             .user()
             .write(offset_ptr, &advanced.to_ne_bytes())
@@ -21487,6 +21502,120 @@ mod tests {
                 );
                 assert_eq!(read_struct::<i64>(&memory, 0x100), 2);
                 assert_eq!(result, negative_errno(libc::EBADF));
+            }
+        }
+    }
+
+    #[test]
+    fn sendfile_readonly_stdin_preserves_explicit_offset_errors() {
+        const OFFSET: u64 = 0x100;
+        const INACCESSIBLE: u64 = 0xffff_ffff_ffff_f000;
+        let root = TestDir::new();
+        let source = root.0.join("source");
+        let destination = root.0.join("readonly-stdin");
+        std::fs::write(&source, b"abcdef").unwrap();
+        std::fs::write(&destination, b"unchanged").unwrap();
+        let mut state = test_state(&root.0);
+        state.stdin = Some(std::fs::File::open(&destination).unwrap());
+        state.files.insert(3, std::fs::File::open(&source).unwrap());
+        state
+            .files
+            .get_mut(&3)
+            .unwrap()
+            .seek(std::io::SeekFrom::Start(1))
+            .unwrap();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+        for raw_stdin in [0, 0x5a5a_5a5a_0000_0000, 0xffff_ffff_0000_0000] {
+            for (name, pointer, offset, count, error) in [
+                ("inaccessible", INACCESSIBLE, 2, 2, libc::EFAULT),
+                ("inaccessible zero count", INACCESSIBLE, 2, 0, libc::EFAULT),
+                ("negative", OFFSET, -1, 2, libc::EINVAL),
+                ("minimum", OFFSET, i64::MIN, 2, libc::EINVAL),
+                ("maximum overflow", OFFSET, i64::MAX, 1, libc::EINVAL),
+                (
+                    "maximum minus one overflow",
+                    OFFSET,
+                    i64::MAX - 1,
+                    2,
+                    libc::EINVAL,
+                ),
+                (
+                    "maximum minus one valid",
+                    OFFSET,
+                    i64::MAX - 1,
+                    1,
+                    libc::EBADF,
+                ),
+                ("maximum zero count", OFFSET, i64::MAX, 0, libc::EBADF),
+                ("negative zero count", OFFSET, -1, 0, libc::EINVAL),
+                ("normal", OFFSET, 0, 2, libc::EBADF),
+                ("normal zero count", OFFSET, 2, 0, libc::EBADF),
+                ("null", 0, 2, 2, libc::EBADF),
+                ("null zero count", 0, 2, 0, libc::EBADF),
+            ] {
+                write_struct(&mut memory, OFFSET, &offset);
+                let result = syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_sendfile,
+                    [raw_stdin, 3, pointer, count, 0, 0],
+                );
+                assert_eq!(
+                    state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+                    1
+                );
+                assert_eq!(read_struct::<i64>(&memory, OFFSET), offset);
+                assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged");
+                actual.push((raw_stdin, name, result));
+                expected.push((raw_stdin, name, negative_errno(error)));
+            }
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn sendfile_readonly_stdin_bad_inputs_precede_offset_range_errors() {
+        let root = TestDir::new();
+        let source = root.0.join("write-only-source");
+        let destination = root.0.join("readonly-stdin");
+        std::fs::write(&source, b"abcdef").unwrap();
+        std::fs::write(&destination, b"unchanged").unwrap();
+        let mut state = test_state(&root.0);
+        state.stdin = Some(std::fs::File::open(&destination).unwrap());
+        state.files.insert(
+            3,
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&source)
+                .unwrap(),
+        );
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        for raw_stdin in [0, 0x5a5a_5a5a_0000_0000, 0xffff_ffff_0000_0000] {
+            for input in [3, 99] {
+                for (offset, count) in
+                    [(-1_i64, 2), (i64::MIN, 2), (i64::MAX, 1), (i64::MAX - 1, 2)]
+                {
+                    write_struct(&mut memory, 0x100, &offset);
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_sendfile,
+                            [raw_stdin, input, 0x100, count, 0, 0],
+                        ),
+                        negative_errno(libc::EBADF),
+                        "{raw_stdin:#x} input={input} offset={offset} count={count}"
+                    );
+                    assert_eq!(read_struct::<i64>(&memory, 0x100), offset);
+                    assert_eq!(
+                        state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+                        0
+                    );
+                    assert_eq!(std::fs::read(&source).unwrap(), b"abcdef");
+                    assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged");
+                }
             }
         }
     }
