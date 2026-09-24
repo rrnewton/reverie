@@ -89,3 +89,87 @@ impl Fault {
         eprintln!("alias failure stage={} counters={counts:?}", self.stage);
     }
 }
+
+// Ownership may repeat a cause, but every leaf must retain that exact cause.
+// Context-bearing errors are not ownership envelopes and must remain visible.
+pub(crate) fn mapping_cause(error: &crate::Error) -> Option<&crate::Error> {
+    fn visit<'a>(error: &'a crate::Error, original: &mut Option<&'a crate::Error>) -> bool {
+        match error {
+            crate::Error::MemoryMapping(io) if io.raw_os_error() == Some(libc::ENOMEM) => {
+                if let Some(original) = original {
+                    std::ptr::eq(*original, error)
+                } else {
+                    *original = Some(error);
+                    true
+                }
+            }
+            crate::Error::SharedFailure(cause) => visit(cause, original),
+            crate::Error::WithCleanup { primary, cleanup } => {
+                visit(primary, original) && cleanup.iter().all(|cause| visit(cause, original))
+            }
+            _ => false,
+        }
+    }
+    let mut original = None;
+    if visit(error, &mut original) {
+        original
+    } else {
+        None
+    }
+}
+
+#[test]
+fn mapping_failure_oracle_keeps_all_causes_and_context() {
+    use std::sync::Arc;
+
+    use crate::Error;
+
+    let original = Arc::new(Error::MemoryMapping(std::io::Error::from_raw_os_error(
+        libc::ENOMEM,
+    )));
+    let direct = Error::SharedFailure(original.clone());
+    assert!(std::ptr::eq(mapping_cause(&direct).unwrap(), &*original));
+    let positive = Error::WithCleanup {
+        primary: Arc::new(Error::SharedFailure(Arc::new(Error::SharedFailure(
+            original.clone(),
+        )))),
+        cleanup: vec![Arc::new(Error::SharedFailure(original.clone()))],
+    };
+    assert!(std::ptr::eq(mapping_cause(&positive).unwrap(), &*original));
+    for extra in [
+        Error::MemoryMapping(std::io::Error::from_raw_os_error(libc::ENOMEM)),
+        Error::MemoryMapping(std::io::Error::from_raw_os_error(libc::EACCES)),
+        Error::UnexpectedVcpuExit("unrelated cleanup failure".to_owned()),
+    ] {
+        let negative = Error::WithCleanup {
+            primary: original.clone(),
+            cleanup: vec![original.clone(), Arc::new(extra)],
+        };
+        assert!(mapping_cause(&negative).is_none(), "{negative:?}");
+    }
+    for context in [
+        Error::WorkerFailure {
+            tid: 3,
+            error: original.clone(),
+        },
+        Error::Cleanup {
+            phase: "unexpected cleanup context",
+            error: original.clone(),
+        },
+        Error::SignalEffects {
+            cause: original.clone(),
+            dequeues: Vec::new(),
+            acknowledged_through: 0,
+            publications: Vec::new(),
+            raw_result: None,
+            context: None,
+        },
+        Error::ExecWorkerTeardown(Box::new(Error::SharedFailure(original.clone()))),
+    ] {
+        let negative = Error::WithCleanup {
+            primary: original.clone(),
+            cleanup: vec![Arc::new(context)],
+        };
+        assert!(mapping_cause(&negative).is_none(), "{negative:?}");
+    }
+}

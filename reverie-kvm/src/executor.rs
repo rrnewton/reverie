@@ -33130,13 +33130,15 @@ mod tests {
         fault.assert_fired();
         let pending = memory.entry_gate().pending_failure().unwrap();
         let error = pending.error();
-        assert!(
-            matches!(error.primary(), crate::Error::MemoryMapping(e) if e.raw_os_error() == Some(libc::ENOMEM))
-        );
+        let cause =
+            crate::alias_failure::mapping_cause(&error).unwrap_or_else(|| panic!("{error:?}"));
         assert_eq!(directory.stream_position().unwrap(), before);
         assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
         let refused = memory.write_raw(0, b"ordinary result").unwrap_err();
-        assert!(std::ptr::eq(error.primary(), refused.primary()));
+        assert!(std::ptr::eq(
+            cause,
+            crate::alias_failure::mapping_cause(&refused).unwrap_or_else(|| panic!("{refused:?}"))
+        ));
     }
 
     #[test]

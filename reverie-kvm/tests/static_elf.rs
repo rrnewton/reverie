@@ -123,6 +123,9 @@ fn getdents64_alias_resource_failure_stops_tool_and_guest() {
 }
 
 fn getdents64_alias_failure_case(test: &str, with_tool: bool) {
+    if !kvm_available(test) {
+        return;
+    }
     let Some(fault) = alias_failure::child(test) else {
         return;
     };
@@ -167,10 +170,7 @@ fn getdents64_alias_failure_case(test: &str, with_tool: bool) {
         marker.exists(),
     );
     let error = result.unwrap_err();
-    assert!(
-        matches!(error.primary(), Error::MemoryMapping(e) if e.raw_os_error() == Some(libc::ENOMEM)),
-        "{error:?}"
-    );
+    let cause = alias_failure::mapping_cause(&error).unwrap_or_else(|| panic!("{error:?}"));
     assert!(!marker.exists(), "guest resumed after supervisor failure");
     assert_eq!(
         ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst),
@@ -178,7 +178,10 @@ fn getdents64_alias_failure_case(test: &str, with_tool: bool) {
     );
     assert!(!ALIAS_FAILURE_CALLBACK_RESUMED.load(Ordering::SeqCst));
     let refused = backend.memory().read(0, &mut [0]).unwrap_err();
-    assert!(std::ptr::eq(error.primary(), refused.primary()));
+    assert!(std::ptr::eq(
+        cause,
+        alias_failure::mapping_cause(&refused).unwrap_or_else(|| panic!("{refused:?}"))
+    ));
     eprintln!(
         "terminal alias failure with_tool={with_tool}: {error}; callbacks={} resumed=false",
         ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst)
@@ -10506,6 +10509,8 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "native_and_kvm_prctl_names_keep_worker_local_and_format_procfs_leader_bytes",
         "kvm_direct_and_tool_match_prctl_identity_cell",
         "kvm_direct_and_tool_match_thp_disable_cell",
+        "getdents64_alias_resource_failure_stops_direct_guest",
+        "getdents64_alias_resource_failure_stops_tool_and_guest",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
@@ -10522,6 +10527,21 @@ fn repair_prctl_required_kvm_is_not_optional() {
             String::from_utf8_lossy(&output.stderr).contains("requires usable /dev/kvm"),
             "{output:?}"
         );
+        if test.starts_with("getdents64_alias_") {
+            let optional = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([test, "--exact", "--test-threads=1", "--nocapture"])
+                .env("LD_PRELOAD", &library)
+                .env_remove("REVERIE_REQUIRE_KVM")
+                .output()
+                .unwrap();
+            assert!(optional.status.success(), "{optional:?}");
+            assert!(
+                String::from_utf8_lossy(&optional.stderr)
+                    .contains(&format!("skipping {test}: cannot open /dev/kvm")),
+                "{optional:?}"
+            );
+            eprintln!("device-denial contract {test}: required=101 optional=0");
+        }
     }
 }
 
