@@ -6573,7 +6573,15 @@ fn validate_sendfile_rejected_input(
     offset: Option<libc::off_t>,
     count: u64,
 ) -> Result<(), i64> {
-    let Some(file) = state.files.get(&in_fd) else {
+    let Some(file) = state.files.get(&in_fd).or_else(|| {
+        // Stdin has a separate modeled backing until it is closed or rebound.
+        // Check that backing, never the executor's own host descriptor zero.
+        if in_fd == libc::STDIN_FILENO && is_open_standard(state, in_fd) {
+            state.stdin.as_ref()
+        } else {
+            None
+        }
+    }) else {
         return Ok(());
     };
     if ensure_fd_not_procfs(file.as_raw_fd()).is_err() {
@@ -6593,12 +6601,12 @@ fn validate_sendfile_rejected_input(
             // querying lseek instead would incorrectly reject null offsets.
             validate_sendfile_range(0, count)
         }
-        libc::S_IFDIR => {
+        libc::S_IFDIR | libc::S_IFREG => {
             let offset = match offset {
                 Some(offset) => offset,
                 None => {
-                    // SAFETY: file is a live readable directory. A zero
-                    // SEEK_CUR query observes its cursor without changing it.
+                    // SAFETY: file is a live readable regular file or directory.
+                    // A zero SEEK_CUR query observes its cursor without changing it.
                     let offset = unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR) };
                     if offset < 0 {
                         return Err(io_error(std::io::Error::last_os_error()));
@@ -22271,6 +22279,252 @@ mod tests {
                 assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged");
             }
         }
+    }
+
+    #[test]
+    fn sendfile_stdin_input_errors_follow_modeled_descriptor() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        const OFFSET: u64 = 0x200;
+        const INACCESSIBLE: u64 = 0xffff_ffff_ffff_f000;
+        let root = TestDir::new();
+        let source = root.0.join("source");
+        let destination = root.0.join("output");
+        std::fs::write(&source, b"abcdef").unwrap();
+        std::fs::write(&destination, b"unchanged-output\n").unwrap();
+        let mut calls = 0;
+        for backing in [
+            "pipe read end",
+            "read-only regular",
+            "write-only regular",
+            "O_PATH",
+            "pipe write end",
+            "closed",
+        ] {
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            for address in [0x100, 0x120] {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_pipe2,
+                        [address, libc::O_NONBLOCK as u64, 0, 0, 0, 0],
+                    ),
+                    0
+                );
+            }
+            let input_pipe: [libc::c_int; 2] = read_struct(&memory, 0x100);
+            let output_pipe: [libc::c_int; 2] = read_struct(&memory, 0x120);
+            state.stdin = Some(match backing {
+                "pipe read end" => state.files[&input_pipe[0]].try_clone().unwrap(),
+                "pipe write end" => state.files[&input_pipe[1]].try_clone().unwrap(),
+                "write-only regular" => std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&source)
+                    .unwrap(),
+                "O_PATH" => std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_PATH)
+                    .open(&source)
+                    .unwrap(),
+                _ => std::fs::File::open(&source).unwrap(),
+            });
+            if backing == "closed" {
+                assert_eq!(close(&mut state, 0), 0);
+            } else if backing.ends_with("regular") {
+                state
+                    .stdin
+                    .as_mut()
+                    .unwrap()
+                    .seek(SeekFrom::Start(1))
+                    .unwrap();
+            }
+            state
+                .files
+                .insert(24, std::fs::File::open(&destination).unwrap());
+            state
+                .files
+                .get_mut(&24)
+                .unwrap()
+                .seek(SeekFrom::Start(2))
+                .unwrap();
+            state
+                .files
+                .insert(31, std::fs::File::open(&source).unwrap());
+            assert_eq!(close(&mut state, 31), 0);
+            let stdin_flags = state
+                .stdin
+                .as_ref()
+                .map(|file| fd_status_flags(file.as_raw_fd()).unwrap());
+            for output in [31, 24, output_pipe[0]] {
+                for raw_stdin in [0, 0x1234_5678_0000_0000] {
+                    for (pointer, offset, count) in [
+                        (OFFSET, 0_i64, 1),
+                        (OFFSET, -1, 1),
+                        (OFFSET, i64::MAX, 1),
+                        (0, 2, u64::MAX),
+                        (OFFSET, 0, 0),
+                        (OFFSET, -1, 0),
+                        (0, 2, 0),
+                        (INACCESSIBLE, 2, 0),
+                        (INACCESSIBLE, 2, 1),
+                    ] {
+                        for (writer, sentinel) in [(input_pipe[1], b'I'), (output_pipe[1], b'O')] {
+                            state
+                                .files
+                                .get_mut(&writer)
+                                .unwrap()
+                                .write_all(&[sentinel])
+                                .unwrap();
+                        }
+                        write_struct(&mut memory, OFFSET, &offset);
+                        let expected = if pointer == INACCESSIBLE {
+                            libc::EFAULT
+                        } else if backing == "pipe read end" && pointer != 0 {
+                            libc::ESPIPE
+                        } else if (backing == "read-only regular" || backing == "pipe read end")
+                            && (count == u64::MAX
+                                || (pointer != 0 && (offset < 0 || offset == i64::MAX)))
+                        {
+                            libc::EINVAL
+                        } else {
+                            libc::EBADF
+                        };
+                        assert_eq!(
+                            syscall_result(
+                                &mut memory,
+                                &mut state,
+                                libc::SYS_sendfile,
+                                [output as u64, raw_stdin, pointer, count, 0, 0],
+                            ),
+                            negative_errno(expected),
+                            "backing={backing} output={output} input={raw_stdin:#x} pointer={pointer:#x} offset={offset} count={count}"
+                        );
+                        assert_eq!(read_struct::<i64>(&memory, OFFSET), offset);
+                        assert_eq!(
+                            state.files.get_mut(&24).unwrap().stream_position().unwrap(),
+                            2
+                        );
+                        if backing.ends_with("regular") {
+                            assert_eq!(state.stdin.as_mut().unwrap().stream_position().unwrap(), 1);
+                        }
+                        assert_eq!(
+                            state
+                                .stdin
+                                .as_ref()
+                                .map(|file| fd_status_flags(file.as_raw_fd()).unwrap()),
+                            stdin_flags
+                        );
+                        assert_eq!(state.closed_standard_fds.contains(&0), backing == "closed");
+                        assert!(!state.files.contains_key(&0));
+                        assert!(!state.files.contains_key(&31));
+                        assert_eq!(std::fs::read(&source).unwrap(), b"abcdef");
+                        assert_eq!(std::fs::read(&destination).unwrap(), b"unchanged-output\n");
+                        for (reader, sentinel) in [(input_pipe[0], b'I'), (output_pipe[0], b'O')] {
+                            let file = state.files.get_mut(&reader).unwrap();
+                            let mut bytes = [0; 2];
+                            assert_eq!(file.read(&mut bytes).unwrap(), 1);
+                            assert_eq!(bytes[0], sentinel);
+                            assert_eq!(
+                                file.read(&mut bytes).unwrap_err().kind(),
+                                std::io::ErrorKind::WouldBlock
+                            );
+                        }
+                        calls += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(calls, 324);
+    }
+
+    #[test]
+    fn sendfile_stdin_input_resolution_preserves_closed_and_rebound_descriptors() {
+        let root = TestDir::new();
+        let source = root.0.join("source");
+        std::fs::write(&source, b"abcdef").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [0x100, libc::O_NONBLOCK as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let pipe: [libc::c_int; 2] = read_struct(&memory, 0x100);
+        state.stdin = Some(state.files[&pipe[0]].try_clone().unwrap());
+        state
+            .files
+            .get_mut(&pipe[1])
+            .unwrap()
+            .write_all(b"S")
+            .unwrap();
+        // A closed standard slot must not expose a retained backing handle.
+        state.closed_standard_fds.insert(0);
+        let mut calls = 0;
+        for rebound in [false, true] {
+            if rebound {
+                state.files.insert(
+                    0,
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&source)
+                        .unwrap(),
+                );
+                state.closed_standard_fds.remove(&0);
+            }
+            // Exercise high-word aliases independently for both descriptors.
+            for (output, input) in [
+                (31, 0),
+                (0x1234_5678_0000_001f, 0),
+                (0xffff_ffff_0000_001f, 0),
+                (31, 0x1234_5678_0000_0000),
+                (31, 0xffff_ffff_0000_0000),
+            ] {
+                for (pointer, offset, count, expected) in [
+                    (0x200, 0_i64, 0, libc::EBADF),
+                    (0x200, -1, 1, libc::EBADF),
+                    (0x200, i64::MAX, 1, libc::EBADF),
+                    (0, 2, u64::MAX, libc::EBADF),
+                    (0xffff_ffff_ffff_f000, 2, 0, libc::EFAULT),
+                ] {
+                    write_struct(&mut memory, 0x200, &offset);
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            libc::SYS_sendfile,
+                            [output, input, pointer, count, 0, 0],
+                        ),
+                        negative_errno(expected),
+                        "rebound={rebound} output={output:#x} input={input:#x} pointer={pointer:#x} offset={offset} count={count}"
+                    );
+                    assert_eq!(read_struct::<i64>(&memory, 0x200), offset);
+                    if rebound {
+                        assert_eq!(
+                            state.files.get_mut(&0).unwrap().stream_position().unwrap(),
+                            0
+                        );
+                    }
+                    assert_eq!(state.closed_standard_fds.contains(&0), !rebound);
+                    assert_eq!(std::fs::read(&source).unwrap(), b"abcdef");
+                    calls += 1;
+                }
+            }
+        }
+        assert_eq!(calls, 50);
+        let mut bytes = [0; 2];
+        let file = state.files.get_mut(&pipe[0]).unwrap();
+        assert_eq!(file.read(&mut bytes).unwrap(), 1);
+        assert_eq!(bytes[0], b'S');
+        assert_eq!(
+            file.read(&mut bytes).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
 
     #[test]

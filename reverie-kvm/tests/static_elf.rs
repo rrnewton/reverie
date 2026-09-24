@@ -16070,9 +16070,7 @@ int main(void) {
 
 #[test]
 fn sendfile_and_lseek_consume_low_descriptor_words_on_kvm() {
-    if !kvm_available("KVM sendfile/lseek low-word argument test") {
-        return;
-    }
+    assert!(kvm_available("KVM sendfile/lseek low-word argument test"));
 
     const PAYLOAD: &[u8] = b"sendfile-lseek-low-word-ok\n";
     let directory = TestDirectory::new();
@@ -16289,9 +16287,7 @@ fn sendfile_bad_output_offsets_match_native_on_tool_kvm() {
 }
 
 fn sendfile_bad_output_offsets_match_native_on_kvm(tool_owned: bool) {
-    if !kvm_available("KVM sendfile bad-output offset precedence") {
-        return;
-    }
+    assert!(kvm_available("KVM sendfile bad-output offset precedence"));
 
     const SOURCE: &[u8] = b"abcdef";
     const DESTINATION: &[u8] = b"unchanged-output\n";
@@ -17024,9 +17020,7 @@ fn sendfile_stdin_matches_native_on_kvm(writable: bool) {
         "tool" => true,
         runtime => panic!("unknown isolated runtime {runtime}"),
     };
-    if !kvm_available("KVM sendfile modeled stdin test") {
-        return;
-    }
+    assert!(kvm_available("KVM sendfile modeled stdin test"));
     // SAFETY: F_GETFL only reads the subprocess's inherited descriptor flags.
     assert_eq!(
         unsafe { libc::fcntl(0, libc::F_GETFL) } & libc::O_ACCMODE,
