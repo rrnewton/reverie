@@ -1829,7 +1829,7 @@ def remove_fresh_checkout(
             file=sys.stderr,
         )
         return False
-    if fresh.exists():
+    if fresh.exists() or fresh.is_symlink():
         print(
             f"validate-run: wrkslots reported success but checkout still exists at {fresh}; "
             "state: RETAINED -- cleanup is not confirmed. remedy: run "
@@ -2062,7 +2062,7 @@ def remove_fresh_checkouts_batch(
     return {
         str(path): (
             "wrkslots reported success but the checkout still exists"
-            if outcomes[identity] is None and path.exists()
+            if outcomes[identity] is None and (path.exists() or path.is_symlink())
             else outcomes[identity]
         )
         for identity, path in requested.items()
@@ -2856,14 +2856,36 @@ def require_run_record_parent_identity(
 
 @contextmanager
 def exclusive_cleanup_record(
-    root: Path, record_path: Path
+    root: Path,
+    record_path: Path,
+    *,
+    population_authority: run_registry.RunPopulationAuthority | None = None,
+    verify_parent_on_exit: bool = True,
 ):
-    """Hold the writer lock only if it belongs to the pinned canonical parent."""
+    """Hold population then record authority for one canonical run handle."""
 
+    if population_authority is None:
+        with run_registry.run_population_lock(
+            root, blocking=False, reject_same_process=True
+        ) as acquired_authority:
+            with exclusive_cleanup_record(
+                root,
+                record_path,
+                population_authority=acquired_authority,
+                verify_parent_on_exit=verify_parent_on_exit,
+            ) as parent_identity:
+                yield parent_identity
+        return
+
+    run_registry.require_run_population_authority(root, population_authority)
     parent_identity = run_record_parent_identity(root, record_path)
     with run_registry.exclusive_record(record_path, blocking=False):
+        run_registry.require_run_population_authority(root, population_authority)
         require_run_record_parent_identity(root, record_path, parent_identity)
         yield parent_identity
+        run_registry.require_run_population_authority(root, population_authority)
+        if verify_parent_on_exit:
+            require_run_record_parent_identity(root, record_path, parent_identity)
 
 
 def _cleanup_recorded_checkout_impl(
@@ -2950,28 +2972,58 @@ def cleanup_recorded_checkout(
     run: Runner,
     tool_root: Path = ROOT,
     wrkslots: WrkslotsIdentity | None = None,
+    bookkeeping_fields: Mapping[str, Any] | None = None,
 ) -> tuple[bool, list[str], str | None]:
-    """Remove a checkout only while its exact durable record is write-locked."""
+    """Remove and stamp a checkout under one population/record authority."""
 
     try:
-        with exclusive_cleanup_record(root, record_path) as parent_identity:
-            durable = run_registry.read_record(record_path)
-            if durable != dict(record) and (
-                record_claims_refused_admission(record)
-                or record_claims_refused_admission(durable)
-            ):
-                return False, [], "run record changed before checkout cleanup"
-            return _cleanup_recorded_checkout_impl(
+        with run_registry.run_population_lock(
+            root, blocking=False, reject_same_process=True
+        ) as population_authority:
+            with exclusive_cleanup_record(
                 root,
-                durable,
-                record_path=record_path,
-                unit=unit,
-                run=run,
-                tool_root=tool_root,
-                wrkslots=wrkslots,
-                record_lock_held=True,
-                record_parent_identity=parent_identity,
-            )
+                record_path,
+                population_authority=population_authority,
+            ) as parent_identity:
+                durable = run_registry.read_record(record_path)
+                if durable != dict(record) and (
+                    record_claims_refused_admission(record)
+                    or record_claims_refused_admission(durable)
+                ):
+                    return False, [], "run record changed before checkout cleanup"
+                cleaned, archived, reason = _cleanup_recorded_checkout_impl(
+                    root,
+                    durable,
+                    record_path=record_path,
+                    unit=unit,
+                    run=run,
+                    tool_root=tool_root,
+                    wrkslots=wrkslots,
+                    record_lock_held=True,
+                    record_parent_identity=parent_identity,
+                )
+                if cleaned:
+                    require_run_record_parent_identity(
+                        root, record_path, parent_identity
+                    )
+                    try:
+                        run_registry.update_record(
+                            record_path,
+                            blocking=False,
+                            _population_authority=population_authority,
+                            _record_lock_held=True,
+                            **dict(bookkeeping_fields or {}),
+                            checkout_removed_at=datetime.now(timezone.utc).isoformat(),
+                            archived_orphaned_receipts=archived,
+                        )
+                    except (OSError, RuntimeError, ValueError) as error:
+                        return (
+                            False,
+                            archived,
+                            "checkout was removed but its durable bookkeeping "
+                            f"failed; associated storage retained: {error}",
+                        )
+                return cleaned, archived, reason
     except (OSError, RuntimeError, ValueError) as error:
         return False, [], f"run record is being updated; retained: {error}"
 
@@ -3109,7 +3161,7 @@ def _cleanup_recorded_cargo_home_impl(
             f"exit {removal.returncode}"
         )
         return False, f"wrkslots retained the Cargo home: {detail}"
-    if private.exists():
+    if private.exists() or private.is_symlink():
         return False, "wrkslots reported success but the Cargo home still exists"
     return True, None
 
@@ -3122,25 +3174,53 @@ def cleanup_recorded_cargo_home(
     run: Runner,
     tool_root: Path = ROOT,
 ) -> tuple[bool, str | None]:
-    """Remove a Cargo home only while its exact durable record is write-locked."""
+    """Remove and stamp a Cargo home under one population/record authority."""
 
     try:
-        with exclusive_cleanup_record(root, record_path) as parent_identity:
-            durable = run_registry.read_record(record_path)
-            if durable != dict(record) and (
-                record_claims_refused_admission(record)
-                or record_claims_refused_admission(durable)
-            ):
-                return False, "run record changed before Cargo-home cleanup"
-            return _cleanup_recorded_cargo_home_impl(
+        with run_registry.run_population_lock(
+            root, blocking=False, reject_same_process=True
+        ) as population_authority:
+            with exclusive_cleanup_record(
                 root,
-                durable,
-                record_path=record_path,
-                run=run,
-                tool_root=tool_root,
-                record_lock_held=True,
-                record_parent_identity=parent_identity,
-            )
+                record_path,
+                population_authority=population_authority,
+            ) as parent_identity:
+                durable = run_registry.read_record(record_path)
+                if durable != dict(record) and (
+                    record_claims_refused_admission(record)
+                    or record_claims_refused_admission(durable)
+                ):
+                    return False, "run record changed before Cargo-home cleanup"
+                cleaned, reason = _cleanup_recorded_cargo_home_impl(
+                    root,
+                    durable,
+                    record_path=record_path,
+                    run=run,
+                    tool_root=tool_root,
+                    record_lock_held=True,
+                    record_parent_identity=parent_identity,
+                )
+                if cleaned:
+                    require_run_record_parent_identity(
+                        root, record_path, parent_identity
+                    )
+                    try:
+                        run_registry.update_record(
+                            record_path,
+                            blocking=False,
+                            _population_authority=population_authority,
+                            _record_lock_held=True,
+                            cargo_home_removed_at=datetime.now(
+                                timezone.utc
+                            ).isoformat(),
+                        )
+                    except (OSError, RuntimeError, ValueError) as error:
+                        return (
+                            False,
+                            "Cargo home was removed but its durable bookkeeping "
+                            f"failed: {error}",
+                        )
+                return cleaned, reason
     except (OSError, RuntimeError, ValueError) as error:
         return False, f"run record is being updated; retained: {error}"
 
@@ -3685,7 +3765,6 @@ def sweep_completed_checkouts(
                 }
             )
             continue
-        fields: dict[str, Any] = {}
         checkout, checkout_error = classify_recorded_checkout(root, row.record)
         protected_reason, protected_error = None, None
         if classify_ownerless_only and checkout is None and checkout_error is None:
@@ -3823,6 +3902,11 @@ def sweep_completed_checkouts(
             cleaned, archived, reason = cleanup_recorded_checkout(
                 root, row.record, record_path=row.path, unit=row.unit,
                 run=run, tool_root=tool_root,
+                bookkeeping_fields=(
+                    {"scorecard_handoff": row.scorecard_handoff}
+                    if row.scorecard_handoff is not None
+                    else None
+                ),
             )
         except (OSError, RuntimeError, ValueError) as error:
             retained.append(
@@ -3834,16 +3918,8 @@ def sweep_completed_checkouts(
         else:
             if cleaned:
                 removed.append(str(row.record.get("checkout")))
-                fields.update(checkout_removed_at=datetime.now(timezone.utc).isoformat(), archived_orphaned_receipts=archived)
-                if row.scorecard_handoff is not None:
-                    fields["scorecard_handoff"] = row.scorecard_handoff
             if reason is not None:
                 retained.append({"checkout": str(row.record.get("checkout", "")), "reason": reason})
-        if fields:
-            try:
-                run_registry.update_record(row.path, blocking=False, **fields)
-            except (OSError, RuntimeError, ValueError) as error:
-                bookkeeping_errors.append({"record": str(row.path), "reason": str(error)})
 
     managed = {key: group for key, group in groups.items() if group.managed}
     try:
@@ -3944,21 +4020,67 @@ def sweep_completed_checkouts(
     def hold_group_record_authority(
         candidates: Sequence[CleanupGroup],
     ):
-        """Lock and freshly revalidate each group's complete handle set."""
+        """Freeze the run population, then lock and revalidate each group."""
 
         if classify_ownerless_only:
-            yield list(candidates), {}
+            yield list(candidates), {}, None
             return
-        with ExitStack() as held_group_locks:
+        with ExitStack() as held_authority:
+            try:
+                population_authority = held_authority.enter_context(
+                    run_registry.run_population_lock(
+                        root, blocking=False, reject_same_process=True
+                    )
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                retained.extend(
+                    {
+                        "checkout": str(group.checkout),
+                        "cleanup_failed": True,
+                        "reason": str(error),
+                    }
+                    for group in candidates
+                )
+                yield [], {}, None
+                return
+            # Discovery happened before this authority was available. Repeat
+            # the pure filesystem census under it so a newly-created handle is
+            # either part of the locked group or vetoes that group.
+            current_groups, _singles, _rows, _errors, _counts = (
+                discover_cleanup_groups(root, runs)
+            )
             authorised: list[CleanupGroup] = []
             parent_identities: dict[Path, tuple[int, ...]] = {}
             for group in candidates:
                 group_locks = ExitStack()
                 group_parents: dict[Path, tuple[int, ...]] = {}
                 try:
+                    current = current_groups.get(str(group.checkout))
+                    expected_rows = sorted(
+                        (str(row.path), row.record) for row in group.rows
+                    )
+                    current_rows = (
+                        sorted((str(row.path), row.record) for row in current.rows)
+                        if current is not None
+                        else []
+                    )
+                    if (
+                        current is None
+                        or current.managed != group.managed
+                        or current.reasons
+                        or current_rows != expected_rows
+                    ):
+                        raise RuntimeError(
+                            "run-handle population changed after cleanup discovery"
+                        )
                     for row in sorted(group.rows, key=lambda item: str(item.path)):
                         group_parents[row.path] = group_locks.enter_context(
-                            exclusive_cleanup_record(root, row.path)
+                            exclusive_cleanup_record(
+                                root,
+                                row.path,
+                                population_authority=population_authority,
+                                verify_parent_on_exit=False,
+                            )
                         )
                     for row in group.rows:
                         durable = run_registry.read_record(row.path)
@@ -3985,10 +4107,10 @@ def sweep_completed_checkouts(
                         {"checkout": str(group.checkout), "reason": str(error)}
                     )
                     continue
-                held_group_locks.callback(group_locks.close)
+                held_authority.callback(group_locks.close)
                 parent_identities.update(group_parents)
                 authorised.append(group)
-            yield authorised, parent_identities
+            yield authorised, parent_identities, population_authority
 
     def groups_with_stable_record_parents(
         candidates: Sequence[CleanupGroup],
@@ -4009,6 +4131,51 @@ def sweep_completed_checkouts(
                 stable.append(group)
         return stable
 
+    def stamp_removed_group(
+        group: CleanupGroup,
+        population_authority: run_registry.RunPopulationAuthority,
+        parent_identities: Mapping[Path, tuple[int, ...]],
+    ) -> bool:
+        """Persist removal while population and every group-row lock stay held."""
+
+        removed_at = datetime.now(timezone.utc).isoformat()
+        complete = True
+        for row in group.rows:
+            try:
+                require_run_record_parent_identity(
+                    root, row.path, parent_identities[row.path]
+                )
+                row.record = run_registry.update_record(
+                    row.path,
+                    blocking=False,
+                    _population_authority=population_authority,
+                    _record_lock_held=True,
+                    checkout_removed_at=removed_at,
+                    archived_orphaned_receipts=row.archived,
+                    **(
+                        {"scorecard_handoff": row.scorecard_handoff}
+                        if row.scorecard_handoff is not None
+                        else {}
+                    ),
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                complete = False
+                bookkeeping_errors.append(
+                    {"record": str(row.path), "reason": str(error)}
+                )
+        if not complete:
+            retained.append(
+                {
+                    "checkout": str(group.checkout),
+                    "cleanup_failed": True,
+                    "reason": (
+                        "checkout was removed but its durable bookkeeping did "
+                        "not complete"
+                    ),
+                }
+            )
+        return complete
+
     ownerless_groups = [
         item
         for item in prepared
@@ -4018,6 +4185,7 @@ def sweep_completed_checkouts(
         with hold_group_record_authority(ownerless_groups) as (
             authorised_ownerless,
             ownerless_parent_identities,
+            ownerless_population_authority,
         ):
             if not classify_ownerless_only:
                 authorised_ownerless = groups_with_stable_record_parents(
@@ -4038,38 +4206,59 @@ def sweep_completed_checkouts(
                     )
                 )
                 ownerless_inputs.append((group.checkout, row.path, source))
-            outcomes = (
-                remove_ownerless_checkouts_batch(
-                    root,
-                    ownerless_inputs,
-                    run=run,
-                    tool_root=tool_root,
-                    classify_only=classify_ownerless_only,
+            try:
+                outcomes = (
+                    remove_ownerless_checkouts_batch(
+                        root,
+                        ownerless_inputs,
+                        run=run,
+                        tool_root=tool_root,
+                        classify_only=classify_ownerless_only,
+                    )
+                    if ownerless_inputs
+                    else {}
                 )
-                if ownerless_inputs
-                else {}
-            )
-        for group in authorised_ownerless:
-            outcome = outcomes.get(str(group.checkout))
-            if outcome is None:
-                retained.append(
+            except (OSError, RuntimeError, ValueError) as error:
+                outcomes = {}
+                retained.extend(
                     {
                         "blocks_entry": True,
                         "checkout": str(group.checkout),
                         "cleanup_failed": True,
-                        "reason": "ownerless cleanup returned no result for this checkout",
+                        "reason": str(error),
                     }
+                    for group in authorised_ownerless
                 )
-            elif outcome.reason is not None:
-                retained.append(
-                    {
-                        "blocks_entry": outcome.blocks_entry,
-                        "checkout": str(group.checkout),
-                        "reason": outcome.reason,
-                    }
-                )
-            else:
-                removed.append(str(group.checkout))
+                authorised_ownerless = []
+            for group in authorised_ownerless:
+                outcome = outcomes.get(str(group.checkout))
+                if outcome is None:
+                    retained.append(
+                        {
+                            "blocks_entry": True,
+                            "checkout": str(group.checkout),
+                            "cleanup_failed": True,
+                            "reason": "ownerless cleanup returned no result for this checkout",
+                        }
+                    )
+                elif outcome.reason is not None:
+                    retained.append(
+                        {
+                            "blocks_entry": outcome.blocks_entry,
+                            "checkout": str(group.checkout),
+                            "reason": outcome.reason,
+                        }
+                    )
+                else:
+                    if (
+                        ownerless_population_authority is not None
+                        and stamp_removed_group(
+                            group,
+                            ownerless_population_authority,
+                            ownerless_parent_identities,
+                        )
+                    ):
+                        removed.append(str(group.checkout))
 
     frozen_groups = [
         item
@@ -4080,6 +4269,7 @@ def sweep_completed_checkouts(
         with hold_group_record_authority(frozen_groups) as (
             authorised_frozen,
             frozen_parent_identities,
+            frozen_population_authority,
         ):
             if not classify_ownerless_only:
                 authorised_frozen = groups_with_stable_record_parents(
@@ -4100,39 +4290,60 @@ def sweep_completed_checkouts(
                     )
                 )
                 frozen_inputs.append((group.checkout, row.path, source))
-            outcomes = (
-                remove_ownerless_checkouts_batch(
-                    root,
-                    frozen_inputs,
-                    run=run,
-                    tool_root=tool_root,
-                    frozen=True,
-                    classify_only=classify_ownerless_only,
+            try:
+                outcomes = (
+                    remove_ownerless_checkouts_batch(
+                        root,
+                        frozen_inputs,
+                        run=run,
+                        tool_root=tool_root,
+                        frozen=True,
+                        classify_only=classify_ownerless_only,
+                    )
+                    if frozen_inputs
+                    else {}
                 )
-                if frozen_inputs
-                else {}
-            )
-        for group in authorised_frozen:
-            outcome = outcomes.get(str(group.checkout))
-            if outcome is None:
-                retained.append(
+            except (OSError, RuntimeError, ValueError) as error:
+                outcomes = {}
+                retained.extend(
                     {
                         "blocks_entry": True,
                         "checkout": str(group.checkout),
                         "cleanup_failed": True,
-                        "reason": "frozen cleanup returned no result for this checkout",
+                        "reason": str(error),
                     }
+                    for group in authorised_frozen
                 )
-            elif outcome.reason is not None:
-                retained.append(
-                    {
-                        "blocks_entry": outcome.blocks_entry,
-                        "checkout": str(group.checkout),
-                        "reason": outcome.reason,
-                    }
-                )
-            else:
-                removed.append(str(group.checkout))
+                authorised_frozen = []
+            for group in authorised_frozen:
+                outcome = outcomes.get(str(group.checkout))
+                if outcome is None:
+                    retained.append(
+                        {
+                            "blocks_entry": True,
+                            "checkout": str(group.checkout),
+                            "cleanup_failed": True,
+                            "reason": "frozen cleanup returned no result for this checkout",
+                        }
+                    )
+                elif outcome.reason is not None:
+                    retained.append(
+                        {
+                            "blocks_entry": outcome.blocks_entry,
+                            "checkout": str(group.checkout),
+                            "reason": outcome.reason,
+                        }
+                    )
+                else:
+                    if (
+                        frozen_population_authority is not None
+                        and stamp_removed_group(
+                            group,
+                            frozen_population_authority,
+                            frozen_parent_identities,
+                        )
+                    ):
+                        removed.append(str(group.checkout))
 
     batch_groups = [group for group in prepared if group.managed and group.identity is not None]
     # ⚠️ AUTHORISATION, WHICH IS A DIFFERENT QUESTION FROM THE CLASSIFICATION
@@ -4170,6 +4381,7 @@ def sweep_completed_checkouts(
             with hold_group_record_authority(batch_groups) as (
                 locked_groups,
                 managed_parent_identities,
+                managed_population_authority,
             ):
                 authorised: list[CleanupGroup] = []
                 for group in locked_groups:
@@ -4214,20 +4426,32 @@ def sweep_completed_checkouts(
                     authorised, managed_parent_identities
                 )
 
-                outcomes = (
-                    remove_fresh_checkouts_batch(
-                        root,
-                        [
-                            (group.checkout, group.identity)
-                            for group in authorised
-                            if group.identity is not None
-                        ],
-                        run=run,
-                        tool_root=tool_root,
+                try:
+                    outcomes = (
+                        remove_fresh_checkouts_batch(
+                            root,
+                            [
+                                (group.checkout, group.identity)
+                                for group in authorised
+                                if group.identity is not None
+                            ],
+                            run=run,
+                            tool_root=tool_root,
+                        )
+                        if authorised
+                        else {}
                     )
-                    if authorised
-                    else {}
-                )
+                except (OSError, RuntimeError, ValueError) as error:
+                    outcomes = {}
+                    retained.extend(
+                        {
+                            "checkout": str(group.checkout),
+                            "cleanup_failed": True,
+                            "reason": str(error),
+                        }
+                        for group in authorised
+                    )
+                    authorised = []
                 for group in authorised:
                     reason = outcomes.get(str(group.checkout))
                     if reason is not None:
@@ -4235,7 +4459,15 @@ def sweep_completed_checkouts(
                             {"checkout": str(group.checkout), "reason": reason}
                         )
                     else:
-                        removed.append(str(group.checkout))
+                        if (
+                            managed_population_authority is not None
+                            and stamp_removed_group(
+                                group,
+                                managed_population_authority,
+                                managed_parent_identities,
+                            )
+                        ):
+                            removed.append(str(group.checkout))
 
     cargo_references: dict[str, tuple[Path, list[CleanupRow]]] = {}
     for row in all_rows:
@@ -4356,39 +4588,6 @@ def sweep_completed_checkouts(
             if not cleaned:
                 continue
             removed_cargo_homes.append(str(cargo_home))
-            removed_at = datetime.now(timezone.utc).isoformat()
-            for row in rows:
-                try:
-                    run_registry.update_record(
-                        row.path,
-                        blocking=False,
-                        cargo_home_removed_at=removed_at,
-                    )
-                except (OSError, RuntimeError, ValueError) as error:
-                    bookkeeping_errors.append(
-                        {"record": str(row.path), "reason": str(error)}
-                    )
-
-    removed_set = set(removed)
-    for group in prepared:
-        if str(group.checkout) not in removed_set:
-            continue
-        removed_at = datetime.now(timezone.utc).isoformat()
-        for row in group.rows:
-            try:
-                run_registry.update_record(
-                    row.path,
-                    blocking=False,
-                    checkout_removed_at=removed_at,
-                    archived_orphaned_receipts=row.archived,
-                    **(
-                        {"scorecard_handoff": row.scorecard_handoff}
-                        if row.scorecard_handoff is not None
-                        else {}
-                    ),
-                )
-            except (OSError, RuntimeError, ValueError) as error:
-                bookkeeping_errors.append({"record": str(row.path), "reason": str(error)})
     if budget is not None:
         budget.remaining("finishing complete storage classification")
     return {
@@ -7371,11 +7570,15 @@ def cleanup_after_attach(
         else:
             if cleaned:
                 associated_cleanup_allowed = True
-                record = bookkeep_record(
-                    record_path,
-                    checkout_removed_at=datetime.now(timezone.utc).isoformat(),
-                    archived_orphaned_receipts=archived,
-                )
+                try:
+                    record = run_registry.read_record(record_path)
+                except (OSError, RuntimeError, ValueError) as error:
+                    print(
+                        "validate-run: completed Cargo home RETAINED: the "
+                        f"checkout record could not be reread: {error}",
+                        file=sys.stderr,
+                    )
+                    return
             elif reason is not None:
                 print(
                     f"validate-run: completed checkout RETAINED: {reason}",
@@ -7406,12 +7609,7 @@ def cleanup_after_attach(
             file=sys.stderr,
         )
     else:
-        if cargo_cleaned:
-            bookkeep_record(
-                record_path,
-                cargo_home_removed_at=datetime.now(timezone.utc).isoformat(),
-            )
-        elif cargo_reason is not None:
+        if not cargo_cleaned and cargo_reason is not None:
             print(
                 f"validate-run: completed Cargo home RETAINED: {cargo_reason}",
                 file=sys.stderr,

@@ -602,9 +602,15 @@ def build_plan(
     run: Runner = subprocess.run,
 ) -> dict[str, Any]:
     roots = load_roots(state_root, owner_state_dir)
+    # Owner-watch production holds this outer lock while its validate-run child
+    # uses the run-population writer lock. Keep that order here: no cleanup path
+    # takes the owner lock, so owner-state -> run-population cannot cycle.
     with run_registry.owner_watch_population_lock(roots.owner_state_dir):
-        recover_pending_transaction(roots)
-        return _build_plan(roots, expected_count=expected_count, run=run)
+        with run_registry.run_population_lock(
+            roots.state_root, reject_same_process=True
+        ):
+            recover_pending_transaction(roots)
+            return _build_plan(roots, expected_count=expected_count, run=run)
 
 
 def open_directory(path: Path) -> int:
@@ -1141,22 +1147,47 @@ def apply_plan(
 ) -> dict[str, Any]:
     roots = load_roots(state_root, owner_state_dir)
     with run_registry.owner_watch_population_lock(roots.owner_state_dir):
-        recover_pending_transaction(roots, replace=replace)
-        initial = _build_plan(roots, expected_count=expected_count, run=run)
-        if initial["plan_sha256"] != expected_plan_sha256:
-            raise CorrectionRefused(
-                "--expect-plan-sha256 does not match the current dry-run plan; run the "
-                "dry run again and review the new plan"
+        with run_registry.run_population_lock(
+            roots.state_root, reject_same_process=True
+        ):
+            return _apply_plan_under_population_lock(
+                roots,
+                expected_count=expected_count,
+                expected_plan_sha256=expected_plan_sha256,
+                run=run,
+                before_commit=before_commit,
+                replace=replace,
             )
-        pending = [
-            row for row in initial["records"] if row["disposition"] == "pending"
-        ]
-        if not pending:
-            initial["applied_count"] = 0
-            initial["applied_plan_sha256"] = expected_plan_sha256
-            initial["changes"] = []
-            return initial
-        with ExitStack() as locks:
+
+
+def _apply_plan_under_population_lock(
+    roots: EvidenceRoots,
+    *,
+    expected_count: int,
+    expected_plan_sha256: str,
+    run: Runner,
+    before_commit: Callable[[], None] | None,
+    replace: Replacer,
+) -> dict[str, Any]:
+    """Apply while caller holds owner-state then stable run-population authority."""
+
+    recover_pending_transaction(roots, replace=replace)
+    initial = _build_plan(roots, expected_count=expected_count, run=run)
+    if initial["plan_sha256"] != expected_plan_sha256:
+        raise CorrectionRefused(
+            "--expect-plan-sha256 does not match the current dry-run plan; run the "
+            "dry run again and review the new plan"
+        )
+    pending = [
+        row for row in initial["records"] if row["disposition"] == "pending"
+    ]
+    if not pending:
+        initial["applied_count"] = 0
+        initial["applied_plan_sha256"] = expected_plan_sha256
+        initial["changes"] = []
+        return initial
+    with ExitStack() as locks:
+        if pending:
             for row in initial["records"]:
                 locks.enter_context(
                     run_registry.exclusive_record(Path(row["handle_path"]))

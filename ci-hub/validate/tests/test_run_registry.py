@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1211,6 +1212,76 @@ class RunRegistryContractTests(unittest.TestCase):
             ledger_numbers.assert_called_once_with(
                 root, team="hermit", host="hosta"
             )
+
+    def test_cleanup_population_authority_rejects_cross_thread_writer(self) -> None:
+        """A callback thread cannot wait forever for its caller's authority."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "ignored/validate/runs/validate-callback.json"
+            run_registry.create_current_record(path, validation_handle())
+            with run_registry.run_population_lock(
+                root, reject_same_process=True
+            ) as authority:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(
+                        run_registry.update_record,
+                        path,
+                        detail="must not wait",
+                    )
+                    with self.assertRaises(run_registry.RecordLocked):
+                        future.result(timeout=1)
+                # Explicitly delegated authority remains usable for internal
+                # bookkeeping while the same record population is frozen.
+                delegated = run_registry.update_record(
+                    path,
+                    _population_authority=authority,
+                    detail="authority delegated",
+                )
+                self.assertEqual("authority delegated", delegated["detail"])
+
+            run_registry.update_record(path, detail="authority released")
+            self.assertEqual("authority released", run_registry.read_record(path)["detail"])
+
+    def test_cleanup_population_authority_blocks_external_writer(self) -> None:
+        """The process-local deadlock guard must not replace the OS boundary."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "ignored/validate/runs/validate-external.json"
+            run_registry.create_current_record(path, validation_handle())
+            program = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import run_registry
+try:
+    run_registry.update_record(Path(sys.argv[2]), blocking=False, detail='external')
+except run_registry.RecordLocked:
+    print('blocked')
+else:
+    raise SystemExit('external writer escaped population authority')
+"""
+            with run_registry.run_population_lock(
+                root, reject_same_process=True
+            ):
+                child = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        program,
+                        str(ROOT / "ci-hub" / "validate"),
+                        str(path),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+
+            self.assertEqual(0, child.returncode, child.stderr)
+            self.assertEqual("blocked", child.stdout.strip())
+            self.assertNotIn("detail", run_registry.read_record(path))
 
     def test_admitted_result_accepts_an_absent_run_number_but_checks_one_present(self) -> None:
         handle = run_registry.parse_current_record(

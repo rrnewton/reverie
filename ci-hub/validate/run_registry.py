@@ -8,9 +8,11 @@ import json
 import os
 import re
 import socket
+import stat
 import sys
 import tempfile
-from contextlib import contextmanager
+import threading
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -1306,19 +1308,197 @@ def read_record(path: Path) -> dict[str, Any]:
 
 
 class RecordLocked(RuntimeError):
-    """Another process holds this record's lock and the caller would not wait.
+    """A requested record/population lock cannot safely be acquired.
 
-    ⚠️ RAISED ONLY WHEN THE CALLER ASKED NOT TO BLOCK. The default is unchanged
-    and still blocks, because most writers here need the read-modify-write to be
-    exclusive for correctness. This exists for the callers whose write is
-    BOOKKEEPING -- where blocking costs the user something more valuable than the
-    record is worth.
+    Nonblocking calls raise on ordinary contention. A blocking writer still
+    waits unless this process already owns a callback-spanning population
+    authority, where waiting could deadlock the owner; that case also raises
+    and requires the explicit authority token for trusted internal bookkeeping.
     """
+
+
+@dataclass
+class RunPopulationAuthority:
+    """An exclusive lock on one state root's complete run-handle population.
+
+    The lock is on the state-root directory, above ``ignored/validate/runs``.
+    Replacing the runs directory therefore cannot detach cleanup from writers
+    that resolve the new canonical path.  The token is explicit so cleanup can
+    perform its own bookkeeping without making arbitrary nested writers
+    reentrant.
+    """
+
+    state_root: Path
+    descriptor: int
+    identity: tuple[int, ...]
+    owner_pid: int
+    active: bool = True
+
+
+RUN_POPULATION_IDENTITY_FIELDS = (
+    "st_dev",
+    "st_ino",
+    "st_mode",
+    "st_uid",
+    "st_gid",
+)
+_RUN_POPULATION_CONDITION = threading.Condition()
+# canonical root -> (PID, owning thread, reject every tokenless local waiter)
+_RUN_POPULATION_ACTIVE: dict[Path, tuple[int, int, bool]] = {}
+
+
+def _directory_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return tuple(
+        int(getattr(metadata, field)) for field in RUN_POPULATION_IDENTITY_FIELDS
+    )
+
+
+def require_run_population_authority(
+    root: Path, authority: RunPopulationAuthority
+) -> None:
+    """Require a live authority for the still-canonical state-root directory."""
+
+    canonical = root.resolve(strict=True)
+    if (
+        not authority.active
+        or authority.owner_pid != os.getpid()
+        or authority.state_root != canonical
+    ):
+        raise RuntimeError("run-population authority is absent or belongs elsewhere")
+    opened = os.fstat(authority.descriptor)
+    current = os.stat(canonical, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or _directory_identity(opened) != authority.identity
+        or _directory_identity(current) != authority.identity
+    ):
+        raise RuntimeError(
+            "validation state root changed while run-population authority was held"
+        )
+
+
+@contextmanager
+def run_population_lock(
+    root: Path,
+    *,
+    blocking: bool = True,
+    reject_same_process: bool = False,
+):
+    """Serialize every run-handle writer with population-wide cleanup.
+
+    Ordinary writers take population -> run-number (when applicable) -> record.
+    Owner-watch correction is the one deliberate outer-lock exception: its
+    producer already holds owner-state while a validate-run child writes, so
+    correction takes owner-state -> population -> records. Cleanup never takes
+    owner-state, which keeps that order acyclic. Cleanup/correction callers set
+    ``reject_same_process`` while invoking callbacks: a tokenless writer on
+    *any* thread then fails rather than waiting for the callback that is waiting
+    for it. Ordinary writers serialize threads locally and processes through
+    ``flock``.
+    """
+
+    canonical = root.resolve(strict=True)
+    owner_pid = os.getpid()
+    thread_id = threading.get_ident()
+    with _RUN_POPULATION_CONDITION:
+        while canonical in _RUN_POPULATION_ACTIVE:
+            active_pid, owner_thread, owner_rejects_waiters = (
+                _RUN_POPULATION_ACTIVE[canonical]
+            )
+            # A fork inherits Python memory but not the identity of the process
+            # that populated it. The inherited descriptor's flock still supplies
+            # the kernel-level exclusion; discard only this stale local marker.
+            if active_pid != owner_pid:
+                del _RUN_POPULATION_ACTIVE[canonical]
+                continue
+            if owner_thread == thread_id or owner_rejects_waiters or not blocking:
+                raise RecordLocked(
+                    "this process already holds run-population authority for "
+                    f"{canonical}"
+                )
+            _RUN_POPULATION_CONDITION.wait()
+        _RUN_POPULATION_ACTIVE[canonical] = (
+            owner_pid,
+            thread_id,
+            reject_same_process,
+        )
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    authority: RunPopulationAuthority | None = None
+    try:
+        descriptor = os.open(canonical, flags)
+        mode = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+        try:
+            fcntl.flock(descriptor, mode)
+        except BlockingIOError as error:
+            raise RecordLocked(
+                "another process holds run-population authority for "
+                f"{canonical}"
+            ) from error
+        opened = os.fstat(descriptor)
+        current = os.stat(canonical, follow_symlinks=False)
+        if not stat.S_ISDIR(opened.st_mode) or _directory_identity(
+            opened
+        ) != _directory_identity(current):
+            raise RuntimeError(
+                "validation state root changed while run-population authority "
+                "was acquired"
+            )
+        authority = RunPopulationAuthority(
+            canonical,
+            descriptor,
+            _directory_identity(opened),
+            os.getpid(),
+        )
+        yield authority
+    finally:
+        if authority is not None:
+            authority.active = False
+        if descriptor is not None:
+            with suppress(OSError):
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+        with _RUN_POPULATION_CONDITION:
+            current = _RUN_POPULATION_ACTIVE.get(canonical)
+            if current is not None and current[:2] == (owner_pid, thread_id):
+                del _RUN_POPULATION_ACTIVE[canonical]
+            _RUN_POPULATION_CONDITION.notify_all()
+
+
+@contextmanager
+def _record_population_authority(
+    path: Path,
+    *,
+    blocking: bool,
+    authority: RunPopulationAuthority | None = None,
+):
+    state_root = _state_root_for_run_handle(path)
+    if state_root is None:
+        if authority is not None:
+            raise RuntimeError(
+                "run-population authority supplied for a non-run-handle path"
+            )
+        yield None
+        return
+    if authority is not None:
+        require_run_population_authority(state_root, authority)
+        yield authority
+        require_run_population_authority(state_root, authority)
+        return
+    with run_population_lock(state_root, blocking=blocking) as held:
+        yield held
 
 
 @contextmanager
 def owner_watch_population_lock(owner_state_dir: Path):
-    """Serialize owner-watch production with evidence-bound corrections."""
+    """Serialize owner-watch production with evidence-bound corrections.
+
+    Owner watch holds this while its validate-run subprocess uses the separate
+    run-population lock. A correction needing both therefore takes this lock
+    first; cleanup never takes it, so that exceptional ordering stays acyclic.
+    """
 
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
@@ -1392,27 +1572,53 @@ def _write_unlocked(path: Path, value: Mapping[str, Any]) -> None:
             pass
 
 
-def write_record(path: Path, value: Mapping[str, Any]) -> None:
-    with exclusive_record(path):
-        _write_unlocked(path, value)
+def write_record(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    _population_authority: RunPopulationAuthority | None = None,
+) -> None:
+    with _record_population_authority(
+        path, blocking=True, authority=_population_authority
+    ):
+        with exclusive_record(path):
+            _write_unlocked(path, value)
 
 
-def write_current_record(path: Path, value: Mapping[str, Any]) -> None:
+def write_current_record(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    _population_authority: RunPopulationAuthority | None = None,
+) -> None:
     parse_current_record(value)
-    write_record(path, value)
+    write_record(path, value, _population_authority=_population_authority)
 
 
-def create_record(path: Path, value: Mapping[str, Any]) -> None:
+def create_record(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    _population_authority: RunPopulationAuthority | None = None,
+) -> None:
     """Create a run handle without replacing another run's identity."""
-    with exclusive_record(path):
-        if path.exists():
-            raise RuntimeError(f"validation handle already exists: {path}")
-        _write_unlocked(path, value)
+    with _record_population_authority(
+        path, blocking=True, authority=_population_authority
+    ):
+        with exclusive_record(path):
+            if path.exists() or path.is_symlink():
+                raise RuntimeError(f"validation handle already exists: {path}")
+            _write_unlocked(path, value)
 
 
-def create_current_record(path: Path, value: Mapping[str, Any]) -> None:
+def create_current_record(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    _population_authority: RunPopulationAuthority | None = None,
+) -> None:
     parse_current_record(value)
-    create_record(path, value)
+    create_record(path, value, _population_authority=_population_authority)
 
 
 def reserve_log(path: Path) -> None:
@@ -1426,25 +1632,50 @@ def reserve_log(path: Path) -> None:
 
 
 def update_record(
-    path: Path, *, blocking: bool = True, **fields: Any
+    path: Path,
+    *,
+    blocking: bool = True,
+    _population_authority: RunPopulationAuthority | None = None,
+    _record_lock_held: bool = False,
+    **fields: Any,
 ) -> dict[str, Any]:
     # The caller and the observer finish at nearly the same time. Serialize the
     # read-modify-write so a final exit update cannot erase cgroup evidence (or
     # vice versa) while retaining atomic replacement for readers.
-    with exclusive_record(path, blocking=blocking):
+    def update_locked() -> dict[str, Any]:
+        nonlocal fields
         value = read_record(path)
         if "reverie_count_request" in value:
             # Generic terminal observers have no exact-event count authority.
-            fields = {key: item for key, item in fields.items()
-                      if key not in {"executed_nodes", "executed_tests", "passed_tests"}}
+            fields = {
+                key: item
+                for key, item in fields.items()
+                if key not in {"executed_nodes", "executed_tests", "passed_tests"}
+            }
         value.update(fields)
         _write_unlocked(path, value)
-    return value
+        return value
+
+    if _record_lock_held:
+        if _population_authority is None:
+            raise RuntimeError(
+                "record-lock-held update requires explicit run-population authority"
+            )
+        with _record_population_authority(
+            path, blocking=blocking, authority=_population_authority
+        ):
+            return update_locked()
+    with _record_population_authority(
+        path, blocking=blocking, authority=_population_authority
+    ):
+        with exclusive_record(path, blocking=blocking):
+            return update_locked()
 
 
 def update_reverie_counts(
     path: Path, expected: dict[str, Any], *, evidence: dict[str, Any] | None = None,
     refusal: str | None = None,
+    _population_authority: RunPopulationAuthority | None = None,
 ) -> dict[str, Any]:
     """Bind counts under the existing record lock without changing any outcome.
 
@@ -1452,23 +1683,36 @@ def update_reverie_counts(
     current authority, and the distinct refusal remains visible. A conflicting
     second handoff can never replace the original proof.
     """
-    with exclusive_record(path, blocking=False):
-        value = read_record(path)
-        if any(value.get(key) != expected.get(key) for key in reverie_node.COUNT_CONTEXT_FIELDS):
-            raise _error("reverie_count_evidence", "handle identity changed during canonical read")
-        if evidence is not None:
-            executed, passed, _filtered = reverie_node.validate_count_evidence(evidence, value, path)
-            previous = value.get("reverie_count_evidence")
-            if previous is not None and previous != evidence:
-                refusal = "conflicting second Reverie count handoff; original proof retained"
-            else:
-                value["reverie_count_evidence"] = evidence
-                value.update(executed_tests=executed, passed_tests=passed)
-        if refusal is not None:
-            value.update(executed_tests=None, passed_tests=None)
-        value["reverie_count_refusal"] = refusal
-        _write_unlocked(path, value)
-        return value
+    with _record_population_authority(
+        path, blocking=False, authority=_population_authority
+    ):
+        with exclusive_record(path, blocking=False):
+            value = read_record(path)
+            if any(
+                value.get(key) != expected.get(key)
+                for key in reverie_node.COUNT_CONTEXT_FIELDS
+            ):
+                raise _error(
+                    "reverie_count_evidence",
+                    "handle identity changed during canonical read",
+                )
+            if evidence is not None:
+                executed, passed, _filtered = reverie_node.validate_count_evidence(
+                    evidence, value, path
+                )
+                previous = value.get("reverie_count_evidence")
+                if previous is not None and previous != evidence:
+                    refusal = (
+                        "conflicting second Reverie count handoff; original proof retained"
+                    )
+                else:
+                    value["reverie_count_evidence"] = evidence
+                    value.update(executed_tests=executed, passed_tests=passed)
+            if refusal is not None:
+                value.update(executed_tests=None, passed_tests=None)
+            value["reverie_count_refusal"] = refusal
+            _write_unlocked(path, value)
+            return value
 
 
 def record_termination_request(
@@ -1487,25 +1731,26 @@ def record_termination_request(
         "pid": pid,
         "reason": reason,
     }
-    with exclusive_record(path):
-        value = read_record(path)
-        handle = parse_current_record(value)
-        if not handle.counts_as_validation:
-            raise _error("termination_requests", "requires a validation handle")
-        if not handle.lock_admissible:
-            raise _error(
-                "termination_requests",
-                f"cannot request termination while state is {handle.state.value}",
-            )
-        if handle.process_identity is None:
-            raise _error(
-                "termination_requests",
-                "cannot request termination before the validation process identity is recorded",
-            )
-        requests = list(value.get("termination_requests", []))
-        requests.append(encoded)
-        value["termination_requests"] = requests
-        _write_unlocked(path, value)
+    with _record_population_authority(path, blocking=True):
+        with exclusive_record(path):
+            value = read_record(path)
+            handle = parse_current_record(value)
+            if not handle.counts_as_validation:
+                raise _error("termination_requests", "requires a validation handle")
+            if not handle.lock_admissible:
+                raise _error(
+                    "termination_requests",
+                    f"cannot request termination while state is {handle.state.value}",
+                )
+            if handle.process_identity is None:
+                raise _error(
+                    "termination_requests",
+                    "cannot request termination before the validation process identity is recorded",
+                )
+            requests = list(value.get("termination_requests", []))
+            requests.append(encoded)
+            value["termination_requests"] = requests
+            _write_unlocked(path, value)
     return encoded
 
 
@@ -1517,29 +1762,31 @@ def confirm_termination_request(
 ) -> TerminationRequestRecord:
     """Confirm that the exact recorded stop request left its unit inactive."""
 
-    with exclusive_record(path):
-        value = read_record(path)
-        requests = value.get("termination_requests")
-        if not isinstance(requests, list):
-            raise _error("termination_requests", "recorded request is missing")
-        match = None
-        for item in requests:
-            if isinstance(item, dict) and all(
-                item.get(field) == request.get(field)
-                for field in ("requested_at", "agent", "pid", "reason")
-            ):
-                match = item
-                break
-        if match is None:
-            raise _error(
-                "termination_requests", "recorded request changed before confirmation"
-            )
-        if "confirmed_at" not in match:
-            match["confirmed_at"] = (
-                confirmed_at or datetime.now(timezone.utc).isoformat()
-            )
-        _write_unlocked(path, value)
-        return cast(TerminationRequestRecord, dict(match))
+    with _record_population_authority(path, blocking=True):
+        with exclusive_record(path):
+            value = read_record(path)
+            requests = value.get("termination_requests")
+            if not isinstance(requests, list):
+                raise _error("termination_requests", "recorded request is missing")
+            match = None
+            for item in requests:
+                if isinstance(item, dict) and all(
+                    item.get(field) == request.get(field)
+                    for field in ("requested_at", "agent", "pid", "reason")
+                ):
+                    match = item
+                    break
+            if match is None:
+                raise _error(
+                    "termination_requests",
+                    "recorded request changed before confirmation",
+                )
+            if "confirmed_at" not in match:
+                match["confirmed_at"] = (
+                    confirmed_at or datetime.now(timezone.utc).isoformat()
+                )
+            _write_unlocked(path, value)
+            return cast(TerminationRequestRecord, dict(match))
 
 
 def update_from_observer(
@@ -1554,44 +1801,49 @@ def update_from_observer(
     accumulate on every row. Observation uncertainty uses the existing detail
     field only when no producer detail is present, without changing the outcome.
     """
-    with exclusive_record(path):
-        value = read_record(path)
-        has_groups = "observed_safe_ci_cgroups" in fields
-        groups = fields.pop("observed_safe_ci_cgroups", ())
-        if service_result.is_evidenced_terminal(value):
-            fields = {}
-        elif observation_detail and not value.get("detail"):
-            fields["detail"] = observation_detail
-        if has_groups:
-            fields["observed_safe_ci_cgroups"] = sorted(
-                set(value.get("observed_safe_ci_cgroups", [])) | set(groups)
-            )
-        if "reverie_count_request" in value:
-            fields = {key: item for key, item in fields.items()
-                      if key not in {"executed_nodes", "executed_tests", "passed_tests"}}
-        if fields:
-            value.update(fields)
-            _write_unlocked(path, value)
+    with _record_population_authority(path, blocking=True):
+        with exclusive_record(path):
+            value = read_record(path)
+            has_groups = "observed_safe_ci_cgroups" in fields
+            groups = fields.pop("observed_safe_ci_cgroups", ())
+            if service_result.is_evidenced_terminal(value):
+                fields = {}
+            elif observation_detail and not value.get("detail"):
+                fields["detail"] = observation_detail
+            if has_groups:
+                fields["observed_safe_ci_cgroups"] = sorted(
+                    set(value.get("observed_safe_ci_cgroups", [])) | set(groups)
+                )
+            if "reverie_count_request" in value:
+                fields = {
+                    key: item
+                    for key, item in fields.items()
+                    if key not in {"executed_nodes", "executed_tests", "passed_tests"}
+                }
+            if fields:
+                value.update(fields)
+                _write_unlocked(path, value)
     return value
 
 
 def bind_process_identity(path: Path, identity: ProcessIdentity) -> dict[str, Any]:
     """Publish one process identity without permitting a different replacement."""
-    with exclusive_record(path):
-        value = read_record(path)
-        encoded = {
-            "pid": identity.pid,
-            "start_ticks": identity.start_ticks,
-            "boot_id": identity.boot_id,
-        }
-        existing = value.get("process_identity")
-        if existing is not None and existing != encoded:
-            raise _error(
-                "process_identity",
-                "record already carries a different process identity",
-            )
-        value["process_identity"] = encoded
-        _write_unlocked(path, value)
+    with _record_population_authority(path, blocking=True):
+        with exclusive_record(path):
+            value = read_record(path)
+            encoded = {
+                "pid": identity.pid,
+                "start_ticks": identity.start_ticks,
+                "boot_id": identity.boot_id,
+            }
+            existing = value.get("process_identity")
+            if existing is not None and existing != encoded:
+                raise _error(
+                    "process_identity",
+                    "record already carries a different process identity",
+                )
+            value["process_identity"] = encoded
+            _write_unlocked(path, value)
     return value
 
 
@@ -1613,32 +1865,35 @@ def publish_admission_result(
             return _publish_numbered_admission_result(path)
     elif reason is None or exit_code is None:
         raise _error("admission_result", "refused requires reason and exit_code")
-    with exclusive_record(path):
-        value = read_record(path)
-        if value.get("producer") != PRODUCER:
-            raise _error("producer", "admission result requires a current handle")
-        handle = parse_current_record(value)
-        existing = handle.admission_result
-        if existing is not None:
-            if (
-                existing.state is not state
-                or existing.reason is not reason
-                or existing.exit_code != exit_code
-            ):
+    with _record_population_authority(path, blocking=True):
+        with exclusive_record(path):
+            value = read_record(path)
+            if value.get("producer") != PRODUCER:
                 raise _error(
-                    "admission_result",
-                    "record already carries a different admission result",
+                    "producer", "admission result requires a current handle"
                 )
-            return value
-        encoded: AdmissionResultRecord = {
-            "state": state.value,
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
-        }
-        if state is AdmissionState.REFUSED:
-            assert reason is not None and exit_code is not None
-            encoded.update(reason=reason.value, exit_code=exit_code)
-        value["admission_result"] = encoded
-        _write_unlocked(path, value)
+            handle = parse_current_record(value)
+            existing = handle.admission_result
+            if existing is not None:
+                if (
+                    existing.state is not state
+                    or existing.reason is not reason
+                    or existing.exit_code != exit_code
+                ):
+                    raise _error(
+                        "admission_result",
+                        "record already carries a different admission result",
+                    )
+                return value
+            encoded: AdmissionResultRecord = {
+                "state": state.value,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if state is AdmissionState.REFUSED:
+                assert reason is not None and exit_code is not None
+                encoded.update(reason=reason.value, exit_code=exit_code)
+            value["admission_result"] = encoded
+            _write_unlocked(path, value)
     return value
 
 
@@ -2099,55 +2354,58 @@ def _publish_numbered_admission_result(path: Path) -> dict[str, Any]:
             f"record host {recorded_host!r} differs from machine {host!r}",
         )
     state_path = root / "ignored/validate/run-numbers" / team / f"{host}.json"
-    with exclusive_record(state_path):
-        with exclusive_record(path):
-            value = read_record(path)
-            handle = parse_current_record(value)
-            if not handle.counts_as_validation or handle.repo != repo:
-                raise _error(
-                    "admission_result.run_number",
-                    "run identity changed while admission was being recorded",
-                )
-            existing = handle.admission_result
-            if existing is not None:
-                if existing.state is not AdmissionState.ADMITTED:
+    with _record_population_authority(path, blocking=True):
+        with exclusive_record(state_path):
+            with exclusive_record(path):
+                value = read_record(path)
+                handle = parse_current_record(value)
+                if not handle.counts_as_validation or handle.repo != repo:
                     raise _error(
-                        "admission_result",
-                        "record already carries a different admission result",
+                        "admission_result.run_number",
+                        "run identity changed while admission was being recorded",
                     )
-                number = existing.run_number
-                if number is None:
-                    # The counter is display metadata, not admission identity.
-                    # Preserve an already-admitted historical record exactly;
-                    # idempotent publication must not mutate it into a newer
-                    # shape or make its real admission unusable.
+                existing = handle.admission_result
+                if existing is not None:
+                    if existing.state is not AdmissionState.ADMITTED:
+                        raise _error(
+                            "admission_result",
+                            "record already carries a different admission result",
+                        )
+                    number = existing.run_number
+                    if number is None:
+                        # The counter is display metadata, not admission identity.
+                        # Preserve an already-admitted historical record exactly;
+                        # idempotent publication must not mutate it into a newer
+                        # shape or make its real admission unusable.
+                        return value
+                    previous = _run_number_state(state_path, repo=repo, host=host)
+                    if number > previous:
+                        _write_run_number_state(
+                            state_path, repo=repo, host=host, number=number
+                        )
                     return value
-                previous = _run_number_state(state_path, repo=repo, host=host)
-                if number > previous:
-                    _write_run_number_state(
-                        state_path, repo=repo, host=host, number=number
-                    )
-                return value
 
-            previous = _run_number_state(state_path, repo=repo, host=host)
-            if previous > 0:
-                number = previous + 1
-            else:
-                ledger_count, ledger_max = _ledger_run_numbers(
-                    root, team=team, host=host
+                previous = _run_number_state(state_path, repo=repo, host=host)
+                if previous > 0:
+                    number = previous + 1
+                else:
+                    ledger_count, ledger_max = _ledger_run_numbers(
+                        root, team=team, host=host
+                    )
+                    number = max(ledger_count, ledger_max) + 1
+                # Persist the counter first. If this process dies before the handle
+                # is written, the number is skipped rather than issued to two runs.
+                _write_run_number_state(
+                    state_path, repo=repo, host=host, number=number
                 )
-                number = max(ledger_count, ledger_max) + 1
-            # Persist the counter first. If this process dies before the handle
-            # is written, the number is skipped rather than issued to two runs.
-            _write_run_number_state(state_path, repo=repo, host=host, number=number)
-            value["host"] = host
-            value["admission_result"] = {
-                "state": AdmissionState.ADMITTED.value,
-                "recorded_at": datetime.now(timezone.utc).isoformat(),
-                "run_number": number,
-            }
-            _write_unlocked(path, value)
-            return value
+                value["host"] = host
+                value["admission_result"] = {
+                    "state": AdmissionState.ADMITTED.value,
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "run_number": number,
+                }
+                _write_unlocked(path, value)
+                return value
 
 
 def _load_cli_record(path: Path) -> dict[str, Any]:

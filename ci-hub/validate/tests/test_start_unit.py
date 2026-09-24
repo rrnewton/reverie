@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import pathlib
 import runpy
@@ -1910,6 +1911,57 @@ class StartUnitTest(unittest.TestCase):
             },
         )
         return fresh, record_path
+
+    def assert_provider_parent_replacement_is_serialized(
+        self,
+        fresh: Path,
+        record: Path,
+        *,
+        action: str,
+    ) -> None:
+        """A replacement runs/ parent must not admit a canonical writer."""
+
+        runs = record.parent
+        displaced = runs.with_name(f"{runs.name}.{fresh.name}.displaced")
+        replacement_lock_was_free = False
+        writer_was_rejected = False
+
+        def run(command: list[str], **kwargs: object):
+            nonlocal replacement_lock_was_free, writer_was_rejected
+            if wrkslots_action(command, action):
+                os.rename(runs, displaced)
+                shutil.copytree(displaced, runs)
+                replacement = runs / record.name
+                with start_unit.run_registry.exclusive_record(
+                    replacement, blocking=False
+                ):
+                    replacement_lock_was_free = True
+                try:
+                    start_unit.run_registry.update_record(
+                        replacement,
+                        blocking=False,
+                        concurrent_writer="replacement-parent",
+                    )
+                except start_unit.run_registry.RecordLocked:
+                    writer_was_rejected = True
+                    raise
+            return self.fake(command, **kwargs)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+
+        durable = start_unit.run_registry.read_record(runs / record.name)
+        self.assertTrue(replacement_lock_was_free)
+        self.assertTrue(writer_was_rejected)
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.exists())
+        self.assertNotIn("concurrent_writer", durable)
+        self.assertNotIn("checkout_removed_at", durable)
+        self.assertTrue(
+            any(row.get("cleanup_failed") is True for row in report["retained"]),
+            report,
+        )
 
     def current_unknown_cleanup_record(
         self, suffix: str, admission_result: dict[str, object] | None
@@ -6999,6 +7051,121 @@ class StartUnitTest(unittest.TestCase):
         self.assertTrue(any("registry shape refused" in row["reason"] for row in report["retained"]))
         self.assertTrue(fresh.exists())
 
+    def test_managed_population_authority_survives_runs_replacement(self) -> None:
+        fresh, record = self.managed_cleanup_record(
+            "managed-population-parent-replacement"
+        )
+        self.assert_provider_parent_replacement_is_serialized(
+            fresh,
+            record,
+            action="remove-validate-batch",
+        )
+
+    def test_managed_provider_cross_thread_writer_fails_without_deadlock(self) -> None:
+        fresh, record = self.managed_cleanup_record("managed-thread-writer")
+        writer_errors: list[BaseException] = []
+        writer_finished_inside_provider = False
+        writer: threading.Thread | None = None
+
+        def write_from_callback() -> None:
+            try:
+                start_unit.run_registry.update_record(
+                    record, concurrent_writer="callback-thread"
+                )
+            except BaseException as error:
+                writer_errors.append(error)
+
+        def run(command: list[str], **_kwargs: object):
+            nonlocal writer_finished_inside_provider, writer
+            if wrkslots_action(command, "remove-validate-batch"):
+                writer = threading.Thread(target=write_from_callback, daemon=True)
+                writer.start()
+                writer.join(timeout=1)
+                writer_finished_inside_provider = not writer.is_alive()
+                return completed(command, rc=3, stderr="fixture retained")
+            return self.fake(command, **_kwargs)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+        assert writer is not None
+        writer.join(timeout=1)
+
+        self.assertTrue(writer_finished_inside_provider, "callback writer deadlocked")
+        self.assertFalse(writer.is_alive(), "callback writer outlived cleanup")
+        self.assertEqual(1, len(writer_errors), writer_errors)
+        self.assertIsInstance(writer_errors[0], start_unit.run_registry.RecordLocked)
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.exists())
+        durable = start_unit.run_registry.read_record(record)
+        self.assertNotIn("concurrent_writer", durable)
+        self.assertNotIn("checkout_removed_at", durable)
+
+    def test_managed_population_authority_is_held_through_bookkeeping(self) -> None:
+        fresh, record = self.managed_cleanup_record("managed-bookkeeping-authority")
+        real_update = start_unit.run_registry.update_record
+        observed_authority = False
+
+        def checked_update(
+            path: Path, *, blocking: bool = True, **fields: object
+        ) -> dict[str, object]:
+            nonlocal observed_authority
+            if "checkout_removed_at" in fields:
+                authority = fields.get("_population_authority")
+                self.assertIsInstance(
+                    authority, start_unit.run_registry.RunPopulationAuthority
+                )
+                assert isinstance(
+                    authority, start_unit.run_registry.RunPopulationAuthority
+                )
+                start_unit.run_registry.require_run_population_authority(
+                    self.root, authority
+                )
+                self.assertIs(fields.get("_record_lock_held"), True)
+                observed_authority = True
+            return real_update(path, blocking=blocking, **fields)
+
+        with mock.patch.object(
+            start_unit.run_registry,
+            "update_record",
+            side_effect=checked_update,
+        ):
+            report = start_unit.sweep_completed_checkouts(
+                self.root, run=self.fake, tool_root=self.root
+            )
+
+        self.assertTrue(observed_authority)
+        self.assertEqual([str(fresh)], report["removed"], report)
+        self.assertIsInstance(
+            start_unit.run_registry.read_record(record).get(
+                "checkout_removed_at"
+            ),
+            str,
+        )
+
+    def test_managed_batch_does_not_confirm_dangling_symlink_as_removed(self) -> None:
+        fresh, record = self.managed_cleanup_record("managed-dangling")
+
+        def leave_dangling(command: list[str], **kwargs: object):
+            result = self.fake(command, **kwargs)
+            if wrkslots_action(command, "remove-validate-batch"):
+                fresh.symlink_to(fresh.parent / "missing-managed-target")
+            return result
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=leave_dangling, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"], report)
+        self.assertTrue(fresh.is_symlink())
+        self.assertTrue(
+            any("still exists" in row["reason"] for row in report["retained"]),
+            report,
+        )
+        self.assertNotIn(
+            "checkout_removed_at", start_unit.run_registry.read_record(record)
+        )
+
     def test_malformed_cursor_refuses_without_removing(self) -> None:
         fresh, _record = self.managed_cleanup_record("bad-cursor")
         cursor = self.root / "ignored/validate/checkout-cleanup-cursor.json"
@@ -7164,6 +7331,94 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertFalse(
             any(command[:2] == ["rm", "-rf"] for command in self.fake.commands)
+        )
+
+    def test_cargo_owner_cannot_appear_between_census_and_provider(self) -> None:
+        _checkout, cargo_home, record = self.in_place_cleanup_record(
+            "cargo-owner-interleaving", temporary=False, current=True
+        )
+        second = record.with_name("validate-cargo-owner-interleaving-second.json")
+        writer_rejected = False
+
+        def add_owner(command: list[str], **kwargs: object):
+            nonlocal writer_rejected
+            if "--ownerless-validate-cargo-home" in command:
+                try:
+                    start_unit.run_registry.write_record(
+                        second,
+                        {
+                            "schema_version": 1,
+                            "unit": "validate-cargo-owner-interleaving-second.service",
+                            "source_checkout": str(self.checkout),
+                            "cargo_home": str(cargo_home),
+                            "repo": "rrnewton/hermit",
+                            "state": "running",
+                        },
+                    )
+                except start_unit.run_registry.RecordLocked:
+                    writer_rejected = True
+                    raise
+            return self.fake(command, **kwargs)
+
+        cleaned, reason = start_unit.cleanup_recorded_cargo_home(
+            self.root,
+            start_unit.run_registry.read_record(record),
+            record_path=record,
+            run=add_owner,
+            tool_root=self.root,
+        )
+
+        self.assertTrue(writer_rejected)
+        self.assertFalse(cleaned)
+        self.assertIn("run-population authority", reason or "")
+        self.assertTrue(cargo_home.exists())
+        self.assertFalse(second.exists())
+        self.assertNotIn(
+            "cargo_home_removed_at", start_unit.run_registry.read_record(record)
+        )
+
+        # Positive control: with no competing owner, the same census/provider
+        # path removes and stamps the Cargo home.
+        cleaned, reason = start_unit.cleanup_recorded_cargo_home(
+            self.root,
+            start_unit.run_registry.read_record(record),
+            record_path=record,
+            run=self.fake,
+            tool_root=self.root,
+        )
+        self.assertTrue(cleaned, reason)
+        self.assertFalse(cargo_home.exists())
+        self.assertIsInstance(
+            start_unit.run_registry.read_record(record).get(
+                "cargo_home_removed_at"
+            ),
+            str,
+        )
+
+    def test_cargo_cleanup_does_not_confirm_dangling_symlink_as_removed(self) -> None:
+        _checkout, cargo_home, record = self.in_place_cleanup_record(
+            "cargo-dangling", temporary=False, current=True
+        )
+
+        def leave_dangling(command: list[str], **kwargs: object):
+            result = self.fake(command, **kwargs)
+            if "--ownerless-validate-cargo-home" in command:
+                cargo_home.symlink_to(cargo_home.parent / "missing-cargo-target")
+            return result
+
+        cleaned, reason = start_unit.cleanup_recorded_cargo_home(
+            self.root,
+            start_unit.run_registry.read_record(record),
+            record_path=record,
+            run=leave_dangling,
+            tool_root=self.root,
+        )
+
+        self.assertFalse(cleaned)
+        self.assertIn("still exists", reason or "")
+        self.assertTrue(cargo_home.is_symlink())
+        self.assertNotIn(
+            "cargo_home_removed_at", start_unit.run_registry.read_record(record)
         )
 
     def test_sweep_retains_cargo_home_when_wrkslots_recovery_refuses(self) -> None:
@@ -7407,6 +7662,16 @@ class StartUnitTest(unittest.TestCase):
         self.assertTrue(observed_locked)
         self.assertEqual([str(fresh)], report["removed"], report)
         self.assertFalse(fresh.exists())
+
+    def test_ownerless_population_authority_survives_runs_replacement(self) -> None:
+        fresh, record = self.ownerless_cleanup_record(
+            "ownerless-population-parent-replacement"
+        )
+        self.assert_provider_parent_replacement_is_serialized(
+            fresh,
+            record,
+            action="recover-ownerless-validate-batch",
+        )
 
     def test_ownerless_batch_blocks_contradictory_writer_and_honors_refusal(self) -> None:
         fresh, record = self.ownerless_cleanup_record(
@@ -8055,6 +8320,41 @@ class StartUnitTest(unittest.TestCase):
         self.assertTrue(observed_locked)
         self.assertEqual([str(fresh)], report["removed"], report)
         self.assertFalse(fresh.exists())
+
+    def test_frozen_population_authority_survives_runs_replacement(self) -> None:
+        fresh = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-frozen-population-parent-replacement"
+        )
+        (fresh / ".git").mkdir(parents=True)
+        self.addCleanup(
+            shutil.rmtree, start_unit.frozen_checkout_parent(self.root), True
+        )
+        record = (
+            self.root
+            / "ignored/validate/runs/validate-frozen-population-parent-replacement.json"
+        )
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "unit": "validate-frozen-population-parent-replacement.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+
+        self.assert_provider_parent_replacement_is_serialized(
+            fresh,
+            record,
+            action="recover-ownerless-validate-batch",
+        )
 
     def test_frozen_batch_blocks_contradictory_writer_and_honors_refusal(self) -> None:
         fresh = (
@@ -12723,6 +13023,32 @@ class StartUnitTest(unittest.TestCase):
                 for command in self.fake.commands
             )
         )
+
+    def test_direct_cleanup_does_not_confirm_dangling_symlink_as_removed(self) -> None:
+        fresh = self.root / "worktrees/validate/validate-fresh-direct-dangling"
+        fresh.mkdir(parents=True)
+        (fresh / ".git").write_text("gitdir: shared/worktrees/direct-dangling\n")
+        self.fake.fresh = fresh
+
+        def leave_dangling(command: list[str], **kwargs: object):
+            result = self.fake(command, **kwargs)
+            if wrkslots_action(command, "remove"):
+                fresh.symlink_to(fresh.parent / "missing-direct-target")
+            return result
+
+        removed = start_unit.remove_fresh_checkout(
+            self.checkout,
+            fresh,
+            state_root=self.root,
+            run=leave_dangling,
+            tool_root=self.root,
+            wrkslots=start_unit.WrkslotsIdentity(
+                fresh.name, self.fake.wrkslots_generation
+            ),
+        )
+
+        self.assertFalse(removed)
+        self.assertTrue(fresh.is_symlink())
 
     def test_immediate_frozen_cleanup_uses_typed_wrkslots_recovery(self) -> None:
         source = self.root / "worktrees/slots/source-hermit"

@@ -345,6 +345,32 @@ class CorrectionTest(unittest.TestCase):
             )
         self.assertEqual(before, self.handle_path.read_bytes())
 
+    def test_apply_holds_population_authority_through_commit_callback(self) -> None:
+        dry = self.plan()
+        new_handle = self.handle_path.with_name("validate-concurrent-writer.json")
+        writer_rejected = False
+
+        def attempt_normal_writer() -> None:
+            nonlocal writer_rejected
+            try:
+                correction.run_registry.create_record(new_handle, self.handle)
+            except correction.run_registry.RecordLocked:
+                writer_rejected = True
+
+        report = correction.apply_plan(
+            self.state_root,
+            self.owner_state,
+            expected_count=1,
+            expected_plan_sha256=str(dry["plan_sha256"]),
+            run=absent_unit,
+            before_commit=attempt_normal_writer,
+        )
+
+        self.assertTrue(writer_rejected)
+        self.assertFalse(new_handle.exists())
+        self.assertEqual(1, report["applied_count"])
+        self.assertEqual("refused", json.loads(self.handle_path.read_text())["state"])
+
     def test_symlink_swap_before_mutation_does_not_touch_escape_target(self) -> None:
         dry = self.plan()
         outside = Path(self.temporary.name) / "outside-handle.json"
