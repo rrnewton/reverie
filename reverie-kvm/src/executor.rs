@@ -13459,7 +13459,13 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     let user = memory.user();
     let alias = match user.writable_alias(args[1], length) {
         Ok(alias) => alias,
-        Err(crate::Error::MemoryMapping(error)) => return io_error(error),
+        Err(error @ crate::Error::MemoryMapping(_)) => {
+            // Alias construction has already released every mapping, lock and
+            // operand. Host resource failure is terminal, not a guest errno:
+            // result publication/injection resume must observe this cause.
+            memory.entry_gate().poison(memory.entry_origin(), error);
+            return negative_errno(libc::EFAULT);
+        }
         Err(_) => return negative_errno(libc::EFAULT),
     };
     // SAFETY: file owns a live descriptor; alias retains the current backing,
@@ -33096,6 +33102,41 @@ mod tests {
             ),
             negative_errno(libc::EBADF)
         );
+    }
+
+    #[test]
+    fn getdents64_alias_mapping_failure_is_terminal_before_directory_io() {
+        let Some(fault) = crate::alias_failure::child(
+            "executor::tests::getdents64_alias_mapping_failure_is_terminal_before_directory_io",
+        ) else {
+            return;
+        };
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut directory = std::fs::File::open(&root.0).unwrap();
+        state.files.insert(0, directory.try_clone().unwrap());
+        let mut memory = GuestMemory::new(0, 3 * PAGE_SIZE as usize).unwrap();
+        memory
+            .write_raw(0, &[0xa5; 3 * PAGE_SIZE as usize])
+            .unwrap();
+        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
+        memory
+            .map_user_range(2 * PAGE_SIZE, PAGE_SIZE, false)
+            .unwrap();
+        memory.enable_user_access();
+        let before = directory.stream_position().unwrap();
+        fault.arm();
+        let _transport_only = getdents64(&mut memory, &state, &[0, 0, 3 * PAGE_SIZE, 0, 0, 0]);
+        fault.assert_fired();
+        let pending = memory.entry_gate().pending_failure().unwrap();
+        let error = pending.error();
+        assert!(
+            matches!(error.primary(), crate::Error::MemoryMapping(e) if e.raw_os_error() == Some(libc::ENOMEM))
+        );
+        assert_eq!(directory.stream_position().unwrap(), before);
+        assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
+        let refused = memory.write_raw(0, b"ordinary result").unwrap_err();
+        assert!(std::ptr::eq(error.primary(), refused.primary()));
     }
 
     #[test]

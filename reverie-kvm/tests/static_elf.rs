@@ -74,6 +74,141 @@ use reverie_kvm::StraceTool;
 
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 
+#[path = "support/alias_failure.rs"]
+mod alias_failure;
+
+static ALIAS_FAILURE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+static ALIAS_FAILURE_CALLBACK_RESUMED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, Default)]
+struct AliasFailureTool;
+
+#[reverie::tool]
+impl Tool for AliasFailureTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscalls([Sysno::getdents64]);
+        subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        ALIAS_FAILURE_CALLBACKS.fetch_add(1, Ordering::SeqCst);
+        let result = guest.inject(syscall).await;
+        ALIAS_FAILURE_CALLBACK_RESUMED.store(true, Ordering::SeqCst);
+        Ok(result?)
+    }
+}
+
+#[test]
+fn getdents64_alias_resource_failure_stops_direct_guest() {
+    getdents64_alias_failure_case(
+        "getdents64_alias_resource_failure_stops_direct_guest",
+        false,
+    );
+}
+
+#[test]
+fn getdents64_alias_resource_failure_stops_tool_and_guest() {
+    getdents64_alias_failure_case(
+        "getdents64_alias_resource_failure_stops_tool_and_guest",
+        true,
+    );
+}
+
+fn getdents64_alias_failure_case(test: &str, with_tool: bool) {
+    let Some(fault) = alias_failure::child(test) else {
+        return;
+    };
+    let directory = TestDirectory::new();
+    std::fs::create_dir(directory.0.join("empty")).unwrap();
+    let program = compile_c_program(
+        &directory.0,
+        "alias-failure",
+        GETDENTS_ALIAS_FAILURE_PROGRAM,
+    );
+    let marker = directory.0.join("guest-continued");
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(&program)
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(std::fs::read(&marker).unwrap(), b"resumed");
+    std::fs::remove_file(&marker).unwrap();
+    let mut backend = KvmBackend::new(64 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_file_with_context(
+            std::fs::File::open(&program).unwrap(),
+            &[program.to_str().unwrap()],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    fault.arm();
+    let result = if with_tool {
+        futures::executor::block_on(backend.run_static_elf_with_tool::<AliasFailureTool>((), true))
+            .map(|(_, code, stdout, stderr)| (code, stdout, stderr))
+    } else {
+        backend.run_static_elf_captured()
+    };
+    fault.assert_fired();
+    eprintln!(
+        "alias refusal observation: result={result:?} callbacks={} resumed={} guest_marker={}",
+        ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst),
+        ALIAS_FAILURE_CALLBACK_RESUMED.load(Ordering::SeqCst),
+        marker.exists(),
+    );
+    let error = result.unwrap_err();
+    assert!(
+        matches!(error.primary(), Error::MemoryMapping(e) if e.raw_os_error() == Some(libc::ENOMEM)),
+        "{error:?}"
+    );
+    assert!(!marker.exists(), "guest resumed after supervisor failure");
+    assert_eq!(
+        ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst),
+        u64::from(with_tool)
+    );
+    assert!(!ALIAS_FAILURE_CALLBACK_RESUMED.load(Ordering::SeqCst));
+    let refused = backend.memory().read(0, &mut [0]).unwrap_err();
+    assert!(std::ptr::eq(error.primary(), refused.primary()));
+    eprintln!(
+        "terminal alias failure with_tool={with_tool}: {error}; callbacks={} resumed=false",
+        ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst)
+    );
+}
+
+const GETDENTS_ALIAS_FAILURE_PROGRAM: &str = r#"
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#define CHECK(x) do { if (!(x)) return 93; } while (0)
+int main(void) {
+    CHECK(close(0) == 0);
+    int fd = open("empty", O_RDONLY | O_DIRECTORY);
+    CHECK(fd == 0);
+    unsigned char *p = mmap(0, 12288, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(p != MAP_FAILED);
+    memset(p, 0xa5, 12288);
+    CHECK(mprotect(p + 4096, 4096, PROT_NONE) == 0);
+    (void)syscall(SYS_getdents64, fd, p, 12288);
+    int marker = open("guest-continued", O_WRONLY | O_CREAT | O_EXCL, 0600);
+    CHECK(marker >= 0 && write(marker, "resumed", 7) == 7);
+    return 0;
+}
+"#;
+
 #[test]
 fn getdents64_copyout_matches_native_direct() {
     getdents64_copyout_case("getdents64_copyout_matches_native_direct", false);

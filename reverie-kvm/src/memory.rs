@@ -271,6 +271,8 @@ pub(crate) struct UserMemory {
 /// operation returns. No permission/mutation lock is held across a blocking
 /// syscall. This is sound only for the current immutable identity coverage;
 /// live remapping and noncontiguous operands require a later adapter protocol.
+/// This contract belongs to HostMemoryOperand; UserWriteAlias below instead
+/// holds permission and host-copy locks through its scoped kernel operation.
 #[derive(Debug)]
 pub(crate) struct HostMemoryOperand {
     _memory: GuestMemory,
@@ -310,8 +312,10 @@ impl Drop for WriteAliasMapping {
 
 /// A scoped kernel copyout view. Permissions and host copies are serialized
 /// through the syscall, while peer vCPUs still see the exact shared-byte writes.
-/// Use only for bounded synchronous operations that do not reenter guest memory
-/// or acquire its allocation lock. This does not hold a short-copy admission.
+/// Use only for synchronous operations with bounded buffer sizes that do not
+/// reenter guest memory or acquire its allocation lock. Filesystem latency is
+/// not bounded: a stalled syscall keeps these locks held. This does not hold a
+/// short-copy admission.
 pub(crate) struct UserWriteAlias<'a> {
     // Field order releases the mappings before their backing owners/locks and
     // finally the retained-operand token, whose drop acquires the entry gate.
@@ -324,6 +328,9 @@ pub(crate) struct UserWriteAlias<'a> {
 }
 
 impl UserWriteAlias<'_> {
+    /// Kernel-only operand for at most the requested byte count. For zero bytes
+    /// this is an unowned sentinel, not a dereferenceable allocation. The caller
+    /// must use a syscall whose zero-count contract never accesses that pointer.
     pub(crate) fn address(&self) -> *mut libc::c_void {
         std::ptr::with_exposed_provenance_mut(self.mapping.address + self.offset)
     }
@@ -4052,6 +4059,38 @@ mod tests {
         expected[PAGE_SIZE - 1..PAGE_SIZE + 1].fill(0);
         expected[2 * PAGE_SIZE - 1..2 * PAGE_SIZE + 1].fill(0);
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn writable_alias_mapping_failure_releases_every_resource() {
+        let Some(fault) = crate::alias_failure::child(
+            "memory::tests::writable_alias_mapping_failure_releases_every_resource",
+        ) else {
+            return;
+        };
+        let memory = GuestMemory::new(0, 3 * PAGE_SIZE).unwrap();
+        memory.write_raw(0, &[0xa5; 3 * PAGE_SIZE]).unwrap();
+        memory.map_user_range(0, PAGE_SIZE as u64, false).unwrap();
+        memory
+            .map_user_range(2 * PAGE_SIZE as u64, PAGE_SIZE as u64, false)
+            .unwrap();
+        memory.enable_user_access();
+        fault.arm();
+        let user = memory.user();
+        // Zero bytes still check admission, but must not allocate an alias.
+        user.writable_alias(u64::MAX, 0).unwrap().finish().unwrap();
+        let error = user.writable_alias(0, 3 * PAGE_SIZE).err().unwrap();
+        assert!(
+            matches!(error, Error::MemoryMapping(ref e) if e.raw_os_error() == Some(libc::ENOMEM))
+        );
+        fault.assert_fired();
+        assert_eq!(memory.entry_gate().test_state().copies, 0);
+        assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
+        assert!(memory.mapping.address_space.try_lock().is_ok());
+        assert!(memory.mapping.slice.backing.host_access.try_lock().is_ok());
+        let mut actual = [0; 3 * PAGE_SIZE];
+        memory.read_raw(0, &mut actual).unwrap();
+        assert_eq!(actual, [0xa5; 3 * PAGE_SIZE]);
     }
 
     #[test]
