@@ -25,6 +25,287 @@ use crate::failure::FailureContext;
 use crate::failure::RunFailure;
 use crate::failure::owned_future::PanicPayload;
 
+struct PanickingWorkerConfig(Option<PanicPayload>);
+
+impl Drop for PanickingWorkerConfig {
+    fn drop(&mut self) {
+        resume_unwind(self.0.take().unwrap());
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ConfigurationCase {
+    DeferredExecution,
+    OrdinaryCompletion,
+    OuterExecution,
+}
+
+fn configuration_panic_control(case: ConfigurationCase) {
+    let mut backend = KvmBackend::new(0x10000).expect("worker configuration control requires KVM");
+    backend.is_guest_thread = true;
+    backend.thread_ownership = ThreadOwnership::Tool;
+    let group = backend.thread_group.clone();
+    let leader = ElfExecutor::new(crate::executor::native_loaded_state(Path::new("/")), false);
+    let mut executor = leader.thread_child(2).unwrap();
+    let global = Arc::new(());
+    let run = RunFailure::new(&global);
+    backend.set_tool_failure(Some(FailureContext::new(
+        run.clone(),
+        Pid::from_raw(1),
+        Pid::from_raw(2),
+    )));
+    let (configuration, configuration_address, configuration_drops) = payload();
+    let execution = (!matches!(case, ConfigurationCase::OrdinaryCompletion)).then(payload);
+    let expected_address = execution
+        .as_ref()
+        .map_or(configuration_address, |(_, address, _)| *address);
+    let execution_drops = execution.as_ref().map(|(_, _, drops)| drops.clone());
+    let worker = std::thread::spawn(move || -> GuestWorkerResult {
+        let config = PanickingWorkerConfig(Some(configuration));
+        match case {
+            ConfigurationCase::OuterExecution => backend.finish_panicked_guest_worker_with_entry(
+                &mut executor,
+                2,
+                execution.unwrap().0,
+                None,
+                |panics| panics.drop_value(config, "Tool worker configuration destruction"),
+            ),
+            ConfigurationCase::DeferredExecution | ConfigurationCase::OrdinaryCompletion => {
+                let result = match execution {
+                    Some((payload, _, _)) => backend
+                        .tool_panic_owner()
+                        .finish_worker_execution::<(ExitStatus, Vec<u8>, Vec<u8>)>(
+                            crate::failure::owned_future::CaughtFuture {
+                                output: None,
+                                panics: vec![payload],
+                            },
+                            "Tool callback",
+                        )
+                        .map_err(|error| backend.report_tool_failure("Tool callback", error)),
+                    None => Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new())),
+                };
+                let result = backend
+                    .finish_worker_configuration(result, config)
+                    .map_err(|error| backend.report_tool_failure("Tool worker completion", error));
+                backend.finish_deferred_worker_panic(2, result)
+            }
+        }
+    });
+    group.add_worker_handle(2, worker);
+    group.join_workers();
+    let error = run.complete(group.teardown_result()).unwrap_err();
+    assert!(matches!(error.primary(), Error::GuestWorkerPanic));
+    assert_eq!(error.worker_tid(), Some(2));
+    assert!(error.retains_primary(&run.primary().unwrap()));
+    assert!(
+        error
+            .to_string()
+            .contains("Tool worker configuration destruction")
+    );
+    assert_eq!(configuration_drops.load(Ordering::SeqCst), 0);
+    if let Some(drops) = &execution_drops {
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+    }
+    {
+        let records = group.completed_worker_panics.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(
+            payload_address(record._join_payload.as_ref().unwrap()),
+            expected_address
+        );
+        if execution_drops.is_some() {
+            assert_eq!(record._cleanup_panics.len(), 1);
+            assert_eq!(
+                payload_address(&record._cleanup_panics[0]),
+                configuration_address
+            );
+        } else {
+            assert!(record._cleanup_panics.is_empty());
+        }
+    }
+    drop(group);
+    assert_eq!(configuration_drops.load(Ordering::SeqCst), 1);
+    if let Some(drops) = execution_drops {
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn configuration_destructor_preserves_deferred_and_outer_execution_panics() {
+    configuration_panic_control(ConfigurationCase::DeferredExecution);
+    configuration_panic_control(ConfigurationCase::OuterExecution);
+}
+
+#[test]
+fn configuration_destructor_after_normal_completion_returns_typed_worker_failure() {
+    configuration_panic_control(ConfigurationCase::OrdinaryCompletion);
+}
+
+#[test]
+fn unstarted_configuration_destructor_preserves_error_and_transfers_payload() {
+    let mut child = KvmBackend::new(0x10000).expect("worker configuration control requires KVM");
+    child.is_guest_thread = true;
+    child.thread_ownership = ThreadOwnership::Tool;
+    let child_panics = child.tool_panic_owner();
+    let parent_panics = Arc::new(crate::failure::tool_panics::ToolPanics::default());
+    let transfer = ChildToolPanicTransfer {
+        parent: parent_panics.clone(),
+        child: child_panics.clone(),
+    };
+    let mut executor =
+        ElfExecutor::new(crate::executor::native_loaded_state(Path::new("/")), false);
+    let original = Arc::new(Error::HostIo(std::io::Error::from_raw_os_error(libc::EIO)));
+    let returned = original.clone();
+    let (configuration, configuration_address, configuration_drops) = payload();
+    let config = PanickingWorkerConfig(Some(configuration));
+    executor.retain_unstarted_tool_cleanup(Box::pin(async move {
+        let transfer = transfer;
+        let caught = crate::failure::owned_future::catch_owned_future(async {
+            Err::<(), _>(Error::SharedFailure(returned))
+        })
+        .await;
+        let result = child
+            .tool_panic_owner()
+            .finish(caught, "unstarted thread owner");
+        let result = child.finish_worker_configuration(result, config);
+        drop(transfer);
+        result
+    }));
+
+    let error = futures::executor::block_on(
+        crate::runtime::finish_unstarted_tool_cleanups_with_panics(&mut executor, &parent_panics),
+    )
+    .unwrap_err();
+    assert!(std::ptr::eq(error.primary(), original.as_ref()));
+    assert!(
+        error
+            .to_string()
+            .contains("Tool worker configuration destruction")
+    );
+    assert!(!child_panics.worker_execution_panicked());
+    assert!(!parent_panics.worker_execution_panicked());
+    assert!(child_panics.take().is_empty());
+    let payloads = parent_panics.take();
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payload_address(&payloads[0]), configuration_address);
+    assert_eq!(configuration_drops.load(Ordering::SeqCst), 0);
+    drop(payloads);
+    assert_eq!(configuration_drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn configuration_panic_interrupts_natural_join_in_both_orders() {
+    for failure_first in [true, false] {
+        let mut backend =
+            KvmBackend::new(0x10000).expect("worker configuration control requires KVM");
+        backend.is_guest_thread = true;
+        backend.thread_ownership = ThreadOwnership::Tool;
+        let group = backend.thread_group.clone();
+        let global = Arc::new(());
+        let run = RunFailure::new(&global);
+        backend.set_tool_failure(Some(FailureContext::new(
+            run.clone(),
+            Pid::from_raw(1),
+            Pid::from_raw(3),
+        )));
+        let sibling_group = group.clone();
+        let sibling_finished = Arc::new(AtomicBool::new(false));
+        let finished = sibling_finished.clone();
+        group.add_worker_handle(
+            2,
+            std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + WAIT;
+                while !sibling_group.cancelled.load(Ordering::Acquire) {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "deferred configuration panic left an earlier sibling running"
+                    );
+                    std::thread::yield_now();
+                }
+                finished.store(true, Ordering::Release);
+                Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+            }),
+        );
+        let (configuration, configuration_address, configuration_drops) = payload();
+        let (release, released) = mpsc::channel();
+        let (done, completed) = mpsc::channel();
+        group.add_worker_handle(
+            3,
+            std::thread::spawn(move || -> GuestWorkerResult {
+                let _done = WorkerDone(done);
+                released.recv_timeout(WAIT).unwrap();
+                let result = backend
+                    .finish_worker_configuration(
+                        Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new())),
+                        PanickingWorkerConfig(Some(configuration)),
+                    )
+                    .map_err(|error| backend.report_tool_failure("Tool worker completion", error));
+                assert!(
+                    backend
+                        .tool_failure
+                        .as_ref()
+                        .unwrap()
+                        .run
+                        .primary()
+                        .is_some()
+                );
+                assert!(
+                    !backend
+                        .thread_group
+                        .failure_state
+                        .lock()
+                        .unwrap()
+                        .worker_failed
+                );
+                assert!(
+                    backend
+                        .thread_group
+                        .reported_worker_panics
+                        .lock()
+                        .unwrap()
+                        .is_empty()
+                );
+                assert!(!backend.tool_panic_owner().worker_execution_panicked());
+                backend.finish_deferred_worker_panic(3, result)
+            }),
+        );
+        if failure_first {
+            release.send(()).unwrap();
+            completed
+                .recv_timeout(WAIT)
+                .expect("failed worker did not finish");
+            assert!(!group.cancelled.load(Ordering::Acquire));
+            group.begin_natural_join();
+        } else {
+            group.begin_natural_join();
+            assert!(!group.cancelled.load(Ordering::Acquire));
+            release.send(()).unwrap();
+        }
+        group.join_workers();
+        assert!(sibling_finished.load(Ordering::Acquire));
+        assert!(group.worker_handles.lock().unwrap().is_empty());
+        assert!(group.take_worker_error_report(3));
+        assert!(!group.take_worker_error_report(3));
+        let error = run.complete(group.teardown_result()).unwrap_err();
+        assert!(matches!(error.primary(), Error::GuestWorkerPanic));
+        assert_eq!(error.worker_tid(), Some(3));
+        assert!(error.retains_primary(&run.primary().unwrap()));
+        assert_eq!(configuration_drops.load(Ordering::SeqCst), 0);
+        {
+            let records = group.completed_worker_panics.lock().unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(
+                payload_address(records[0]._join_payload.as_ref().unwrap()),
+                configuration_address
+            );
+            assert!(records[0]._cleanup_panics.is_empty());
+        }
+        drop(group);
+        assert_eq!(configuration_drops.load(Ordering::SeqCst), 1);
+    }
+}
+
 const WAIT: Duration = Duration::from_secs(5);
 const PARENT_TID: i32 = 2;
 const CHILD_TID: i32 = 3;

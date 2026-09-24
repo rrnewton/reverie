@@ -20,3 +20,6 @@ libc = "0.2.186"
 perf-event-open-sys = "5.0"
 reverie = { version = "0.2.0", path = "../reverie", package = "reverie-core" }
 thiserror = "2.0.18"
+
+[dev-dependencies]
+serde = { version = "1.0.219", features = ["derive"] }

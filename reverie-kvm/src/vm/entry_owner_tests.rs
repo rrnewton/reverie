@@ -167,7 +167,13 @@ fn caught_worker_driver_retires_after_pending_consumer_and_before_payload_resume
     .expect_err("constructed callback destructor must panic");
     assert!(origin.callback_dropped());
     let resumed = catch_unwind(AssertUnwindSafe(|| {
-        backend.finish_panicked_guest_worker_with_entry(&mut executor, 2, caught, Some(driver));
+        backend.finish_panicked_guest_worker_with_entry(
+            &mut executor,
+            2,
+            caught,
+            Some(driver),
+            |_| Ok(()),
+        );
     }))
     .expect_err("worker must resume the exact original panic");
     assert_eq!(

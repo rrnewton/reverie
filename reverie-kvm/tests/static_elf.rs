@@ -4388,6 +4388,32 @@ fn static_elf_cannot_copy_supervisor_bootstrap_memory() {
 }
 
 #[test]
+fn static_elf_ready_synchronous_runs_preserve_outer_executor_compatibility() {
+    if !kvm_available("synchronous runner inside an outer executor") {
+        return;
+    }
+    let image = static_elf(&[
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0xbf, 0x2a, 0x00, 0x00, 0x00, // mov edi, 42
+        0x0f, 0x05, 0x0f, 0x0b, // syscall; ud2
+    ]);
+    for capture in [false, true] {
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        backend.install_static_elf(&image, "exit-42").unwrap();
+        futures::executor::block_on(async {
+            if capture {
+                let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+                assert_eq!(code, 42);
+                assert!(stdout.is_empty());
+                assert!(stderr.is_empty());
+            } else {
+                assert_eq!(backend.run_static_elf().unwrap(), 42);
+            }
+        });
+    }
+}
+
+#[test]
 fn static_elf_forks_execs_and_waits_for_child() {
     match Kvm::new() {
         Ok(_) => {}
@@ -7638,6 +7664,46 @@ fn real_gcc_compiles_an_object_through_child_processes() {
         &root.0,
     );
     assert!(root.0.join("fixture.o").is_file());
+}
+
+#[test]
+fn real_gcc_tool_output_matches_native() {
+    if !kvm_available("GCC Tool execution and native object comparison") {
+        return;
+    }
+    let root = TestDirectory::new();
+    std::fs::write(
+        root.0.join("fixture.c"),
+        b"int hermit_compat(void) { return 42; }\n",
+    )
+    .unwrap();
+    let args = [
+        "-std=c11",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-fno-ident",
+        "-frandom-seed=hermit-gcc",
+        "-c",
+        "fixture.c",
+        "-o",
+        "fixture.o",
+    ];
+    let native = std::process::Command::new("/usr/bin/gcc")
+        .args(args)
+        .current_dir(&root.0)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "native GCC failed: {native:?}");
+    let expected = std::fs::read(root.0.join("fixture.o")).unwrap();
+    std::fs::remove_file(root.0.join("fixture.o")).unwrap();
+    let argv: Vec<_> = std::iter::once("gcc").chain(args).collect();
+    let (stdout, stderr) = run_host_program_with_tool_captured("/usr/bin/gcc", &argv, &root.0);
+    assert_eq!(stdout, native.stdout);
+    assert_eq!(stderr, native.stderr);
+    assert_eq!(std::fs::read(root.0.join("fixture.o")).unwrap(), expected);
 }
 
 #[test]
