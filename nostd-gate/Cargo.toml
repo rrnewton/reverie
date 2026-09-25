@@ -11,15 +11,19 @@ publish = false
 [workspace]
 
 [dependencies]
+reverie = { package = "reverie-core", path = "../reverie", default-features = false }
 reverie-memory = { path = "../reverie-memory", default-features = false }
 reverie-process = { path = "../reverie-process", default-features = false }
 reverie-syscalls = { path = "../reverie-syscalls", default-features = false }
+serde = { version = "1.0.219", features = ["derive"], default-features = false }
 syscalls = { version = "0.6.18", default-features = false }
+tracing = { version = "0.1.41", default-features = false }
 
 [features]
 # Negative controls only: enabling one contract crate's `std` feature on the
 # no-std target must fail to build (E0463, no `std`), proving the positive
 # build of that crate is not vacuous. `run.sh` checks each one.
+negative-std-core = ["reverie/std"]
 negative-std-memory = ["reverie-memory/std"]
 negative-std-process = ["reverie-process/std"]
 negative-std-syscalls = ["reverie-syscalls/std"]

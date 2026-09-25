@@ -6,7 +6,10 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use nix::sys::signal::Signal;
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::Ordering;
+
+use crate::Signal;
 
 /// Options for scheduling a timer event.
 pub enum TimerSchedule {
@@ -59,7 +62,7 @@ pub const SKID_OVERSHOOT_MARKER: &str = "HERMIT_SKID_OVERSHOOT";
 /// "divergence caused by skid" classification built on this counter *causally*
 /// bound — it can be true only when an overshoot actually occurred in one of the
 /// compared runs — rather than merely authenticating who printed a marker.
-static SKID_OVERSHOOT_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SKID_OVERSHOOT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Record that a skid overshoot was detected. Called at every overshoot-detection
 /// site (the `reverie-ptrace` precise single-step guard and hermit's detcore
@@ -67,14 +70,14 @@ static SKID_OVERSHOOT_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 /// [`SKID_OVERSHOOT_MARKER`] emission. Cheap and lock-free; the overshoot path is
 /// rare.
 pub fn record_skid_overshoot() {
-    SKID_OVERSHOOT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    SKID_OVERSHOOT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Atomically read and reset the recorded skid-overshoot count. The in-process
 /// supervisor calls this after each verify run to attribute overshoots per run;
 /// resetting to zero keeps the two runs' counts disjoint.
 pub fn take_skid_overshoot_count() -> u64 {
-    SKID_OVERSHOOT_COUNT.swap(0, std::sync::atomic::Ordering::Relaxed)
+    SKID_OVERSHOOT_COUNT.swap(0, Ordering::Relaxed)
 }
 
 #[cfg(test)]

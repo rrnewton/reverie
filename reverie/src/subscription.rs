@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use alloc::vec::Vec;
+
 use bitflags::bitflags;
 use reverie_syscalls::Sysno;
 use syscalls::SysnoSet;

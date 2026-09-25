@@ -10,8 +10,9 @@
 //! These operations do not borrow a Guest, resume instructions, or run a Tool
 //! hook. Installation is atomic and precedes the first guest callback.
 
-use std::fmt::Debug;
-use std::sync::Arc;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::fmt::Debug;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -22,6 +23,7 @@ use crate::ProcessAlarmSignalDisposition;
 use crate::SignalEvent;
 use crate::SignalProcessId;
 use crate::SignalTaskIdentity;
+use crate::libc;
 use crate::syscalls::Errno;
 
 /// Whether the Tool takes responsibility for recipient selection.
