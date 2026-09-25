@@ -9,6 +9,7 @@
 use core::fmt;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
+
 use crate::IoSlice;
 use crate::IoSliceMut;
 
