@@ -39,6 +39,7 @@ fn split_each_worker_startup_failure_retains_destination_until_actual_joins() {
         let mut workers = Workers {
             owner: None,
             escrow: None,
+            task_exits: TaskExits::default(),
         };
         let options = CaptureOptions {
             limits: CaptureLimits {
@@ -81,11 +82,129 @@ fn split_each_worker_startup_failure_retains_destination_until_actual_joins() {
         }
         workers.join_blocking();
         assert_eq!(workers.joins(), (Some(true), Some(true)));
+        workers.settle_task_exits_blocking();
         assert!(!dropped.load(Ordering::Acquire));
         allowed.store(true, Ordering::Release);
         drop(workers.escrow.take());
         assert!(dropped.load(Ordering::Acquire));
     }
+}
+
+#[test]
+fn split_publication_anchor_failure_retains_escrow_and_factories_until_recovery() {
+    use std::sync::atomic::AtomicUsize;
+
+    struct DestinationProbe(Arc<AtomicUsize>);
+    impl Write for DestinationProbe {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl CaptureDestination for DestinationProbe {
+        fn progress(&self) -> DestinationProgress {
+            DestinationProgress::default()
+        }
+    }
+    impl Drop for DestinationProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+    struct FactoryProbe(Arc<AtomicUsize>);
+    impl Drop for FactoryProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    let destination_drops = Arc::new(AtomicUsize::new(0));
+    let factory_drops = Arc::new(AtomicUsize::new(0));
+    let blocked = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    ANCHOR_FAULT.with(|fault| {
+        assert!(fault.borrow().is_none());
+        *fault.borrow_mut() = Some((AnchorWorker::Publication, blocked.clone()));
+    });
+    let options = CaptureOptions {
+        limits: CaptureLimits {
+            producers: 2,
+            slots_per_producer: 8,
+            max_record_bytes: 64,
+            host_pending_bytes: 256,
+            guest_pending_bytes: 256,
+            pending_records: 8,
+            diagnostic_bytes: 128,
+        },
+        timeouts: CaptureTimeouts {
+            startup: Duration::from_secs(2),
+            blocked_publication: Duration::from_secs(2),
+            final_drain: Duration::from_secs(2),
+        },
+    };
+    let plan = unsafe { SplitCapturePlan::new(options) }.unwrap();
+    let mut workers = Workers {
+        owner: None,
+        escrow: None,
+        task_exits: TaskExits::default(),
+    };
+    assert_eq!(
+        workers.start(
+            plan,
+            DestinationProbe(destination_drops.clone()),
+            Instant::now() + Duration::from_secs(2),
+        ),
+        Err(StartupError::Protocol)
+    );
+    ANCHOR_FAULT.with(|fault| assert!(fault.borrow().is_none()));
+    assert!(workers.owner.is_some());
+    assert!(workers.task_exits.publication.is_some());
+    assert!(workers.task_exits.collector.is_none());
+
+    let mut run = SplitCaptureRun::<u8, FactoryProbe, FactoryProbe> {
+        parent_factory: Some(FactoryProbe(factory_drops.clone())),
+        child_factory: Some(FactoryProbe(factory_drops.clone())),
+        plan: Cell::new(None),
+        workers,
+        child: None,
+        result: None,
+        status: None,
+        failure: None,
+        frozen: None,
+        integrity_faults: IntegrityFaultSet::default(),
+        frozen_integrity: None,
+        failed_bytes: Vec::new(),
+    };
+    run.fail(
+        IntegrityFault::OwnedChild,
+        "injected publication anchor startup failure",
+    );
+    let run = match run.settle_until(Instant::now() + Duration::from_secs(1)) {
+        SplitCaptureOutcome::Unjoined(run) => run,
+        SplitCaptureOutcome::Joined(_) => panic!("blocked anchor released owned resources"),
+    };
+    assert_eq!(destination_drops.load(Ordering::Acquire), 0);
+    assert_eq!(factory_drops.load(Ordering::Acquire), 0);
+
+    blocked.store(false, Ordering::Release);
+    let joined = match run.settle_until(Instant::now() + Duration::from_secs(2)) {
+        SplitCaptureOutcome::Joined(joined) => joined,
+        SplitCaptureOutcome::Unjoined(_) => panic!("restored anchor did not settle"),
+    };
+    assert_eq!(joined.actual_joins, (true, true));
+    assert!(matches!(
+        joined.integrity,
+        TerminalCaptureIntegrity::Incomplete { faults }
+            if faults.contains(IntegrityFault::OwnedChild)
+                && faults.contains(IntegrityFault::Teardown)
+    ));
+    assert_eq!(
+        joined.report.failure.as_deref(),
+        Some("injected publication anchor startup failure")
+    );
+    assert_eq!(destination_drops.load(Ordering::Acquire), 1);
+    assert_eq!(factory_drops.load(Ordering::Acquire), 2);
 }
 
 #[test]
