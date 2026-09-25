@@ -967,9 +967,66 @@ fn receive_endpoint_alias(socket: &std::os::unix::net::UnixDatagram) -> std::os:
         std::os::fd::OwnedFd::from_raw_fd(fd)
     }
 }
+// Keep setup failure non-core-producing: a refused prctl must not panic
+// through the raw-clone extern-C callback while C is still dumpable.
+fn split_dumpability_refused(stage: &[u8], result: i32, errno: i32) -> ! {
+    fn write(bytes: &[u8]) {
+        unsafe {
+            libc::write(libc::STDERR_FILENO, bytes.as_ptr().cast(), bytes.len());
+        }
+    }
+    fn number(value: i32) {
+        let mut bytes = [0u8; 12];
+        let mut at = bytes.len();
+        let mut magnitude = i64::from(value).unsigned_abs();
+        loop {
+            at -= 1;
+            bytes[at] = b'0' + (magnitude % 10) as u8;
+            magnitude /= 10;
+            if magnitude == 0 {
+                break;
+            }
+        }
+        if value < 0 {
+            at -= 1;
+            bytes[at] = b'-';
+        }
+        write(&bytes[at..]);
+    }
+    write(b"split-fixture dumpability-setup-refused stage=");
+    write(stage);
+    write(b" raw_result=");
+    number(result);
+    write(b" errno=");
+    number(errno);
+    write(b" noncore_exit=90 intended-abort-not-entered\n");
+    unsafe { libc::_exit(90) }
+}
+
+fn split_contain_intentional_abort() {
+    let result = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+    if result != 0 {
+        let errno = unsafe { *libc::__errno_location() };
+        split_dumpability_refused(b"SET", result, errno);
+    }
+    let result = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+    if result != 0 {
+        let errno = if result < 0 {
+            unsafe { *libc::__errno_location() }
+        } else {
+            0
+        };
+        split_dumpability_refused(b"GET", result, errno);
+    }
+}
+
 fn split_lifecycle(case: &str) {
     let guest7 = case.ends_with("-guest7");
     let mode = case.strip_suffix("-guest7").unwrap_or(case);
+    let intentional_abort = matches!(
+        mode,
+        "serialize-error" | "serialize-panic" | "T-panic" | "field-panic" | "U-panic" | "W-panic"
+    );
     use std::os::unix::process::ExitStatusExt;
     use std::time::Instant;
 
@@ -1230,6 +1287,12 @@ fn split_lifecycle(case: &str) {
                             );
                         }
                         drop(endpoint);
+                        if intentional_abort {
+                            // G has been reaped. Contain only C's intentional abort, before
+                            // W is dropped or serialization/value/deferred teardown begins.
+                            // A host core helper must not participate in the join deadline.
+                            split_contain_intentional_abort();
+                        }
                         let disposition = if selected == "caught-panic" {
                             let caught = std::panic::catch_unwind(|| {
                                 panic!("caught coordinator fixture panic")
@@ -1537,6 +1600,13 @@ fn split_lifecycle(case: &str) {
                     .is_some_and(|status| !status.success())
             );
             assert_eq!(joined.actual_joins, (true, true));
+            if intentional_abort {
+                assert_eq!(
+                    joined.actual_coordinator_status.unwrap().signal(),
+                    Some(libc::SIGABRT),
+                    "{mode}: setup refusal must not qualify as the intended abort"
+                );
+            }
             if mode == "coordinator-exit" {
                 assert_eq!(
                     joined.actual_coordinator_status,
