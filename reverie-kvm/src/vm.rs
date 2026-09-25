@@ -346,6 +346,16 @@ impl Drop for WorkerCompletionNotice {
     }
 }
 
+/// How an inline (Direct) fork child's completion resolved for its caller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ForkedProcessCompletion {
+    /// The caller's fork returns the child PID with the status recorded.
+    Returned,
+    /// The caller's process exited while the child ran; an outside namespace
+    /// init reaped the child and the caller's fork never returns.
+    Detached,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessActionOutcome {
     pub(crate) image_replaced: bool,
@@ -2204,7 +2214,7 @@ impl KvmBackend {
         status: ExitStatus,
         stdout: Vec<u8>,
         stderr: Vec<u8>,
-    ) -> Result<()> {
+    ) -> Result<ForkedProcessCompletion> {
         self.finish_forked_process_inner(executor, &mut child, status, stdout, stderr)
     }
 
@@ -2215,7 +2225,7 @@ impl KvmBackend {
         status: ExitStatus,
         stdout: Vec<u8>,
         stderr: Vec<u8>,
-    ) -> Result<()> {
+    ) -> Result<ForkedProcessCompletion> {
         // A process clone has a private snapshot, so no surviving task can
         // observe this clear; preserve the child-side ABI.
         write_tid_best_effort(
@@ -2224,7 +2234,7 @@ impl KvmBackend {
             0,
         );
         child.backend.check_entry_owner()?;
-        let family = child.executor.process_family_exit()?;
+        let family = child.executor.claim_process_family_exit()?;
         let snapshot = match family {
             crate::executor::ProcessFamilyExit::Child(snapshot) => snapshot,
             crate::executor::ProcessFamilyExit::Root => {
@@ -2244,15 +2254,21 @@ impl KvmBackend {
                     child.pid
                 )));
             }
-            crate::executor::ProcessFamilyExit::ReapedByNamespaceInit { .. } => {
-                // A peer's exit_group can make the blocked caller's process
-                // terminal and orphan this child. As with teardown, the
-                // synchronous stack has no detached path that could consume
-                // the completion, so refuse rather than return into it.
-                return Err(Error::UnexpectedVcpuExit(format!(
-                    "KVM fork child {} completed after reparenting to namespace init",
-                    child.pid
-                )));
+            crate::executor::ProcessFamilyExit::ReapedByNamespaceInit {
+                status: family_status,
+            } => {
+                // A peer's exit_group made the blocked caller's process
+                // terminal and orphaned this child to an outside init, which
+                // reaps it. The caller's process has no wait to record and its
+                // fork never returns; the caller finishes its own exit instead.
+                if family_status != status {
+                    return Err(Error::UnexpectedVcpuExit(format!(
+                        "KVM fork child {} family status disagrees with its process status",
+                        child.pid
+                    )));
+                }
+                executor.append_output(stdout, stderr);
+                return Ok(ForkedProcessCompletion::Detached);
             }
             crate::executor::ProcessFamilyExit::Failed => {
                 unreachable!("executor maps failed family state to an error")
@@ -2291,7 +2307,8 @@ impl KvmBackend {
             self.syscall_frame_address,
             i64::from(child.pid),
             None,
-        )
+        )?;
+        Ok(ForkedProcessCompletion::Returned)
     }
 
     // TODO-HUMAN-REVIEW(PR-156): Review process actions completed during Tool injection.
@@ -2362,6 +2379,9 @@ impl KvmBackend {
                         .finish_forked_process_inner(executor, &mut child, status, stdout, stderr),
                     Err(error) => Err(error),
                 };
+                if let Ok(ForkedProcessCompletion::Detached) = result {
+                    return Ok(ProcessActionOutcome::cancelled());
+                }
                 if let Err(error) = result {
                     if self.entry_driver.is_some() {
                         // KvmBackend::drop cancels/joins. Keep that destruction
@@ -7114,6 +7134,81 @@ mod tests {
             Error::DescendantReparentingUnsupported { process, child }
                 if process == owner && child == descendant_id
         ));
+    }
+
+    /// A peer's exit_group makes the root terminal while its caller is blocked
+    /// in a Direct fork. The outside init adopts and reaps the child, so the
+    /// fork completes detached rather than returning into the terminal caller.
+    fn direct_fork_orphaned_by_a_terminal_root(
+        reported: ExitStatus,
+    ) -> (Result<ForkedProcessCompletion>, ElfExecutor) {
+        let mut parent =
+            KvmBackend::new(16 * 1024 * 1024).expect("direct fork family control requires KVM");
+        parent.set_root_pid(3).unwrap();
+        parent
+            .install_static_elf(&minimal_test_elf(&[0xf4]), "/bin/fork-family-detached")
+            .unwrap();
+        let mut executor = ElfExecutor::new(parent.static_elf.take().unwrap(), true);
+        let registers = parent.vcpu.get_regs().unwrap();
+        stage_process_syscall_return(
+            &mut parent.memory,
+            &parent.vcpu,
+            parent.syscall_frame_address,
+            registers,
+        )
+        .unwrap();
+
+        let mut child = parent
+            .prepare_forked_process(
+                &executor, 4, None, None, None, None, false, false, false, None,
+            )
+            .unwrap();
+        executor.retire_current_thread(ExitStatus::Exited(1), false);
+        child
+            .executor
+            .retire_current_thread(ExitStatus::Exited(7), false);
+        let result = parent.finish_forked_process(
+            &mut executor,
+            child,
+            reported,
+            b"orphan out".to_vec(),
+            b"orphan err".to_vec(),
+        );
+        (result, executor)
+    }
+
+    #[test]
+    fn finish_forked_process_detaches_a_child_reaped_by_namespace_init() {
+        let (result, mut executor) = direct_fork_orphaned_by_a_terminal_root(ExitStatus::Exited(7));
+        assert!(matches!(result, Ok(ForkedProcessCompletion::Detached)));
+        assert_eq!(
+            executor.take_output(),
+            (b"orphan out".to_vec(), b"orphan err".to_vec()),
+            "a detached child's output still reaches the run",
+        );
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_wait4 as u64,
+                    [4, 0, libc::WNOHANG as u64, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            -i64::from(libc::ECHILD),
+            "init reaped the child, so its former parent has nothing to wait for",
+        );
+    }
+
+    #[test]
+    fn finish_forked_process_refuses_a_detached_status_mismatch() {
+        let (result, mut executor) = direct_fork_orphaned_by_a_terminal_root(ExitStatus::Exited(8));
+        assert!(matches!(
+            result,
+            Err(Error::UnexpectedVcpuExit(message))
+                if message.contains("family status disagrees")
+        ));
+        assert_eq!(executor.take_output(), (Vec::new(), Vec::new()));
     }
 
     #[derive(Default)]

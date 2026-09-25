@@ -1332,6 +1332,11 @@ pub(crate) struct ElfExecutor {
     unstarted_tool_cleanup: Mutex<Vec<UnstartedToolCleanup>>,
     // Exiting workers transfer forks to their process owner before returning.
     transferred_processes: Arc<Mutex<std::collections::BTreeMap<i32, Vec<OwnedChildProcesses>>>>,
+    // Run-wide. A process whose exit reparented its children to an outside
+    // namespace init no longer owns their host completion; it moves them here
+    // and the traced root, which outlives every process it transitively joins,
+    // joins them. Keyed by PID, which is never reissued within a run.
+    namespace_orphanage: Arc<Mutex<std::collections::BTreeMap<i32, PendingProcess>>>,
     child_completion_sender: std::sync::mpsc::Sender<i32>,
     child_completion_receiver: Mutex<std::sync::mpsc::Receiver<i32>>,
     process_action: Option<ProcessAction>,
@@ -1786,23 +1791,314 @@ pub(crate) struct FileTableState {
     fd_object_inodes: std::collections::BTreeMap<i32, Arc<GuestFileIdentity>>,
 }
 
-/// A proc fdinfo open description refers to one task incarnation and descriptor
-/// number, not to a supervisor fd. Aliases share seq state; each observation
-/// resolves the current entry in the original task's table.
+/// A seq_file-backed synthetic proc open description. Its content is rendered
+/// when the sequence is (re)started, never when the file is opened, and never
+/// from a supervisor fd. Aliases share seq state.
 #[derive(Debug)]
 pub(crate) struct FdinfoDescription {
+    source: SeqProcSource,
+    path: Vec<u8>,
+    nofollow_status: bool,
+    sequence: Mutex<crate::fdinfo::FdinfoSequence>,
+}
+
+/// A `/proc/<pid>/stat` or `status` description carried by SCM_RIGHTS. The host
+/// passes only the empty backing memfd, so the receiver finds the description
+/// by that memfd's identity. The pin keeps the inode from being reused while a
+/// message may still carry it; `in_flight` counts rights sent and not yet
+/// received.
+#[derive(Debug)]
+pub(crate) struct ProcTransfer {
+    description: Arc<FdinfoDescription>,
+    proc_inode: u64,
+    nofollow: bool,
+    _pin: std::fs::File,
+    in_flight: usize,
+}
+
+fn host_file_key(fd: RawFd) -> Result<(libc::dev_t, libc::ino_t), i64> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: stat is writable and fd is live.
+    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fstat initialized stat on success.
+    let stat = unsafe { stat.assume_init() };
+    Ok((stat.st_dev, stat.st_ino))
+}
+
+/// Bounds the process proc rights in flight across the namespace. Linux bounds
+/// a user's in-flight rights by RLIMIT_NOFILE and fails the send with
+/// ETOOMANYREFS; here each tracked description also pins a host descriptor, and
+/// a right the host discards unreceived is never released, so the bound is small.
+const PROC_TRANSFER_LIMIT: usize = 1024;
+
+/// Records one in-flight right for the process proc description at `guest_fd`.
+fn register_proc_transfer(
+    state: &LoadedStaticElf,
+    guest_fd: libc::c_int,
+    host_fd: RawFd,
+) -> Result<(libc::dev_t, libc::ino_t), i64> {
+    let description = &state.fdinfo_files[&guest_fd];
+    let proc_inode = *state
+        .proc_files
+        .get(&guest_fd)
+        .ok_or_else(|| negative_errno(libc::ENOSYS))?;
+    let key = host_file_key(host_fd)?;
+    let mut table = state
+        .file_identity_table
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let in_flight: usize = table
+        .proc_transfers
+        .values()
+        .map(|transfer| transfer.in_flight)
+        .sum();
+    if in_flight >= PROC_TRANSFER_LIMIT {
+        return Err(negative_errno(libc::ETOOMANYREFS));
+    }
+    match table.proc_transfers.entry(key) {
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            // The pin makes a different description at this identity impossible.
+            if !Arc::ptr_eq(&entry.get().description, description) {
+                return Err(negative_errno(libc::ENOSYS));
+            }
+            entry.get_mut().in_flight += 1;
+        }
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            // SAFETY: host_fd is live; success returns a new owned descriptor.
+            let pin = unsafe { libc::fcntl(host_fd, libc::F_DUPFD_CLOEXEC, 0) };
+            if pin < 0 {
+                return Err(io_error(std::io::Error::last_os_error()));
+            }
+            entry.insert(ProcTransfer {
+                description: description.clone(),
+                proc_inode,
+                nofollow: state.synthetic_proc_nofollow_fds.contains(&guest_fd),
+                // SAFETY: successful F_DUPFD_CLOEXEC transfers ownership.
+                _pin: unsafe { std::fs::File::from_raw_fd(pin) },
+                in_flight: 1,
+            });
+        }
+    }
+    Ok(key)
+}
+
+/// Finds the process proc description sent with a received backing memfd. A
+/// peek leaves the right queued, so only a consuming receive takes it.
+fn received_proc_transfer(
+    state: &LoadedStaticElf,
+    file: &std::fs::File,
+    peek: bool,
+) -> Result<Option<(Arc<FdinfoDescription>, u64, bool)>, i64> {
+    let key = host_file_key(file.as_raw_fd())?;
+    let mut table = state
+        .file_identity_table
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if peek {
+        return Ok(table.proc_transfers.get(&key).map(|transfer| {
+            (
+                transfer.description.clone(),
+                transfer.proc_inode,
+                transfer.nofollow,
+            )
+        }));
+    }
+    Ok(take_proc_transfer(&mut table, key))
+}
+
+/// Undoes registrations whose rights the host never queued.
+fn release_proc_transfers(state: &LoadedStaticElf, keys: &[(libc::dev_t, libc::ino_t)]) {
+    let mut table = state
+        .file_identity_table
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for key in keys {
+        take_proc_transfer(&mut table, *key);
+    }
+}
+
+/// Consumes one in-flight right, returning its description state.
+fn take_proc_transfer(
+    table: &mut crate::elf::GuestFileIdentityTable,
+    key: (libc::dev_t, libc::ino_t),
+) -> Option<(Arc<FdinfoDescription>, u64, bool)> {
+    let std::collections::btree_map::Entry::Occupied(mut entry) = table.proc_transfers.entry(key)
+    else {
+        return None;
+    };
+    let transfer = entry.get_mut();
+    let received = (
+        transfer.description.clone(),
+        transfer.proc_inode,
+        transfer.nofollow,
+    );
+    transfer.in_flight -= 1;
+    if transfer.in_flight == 0 {
+        entry.remove();
+    }
+    Some(received)
+}
+
+#[derive(Debug)]
+enum SeqProcSource {
+    Fdinfo(FdinfoTarget),
+    Process {
+        file: ProcessProcFile,
+        view: ProcessProcView,
+    },
+}
+
+/// A proc fdinfo entry refers to one task incarnation and descriptor number.
+/// Each observation resolves the current entry in the original task's table.
+#[derive(Debug)]
+struct FdinfoTarget {
     target_tid: i32,
     target_generation: u64,
     target_fd: i32,
     table: std::sync::Weak<Mutex<FileTableState>>,
     lifecycle: Arc<Mutex<crate::elf::TaskLifecycleTable>>,
     capture_output: bool,
-    path: Vec<u8>,
-    nofollow_status: bool,
-    sequence: Mutex<crate::fdinfo::FdinfoSequence>,
+}
+
+/// The per-process `/proc/<pid>` files whose content Linux generates on read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessProcFile {
+    Stat,
+    Status,
+}
+
+impl ProcessProcFile {
+    fn from_normalized_path(path: &[u8]) -> Option<Self> {
+        match path {
+            b"/proc/self/stat" => Some(Self::Stat),
+            b"/proc/self/status" => Some(Self::Status),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Stat => "stat",
+            Self::Status => "status",
+        }
+    }
+}
+
+/// The process cells rendered into `/proc/<pid>/stat` and `status`. The parent
+/// cell and the leader's name are shared with the live process, so a
+/// description opened before reparenting or `PR_SET_NAME` renders the value
+/// current at read time, as Linux does. The umask is sampled at open because
+/// it is not a shared process cell here.
+#[derive(Clone, Debug)]
+struct ProcessProcView {
+    pid: i32,
+    ppid: i32,
+    orphan_reaper_pid: Arc<AtomicI32>,
+    leader_name: Arc<Mutex<[u8; TASK_COMM_LEN]>>,
+    umask: libc::mode_t,
+}
+
+impl ProcessProcView {
+    fn of(state: &LoadedStaticElf) -> Self {
+        Self {
+            pid: state.pid,
+            ppid: state.ppid,
+            orphan_reaper_pid: state.orphan_reaper_pid.clone(),
+            leader_name: state.thread_group_leader_name.clone(),
+            umask: state.umask,
+        }
+    }
+
+    /// Same rule as [`LoadedStaticElf::guest_parent_pid`].
+    fn parent_pid(&self) -> i32 {
+        match self.orphan_reaper_pid.load(Ordering::SeqCst) {
+            0 => self.ppid,
+            reaper => reaper,
+        }
+    }
+
+    /// The thread-group leader's `comm`, without its terminating NUL byte.
+    fn comm(&self) -> Vec<u8> {
+        let name = self
+            .leader_name
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let length = name
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(TASK_COMM_LEN);
+        name[..length].to_vec()
+    }
+
+    fn render(&self, file: ProcessProcFile) -> Vec<u8> {
+        match file {
+            ProcessProcFile::Stat => self.stat(),
+            ProcessProcFile::Status => self.status(),
+        }
+    }
+
+    fn stat(&self) -> Vec<u8> {
+        // pid (comm) state ppid ... The fields after ppid are process-accounting
+        // values reported as zero so no nondeterministic host state leaks. The
+        // real file has 52 fields; pad with zeros so field-counting parsers are
+        // satisfied.
+        let mut line = format!("{} (", self.pid).into_bytes();
+        line.extend_from_slice(&self.comm());
+        line.extend_from_slice(format!(") R {} 0 0 0 -1 0", self.parent_pid()).as_bytes());
+        for _ in 0..44 {
+            line.extend_from_slice(b" 0");
+        }
+        line.push(b'\n');
+        line
+    }
+
+    fn status(&self) -> Vec<u8> {
+        let mut content = b"Name:\t".to_vec();
+        // Linux renders newline and backslash as two-byte escape sequences in
+        // the `Name` field; `stat` keeps the raw bytes.
+        for byte in self.comm() {
+            match byte {
+                b'\n' => content.extend_from_slice(b"\\n"),
+                b'\\' => content.extend_from_slice(b"\\\\"),
+                _ => content.push(byte),
+            }
+        }
+        content.push(b'\n');
+        content.extend_from_slice(
+            format!(
+                "Umask:\t{umask:04o}\n\
+         State:\tR (running)\n\
+         Tgid:\t{pid}\n\
+         Ngid:\t0\n\
+         Pid:\t{pid}\n\
+         PPid:\t{ppid}\n\
+         TracerPid:\t0\n\
+         Uid:\t0\t0\t0\t0\n\
+         Gid:\t0\t0\t0\t0\n\
+         FDSize:\t64\n\
+         Threads:\t1\n",
+                umask = self.umask,
+                pid = self.pid,
+                ppid = self.parent_pid(),
+            )
+            .as_bytes(),
+        );
+        content
+    }
 }
 
 impl FdinfoDescription {
+    fn observe(&self) -> Result<Vec<u8>, i64> {
+        match &self.source {
+            SeqProcSource::Fdinfo(target) => target.observe(),
+            SeqProcSource::Process { file, view } => Ok(view.render(*file)),
+        }
+    }
+}
+
+impl FdinfoTarget {
     fn observe(&self) -> Result<Vec<u8>, i64> {
         let table = self
             .table
@@ -1871,7 +2167,9 @@ impl FdinfoDescription {
         let bytes = read_owned_fdinfo(&file)?;
         replace_fdinfo_flags(&bytes, flags)
     }
+}
 
+impl FdinfoDescription {
     fn read(&self, memory: &mut GuestMemory, args: &[u64; 6], positioned: bool) -> i64 {
         let Ok(count) = usize::try_from(args[2]) else {
             return negative_errno(libc::EINVAL);
@@ -1916,10 +2214,20 @@ fn fdinfo_private_carrier_error(
     args: &[u64; 6],
 ) -> Option<i64> {
     let is_fdinfo = |raw: u64| state.fdinfo_files.contains_key(&(raw as libc::c_int));
+    // Process stat/status backings are empty sealed synthetic proc files, the
+    // same metadata carrier they had before read-time rendering; only their
+    // content paths (read, seek, mmap, sendfile input) must avoid it.
+    let is_fdinfo_entry = |raw: u64| {
+        state
+            .fdinfo_files
+            .get(&(raw as libc::c_int))
+            .is_some_and(|description| matches!(description.source, SeqProcSource::Fdinfo(_)))
+    };
     // The backing memfd is never a readable payload for kernel transfer or
     // mmap operations. Scalar read/pread/lseek use seq; vectors retain the
-    // existing proc-file ENOSYS boundary in vectored_io.
-    if (number == libc::SYS_sendfile as u64 && (is_fdinfo(args[0]) || is_fdinfo(args[1])))
+    // existing proc-file ENOSYS boundary in vectored_io. A sendfile input is
+    // refused by resolve_sendfile_input, after output errors are recorded.
+    if (number == libc::SYS_sendfile as u64 && is_fdinfo(args[0]))
         || (number == libc::SYS_mmap as u64
             && args[3] & libc::MAP_ANONYMOUS as u64 == 0
             && is_fdinfo(args[4]))
@@ -1928,12 +2236,12 @@ fn fdinfo_private_carrier_error(
             || n == libc::SYS_fdatasync as u64 || n == libc::SYS_readahead as u64
             || n == libc::SYS_sync_file_range as u64 || n == libc::SYS_fchmod as u64
             || n == libc::SYS_fchown as u64)
-            && is_fdinfo(args[0]))
+            && is_fdinfo_entry(args[0]))
     {
         return Some(negative_errno(libc::ENOSYS));
     }
     if number == libc::SYS_fcntl as u64
-        && is_fdinfo(args[0])
+        && is_fdinfo_entry(args[0])
         && !matches!(
             args[1] as libc::c_int,
             libc::F_DUPFD
@@ -2139,12 +2447,14 @@ fn open_fdinfo(
     }
     let path = format!("/proc/{}/fdinfo/{}", target.0, target.1).into_bytes();
     let description = Arc::new(FdinfoDescription {
-        target_tid: target.0,
-        target_generation: generation,
-        target_fd: target.1,
-        table: state.fdinfo_table.clone(),
-        lifecycle: state.task_lifecycle.clone(),
-        capture_output,
+        source: SeqProcSource::Fdinfo(FdinfoTarget {
+            target_tid: target.0,
+            target_generation: generation,
+            target_fd: target.1,
+            table: state.fdinfo_table.clone(),
+            lifecycle: state.task_lifecycle.clone(),
+            capture_output,
+        }),
         path: path.clone(),
         nofollow_status: flags & libc::O_NOFOLLOW as u64 != 0,
         sequence: Mutex::default(),
@@ -2181,6 +2491,41 @@ fn open_fdinfo(
         let retired = state.insert_file(fd, file);
         state.file_retirement.retire(retired);
         state.fdinfo_files.insert(fd, description);
+    }
+    result
+}
+
+/// Open `/proc/<pid>/stat` or `status` as a seq description over this
+/// process's live cells. Access and flag checks precede this call.
+fn open_process_proc(
+    state: &mut LoadedStaticElf,
+    normalized_path: &[u8],
+    file: ProcessProcFile,
+    flags: u64,
+    close_on_exec: bool,
+) -> i64 {
+    let description = Arc::new(FdinfoDescription {
+        source: SeqProcSource::Process {
+            file,
+            view: ProcessProcView::of(state),
+        },
+        path: format!("/proc/{}/{}", state.pid, file.name()).into_bytes(),
+        // open_synthetic_proc records guest O_NOFOLLOW for this descriptor.
+        nofollow_status: false,
+        sequence: Mutex::default(),
+    });
+    // The empty, read-only backing file supplies descriptor ownership and the
+    // synthetic proc metadata only; reads and seeks use the description.
+    let result = open_synthetic_proc(
+        state,
+        normalized_path,
+        b"",
+        close_on_exec,
+        false,
+        flags as libc::c_int,
+    );
+    if result >= 0 {
+        state.fdinfo_files.insert(result as i32, description);
     }
     result
 }
@@ -2507,6 +2852,7 @@ impl ElfExecutor {
             completed_processes: Vec::new(),
             unstarted_tool_cleanup: Mutex::new(Vec::new()),
             transferred_processes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+            namespace_orphanage: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             child_completion_sender,
             child_completion_receiver: Mutex::new(child_completion_receiver),
             process_action: None,
@@ -2967,6 +3313,7 @@ impl ElfExecutor {
             completed_processes: Vec::new(),
             unstarted_tool_cleanup: Mutex::new(Vec::new()),
             transferred_processes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+            namespace_orphanage: self.namespace_orphanage.clone(),
             child_completion_sender,
             child_completion_receiver: Mutex::new(child_completion_receiver),
             process_action: None,
@@ -3068,6 +3415,7 @@ impl ElfExecutor {
             completed_processes: Vec::new(),
             unstarted_tool_cleanup: Mutex::new(Vec::new()),
             transferred_processes: self.transferred_processes.clone(),
+            namespace_orphanage: self.namespace_orphanage.clone(),
             child_completion_sender,
             child_completion_receiver: Mutex::new(child_completion_receiver),
             process_action: None,
@@ -3334,6 +3682,30 @@ impl ElfExecutor {
             }
         }
         pending.sort_by_key(|(pid, _)| *pid);
+        if !failed
+            && self.is_thread_group_leader()
+            && !self.is_traced_tree_root()
+            && self
+                .signal_registry
+                .transferred_children_to_namespace_init(self.admitted_signal_identity().process)
+        {
+            // Linux reparents in the exiting process's own exit; it never waits
+            // for an adopted child. Release each gate as an ordinary successful
+            // exit would, then hand the host handle to the traced root.
+            let mut orphanage = self
+                .namespace_orphanage
+                .lock()
+                .expect("KVM namespace orphanage lock poisoned");
+            for (pid, process) in std::mem::take(&mut pending) {
+                if process.start.start().is_err() {
+                    errors.push(crate::Error::UnexpectedVcpuExit(format!(
+                        "KVM child process {pid} lost its parent start gate"
+                    )));
+                }
+                let previous = orphanage.insert(pid, process);
+                debug_assert!(previous.is_none(), "KVM orphan pid {pid} transferred twice");
+            }
+        }
         if failed {
             // Resolve all pending gates before joining the first child: an
             // earlier child may need a later child's consuming cleanup.
@@ -3398,7 +3770,72 @@ impl ElfExecutor {
                 errors.push(error);
             }
         }
+        if self.is_thread_group_leader() && self.is_traced_tree_root() {
+            self.join_namespace_orphans(failed, &mut errors);
+        }
         crate::Error::combine(errors)
+    }
+
+    /// The traced root stands in for the outside namespace init that adopted
+    /// these processes: it joins each one and discards its status, which no
+    /// traced process can observe. Every process that can add an orphan is
+    /// itself joined, directly or through this loop, before the loop ends.
+    fn join_namespace_orphans(&self, failed: bool, errors: &mut Vec<crate::Error>) {
+        loop {
+            let orphans = std::mem::take(
+                &mut *self
+                    .namespace_orphanage
+                    .lock()
+                    .expect("KVM namespace orphanage lock poisoned"),
+            );
+            if orphans.is_empty() {
+                return;
+            }
+            if failed {
+                for (pid, process) in &orphans {
+                    if matches!(
+                        process.start.cancel_after_failure(),
+                        ChildStartCancellation::NewlyCancelled {
+                            delivery_failed: true
+                        }
+                    ) {
+                        errors.push(crate::Error::UnexpectedVcpuExit(format!(
+                            "KVM orphan process {pid} lost its cancellation gate"
+                        )));
+                    }
+                }
+            }
+            for (pid, process) in orphans {
+                let result = process.handle.join(|| {
+                    crate::Error::UnexpectedVcpuExit(format!("KVM orphan process {pid} panicked"))
+                });
+                if let Err(error) = result {
+                    errors.push(error);
+                    continue;
+                }
+                match process.completion.take() {
+                    Ok(Some(_)) => {}
+                    Ok(None) => errors.push(crate::Error::UnexpectedVcpuExit(format!(
+                        "KVM orphan process {pid} exited without publishing its status"
+                    ))),
+                    Err(ChildCompletionSlotError::Failed) => {
+                        errors.push(crate::Error::UnexpectedVcpuExit(format!(
+                            "KVM orphan process {pid} failed before publishing its status"
+                        )))
+                    }
+                    Err(ChildCompletionSlotError::PublicationFenced) => {
+                        errors.push(crate::Error::UnexpectedVcpuExit(format!(
+                            "KVM orphan process {pid} exited while its wait publication was fenced"
+                        )))
+                    }
+                    Err(ChildCompletionSlotError::Poisoned) => {
+                        errors.push(crate::Error::UnexpectedVcpuExit(format!(
+                            "KVM orphan process {pid} completion lock poisoned"
+                        )))
+                    }
+                }
+            }
+        }
     }
 
     fn synchronize_wait4(&mut self, request: &SyscallRequest) -> Option<i64> {
@@ -4661,7 +5098,21 @@ impl ElfExecutor {
 
     pub(crate) fn process_family_exit(&self) -> crate::Result<ProcessFamilyExit> {
         let process = self.admitted_signal_identity().process;
-        match self.signal_registry.process_family_exit(process) {
+        Self::family_exit_result(process, self.signal_registry.process_family_exit(process))
+    }
+
+    /// Like [`Self::process_family_exit`], but claims a `Child` result for this
+    /// process's exit completion. See [`ProcessSignalRegistry::claim_child_exit`].
+    pub(crate) fn claim_process_family_exit(&self) -> crate::Result<ProcessFamilyExit> {
+        let process = self.admitted_signal_identity().process;
+        Self::family_exit_result(process, self.signal_registry.claim_child_exit(process))
+    }
+
+    fn family_exit_result(
+        process: reverie::SignalProcessId,
+        exit: Option<ProcessFamilyExit>,
+    ) -> crate::Result<ProcessFamilyExit> {
+        match exit {
             Some(exit @ ProcessFamilyExit::Root)
             | Some(exit @ ProcessFamilyExit::Child(_))
             | Some(exit @ ProcessFamilyExit::RunTeardownChild { .. })
@@ -6760,8 +7211,10 @@ fn resolve_sendfile_input(
         });
     };
     // Procfs can look regular, but forwarding it would bypass its deterministic
-    // snapshot. Refuse it before the regular/memfd gate, as before.
-    if ensure_fd_not_procfs(in_file.as_raw_fd()).is_err() {
+    // snapshot. Refuse it before the regular/memfd gate, as before. A seq
+    // description's empty backing memfd is not its content.
+    if state.fdinfo_files.contains_key(&in_fd) || ensure_fd_not_procfs(in_file.as_raw_fd()).is_err()
+    {
         return Err(negative_errno(libc::ENOSYS));
     }
     if !is_regular_host_file(in_file)? {
@@ -7472,6 +7925,21 @@ fn open_file(
         }
         let normalized =
             normalize_proc_path(state, path).expect("a synthesized /proc path always normalizes");
+        if let Some(file) = ProcessProcFile::from_normalized_path(&normalized) {
+            if !path_only {
+                return open_process_proc(state, &normalized, file, flags, close_on_exec);
+            }
+            // An O_PATH handle has no content. Keep its backing empty, like
+            // the readable description's, so fstat agrees with path stat.
+            return open_synthetic_proc(
+                state,
+                &normalized,
+                b"",
+                close_on_exec,
+                true,
+                flags as libc::c_int,
+            );
+        }
         return open_synthetic_proc(
             state,
             &normalized,
@@ -7867,6 +8335,16 @@ fn open_guest_fd_path(
             return negative_errno(libc::ELOOP);
         }
         return negative_errno(libc::EEXIST);
+    }
+    if source_proc_inode.is_some_and(|inode| {
+        [b"/proc/self/stat".as_slice(), b"/proc/self/status"]
+            .into_iter()
+            .any(|path| inode == synthetic_proc_inode(path))
+    }) {
+        // Their content is rendered from the opener's process cells, which an
+        // O_PATH backing does not carry. Refuse rather than expose its empty
+        // backing file.
+        return negative_errno(libc::ENOSYS);
     }
     if state.fdinfo_files.contains_key(&guest_fd) || state.random_device_fds.contains(&guest_fd) {
         // Random-only prerequisite from https://github.com/rrnewton/reverie/pull/610
@@ -10719,7 +11197,26 @@ fn is_socket_timestamp_cmsg(message: ControlMessage) -> bool {
         )
 }
 
-fn translate_outgoing_control(control: &mut [u8], state: &LoadedStaticElf) -> Result<(), i64> {
+/// Returns the process proc transfers registered for `control`. The caller
+/// releases them if the host does not queue the message.
+fn translate_outgoing_control(
+    control: &mut [u8],
+    state: &LoadedStaticElf,
+) -> Result<Vec<(libc::dev_t, libc::ino_t)>, i64> {
+    let mut transfers = Vec::new();
+    let result = translate_outgoing_rights(control, state, &mut transfers);
+    if let Err(error) = result {
+        release_proc_transfers(state, &transfers);
+        return Err(error);
+    }
+    Ok(transfers)
+}
+
+fn translate_outgoing_rights(
+    control: &mut [u8],
+    state: &LoadedStaticElf,
+    transfers: &mut Vec<(libc::dev_t, libc::ino_t)>,
+) -> Result<(), i64> {
     for message in control_messages(control)? {
         // SCM_RIGHTS is the only ancillary input whose payload is meaningful in
         // the guest descriptor namespace. Other control inputs (credentials,
@@ -10737,7 +11234,16 @@ fn translate_outgoing_control(control: &mut [u8], state: &LoadedStaticElf) -> Re
         {
             let guest_fd = read_control_fd(control, offset)?;
             let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
-            if state.fdinfo_files.contains_key(&guest_fd)
+            if state
+                .fdinfo_files
+                .get(&guest_fd)
+                .is_some_and(|description| {
+                    matches!(description.source, SeqProcSource::Process { .. })
+                })
+            {
+                // The receiver restores this description from the registry.
+                transfers.push(register_proc_transfer(state, guest_fd, host_fd)?);
+            } else if state.fdinfo_files.contains_key(&guest_fd)
                 || signalfd_mask(state, guest_fd).is_some()
                 || state.random_device_fds.contains(&guest_fd)
             {
@@ -10907,6 +11413,7 @@ fn install_received_rights(
     control: &mut [u8],
     rights: Vec<PendingReceivedRight>,
     close_on_exec: bool,
+    peek: bool,
 ) -> Result<Vec<libc::c_int>, i64> {
     let rights: Vec<_> = rights
         .into_iter()
@@ -10935,12 +11442,29 @@ fn install_received_rights(
                 return Err(error);
             }
         };
+        let transfer = match received_proc_transfer(state, file.as_file(), peek) {
+            Ok(transfer) => transfer,
+            Err(error) => {
+                rollback_received_rights(state, &installed);
+                return Err(error);
+            }
+        };
         let retired = state.insert_file(guest_fd, file.into_file());
         state.file_retirement.retire(retired);
         state.fd_object_inodes.insert(guest_fd, object_inode);
-        if let Some(inode) = proc_inode {
+        state.synthetic_proc_nofollow_fds.remove(&guest_fd);
+        if let Some((description, inode, nofollow)) = transfer {
+            // The received descriptor shares the sender's open description.
+            state.fdinfo_files.insert(guest_fd, description);
+            state.proc_files.insert(guest_fd, inode);
+            if nofollow {
+                state.synthetic_proc_nofollow_fds.insert(guest_fd);
+            }
+        } else if let Some(inode) = proc_inode {
+            state.fdinfo_files.remove(&guest_fd);
             state.proc_files.insert(guest_fd, inode);
         } else {
+            state.fdinfo_files.remove(&guest_fd);
             state.proc_files.remove(&guest_fd);
         }
         if close_on_exec {
@@ -11048,9 +11572,10 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
     {
         return negative_errno(libc::EFAULT);
     }
-    if let Err(error) = translate_outgoing_control(&mut control, state) {
-        return error;
-    }
+    let transfers = match translate_outgoing_control(&mut control, state) {
+        Ok(transfers) => transfers,
+        Err(error) => return error,
+    };
 
     let mut host_iov = libc::iovec {
         iov_base: payload.as_mut_ptr().cast(),
@@ -11087,7 +11612,10 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
         )
     };
     if result < 0 {
-        io_error(std::io::Error::last_os_error())
+        let error = std::io::Error::last_os_error();
+        // A failed sendmsg queues no rights.
+        release_proc_transfers(state, &transfers);
+        io_error(error)
     } else {
         result as i64
     }
@@ -11268,6 +11796,7 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
         &mut control_bytes,
         rights,
         flags & libc::MSG_CMSG_CLOEXEC != 0,
+        flags & libc::MSG_PEEK != 0,
     ) {
         Ok(installed) => installed,
         Err(error) => return error,
@@ -11539,6 +12068,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
             &mut control_bytes,
             rights,
             flags & libc::MSG_CMSG_CLOEXEC != 0,
+            flags & libc::MSG_PEEK != 0,
         ) {
             Ok(installed) => installed,
             Err(error) => {
@@ -12026,7 +12556,10 @@ fn fstatat_impl(
     if let Some(content) = synthetic_proc_content(state, &path) {
         let normalized =
             normalize_proc_path(state, &path).expect("a synthesized /proc path always normalizes");
-        let stat = synthetic_proc_stat(synthetic_proc_inode(&normalized), content.len());
+        let stat = synthetic_proc_stat(
+            synthetic_proc_inode(&normalized),
+            synthetic_proc_path_size(&normalized, &content),
+        );
         return write_struct(memory, output_address, &stat);
     }
 
@@ -12178,7 +12711,10 @@ fn statx(
         if let Some(content) = synthetic_proc_content(state, &path) {
             let normalized = normalize_proc_path(state, &path)
                 .expect("a synthesized /proc path always normalizes");
-            let stx = synthetic_proc_statx(synthetic_proc_inode(&normalized), content.len() as u64);
+            let stx = synthetic_proc_statx(
+                synthetic_proc_inode(&normalized),
+                synthetic_proc_path_size(&normalized, &content) as u64,
+            );
             return write_struct(memory, args[4], &stx);
         }
     } else if let Some(&inode) = state.proc_files.get(&(args[0] as libc::c_int)) {
@@ -13441,34 +13977,9 @@ fn proc_locks_content(state: &LoadedStaticElf) -> Vec<u8> {
 }
 
 /// The thread-group leader's `comm`, without its terminating NUL byte.
+#[cfg(test)]
 fn proc_comm(state: &LoadedStaticElf) -> Vec<u8> {
-    let name = state
-        .thread_group_leader_name
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let length = name
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(TASK_COMM_LEN);
-    name[..length].to_vec()
-}
-
-/// Format the thread-group leader's name for `/proc/self/status`.
-///
-/// Linux renders newline and backslash as two-byte escape sequences in the
-/// `Name` field. `/proc/self/stat` intentionally continues to use the raw
-/// bytes returned by [`proc_comm`].
-fn proc_status_comm(state: &LoadedStaticElf) -> Vec<u8> {
-    let raw = proc_comm(state);
-    let mut formatted = Vec::with_capacity(raw.len());
-    for byte in raw {
-        match byte {
-            b'\n' => formatted.extend_from_slice(b"\\n"),
-            b'\\' => formatted.extend_from_slice(b"\\\\"),
-            _ => formatted.push(byte),
-        }
-    }
-    formatted
+    ProcessProcView::of(state).comm()
 }
 
 fn proc_self_cmdline_content(state: &LoadedStaticElf) -> Vec<u8> {
@@ -13489,44 +14000,22 @@ fn proc_self_maps_content(state: &LoadedStaticElf) -> Vec<u8> {
     format!("{stack_start:012x}-{stack_end:012x} rw-p 00000000 00:00 0 [stack]\n").into_bytes()
 }
 
-fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
-    // pid (comm) state ppid ... The fields after ppid are process-accounting
-    // values reported as zero so no nondeterministic host state leaks. The real
-    // file has 52 fields; pad with zeros so field-counting parsers are satisfied.
-    let mut line = format!("{} (", state.pid).into_bytes();
-    line.extend_from_slice(&proc_comm(state));
-    line.extend_from_slice(format!(") R {} 0 0 0 -1 0", state.guest_parent_pid()).as_bytes());
-    for _ in 0..44 {
-        line.extend_from_slice(b" 0");
+/// The size a path stat reports. Read-time files report zero, as Linux does
+/// and as their descriptors' empty backing does.
+fn synthetic_proc_path_size(normalized: &[u8], content: &[u8]) -> usize {
+    if ProcessProcFile::from_normalized_path(normalized).is_some() {
+        0
+    } else {
+        content.len()
     }
-    line.push(b'\n');
-    line
+}
+
+fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
+    ProcessProcView::of(state).stat()
 }
 
 fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
-    let mut content = b"Name:\t".to_vec();
-    content.extend_from_slice(&proc_status_comm(state));
-    content.push(b'\n');
-    content.extend_from_slice(
-        format!(
-            "Umask:\t{umask:04o}\n\
-         State:\tR (running)\n\
-         Tgid:\t{pid}\n\
-         Ngid:\t0\n\
-         Pid:\t{pid}\n\
-         PPid:\t{ppid}\n\
-         TracerPid:\t0\n\
-         Uid:\t0\t0\t0\t0\n\
-         Gid:\t0\t0\t0\t0\n\
-         FDSize:\t64\n\
-         Threads:\t1\n",
-            umask = state.umask,
-            pid = state.pid,
-            ppid = state.guest_parent_pid(),
-        )
-        .as_bytes(),
-    );
-    content
+    ProcessProcView::of(state).status()
 }
 
 fn supported_synthetic_proc_seals(seals: libc::c_int) -> bool {
@@ -16975,6 +17464,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         file_identity_table: Arc::new(std::sync::Mutex::new(crate::elf::GuestFileIdentityTable {
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
+            proc_transfers: std::collections::BTreeMap::new(),
         })),
     }
 }
@@ -17640,6 +18130,7 @@ mod tests {
                     file: std::fs::File::open(path).unwrap(),
                 }],
                 true,
+                false,
             )
             .unwrap();
             let descriptor = installed[0];
@@ -17680,6 +18171,7 @@ mod tests {
                     },
                 ],
                 true,
+                false,
             );
             assert_eq!(result, Err(negative_errno(libc::EACCES)), "{path}");
             assert!(state.files.is_empty());
@@ -17694,6 +18186,7 @@ mod tests {
                     control_offset: 0,
                     file: std::fs::File::open("/").unwrap(),
                 }],
+                false,
                 false,
             )
             .unwrap();
@@ -17723,6 +18216,7 @@ mod tests {
                 control_offset: 0,
                 file,
             }],
+            false,
             false,
         )
         .unwrap();
@@ -17762,6 +18256,7 @@ mod tests {
                 },
             ],
             true,
+            false,
         );
         assert!(result.is_err());
         assert!(state.files.is_empty());
@@ -30141,6 +30636,7 @@ mod tests {
                 control_offset: std::mem::size_of::<libc::c_int>(),
                 file,
             }],
+            false,
             false,
         )
         .unwrap_err();

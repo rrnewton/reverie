@@ -3008,8 +3008,11 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
         outcome.is_ok() && workers.is_ok() && process_status.is_ok(),
     ) {
         (Some(context), true) => {
+            // Claiming decides, atomically with the parent's exit, whether this
+            // status is announced to a live parent or reaped by the namespace
+            // init that adopted the parent's children.
             let family_exit = executor
-                .process_family_exit()
+                .claim_process_family_exit()
                 .map_err(|error| report("child family exit", error));
             match family_exit {
                 Err(error) => Err(error),

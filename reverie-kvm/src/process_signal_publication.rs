@@ -179,6 +179,15 @@ struct ProcessFamilyState {
     // Live exact generations adopted by an outside namespace init. An entry is
     // removed only by that generation's own exit or failure.
     namespace_orphans: BTreeSet<ProcessKey>,
+    // Child exits recorded for a live parent whose runtime has not yet claimed
+    // them for a Tool callback, keyed by that parent. On Linux the parent
+    // notification is part of the exit itself; here it is deferred to the
+    // claim, so a parent exit that reparents first retires the claim instead.
+    unclaimed_child_exits: BTreeMap<ProcessKey, BTreeSet<ProcessKey>>,
+    // Exact generations whose exit transferred their children to an outside
+    // namespace init. Their executors hand live host children to the run's
+    // namespace orphanage instead of joining them.
+    reparented: BTreeSet<ProcessKey>,
 }
 
 impl ProcessFamilyState {
@@ -188,6 +197,24 @@ impl ProcessFamilyState {
     /// already-published zombie is reaped by init, retiring the exiting
     /// parent's claim on its status. Returns the adopted live children.
     fn reparent_children_to_outside_init(&mut self, process: ProcessKey) -> Vec<ProcessKey> {
+        self.reparented.insert(process);
+        // An exit recorded for a live parent but not yet claimed has not been
+        // announced to anyone. The parent's exit, not a later callback to the
+        // now-terminal parent, decides that status: init reaps it.
+        for child in self
+            .unclaimed_child_exits
+            .remove(&process)
+            .unwrap_or_default()
+        {
+            if let Some(ProcessFamilyExit::Child(snapshot)) = self.terminal.get(&child).copied() {
+                self.terminal.insert(
+                    child,
+                    ProcessFamilyExit::ReapedByNamespaceInit {
+                        status: snapshot.completion.status,
+                    },
+                );
+            }
+        }
         let Some(children) = self.direct_children.remove(&process) else {
             return Vec::new();
         };
@@ -550,6 +577,11 @@ impl ProcessSignalRegistry {
                     family.direct_children.remove(&parent_key);
                 }
             }
+            family
+                .unclaimed_child_exits
+                .entry(parent_key)
+                .or_default()
+                .insert(child_key);
             ProcessFamilyExit::Child(ChildExitSnapshot {
                 completion,
                 disposition,
@@ -603,6 +635,36 @@ impl ProcessSignalRegistry {
             .terminal
             .get(&process_key(process))
             .copied()
+    }
+
+    /// Take this exact generation's terminal family result for its exit
+    /// completion. A `Child` result is claimed exactly once, atomically with
+    /// respect to the parent's exit: once claimed, a reparenting parent exit
+    /// no longer rewrites it, and once rewritten, no callback targets the
+    /// terminal parent.
+    pub(super) fn claim_child_exit(&self, process: SignalProcessId) -> Option<ProcessFamilyExit> {
+        let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
+        let exit = family.terminal.get(&process_key(process)).copied()?;
+        if let ProcessFamilyExit::Child(snapshot) = exit {
+            let parent_key = process_key(snapshot.completion.parent);
+            if let Some(children) = family.unclaimed_child_exits.get_mut(&parent_key) {
+                children.remove(&process_key(process));
+                if children.is_empty() {
+                    family.unclaimed_child_exits.remove(&parent_key);
+                }
+            }
+        }
+        Some(exit)
+    }
+
+    /// Whether this exact generation's exit transferred its children to an
+    /// outside namespace init, so it no longer owns their host completion.
+    pub(super) fn transferred_children_to_namespace_init(&self, process: SignalProcessId) -> bool {
+        self.family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .reparented
+            .contains(&process_key(process))
     }
 
     pub(super) fn consume_child_wait(&self, parent: SignalProcessId, child_pid: i32) -> bool {
@@ -3220,6 +3282,13 @@ mod tests {
             !root.signal_registry.consume_child_wait(parent_id, 8),
             "init reaped the zombie; its former parent cannot reap it again",
         );
+        assert_eq!(
+            zombie.signal_registry.process_family_exit(zombie_id),
+            Some(ProcessFamilyExit::ReapedByNamespaceInit {
+                status: reverie::ExitStatus::Exited(9),
+            }),
+            "no callback may name the zombie's terminal parent",
+        );
         assert_eq!(getppid(&mut orphan), 1);
         assert_eq!(
             getppid(&mut orphan_thread),
@@ -3420,21 +3489,22 @@ mod tests {
             ));
             let child_exit = child.signal_registry.process_family_exit(child_id).unwrap();
             let reaper = child.state.orphan_reaper_pid.load(Ordering::SeqCst);
-            let child_first = match child_exit {
-                // Child first: the parent owned and was notified of the exit;
-                // its own exit then retired that unreaped zombie edge.
-                ProcessFamilyExit::Child(snapshot) => {
-                    assert_eq!(snapshot.completion.parent, parent_id);
-                    assert_eq!(reaper, 0);
-                    true
-                }
+            // Nothing claimed the child's exit for a parent callback, so in
+            // both orders init reaps it and the parent is never notified.
+            assert_eq!(
+                child_exit,
+                ProcessFamilyExit::ReapedByNamespaceInit {
+                    status: reverie::ExitStatus::Exited(2),
+                },
+                "child exit lost its single owner",
+            );
+            let child_first = match reaper {
+                // Child first: the parent's exit retired the unclaimed zombie
+                // and its edge. The dead child was never relabeled.
+                0 => true,
                 // Parent first: init adopted the live child and reaps it.
-                ProcessFamilyExit::ReapedByNamespaceInit { status } => {
-                    assert_eq!(status, reverie::ExitStatus::Exited(2));
-                    assert_eq!(reaper, 1);
-                    false
-                }
-                other => panic!("child exit lost its single owner: {other:?}"),
+                1 => false,
+                other => panic!("unexpected reaper label {other}"),
             };
             assert_eq!(
                 family_snapshot(&root),
@@ -3455,6 +3525,800 @@ mod tests {
         assert!(run(Some(false)));
         for _ in 0..64 {
             run(None);
+        }
+    }
+
+    #[test]
+    fn unclaimed_zombie_status_passes_to_namespace_init_when_its_parent_exits() {
+        let root = outside_init_root();
+        let root_id = identity(&root);
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let parent_id = identity(&parent);
+        let mut child = parent.fork_child(7, false, false).unwrap();
+        let child_id = identity(&child);
+        child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+        assert!(matches!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::Child(snapshot)) if snapshot.completion.parent == parent_id
+        ));
+
+        // The parent exits before the child's runtime claims its callback. A
+        // later callback would name a terminal parent; init reaps it instead.
+        parent.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        let reaped = ProcessFamilyExit::ReapedByNamespaceInit {
+            status: reverie::ExitStatus::Exited(2),
+        };
+        assert_eq!(
+            child.signal_registry.claim_child_exit(child_id),
+            Some(reaped)
+        );
+        assert_eq!(child.claim_process_family_exit().unwrap(), reaped);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(reaped)
+        );
+        assert!(!root.signal_registry.consume_child_wait(parent_id, 7));
+        assert_eq!(
+            child.state.orphan_reaper_pid.load(Ordering::SeqCst),
+            0,
+            "an already-dead child is never relabeled",
+        );
+        assert_eq!(
+            family_snapshot(&root),
+            (
+                BTreeMap::from([(
+                    process_key(root_id),
+                    BTreeMap::from([(process_key(parent_id), DirectChildState::WaitableZombie)]),
+                )]),
+                BTreeSet::new(),
+            ),
+        );
+    }
+
+    #[test]
+    fn claimed_child_exit_keeps_its_parent_callback_when_the_parent_then_exits() {
+        let root = outside_init_root();
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let parent_id = identity(&parent);
+        let mut child = parent.fork_child(7, false, false).unwrap();
+        let child_id = identity(&child);
+        child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+        let claimed = child.claim_process_family_exit().unwrap();
+        assert!(matches!(
+            claimed,
+            ProcessFamilyExit::Child(snapshot)
+                if snapshot.completion.parent == parent_id
+                    && snapshot.completion.status == reverie::ExitStatus::Exited(2)
+        ));
+
+        // Once claimed, the callback is the Tool's to fence; the parent's
+        // exit no longer changes the result the runtime already acted on.
+        parent.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(claimed)
+        );
+        assert_eq!(
+            child.signal_registry.claim_child_exit(child_id),
+            Some(claimed)
+        );
+        assert!(
+            !root.signal_registry.consume_child_wait(parent_id, 7),
+            "the parent's exit still retires the zombie's wait edge",
+        );
+    }
+
+    #[test]
+    fn child_exit_claim_and_parent_reparenting_serialize() {
+        let mut outcomes = BTreeSet::new();
+        for _ in 0..64 {
+            let root = outside_init_root();
+            let mut parent = root.fork_child(6, false, false).unwrap();
+            let parent_id = identity(&parent);
+            let mut child = parent.fork_child(7, false, false).unwrap();
+            let child_id = identity(&child);
+            child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+            let barrier = std::sync::Barrier::new(2);
+            let claimed = std::thread::scope(|scope| {
+                let claim = scope.spawn(|| {
+                    barrier.wait();
+                    child.signal_registry.claim_child_exit(child_id)
+                });
+                scope.spawn(|| {
+                    barrier.wait();
+                    parent.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+                });
+                claim.join().unwrap()
+            });
+            assert_eq!(
+                claimed,
+                child.signal_registry.process_family_exit(child_id),
+                "a claimed family result is final",
+            );
+            match claimed {
+                Some(ProcessFamilyExit::Child(snapshot)) => {
+                    assert_eq!(snapshot.completion.parent, parent_id);
+                    outcomes.insert("claimed first");
+                }
+                Some(ProcessFamilyExit::ReapedByNamespaceInit { status }) => {
+                    assert_eq!(status, reverie::ExitStatus::Exited(2));
+                    outcomes.insert("reparented first");
+                }
+                other => panic!("child exit lost its single owner: {other:?}"),
+            }
+        }
+        assert!(!outcomes.is_empty());
+    }
+
+    #[test]
+    fn namespace_init_reaping_never_rewrites_a_failed_child() {
+        let root = outside_init_root();
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let mut child = parent.fork_child(7, false, false).unwrap();
+        let child_id = identity(&child);
+        let mut peer = child.thread_child(8).unwrap();
+        peer.retire_current_thread(reverie::ExitStatus::Exited(3), true);
+        assert!(matches!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::Child(_))
+        ));
+        child.retire_failed_thread();
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::Failed)
+        );
+        parent.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::Failed),
+            "reaping an unclaimed exit never masks a process failure",
+        );
+    }
+
+    fn open_proc(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        path: &str,
+        flags: i32,
+    ) -> i64 {
+        memory.write(0x100, format!("{path}\0").as_bytes()).unwrap();
+        call(
+            executor,
+            memory,
+            libc::SYS_openat,
+            [libc::AT_FDCWD as u64, 0x100, flags as u64, 0, 0, 0],
+        )
+    }
+
+    /// One guest read of at most `count` bytes from `fd`'s current position.
+    fn read_proc_once(
+        executor: &mut ElfExecutor,
+        memory: &GuestMemory,
+        fd: i64,
+        count: u64,
+    ) -> String {
+        let count = call(
+            executor,
+            memory,
+            libc::SYS_read,
+            [fd as u64, 0x400, count, 0, 0, 0],
+        );
+        assert!(count >= 0, "read failed: {count}");
+        let mut bytes = vec![0; count as usize];
+        memory.read(0x400, &mut bytes).unwrap();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    /// Read `fd` from its current position to EOF in `chunk`-byte reads.
+    fn read_proc(executor: &mut ElfExecutor, memory: &GuestMemory, fd: i64, chunk: u64) -> String {
+        let mut content = String::new();
+        loop {
+            let bytes = read_proc_once(executor, memory, fd, chunk);
+            if bytes.is_empty() {
+                return content;
+            }
+            content.push_str(&bytes);
+        }
+    }
+
+    #[test]
+    fn proc_stat_and_status_opened_before_reparenting_report_the_new_parent() {
+        let root = outside_init_root();
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let mut child = parent.fork_child(7, false, false).unwrap();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let stat = open_proc(&mut child, &mut memory, "/proc/self/stat", libc::O_RDONLY);
+        let status = open_proc(&mut child, &mut memory, "/proc/7/status", libc::O_RDONLY);
+        let restarted = open_proc(&mut child, &mut memory, "/proc/self/status", libc::O_RDONLY);
+        let partial = open_proc(&mut child, &mut memory, "/proc/self/stat", libc::O_RDONLY);
+        assert!(stat >= 0 && status >= 0 && restarted >= 0 && partial >= 0);
+        // Linux renders the whole single record when a read starts the
+        // sequence, and later reads drain that buffer.
+        assert!(read_proc(&mut child, &memory, restarted, 64).contains("\nPPid:\t6\n"));
+        let head = read_proc_once(&mut child, &memory, partial, 4);
+        assert_eq!(head, "7 (t");
+
+        parent.retire_current_thread(reverie::ExitStatus::Exited(0), false);
+        assert_eq!(getppid(&mut child), 1);
+        let stat_text = read_proc(&mut child, &memory, stat, 64);
+        assert!(
+            stat_text.starts_with("7 (test) R 1 0 0 0 -1 0 "),
+            "{stat_text}"
+        );
+        let status_text = read_proc(&mut child, &memory, status, 64);
+        assert!(
+            status_text.contains("\nPid:\t7\nPPid:\t1\n"),
+            "{status_text}"
+        );
+
+        // A drained sequence stays at EOF until it restarts at offset zero.
+        assert_eq!(read_proc(&mut child, &memory, restarted, 64), "");
+        assert_eq!(
+            call(
+                &mut child,
+                &memory,
+                libc::SYS_lseek,
+                [restarted as u64, 0, libc::SEEK_SET as u64, 0, 0, 0]
+            ),
+            0
+        );
+        assert!(read_proc(&mut child, &memory, restarted, 64).contains("\nPPid:\t1\n"));
+        let tail = read_proc(&mut child, &memory, partial, 64);
+        assert!(
+            format!("{head}{tail}").starts_with("7 (test) R 6 "),
+            "a started sequence keeps the record it rendered: {head}{tail}",
+        );
+        let count = call(
+            &mut child,
+            &memory,
+            libc::SYS_pread64,
+            [partial as u64, 0x400, 64, 0, 0, 0],
+        );
+        assert!(count > 0);
+        let mut bytes = vec![0; count as usize];
+        memory.read(0x400, &mut bytes).unwrap();
+        assert!(
+            bytes.starts_with(b"7 (test) R 1 "),
+            "{:?}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+
+    #[test]
+    fn proc_stat_and_status_descriptors_expose_no_stale_backing() {
+        let root = outside_init_root();
+        let mut child = root.fork_child(6, false, false).unwrap();
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        for (name, path) in [("stat", "/proc/self/stat"), ("status", "/proc/6/status")] {
+            let fd = open_proc(&mut child, &mut memory, path, libc::O_RDONLY);
+            assert!(fd >= 0);
+            assert_eq!(
+                call(
+                    &mut child,
+                    &memory,
+                    libc::SYS_fstat,
+                    [fd as u64, 0x800, 0, 0, 0, 0]
+                ),
+                0
+            );
+            let described: libc::stat = read_struct(&memory, 0x800);
+            memory.write(0x100, format!("{path}\0").as_bytes()).unwrap();
+            assert_eq!(
+                call(
+                    &mut child,
+                    &memory,
+                    libc::SYS_newfstatat,
+                    [libc::AT_FDCWD as u64, 0x100, 0x800, 0, 0, 0]
+                ),
+                0
+            );
+            let named: libc::stat = read_struct(&memory, 0x800);
+            assert_eq!(
+                (described.st_size, named.st_size),
+                (0, 0),
+                "{name}: Linux reports size zero"
+            );
+            assert_eq!(described.st_ino, named.st_ino);
+            memory
+                .write(0x100, format!("/proc/self/fd/{fd}\0").as_bytes())
+                .unwrap();
+            let length = call(
+                &mut child,
+                &memory,
+                libc::SYS_readlink,
+                [0x100, 0x400, 64, 0, 0, 0],
+            );
+            assert!(length > 0);
+            let mut target = vec![0; length as usize];
+            memory.read(0x400, &mut target).unwrap();
+            assert_eq!(target, format!("/proc/6/{name}").into_bytes());
+            // The empty backing memfd is never content: kernel transfers and
+            // mappings are refused, and an invalid output keeps its EBADF.
+            assert_eq!(
+                call(
+                    &mut child,
+                    &memory,
+                    libc::SYS_sendfile,
+                    [1, fd as u64, 0, 1, 0, 0]
+                ),
+                -i64::from(libc::ENOSYS)
+            );
+            assert_eq!(
+                call(
+                    &mut child,
+                    &memory,
+                    libc::SYS_sendfile,
+                    [999, fd as u64, 0, 1, 0, 0]
+                ),
+                -i64::from(libc::EBADF)
+            );
+            assert_eq!(
+                call(
+                    &mut child,
+                    &memory,
+                    libc::SYS_mmap,
+                    [
+                        0,
+                        4096,
+                        libc::PROT_READ as u64,
+                        libc::MAP_PRIVATE as u64,
+                        fd as u64,
+                        0
+                    ],
+                ),
+                -i64::from(libc::ENOSYS)
+            );
+            // Neither a readable nor an O_PATH handle reopens as its backing.
+            let path_only = open_proc(&mut child, &mut memory, path, libc::O_PATH);
+            assert!(path_only >= 0);
+            for source in [fd, path_only] {
+                assert_eq!(
+                    open_proc(
+                        &mut child,
+                        &mut memory,
+                        &format!("/proc/self/fd/{source}"),
+                        libc::O_RDONLY
+                    ),
+                    -i64::from(libc::ENOSYS),
+                    "{name}: reopening fd {source}",
+                );
+            }
+        }
+    }
+
+    const RIGHTS_HEADER: u64 = 0x2000;
+    const RIGHTS_IOV: u64 = 0x2100;
+    const RIGHTS_BYTE: u64 = 0x2300;
+    // Room for SCM_MAX_FD rights below the end of a 0x4000-byte guest.
+    const RIGHTS_CONTROL: u64 = 0x3000;
+
+    fn write_rights_header(memory: &mut GuestMemory, control_length: usize) {
+        let iov = libc::iovec {
+            iov_base: RIGHTS_BYTE as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(super::super::write_struct(memory, RIGHTS_IOV, &iov), 0);
+        // SAFETY: an all-zero msghdr is a valid empty header.
+        let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
+        header.msg_iov = RIGHTS_IOV as *mut libc::iovec;
+        header.msg_iovlen = 1;
+        header.msg_control = RIGHTS_CONTROL as *mut libc::c_void;
+        header.msg_controllen = control_length;
+        assert_eq!(
+            super::super::write_struct(memory, RIGHTS_HEADER, &header),
+            0
+        );
+    }
+
+    /// Sends one byte carrying `fd` as a single SCM_RIGHTS descriptor.
+    fn send_right(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        socket: i64,
+        fd: i64,
+    ) -> i64 {
+        send_rights(executor, memory, socket, &[fd])
+    }
+
+    /// Sends one byte carrying all of `fds` in one SCM_RIGHTS message.
+    fn send_rights(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        socket: i64,
+        fds: &[i64],
+    ) -> i64 {
+        let bytes = (fds.len() * 4) as u32;
+        // SAFETY: CMSG_* only compute sizes.
+        let (space, length) = unsafe {
+            (
+                libc::CMSG_SPACE(bytes) as usize,
+                libc::CMSG_LEN(bytes) as usize,
+            )
+        };
+        let mut control = vec![0u8; space];
+        // SAFETY: an all-zero cmsghdr is valid plain data.
+        let mut header: libc::cmsghdr = unsafe { std::mem::zeroed() };
+        header.cmsg_len = length;
+        header.cmsg_level = libc::SOL_SOCKET;
+        header.cmsg_type = libc::SCM_RIGHTS;
+        let header_size = std::mem::size_of::<libc::cmsghdr>();
+        // SAFETY: control holds at least one cmsghdr.
+        unsafe { std::ptr::write_unaligned(control.as_mut_ptr().cast(), header) };
+        for (index, fd) in fds.iter().enumerate() {
+            let start = header_size + index * 4;
+            control[start..start + 4].copy_from_slice(&(*fd as i32).to_ne_bytes());
+        }
+        memory.write(RIGHTS_CONTROL, &control).unwrap();
+        memory.write(RIGHTS_BYTE, b"R").unwrap();
+        write_rights_header(memory, space);
+        call(
+            executor,
+            memory,
+            libc::SYS_sendmsg,
+            [socket as u64, RIGHTS_HEADER, 0, 0, 0, 0],
+        )
+    }
+
+    /// Receives one byte and returns its single SCM_RIGHTS descriptor.
+    fn receive_right(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        socket: i64,
+        flags: i32,
+    ) -> i64 {
+        let fds = receive_rights(executor, memory, socket, flags, 1);
+        assert_eq!(fds.len(), 1);
+        fds[0]
+    }
+
+    /// Receives one byte with room for `capacity` SCM_RIGHTS descriptors.
+    fn receive_rights(
+        executor: &mut ElfExecutor,
+        memory: &mut GuestMemory,
+        socket: i64,
+        flags: i32,
+        capacity: usize,
+    ) -> Vec<i64> {
+        // SAFETY: CMSG_SPACE only computes a size.
+        let space = unsafe { libc::CMSG_SPACE((capacity * 4) as u32) } as usize;
+        memory.write(RIGHTS_CONTROL, &vec![0; space]).unwrap();
+        write_rights_header(memory, space);
+        assert_eq!(
+            call(
+                executor,
+                memory,
+                libc::SYS_recvmsg,
+                [socket as u64, RIGHTS_HEADER, flags as u64, 0, 0, 0],
+            ),
+            1
+        );
+        let header: libc::cmsghdr = read_struct(memory, RIGHTS_CONTROL);
+        assert_eq!(
+            (header.cmsg_level, header.cmsg_type),
+            (libc::SOL_SOCKET, libc::SCM_RIGHTS)
+        );
+        // SAFETY: CMSG_LEN only computes a size.
+        let empty = unsafe { libc::CMSG_LEN(0) } as usize;
+        let mut fds = vec![0; header.cmsg_len - empty];
+        memory
+            .read(
+                RIGHTS_CONTROL + std::mem::size_of::<libc::cmsghdr>() as u64,
+                &mut fds,
+            )
+            .unwrap();
+        fds.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|fd| i64::from(i32::from_ne_bytes(*fd)))
+            .collect()
+    }
+
+    fn proc_transfers_in_flight(executor: &ElfExecutor) -> Vec<usize> {
+        executor
+            .state
+            .file_identity_table
+            .lock()
+            .unwrap()
+            .proc_transfers
+            .values()
+            .map(|transfer| transfer.in_flight)
+            .collect()
+    }
+
+    #[test]
+    fn proc_stat_and_status_sent_with_scm_rights_keep_one_read_time_description() {
+        let root = outside_init_root();
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let mut child = parent.fork_child(7, false, false).unwrap();
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        assert_eq!(
+            call(
+                &mut child,
+                &memory,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_STREAM as u64,
+                    0,
+                    0x2400,
+                    0,
+                    0
+                ],
+            ),
+            0
+        );
+        let sockets: [i32; 2] = read_struct(&memory, 0x2400);
+        let (sender, receiver) = (i64::from(sockets[0]), i64::from(sockets[1]));
+        let stat = open_proc(&mut child, &mut memory, "/proc/self/stat", libc::O_RDONLY);
+        let status = open_proc(&mut child, &mut memory, "/proc/7/status", libc::O_RDONLY);
+        assert!(stat >= 0 && status >= 0);
+        let head = read_proc_once(&mut child, &memory, stat, 4);
+        assert_eq!(head, "7 (t");
+        assert_eq!(send_right(&mut child, &mut memory, sender, stat), 1);
+        assert_eq!(send_right(&mut child, &mut memory, sender, status), 1);
+        assert_eq!(proc_transfers_in_flight(&child), [1, 1]);
+        // The queued rights alone keep both descriptions alive.
+        for fd in [stat, status] {
+            assert_eq!(
+                call(
+                    &mut child,
+                    &memory,
+                    libc::SYS_close,
+                    [fd as u64, 0, 0, 0, 0, 0]
+                ),
+                0
+            );
+        }
+        // A peeked right is installed but stays queued for the real receive.
+        let peeked = receive_right(&mut child, &mut memory, receiver, libc::MSG_PEEK);
+        assert_eq!(proc_transfers_in_flight(&child), [1, 1]);
+        assert_eq!(
+            call(
+                &mut child,
+                &memory,
+                libc::SYS_close,
+                [peeked as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let received_stat = receive_right(&mut child, &mut memory, receiver, 0);
+        let received_status = receive_right(&mut child, &mut memory, receiver, 0);
+        assert_eq!(proc_transfers_in_flight(&child), Vec::<usize>::new());
+
+        parent.retire_current_thread(reverie::ExitStatus::Exited(0), false);
+        assert_eq!(getppid(&mut child), 1);
+        // The received stat shares the sender's started sequence and position.
+        let tail = read_proc(&mut child, &memory, received_stat, 64);
+        assert!(
+            format!("{head}{tail}").starts_with("7 (test) R 6 "),
+            "{head}{tail}"
+        );
+        assert_eq!(
+            call(
+                &mut child,
+                &memory,
+                libc::SYS_lseek,
+                [received_stat as u64, 0, libc::SEEK_SET as u64, 0, 0, 0]
+            ),
+            0
+        );
+        let restarted = read_proc(&mut child, &memory, received_stat, 64);
+        assert!(restarted.starts_with("7 (test) R 1 "), "{restarted}");
+        // Status was opened before reparenting and first read after it.
+        let status_text = read_proc(&mut child, &memory, received_status, 64);
+        assert!(
+            status_text.contains("\nPid:\t7\nPPid:\t1\n"),
+            "{status_text}"
+        );
+        memory
+            .write(
+                0x100,
+                format!("/proc/self/fd/{received_status}\0").as_bytes(),
+            )
+            .unwrap();
+        let length = call(
+            &mut child,
+            &memory,
+            libc::SYS_readlink,
+            [0x100, 0x400, 64, 0, 0, 0],
+        );
+        assert!(length > 0);
+        let mut target = vec![0; length as usize];
+        memory.read(0x400, &mut target).unwrap();
+        assert_eq!(target, b"/proc/7/status");
+        assert_eq!(
+            call(
+                &mut child,
+                &memory,
+                libc::SYS_ioctl,
+                [received_status as u64, libc::FIONREAD, 0x800, 0, 0, 0]
+            ),
+            -i64::from(libc::ENOTTY)
+        );
+
+        // A send the host refuses leaves nothing registered. Shut down the
+        // socket itself: closing the peer is not enough while a concurrent
+        // test's fork still holds a copy of the host descriptor before exec.
+        assert_eq!(
+            call(
+                &mut child,
+                &memory,
+                libc::SYS_shutdown,
+                [sender as u64, libc::SHUT_WR as u64, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            send_right(&mut child, &mut memory, sender, received_status),
+            -i64::from(libc::EPIPE)
+        );
+        assert_eq!(proc_transfers_in_flight(&child), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn proc_rights_in_flight_are_bounded_until_received() {
+        const SCM_MAX_FD: usize = 253;
+        let limit = super::super::PROC_TRANSFER_LIMIT;
+        let root = outside_init_root();
+        let mut child = root.fork_child(6, false, false).unwrap();
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        assert_eq!(
+            call(
+                &mut child,
+                &memory,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_STREAM as u64,
+                    0,
+                    0x2400,
+                    0,
+                    0
+                ],
+            ),
+            0
+        );
+        let sockets: [i32; 2] = read_struct(&memory, 0x2400);
+        let (sender, receiver) = (i64::from(sockets[0]), i64::from(sockets[1]));
+        let stat = open_proc(&mut child, &mut memory, "/proc/self/stat", libc::O_RDONLY);
+        assert!(stat >= 0);
+        let mut queued = 0;
+        while queued < limit - 1 {
+            let count = SCM_MAX_FD.min(limit - 1 - queued);
+            assert_eq!(
+                send_rights(&mut child, &mut memory, sender, &vec![stat; count]),
+                1
+            );
+            queued += count;
+        }
+        assert_eq!(proc_transfers_in_flight(&child), [limit - 1]);
+        // A message crossing the bound is refused whole.
+        assert_eq!(
+            send_rights(&mut child, &mut memory, sender, &[stat, stat]),
+            -i64::from(libc::ETOOMANYREFS)
+        );
+        assert_eq!(proc_transfers_in_flight(&child), [limit - 1]);
+        assert_eq!(send_right(&mut child, &mut memory, sender, stat), 1);
+        assert_eq!(
+            send_right(&mut child, &mut memory, sender, stat),
+            -i64::from(libc::ETOOMANYREFS)
+        );
+        assert_eq!(proc_transfers_in_flight(&child), [limit]);
+        // Receiving the first message returns its capacity.
+        let received = receive_rights(&mut child, &mut memory, receiver, 0, SCM_MAX_FD);
+        assert_eq!(received.len(), SCM_MAX_FD);
+        assert_eq!(proc_transfers_in_flight(&child), [limit - SCM_MAX_FD]);
+        assert_eq!(send_right(&mut child, &mut memory, sender, stat), 1);
+        assert_eq!(proc_transfers_in_flight(&child), [limit - SCM_MAX_FD + 1]);
+    }
+
+    /// A host thread standing in for a started child's vCPU. It publishes
+    /// `completion` (or nothing) and returns `result` once `release` fires.
+    fn adopted_child_thread(
+        completion: Option<super::super::ChildCompletion>,
+        result: crate::Result<()>,
+    ) -> (
+        super::super::ChildStartGate,
+        Arc<super::super::ChildCompletionSlot>,
+        std::thread::JoinHandle<crate::Result<()>>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (start, started) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let slot = Arc::new(super::super::ChildCompletionSlot::default());
+        let published = slot.clone();
+        let handle = std::thread::spawn(move || {
+            assert_eq!(
+                started.recv().unwrap(),
+                super::super::ChildStartCommand::Start
+            );
+            released.recv().unwrap();
+            if let Some(completion) = completion {
+                assert!(published.publish(completion));
+            }
+            result
+        });
+        (
+            super::super::ChildStartGate::new(start),
+            slot,
+            handle,
+            release,
+        )
+    }
+
+    #[test]
+    fn reparented_leader_hands_adopted_children_to_the_traced_root() {
+        let mut root = outside_init_root();
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let mut orphan = parent.fork_child(7, false, false).unwrap();
+        let (gate, slot, handle, release) = adopted_child_thread(
+            Some(super::super::ChildCompletion::AutoReaped(
+                reverie::ExitStatus::Exited(5),
+            )),
+            Ok(()),
+        );
+        parent.register_child_process_with_gate(7, gate, slot, handle);
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+
+        // Linux never makes an exiting parent wait for a child that init
+        // adopted. The orphan is still running when the parent finishes.
+        let (joined, parent_joined) = std::sync::mpsc::channel();
+        let parent_thread = std::thread::spawn(move || {
+            let result = parent.join_all_child_processes();
+            joined.send(()).unwrap();
+            result
+        });
+        let timely = parent_joined
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_ok();
+        if !timely {
+            release.send(()).unwrap();
+        }
+        parent_thread.join().unwrap().unwrap();
+        assert!(timely, "the exiting parent waited for its adopted child");
+        assert_eq!(
+            root.namespace_orphanage
+                .lock()
+                .unwrap()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![7],
+            "the traced root owns the adopted child's host completion",
+        );
+
+        orphan.retire_current_thread(reverie::ExitStatus::Exited(5), false);
+        release.send(()).unwrap();
+        root.join_all_child_processes().unwrap();
+        assert!(root.namespace_orphanage.lock().unwrap().is_empty());
+        assert!(root.state.children.is_empty(), "no traced process reaps it");
+    }
+
+    #[test]
+    fn traced_root_reports_adopted_children_that_fail_or_publish_nothing() {
+        for (completion, result, expected) in [
+            (
+                None,
+                Ok(()),
+                "KVM orphan process 7 exited without publishing its status",
+            ),
+            (
+                None,
+                Err(crate::Error::GuestClock("adopted child failed".to_owned())),
+                "adopted child failed",
+            ),
+        ] {
+            let mut root = outside_init_root();
+            let mut parent = root.fork_child(6, false, false).unwrap();
+            let _orphan = parent.fork_child(7, false, false).unwrap();
+            let (gate, slot, handle, release) = adopted_child_thread(completion, result);
+            parent.register_child_process_with_gate(7, gate, slot, handle);
+            parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+            parent.join_all_child_processes().unwrap();
+            release.send(()).unwrap();
+            let error = root.join_child_processes_after_failure().unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+            assert!(root.namespace_orphanage.lock().unwrap().is_empty());
         }
     }
 
