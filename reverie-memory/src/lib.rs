@@ -6,17 +6,28 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
 mod addr;
+mod io_slice;
+#[cfg(feature = "std")]
 mod local;
 
+use alloc::ffi::CString;
+use alloc::vec::Vec;
 use core::mem;
-use std::ffi::CString;
+#[cfg(feature = "std")]
 use std::io;
 
 pub use addr::Addr;
 pub use addr::AddrMut;
 pub use addr::AddrSlice;
 pub use addr::AddrSliceMut;
+pub use io_slice::IoSlice;
+pub use io_slice::IoSliceMut;
+#[cfg(feature = "std")]
 pub use local::LocalMemory;
 use syscalls::Errno;
 
@@ -28,8 +39,8 @@ pub trait MemoryAccess {
     /// filled.
     fn read_vectored(
         &self,
-        read_from: &[io::IoSlice],
-        write_to: &mut [io::IoSliceMut],
+        read_from: &[IoSlice],
+        write_to: &mut [IoSliceMut],
     ) -> Result<usize, Errno>;
 
     /// Writes bytes to the address space. Returns the number of bytes written.
@@ -38,8 +49,8 @@ pub trait MemoryAccess {
     /// be written.
     fn write_vectored(
         &mut self,
-        read_from: &[io::IoSlice],
-        write_to: &mut [io::IoSliceMut],
+        read_from: &[IoSlice],
+        write_to: &mut [IoSliceMut],
     ) -> Result<usize, Errno>;
 
     /// Performs a read starting at the given address. The number of bytes read
@@ -50,7 +61,7 @@ pub trait MemoryAccess {
     {
         let slice = unsafe { AddrSlice::from_raw_parts(addr.into(), buf.len()) };
         let from = [unsafe { slice.as_ioslice() }];
-        let mut to = [io::IoSliceMut::new(buf)];
+        let mut to = [IoSliceMut::new(buf)];
         self.read_vectored(&from, &mut to)
     }
 
@@ -59,7 +70,7 @@ pub trait MemoryAccess {
     /// fully written.
     fn write(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
         let mut slice = unsafe { AddrSliceMut::from_raw_parts(addr, buf.len()) };
-        let from = [io::IoSlice::new(buf)];
+        let from = [IoSlice::new(buf)];
         let mut to = [unsafe { slice.as_ioslice_mut() }];
         self.write_vectored(&from, &mut to)
     }
@@ -300,6 +311,7 @@ where
     }
 }
 
+#[cfg(feature = "std")]
 impl<'a, M> io::Read for MemoryReader<'a, M, u8>
 where
     M: MemoryAccess,
@@ -341,6 +353,7 @@ where
     }
 }
 
+#[cfg(feature = "std")]
 impl<'a, M> io::Write for MemoryWriter<'a, M, u8>
 where
     M: MemoryAccess,

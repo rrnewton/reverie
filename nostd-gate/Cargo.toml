@@ -1,0 +1,20 @@
+# Compile-time gate: the shared Reverie contract must build for a target that
+# has `core` and `alloc` but no `std` (the Narf kernel's `x86_64-unknown-none`).
+# Standalone workspace so it neither joins nor rewrites the host workspace lock.
+# Run through `nostd-gate/run.sh`.
+[package]
+name = "reverie-nostd-gate"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+reverie-memory = { path = "../reverie-memory", default-features = false }
+syscalls = { version = "0.6.18", default-features = false }
+
+[features]
+# Negative control only: enabling a contract crate's `std` feature on the
+# no-std target must fail to build, proving the positive build is not vacuous.
+negative-std = ["reverie-memory/std"]
