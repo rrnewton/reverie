@@ -251,6 +251,20 @@ impl TaskExit {
             .unwrap_or_else(|p| p.into_inner())
             .detached
     }
+
+    #[cfg(test)]
+    pub(super) fn startup_attempt_for_test(&self) -> u64 {
+        match &self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .startup
+        {
+            Startup::Starting { attempt } | Startup::Failed { attempt, .. } => *attempt,
+            Startup::Anchored => u64::MAX,
+        }
+    }
 }
 
 /// The split-only pair of worker identities. Ordinary capture keeps its
