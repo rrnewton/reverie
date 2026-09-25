@@ -71,6 +71,13 @@ VALIDATE_CLEANUP_BATCH_LIMIT = 8
 # Separate from payload/queue deadlines: admission observed 10.612s for eight
 # retained groups. Every read-only child shares this finite classification budget.
 VALIDATE_ENTRY_CLASSIFICATION_SECONDS = 30.0
+# Same-launch cleanup is the only destructive cleanup permitted while the
+# rollout fence below remains closed. A concurrent launcher normally holds the
+# shared generation side for roughly the 10.4-second Cargo seed window, so
+# cleanup waits for a bounded 30 seconds rather than leaking immediately or
+# waiting forever behind a stream of launchers.
+SAME_LAUNCH_CLEANUP_LOCK_WAIT_SECONDS = 30.0
+SAME_LAUNCH_CLEANUP_LOCK_POLL_SECONDS = 0.05
 WRKSLOTS_MACHINE = socket.gethostname().split(".", 1)[0]
 
 
@@ -425,6 +432,32 @@ class DestructiveCleanupAuthority:
 
     generation: run_registry.RunWriterGenerationAuthority
     same_launch: bool = False
+    lock_deadline: float | None = None
+
+
+def _retryable_external_cleanup_lock(error: run_registry.RecordLocked) -> bool:
+    """Only retry kernel-lock contention owned by another process."""
+
+    return isinstance(error.__cause__, BlockingIOError)
+
+
+def _wait_for_cleanup_lock(
+    deadline: float,
+    *,
+    role: str,
+    error: run_registry.RecordLocked,
+) -> None:
+    """Sleep once before a bounded same-launch lock retry."""
+
+    if not _retryable_external_cleanup_lock(error):
+        raise error
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise run_registry.RecordLocked(
+            "same-launch cleanup timed out after "
+            f"{SAME_LAUNCH_CLEANUP_LOCK_WAIT_SECONDS:g}s waiting for {role}: {error}"
+        ) from error
+    time.sleep(min(SAME_LAUNCH_CLEANUP_LOCK_POLL_SECONDS, remaining))
 
 
 def require_destructive_cleanup_authority(
@@ -443,13 +476,75 @@ def destructive_cleanup_authority(root: Path, *, same_launch: bool = False):
 
     if not DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED and not same_launch:
         raise CleanupRolloutUnavailable(DESTRUCTIVE_CLEANUP_ROLLOUT_REASON)
-    with run_registry.run_writer_generation_lock(
-        root, exclusive=True, blocking=False
-    ) as generation:
-        authority = DestructiveCleanupAuthority(generation, same_launch=same_launch)
+    deadline = (
+        time.monotonic() + SAME_LAUNCH_CLEANUP_LOCK_WAIT_SECONDS
+        if same_launch
+        else None
+    )
+    while True:
+        held = ExitStack()
+        try:
+            generation = held.enter_context(
+                run_registry.run_writer_generation_lock(
+                    root, exclusive=True, blocking=False
+                )
+            )
+        except run_registry.RecordLocked as error:
+            held.close()
+            if deadline is None:
+                raise
+            _wait_for_cleanup_lock(
+                deadline,
+                role="run-writer generation authority",
+                error=error,
+            )
+            continue
+        break
+    with held:
+        authority = DestructiveCleanupAuthority(
+            generation,
+            same_launch=same_launch,
+            lock_deadline=deadline,
+        )
         require_destructive_cleanup_authority(root, authority)
         yield authority
         require_destructive_cleanup_authority(root, authority)
+
+
+@contextmanager
+def cleanup_population_authority(
+    root: Path,
+    cleanup_authority: DestructiveCleanupAuthority,
+):
+    """Take population authority, sharing the same-launch cleanup deadline."""
+
+    require_destructive_cleanup_authority(root, cleanup_authority)
+    while True:
+        held = ExitStack()
+        try:
+            population = held.enter_context(
+                run_registry.run_population_lock(
+                    root,
+                    blocking=False,
+                    reject_same_process=True,
+                    _generation_authority=cleanup_authority.generation,
+                )
+            )
+        except run_registry.RecordLocked as error:
+            held.close()
+            if cleanup_authority.lock_deadline is None:
+                raise
+            _wait_for_cleanup_lock(
+                cleanup_authority.lock_deadline,
+                role="run-population authority",
+                error=error,
+            )
+            continue
+        break
+    with held:
+        require_destructive_cleanup_authority(root, cleanup_authority)
+        yield population
+        require_destructive_cleanup_authority(root, cleanup_authority)
 
 
 TERMINAL_STATES = frozenset(("failed", "inactive"))
@@ -6639,11 +6734,8 @@ def cleanup_recorded_run_storage(
         with destructive_cleanup_authority(
             root, same_launch=_same_launch
         ) as generation_authority:
-            with run_registry.run_population_lock(
-                root,
-                blocking=False,
-                reject_same_process=True,
-                _generation_authority=generation_authority.generation,
+            with cleanup_population_authority(
+                root, generation_authority
             ) as population_authority, exclusive_cleanup_record(
                 root,
                 record_path,
@@ -6872,6 +6964,18 @@ def cleanup_recorded_run_storage(
 
                 if remove_runtime:
                     assert durable_runtime is not None
+                    runtime_owners = recorded_runtime_root_owners(
+                        root, durable_runtime
+                    )
+                    canonical_record_path = Path(
+                        os.path.abspath(os.fspath(record_path))
+                    )
+                    if runtime_owners != [canonical_record_path]:
+                        return outcome(
+                            "durable runtime root is not owned exclusively by this "
+                            "validation handle; owners="
+                            f"{', '.join(str(path) for path in runtime_owners) or 'none'}"
+                        )
                     runtime_removed, runtime_error = _remove_temporary_tree_checked(
                         durable_runtime, role="validation runtime root", run=run
                     )

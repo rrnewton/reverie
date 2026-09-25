@@ -1401,6 +1401,141 @@ class StartUnitTest(unittest.TestCase):
             )
         return rc, out.getvalue(), err.getvalue()
 
+    def foreign_cleanup_lock_holder(
+        self, kind: str, *, seconds: float
+    ) -> subprocess.Popen[str]:
+        """Start one exec'd process holding a real generation/population lock."""
+
+        program = r"""
+import fcntl
+import os
+import sys
+import time
+from pathlib import Path
+
+kind, module_dir, raw_root, raw_seconds = sys.argv[1:]
+root = Path(raw_root)
+if kind == "generation":
+    sys.path.insert(0, module_dir)
+    import run_registry
+    with run_registry.run_writer_generation_lock(root):
+        print("ready", flush=True)
+        time.sleep(float(raw_seconds))
+elif kind == "population":
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        print("ready", flush=True)
+        time.sleep(float(raw_seconds))
+    finally:
+        os.close(descriptor)
+else:
+    raise SystemExit(f"unknown lock kind: {kind}")
+"""
+        holder = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                program,
+                kind,
+                str(Path(start_unit.run_registry.__file__).resolve().parent),
+                str(self.root),
+                str(seconds),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        def stop_holder() -> None:
+            if holder.poll() is None:
+                holder.terminate()
+                try:
+                    holder.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    holder.kill()
+                    holder.wait(timeout=2)
+            if holder.stdout is not None:
+                holder.stdout.close()
+            if holder.stderr is not None:
+                holder.stderr.close()
+
+        self.addCleanup(stop_holder)
+        assert holder.stdout is not None
+        self.assertEqual("ready", holder.stdout.readline().strip())
+        self.assertIsNone(holder.poll())
+        return holder
+
+    def invoke_with_foreign_cleanup_lock(
+        self,
+        kind: str,
+        *,
+        holder_seconds: float,
+        wait_seconds: float,
+    ) -> tuple[int, str, str, subprocess.Popen[str]]:
+        real_finalize = start_unit.finalize_commit_status_publication
+        holder: subprocess.Popen[str] | None = None
+
+        def hold_after_publication(*args: object, **kwargs: object):
+            nonlocal holder
+            updated = real_finalize(*args, **kwargs)
+            holder = self.foreign_cleanup_lock_holder(
+                kind, seconds=holder_seconds
+            )
+            return updated
+
+        with (
+            mock.patch.object(
+                start_unit,
+                "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED",
+                PRODUCTION_CLEANUP_ROLLOUT_ENABLED,
+            ),
+            mock.patch.object(
+                start_unit,
+                "SAME_LAUNCH_CLEANUP_LOCK_WAIT_SECONDS",
+                wait_seconds,
+            ),
+            mock.patch.object(
+                start_unit, "SAME_LAUNCH_CLEANUP_LOCK_POLL_SECONDS", 0.005
+            ),
+            mock.patch.object(
+                start_unit,
+                "finalize_commit_status_publication",
+                side_effect=hold_after_publication,
+            ),
+        ):
+            rc, output, error = self.invoke(["--", "full"])
+
+        assert holder is not None
+        return rc, output, error, holder
+
+    def assert_record_storage_removed(self) -> None:
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        for field in (
+            "checkout_removed_at",
+            "cargo_home_removed_at",
+            "runtime_root_removed_at",
+        ):
+            self.assertIn(field, record)
+        for field in ("checkout", "cargo_home", "runtime_root"):
+            path = Path(record[field])
+            self.assertFalse(path.exists() or path.is_symlink(), path)
+
+    def assert_record_storage_retained(self) -> None:
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        for field in ("checkout", "cargo_home", "runtime_root"):
+            self.assertTrue(Path(record[field]).is_dir(), field)
+        for field in (
+            "checkout_removed_at",
+            "cargo_home_removed_at",
+            "runtime_root_removed_at",
+        ):
+            self.assertNotIn(field, record)
+
     @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
     def test_measured_toolchain_reaches_unit_and_retained_log(self, _pane) -> None:
         environment = {**self.environment, "RUSTUP_TOOLCHAIN": "stable"}
@@ -14970,6 +15105,207 @@ class StartUnitTest(unittest.TestCase):
         for field in ("checkout", "cargo_home", "runtime_root"):
             path = Path(record[field])
             self.assertFalse(path.exists() or path.is_symlink(), path)
+
+    def test_same_launch_cleanup_waits_for_foreign_generation_holder(self) -> None:
+        rc, _output, error, holder = self.invoke_with_foreign_cleanup_lock(
+            "generation", holder_seconds=0.3, wait_seconds=1.0
+        )
+        self.assertEqual(0, holder.wait(timeout=2), holder.stderr.read())
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assert_record_storage_removed()
+
+    def test_same_launch_cleanup_waits_for_foreign_population_holder(self) -> None:
+        rc, _output, error, holder = self.invoke_with_foreign_cleanup_lock(
+            "population", holder_seconds=0.3, wait_seconds=1.0
+        )
+        self.assertEqual(0, holder.wait(timeout=2), holder.stderr.read())
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assert_record_storage_removed()
+
+    def test_same_launch_cleanup_retains_after_generation_wait_deadline(self) -> None:
+        rc, _output, error, holder = self.invoke_with_foreign_cleanup_lock(
+            "generation", holder_seconds=2.0, wait_seconds=0.05
+        )
+        self.assertIsNone(holder.poll())
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn(
+            "same-launch cleanup timed out after 0.05s waiting for "
+            "run-writer generation authority",
+            error,
+        )
+        self.assert_record_storage_retained()
+
+    def test_same_launch_cleanup_retains_after_population_wait_deadline(self) -> None:
+        rc, _output, error, holder = self.invoke_with_foreign_cleanup_lock(
+            "population", holder_seconds=2.0, wait_seconds=0.05
+        )
+        self.assertIsNone(holder.poll())
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn(
+            "same-launch cleanup timed out after 0.05s waiting for "
+            "run-population authority",
+            error,
+        )
+        self.assert_record_storage_retained()
+
+    def test_same_launch_cleanup_does_not_retry_its_own_generation_lock(self) -> None:
+        with (
+            start_unit.run_registry.run_writer_generation_lock(self.root),
+            mock.patch.object(
+                start_unit,
+                "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED",
+                PRODUCTION_CLEANUP_ROLLOUT_ENABLED,
+            ),
+            mock.patch.object(start_unit.time, "sleep") as lock_sleep,
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn(
+            "this process already holds run-writer generation authority", error
+        )
+        lock_sleep.assert_not_called()
+        self.assert_record_storage_retained()
+
+    def test_same_launch_cleanup_shares_one_generation_and_population_deadline(
+        self,
+    ) -> None:
+        real_finalize = start_unit.finalize_commit_status_publication
+        real_wait = start_unit._wait_for_cleanup_lock
+        generation_holder: subprocess.Popen[str] | None = None
+        population_holder: subprocess.Popen[str] | None = None
+        observed: list[tuple[str, float]] = []
+
+        def hold_both_after_publication(*args: object, **kwargs: object):
+            nonlocal generation_holder, population_holder
+            updated = real_finalize(*args, **kwargs)
+            population_holder = self.foreign_cleanup_lock_holder(
+                "population", seconds=2.0
+            )
+            generation_holder = self.foreign_cleanup_lock_holder(
+                "generation", seconds=0.15
+            )
+            return updated
+
+        def observe_wait(
+            deadline: float,
+            *,
+            role: str,
+            error: run_registry.RecordLocked,
+        ) -> None:
+            observed.append((role, deadline))
+            real_wait(deadline, role=role, error=error)
+
+        with (
+            mock.patch.object(
+                start_unit,
+                "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED",
+                PRODUCTION_CLEANUP_ROLLOUT_ENABLED,
+            ),
+            mock.patch.object(
+                start_unit, "SAME_LAUNCH_CLEANUP_LOCK_WAIT_SECONDS", 0.3
+            ),
+            mock.patch.object(
+                start_unit, "SAME_LAUNCH_CLEANUP_LOCK_POLL_SECONDS", 0.005
+            ),
+            mock.patch.object(
+                start_unit,
+                "finalize_commit_status_publication",
+                side_effect=hold_both_after_publication,
+            ),
+            mock.patch.object(
+                start_unit, "_wait_for_cleanup_lock", side_effect=observe_wait
+            ),
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        assert generation_holder is not None
+        assert population_holder is not None
+        self.assertEqual(0, generation_holder.wait(timeout=2))
+        self.assertIsNone(population_holder.poll())
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn("waiting for run-population authority", error)
+        self.assertIn("run-writer generation authority", {row[0] for row in observed})
+        self.assertIn("run-population authority", {row[0] for row in observed})
+        self.assertEqual(1, len({row[1] for row in observed}), observed)
+        self.assert_record_storage_retained()
+
+    def test_same_launch_cleanup_does_not_retry_a_body_lock_error(self) -> None:
+        with (
+            mock.patch.object(
+                start_unit,
+                "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED",
+                PRODUCTION_CLEANUP_ROLLOUT_ENABLED,
+            ),
+            mock.patch.object(start_unit.time, "sleep") as lock_sleep,
+        ):
+            with self.assertRaisesRegex(run_registry.RecordLocked, "body failure"):
+                with start_unit.destructive_cleanup_authority(
+                    self.root, same_launch=True
+                ):
+                    raise run_registry.RecordLocked("body failure") from BlockingIOError()
+
+        lock_sleep.assert_not_called()
+
+    def test_same_launch_population_does_not_retry_a_body_lock_error(self) -> None:
+        with (
+            mock.patch.object(
+                start_unit,
+                "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED",
+                PRODUCTION_CLEANUP_ROLLOUT_ENABLED,
+            ),
+            mock.patch.object(start_unit.time, "sleep") as lock_sleep,
+        ):
+            with start_unit.destructive_cleanup_authority(
+                self.root, same_launch=True
+            ) as cleanup_authority:
+                with self.assertRaisesRegex(run_registry.RecordLocked, "body failure"):
+                    with start_unit.cleanup_population_authority(
+                        self.root, cleanup_authority
+                    ):
+                        raise run_registry.RecordLocked(
+                            "body failure"
+                        ) from BlockingIOError()
+
+        lock_sleep.assert_not_called()
+
+
+    def test_same_launch_runtime_cleanup_retains_a_second_record_owner(self) -> None:
+        real_finalize = start_unit.finalize_commit_status_publication
+        second = run_registry.record_path(self.root, "validate-runtime-second-owner")
+
+        def add_runtime_owner(*args: object, **kwargs: object):
+            updated = real_finalize(*args, **kwargs)
+            record_path = args[2]
+            assert isinstance(record_path, Path)
+            durable = run_registry.read_record(record_path)
+            second.write_text(
+                json.dumps(
+                    {
+                        "schema_version": run_registry.SCHEMA_VERSION,
+                        "runtime_root": durable["runtime_root"],
+                    }
+                )
+                + "\n"
+            )
+            return updated
+
+        with mock.patch.object(
+            start_unit,
+            "finalize_commit_status_publication",
+            side_effect=add_runtime_owner,
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn("runtime root is not owned exclusively", error)
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        self.assertIn("checkout_removed_at", record)
+        self.assertIn("cargo_home_removed_at", record)
+        self.assertNotIn("runtime_root_removed_at", record)
+        self.assertTrue(Path(record["runtime_root"]).is_dir())
 
     def test_production_fence_same_launch_exemption_is_start_identity_bound(
         self,
