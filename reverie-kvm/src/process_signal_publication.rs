@@ -194,6 +194,9 @@ impl ProcessFamilyState {
         let mut adopted = Vec::new();
         for (child, state) in children {
             match state {
+                // A child whose own exit already recorded a typed fatal
+                // result keeps its edge but will never exit again.
+                DirectChildState::Live if self.terminal.contains_key(&child) => {}
                 DirectChildState::Live => {
                     let inserted = self.namespace_orphans.insert(child);
                     debug_assert!(inserted, "KVM orphan adopted twice");
@@ -311,9 +314,13 @@ impl ProcessSignalRegistry {
 
     /// Declare the traced root's PID namespace. A root with no guest-visible
     /// parent is itself namespace init (see `vm::root_parent_pid`); otherwise
-    /// its guest-visible parent is the outside init that adopts orphans.
+    /// its guest-visible parent is the outside init that adopts orphans. An
+    /// executor built from any other state leaves the reaper unknown, which
+    /// keeps reparenting fail-closed.
     pub(super) fn install_namespace_reaper(&self, root: &LoadedStaticElf) {
-        debug_assert!(root.is_traced_tree_root);
+        if !root.is_traced_tree_root {
+            return;
+        }
         self.family.lock().unwrap_or_else(|p| p.into_inner()).reaper = if root.ppid == 0 {
             NamespaceReaper::TracedRoot
         } else {
@@ -332,7 +339,9 @@ impl ProcessSignalRegistry {
     /// Freeze the exact process generation at its first exact task failure.
     /// Descendants may still finish successfully while the runtime unwinds,
     /// but their completion is teardown rather than a new logical child-exit
-    /// publication to the failed parent.
+    /// publication to the failed parent. A failure is a run abort rather than
+    /// a guest exit, so its live children are not reparented to an outside
+    /// namespace init either.
     pub(super) fn record_process_failure(&self, process: SignalProcessId) {
         let parent = self.lookup(process).and_then(|binding| binding.parent);
         let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
@@ -439,7 +448,7 @@ impl ProcessSignalRegistry {
             let exit = ProcessFamilyExit::ReapedByNamespaceInit { status };
             family.terminal.insert(process_key(process), exit);
             let adopted = family.reparent_children_to_outside_init(process_key(process));
-            self.label_orphans(&family, &adopted);
+            self.label_orphans(&mut family, &adopted);
             return exit;
         }
         let blocking_descendant = family
@@ -555,7 +564,7 @@ impl ProcessSignalRegistry {
             && matches!(family.reaper, NamespaceReaper::Outside { .. })
         {
             let adopted = family.reparent_children_to_outside_init(process_key(process));
-            self.label_orphans(&family, &adopted);
+            self.label_orphans(&mut family, &adopted);
         }
         exit
     }
@@ -563,14 +572,22 @@ impl ProcessSignalRegistry {
     /// Publish each adoption to its exact generation's guest-visible parent
     /// before the family critical section ends. Lock order: family, then the
     /// binding table.
-    fn label_orphans(&self, family: &ProcessFamilyState, adopted: &[ProcessKey]) {
+    ///
+    /// Every started child holds its binding until its exit is recorded. A
+    /// live edge without one belongs to a child discarded before it started
+    /// (`discard_unstarted_child_process`), which will never record an exit,
+    /// so no orphan record is kept for it.
+    fn label_orphans(&self, family: &mut ProcessFamilyState, adopted: &[ProcessKey]) {
         let NamespaceReaper::Outside { pid } = family.reaper else {
             debug_assert!(adopted.is_empty());
             return;
         };
         for child in adopted {
-            if let Some(binding) = self.lookup(process_identity(*child)) {
-                binding.orphan_reaper_pid.store(pid, Ordering::SeqCst);
+            match self.lookup(process_identity(*child)) {
+                Some(binding) => binding.orphan_reaper_pid.store(pid, Ordering::SeqCst),
+                None => {
+                    family.namespace_orphans.remove(child);
+                }
             }
         }
     }
@@ -3461,6 +3478,75 @@ mod tests {
             "adoption never replaces an exact process failure",
         );
         assert!(family_snapshot(&root).1.is_empty());
+    }
+
+    #[test]
+    fn outside_init_adopts_only_children_that_can_still_exit() {
+        let root = outside_init_root();
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let parent_id = identity(&parent);
+        let live = parent.fork_child(7, false, false).unwrap();
+        let live_id = identity(&live);
+        let fatal = parent.fork_child(8, false, false).unwrap();
+        let fatal_id = identity(&fatal);
+        let unstarted = parent.fork_child(9, false, false).unwrap();
+        let unstarted_id = identity(&unstarted);
+        // A child discarded before it started drops its only binding and
+        // never records an exit.
+        drop(unstarted);
+        {
+            // A child whose own exit recorded a typed fatal family result
+            // keeps its live edge but will never exit again.
+            let mut family = root
+                .signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            family.terminal.insert(
+                process_key(fatal_id),
+                ProcessFamilyExit::AncestryCycle {
+                    ancestor: parent_id,
+                },
+            );
+            assert_eq!(
+                family.direct_children[&process_key(parent_id)].get(&process_key(unstarted_id)),
+                Some(&DirectChildState::Live),
+            );
+        }
+
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        assert!(matches!(
+            parent.signal_registry.process_family_exit(parent_id),
+            Some(ProcessFamilyExit::Child(_))
+        ));
+        assert_eq!(
+            family_snapshot(&root).1,
+            BTreeSet::from([process_key(live_id)]),
+            "only a child that will still record an exit has an orphan record",
+        );
+        assert_eq!(live.state.orphan_reaper_pid.load(Ordering::SeqCst), 1);
+        assert_eq!(fatal.state.orphan_reaper_pid.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn executor_built_from_a_non_root_state_keeps_reparenting_fail_closed() {
+        let mut state = native_loaded_state(std::path::Path::new("/tmp"));
+        state.pid = 6;
+        state.pgid = 6;
+        state.tid = 6;
+        state.ppid = 3;
+        state.is_traced_tree_root = false;
+        let executor = ElfExecutor::new(state, false);
+        let reaper = executor
+            .signal_registry
+            .family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .reaper;
+        assert!(
+            matches!(reaper, NamespaceReaper::Unknown),
+            "a non-root state must not name its parent as the namespace reaper: {reaper:?}",
+        );
     }
 
     #[test]
