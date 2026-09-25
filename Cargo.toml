@@ -29,4 +29,4 @@ members = [
     "reverie-util",
     "safeptrace",
 ]
-exclude = ["nostd-gate", "public_autocargo/experimental"]
+exclude = ["nostd-gate", "public_autocargo/experimental", "reverie-syscalls/shim-gen/nixdump"]

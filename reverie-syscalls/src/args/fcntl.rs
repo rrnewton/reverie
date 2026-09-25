@@ -6,11 +6,17 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#[cfg(feature = "std")]
 use std::os::unix::io::RawFd;
 
 use super::Addr;
 use super::Pid;
 use crate::FromToRaw;
+use crate::libc;
+
+/// `std::os::unix::io::RawFd`'s definition, for builds without `std`.
+#[cfg(not(feature = "std"))]
+type RawFd = libc::c_int;
 
 // TODO: Upstream this struct to libc crate.
 #[repr(C)]

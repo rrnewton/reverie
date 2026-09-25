@@ -1,0 +1,15 @@
+# Generator for reverie-syscalls/src/nix_shim.rs; run through ../regen.sh.
+# Standalone workspace so it neither joins nor rewrites the host workspace
+# lock. The versions are pinned to the ones reverie-syscalls resolves;
+# regen.sh checks that they still agree.
+[package]
+name = "reverie-syscalls-nixdump"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+bitflags = "=2.13.2"
+nix = { version = "=0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
