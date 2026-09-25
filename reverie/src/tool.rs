@@ -12,6 +12,8 @@
 //! thread) instrumentation, though in some backends these will execute in the
 //! same process.
 
+use alloc::boxed::Box;
+
 use async_trait::async_trait;
 use reverie_syscalls::Syscall;
 use serde::Serialize;
@@ -218,7 +220,7 @@ pub trait GlobalTool: Send + Sync + Default {
     /// `receive_rpc`, and proceed to consuming exit hooks. Shared state must
     /// already support that cleanup; returning is not an ordinary RPC reply.
     async fn wait_for_backend_failure(&self) {
-        std::future::pending::<()>().await
+        core::future::pending::<()>().await
     }
 
     /// Reports that a backend observed a child transition and committed its

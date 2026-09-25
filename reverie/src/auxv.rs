@@ -6,14 +6,20 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+#[cfg(feature = "std")]
 use std::fs;
+#[cfg(feature = "std")]
 use std::io;
 
+#[cfg(feature = "std")]
 use byteorder::NativeEndian;
+#[cfg(feature = "std")]
 use byteorder::ReadBytesExt;
 
+#[cfg(feature = "std")]
 use crate::Pid;
+use crate::libc;
 use crate::syscalls::Addr;
 
 /// Represents the auxv table of a process.
@@ -38,6 +44,7 @@ impl Auxv {
     }
 
     /// Reads the auxiliary values from `/proc/{pid}/auxv`.
+    #[cfg(feature = "std")]
     pub(crate) fn new(pid: Pid) -> io::Result<Self> {
         let mut map = BTreeMap::new();
         let buf = fs::read(format!("/proc/{}/auxv", pid))?;

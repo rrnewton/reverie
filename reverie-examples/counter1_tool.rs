@@ -7,10 +7,19 @@
  */
 
 //! Backend-neutral implementation of the counter1 Reverie tool.
+//!
+//! This module names only `core` and `alloc`, so it also builds against
+//! reverie without `std` (the Narf kernel build); `nostd-gate` compiles and
+//! runs it that way.
 
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
+extern crate alloc;
+
+// The `#[reverie::tool]` expansion boxes each handler future by the bare name
+// `Box`, which is only in the prelude with `std`.
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::Ordering;
 
 use reverie::Error;
 use reverie::GlobalTool;

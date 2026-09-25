@@ -8,6 +8,9 @@
 
 //! Guest (i.e. thread) structure and traits
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
 use async_trait::async_trait;
 use reverie_syscalls::Errno;
 use reverie_syscalls::MemoryAccess;
@@ -19,6 +22,7 @@ use crate::SignalEvent;
 use crate::auxv::Auxv;
 use crate::backtrace::Backtrace;
 use crate::error::Error;
+use crate::libc;
 use crate::stack::Stack;
 use crate::timer::TimerSchedule;
 use crate::tool::GlobalRPC;
@@ -105,9 +109,17 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     }
 
     /// Reads and returns the auxv table for this process.
+    #[cfg(feature = "std")]
     fn auxv(&self) -> Auxv {
         Auxv::new(self.pid()).expect("failed to read auxv table")
     }
+
+    /// Returns the auxv table for this process.
+    ///
+    /// Without `std` there is no `/proc` to read it from, so the backend,
+    /// which built the table, must provide it (see [`Auxv::from_entries`]).
+    #[cfg(not(feature = "std"))]
+    fn auxv(&self) -> Auxv;
 
     /// Returns a representation of the address space associated with this guest
     /// thread.
@@ -590,6 +602,13 @@ where
 
     fn is_command_bootstrap(&self) -> bool {
         self.inner.is_command_bootstrap()
+    }
+
+    // Required without `std`. With `std` this wrapper keeps the default,
+    // which reads `/proc/<pid>/auxv` for the forwarded `pid()`.
+    #[cfg(not(feature = "std"))]
+    fn auxv(&self) -> Auxv {
+        self.inner.auxv()
     }
 
     fn is_main_thread(&self) -> bool {

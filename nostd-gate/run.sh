@@ -3,13 +3,15 @@
 #
 # Positive: the gate crate, which uses the contract crates with
 # `default-features = false`, must build for `x86_64-unknown-none` (core and
-# alloc only). Negative: turning any one contract crate's `std` feature back on
-# must fail with E0463 (no `std` for this target); otherwise the positive build
-# would prove nothing about that crate.
+# alloc only). Execution: the gate's unit tests, built for the host with the
+# same `std`-free contract crates, must pass; they run reverie-examples'
+# counter1 tool through the gate's `Guest`. Negative: turning any one contract
+# crate's `std` feature back on must fail with E0463 (no `std` for this
+# target); otherwise the positive build would prove nothing about that crate.
 #
 # Usage: nostd-gate/run.sh [LOG_DIR]
-# Exit status is 0 only if the positive build passes and every negative
-# control fails for the expected reason.
+# Exit status is 0 only if the positive build and the execution step pass and
+# every negative control fails for the expected reason.
 set -uo pipefail
 
 TOOLCHAIN=${NOSTD_GATE_TOOLCHAIN:-nightly-2025-09-14}
@@ -30,6 +32,12 @@ status=0
 check > "$LOG_DIR/positive.log" 2>&1
 rc=$?
 echo "positive rc=$rc"
+[ "$rc" -eq 0 ] || status=1
+
+cargo "+$TOOLCHAIN" test > "$LOG_DIR/execution.log" 2>&1
+rc=$?
+passed=$(grep -m1 -E '^test result:' "$LOG_DIR/execution.log" || true)
+echo "execution rc=$rc ${passed:-<no test result>}"
 [ "$rc" -eq 0 ] || status=1
 
 for feature in $NEGATIVES; do

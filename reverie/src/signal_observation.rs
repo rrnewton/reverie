@@ -7,6 +7,8 @@
 
 //! Identities and results for observing real pending-signal removals.
 
+use alloc::vec::Vec;
+
 use serde::Deserialize;
 use serde::Serialize;
 

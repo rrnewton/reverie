@@ -47,9 +47,29 @@
 
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
-#![cfg(target_os = "linux")]
+// Without `std` the crate builds with `core` and `alloc` only, for the Narf
+// kernel target: it still defines the whole `Tool`, `GlobalTool` and `Guest`
+// contract, but not the backends, backtrace symbolization or anything else
+// that reads host files or starts processes.
+#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg(any(target_os = "linux", not(feature = "std")))]
+
+// The `std`-free libc stand-in reverie-syscalls provides is x86_64 Linux's.
+#[cfg(all(not(feature = "std"), not(target_arch = "x86_64")))]
+compile_error!("reverie without `std` is only defined for x86_64");
+
+extern crate alloc;
+
+// The libc items the contract names (`user_regs_struct`, `AT_*`, signal
+// numbers). With `std` this is the `libc` crate; without it, the checked
+// x86_64 Linux copy reverie-syscalls provides at the same path.
+#[cfg(feature = "std")]
+use ::libc;
+#[cfg(not(feature = "std"))]
+use reverie_syscalls::libc;
 
 mod auxv;
+#[cfg(feature = "std")]
 mod backend;
 pub mod backend_stats;
 mod backtrace;
@@ -60,6 +80,7 @@ pub mod pmu;
 mod process_signal_control;
 #[cfg(target_arch = "x86_64")]
 mod rdtsc;
+#[cfg(feature = "std")]
 mod regs;
 mod signal;
 mod signal_observation;
@@ -69,6 +90,7 @@ mod timer;
 mod tool;
 
 pub use auxv::*;
+#[cfg(feature = "std")]
 pub use backend::*;
 pub use backend_stats::*;
 pub use backtrace::*;
@@ -78,7 +100,9 @@ pub use process::ExitStatus;
 pub use process::Pid;
 #[cfg(target_arch = "x86_64")]
 pub use rdtsc::*;
+#[cfg(feature = "std")]
 pub use regs::RegDisplay;
+#[cfg(feature = "std")]
 pub use regs::RegDisplayOptions;
 pub use reverie_process as process;
 pub use signal::*;
@@ -112,11 +136,13 @@ pub use async_trait::async_trait as global_tool;
 ///
 /// NOTE: This is just an alias for `async_trait` for now, but may be extended in
 /// the future.
+#[cfg(feature = "std")]
 pub use async_trait::async_trait as backend;
-// Reexport nix Signal type.
-pub use nix::sys::signal::Signal;
 /// CPUID result.
 pub use raw_cpuid::CpuIdResult;
+// The signal type: nix's `Signal` with `std`, and reverie-process's
+// same-shaped stand-in without it.
+pub use reverie_process::Signal;
 /// typed syscalls.
 pub use reverie_syscalls as syscalls;
 

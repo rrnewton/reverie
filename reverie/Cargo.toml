@@ -19,22 +19,48 @@ license = "BSD-2-Clause"
 name = "reverie"
 
 [dependencies]
-addr2line = "0.26.1"
-anyhow = "1.0.103"
+addr2line = { version = "0.26.1", optional = true }
+anyhow = { version = "1.0.103", default-features = false }
 async-trait = "0.1.86"
-bitflags = { version = "2.13.1", features = ["serde", "std"], default-features = false }
-byteorder = "1.5"
-libc = "0.2.186"
-linked-hash-map = { version = "0.5", features = ["serde_impl"] }
-memmap2 = "0.9.11"
+bitflags = { version = "2.13.1", features = ["serde"], default-features = false }
+byteorder = { version = "1.5", optional = true }
+libc = { version = "0.2.186", optional = true }
+linked-hash-map = { version = "0.5", features = ["serde_impl"], optional = true }
+memmap2 = { version = "0.9.11", optional = true }
 never-say-never = "6"
-nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
-object = { version = "0.36.7", features = ["read", "write"] }
-procfs = "0.18.0"
+nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"], optional = true }
+object = { version = "0.36.7", features = ["read", "write"], optional = true }
+procfs = { version = "0.18.0", optional = true }
 raw-cpuid = "10.7.0"
-reverie-process = { version = "0.2.0", path = "../reverie-process" }
-reverie-syscalls = { version = "0.2.0", path = "../reverie-syscalls" }
-serde = { version = "1.0.219", features = ["derive", "rc"] }
-syscalls = { version = "0.6.18", features = ["serde"] }
-thiserror = "2.0.18"
-typed-arena = "2"
+reverie-process = { version = "0.2.0", path = "../reverie-process", default-features = false }
+reverie-syscalls = { version = "0.2.0", path = "../reverie-syscalls", default-features = false }
+serde = { version = "1.0.219", features = ["alloc", "derive"], default-features = false }
+syscalls = { version = "0.6.18", features = ["serde"], default-features = false }
+thiserror = { version = "2.0.18", default-features = false }
+typed-arena = { version = "2", optional = true }
+
+[features]
+default = ["std"]
+# `std` is the host crate: backends, backtrace symbolization, reading
+# `/proc/<pid>/auxv`, `Error::Io` and the nix conversions. Without it the
+# crate is `no_std` + `alloc` and still defines the whole `Tool`,
+# `GlobalTool` and `Guest` contract, for the Narf kernel target.
+std = [
+    "anyhow/std",
+    "bitflags/std",
+    "dep:addr2line",
+    "dep:byteorder",
+    "dep:libc",
+    "dep:linked-hash-map",
+    "dep:memmap2",
+    "dep:nix",
+    "dep:object",
+    "dep:procfs",
+    "dep:typed-arena",
+    "reverie-process/std",
+    "reverie-syscalls/std",
+    "serde/rc",
+    "serde/std",
+    "syscalls/std",
+    "thiserror/std",
+]
