@@ -467,6 +467,18 @@ impl Timer {
         (dur.as_secs() * 600_000_000) + (u64::from(dur.subsec_nanos()) * 6 / 10)
     }
 
+    /// Whether `signal` is this timer's own counter-overflow notification.
+    ///
+    /// Such a signal belongs to Reverie and is never guest-visible. An overflow
+    /// interrupt can arrive after the guest has reached its next event, which
+    /// cancels the timer event, so this can match at stops where the timer
+    /// has nothing left to deliver. Artificial timer signals carry no overflow
+    /// siginfo and do not match.
+    pub(crate) fn owns_overflow_signal(&self, signal: &libc::siginfo_t) -> bool {
+        self.inner_noinit()
+            .is_some_and(|t| t.owns_overflow_signal(signal))
+    }
+
     /// Return the signal type sent by the timer. This is intended to allow
     /// pre-filtering signals without the full overhead of gathering signal info
     /// to pass to ['Timer::generated_signal`].
@@ -925,13 +937,17 @@ impl TimerImpl {
         self.initial_command == InitialCommand::Ordinary
             && signal.si_signo == MARKER_SIGNAL as i32
             // If we sent an artificial signal, it doesn't have any siginfo
-            && (self.send_artificial_signal
-            // If not, the fd should match. This could possibly lead to a
-            // collision, because an fd comparing-equal to this one in another
-            // process could also send a signal. However, that it would also do so
-            // as SIGSTKFLT is effectively not going to happen.
-                || (Self::is_timer_generated_signal(signal)
-                    && get_si_fd(signal) == self.timer.raw_fd()))
+            && (self.send_artificial_signal || self.owns_overflow_signal(signal))
+    }
+
+    fn owns_overflow_signal(&self, signal: &libc::siginfo_t) -> bool {
+        self.initial_command == InitialCommand::Ordinary
+            && Self::is_timer_generated_signal(signal)
+            // The fd should match. This could possibly lead to a collision,
+            // because an fd comparing-equal to this one in another process could
+            // also send a signal. However, that it would also do so as SIGSTKFLT
+            // is effectively not going to happen.
+            && get_si_fd(signal) == self.timer.raw_fd()
     }
 
     pub fn read_clock(&self) -> u64 {

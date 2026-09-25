@@ -2071,6 +2071,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(regs)
     }
 
+    /// Whether a signal-delivery stop reports this thread's own precise-timer
+    /// overflow notification, which must never be delivered to the guest.
+    fn is_own_timer_overflow(&self, task: &Stopped, sig: Signal) -> Result<bool, TraceError> {
+        Ok(sig == Timer::signal_type() && self.timer.owns_overflow_signal(&task.getsiginfo()?))
+    }
+
     /// Returns `true` if the signal was actually meant for the timer, and
     /// therefore should not be forwarded to the tool / guest.
     async fn handle_timer(&mut self, task: Stopped) -> Result<(bool, Stopped), TraceError> {
@@ -5327,8 +5333,38 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         // Step to run the syscall instruction.
-        let wait = self.step_stopped(task, None)?.next_state().await?;
+        let mut wait = self.step_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait);
+
+        // A late overflow notification of the timer can be pending when the
+        // step starts. Its delivery stop precedes the syscall instruction. No
+        // guest branch runs during an injection, so the overflow predates the
+        // current stop, which ends the event it belongs to. A timer the Tool
+        // re-armed at this stop cannot have overflowed yet. The notification
+        // has nothing to deliver: discard it and step again.
+        while let Wait::Stopped(stopped, Event::Signal(sig)) = &wait
+            && stopped.getregs()?.ip() as usize == cp::PRIVATE_PAGE_OFFSET
+            && self.is_own_timer_overflow(stopped, *sig)?
+        {
+            self.validate_nested_liteinst_activation_signal(
+                stopped,
+                *sig,
+                LiteinstActivationOperation::FinishInjectedSyscall,
+                NestedTrapExpectation::PrivateSyscall(
+                    (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64,
+                ),
+                false,
+            )?;
+            tracing::debug!(
+                "[{}] discarding a late timer overflow signal before an injected syscall",
+                stopped.pid()
+            );
+            let Wait::Stopped(stopped, _) = wait else {
+                unreachable!("the loop condition matched a stopped task")
+            };
+            wait = self.step_stopped(stopped, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+        }
 
         // Get the result of the syscall to return to the caller.
         let result = self
