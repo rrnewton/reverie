@@ -103,7 +103,24 @@ impl PtraceRunFailure {
             captured_prefix,
         } = self;
         match Arc::try_unwrap(primary) {
-            Ok(error) => error,
+            Ok(error) if secondary.is_empty() => error,
+            Ok(Error::Tool(error)) => {
+                let primary_display = error.to_string();
+                Error::Tool(error.context(LegacyCleanupDiagnostics {
+                    primary_display,
+                    origin,
+                    secondary,
+                    captured_prefix,
+                }))
+            }
+            Ok(error) => Error::Tool(anyhow::Error::new(LegacyFailureProjection {
+                failure: Self {
+                    primary: Arc::new(error),
+                    origin,
+                    secondary,
+                    captured_prefix,
+                },
+            })),
             Err(primary) => Error::Tool(anyhow::Error::new(LegacyFailureProjection {
                 failure: Self {
                     primary,
@@ -113,6 +130,51 @@ impl PtraceRunFailure {
                 },
             })),
         }
+    }
+}
+
+/// Typed cleanup context attached to a uniquely owned legacy Tool error.
+///
+/// The original Anyhow error remains the cause: its direct payload downcasts
+/// still work. This context retains the actual later errors in capture order,
+/// their origins, and any captured bytes. The primary text is only a display
+/// snapshot; it never substitutes for the original typed cause.
+#[derive(Debug)]
+pub struct LegacyCleanupDiagnostics {
+    primary_display: String,
+    origin: BackendFailure,
+    secondary: Vec<PtraceCleanupFailure>,
+    captured_prefix: Option<CapturedPrefix>,
+}
+
+impl LegacyCleanupDiagnostics {
+    /// The original primary failure's origin.
+    pub fn origin(&self) -> BackendFailure {
+        self.origin
+    }
+
+    /// The original typed subsequent errors, in capture order.
+    pub fn secondary(&self) -> &[PtraceCleanupFailure] {
+        &self.secondary
+    }
+
+    /// The actual captured bytes, if this wait requested capture.
+    pub fn captured_prefix(&self) -> Option<&CapturedPrefix> {
+        self.captured_prefix.as_ref()
+    }
+}
+
+impl fmt::Display for LegacyCleanupDiagnostics {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} ({} at pid={}, tid={})",
+            self.primary_display, self.origin.phase, self.origin.pid, self.origin.tid
+        )?;
+        for secondary in &self.secondary {
+            write!(f, "; {}: {}", secondary.origin.phase, secondary.error)?;
+        }
+        Ok(())
     }
 }
 
@@ -138,17 +200,19 @@ impl std::error::Error for PtraceRunFailure {
 
 /// A confirmed failed run could not move its primary into the legacy error.
 ///
-/// This typed diagnostic is returned only when another diagnostic still shares
-/// the primary. It retains the complete failure, including its typed cause and
-/// captured prefix. Unlike the usual unique-primary legacy projection, callers
-/// must downcast to this type and inspect [`Self::failure`] for the Tool cause.
+/// This typed diagnostic is returned when another diagnostic still shares the
+/// primary, or a non-Tool primary has later cleanup failures. It retains the
+/// complete failure, including the primary's original variant and typed cause.
+/// Callers downcast to this type and inspect [`Self::failure`]. A unique Tool
+/// primary instead keeps its direct payload downcast and carries any later
+/// failures in [`LegacyCleanupDiagnostics`].
 #[derive(Debug)]
 pub struct LegacyFailureProjection {
     failure: PtraceRunFailure,
 }
 
 impl LegacyFailureProjection {
-    /// The complete original failed run whose primary remains shared.
+    /// The complete original failed run, including its typed primary.
     pub fn failure(&self) -> &PtraceRunFailure {
         &self.failure
     }
@@ -158,7 +222,7 @@ impl fmt::Display for LegacyFailureProjection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "legacy ptrace failure projection retained a shared primary: {}",
+            "legacy ptrace failure projection retained the original failure: {}",
             self.failure
         )
     }
@@ -348,6 +412,107 @@ mod tests {
                 .0,
             71
         );
+    }
+
+    #[test]
+    fn unique_legacy_projection_preserves_secondary_and_direct_nonclone_marker() {
+        let mut failure = failure();
+        let Error::Tool(primary) = failure.primary() else {
+            panic!("original Tool variant")
+        };
+        let original = &*primary.downcast_ref::<Marker>().unwrap().0 as *const u64;
+        failure.secondary.push(PtraceCleanupFailure {
+            origin: BackendFailure {
+                pid: reverie::Pid::from_raw(17),
+                tid: reverie::Pid::from_raw(18),
+                phase: "injected tracee cleanup confirmation",
+            },
+            error: Arc::new(std::io::Error::from_raw_os_error(libc::EIO).into()),
+        });
+        let Error::Tool(error) = failure.into_legacy_error() else {
+            panic!("lost Tool variant")
+        };
+        let marker = error
+            .downcast_ref::<Marker>()
+            .expect("original direct downcast");
+        assert_eq!(*marker.0, 71);
+        assert_eq!(
+            &*marker.0 as *const u64, original,
+            "original payload replaced"
+        );
+        assert!(
+            error.to_string().contains("Input/output error"),
+            "actual cleanup failure disappeared from legacy diagnostic: {error}"
+        );
+    }
+
+    #[test]
+    fn legacy_cleanup_context_retains_typed_order_origins_and_prefix() {
+        let mut failure = failure();
+        let origin = failure.origin();
+        for (phase, errno) in [("discovery", libc::EIO), ("scan", libc::EBADF)] {
+            failure.secondary.push(PtraceCleanupFailure {
+                origin: BackendFailure { phase, ..origin },
+                error: Arc::new(std::io::Error::from_raw_os_error(errno).into()),
+            });
+        }
+        let Error::Tool(error) = failure.into_legacy_error() else {
+            panic!("Tool error")
+        };
+        assert_eq!(*error.downcast_ref::<Marker>().unwrap().0, 71);
+        let context = error.downcast_ref::<LegacyCleanupDiagnostics>().unwrap();
+        assert_eq!(context.origin(), origin);
+        assert_eq!(context.secondary().len(), 2);
+        for (actual, (phase, errno)) in context
+            .secondary()
+            .iter()
+            .zip([("discovery", libc::EIO), ("scan", libc::EBADF)])
+        {
+            assert_eq!(actual.origin(), BackendFailure { phase, ..origin });
+            assert!(
+                matches!(actual.error(), Error::Io(error) if error.raw_os_error() == Some(errno))
+            );
+        }
+        assert_eq!(context.captured_prefix().unwrap().stdout(), &[0, 255, 7]);
+        assert_eq!(context.captured_prefix().unwrap().stderr(), &[9, 0]);
+    }
+
+    #[test]
+    fn non_tool_legacy_projection_retains_primary_variant_and_secondary() {
+        for primary in [
+            Error::Errno(reverie::Errno::ENOTSUPP),
+            std::io::Error::from_raw_os_error(libc::EPIPE).into(),
+        ] {
+            let mut failure = failure();
+            failure.primary = Arc::new(primary);
+            failure.secondary.push(PtraceCleanupFailure {
+                origin: failure.origin(),
+                error: Arc::new(std::io::Error::from_raw_os_error(libc::EIO).into()),
+            });
+            let was_errno = matches!(failure.primary(), Error::Errno(_));
+            let Error::Tool(error) = failure.into_legacy_error() else {
+                panic!("typed projection")
+            };
+            let failure = error
+                .downcast_ref::<LegacyFailureProjection>()
+                .unwrap()
+                .failure();
+            if was_errno {
+                assert!(
+                    matches!(failure.primary(), Error::Errno(error) if *error == reverie::Errno::ENOTSUPP)
+                );
+            } else {
+                assert!(
+                    matches!(failure.primary(), Error::Io(error) if error.raw_os_error() == Some(libc::EPIPE))
+                );
+            }
+            assert_eq!(failure.secondary().len(), 1);
+            assert!(
+                matches!(failure.secondary()[0].error(), Error::Io(error) if error.raw_os_error() == Some(libc::EIO))
+            );
+            assert_eq!(failure.captured_prefix().unwrap().stdout(), &[0, 255, 7]);
+            assert!(error.to_string().contains("Input/output error"));
+        }
     }
 
     #[test]

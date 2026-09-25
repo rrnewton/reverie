@@ -60,6 +60,7 @@ mod vdso;
 
 pub use backend::PtraceBackend;
 pub use failure::CapturedPrefix;
+pub use failure::LegacyCleanupDiagnostics;
 pub use failure::LegacyFailureProjection;
 pub use failure::PtraceCallbackDecision;
 pub use failure::PtraceCallbackDiagnostic;

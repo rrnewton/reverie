@@ -2773,6 +2773,13 @@ impl<G, R> CompletionDriver<G, R> {
         if complete && Arc::strong_count(&self.work.tracer.gref) == 1 {
             let mut index = 0;
             while index < self.resources.len() {
+                #[cfg(all(test, target_arch = "x86_64"))]
+                injected_error_tests::static_driver_observation(
+                    session.failure_snapshot().as_ref(),
+                    self.work.stdout.observed_prefix_for_test(),
+                    self.work.stderr.observed_prefix_for_test(),
+                    self.work.stdout.is_finished() && self.work.stderr.is_finished(),
+                );
                 match self.resources[index].cleanup() {
                     Ok(()) => drop(std::mem::ManuallyDrop::into_inner(
                         self.resources.remove(index),
