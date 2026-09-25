@@ -87,19 +87,13 @@ fn run_carrier(tool: bool) {
             )
             .unwrap();
         let started = std::time::Instant::now();
+        let mut callbacks = Vec::new();
         let (code, stdout, stderr) = if tool {
             let (log, code, stdout, stderr) = futures::executor::block_on(
                 backend.run_static_elf_with_tool::<StraceTool>((), true),
             )
             .unwrap();
-            for name in [
-                "openat", "read", "readv", "write", "writev", "fcntl", "fstat", "mmap",
-            ] {
-                assert!(
-                    log.syscalls().iter().any(|call| call == name),
-                    "missing Tool callback {name}"
-                );
-            }
+            callbacks = log.syscalls().to_vec();
             (code, stdout, stderr)
         } else {
             backend.run_static_elf_captured().unwrap()
@@ -121,6 +115,18 @@ fn run_carrier(tool: bool) {
                 ),
             )
             .unwrap();
+        }
+        // Retain the actual executor result even when an early guest failure
+        // prevents a later required Tool callback from occurring.
+        if tool {
+            for name in [
+                "openat", "read", "readv", "write", "writev", "fcntl", "fstat", "mmap",
+            ] {
+                assert!(
+                    callbacks.iter().any(|call| call == name),
+                    "missing Tool callback {name}"
+                );
+            }
         }
         assert_eq!(
             code,

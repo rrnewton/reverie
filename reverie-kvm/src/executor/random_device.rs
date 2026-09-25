@@ -370,9 +370,6 @@ fn random_device_mmap(
     };
     let kind = flags & libc::MAP_TYPE;
     let fixed = flags & (libc::MAP_FIXED | libc::MAP_FIXED_NOREPLACE) != 0;
-    if fixed && !args[0].is_multiple_of(PAGE_SIZE) {
-        return negative_errno(libc::EINVAL);
-    }
     let address = if fixed {
         args[0]
     } else {
@@ -381,11 +378,19 @@ fn random_device_mmap(
             None => return negative_errno(libc::ENOMEM),
         }
     };
-    if address < BOOT_RESERVED_END
-        || address
-            .checked_add(length)
-            .is_none_or(|end| end > state.mmap_limit)
+    // Linux checks the upper address/length bound before fixed alignment.
+    // Keep the model's reserved lower range after alignment: a low, otherwise
+    // representable misaligned request must still return EINVAL.
+    if address
+        .checked_add(length)
+        .is_none_or(|end| end > state.mmap_limit)
     {
+        return negative_errno(libc::ENOMEM);
+    }
+    if fixed && !address.is_multiple_of(PAGE_SIZE) {
+        return negative_errno(libc::EINVAL);
+    }
+    if address < BOOT_RESERVED_END {
         return negative_errno(libc::ENOMEM);
     }
     if flags & libc::MAP_FIXED_NOREPLACE != 0
@@ -428,7 +433,9 @@ fn random_device_mmap(
         | MAP_ABOVE4G
         | libc::MAP_HUGE_2MB
         | libc::MAP_HUGE_1GB;
-    if kind == libc::MAP_SHARED_VALIDATE && flags & !LEGACY != 0 {
+    // x86-64 SYS_mmap takes unsigned long flags. Validate the original word,
+    // zero-extending the low-word mask so unknown high bits cannot disappear.
+    if kind == libc::MAP_SHARED_VALIDATE && args[3] & !u64::from(LEGACY as u32) != 0 {
         return negative_errno(libc::EOPNOTSUPP);
     }
     if !description.readable()

@@ -50,6 +50,41 @@ static int mapping_errors(long fd, long mode) {
     const long extension[]={MAP_SYNC,0x80000000L,0x02000000};
     for(unsigned i=0;i<sizeof(extension)/sizeof(extension[0]);++i)
         FAIL(syscall(SYS_mmap,(long)pages,4096L,(long)PROT_READ,MAP_SHARED_VALIDATE|f|extension[i],fd,0L),mode==O_PATH ? EBADF : EOPNOTSUPP);
+    /* Raw x86-64 syscall arguments are unsigned long, including flags.
+     * These bits must reach SHARED_VALIDATE intact, while ordinary mapping
+     * kinds ignore them. Keep every earlier mmap validation ahead of them. */
+    _Static_assert(sizeof(unsigned long)==8,"requires x86-64 syscall word");
+    const unsigned long high[]={0UL,1UL<<32,1UL<<63};
+    const unsigned long kinds[]={MAP_SHARED,MAP_PRIVATE,MAP_SHARED_VALIDATE};
+    for(unsigned i=0;i<sizeof(high)/sizeof(high[0]);++i) {
+        for(unsigned k=0;k<sizeof(kinds)/sizeof(kinds[0]);++k) {
+            int error=mode==O_PATH ? EBADF : (kinds[k]==MAP_SHARED_VALIDATE && high[i]!=0 ? EOPNOTSUPP : (mode==O_WRONLY || mode==3 ? EACCES : ENODEV));
+            FAIL(syscall(SYS_mmap,(long)pages,4096L,(long)PROT_READ,kinds[k]|(unsigned long)f|high[i],fd,0L),error);
+        }
+        if(high[i]==0) continue;
+        struct { long address,length,offset,error; unsigned long flags; } crossed[]={
+            {(long)pages,4096,1,EINVAL,MAP_SHARED_VALIDATE|f},
+            {(long)pages,4096,0,EINVAL,MAP_SHARED_VALIDATE|f|h},
+            {(long)pages,0,0,EINVAL,MAP_SHARED_VALIDATE|f},
+            {(long)pages,-1L,0,ENOMEM,MAP_SHARED_VALIDATE|f},
+            {-4096L,4096,0,ENOMEM,MAP_SHARED_VALIDATE|f},
+            {(long)pages,4096,0,EEXIST,MAP_SHARED_VALIDATE|n},
+            {(long)pages,4096,-4096L,EOVERFLOW,MAP_SHARED_VALIDATE|f},
+            {(long)pages,4096,0,EINVAL,t|f},
+        };
+        for(unsigned c=0;c<sizeof(crossed)/sizeof(crossed[0]);++c) {
+            int error=crossed[c].offset==1 ? EINVAL : (mode==O_PATH ? EBADF : crossed[c].error);
+            FAIL(syscall(SYS_mmap,crossed[c].address,crossed[c].length,(long)PROT_READ,crossed[c].flags|high[i],fd,crossed[c].offset),error);
+        }
+    }
+    const struct { unsigned long address,length; int error; } ranges[]={
+        {0xffffffffffffe001UL,4096UL,ENOMEM},
+        {0x1001UL,1UL<<63,ENOMEM},
+        {(unsigned long)(pages+1),4096UL,EINVAL},
+        {0x1001UL,4096UL,EINVAL},
+    };
+    for(unsigned i=0;i<sizeof(ranges)/sizeof(ranges[0]);++i)
+        FAIL(syscall(SYS_mmap,ranges[i].address,ranges[i].length,(unsigned long)PROT_READ,(unsigned long)(MAP_PRIVATE|MAP_FIXED),fd,0UL),mode==O_PATH ? EBADF : ranges[i].error);
     CHECK(syscall(SYS_fcntl,fd,(long)F_GETFL,0L)==original);
     for(unsigned i=0;i<4096;++i) CHECK(pages[i]==0xa5 && pages[8192+i]==0xa5);
     CHECK(syscall(SYS_mmap,(long)(pages+4096),4096L,(long)(PROT_READ|PROT_WRITE),(long)(MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE),-1L,0L)==(long)(pages+4096));
