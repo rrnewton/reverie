@@ -81,6 +81,7 @@ static int mapping_errors(long fd, long mode) {
         {0xffffffffffffe001UL,4096UL,ENOMEM},
         {0x1001UL,1UL<<63,ENOMEM},
         {(unsigned long)(pages+1),4096UL,EINVAL},
+        {0x7f0000001001UL,4096UL,EINVAL},
         {0x1001UL,4096UL,EINVAL},
     };
     for(unsigned i=0;i<sizeof(ranges)/sizeof(ranges[0]);++i)

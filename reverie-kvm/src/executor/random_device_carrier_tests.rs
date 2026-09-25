@@ -818,6 +818,15 @@ fn random_carrier_fixed_range_errors_precede_alignment() {
             0,
             libc::EINVAL,
         ),
+        // A Linux-valid high address is outside the finite guest backing.
+        // That backing limit, like the lower reservation, follows alignment.
+        (
+            0x7f0000001001,
+            PAGE_SIZE,
+            (libc::MAP_PRIVATE | libc::MAP_FIXED) as u64,
+            0,
+            libc::EINVAL,
+        ),
         // The model's reserved lower range must not hide alignment EINVAL.
         (
             0x1001,

@@ -378,19 +378,19 @@ fn random_device_mmap(
             None => return negative_errno(libc::ENOMEM),
         }
     };
-    // Linux checks the upper address/length bound before fixed alignment.
-    // Keep the model's reserved lower range after alignment: a low, otherwise
-    // representable misaligned request must still return EINVAL.
-    if address
-        .checked_add(length)
-        .is_none_or(|end| end > state.mmap_limit)
-    {
+    // Check the modeled Linux user-address bound before fixed alignment.
+    // The finite backing and reserved lower range are separate restrictions;
+    // neither may hide EINVAL for an otherwise valid misaligned address.
+    let Some(end) = address.checked_add(length) else {
+        return negative_errno(libc::ENOMEM);
+    };
+    if end > X86_64_GUEST_USER_LIMIT {
         return negative_errno(libc::ENOMEM);
     }
     if fixed && !address.is_multiple_of(PAGE_SIZE) {
         return negative_errno(libc::EINVAL);
     }
-    if address < BOOT_RESERVED_END {
+    if address < BOOT_RESERVED_END || end > state.mmap_limit {
         return negative_errno(libc::ENOMEM);
     }
     if flags & libc::MAP_FIXED_NOREPLACE != 0
