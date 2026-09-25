@@ -6,34 +6,67 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! `no_std` kernel-facing execution core for `reverie-narf`.
+//! `no_std` execution core that hosts an unmodified [`reverie::Tool`] inside
+//! the Narf kernel.
 //!
-//! This crate contains no Linux process API, socket, serialization, or IPC
-//! dependency. Narf implements [`KernelTransition`] with its first-class kernel
-//! hook. A kernel-compatible Tool implements [`Tool`], and [`drive_syscall`]
-//! polls that Tool while lending direct references to its global and per-thread
-//! state. The standard `reverie-narf` crate reuses the exact request and outcome
-//! types here while adapting the full Linux/`std` Reverie traits.
+//! The Narf kernel calls its syscall interceptor on the trapping task's own
+//! kernel stack, in the one address space it shares with every other task and
+//! with the Tool. This crate turns that call into a Reverie callback without
+//! any IPC, ptrace emulation, signal, binary rewriting or polling:
+//!
+//! * the kernel implements [`KernelServices`], a narrow view of the current
+//!   task and of the kernel-owned native transition for this one syscall;
+//! * [`NarfToolHost`] owns the run's [`reverie::GlobalTool`] singleton, the
+//!   Tool configuration, one Tool value per process and one
+//!   `ThreadState` per thread;
+//! * [`NarfToolHost::handle_syscall`] builds a [`NarfGuest`], which implements
+//!   [`reverie::Guest`] on top of [`KernelServices`], and polls the Tool's
+//!   `handle_syscall_event` future exactly once. A future that is still
+//!   pending without having made a terminal transition fails closed with
+//!   [`NarfFatal::ToolSuspended`]; it is never polled again;
+//! * global RPC is a direct call of [`reverie::GlobalTool::receive_rpc`] on the
+//!   singleton;
+//! * [`NarfToolHost::task_exited`] runs `on_exit_thread` exactly once per
+//!   thread and `on_exit_process` exactly once per process.
+//!
+//! The crate builds with `core` and `alloc` only, against Reverie with its
+//! `std` feature off, and also against the host's `std` build of Reverie, so
+//! the same code is exercised by host tests and linked into the kernel.
 
 #![no_std]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-use core::future::Future;
-use core::future::poll_fn;
-use core::pin::Pin;
-use core::sync::atomic::AtomicI64;
-use core::sync::atomic::AtomicU8;
-use core::sync::atomic::Ordering;
-use core::task::Context;
-use core::task::Poll;
+extern crate alloc;
 
-const TAIL_NONE: u8 = 0;
-const TAIL_RETURNED: u8 = 1;
-const TAIL_CONTEXT_MANAGED: u8 = 2;
+mod guest;
+mod host;
+mod services;
+mod stack;
+
+pub use guest::NarfGuest;
+pub use host::Disposition;
+pub use host::LifecycleOutcome;
+pub use host::NarfFatal;
+pub use host::NarfToolHost;
+pub use host::TaskExit;
+pub use host::TaskLock;
+pub use host::TaskTable;
+pub use services::CreatedTask;
+pub use services::CreatedTaskKind;
+pub use services::KernelServices;
+pub use stack::NarfStack;
+pub use stack::NarfStackGuard;
 
 /// Largest errno value reserved by Linux's raw syscall return convention.
 pub const LINUX_MAX_ERRNO: i32 = 4095;
+
+/// Bits of a Narf syscall wire number that carry the Linux syscall number.
+///
+/// The top byte is Narf's ABI version. Reverie's typed syscalls know only the
+/// architecture number, so the core compares requests under this mask and
+/// re-issues the intercepted original with its exact wire number.
+pub const NARF_SYSCALL_NUMBER_MASK: u32 = 0x00ff_ffff;
 
 /// Six raw Linux syscall arguments in architecture register order.
 pub type RawSyscallArgs = [u64; 6];
@@ -41,23 +74,61 @@ pub type RawSyscallArgs = [u64; 6];
 /// One explicit native syscall request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NarfSyscallRequest {
-    /// Exact unsigned syscall wire number for the current architecture.
+    /// Exact unsigned syscall wire number, including Narf's version byte.
     pub number: u32,
     /// Six raw register arguments.
     pub args: RawSyscallArgs,
 }
 
-/// Immutable metadata for one intercepted guest syscall.
+impl NarfSyscallRequest {
+    /// The Linux syscall number with Narf's version byte removed.
+    pub const fn linux_number(&self) -> u32 {
+        self.number & NARF_SYSCALL_NUMBER_MASK
+    }
+
+    /// Whether `other` names the same Linux syscall with the same arguments,
+    /// ignoring the version byte.
+    pub const fn same_call(&self, other: &Self) -> bool {
+        let mut i = 0;
+        while i < 6 {
+            if self.args[i] != other.args[i] {
+                return false;
+            }
+            i += 1;
+        }
+        self.linux_number() == other.linux_number()
+    }
+}
+
+/// One entry into the kernel's syscall interceptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SyscallEvent {
-    /// Original syscall request.
+pub struct SyscallEntry {
+    /// The intercepted request exactly as the guest issued it.
     pub request: NarfSyscallRequest,
-    /// Narf task identifier.
-    pub task_id: u64,
-    /// User instruction pointer immediately after the syscall instruction.
-    pub instruction_pointer: u64,
-    /// User stack pointer at entry.
-    pub stack_pointer: u64,
+    /// True when the kernel is re-executing a syscall it previously parked
+    /// (by rewinding the user instruction pointer), rather than delivering a
+    /// new guest syscall. The Tool already observed the syscall at its first
+    /// entry, so the core re-issues the parked transition without calling the
+    /// Tool again.
+    pub park_reexecution: bool,
+}
+
+impl SyscallEntry {
+    /// A new guest syscall.
+    pub const fn new(request: NarfSyscallRequest) -> Self {
+        Self {
+            request,
+            park_reexecution: false,
+        }
+    }
+
+    /// A re-execution of a previously parked syscall.
+    pub const fn reexecution(request: NarfSyscallRequest) -> Self {
+        Self {
+            request,
+            park_reexecution: true,
+        }
+    }
 }
 
 /// Outcome reported by Narf's kernel-owned native transition.
@@ -79,265 +150,145 @@ pub enum OriginalSyscallError {
     ContextManaged,
 }
 
-/// Narf's kernel-owned native transition for the current callback.
-pub trait KernelTransition {
-    /// Execute the intercepted original syscall at most once.
-    fn execute_original(&mut self) -> Result<NarfSyscallOutcome, OriginalSyscallError>;
-
-    /// Execute one explicit request, bypassing interception.
-    fn execute_injected(&mut self, request: NarfSyscallRequest) -> NarfSyscallOutcome;
-}
-
-/// A checked, positive Linux errno.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LinuxErrno(i32);
-
-impl LinuxErrno {
-    /// Constructs an errno when `value` is in Linux's reserved `1..=4095`
-    /// syscall-error range.
-    pub const fn new(value: i32) -> Option<Self> {
-        if value >= 1 && value <= LINUX_MAX_ERRNO {
-            Some(Self(value))
-        } else {
-            None
-        }
-    }
-
-    /// Returns the positive errno value.
-    pub const fn get(self) -> i32 {
-        self.0
-    }
-}
-
-/// A Tool failure which cannot be represented as an ordinary raw return.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ToolError {
-    /// Checked positive Linux errno.
-    Errno(LinuxErrno),
-    /// Backend/tool-specific fatal class. The integration must stop the run.
-    Fatal(u32),
-}
-
-/// Terminal disposition after driving one Tool syscall callback.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DrivenSyscall {
-    /// Resume the guest with this raw Linux return value.
-    Complete(i64),
-    /// Narf owns continuation; no return may be fabricated.
-    ContextManaged,
-    /// Stop the run with this fatal class.
-    Fatal(u32),
-}
-
-/// Kernel-compatible Tool policy hosted by this core.
-///
-/// The full `reverie::Tool` adapter remains in the standard `reverie-narf`
-/// crate. This trait is the allocation-free ABI that can compile into Narf
-/// today; the ongoing API split will make full Reverie Tools target this same
-/// core without duplicating policy.
-pub trait Tool: Sync {
-    /// Process-tree singleton shared directly by every callback.
-    type GlobalState: Sync;
-    /// State owned by one guest thread.
-    type ThreadState;
-
-    /// Handle one subscribed syscall.
-    fn handle_syscall<'a, K>(
-        &'a self,
-        guest: &'a mut Guest<'_, Self, K>,
-        event: SyscallEvent,
-    ) -> impl Future<Output = Result<i64, ToolError>> + 'a
-    where
-        Self: Sized,
-        K: KernelTransition + 'a;
-}
-
-#[derive(Default)]
-struct TailCell {
-    kind: AtomicU8,
-    value: AtomicI64,
-}
-
-impl TailCell {
-    fn publish(&self, outcome: NarfSyscallOutcome) {
-        match outcome {
-            NarfSyscallOutcome::Returned(value) => {
-                self.value.store(value, Ordering::Relaxed);
-                self.kind.store(TAIL_RETURNED, Ordering::Release);
-            }
-            NarfSyscallOutcome::ContextManaged => {
-                self.kind.store(TAIL_CONTEXT_MANAGED, Ordering::Release);
-            }
-        }
-    }
-
-    fn take(&self) -> Option<DrivenSyscall> {
-        match self.kind.swap(TAIL_NONE, Ordering::AcqRel) {
-            TAIL_RETURNED => Some(DrivenSyscall::Complete(self.value.load(Ordering::Relaxed))),
-            TAIL_CONTEXT_MANAGED => Some(DrivenSyscall::ContextManaged),
-            _ => None,
-        }
-    }
-}
-
-/// Direct state and kernel operations available to one Tool callback.
-pub struct Guest<'a, T, K>
-where
-    T: Tool + ?Sized,
-    K: KernelTransition,
-{
-    kernel: &'a mut K,
-    global: &'a T::GlobalState,
-    thread_state: &'a mut T::ThreadState,
-    original: NarfSyscallRequest,
-    tail: &'a TailCell,
-}
-
-impl<T, K> Guest<'_, T, K>
-where
-    T: Tool + ?Sized,
-    K: KernelTransition,
-{
-    /// Borrow the process-tree singleton directly.
-    pub fn global(&self) -> &T::GlobalState {
-        self.global
-    }
-
-    /// Borrow this guest thread's Tool state.
-    pub fn thread_state(&self) -> &T::ThreadState {
-        self.thread_state
-    }
-
-    /// Mutably borrow this guest thread's Tool state.
-    pub fn thread_state_mut(&mut self) -> &mut T::ThreadState {
-        self.thread_state
-    }
-
-    fn execute(&mut self, request: NarfSyscallRequest) -> NarfSyscallOutcome {
-        if request == self.original {
-            match self.kernel.execute_original() {
-                Ok(outcome) => return outcome,
-                Err(OriginalSyscallError::ContextManaged) => {
-                    return NarfSyscallOutcome::ContextManaged;
-                }
-                Err(OriginalSyscallError::AlreadyExecuted) => {}
-            }
-        }
-        self.kernel.execute_injected(request)
-    }
-
-    /// Execute a syscall and return its raw Linux result.
-    ///
-    /// A context-managed transition deliberately never resolves this future;
-    /// the outer driver observes the terminal cell in the same poll and returns
-    /// [`DrivenSyscall::ContextManaged`].
-    pub async fn inject(&mut self, request: NarfSyscallRequest) -> i64 {
-        match self.execute(request) {
-            NarfSyscallOutcome::Returned(value) => value,
-            outcome @ NarfSyscallOutcome::ContextManaged => {
-                self.tail.publish(outcome);
-                core::future::pending().await
-            }
-        }
-    }
-
-    /// Execute a syscall as the terminal action of this callback.
-    pub async fn tail_inject(&mut self, request: NarfSyscallRequest) -> Never {
-        let outcome = self.execute(request);
-        self.tail.publish(outcome);
-        core::future::pending().await
-    }
-}
-
-/// Uninhabited return type for terminal Tool actions.
-pub enum Never {}
-
-/// Drive one syscall through a kernel-compatible Tool.
-pub async fn drive_syscall<T, K>(
-    tool: &T,
-    global: &T::GlobalState,
-    thread_state: &mut T::ThreadState,
-    kernel: &mut K,
-    event: SyscallEvent,
-) -> DrivenSyscall
-where
-    T: Tool,
-    K: KernelTransition,
-{
-    let tail = TailCell::default();
-    let mut guest = Guest::<T, K> {
-        kernel,
-        global,
-        thread_state,
-        original: event.request,
-        tail: &tail,
-    };
-    let mut future = core::pin::pin!(tool.handle_syscall(&mut guest, event));
-    poll_fn(|context| poll_tool_future(future.as_mut(), &tail, context)).await
-}
-
-fn poll_tool_future<F>(
-    mut future: Pin<&mut F>,
-    tail: &TailCell,
-    context: &mut Context<'_>,
-) -> Poll<DrivenSyscall>
-where
-    F: Future<Output = Result<i64, ToolError>> + ?Sized,
-{
-    match future.as_mut().poll(context) {
-        Poll::Ready(Ok(value)) => Poll::Ready(DrivenSyscall::Complete(value)),
-        Poll::Ready(Err(ToolError::Errno(errno))) => {
-            Poll::Ready(DrivenSyscall::Complete(-i64::from(errno.get())))
-        }
-        Poll::Ready(Err(ToolError::Fatal(class))) => Poll::Ready(DrivenSyscall::Fatal(class)),
-        Poll::Pending => match tail.take() {
-            Some(outcome) => Poll::Ready(outcome),
-            None => Poll::Pending,
-        },
-    }
-}
-
 #[cfg(test)]
 extern crate std;
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
     use core::sync::atomic::AtomicU64;
-    use core::task::RawWaker;
-    use core::task::RawWakerVTable;
-    use core::task::Waker;
+    use core::sync::atomic::Ordering;
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use reverie::Auxv;
+    use reverie::Error;
+    use reverie::GlobalTool;
+    use reverie::Guest;
+    use reverie::Pid;
+    use reverie::Tool;
+    use reverie::syscalls::Errno;
+    use reverie::syscalls::IoSlice;
+    use reverie::syscalls::IoSliceMut;
+    use reverie::syscalls::MemoryAccess;
+    use reverie::syscalls::Syscall;
+    use reverie::syscalls::SyscallInfo;
+    use reverie::syscalls::libc;
 
     use super::*;
+
+    struct StdLock<V>(Mutex<V>);
+
+    impl<V: Send> TaskLock<V> for StdLock<V> {
+        fn new(value: V) -> Self {
+            Self(Mutex::new(value))
+        }
+
+        fn with<R>(&self, f: impl FnOnce(&mut V) -> R) -> R {
+            f(&mut self.0.lock().unwrap())
+        }
+    }
 
     #[derive(Default)]
     struct Global {
         total: AtomicU64,
     }
 
+    #[async_trait]
+    impl GlobalTool for Global {
+        type Request = u64;
+        type Response = ();
+        type Config = ();
+
+        async fn receive_rpc(&self, _from: Pid, message: u64) {
+            self.total.fetch_add(message, Ordering::Relaxed);
+        }
+    }
+
+    #[derive(Default)]
     struct Probe;
+
+    #[async_trait]
     impl Tool for Probe {
         type GlobalState = Global;
         type ThreadState = u64;
 
-        async fn handle_syscall<'a, K>(
-            &'a self,
-            guest: &'a mut Guest<'_, Self, K>,
-            event: SyscallEvent,
-        ) -> Result<i64, ToolError>
-        where
-            K: KernelTransition + 'a,
-        {
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
             *guest.thread_state_mut() += 1;
-            guest.global().total.fetch_add(5, Ordering::Relaxed);
-            Ok(guest.inject(event.request).await + 5)
+            guest.send_rpc(5).await;
+            Ok(guest.inject(syscall).await? + 5)
         }
     }
+
+    /// Fails every syscall with the errno in its first argument.
+    #[derive(Default)]
+    struct ErrnoTool;
+
+    #[async_trait]
+    impl Tool for ErrnoTool {
+        type GlobalState = Global;
+        type ThreadState = ();
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            _guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            let (_, args) = syscall.into_parts();
+            Err(Errno::new(args.arg0 as i32).into())
+        }
+    }
+
+    struct NoMemory;
+
+    impl MemoryAccess for NoMemory {
+        fn read_vectored(&self, _: &[IoSlice], _: &mut [IoSliceMut]) -> Result<usize, Errno> {
+            Err(Errno::EFAULT)
+        }
+
+        fn write_vectored(&mut self, _: &[IoSlice], _: &mut [IoSliceMut]) -> Result<usize, Errno> {
+            Err(Errno::EFAULT)
+        }
+    }
+
+    const TID: i32 = 7;
 
     struct Kernel {
         calls: u64,
     }
 
-    impl KernelTransition for Kernel {
+    impl KernelServices for Kernel {
+        type Memory = NoMemory;
+
+        fn tid(&self) -> Pid {
+            Pid::from_raw(TID)
+        }
+
+        fn pid(&self) -> Pid {
+            Pid::from_raw(TID)
+        }
+
+        fn ppid(&self) -> Option<Pid> {
+            None
+        }
+
+        fn auxv(&self) -> Auxv {
+            Auxv::from_entries([])
+        }
+
+        fn memory(&self) -> NoMemory {
+            NoMemory
+        }
+
+        fn regs(&self) -> libc::user_regs_struct {
+            // SAFETY: user_regs_struct is plain integers; all-zero is valid.
+            unsafe { core::mem::zeroed() }
+        }
+
         fn execute_original(&mut self) -> Result<NarfSyscallOutcome, OriginalSyscallError> {
             if self.calls != 0 {
                 return Err(OriginalSyscallError::AlreadyExecuted);
@@ -350,82 +301,61 @@ mod tests {
             self.calls += 1;
             NarfSyscallOutcome::Returned(99)
         }
-    }
 
-    fn block_on_ready<F: Future>(future: F) -> F::Output {
-        unsafe fn clone(_: *const ()) -> RawWaker {
-            raw_waker()
-        }
-        unsafe fn no_op(_: *const ()) {}
-        fn raw_waker() -> RawWaker {
-            RawWaker::new(
-                core::ptr::null(),
-                &RawWakerVTable::new(clone, no_op, no_op, no_op),
-            )
+        fn take_created_task(&mut self) -> Option<CreatedTask> {
+            None
         }
 
-        let waker = unsafe { Waker::from_raw(raw_waker()) };
-        let mut context = Context::from_waker(&waker);
-        let mut future = core::pin::pin!(future);
-        loop {
-            if let Poll::Ready(value) = future.as_mut().poll(&mut context) {
-                return value;
-            }
+        fn daemonize(&mut self) -> Result<(), Errno> {
+            Ok(())
         }
     }
 
-    fn classify_ready(result: Result<i64, ToolError>) -> DrivenSyscall {
-        let tail = TailCell::default();
-        let mut future = core::pin::pin!(core::future::ready(result));
-        block_on_ready(poll_fn(|context| {
-            poll_tool_future(future.as_mut(), &tail, context)
-        }))
+    fn host<T: Tool<GlobalState = Global>>() -> NarfToolHost<T, StdLock<TaskTable<T>>> {
+        let host = NarfToolHost::new(()).expect("host");
+        host.register_root(Pid::from_raw(TID), Pid::from_raw(TID))
+            .expect("root");
+        host
+    }
+
+    fn getpid(arg0: u64) -> SyscallEntry {
+        SyscallEntry::new(NarfSyscallRequest {
+            number: 39,
+            args: [arg0, 0, 0, 0, 0, 0],
+        })
     }
 
     #[test]
     fn errno_range_is_checked_and_maps_to_negative_linux_results() {
-        assert_eq!(LinuxErrno::new(-1), None);
-        assert_eq!(LinuxErrno::new(0), None);
-        assert_eq!(LinuxErrno::new(LINUX_MAX_ERRNO + 1), None);
+        let host = host::<ErrnoTool>();
+        let mut kernel = Kernel { calls: 0 };
+        let mut errno = |raw: i32| host.handle_syscall(&mut kernel, getpid(raw as u64));
 
-        let one = LinuxErrno::new(1).expect("one is a Linux errno");
-        let max = LinuxErrno::new(LINUX_MAX_ERRNO).expect("maximum errno is accepted");
+        assert!(matches!(errno(-1), Err(NarfFatal::InvalidErrno(-1))));
+        assert!(matches!(errno(0), Err(NarfFatal::InvalidErrno(0))));
+        assert!(matches!(
+            errno(LINUX_MAX_ERRNO + 1),
+            Err(NarfFatal::InvalidErrno(4096))
+        ));
+
+        assert_eq!(errno(1).ok(), Some(Disposition::Complete(-1)));
         assert_eq!(
-            classify_ready(Err(ToolError::Errno(one))),
-            DrivenSyscall::Complete(-1)
-        );
-        assert_eq!(
-            classify_ready(Err(ToolError::Errno(max))),
-            DrivenSyscall::Complete(-i64::from(LINUX_MAX_ERRNO))
+            errno(LINUX_MAX_ERRNO).ok(),
+            Some(Disposition::Complete(-i64::from(LINUX_MAX_ERRNO)))
         );
     }
 
     #[test]
     fn drives_direct_global_thread_and_original_state() {
-        let global = Global::default();
-        let mut thread = 0;
+        let host = host::<Probe>();
         let mut kernel = Kernel { calls: 0 };
-        let event = SyscallEvent {
-            request: NarfSyscallRequest {
-                number: 39,
-                args: [0; 6],
-            },
-            task_id: 7,
-            instruction_pointer: 0x1000,
-            stack_pointer: 0x2000,
-        };
 
-        let outcome = block_on_ready(drive_syscall(
-            &Probe,
-            &global,
-            &mut thread,
-            &mut kernel,
-            event,
-        ));
+        let outcome = host.handle_syscall(&mut kernel, getpid(0));
 
-        assert_eq!(outcome, DrivenSyscall::Complete(42));
-        assert_eq!(thread, 1);
-        assert_eq!(global.total.load(Ordering::Relaxed), 5);
+        assert_eq!(outcome.ok(), Some(Disposition::Complete(42)));
+        let thread = host.with_thread_state(Pid::from_raw(TID), |state| *state);
+        assert_eq!(thread, Some(1));
+        assert_eq!(host.global().total.load(Ordering::Relaxed), 5);
         assert_eq!(kernel.calls, 1);
     }
 }
