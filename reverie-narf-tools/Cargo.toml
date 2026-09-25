@@ -1,0 +1,17 @@
+[package]
+name = "reverie-narf-tools"
+description = "Backend-neutral Reverie Tools shared by the Narf kernel backend and its Linux comparison hosts"
+version = "0.2.0"
+authors = ["Meta Platforms"]
+edition = "2024"
+repository = "https://github.com/facebookexperimental/reverie"
+license = "BSD-2-Clause"
+
+# Every dependency is `default-features = false`: this crate is linked into the
+# Narf kernel (`x86_64-unknown-none`, no `std`). A host that links it next to a
+# `std` backend (reverie-ptrace) gets `std` through that backend's own feature
+# requests, never through this crate.
+[dependencies]
+reverie = { package = "reverie-core", version = "0.2.0", path = "../reverie", default-features = false }
+serde = { version = "1.0.219", features = ["alloc", "derive"], default-features = false }
+tracing = { version = "0.1.41", default-features = false }
