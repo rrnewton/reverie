@@ -6,3 +6,11 @@ authors = ["Meta Platforms"]
 edition = "2024"
 repository = "https://github.com/facebookexperimental/reverie"
 license = "BSD-2-Clause"
+
+[dependencies]
+async-trait = "0.1.86"
+reverie = { package = "reverie-core", version = "0.2.0", path = "../reverie", default-features = false }
+
+[dev-dependencies]
+serde = { version = "1.0.219", features = ["alloc", "derive"], default-features = false }
+tracing = { version = "0.1.41", default-features = false }
