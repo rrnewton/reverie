@@ -20,6 +20,7 @@ members = [
     "reverie-kvm",
     "reverie-liteinst",
     "reverie-memory",
+    "reverie-narf",
     "reverie-process",
     "reverie-ptrace",
     "reverie-rpc-transport",
