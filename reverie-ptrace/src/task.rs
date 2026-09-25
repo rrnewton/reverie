@@ -3112,7 +3112,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Postconditions:
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
-        self.timer.observe_event();
+        self.timer.observe_event(&event);
         // The guest can remove a timer notification between two stops without
         // an injection seeing the queue. See `untraced_syscall`.
         self.timer.expire_overflow_records(&stopped);
