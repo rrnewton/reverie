@@ -39,7 +39,7 @@ negative-control mutation.
 ## Narf syscall-interception milestone
 
 Current local Narf head:
-`10dc04b5c2757e8fdecd031bebe30688209b5268`.
+`d3cd3255357d9a9675b68e3dcebce3b786b3cdf2`.
 
 Commits:
 
@@ -66,6 +66,12 @@ Commits:
   detection, remove reset APIs from the production boot feature graph, and arm
   every online CPU through a synchronous IPI rendezvous before install returns.
   This TCB commit is also GPG-signed with the required AI attribution.
+- `d3cd3255357d9a9675b68e3dcebce3b786b3cdf2` — add the
+  kernel-owned native syscall transition needed by a Reverie Guest. The
+  original handler is at most once; explicit injected requests carry their own
+  wire number and six arguments, may repeat, and bypass recursive interception;
+  context-managed outcomes remain terminal and cannot become fabricated
+  returns. This commit is GPG-signed with the required AI attribution.
 
 The current interface provides an immutable `SyscallInvocation` snapshot,
 entry control (`Continue` or `Complete`), a return-only replacement callback,
@@ -217,6 +223,56 @@ That broad selection is not claimed green. The focused new test was registered
 under `syscall_abi/interception` so its causal result can be run independently;
 no existing assertion, skip, comparator, or tolerance was weakened.
 
+## Native syscall transition and Reverie driver checkpoint
+
+At Narf head `d3cd3255...`, `SyscallInterceptor::on_syscall_enter` receives a
+borrowed `NativeSyscallTransition` rather than mutable trap state.
+`execute_original()` can run the intercepted native handler once and then
+returns `NativeSyscallAlreadyExecuted`; `execute_injected(request)` runs the
+specified wire number and arguments once per call without recursively entering
+the interceptor. Normal injected returns are captured without writing the live
+guest return registers. An exit, exec, park, or redirection produces a sticky
+`ContextManaged` outcome, after which the dispatcher refuses to fabricate a
+normal completion.
+
+Validation:
+
+- `cargo check -p narf-userspace --tests`, frame `user-mode-e2e` check,
+  package formatting, diff check, and warning-as-error clippy for userspace,
+  frame, and verification: passed.
+- Focused x86_64 kernel test proved one original execution, rejection of the
+  duplicate original transition, two explicit injected calls with distinct
+  arguments/results, final Tool-owned return replacement, and clean boot.
+  Transcript SHA-256:
+  `8670216e12b69d33481e61d697a4faa6550f472c161d7d8a0e35d0717687e3e8`.
+- The existing three-case userspace syscall-interceptor selection passed with
+  clean boot after the API change. Transcript SHA-256:
+  `2b952d4b31ac555b11bd176475448edda86f0eb3f4ebec38a8778cbf21876ce4`.
+- The real two-vCPU x86_64 ring-3 syscall/RDTSC test passed with one AP online
+  and clean boot. Transcript SHA-256:
+  `44fc3765d570417b2ce564dbc3d989a8c0bd769a393897005593fc35c5932a79`.
+- A direct host `cargo test -p narf-userspace` attempt is not a valid runner for
+  this kernel crate and failed to link pre-existing Narf symbols such as
+  `narf_phys_to_node` and `__text_start`; no host-unit pass is claimed. The
+  repository's QEMU kernel-test driver executed the new assertions instead.
+
+The registered Reverie worktree now has commit
+`ad1ba781798859a0274678ac9c5ebab23368a0bf`, adding a new
+`reverie-narf` crate. It defines a mechanism-neutral `NarfKernel` trait and a
+`NarfGuest<T, K>` that hosts arbitrary `T: reverie::Tool`, including direct
+global-state calls, per-thread state, original/injected syscalls, register,
+memory, stack, timer, clock, and terminal-outcome surfaces. Its fake-kernel
+test passed and proves a Tool mutates thread state, calls the singleton directly
+through `send_rpc`, executes the original transition once, and returns the
+combined result. `cargo check`, formatting, warning-as-error clippy, unit test,
+and doctest gates passed.
+
+This Reverie component is not yet a working Narf backend. Current Reverie
+public traits depend on Linux/`std`, while the Narf kernel is `no_std`; the
+crate documents that boundary and does not implement the `Backend` launch/
+lifecycle contract yet. There is no Narf-linked adapter, real guest through
+this driver, canonical cross-kernel trace, or negative mutation result yet.
+
 ## Audit state
 
 The first separate adversarial review covered exact head
@@ -269,14 +325,14 @@ worktree was removed after its output was captured under `/tmp`.
 
 ## Next gates
 
-1. Add the kernel-owned, at-most-once native syscall transition needed by
-   Reverie `Guest::inject`, without exposing mutable trap state or permitting a
-   dispatcher to run the native handler twice.
-2. Implement the general `reverie-narf` backend in the registered Reverie
-   worktree, then the minimal Hermit integration/tool surface in its registered
-   worktree.
-3. Run the real guest on both backends, compare fail-closed versioned INFO logs
+1. Split a `no_std` kernel-facing core from `reverie-narf`, retain the arbitrary
+   Reverie Tool adapter on the `std` side, and compile the core for Narf.
+2. Implement the Narf adapter against the signed native transition and direct
+   task/memory/register interfaces; then add subscription and lifecycle state.
+3. Complete the `Backend` launch/lifecycle contract and the minimal Hermit
+   integration/tool surface in their registered worktrees.
+4. Run the real guest on both backends, compare fail-closed versioned INFO logs
    byte-for-byte, and show the negative mutation is rejected.
-4. Obtain exact-head adversarial and deterministic-scheduling reviews where
+5. Obtain exact-head adversarial and deterministic-scheduling reviews where
    applicable, open the upstream Narf PR for human owner/maintainer review, and
    land only through each repository's supported policy.
