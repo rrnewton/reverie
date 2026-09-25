@@ -8723,13 +8723,10 @@ int main(void) {
 
 #[test]
 fn grandchild_family_transitions_are_causal_on_real_kvm() {
-    match Kvm::new() {
-        Ok(_) => {}
-        Err(error) if kvm_is_unavailable(&error) => {
-            eprintln!("skipping KVM descendant-lifecycle test: cannot open /dev/kvm: {error}");
-            return;
-        }
-        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    // Bounded: an exiting parent that waited for its adopted child would
+    // deadlock mode 9, whose grandchild outlives the root's reap of that parent.
+    if !leader_self_exec_bounded("grandchild_family_transitions_are_causal_on_real_kvm") {
+        return;
     }
 
     let directory = TestDirectory::new();
@@ -8739,10 +8736,38 @@ fn grandchild_family_transitions_are_causal_on_real_kvm() {
         r#"
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+/* Reads a procfs record whose descriptor was opened before reparenting. */
+static int read_record(int fd, char *buffer, size_t size) {
+  ssize_t length = read(fd, buffer, size - 1);
+  if (length <= 0) return -1;
+  buffer[length] = 0;
+  return 0;
+}
+
+/* Runs in a grandchild adopted by the outside init. Its descriptors were opened
+   under its original parent; both must report the new parent when first read. */
+static char adopted_verdict(int stat_fd, int status_fd) {
+  if (getppid() != 1) return 'p';
+  char buffer[4096];
+  if (read_record(stat_fd, buffer, sizeof buffer) != 0) return 's';
+  char *end = strrchr(buffer, ')');
+  char state = 0;
+  int ppid = -1;
+  if (end == 0 || sscanf(end + 1, " %c %d", &state, &ppid) != 2 || ppid != 1)
+    return 'S';
+  if (read_record(status_fd, buffer, sizeof buffer) != 0) return 't';
+  char *line = strstr(buffer, "\nPPid:\t");
+  if (line == 0 || atoi(line + 7) != 1) return 'T';
+  return 'k';
+}
 
 int main(int argc, char **argv) {
   if (argc != 2) return 8;
@@ -8752,7 +8777,11 @@ int main(int argc, char **argv) {
   sigaddset(&blocked, SIGCHLD);
   if (sigprocmask(SIG_BLOCK, &blocked, 0) != 0) return 9;
   int ready[2] = {-1, -1};
-  if ((mode == 0 || (mode >= 6 && mode <= 8)) && pipe(ready) != 0) return 10;
+  int verdict[2] = {-1, -1};
+  int release[2] = {-1, -1};
+  int hold[2] = {-1, -1};
+  if ((mode == 0 || (mode >= 6 && mode <= 9)) && pipe(ready) != 0) return 10;
+  if (mode == 9 && (pipe(verdict) != 0 || pipe(release) != 0 || pipe(hold) != 0)) return 26;
   pid_t child = fork();
   if (child < 0) return 11;
   if (child == 0) {
@@ -8771,13 +8800,30 @@ int main(int argc, char **argv) {
         char byte = 'x';
         if (write(ready[1], &byte, 1) != 1) _exit(14);
         for (;;) (void)getpid();
+      } else if (mode == 9) {
+        /* Only the root may release this process; its failure reads as EOF.
+           Dropping the hold end leaves the former parent as its last writer. */
+        if (close(release[1]) != 0 || close(hold[1]) != 0) _exit(36);
+        int stat_fd = open("/proc/self/stat", O_RDONLY);
+        int status_fd = open("/proc/self/status", O_RDONLY);
+        if (stat_fd < 0 || status_fd < 0) _exit(27);
+        if (getppid() == 1) _exit(28);
+        char byte = 'x';
+        if (write(ready[1], &byte, 1) != 1) _exit(29);
+        /* The parent exits after reading the byte; spin until adoption. */
+        while (getppid() != 1) (void)getpid();
+        byte = adopted_verdict(stat_fd, status_fd);
+        if (write(verdict[1], &byte, 1) != 1) _exit(30);
+        /* Outlive the former parent until the root has reaped it: its exit
+           must not wait for this adopted process. */
+        if (read(release[0], &byte, 1) != 1) _exit(34);
       } else if (mode >= 6 && mode <= 8) {
         char byte = 0;
         if (read(ready[0], &byte, 1) != 1 || byte != 'x') _exit(21);
       }
       _exit(9);
     }
-    if (mode == 0) {
+    if (mode == 0 || mode == 9) {
       char byte = 0;
       if (read(ready[0], &byte, 1) != 1 || byte != 'x') _exit(15);
     } else if (mode == 1 || mode == 3) {
@@ -8821,9 +8867,25 @@ int main(int argc, char **argv) {
     _exit(7);
   }
   if (mode >= 6 && mode <= 8) return 0;
+  if (mode == 9 && (close(verdict[1]) != 0 || close(release[0]) != 0 ||
+                    close(hold[1]) != 0)) return 31;
   int status = 0;
   if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
       WEXITSTATUS(status) != 7) return 20;
+  if (mode == 9) {
+    /* The adopted grandchild was never this process's child, and the outside
+       init reaps it; only its verdict comes back. */
+    errno = 0;
+    if (waitpid(-1, &status, WNOHANG) != -1 || errno != ECHILD) return 32;
+    char byte = 0;
+    if (read(verdict[0], &byte, 1) != 1) return 33;
+    if (byte != 'k') return byte;
+    /* Only the reaped parent still held this write end. Its descriptors close
+       in its own exit, however long the adopted grandchild lives. */
+    if (read(hold[0], &byte, 1) != 0) return 37;
+    byte = 'r';
+    if (write(release[1], &byte, 1) != 1) return 35;
+  }
   return 0;
 }
 "#,
@@ -8850,8 +8912,12 @@ int main(int argc, char **argv) {
         }
     };
 
-    for root_pid in [1, 3] {
-        for mode in 0..=8 {
+    // A traced root that is itself namespace init (PID 1) cannot adopt
+    // orphans, so it stays fail-closed. Beneath an outside init (PID 3) the
+    // grandchild is adopted instead; mode 0's grandchild never exits, which
+    // would legitimately run forever, so PID 3 runs the finite mode 9.
+    for (root_pid, modes) in [(1, 0..=8), (3, 1..=9)] {
+        for mode in modes {
             let events = Arc::new(Mutex::new(Vec::new()));
             let config =
                 child_wait_event_config_with_block(&events, (mode == 0).then_some(root_pid + 2));
@@ -8875,8 +8941,8 @@ int main(int argc, char **argv) {
                 .clone();
             let child = root_pid + 1;
             let grandchild = root_pid + 2;
-            match mode {
-                0 => {
+            match (mode, root_pid) {
+                (0, 1) => {
                     let rendered = result.unwrap_err().to_string();
                     assert!(
                         rendered.contains("still requiring unsupported reparenting"),
@@ -8887,7 +8953,7 @@ int main(int argc, char **argv) {
                         "a still-live grandchild has no terminal event: {observed:?}"
                     );
                 }
-                1 => {
+                (1, 1) => {
                     let rendered = result.unwrap_err().to_string();
                     assert!(
                         rendered.contains("still requiring unsupported reparenting"),
@@ -8899,7 +8965,39 @@ int main(int argc, char **argv) {
                         "WNOWAIT must retain the zombie while suppressing only C-to-root publication",
                     );
                 }
-                2 | 3 => {
+                (1, 3) => {
+                    let (_global, code, _stdout, stderr) = result.unwrap();
+                    assert_eq!(
+                        code,
+                        0,
+                        "zombie descendant, root pid {root_pid}: {}",
+                        String::from_utf8_lossy(&stderr)
+                    );
+                    assert_eq!(
+                        observed,
+                        vec![
+                            event(child, 2, grandchild, 3, true),
+                            event(root_pid, 1, child, 2, true),
+                        ],
+                        "a zombie already announced to its parent keeps that callback; \
+                         init then reaps it and the parent's exit reaches the root",
+                    );
+                }
+                (9, 3) => {
+                    let (_global, code, _stdout, stderr) = result.unwrap();
+                    assert_eq!(
+                        code,
+                        0,
+                        "adopted live grandchild, root pid {root_pid}: {}",
+                        String::from_utf8_lossy(&stderr)
+                    );
+                    assert_eq!(
+                        observed,
+                        vec![event(root_pid, 1, child, 2, true)],
+                        "an init-reaped orphan has no traced parent to notify",
+                    );
+                }
+                (2 | 3, _) => {
                     let (_global, code, _stdout, stderr) = result.unwrap();
                     assert_eq!(
                         code,
@@ -8915,7 +9013,7 @@ int main(int argc, char **argv) {
                         ],
                     );
                 }
-                4 | 5 => {
+                (4 | 5, _) => {
                     let (_global, code, _stdout, stderr) = result.unwrap();
                     assert_eq!(
                         code,
@@ -8931,7 +9029,7 @@ int main(int argc, char **argv) {
                         ],
                     );
                 }
-                6 => {
+                (6, _) => {
                     let (_global, code, _stdout, stderr) = result.unwrap();
                     assert_eq!(
                         code,
@@ -8945,7 +9043,7 @@ int main(int argc, char **argv) {
                         "a terminal transitive root cannot steal a grandchild from its live direct parent",
                     );
                 }
-                7 | 8 => {
+                (7 | 8, _) => {
                     let (_global, code, _stdout, stderr) = result.unwrap();
                     assert_eq!(
                         code,
@@ -8962,6 +9060,88 @@ int main(int argc, char **argv) {
                 _ => unreachable!(),
             }
         }
+    }
+}
+
+#[test]
+fn direct_fork_orphaned_by_a_peer_exit_group_completes_detached_on_real_kvm() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM detached direct-fork test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "direct-fork-peer-exit-group",
+        r#"
+#define _GNU_SOURCE
+#include <pthread.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static int ready[2];
+
+static void say(const char *message, size_t length) {
+  if (write(1, message, length) != (ssize_t)length) _exit(30);
+}
+
+/* Ends the whole root process once the inline fork child is running. */
+static void *exit_group_peer(void *unused) {
+  (void)unused;
+  char byte = 0;
+  if (read(ready[0], &byte, 1) != 1 || byte != 'x') syscall(SYS_exit_group, 40);
+  syscall(SYS_exit_group, 0);
+  return 0;
+}
+
+int main(void) {
+  if (pipe(ready) != 0) return 10;
+  pthread_t peer;
+  if (pthread_create(&peer, 0, exit_group_peer, 0) != 0) return 11;
+  pid_t child = fork();
+  if (child < 0) return 12;
+  if (child == 0) {
+    if (getppid() != 3) _exit(13);
+    char byte = 'x';
+    if (write(ready[1], &byte, 1) != 1) _exit(14);
+    /* The peer's exit_group makes the root terminal while this fork's caller
+       is still blocked, so the outside init adopts this process. */
+    while (getppid() != 1) (void)getpid();
+    say("adopted\n", 8);
+    _exit(5);
+  }
+  /* The root is already terminal when the fork completes; it must not return. */
+  say("fork returned\n", 14);
+  return 20;
+}
+"#,
+    );
+    let image = std::fs::read(&executable).unwrap();
+    let executable = executable.to_str().unwrap();
+    for attempt in 0..3 {
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend.set_root_pid(3).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[executable],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+        assert_eq!(
+            (code, stdout.as_slice()),
+            (0, b"adopted\n".as_slice()),
+            "attempt {attempt}: stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr),
+        );
     }
 }
 

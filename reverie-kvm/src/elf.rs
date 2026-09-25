@@ -235,6 +235,10 @@ impl GuestFileIdentityEntry {
 pub(crate) struct GuestFileIdentityTable {
     pub next_inode: u64,
     pub objects: std::collections::BTreeMap<(libc::dev_t, libc::ino_t), GuestFileIdentityEntry>,
+    /// Read-time procfs descriptions sent with SCM_RIGHTS and not yet received,
+    /// keyed by their pinned backing memfd.
+    pub proc_transfers:
+        std::collections::BTreeMap<(libc::dev_t, libc::ino_t), crate::executor::ProcTransfer>,
 }
 
 /// Process-tree-wide state whose lifetime follows a guest task rather than an
@@ -1606,6 +1610,7 @@ fn load_executable(
         file_identity_table: std::sync::Arc::new(std::sync::Mutex::new(GuestFileIdentityTable {
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
+            proc_transfers: std::collections::BTreeMap::new(),
         })),
     })
 }
