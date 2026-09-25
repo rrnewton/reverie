@@ -113,6 +113,41 @@ def bench_handle(**updates: object) -> dict[str, object]:
 
 
 class RunRegistryContractTests(unittest.TestCase):
+    def test_runtime_root_identity_is_optional_but_strict(self) -> None:
+        legacy = run_registry.parse_current_record(validation_handle())
+        self.assertNotIn("runtime_root_identity", legacy.raw)
+        identity = {
+            "device": 1,
+            "inode": 2,
+            "mode": 0o40700,
+            "uid": 3,
+            "gid": 4,
+        }
+        current = run_registry.parse_current_record(
+            validation_handle(
+                runtime_root="/tmp/vfixture",
+                runtime_root_identity=identity,
+            )
+        )
+        self.assertEqual(identity, current.raw["runtime_root_identity"])
+
+        malformed = (
+            {**identity, "inode": True},
+            {**identity, "mode": 0o100600},
+            {key: value for key, value in identity.items() if key != "gid"},
+            {**identity, "extra": 5},
+        )
+        for value in malformed:
+            with self.subTest(value=value), self.assertRaisesRegex(
+                RuntimeError, "runtime_root_identity"
+            ):
+                run_registry.parse_current_record(
+                    validation_handle(
+                        runtime_root="/tmp/vfixture",
+                        runtime_root_identity=value,
+                    )
+                )
+
     def test_recorded_github_route_is_optional_but_strictly_absolute(self) -> None:
         legacy = run_registry.parse_current_record(validation_handle())
         self.assertNotIn("github_executable", legacy.raw)

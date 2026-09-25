@@ -7,6 +7,7 @@ import fcntl
 import json
 import multiprocessing
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -149,6 +150,7 @@ class ParallelValidatePathTest(unittest.TestCase):
             "environment": {
                 "HOME": "/home/test",
                 "PATH": "/usr/bin",
+                "FLEET_REAL_GH": sys.executable,
                 "TMPDIR": "/tmp",
                 "XDG_RUNTIME_DIR": "/run/user/1234",
                 "DAGRUN_RESOURCE_CAPS_PATH": "/run/user/1234/ci-hub/resource-caps.json",
@@ -175,9 +177,11 @@ class ParallelValidatePathTest(unittest.TestCase):
             shared_child.write_text("run-b")
             self.assertEqual(shared_child.read_text(), "run-b")
 
-        runtime_environment = {"XDG_RUNTIME_DIR": str(self.root)}
+        runtime_environment = {"XDG_RUNTIME_DIR": "/tmp"}
         runtime_a = start_unit.prepare_runtime_root(runtime_environment)
         runtime_b = start_unit.prepare_runtime_root(runtime_environment)
+        self.addCleanup(shutil.rmtree, runtime_a, True)
+        self.addCleanup(shutil.rmtree, runtime_b, True)
         fixed_a = start_unit.build_systemd_command(
             **common, unit="validate-a", runtime_root=runtime_a
         )
@@ -219,12 +223,36 @@ class ParallelValidatePathTest(unittest.TestCase):
         fixed_socket.parent.mkdir(parents=True)
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
             listener.bind(str(fixed_socket))
+        custom_runtime_parent = self.root / "custom-runtime"
+        custom_runtime_parent.mkdir()
+        with self.assertRaisesRegex(ValueError, "recoverable validation storage"):
+            start_unit.prepare_runtime_root(
+                {"XDG_RUNTIME_DIR": str(custom_runtime_parent)}
+            )
         long_runtime_parent = self.root / ("x" * 32)
         long_runtime_parent.mkdir()
-        with self.assertRaisesRegex(ValueError, "too long"):
-            start_unit.prepare_runtime_root(
-                {"XDG_RUNTIME_DIR": str(long_runtime_parent)}
+        with mock.patch.object(
+            start_unit,
+            "RUNTIME_ROOT_RECOVERY_PARENTS",
+            (long_runtime_parent,),
+        ):
+            with self.assertRaisesRegex(ValueError, "too long"):
+                start_unit.prepare_runtime_root(
+                    {"XDG_RUNTIME_DIR": str(long_runtime_parent)}
+                )
+        aliased_parent = self.root / "runtime-alias"
+        aliased_parent.symlink_to(Path("/tmp"), target_is_directory=True)
+        with mock.patch.object(
+            start_unit,
+            "RUNTIME_ROOT_RECOVERY_PARENTS",
+            (aliased_parent,),
+        ):
+            aliased_runtime = start_unit.prepare_runtime_root(
+                {"XDG_RUNTIME_DIR": str(aliased_parent)}
             )
+            self.addCleanup(shutil.rmtree, aliased_runtime, True)
+            self.assertEqual(Path("/tmp"), aliased_runtime.parent)
+            self.assertTrue(start_unit.recoverable_runtime_root_path(aliased_runtime))
         # One run's cells deliberately share one E2E result root so the verifier
         # can aggregate them; only separate top-level runs get separate roots.
         self.assertIn("E2E_RUN_ID=validate-a", fixed_a)

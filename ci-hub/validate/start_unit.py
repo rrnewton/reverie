@@ -1341,6 +1341,23 @@ def _carries_nosuid_or_nodev(path: Path) -> bool:
     return bool(flags & os.ST_NOSUID) or bool(flags & os.ST_NODEV)
 
 
+RUNTIME_ROOT_IDENTITY_FIELDS = ("device", "inode", "mode", "uid", "gid")
+RUNTIME_ROOT_RECOVERY_NAME_RE = re.compile(r"v[a-z0-9_]{8}")
+RUNTIME_ROOT_RECOVERY_PARENTS = (
+    Path("/tmp"),
+    Path("/var/tmp"),
+    Path(f"/run/user/{os.geteuid()}"),
+)
+
+
+def resolved_runtime_root_recovery_parents() -> tuple[Path, ...]:
+    """Canonical fixed parents accepted by both creation and recovery."""
+
+    return tuple(
+        dict.fromkeys(parent.resolve() for parent in RUNTIME_ROOT_RECOVERY_PARENTS)
+    )
+
+
 def runtime_root_parent(environment: Mapping[str, str]) -> Path:
     """Pick a short host directory whose filesystem Hermit's container can use.
 
@@ -1361,19 +1378,42 @@ def runtime_root_parent(environment: Mapping[str, str]) -> Path:
     Preference order keeps the previous behaviour wherever it was already
     correct, and the length bound still applies -- `/tmp/vXXXXXX` is shorter than
     the `/run/user/<uid>` path it replaces, so nothing regresses there.
+
+    Recovery later acts from a durable run handle, not this launcher's closure.
+    Constrain creation to the same fixed parent/name namespace that recovery can
+    independently verify; an arbitrary XDG_RUNTIME_DIR must never turn a
+    mutable JSON row into authority to recursively delete an arbitrary tree.
     """
-    configured = environment.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    candidates = [Path(configured), Path("/tmp"), Path("/var/tmp")]
+    allowed_parents = resolved_runtime_root_recovery_parents()
+    configured = environment.get("XDG_RUNTIME_DIR")
+    candidates: list[Path]
+    if configured:
+        requested = Path(configured)
+        if not requested.is_absolute():
+            raise ValueError(f"XDG_RUNTIME_DIR must be absolute, got {requested}")
+        requested = requested.resolve()
+        if requested not in allowed_parents:
+            raise ValueError(
+                "XDG_RUNTIME_DIR must name /tmp, /var/tmp, or the current "
+                f"user runtime directory for recoverable validation storage; got "
+                f"{requested}"
+            )
+        candidates = [requested, *allowed_parents]
+    else:
+        candidates = [*allowed_parents]
     rejected: list[str] = []
+    seen: set[Path] = set()
     for candidate in candidates:
-        if not candidate.is_absolute():
-            raise ValueError(f"XDG_RUNTIME_DIR must be absolute, got {candidate}")
-        if not candidate.is_dir():
+        resolved = candidate.resolve()
+        if resolved in seen:
             continue
-        if _carries_nosuid_or_nodev(candidate):
-            rejected.append(str(candidate))
+        seen.add(resolved)
+        if not resolved.is_dir():
             continue
-        return candidate
+        if _carries_nosuid_or_nodev(resolved):
+            rejected.append(str(resolved))
+            continue
+        return resolved
     # ⚠️ REFUSE RATHER THAN PROCEED. Running anyway produces a full set of rows
     # that all fail for one reason and say nothing about the code, which is
     # strictly worse than not running: it looks like a measurement.
@@ -1399,6 +1439,54 @@ def prepare_runtime_root(environment: Mapping[str, str]) -> Path:
     for name in ("cache", "python-cache", "hermit-data"):
         (runtime / name).mkdir(mode=0o700)
     return runtime
+
+
+def runtime_root_identity(runtime: Path) -> dict[str, int]:
+    """Capture the stable inode identity used by later orphan recovery."""
+
+    metadata = os.lstat(runtime)
+    if not stat.S_ISDIR(metadata.st_mode) or runtime.is_symlink():
+        raise RuntimeError(f"validation runtime root is not a directory: {runtime}")
+    return {
+        "device": int(metadata.st_dev),
+        "inode": int(metadata.st_ino),
+        "mode": int(metadata.st_mode),
+        "uid": int(metadata.st_uid),
+        "gid": int(metadata.st_gid),
+    }
+
+
+def runtime_root_identity_matches(runtime: Path, raw: object) -> bool:
+    if not isinstance(raw, dict) or set(raw) != set(RUNTIME_ROOT_IDENTITY_FIELDS):
+        return False
+    try:
+        metadata = os.lstat(runtime)
+    except OSError:
+        return False
+    observed = (
+        {
+            "device": int(metadata.st_dev),
+            "inode": int(metadata.st_ino),
+            "mode": int(metadata.st_mode),
+            "uid": int(metadata.st_uid),
+            "gid": int(metadata.st_gid),
+        }
+        if stat.S_ISDIR(metadata.st_mode)
+        else None
+    )
+    return observed == raw
+
+
+def recoverable_runtime_root_path(runtime: Path) -> bool:
+    """Limit orphan recovery to the launcher's fixed short-path namespace."""
+
+    lexical = _lexical_absolute_path(str(runtime))
+    if (
+        len(os.fsencode(lexical)) > MAX_RUNTIME_ROOT_BYTES
+        or RUNTIME_ROOT_RECOVERY_NAME_RE.fullmatch(lexical.name) is None
+    ):
+        return False
+    return lexical.parent in resolved_runtime_root_recovery_parents()
 
 
 def remove_runtime_root(runtime: Path | None, *, run: Runner) -> None:
@@ -2544,6 +2632,23 @@ def _paths_overlap(first: Path, second: Path) -> bool:
         return False
 
 
+def _lexical_absolute_path(raw: str) -> Path:
+    """Return an absolute pathname without following its final component."""
+
+    return Path(os.path.abspath(os.fspath(Path(raw))))
+
+
+def _path_spellings_overlap(first: Path, second: Path) -> bool:
+    """Compare both lexical and resolved spellings without requiring existence."""
+
+    first_lexical = _lexical_absolute_path(str(first))
+    second_lexical = _lexical_absolute_path(str(second))
+    return _paths_overlap(first_lexical, second_lexical) or _paths_overlap(
+        first_lexical.resolve(strict=False),
+        second_lexical.resolve(strict=False),
+    )
+
+
 def classify_create_journal_scopes(
     root: Path,
     *,
@@ -2555,11 +2660,11 @@ def classify_create_journal_scopes(
     """Read and strictly bind provider evidence for interrupted slot creates."""
 
     state_root = root.resolve()
-    prospective = prospective_checkout.resolve()
+    prospective = _lexical_absolute_path(str(prospective_checkout))
     cargo_parent = (state_root / "ignored/validate/cargo-homes").resolve()
-    expected_requested_path = (
+    expected_requested_path = _lexical_absolute_path(str(
         state_root / "worktrees" / "validate" / prospective_slot
-    ).resolve()
+    ))
     requested_agent = f"validate-{prospective_slot}"
     result = run(
         wrkslots_command(
@@ -2656,16 +2761,16 @@ def classify_create_journal_scopes(
             raw_slot_path = row.get("slot_path")
             if not isinstance(raw_slot_path, str) or not raw_slot_path:
                 raise ValueError("journal slot path is missing")
-            slot_path = Path(raw_slot_path).resolve()
-            expected_slot_root = (
+            slot_path = _lexical_absolute_path(raw_slot_path)
+            expected_slot_root = _lexical_absolute_path(str(
                 state_root
                 / "worktrees"
                 / ("slots" if slot_type == "agent" else "validate")
                 / slot
-            ).resolve()
+            ))
             if slot_path != expected_slot_root:
                 raise ValueError("journal slot path does not match its slot identity")
-            if _paths_overlap(prospective, slot_path) or _paths_overlap(
+            if _path_spellings_overlap(prospective, slot_path) or _path_spellings_overlap(
                 cargo_parent, slot_path
             ):
                 raise ValueError("prospective validation storage overlaps a journal slot")
@@ -2914,7 +3019,12 @@ def classify_recorded_checkout(
     raw_checkout = record.get("checkout")
     if not isinstance(raw_checkout, str):
         return None, "run record has no checkout path"
-    checkout = Path(raw_checkout).resolve()
+    if not Path(raw_checkout).is_absolute():
+        return None, "recorded checkout is not an absolute path"
+    # Keep the recorded final component lexical.  Resolving a dangling symlink
+    # turns the symlink itself into an apparently absent target and drops the
+    # only artifact that recovery needs to classify.
+    checkout = _lexical_absolute_path(raw_checkout)
     parents = recorded_checkout_parents(root, record)
     has_temporary = "temporary_checkout" in record
     temporary = record.get("temporary_checkout")
@@ -3132,6 +3242,12 @@ def update_authorized_cleanup_record(
         raise RuntimeError(
             "cleanup bookkeeping did not bind its replacement record inode"
         )
+    # The replacement is the cleanup receipt.  Syncing only the new file does
+    # not make the directory entry durable across a crash; the target may have
+    # been removed while the only durable row still lacks its removal stamp.
+    # Reuse the already pinned parent descriptor so this cannot fsync a swapped
+    # pathname.  A failure is surfaced to the caller as incomplete bookkeeping.
+    os.fsync(authority.parent_descriptor)
     require_cleanup_record_authority(authority)
     return updated
 
@@ -3455,7 +3571,11 @@ def classify_recorded_cargo_home(
     raw_private = record.get("cargo_home")
     if not isinstance(raw_private, str):
         return None, "recorded Cargo home must be a path string"
-    private = Path(raw_private).resolve()
+    if not Path(raw_private).is_absolute():
+        return None, "recorded Cargo home is not an absolute path"
+    # Do not resolve the final component: a dangling symlink is retained
+    # storage, not proof that the recorded pathname is absent.
+    private = _lexical_absolute_path(raw_private)
     parents = (
         (root / "ignored" / "validate" / "cargo-homes").resolve(),
         # Runs launched before private Cargo homes were separated from
@@ -3465,7 +3585,11 @@ def classify_recorded_cargo_home(
     if private.parent not in parents or not private.name.startswith("validate-cargo-"):
         expected = " or ".join(str(parent) for parent in parents)
         return None, f"recorded Cargo home is outside {expected}"
-    return (private, None) if private.exists() else (None, None)
+    return (
+        (private, None)
+        if private.exists() or private.is_symlink()
+        else (None, None)
+    )
 
 
 def recorded_cargo_home_owners(root: Path, cargo_home: Path) -> list[Path]:
@@ -3488,7 +3612,8 @@ def recorded_cargo_home_owners(root: Path, cargo_home: Path) -> list[Path]:
         recorded = raw.get("cargo_home")
         if not isinstance(recorded, str) or not Path(recorded).is_absolute():
             continue
-        if Path(recorded).resolve() == cargo_home:
+        recorded_path = _lexical_absolute_path(recorded)
+        if _path_spellings_overlap(recorded_path, cargo_home):
             owners.append(path)
     return owners
 
@@ -3660,26 +3785,214 @@ def cleanup_recorded_cargo_home(
         return False, f"run record is being updated; retained: {error}"
 
 
+def classify_recorded_runtime_root(
+    record: Mapping[str, Any],
+) -> tuple[Path | None, str | None]:
+    """Classify a still-present runtime root using its launch-time inode proof."""
+
+    raw_runtime = record.get("runtime_root")
+    if raw_runtime is None:
+        return None, None
+    if not isinstance(raw_runtime, str) or not Path(raw_runtime).is_absolute():
+        return None, "recorded runtime root is not an absolute path"
+    runtime = _lexical_absolute_path(raw_runtime)
+    if not (runtime.exists() or runtime.is_symlink()):
+        return None, None
+    if not recoverable_runtime_root_path(runtime):
+        return runtime, (
+            "recorded runtime root is outside the fixed recovery namespace; "
+            "retained"
+        )
+    if isinstance(record.get("runtime_root_removed_at"), str):
+        return runtime, (
+            "recorded runtime root reappeared after its durable removal stamp; "
+            "retained"
+        )
+    if runtime.is_symlink():
+        return runtime, "recorded runtime root is a symlink; retained"
+    if not runtime_root_identity_matches(
+        runtime, record.get("runtime_root_identity")
+    ):
+        return runtime, (
+            "recorded runtime root has no matching launch-time inode identity; "
+            "retained"
+        )
+    return runtime, None
+
+
+def cleanup_recorded_runtime_root(
+    root: Path,
+    record: Mapping[str, Any],
+    *,
+    record_path: Path,
+    run: Runner,
+    expected_record_identity: tuple[int, ...] | None = None,
+) -> tuple[bool, str | None]:
+    """Retry one runtime-root removal and durably stamp the same locked row."""
+
+    try:
+        with destructive_cleanup_authority(root) as generation_authority:
+            with run_registry.run_population_lock(
+                root,
+                blocking=False,
+                reject_same_process=True,
+                _generation_authority=generation_authority,
+            ) as population_authority, exclusive_cleanup_record(
+                root,
+                record_path,
+                population_authority=population_authority,
+                expected_record_identity=expected_record_identity,
+            ) as record_authority:
+                durable = read_authorized_cleanup_record(record_authority)
+                if durable != dict(record):
+                    return False, "run record changed before runtime-root cleanup"
+                run_registry.parse_current_record(durable)
+                observation = terminal_cleanup_unit(
+                    root,
+                    record_path,
+                    durable,
+                    run=run,
+                    record_lock_held=True,
+                    record_parent_identity=record_authority.parent_identity,
+                )
+                if (
+                    observation.state is not CleanupUnitState.TERMINAL
+                    or observation.unit is None
+                ):
+                    return False, (
+                        "runtime root retained because its validation unit is not "
+                        f"provably terminal: {observation.reason or 'unknown state'}"
+                    )
+                runtime, reason = classify_recorded_runtime_root(durable)
+                if reason is not None:
+                    return False, reason
+                if runtime is None:
+                    return False, None
+
+                owners = recorded_runtime_root_owners(root, runtime)
+                canonical_record_path = Path(
+                    os.path.abspath(os.fspath(record_path))
+                )
+                if owners != [canonical_record_path]:
+                    return (
+                        False,
+                        "recorded runtime root is not owned exclusively by this "
+                        "validation handle; owners="
+                        f"{', '.join(str(path) for path in owners) or 'none'}",
+                    )
+
+                raw_checkout = durable.get("checkout")
+                if (
+                    not isinstance(raw_checkout, str)
+                    or not Path(raw_checkout).is_absolute()
+                ):
+                    return False, "runtime-root cleanup has no exact checkout identity"
+                checkout = _lexical_absolute_path(raw_checkout)
+                if durable.get("temporary_checkout") is True:
+                    if checkout.exists() or checkout.is_symlink():
+                        return (
+                            False,
+                            "runtime root retained until checkout cleanup completes",
+                        )
+                    if not isinstance(durable.get("checkout_removed_at"), str):
+                        return False, (
+                            "runtime root retained because checkout absence has no "
+                            "durable stamp"
+                        )
+                else:
+                    raw_source = durable.get("source_checkout")
+                    if (
+                        not isinstance(raw_source, str)
+                        or not Path(raw_source).is_absolute()
+                        or checkout != _lexical_absolute_path(raw_source)
+                    ):
+                        return False, (
+                            "runtime-root cleanup cannot prove the retained in-place "
+                            "checkout/source identity"
+                        )
+
+                raw_cargo = durable.get("cargo_home")
+                if (
+                    not isinstance(raw_cargo, str)
+                    or not Path(raw_cargo).is_absolute()
+                ):
+                    return False, "runtime-root cleanup has no exact Cargo-home identity"
+                cargo_home = _lexical_absolute_path(raw_cargo)
+                if cargo_home.exists() or cargo_home.is_symlink():
+                    return False, "runtime root retained until Cargo-home cleanup completes"
+                if not isinstance(durable.get("cargo_home_removed_at"), str):
+                    return False, (
+                        "runtime root retained because Cargo-home absence has no durable stamp"
+                    )
+
+                if not runtime_root_identity_matches(
+                    runtime, durable.get("runtime_root_identity")
+                ):
+                    return False, (
+                        "recorded runtime-root inode identity changed before removal; "
+                        "retained"
+                    )
+
+                removed, removal_error = _remove_temporary_tree_checked(
+                    runtime, role="validation runtime root", run=run
+                )
+                if not removed:
+                    return False, removal_error
+                updated = update_authorized_cleanup_record(
+                    record_authority,
+                    population_authority,
+                    runtime_root_removed_at=datetime.now(timezone.utc).isoformat(),
+                )
+                if read_authorized_cleanup_record(record_authority) != updated:
+                    raise RuntimeError(
+                        "runtime-root-removal bookkeeping readback changed"
+                    )
+                return True, None
+    except (OSError, RuntimeError, ValueError) as error:
+        return False, f"run record is being updated; retained: {error}"
+
+
+def recorded_runtime_root_owners(root: Path, runtime_root: Path) -> list[Path]:
+    """Return every readable run handle whose storage overlaps one runtime root."""
+
+    runs = root.resolve() / "ignored" / "validate" / "runs"
+    owners: list[Path] = []
+    for path in sorted(runs.glob("*.json")):
+        if path.is_symlink():
+            raise RuntimeError(
+                f"cannot prove runtime-root ownership through symlinked handle {path}"
+            )
+        raw = read_cleanup_record_object(path)
+        recorded = raw.get("runtime_root")
+        if not isinstance(recorded, str) or not Path(recorded).is_absolute():
+            continue
+        recorded_path = _lexical_absolute_path(recorded)
+        if _path_spellings_overlap(recorded_path, runtime_root):
+            owners.append(path)
+    return owners
+
+
 def recorded_cleanup_path_exists(root: Path, record: Mapping[str, Any]) -> bool:
     """Whether a run record names material that this sweep could remove."""
     raw_checkout = record.get("checkout")
-    if isinstance(raw_checkout, str):
-        checkout = Path(raw_checkout).resolve()
+    if isinstance(raw_checkout, str) and Path(raw_checkout).is_absolute():
+        checkout = _lexical_absolute_path(raw_checkout)
         accepted_unmarked_checkout = (
             checkout.parent in recorded_checkout_parents(root, record)
             and checkout.name.startswith("validate-fresh-")
         )
-        if checkout.exists() and (
+        if (checkout.exists() or checkout.is_symlink()) and (
             record.get("temporary_checkout") is True or accepted_unmarked_checkout
         ):
             return True
 
     raw_cargo_home = record.get("cargo_home")
-    if not isinstance(raw_cargo_home, str):
-        return False
-    cargo_home = Path(raw_cargo_home).resolve()
+    if not isinstance(raw_cargo_home, str) or not Path(raw_cargo_home).is_absolute():
+        cargo_home = None
+    else:
+        cargo_home = _lexical_absolute_path(raw_cargo_home)
     shared_cargo_home = process_user_cargo_home()
-    if shared_cargo_home is not None and cargo_home == shared_cargo_home:
+    if cargo_home is not None and shared_cargo_home is not None and cargo_home == shared_cargo_home:
         retained_reason, retained_error = classify_retained_current_in_place_record(
             root, record
         )
@@ -3692,8 +4005,19 @@ def recorded_cleanup_path_exists(root: Path, record: Mapping[str, Any]) -> bool:
         # home makes that one shared directory block every later validation.
         # Keep the exception exact: malformed, temporary, overlapping, or
         # arbitrary external paths remain candidates and fail closed below.
-        return False
-    return cargo_home.exists()
+        cargo_home = None
+    if cargo_home is not None and (cargo_home.exists() or cargo_home.is_symlink()):
+        return True
+
+    raw_runtime = record.get("runtime_root")
+    return (
+        isinstance(raw_runtime, str)
+        and Path(raw_runtime).is_absolute()
+        and (
+            _lexical_absolute_path(raw_runtime).exists()
+            or _lexical_absolute_path(raw_runtime).is_symlink()
+        )
+    )
 
 
 def read_cleanup_record_object(path: Path) -> dict[str, Any]:
@@ -3780,12 +4104,12 @@ def read_cleanup_record(path: Path) -> dict[str, Any]:
 
 def cleanup_checkout_reference(root: Path, record: Mapping[str, Any]) -> Path | None:
     raw = record.get("checkout")
-    if not isinstance(raw, str):
+    if not isinstance(raw, str) or not Path(raw).is_absolute():
         return None
-    checkout = Path(raw).resolve()
+    checkout = _lexical_absolute_path(raw)
     return (
         checkout
-        if checkout.exists()
+        if (checkout.exists() or checkout.is_symlink())
         and checkout.name.startswith("validate-fresh-")
         and checkout.parent in recorded_checkout_parents(root, record)
         else None
@@ -3892,7 +4216,7 @@ def discover_cleanup_groups(
                 except (RuntimeError, TypeError, ValueError):
                     path_is_run_handle = False
                 if not path_is_run_handle:
-                    if not count_handle.exists():
+                    if not (count_handle.exists() or count_handle.is_symlink()):
                         sidecar_kind = "Reverie count"
                         handle = count_handle
                     else:
@@ -3904,7 +4228,7 @@ def discover_cleanup_groups(
                             sidecar_kind = "Reverie count"
                             handle = count_handle
         if handle is not None:
-            if handle.exists():
+            if handle.exists() or handle.is_symlink():
                 field = (
                     "framework_result_sidecars_skipped"
                     if sidecar_kind == "framework result"
@@ -3986,7 +4310,13 @@ def discover_cleanup_groups(
 
 
 def terminal_cleanup_unit(
-    root: Path, path: Path, record: Mapping[str, Any], *, run: Runner
+    root: Path,
+    path: Path,
+    record: Mapping[str, Any],
+    *,
+    run: Runner,
+    record_lock_held: bool = False,
+    record_parent_identity: tuple[int, ...] | None = None,
 ) -> CleanupUnitObservation:
     try:
         unit = sanitize_unit(str(record.get("unit", path.stem)))
@@ -4005,7 +4335,12 @@ def terminal_cleanup_unit(
         properties is None
         and not service_result.is_evidenced_terminal(record)
         and not cleanup_record_allows_removal_attempt(
-            root, path, record, unit_absent=unit_absent
+            root,
+            path,
+            record,
+            unit_absent=unit_absent,
+            record_lock_held=record_lock_held,
+            record_parent_identity=record_parent_identity,
         )
     ):
         return CleanupUnitObservation(
@@ -4162,6 +4497,7 @@ def sweep_completed_checkouts(
     runs = root / "ignored" / "validate" / "runs"
     removed: list[str] = []
     removed_cargo_homes: list[str] = []
+    removed_runtime_roots: list[str] = []
     scorecard_handoffs: list[str] = []
     retained: list[dict[str, Any]] = []
     deferred: list[dict[str, str]] = []
@@ -4222,6 +4558,7 @@ def sweep_completed_checkouts(
         return {
             "removed": removed,
             "removed_cargo_homes": removed_cargo_homes,
+            "removed_runtime_roots": removed_runtime_roots,
             "scorecard_handoffs": scorecard_handoffs,
             "retained": retained,
             "deferred": deferred,
@@ -4357,7 +4694,7 @@ def sweep_completed_checkouts(
             blocker = checkout
             subject = "checkout"
             absent_detail = ""
-            if not checkout.exists():
+            if not (checkout.exists() or checkout.is_symlink()):
                 raw_cargo_home = row.record.get("cargo_home")
                 if isinstance(raw_cargo_home, str):
                     recorded_cargo_home = Path(raw_cargo_home).resolve()
@@ -5111,11 +5448,152 @@ def sweep_completed_checkouts(
             if not cleaned:
                 continue
             removed_cargo_homes.append(str(cargo_home))
+    # A runtime-root failure happens after checkout and Cargo removal.  Without
+    # this final census the next sweep used to skip the row entirely, making a
+    # leaked root invisible and impossible to retry.  Re-read each candidate so
+    # stamps written by this same sweep participate in the decision.  Runtime
+    # removal is cheap but remains bounded with the same one-item policy as a
+    # private Cargo tree.
+    runtime_candidates: list[tuple[Path, CleanupRow, dict[str, Any]]] = []
+    for row in all_rows:
+        if budget is not None:
+            budget.remaining(f"classifying runtime storage for {row.path}")
+        try:
+            durable = read_cleanup_record(row.path)
+        except (OSError, RuntimeError, ValueError) as error:
+            retained.append(
+                {
+                    "checkout": str(row.path),
+                    "cleanup_failed": True,
+                    "reason": f"cannot reread runtime-root owner: {error}",
+                }
+            )
+            continue
+        runtime, runtime_error = classify_recorded_runtime_root(durable)
+        if runtime_error is not None:
+            retained.append(
+                {
+                    "checkout": str(runtime or durable.get("runtime_root", "")),
+                    "cleanup_failed": True,
+                    "reason": runtime_error,
+                }
+            )
+            continue
+        if runtime is None:
+            continue
+        if classify_ownerless_only:
+            retained.append(
+                {
+                    "blocks_entry": False,
+                    "checkout": str(runtime),
+                    "reason": (
+                        "validation runtime root remains retained; read-only "
+                        "classification did not remove it"
+                    ),
+                }
+            )
+            continue
+        runtime_candidates.append((runtime, row, durable))
+
+    eligible_runtime: list[tuple[Path, CleanupRow, dict[str, Any]]] = []
+    for runtime, row, durable in runtime_candidates:
+        owners = [
+            other_row
+            for other_runtime, other_row, _other_durable in runtime_candidates
+            if _path_spellings_overlap(runtime, other_runtime)
+        ]
+        if len(owners) != 1:
+            retained.append(
+                {
+                    "checkout": str(runtime),
+                    "cleanup_failed": True,
+                    "reason": (
+                        "recorded runtime root is named by multiple validation "
+                        "handles; preserve it until ownership is reconciled"
+                    ),
+                }
+            )
+            continue
+        raw_checkout = durable.get("checkout")
+        raw_cargo = durable.get("cargo_home")
+        checkout_present = (
+            isinstance(raw_checkout, str)
+            and Path(raw_checkout).is_absolute()
+            and (
+                _lexical_absolute_path(raw_checkout).exists()
+                or _lexical_absolute_path(raw_checkout).is_symlink()
+            )
+        )
+        cargo_present = (
+            isinstance(raw_cargo, str)
+            and Path(raw_cargo).is_absolute()
+            and (
+                _lexical_absolute_path(raw_cargo).exists()
+                or _lexical_absolute_path(raw_cargo).is_symlink()
+            )
+        )
+        checkout_stamped = (
+            durable.get("temporary_checkout") is not True
+            or isinstance(durable.get("checkout_removed_at"), str)
+        )
+        cargo_stamped = isinstance(durable.get("cargo_home_removed_at"), str)
+        temporary_checkout_present = (
+            durable.get("temporary_checkout") is True and checkout_present
+        )
+        if (
+            temporary_checkout_present
+            or cargo_present
+            or not checkout_stamped
+            or not cargo_stamped
+        ):
+            deferred.append(
+                {
+                    "checkout": str(runtime),
+                    "reason": (
+                        "runtime-root cleanup deferred until checkout and Cargo-home "
+                        "absence are durably confirmed"
+                    ),
+                }
+            )
+            continue
+        eligible_runtime.append((runtime, row, durable))
+
+    for runtime, _row, _durable in eligible_runtime[1:]:
+        deferred.append(
+            {
+                "checkout": str(runtime),
+                "reason": "deferred by the one-item validation runtime-root cleanup batch",
+            }
+        )
+    if eligible_runtime:
+        runtime, row, durable = eligible_runtime[0]
+        try:
+            expected_identity = cleanup_record_path_identity(row.path)
+            cleaned, reason = cleanup_recorded_runtime_root(
+                root,
+                durable,
+                record_path=row.path,
+                run=run,
+                expected_record_identity=expected_identity,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            cleaned, reason = False, str(error)
+        if cleaned:
+            removed_runtime_roots.append(str(runtime))
+        elif reason is not None:
+            retained.append(
+                {
+                    "checkout": str(runtime),
+                    "cleanup_failed": True,
+                    "reason": reason,
+                }
+            )
     if budget is not None:
         budget.remaining("finishing complete storage classification")
     return {
         "removed": removed,
         "removed_cargo_homes": removed_cargo_homes,
+        "removed_runtime_roots": removed_runtime_roots,
         "scorecard_handoffs": sorted(set(scorecard_handoffs)),
         "retained": retained,
         "deferred": deferred,
@@ -5125,7 +5603,122 @@ def sweep_completed_checkouts(
 
 
 class ValidateEntryCleanupRefused(RuntimeError):
-    """A new disposable checkout cannot be created while cleanup is incomplete."""
+    """The prospective validation slot/path cannot be proved unowned."""
+
+
+def _is_owned_validation_companion_sidecar(path: Path) -> bool:
+    """Recognize a sidecar only when its exact owning handle is present."""
+
+    handle = service_result.handle_path_for_result(path)
+    sidecar_kind = "service-result"
+    if handle is None:
+        handle = reverie_node.handle_path_for_count_sidecar(path)
+        sidecar_kind = "reverie-count"
+    if handle is None or not (handle.exists() or handle.is_symlink()):
+        return False
+    try:
+        candidate = read_cleanup_record_object(path)
+    except (OSError, RuntimeError, ValueError):
+        candidate = None
+    if isinstance(candidate, dict) and any(
+        field in candidate
+        for field in ("checkout", "source_checkout", "cargo_home", "runtime_root")
+    ):
+        # A storage-bearing run handle remains a handle even when its legal
+        # unit name happens to end with a companion-sidecar suffix.
+        return False
+    try:
+        owner = read_cleanup_record_object(handle)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if sidecar_kind == "service-result":
+        target = owner.get("target")
+        marker = owner.get("service_result_schema")
+        if (
+            not isinstance(target, str)
+            or not service_result.is_supported_schema_version(marker)
+            or candidate is None
+        ):
+            return False
+        try:
+            evidence = service_result.read_framework_result_bytes(
+                json.dumps(candidate).encode("utf-8"),
+                expected_commit=target,
+            )
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return evidence.service_result_schema == marker
+    if not reverie_node.is_current_count_handle(owner, handle) or candidate is None:
+        return False
+    try:
+        binding, _digest, _generation = reverie_node.read_count_sidecar(path)
+        reverie_node.validate_count_binding(binding, owner, handle)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    return binding == candidate
+
+
+def _prospective_run_handle_conflicts(
+    root: Path,
+    prospective_checkout: Path,
+    *,
+    budget: CleanupClassificationBudget | None = None,
+) -> tuple[int, list[str]]:
+    """Read the run population and name only records overlapping one prospect.
+
+    Old terminal rows are evidence and cleanup work, not a global launch mutex.
+    A readable disjoint row is therefore harmless.  An unreadable handle is
+    different: without its contents we cannot prove that it does not already
+    own the pathname about to be created, so entry remains fail-closed.
+    """
+
+    runs = root / "ignored" / "validate" / "runs"
+    if not runs.is_dir():
+        return 0, []
+    inspected = 0
+    conflicts: list[str] = []
+    for path in sorted(runs.glob("*.json")):
+        if budget is not None:
+            budget.remaining(f"reading {path}")
+        # A suffix alone is not authority to ignore a file: an orphan sidecar
+        # lookalike could itself be a malformed or newer run handle.  Only an
+        # exact sidecar whose owning handle is present is excluded.
+        if _is_owned_validation_companion_sidecar(path):
+            continue
+        inspected += 1
+        try:
+            record = read_cleanup_record_object(path)
+        except (OSError, RuntimeError, ValueError) as error:
+            conflicts.append(
+                f"prospective path authority is indeterminate because validation "
+                f"handle {path} is unreadable: {error}"
+            )
+            continue
+        storage_fields = ("checkout", "cargo_home", "runtime_root")
+        if not any(field in record for field in storage_fields):
+            conflicts.append(
+                "prospective path authority is indeterminate because validation "
+                f"handle {path} names no storage path"
+            )
+            continue
+        for field in storage_fields:
+            if field not in record:
+                continue
+            raw = record.get(field)
+            if not isinstance(raw, str) or not Path(raw).is_absolute():
+                conflicts.append(
+                    "prospective path authority is indeterminate because "
+                    f"validation handle {path} has an invalid {field} path"
+                )
+                break
+            recorded = _lexical_absolute_path(raw)
+            if _path_spellings_overlap(prospective_checkout, recorded):
+                conflicts.append(
+                    f"prospective validation checkout {prospective_checkout} "
+                    f"overlaps {field} {recorded} named by {path}"
+                )
+                break
+    return inspected, conflicts
 
 
 def require_validate_entry_cleanup(
@@ -5135,65 +5728,82 @@ def require_validate_entry_cleanup(
     prospective_checkout: Path,
     run: Runner,
     tool_root: Path = ROOT,
+    generation_authority: run_registry.RunWriterGenerationAuthority | None = None,
 ) -> None:
-    """Classify retained storage within one deadline before creating a checkout.
+    """Prove that one prospective slot/path has no competing authority.
 
-    An active managed validation is not old work and does not block another
-    admitted run.  A provider-classified pre-proof historical checkout also
-    remains visible without blocking. Every managed page is classified without
-    changing storage. An unresolved row, bookkeeping error, or expired budget
-    prevents entry; bounded removal remains a separate operation.
+    Cleanup debt is deliberately not an admission mutex.  Retained and deferred
+    rows for other paths stay visible to ``--sweep-completed`` while a new,
+    disjoint validation proceeds.  Entry refuses only an existing prospective
+    pathname, an overlapping run-handle claim, or provider evidence that cannot
+    establish that interrupted creates are disjoint from this exact slot. The
+    complete read-only classification shares one finite wall-clock budget.
     """
     started = time.monotonic()
+    budget = CleanupClassificationBudget(
+        started + VALIDATE_ENTRY_CLASSIFICATION_SECONDS, run
+    )
+    run = budget.run
     try:
-        report = sweep_completed_checkouts(
+        journal_scopes = classify_create_journal_scopes(
             root,
-            run=run,
-            tool_root=tool_root,
-            classify_ownerless_only=True,
             prospective_slot=prospective_slot,
             prospective_checkout=prospective_checkout,
+            run=run,
+            tool_root=tool_root,
         )
+        budget.remaining("classifying create journals")
+        prospective = _lexical_absolute_path(str(prospective_checkout))
+        if prospective.exists() or prospective.is_symlink():
+            raise RuntimeError(
+                f"prospective validation checkout already exists at {prospective}"
+            )
+
+        def inspect_population() -> tuple[int, list[str]]:
+            inspected_result, conflict_result = _prospective_run_handle_conflicts(
+                root, prospective, budget=budget
+            )
+            budget.remaining("finishing run-handle classification")
+            if prospective.exists() or prospective.is_symlink():
+                conflict_result.append(
+                    f"prospective validation checkout appeared at {prospective} "
+                    "while its authority was inspected"
+                )
+            return inspected_result, conflict_result
+
+        if generation_authority is None:
+            with run_registry.run_writer_generation_lock(
+                root, exclusive=False, blocking=True
+            ) as acquired_generation:
+                with run_registry.run_population_lock(
+                    root,
+                    blocking=True,
+                    _generation_authority=acquired_generation,
+                ):
+                    inspected, conflicts = inspect_population()
+        else:
+            run_registry.require_run_writer_generation_authority(
+                root, generation_authority, exclusive=False
+            )
+            with run_registry.run_population_lock(
+                root,
+                blocking=True,
+                _generation_authority=generation_authority,
+            ):
+                inspected, conflicts = inspect_population()
+        if conflicts:
+            raise RuntimeError(conflicts[0])
     except (OSError, RuntimeError, ValueError) as error:
         elapsed = time.monotonic() - started
         raise ValidateEntryCleanupRefused(
-            "validation checkout cleanup could not complete before entry "
+            "prospective validation slot/path authority could not be proved "
             f"after {elapsed:.3f}s: {error}"
         ) from error
     elapsed = time.monotonic() - started
-    retained = list(report["retained"])
-    nonblocking = [row for row in retained if row.get("blocks_entry") is False]
-    blocked = [row for row in retained if row.get("blocks_entry") is not False]
-    deferred = list(report["deferred"])
-    bookkeeping_errors = list(report["bookkeeping_errors"])
-    removed = list(report["removed"])
-    removed_cargo_homes = list(report["removed_cargo_homes"])
-
-    if blocked or deferred or bookkeeping_errors:
-        if blocked:
-            first_kind = "retained"
-            first = blocked[0]
-        elif bookkeeping_errors:
-            first_kind = "bookkeeping error"
-            first = bookkeeping_errors[0]
-        else:
-            first_kind = "deferred"
-            first = deferred[0]
-        location = first.get("checkout") or first.get("record") or "(unknown)"
-        reason = " ".join(str(first.get("reason", "unknown reason")).split())
-        raise ValidateEntryCleanupRefused(
-            "validation checkout cleanup is incomplete after "
-            f"{elapsed:.3f}s: removed {len(removed)} checkout(s) and "
-            f"{len(removed_cargo_homes)} Cargo home(s); waiting on "
-            f"{len(deferred)} deferred checkout(s), {len(blocked)} retained "
-            f"checkout(s), and {len(bookkeeping_errors)} bookkeeping error(s); "
-            f"first {first_kind}: {location}: {reason}"
-        )
-
     print(
-        "validate-run: ENTRY-CLEANUP state=ready "
-        f"removed={len(removed)} removed-cargo-homes={len(removed_cargo_homes)} "
-        f"retained-nonblocking={len(nonblocking)} elapsed={elapsed:.3f}s",
+        "validate-run: ENTRY-AUTHORITY state=ready "
+        f"journals={len(journal_scopes)} run-handles={inspected} "
+        f"elapsed={elapsed:.3f}s",
         file=sys.stderr,
     )
 
@@ -5660,6 +6270,17 @@ def cleanup_recorded_run_storage(
                 if remove_runtime and durable_runtime is None:
                     raise RuntimeError(
                         "durable run record has no runtime_root cleanup identity"
+                    )
+                if (
+                    durable_runtime is not None
+                    and (durable_runtime.exists() or durable_runtime.is_symlink())
+                    and not runtime_root_identity_matches(
+                        durable_runtime, durable.get("runtime_root_identity")
+                    )
+                ):
+                    raise RuntimeError(
+                        "durable runtime-root inode identity does not match this launch; "
+                        "retained"
                     )
                 if durable.get("temporary_checkout") is not expected_temporary_checkout:
                     raise RuntimeError(
@@ -6390,6 +7011,8 @@ def cleanup_record_allows_removal_attempt(
     record: Mapping[str, Any],
     *,
     unit_absent: bool,
+    record_lock_held: bool = False,
+    record_parent_identity: tuple[int, ...] | None = None,
 ) -> bool:
     """Allow the downstream liveness-checked removal without changing a verdict.
 
@@ -6409,7 +7032,13 @@ def cleanup_record_allows_removal_attempt(
     if admission is None:
         return False
     if admission.state is run_registry.AdmissionState.REFUSED:
-        return refused_admission_ledger_retirement_ready(root, record_path, record)
+        return refused_admission_ledger_retirement_ready(
+            root,
+            record_path,
+            record,
+            record_lock_held=record_lock_held,
+            record_parent_identity=record_parent_identity,
+        )
     return unit_absent and admission.state is run_registry.AdmissionState.ADMITTED
 
 
@@ -6593,6 +7222,7 @@ def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
     if event == "SWEEP-COMPLETED":
         removed = report.get("removed", [])
         removed_cargo_homes = report.get("removed_cargo_homes", [])
+        removed_runtime_roots = report.get("removed_runtime_roots", [])
         retained = report.get("retained", [])
         deferred = report.get("deferred", [])
         bookkeeping_errors = report.get("bookkeeping_errors", [])
@@ -6600,6 +7230,7 @@ def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
             "validate-run: SWEEP-COMPLETED "
             f"removed={len(removed)} "
             f"removed-cargo-homes={len(removed_cargo_homes)} "
+            f"removed-runtime-roots={len(removed_runtime_roots)} "
             f"retained={len(retained)} "
             f"deferred={len(deferred)} "
             f"bookkeeping-errors={len(bookkeeping_errors)}",
@@ -7204,7 +7835,7 @@ def publish_recorded_scorecard_handoff(
             raise RuntimeError(
                 "cell ledger publication is incomplete; retain original results"
             )
-        if not checkout.exists():
+        if not (checkout.exists() or checkout.is_symlink()):
             return None
         identity = recorded_wrkslots_identity(record, checkout)
         if identity is None:
@@ -8452,10 +9083,38 @@ def cleanup_after_attach(
             f"validate-run: completed Cargo home RETAINED: {error}",
             file=sys.stderr,
         )
+        return
     else:
         if not cargo_cleaned and cargo_reason is not None:
             print(
                 f"validate-run: completed Cargo home RETAINED: {cargo_reason}",
+                file=sys.stderr,
+            )
+            return
+
+    # Runtime removal is the last coupled leg.  Retrying --attach after an
+    # earlier rm failure must reach this leg even when checkout and Cargo are
+    # already absent; otherwise the surviving root disappears from every
+    # supported cleanup path.
+    try:
+        latest = run_registry.read_record(record_path)
+        if "runtime_root" not in latest:
+            return
+        runtime_cleaned, runtime_reason = cleanup_recorded_runtime_root(
+            root,
+            latest,
+            record_path=record_path,
+            run=run,
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        print(
+            f"validate-run: completed runtime root RETAINED: {error}",
+            file=sys.stderr,
+        )
+    else:
+        if not runtime_cleaned and runtime_reason is not None:
+            print(
+                f"validate-run: completed runtime root RETAINED: {runtime_reason}",
                 file=sys.stderr,
             )
 
@@ -8533,7 +9192,7 @@ def retire_unit_after_writeback(
 
     unit = sanitize_unit(raw_unit)
     record_path = run_registry.record_path(root, unit)
-    if not record_path.exists():
+    if not (record_path.exists() or record_path.is_symlink()):
         # A refusal before the launcher creates its handle can still reach
         # ExecStopPost. (A later validate-lock refusal does have a typed handle
         # and is handled below.) There is nothing to retire and nothing has gone
@@ -8545,6 +9204,14 @@ def retire_unit_after_writeback(
             file=sys.stderr,
         )
         return 0
+    if record_path.is_symlink():
+        print(
+            f"validate-run: RETIRE-REFUSED {unit}: run handle {record_path} is "
+            "a symlink; it is retained for recovery and grants no cleanup "
+            "authority.",
+            file=sys.stderr,
+        )
+        return EXIT_COULD_NOT_DETERMINE
     record = run_registry.read_record(record_path)
 
     repo = str(record.get("repo") or "rrnewton/hermit")
@@ -8632,7 +9299,7 @@ def retire_unit_after_writeback(
                 file=sys.stderr,
             )
             return EXIT_COULD_NOT_DETERMINE
-        if not checkout.exists():
+        if not (checkout.exists() or checkout.is_symlink()):
             print(
                 f"validate-run: RETIRE-ALREADY-ABSENT {unit}: {checkout}; "
                 f"retirement evidence {handoff} is durable and no path was removed.",
@@ -9493,12 +10160,15 @@ def main(
     cleanup_record_path: Path | None = None
     launcher_generation = ExitStack()
     launcher_generation_active = False
+    launcher_generation_authority: (
+        run_registry.RunWriterGenerationAuthority | None
+    ) = None
 
     def begin_launcher_generation() -> None:
-        nonlocal launcher_generation_active
+        nonlocal launcher_generation_active, launcher_generation_authority
         if launcher_generation_active:
             raise RuntimeError("launcher-generation authority was acquired twice")
-        launcher_generation.enter_context(
+        launcher_generation_authority = launcher_generation.enter_context(
             run_registry.run_writer_generation_lock(
                 state_root, exclusive=False, blocking=True
             )
@@ -9506,10 +10176,11 @@ def main(
         launcher_generation_active = True
 
     def release_launcher_generation() -> None:
-        nonlocal launcher_generation_active
+        nonlocal launcher_generation_active, launcher_generation_authority
         if launcher_generation_active:
             launcher_generation.close()
             launcher_generation_active = False
+            launcher_generation_authority = None
 
     def cleanup_current_storage(
         *,
@@ -9727,13 +10398,22 @@ def main(
                 else validate_checkout_parent(state_root)
             )
             fresh_slot = fresh_validation_slot(args.target)
+            # Bind the prospective run-handle census to one short shared
+            # launcher generation.  The provider's create journal owns the
+            # checkout mutation that follows; a second short shared generation
+            # begins once creation succeeds and bridges private storage to the
+            # first durable row. Other launchers take shared sides too, while
+            # destructive cleanup alone takes the exclusive side.
+            begin_launcher_generation()
             require_validate_entry_cleanup(
                 state_root,
                 prospective_slot=fresh_slot,
                 prospective_checkout=checkout_parent / fresh_slot,
                 run=run,
                 tool_root=tool_root,
+                generation_authority=launcher_generation_authority,
             )
+            release_launcher_generation()
             # DEFAULT: validate the COMMIT, not the tree that claims to be at it.
             fresh_checkout, fresh_wrkslots = prepare_fresh_checkout(
                 source_checkout,
@@ -9916,6 +10596,7 @@ def main(
                     ),
                     "cargo_home": str(private_cargo_home),
                     "runtime_root": str(runtime_root),
+                    "runtime_root_identity": runtime_root_identity(runtime_root),
                     "log": str(log),
                     "agent": args.agent,
                     "pr": args.pr,
@@ -10060,10 +10741,8 @@ def main(
         if isinstance(error, ValidateEntryCleanupRefused):
             return refuse(
                 str(error),
-                "run `ci-hub validate-run --sweep-completed` until it reports "
-                "deferred=0, no non-running RETAINED rows, and "
-                "bookkeeping-errors=0. If a retained path names a live process, "
-                "let it exit or stop it before retrying this validate",
+                "inspect the named overlapping slot, run handle, or create "
+                "journal; recover that exact authority before retrying",
             )
         return refuse(
             str(error),

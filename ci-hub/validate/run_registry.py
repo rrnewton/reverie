@@ -77,6 +77,14 @@ class ProcessIdentityRecord(TypedDict):
     boot_id: str
 
 
+class RuntimeRootIdentityRecord(TypedDict):
+    device: int
+    inode: int
+    mode: int
+    uid: int
+    gid: int
+
+
 class AdmissionResultRecord(TypedDict, total=False):
     state: str
     recorded_at: str
@@ -136,6 +144,7 @@ class RunRecord(TypedDict, total=False):
     temporary_checkout: bool
     cargo_home: str
     runtime_root: str
+    runtime_root_identity: RuntimeRootIdentityRecord
     log: str
     agent: str
     pr: int | None
@@ -313,6 +322,7 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "temporary_checkout",
         "cargo_home",
         "runtime_root",
+        "runtime_root_identity",
         "pr",
         "parent_checkout_head",
         "github_executable",
@@ -989,6 +999,23 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
                 raise _error(
                     "scorecard_handoff",
                     "is valid only for Hermit validation handles",
+                )
+        if "runtime_root_identity" in value:
+            runtime_identity = value.get("runtime_root_identity")
+            expected_identity_fields = {"device", "inode", "mode", "uid", "gid"}
+            if (
+                not isinstance(runtime_identity, dict)
+                or set(runtime_identity) != expected_identity_fields
+                or any(
+                    type(runtime_identity.get(field)) is not int
+                    or runtime_identity[field] < 0
+                    for field in expected_identity_fields
+                )
+                or not stat.S_ISDIR(runtime_identity["mode"])
+            ):
+                raise _error(
+                    "runtime_root_identity",
+                    "must be an exact nonnegative directory identity",
                 )
         for field in (
             "source_checkout",
