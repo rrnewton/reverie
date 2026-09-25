@@ -1054,6 +1054,17 @@ impl LoadedStaticElf {
     }
 
     pub(crate) fn inherit_process_state_locked(&mut self, previous: Self) -> Vec<std::fs::File> {
+        // Linux reads comm when a /proc/<pid>/stat or status descriptor is read,
+        // so one opened before exec renders the new image's name. Siblings are
+        // already torn down; only such descriptors still share this cell.
+        let thread_group_leader_name = previous.thread_group_leader_name.clone();
+        *thread_group_leader_name
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = *self
+            .thread_group_leader_name
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.thread_group_leader_name = thread_group_leader_name;
         let thp_disabled =
             std::sync::Arc::new(AtomicU8::new(previous.thp_disabled.load(Ordering::SeqCst)));
         let regular_create_directory_policy = previous.regular_create_directory_policy;

@@ -1919,6 +1919,23 @@ fn release_proc_transfers(state: &LoadedStaticElf, keys: &[(libc::dev_t, libc::i
     }
 }
 
+/// Undoes registrations whose rights the host dequeued but the guest will never
+/// receive. A peek left them queued, so they stay in flight.
+fn release_dropped_proc_transfers<'a>(
+    state: &LoadedStaticElf,
+    files: impl IntoIterator<Item = &'a std::fs::File>,
+    peek: bool,
+) {
+    if peek {
+        return;
+    }
+    let keys: Vec<_> = files
+        .into_iter()
+        .filter_map(|file| host_file_key(file.as_raw_fd()).ok())
+        .collect();
+    release_proc_transfers(state, &keys);
+}
+
 /// Consumes one in-flight right, returning its description state.
 fn take_proc_transfer(
     table: &mut crate::elf::GuestFileIdentityTable,
@@ -11424,28 +11441,38 @@ fn install_received_rights(
             )
         })
         .collect();
-    let guest_fds = available_guest_fds_with_limit(state, rights.len(), GUEST_NOFILE_LIMIT)?;
+    let guest_fds = match available_guest_fds_with_limit(state, rights.len(), GUEST_NOFILE_LIMIT) {
+        Ok(guest_fds) => guest_fds,
+        Err(error) => {
+            release_dropped_proc_transfers(
+                state,
+                rights.iter().map(|(_, file)| file.as_file()),
+                peek,
+            );
+            return Err(error);
+        }
+    };
     let mut installed = Vec::with_capacity(rights.len());
+    let mut pending = rights.into_iter().zip(guest_fds);
 
-    for ((control_offset, file), guest_fd) in rights.into_iter().zip(guest_fds) {
-        let proc_inode = match received_proc_inode(file.as_file()) {
-            Ok(inode) => inode,
+    while let Some(((control_offset, file), guest_fd)) = pending.next() {
+        let prepared = received_proc_inode(file.as_file()).and_then(|proc_inode| {
+            let object_inode = allocate_fd_object_inode(state, file.as_file())?;
+            let transfer = received_proc_transfer(state, file.as_file(), peek)?;
+            Ok((proc_inode, object_inode, transfer))
+        });
+        let (proc_inode, object_inode, transfer) = match prepared {
+            Ok(prepared) => prepared,
             Err(error) => {
                 rollback_received_rights(state, &installed);
-                return Err(error);
-            }
-        };
-        let object_inode = match allocate_fd_object_inode(state, file.as_file()) {
-            Ok(object_inode) => object_inode,
-            Err(error) => {
-                rollback_received_rights(state, &installed);
-                return Err(error);
-            }
-        };
-        let transfer = match received_proc_transfer(state, file.as_file(), peek) {
-            Ok(transfer) => transfer,
-            Err(error) => {
-                rollback_received_rights(state, &installed);
+                let rest: Vec<_> = pending.map(|((_, file), _)| file).collect();
+                release_dropped_proc_transfers(
+                    state,
+                    std::iter::once(&file)
+                        .chain(&rest)
+                        .map(|file| file.as_file()),
+                    peek,
+                );
                 return Err(error);
             }
         };
@@ -11476,6 +11503,8 @@ fn install_received_rights(
         if let Err(error) = write_control_fd(control, control_offset, guest_fd) {
             installed.push(guest_fd);
             rollback_received_rights(state, &installed);
+            let rest: Vec<_> = pending.map(|((_, file), _)| file).collect();
+            release_dropped_proc_transfers(state, rest.iter().map(|file| file.as_file()), peek);
             return Err(error);
         }
         installed.push(guest_fd);
@@ -11775,6 +11804,8 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
                 )
                 .is_err()
         {
+            let dropped = rights.iter().map(|right| &right.file);
+            release_dropped_proc_transfers(state, dropped, flags & libc::MSG_PEEK != 0);
             return negative_errno(libc::EFAULT);
         }
         copied += length;
@@ -11788,6 +11819,8 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
             )
             .is_err()
     {
+        let dropped = rights.iter().map(|right| &right.file);
+        release_dropped_proc_transfers(state, dropped, flags & libc::MSG_PEEK != 0);
         return negative_errno(libc::EFAULT);
     }
 
@@ -12040,6 +12073,8 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
                     )
                     .is_err()
             {
+                let dropped = rights.iter().map(|right| &right.file);
+                release_dropped_proc_transfers(state, dropped, flags & libc::MSG_PEEK != 0);
                 return if delivered == 0 {
                     negative_errno(libc::EFAULT)
                 } else {
@@ -12057,6 +12092,8 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
                 )
                 .is_err()
         {
+            let dropped = rights.iter().map(|right| &right.file);
+            release_dropped_proc_transfers(state, dropped, flags & libc::MSG_PEEK != 0);
             return if delivered == 0 {
                 negative_errno(libc::EFAULT)
             } else {
@@ -48097,10 +48134,12 @@ mod tests {
         replacement.inherit_process_state(forked);
         assert_eq!(replacement.thread_name, *b"new-program\0\0\0\0\0");
         assert_eq!(proc_comm(&replacement), b"new-program");
-        assert!(!Arc::ptr_eq(
-            &replacement.thread_group_leader_name,
-            &forked_leader_name,
-        ));
+        // A proc descriptor opened before exec shares the process's name cell
+        // and renders the new image's name.
+        assert_eq!(
+            *forked_leader_name.lock().unwrap(),
+            *b"new-program\0\0\0\0\0"
+        );
 
         let mut leader = ElfExecutor::new(state, false);
         let mut sibling = leader.thread_child(3).unwrap();

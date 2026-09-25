@@ -642,6 +642,13 @@ impl ProcessSignalRegistry {
     /// respect to the parent's exit: once claimed, a reparenting parent exit
     /// no longer rewrites it, and once rewritten, no callback targets the
     /// terminal parent.
+    ///
+    /// Which of the two comes first decides the reported parent, the Tool
+    /// callback, and whether the old parent can wait for the child or gets its
+    /// SIGCHLD. Reverie-KVM alone leaves that to the host threads of the two
+    /// exits; a deterministic embedder must order them. Hermit does: detcore's
+    /// child exit reservation is a control barrier that holds every other
+    /// scheduler turn until the child's exit is published.
     pub(super) fn claim_child_exit(&self, process: SignalProcessId) -> Option<ProcessFamilyExit> {
         let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
         let exit = family.terminal.get(&process_key(process)).copied()?;
@@ -3610,26 +3617,45 @@ mod tests {
 
     #[test]
     fn child_exit_claim_and_parent_reparenting_serialize() {
-        let mut outcomes = BTreeSet::new();
-        for _ in 0..64 {
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        enum Order {
+            ClaimFirst,
+            ReparentFirst,
+            Raced,
+        }
+        // Returns which of the two outcomes the claim observed.
+        let run = |order: Order| {
             let root = outside_init_root();
             let mut parent = root.fork_child(6, false, false).unwrap();
             let parent_id = identity(&parent);
             let mut child = parent.fork_child(7, false, false).unwrap();
             let child_id = identity(&child);
             child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
-            let barrier = std::sync::Barrier::new(2);
-            let claimed = std::thread::scope(|scope| {
-                let claim = scope.spawn(|| {
-                    barrier.wait();
-                    child.signal_registry.claim_child_exit(child_id)
-                });
-                scope.spawn(|| {
-                    barrier.wait();
+            let claimed = match order {
+                Order::ClaimFirst => {
+                    let claimed = child.signal_registry.claim_child_exit(child_id);
                     parent.retire_current_thread(reverie::ExitStatus::Exited(1), false);
-                });
-                claim.join().unwrap()
-            });
+                    claimed
+                }
+                Order::ReparentFirst => {
+                    parent.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+                    child.signal_registry.claim_child_exit(child_id)
+                }
+                Order::Raced => {
+                    let barrier = std::sync::Barrier::new(2);
+                    std::thread::scope(|scope| {
+                        let claim = scope.spawn(|| {
+                            barrier.wait();
+                            child.signal_registry.claim_child_exit(child_id)
+                        });
+                        scope.spawn(|| {
+                            barrier.wait();
+                            parent.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+                        });
+                        claim.join().unwrap()
+                    })
+                }
+            };
             assert_eq!(
                 claimed,
                 child.signal_registry.process_family_exit(child_id),
@@ -3638,16 +3664,23 @@ mod tests {
             match claimed {
                 Some(ProcessFamilyExit::Child(snapshot)) => {
                     assert_eq!(snapshot.completion.parent, parent_id);
-                    outcomes.insert("claimed first");
+                    Order::ClaimFirst
                 }
                 Some(ProcessFamilyExit::ReapedByNamespaceInit { status }) => {
                     assert_eq!(status, reverie::ExitStatus::Exited(2));
-                    outcomes.insert("reparented first");
+                    Order::ReparentFirst
                 }
                 other => panic!("child exit lost its single owner: {other:?}"),
             }
+        };
+        // Each order has exactly one outcome.
+        assert_eq!(run(Order::ClaimFirst), Order::ClaimFirst);
+        assert_eq!(run(Order::ReparentFirst), Order::ReparentFirst);
+        // Racing host threads may produce either one; `run` panics on any
+        // other. The embedder, not this ledger, fixes which.
+        for _ in 0..64 {
+            run(Order::Raced);
         }
-        assert!(!outcomes.is_empty());
     }
 
     #[test]
@@ -4212,6 +4245,69 @@ mod tests {
         assert_eq!(proc_transfers_in_flight(&child), [limit - SCM_MAX_FD + 1]);
     }
 
+    #[test]
+    fn proc_rights_dropped_by_a_failed_install_leave_the_in_flight_bound() {
+        let root = outside_init_root();
+        let mut child = root.fork_child(6, false, false).unwrap();
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        assert_eq!(
+            call(
+                &mut child,
+                &memory,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_STREAM as u64,
+                    0,
+                    0x2400,
+                    0,
+                    0
+                ],
+            ),
+            0
+        );
+        let sockets: [i32; 2] = read_struct(&memory, 0x2400);
+        let sender = i64::from(sockets[0]);
+        let stat = open_proc(&mut child, &mut memory, "/proc/self/stat", libc::O_RDONLY);
+        assert!(stat >= 0);
+        assert_eq!(send_rights(&mut child, &mut memory, sender, &[stat; 3]), 1);
+        assert_eq!(proc_transfers_in_flight(&child), [3]);
+        let open_before: Vec<_> = child.state.files.keys().copied().collect();
+
+        // Install the dequeued message's three rights into an 8-byte control
+        // buffer: the first fits, the second's slot is out of range, and the
+        // third is never reached. The host delivers the sender's open
+        // description, as a dup does.
+        let host = super::super::host_fd(&child.state, stat as i32).unwrap();
+        // SAFETY: the guest's stat descriptor keeps `host` open.
+        let host = unsafe { std::os::fd::BorrowedFd::borrow_raw(host) };
+        let install = |child: &mut ElfExecutor, peek: bool| {
+            let rights = [0, 8, 4]
+                .map(|control_offset| super::super::PendingReceivedRight {
+                    control_offset,
+                    file: host.try_clone_to_owned().unwrap().into(),
+                })
+                .into();
+            super::super::install_received_rights(
+                &mut child.state,
+                &mut [0; 8],
+                rights,
+                false,
+                peek,
+            )
+        };
+        // A failed peek leaves every right queued.
+        assert_eq!(install(&mut child, true), Err(-i64::from(libc::EINVAL)));
+        assert_eq!(proc_transfers_in_flight(&child), [3]);
+        // A failed consuming receive drops all three, including the unreached one.
+        assert_eq!(install(&mut child, false), Err(-i64::from(libc::EINVAL)));
+        assert_eq!(proc_transfers_in_flight(&child), []);
+        assert_eq!(
+            child.state.files.keys().copied().collect::<Vec<_>>(),
+            open_before
+        );
+    }
+
     /// A host thread standing in for a started child's vCPU. It publishes
     /// `completion` (or nothing) and returns `result` once `release` fires.
     fn adopted_child_thread(
@@ -4389,6 +4485,30 @@ mod tests {
             }),
         );
         assert!(family_snapshot(&root).1.is_empty());
+    }
+
+    #[test]
+    fn proc_stat_and_status_opened_before_exec_report_the_new_image_name() {
+        let root = outside_init_root();
+        let mut child = root.fork_child(7, false, false).unwrap();
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let stat = open_proc(&mut child, &mut memory, "/proc/self/stat", libc::O_RDONLY);
+        let status = open_proc(&mut child, &mut memory, "/proc/self/status", libc::O_RDONLY);
+        assert!(stat >= 0 && status >= 0);
+        // As exec_static_elf names the new image before it inherits the process.
+        let mut replacement = native_loaded_state(std::path::Path::new("/"));
+        replacement.thread_name =
+            crate::elf::initial_thread_name(std::path::Path::new("/bin/exec-image"));
+        *replacement.thread_group_leader_name.lock().unwrap() = replacement.thread_name;
+        let previous = std::mem::replace(&mut child.state, replacement);
+        child.state.inherit_process_state(previous);
+        let stat_text = read_proc(&mut child, &memory, stat, 64);
+        assert!(stat_text.starts_with("7 (exec-image) "), "{stat_text}");
+        let status_text = read_proc(&mut child, &memory, status, 64);
+        assert!(
+            status_text.starts_with("Name:\texec-image\n"),
+            "{status_text}"
+        );
     }
 
     #[test]
