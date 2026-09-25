@@ -10,7 +10,14 @@ repository = "https://github.com/facebookexperimental/reverie"
 license = "BSD-2-Clause"
 
 [dependencies]
-syscalls = { version = "0.6.18", features = ["serde"] }
+syscalls = { version = "0.6.18", features = ["serde"], default-features = false }
+
+[features]
+default = ["std"]
+# `std` adds `LocalMemory`, the `std::io::Read`/`Write` adapters, and makes
+# `IoSlice`/`IoSliceMut` the `std::io` types. Without it the crate is
+# `no_std` + `alloc`.
+std = ["syscalls/std"]
 
 [dev-dependencies]
 libc = "0.2.186"
