@@ -9,8 +9,16 @@
 use core::fmt;
 use core::hash::Hash;
 
+#[cfg(feature = "std")]
+use libc::pid_t;
 use serde::Deserialize;
 use serde::Serialize;
+
+/// Without `std` there is no `libc` for this target; `pid_t` is `i32` on
+/// Linux.
+#[cfg(not(feature = "std"))]
+#[allow(non_camel_case_types)]
+type pid_t = i32;
 
 /// A process ID (PID).
 #[derive(
@@ -25,26 +33,28 @@ use serde::Serialize;
     Serialize,
     Deserialize
 )]
-pub struct Pid(libc::pid_t);
+pub struct Pid(pid_t);
 
 impl Pid {
     /// Creates `Pid` from a raw `pid_t`.
-    pub fn from_raw(pid: libc::pid_t) -> Self {
+    pub fn from_raw(pid: pid_t) -> Self {
         Self(pid)
     }
 
     /// Returns the PID of the calling process.
+    #[cfg(feature = "std")]
     pub fn this() -> Self {
         nix::unistd::Pid::this().into()
     }
 
     /// Returns the PID of the calling process.
+    #[cfg(feature = "std")]
     pub fn parent() -> Self {
         nix::unistd::Pid::parent().into()
     }
 
     /// Gets the raw `pid_t` from this `Pid`.
-    pub fn as_raw(self) -> libc::pid_t {
+    pub fn as_raw(self) -> pid_t {
         self.0
     }
 
@@ -54,31 +64,34 @@ impl Pid {
     ///
     /// Note that while the same PIDs always have the same color, different PIDs
     /// may also have the same color if they fall into the same color bucket.
+    #[cfg(feature = "std")]
     pub fn colored(self) -> ColoredPid {
         ColoredPid(self)
     }
 }
 
+#[cfg(feature = "std")]
 impl From<nix::unistd::Pid> for Pid {
     fn from(pid: nix::unistd::Pid) -> Pid {
         Self(pid.as_raw())
     }
 }
 
+#[cfg(feature = "std")]
 impl From<Pid> for nix::unistd::Pid {
     fn from(pid: Pid) -> nix::unistd::Pid {
         nix::unistd::Pid::from_raw(pid.as_raw())
     }
 }
 
-impl From<Pid> for libc::pid_t {
-    fn from(pid: Pid) -> libc::pid_t {
+impl From<Pid> for pid_t {
+    fn from(pid: Pid) -> pid_t {
         pid.as_raw()
     }
 }
 
-impl From<libc::pid_t> for Pid {
-    fn from(pid: libc::pid_t) -> Pid {
+impl From<pid_t> for Pid {
+    fn from(pid: pid_t) -> Pid {
         Pid::from_raw(pid)
     }
 }
@@ -90,8 +103,10 @@ impl fmt::Display for Pid {
 }
 
 /// A colored pid.
+#[cfg(feature = "std")]
 pub struct ColoredPid(Pid);
 
+#[cfg(feature = "std")]
 impl ColoredPid {
     /// Gets the ansi color code for the current PID. Returns `None` if not
     /// writing to a terminal.
@@ -123,6 +138,7 @@ impl ColoredPid {
     }
 }
 
+#[cfg(feature = "std")]
 impl fmt::Display for ColoredPid {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(color) = self.ansi_code() {
