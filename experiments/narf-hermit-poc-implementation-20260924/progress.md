@@ -39,7 +39,10 @@ negative-control mutation.
 ## Narf syscall-interception milestone
 
 Current local Narf head:
-`d3cd3255357d9a9675b68e3dcebce3b786b3cdf2`.
+`de6f90306fc754410015a9439121ed8bdeb178be`.
+The clean upstream hook stack still ends at
+`d3cd3255357d9a9675b68e3dcebce3b786b3cdf2`; the top commit is the
+POC integration which consumes the separately committed Reverie core.
 
 Commits:
 
@@ -72,6 +75,12 @@ Commits:
   wire number and six arguments, may repeat, and bypass recursive interception;
   context-managed outcomes remain terminal and cannot become fabricated
   returns. This commit is GPG-signed with the required AI attribution.
+- `de6f90306fc754410015a9439121ed8bdeb178be` — pin the separately
+  published `reverie-narf-core`, translate the real Narf native transition,
+  keep Tool global and per-task state as direct kernel references, and install
+  an opt-in pass-through Tool on the production syscall table. This TCB commit
+  is GPG-signed, adds a machine-checkable safety argument, and is deliberately
+  above the clean Narf-hook PR boundary.
 
 The current interface provides an immutable `SyscallInvocation` snapshot,
 entry control (`Continue` or `Complete`), a return-only replacement callback,
@@ -256,8 +265,10 @@ Validation:
   `narf_phys_to_node` and `__text_start`; no host-unit pass is claimed. The
   repository's QEMU kernel-test driver executed the new assertions instead.
 
-The registered Reverie worktree now has commit
-`ad1ba781798859a0274678ac9c5ebab23368a0bf`, adding a new
+The registered Reverie worktree now has commits
+`ad1ba781798859a0274678ac9c5ebab23368a0bf`,
+`42e7bca681802693f3132d3a2453da8f4851e496`, and
+`08a70a2e1562de1602d20e8bf1f6b2238aec7ee5`, adding a new
 `reverie-narf` crate. It defines a mechanism-neutral `NarfKernel` trait and a
 `NarfGuest<T, K>` that hosts arbitrary `T: reverie::Tool`, including direct
 global-state calls, per-thread state, original/injected syscalls, register,
@@ -267,11 +278,43 @@ through `send_rpc`, executes the original transition once, and returns the
 combined result. `cargo check`, formatting, warning-as-error clippy, unit test,
 and doctest gates passed.
 
-This Reverie component is not yet a working Narf backend. Current Reverie
-public traits depend on Linux/`std`, while the Narf kernel is `no_std`; the
-crate documents that boundary and does not implement the `Backend` launch/
-lifecycle contract yet. There is no Narf-linked adapter, real guest through
-this driver, canonical cross-kernel trace, or negative mutation result yet.
+`reverie-narf-core` is dependency-free `no_std` code containing the exact
+unsigned 32-bit syscall wire number, six arguments, typed native-transition
+outcomes, direct global/per-thread state borrows, kernel-compatible Tool
+contract, and driver. The ordinary `reverie-narf` crate reuses those exact
+request/outcome types instead of maintaining a parallel ABI. Host unit tests,
+warning-as-error clippy, and a bare `x86_64-unknown-none` build with Narf's
+pinned `nightly-2025-09-14` toolchain passed. The exact head is published only
+as feature branch `rrnewton/reverie:codex/narf-poc-reverie`; it is not merged.
+
+The signed Narf integration head consumes that exact Reverie commit and has now
+executed in an actual kernel image:
+
+- `cargo xtask build --arch x86_64 --debug --features
+  reverie-narf-poc,boot-init` passed and linked the generic adapter into Narf.
+- A focused QEMU kernel test passed one original native execution, Tool-owned
+  replacement, direct shared global state, and persistent per-task state:
+  `1 pass, 0 fail, 0 skip`. Transcript SHA-256:
+  `d34db716b0f337aeff4e67f49e1d3f02a1351bd09c6140ce2c6cc7a64efd7f39`.
+- A bounded production boot printed
+  `INFO reverie-narf-poc backend=v1 state=active` from the first real
+  userspace syscall, then continued through `NARF Userspace Init started!` to
+  the login prompt before the external 150-second timeout stopped QEMU.
+  Transcript SHA-256:
+  `baebb8ddcf49544fb254edaf7a2d71893c165eedc87b798dd61aa054408785a0`.
+- Package formatting, warning-as-error clippy, host check, and bare-metal
+  x86_64 check for the adapter passed. A standalone host `cargo test` is not a
+  supported Narf runner and failed on the same kernel-linker symbols documented
+  above; the assertion ran and passed through Narf's QEMU kernel-test driver.
+
+This is the first working Narf-linked syscall path through the new backend
+core, but it is not the completed POC. The opt-in Tool is only pass-through;
+the existing full `reverie::Tool` API still depends on Linux/`std`, ordinary
+asynchronous suspension currently fails closed rather than parking on a Narf
+waker, and task teardown does not yet reclaim adapter thread state. There is no
+versioned canonical cross-kernel trace, Linux/Hermit comparison, or negative
+mutation result yet. The production-boot activation line is diagnostic
+evidence, not the required canonical INFO log.
 
 ## Audit state
 
