@@ -16,6 +16,7 @@ use serde::Serialize;
 use crate::Displayable;
 use crate::FromToRaw;
 use crate::MemoryAccess;
+use crate::libc;
 
 /// A serializable version of `libc::pollfd`.
 #[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Default)]

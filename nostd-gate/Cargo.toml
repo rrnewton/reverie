@@ -13,6 +13,7 @@ publish = false
 [dependencies]
 reverie-memory = { path = "../reverie-memory", default-features = false }
 reverie-process = { path = "../reverie-process", default-features = false }
+reverie-syscalls = { path = "../reverie-syscalls", default-features = false }
 syscalls = { version = "0.6.18", default-features = false }
 
 [features]
@@ -21,3 +22,4 @@ syscalls = { version = "0.6.18", default-features = false }
 # build of that crate is not vacuous. `run.sh` checks each one.
 negative-std-memory = ["reverie-memory/std"]
 negative-std-process = ["reverie-process/std"]
+negative-std-syscalls = ["reverie-syscalls/std"]

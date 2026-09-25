@@ -10,22 +10,6 @@ pub mod family;
 
 use ::syscalls::SyscallArgs;
 use ::syscalls::Sysno;
-// Re-export flags that used by syscalls from the `nix` crate so downstream
-// projects don't need to add another dependency on it.
-pub use nix::fcntl::AtFlags;
-pub use nix::fcntl::OFlag;
-// FIXME: Switch everything over to `crate::args::CloneFlags`.
-use nix::sched::CloneFlags;
-pub use nix::sys::epoll::EpollCreateFlags;
-pub use nix::sys::eventfd::EfdFlags;
-pub use nix::sys::inotify::InitFlags;
-pub use nix::sys::mman::MapFlags;
-pub use nix::sys::mman::ProtFlags;
-pub use nix::sys::signalfd::SfdFlags;
-pub use nix::sys::socket::SockFlag;
-pub use nix::sys::stat::Mode;
-pub use nix::sys::timerfd::TimerFlags;
-pub use nix::sys::wait::WaitPidFlag;
 
 use crate::Addr;
 use crate::AddrMut;
@@ -45,6 +29,23 @@ use crate::args::TimevalMutPtr;
 use crate::args::Timezone;
 use crate::args::ioctl;
 use crate::display::Displayable;
+use crate::libc;
+// Re-export flags that used by syscalls from the `nix` crate so downstream
+// projects don't need to add another dependency on it.
+pub use crate::nix::fcntl::AtFlags;
+pub use crate::nix::fcntl::OFlag;
+// FIXME: Switch everything over to `crate::args::CloneFlags`.
+use crate::nix::sched::CloneFlags;
+pub use crate::nix::sys::epoll::EpollCreateFlags;
+pub use crate::nix::sys::eventfd::EfdFlags;
+pub use crate::nix::sys::inotify::InitFlags;
+pub use crate::nix::sys::mman::MapFlags;
+pub use crate::nix::sys::mman::ProtFlags;
+pub use crate::nix::sys::signalfd::SfdFlags;
+pub use crate::nix::sys::socket::SockFlag;
+pub use crate::nix::sys::stat::Mode;
+pub use crate::nix::sys::timerfd::TimerFlags;
+pub use crate::nix::sys::wait::WaitPidFlag;
 use crate::raw::FromToRaw;
 
 /// A trait that all syscalls implement.

@@ -8,6 +8,8 @@
 
 //! Everything related to ioctl arguments.
 
+use alloc::vec::Vec;
+
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -16,6 +18,7 @@ use crate::AddrMut;
 use crate::Errno;
 use crate::FromToRaw;
 use crate::MemoryAccess;
+use crate::libc;
 
 /// The type of ioctl from the perspective of userspace. That is, whether
 /// userspace is reading, writing, or doing nothing.
@@ -205,7 +208,7 @@ impl<'a> Request<'a> {
                     return Ok(None);
                 }
                 let addr = Addr::<u8>::from_raw(*arg).ok_or(Errno::EFAULT)?;
-                let mut bytes = vec![0; size];
+                let mut bytes = alloc::vec![0; size];
                 m.read_exact(addr, &mut bytes)?;
                 Output::Other(bytes)
             }

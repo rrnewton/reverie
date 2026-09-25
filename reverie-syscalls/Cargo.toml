@@ -11,10 +11,17 @@ license = "BSD-2-Clause"
 
 [dependencies]
 bitflags = { version = "2.13.1", features = ["serde"], default-features = false }
-derive_more = { version = "1.0.0", features = ["full"] }
-libc = "0.2.186"
-nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
+derive_more = { version = "1.0.0", features = ["full"], default-features = false }
+libc = { version = "0.2.186", optional = true }
+nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"], optional = true }
 paste = "1.0.14"
-reverie-memory = { version = "0.2.0", path = "../reverie-memory" }
-serde = { version = "1.0.219", features = ["derive", "rc"] }
-syscalls = { version = "0.6.18", features = ["serde"] }
+reverie-memory = { version = "0.2.0", path = "../reverie-memory", default-features = false }
+serde = { version = "1.0.219", features = ["alloc", "derive"], default-features = false }
+syscalls = { version = "0.6.18", features = ["serde"], default-features = false }
+
+[features]
+default = ["std"]
+# `std` makes the libc and nix items the syscall types use the real crates'
+# and `PathPtr` read a `PathBuf`. Without it the crate is `no_std` + `alloc`,
+# with `src/libc_shim.rs` and `src/nix_shim.rs` standing in for libc and nix.
+std = ["dep:libc", "dep:nix", "derive_more/std", "reverie-memory/std", "serde/rc", "serde/std", "syscalls/std"]

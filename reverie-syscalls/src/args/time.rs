@@ -11,6 +11,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::libc;
+
 /// A serializable version of `libc::timespec`.
 #[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug, Hash)]
 #[repr(C)]
@@ -77,8 +79,8 @@ impl From<Timespec> for libc::timeval {
     }
 }
 
-impl std::fmt::Display for Timespec {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl core::fmt::Display for Timespec {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(
             f,
             "{{ tv_sec: {}, tv_nsec: {} }}",
@@ -97,8 +99,8 @@ pub struct Timeval {
     pub tv_usec: libc::suseconds_t,
 }
 
-impl std::fmt::Display for Timeval {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl core::fmt::Display for Timeval {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(
             f,
             "{{ tv_sec: {}, tv_usec: {} }}",

@@ -9,10 +9,14 @@
 //! Collection of type-safe syscall arguments. These are shared among
 //! potentially many syscalls.
 
+use alloc::ffi::CString;
+use alloc::vec::Vec;
 use core::fmt;
-use std::ffi::CString;
+#[cfg(feature = "std")]
 use std::ffi::OsString;
+#[cfg(feature = "std")]
 use std::os::unix::ffi::OsStringExt;
+#[cfg(feature = "std")]
 use std::path::PathBuf;
 
 mod clone;
@@ -27,9 +31,6 @@ mod time;
 pub use clone::*;
 pub use fcntl::FcntlCmd;
 pub use io_uring::*;
-use nix::sys::stat::Mode;
-use nix::sys::stat::SFlag;
-use nix::unistd::Pid;
 pub use poll::*;
 use serde::Deserialize;
 use serde::Serialize;
@@ -43,6 +44,10 @@ use crate::Displayable;
 use crate::Errno;
 use crate::FromToRaw;
 use crate::MemoryAccess;
+use crate::libc;
+use crate::nix::sys::stat::Mode;
+use crate::nix::sys::stat::SFlag;
+use crate::nix::unistd::Pid;
 
 /// Helper trait for reading a specific value from an address.
 pub trait ReadAddr {
@@ -242,13 +247,25 @@ impl<'a> PathPtr<'a> {
 }
 
 impl<'a> ReadAddr for PathPtr<'a> {
+    /// A Linux path is a NUL-free byte string. With `std` it is returned as a
+    /// `PathBuf`; without `std` there is no `PathBuf`, so it is the
+    /// `CString` those bytes were read into.
+    #[cfg(feature = "std")]
     type Target = PathBuf;
+    #[cfg(not(feature = "std"))]
+    type Target = CString;
     type Error = Errno;
 
+    #[cfg(feature = "std")]
     fn read<M: MemoryAccess>(&self, memory: &M) -> Result<Self::Target, Self::Error> {
         let path = PathBuf::from(OsString::from_vec(self.0.read(memory)?.into_bytes()));
 
         Ok(path)
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn read<M: MemoryAccess>(&self, memory: &M) -> Result<Self::Target, Self::Error> {
+        self.0.read(memory)
     }
 }
 
@@ -472,15 +489,15 @@ impl Displayable for StatxMask {
 }
 
 pub(crate) fn fmt_nullable_ptr<T, E, M, P>(
-    f: &mut std::fmt::Formatter<'_>,
+    f: &mut fmt::Formatter<'_>,
     value: &Option<P>,
     memory: &M,
     outputs: bool,
-) -> std::fmt::Result
+) -> fmt::Result
 where
     T: Displayable,
-    E: std::fmt::Display,
-    P: ReadAddr<Target = T, Error = E> + std::fmt::Display,
+    E: fmt::Display,
+    P: ReadAddr<Target = T, Error = E> + fmt::Display,
     M: MemoryAccess,
 {
     match value {
@@ -490,15 +507,15 @@ where
 }
 
 pub(crate) fn fmt_ptr<T, E, M, P>(
-    f: &mut std::fmt::Formatter<'_>,
+    f: &mut fmt::Formatter<'_>,
     addr: &P,
     memory: &M,
     outputs: bool,
-) -> std::fmt::Result
+) -> fmt::Result
 where
     T: Displayable,
-    E: std::fmt::Display,
-    P: ReadAddr<Target = T, Error = E> + std::fmt::Display,
+    E: fmt::Display,
+    P: ReadAddr<Target = T, Error = E> + fmt::Display,
     M: MemoryAccess,
 {
     if !outputs {
