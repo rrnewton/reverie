@@ -429,6 +429,24 @@ run_test_check() {
         "$LIBTEST_COUNTS_TOOL" run "$counts_file" -- "$@"
 }
 
+build_workspace_with_loader_conformance() {
+    printf 'Required substep: Build workspace\nCommand: cargo build --workspace --all-features\n'
+    if cargo build --workspace --all-features; then
+        :
+    else
+        return "$?"
+    fi
+
+    # The real release artifact is intentionally ignored by the all-features
+    # test harness. Its runner binds the DSO and requires exactly one test.
+    printf 'Required substep: LiteInst real target-loader conformance\nCommand:'
+    printf ' %q' env "CARGO_TARGET_DIR=$ROOT_DIR/target/liteinst-conformance" \
+        "$ROOT_DIR/reverie-liteinst/tests/run_target_loader_conformance.sh"
+    printf '\n'
+    env CARGO_TARGET_DIR="$ROOT_DIR/target/liteinst-conformance" \
+        "$ROOT_DIR/reverie-liteinst/tests/run_target_loader_conformance.sh"
+}
+
 if ((SELF_TEST_GATE_COUNTS == 1)); then
     set -e
     reset_self_test_gates() {
@@ -749,12 +767,7 @@ readonly -a REGULAR_TEST_SKIP_ARGS=(
 )
 
 run_check "Cross-client skill discovery" "$ROOT_DIR/scripts/check-skill-discovery.rs"
-run_check "Build workspace" cargo build --workspace --all-features
-# The real release artifact is intentionally ignored by the all-features test
-# harness. Its runner binds the DSO and requires exactly one executed test.
-run_check "LiteInst real target-loader conformance" \
-    env CARGO_TARGET_DIR="$ROOT_DIR/target/liteinst-conformance" \
-    "$ROOT_DIR/reverie-liteinst/tests/run_target_loader_conformance.sh"
+run_check "Build workspace" build_workspace_with_loader_conformance
 run_check "DBT virtual identity and pidfd_open policy" \
     "$ROOT_DIR/reverie-dbt/scripts/test-identity-policy.sh"
 run_test_check "Test regular workspace cases" cargo test --workspace --all-features \
