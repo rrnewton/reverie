@@ -20,6 +20,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
@@ -747,6 +748,15 @@ pub(crate) struct LoadedStaticElf {
     /// root guest has no traced parent. Use [`Self::is_traced_tree_root`] to
     /// answer the traced-tree question.
     pub ppid: i32,
+    /// Guest-visible parent after the fork-time parent exited, or zero.
+    ///
+    /// Linux reparents an orphan to its namespace reaper, so `getppid(2)` and
+    /// procfs change while the traced-tree parent (`Guest::ppid`) keeps its
+    /// fork-time value, as under the ptrace backend. The run-scoped process
+    /// family ledger stores the reaper here in the same critical section that
+    /// transfers wait ownership. Threads share one cell, fork starts a fresh
+    /// zero cell, and `execve` keeps the process's cell.
+    pub orphan_reaper_pid: std::sync::Arc<AtomicI32>,
     /// True iff this process is the root of the *traced* process tree, i.e. it
     /// was installed by the backend rather than created by a guest `fork`/`clone`.
     ///
@@ -873,6 +883,14 @@ pub(crate) struct LoadedStaticElf {
 }
 
 impl LoadedStaticElf {
+    /// The value reported by `getppid(2)` and procfs for this process.
+    pub(crate) fn guest_parent_pid(&self) -> i32 {
+        match self.orphan_reaper_pid.load(Ordering::SeqCst) {
+            0 => self.ppid,
+            reaper => reaper,
+        }
+    }
+
     /// Return replaced descriptions, including inherited stdin at fd 0, so
     /// callers retire them after both the authoritative file-table and
     /// signal-transaction guards are released.
@@ -954,6 +972,7 @@ impl LoadedStaticElf {
             pgid: self.pgid,
             tid: child_pid,
             ppid: self.pid,
+            orphan_reaper_pid: std::sync::Arc::new(AtomicI32::new(0)),
             // A guest-created child always has a traced parent: this process.
             is_traced_tree_root: false,
             logical_clock_ns: self.logical_clock_ns,
@@ -1156,6 +1175,7 @@ impl LoadedStaticElf {
         self.pgid = previous.pgid;
         self.tid = previous.tid;
         self.ppid = previous.ppid;
+        self.orphan_reaper_pid = previous.orphan_reaper_pid;
         // `execve` replaces the image, never the position in the process tree.
         self.is_traced_tree_root = previous.is_traced_tree_root;
         self.logical_clock_ns = previous.logical_clock_ns;
@@ -1533,6 +1553,7 @@ fn load_executable(
         pgid: 1,
         tid: 1,
         ppid: 0,
+        orphan_reaper_pid: std::sync::Arc::new(AtomicI32::new(0)),
         // The backend-installed image is the root of the traced process tree.
         // `KvmBackend::set_root_pid` may later renumber `pid`/`tid`/`ppid`; it
         // must not change this.

@@ -2244,6 +2244,15 @@ impl KvmBackend {
                     child.pid
                 )));
             }
+            crate::executor::ProcessFamilyExit::ReapedByNamespaceInit { .. } => {
+                // The synchronous caller is blocked in this fork, so it cannot
+                // have exited and orphaned the child. Refuse the impossible
+                // state rather than return into a caller that lost the child.
+                return Err(Error::UnexpectedVcpuExit(format!(
+                    "KVM fork child {} completed after reparenting to namespace init",
+                    child.pid
+                )));
+            }
             crate::executor::ProcessFamilyExit::Failed => {
                 unreachable!("executor maps failed family state to an error")
             }

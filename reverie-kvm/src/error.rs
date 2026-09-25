@@ -43,9 +43,10 @@ pub enum Error {
     #[error("KVM execution stopped after a fatal run failure")]
     RunAborted,
 
-    /// A process exited while it still owned a logical child. Reparenting is
-    /// deliberately fail-closed until wait ownership can be transferred to an
-    /// in-tree PID 1 or an out-of-tree namespace reaper atomically.
+    /// A process exited while it still owned a logical child whose Linux
+    /// reaper is the traced root acting as PID-namespace init. Orphans of an
+    /// outside namespace init are reparented; transferring wait ownership into
+    /// an in-tree init's executor is deliberately fail-closed.
     #[error(
         "KVM process {process:?} exited with child {child:?} still requiring unsupported reparenting"
     )]
