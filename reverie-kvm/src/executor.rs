@@ -1360,9 +1360,10 @@ pub(crate) struct ElfExecutor {
     file_table: Arc<std::sync::Mutex<FileTableState>>,
     output: Option<CapturedOutput>,
     owns_output: bool,
-    // Run-wide and only incremented, so a numeric PID or TID is never
-    // reissued within a run: exited-process records keyed by number, such as
-    // an orphan's generation, cannot be claimed by a later process.
+    // Run-wide and never wrapped (see `allocate_task_id`), so a numeric PID
+    // or TID is never reissued within a run. Task records keyed by number
+    // alone, such as the lifecycle table and the scheduler's exited-process
+    // bookkeeping, therefore cannot confuse two tasks.
     next_pid: Arc<AtomicI32>,
     sigchld_auto_reap: Arc<AtomicBool>,
     // TODO-HUMAN-REVIEW(PR-235): Review concurrent KVM process lifecycle ownership.
@@ -2727,6 +2728,18 @@ impl ElfExecutor {
         )
     }
 
+    /// Reserve the next run-wide task ID without wrapping. Once the space is
+    /// exhausted every later clone fails with EAGAIN, as Linux does when no
+    /// PID is free, and the counter no longer moves.
+    fn allocate_task_id(&self) -> Option<i32> {
+        self.next_pid
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |next| {
+                next.checked_add(1)
+            })
+            .ok()
+            .filter(|id| *id > 0)
+    }
+
     fn prepare_thread(
         &mut self,
         flags: u64,
@@ -2760,10 +2773,9 @@ impl ElfExecutor {
         {
             return negative_errno(libc::ENOSYS);
         }
-        let child_tid = self.next_pid.fetch_add(1, Ordering::SeqCst);
-        if child_tid <= 0 {
+        let Some(child_tid) = self.allocate_task_id() else {
             return negative_errno(libc::EAGAIN);
-        }
+        };
         self.process_action = Some(ProcessAction::Thread {
             child_tid,
             child_stack,
@@ -2805,10 +2817,9 @@ impl ElfExecutor {
         {
             return negative_errno(libc::ENOSYS);
         }
-        let child_pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
-        if child_pid <= 0 {
+        let Some(child_pid) = self.allocate_task_id() else {
             return negative_errno(libc::EAGAIN);
-        }
+        };
         self.process_action = Some(ProcessAction::Fork {
             child_pid,
             child_stack,
@@ -46302,6 +46313,32 @@ mod tests {
                     .shared_pending
                     .is_empty(),
             );
+        }
+    }
+
+    #[test]
+    fn task_id_allocation_fails_closed_instead_of_wrapping() {
+        let dir = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&dir.0), false);
+        executor.next_pid.store(i32::MAX - 1, Ordering::SeqCst);
+        assert_eq!(executor.allocate_task_id(), Some(i32::MAX - 1));
+        for _ in 0..2 {
+            assert_eq!(
+                executor.prepare_fork(None, None, None, None, false, false),
+                negative_errno(libc::EAGAIN),
+            );
+            assert_eq!(
+                executor.prepare_thread(
+                    THREAD_CLONE_REQUIRED_FLAGS,
+                    Some(0x8000),
+                    None,
+                    None,
+                    None
+                ),
+                negative_errno(libc::EAGAIN),
+            );
+            assert!(executor.process_action.is_none());
+            assert_eq!(executor.next_pid.load(Ordering::SeqCst), i32::MAX);
         }
     }
 
