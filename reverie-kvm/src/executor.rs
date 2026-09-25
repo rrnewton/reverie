@@ -239,6 +239,7 @@ pub(crate) enum SyscallAction {
         segment: Option<(SegmentBase, u64)>,
     },
     Exit(ExitStatus),
+    Failure(crate::Error),
 }
 
 #[derive(Default)]
@@ -488,6 +489,43 @@ fn execute_basic_syscall_inner(
         return continue_with(error);
     }
 
+    // Only these supported operations use a random carrier's current OFD
+    // position. Writes cannot advance it: its sole exposed host description
+    // is O_RDONLY, and proc-fd/SCM_RIGHTS metadata-losing exports are refused.
+    let random_position_fd = if number == libc::SYS_read as u64
+        || number == libc::SYS_readv as u64
+        || number == libc::SYS_lseek as u64
+        || (number == libc::SYS_preadv2 as u64 && args[3] as i64 == -1)
+    {
+        Some(args[0] as libc::c_int)
+    } else if number == libc::SYS_sendfile as u64 && args[2] == 0 {
+        Some(args[1] as libc::c_int)
+    } else {
+        None
+    };
+    let random_description = random_position_fd
+        .and_then(|fd| state.random_device_descriptions.get(&fd))
+        .cloned();
+    let mut random_position = match random_description.as_ref() {
+        Some(description) => match description.position.lock() {
+            Ok(guard) => Some(guard),
+            Err(_) => {
+                return SyscallAction::Failure(crate::Error::HostIo(std::io::Error::other(
+                    "KVM random-device position lock poisoned",
+                )));
+            }
+        },
+        None => None,
+    };
+    if (number == libc::SYS_read as u64 || number == libc::SYS_readv as u64)
+        && let Some(description) = random_description.as_ref()
+    {
+        return match random_device_read(memory, state, args, number, description) {
+            Ok(result) => continue_with(result),
+            Err(error) => SyscallAction::Failure(error),
+        };
+    }
+
     let result = if number == libc::SYS_write as u64 {
         write(memory, state, args, output)
     } else if number == libc::SYS_read as u64 {
@@ -516,7 +554,7 @@ fn execute_basic_syscall_inner(
         pwrite64(memory, state, args)
     } else if number == libc::SYS_sendfile as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        sendfile(memory, state, args, output)
+        sendfile(memory, state, args, output, random_position.take())
     } else if number == libc::SYS_lseek as u64 {
         lseek(state, args, capture_output)
     } else if number == libc::SYS_ftruncate as u64 {
@@ -1698,6 +1736,33 @@ impl ChildCompletionSlot {
     }
 }
 
+/// Seed and operation serialization shared by aliases of one random-device
+/// open description. Its private host OFD remains the only position authority.
+/// This preserves atomic consumption, not ordering between unsynchronized
+/// direct workers. The Tool retains responsibility for deterministic scheduling.
+#[derive(Debug)]
+pub(crate) struct RandomDeviceDescription {
+    seed: u64,
+    position: Mutex<()>,
+    #[cfg(test)]
+    fail_cursor_commit: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    poison_after_copy: Mutex<Option<Arc<crate::Error>>>,
+}
+
+impl RandomDeviceDescription {
+    fn new(seed: u64) -> Self {
+        Self {
+            seed,
+            position: Mutex::new(()),
+            #[cfg(test)]
+            fail_cursor_commit: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            poison_after_copy: Mutex::new(None),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct FileTableState {
     stdin: Option<std::fs::File>,
@@ -1705,6 +1770,7 @@ pub(crate) struct FileTableState {
     files: std::collections::BTreeMap<i32, std::fs::File>,
     fd_entry_ids: std::collections::BTreeMap<i32, Arc<()>>,
     random_device_fds: std::collections::BTreeSet<i32>,
+    random_device_descriptions: std::collections::BTreeMap<i32, Arc<RandomDeviceDescription>>,
     stdout_alias_fds: std::collections::BTreeSet<i32>,
     stderr_alias_fds: std::collections::BTreeSet<i32>,
     cloexec_fds: std::collections::BTreeSet<i32>,
@@ -2166,6 +2232,7 @@ impl FileTableState {
                 .collect(),
             fd_entry_ids: state.fd_entry_ids.clone(),
             random_device_fds: state.random_device_fds.clone(),
+            random_device_descriptions: state.random_device_descriptions.clone(),
             stdout_alias_fds: state.stdout_alias_fds.clone(),
             stderr_alias_fds: state.stderr_alias_fds.clone(),
             cloexec_fds: state.cloexec_fds.clone(),
@@ -2241,6 +2308,9 @@ impl FileTableState {
         );
         state.fd_entry_ids.clone_from(&self.fd_entry_ids);
         state.random_device_fds.clone_from(&self.random_device_fds);
+        state
+            .random_device_descriptions
+            .clone_from(&self.random_device_descriptions);
         state.stdout_alias_fds.clone_from(&self.stdout_alias_fds);
         state.stderr_alias_fds.clone_from(&self.stderr_alias_fds);
         state.cloexec_fds.clone_from(&self.cloexec_fds);
@@ -5179,6 +5249,7 @@ impl ElfExecutor {
                 .expect("clone updated KVM file table");
         }
         match action {
+            SyscallAction::Failure(error) => Err(error),
             SyscallAction::Continue { result, segment } => {
                 if segment.is_some() {
                     self.pending_segment = segment;
@@ -5654,6 +5725,142 @@ fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -
         Ok(()) => count as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
+}
+
+fn prepare_random_device_read(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    number: u64,
+) -> Result<(RawFd, Vec<GuestIoVec>, usize), i64> {
+    let fd = args[0] as libc::c_int;
+    let file = state
+        .files
+        .get(&fd)
+        .ok_or_else(|| negative_errno(libc::EBADF))?;
+    if number == libc::SYS_read as u64 {
+        let requested = usize::try_from(args[2]).map_err(|_| negative_errno(libc::EINVAL))?;
+        ensure_read_capable(file)?;
+        ensure_readable(file)?;
+        if !range_is_valid(memory, args[1], args[2]) {
+            return Err(negative_errno(libc::EFAULT));
+        }
+        let length = requested.min(MAX_HOST_IO);
+        Ok((
+            file.as_raw_fd(),
+            vec![GuestIoVec {
+                base: args[1],
+                length,
+            }],
+            length,
+        ))
+    } else {
+        ensure_readable(file)?;
+        let (vectors, total, kernel_total) = decode_guest_iovecs(memory, args[1], args[2])?;
+        // Retain the ordinary vector path's staging-bound refusal even though
+        // tmpfs itself does not impose O_DIRECT alignment on this carrier.
+        if kernel_total > total && file_status_flags(file)? & libc::O_DIRECT != 0 {
+            return Err(negative_errno(libc::EOPNOTSUPP));
+        }
+        Ok((file.as_raw_fd(), vectors, total))
+    }
+}
+
+fn check_random_copy_failure(memory: &GuestMemory) -> crate::Result<()> {
+    match memory.entry_gate().pending_failure() {
+        Some(failure) => Err(failure.error()),
+        None => Ok(()),
+    }
+}
+
+/// The caller holds the shared description's position guard. Generate only a
+/// bounded chunk and commit exactly the writable prefix to the actual OFD.
+/// Keeping this operation checked prevents an impossible private seek failure
+/// after copyout from becoming a fabricated guest errno or successful count.
+fn random_device_read(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    number: u64,
+    description: &RandomDeviceDescription,
+) -> crate::Result<i64> {
+    let prepared = prepare_random_device_read(memory, state, args, number);
+    // Iovec import maps ordinary memory errors to EFAULT. Admission poison
+    // must win over every preparation errno and zero-work return.
+    check_random_copy_failure(memory)?;
+    let (host_fd, vectors, total) = match prepared {
+        Ok(prepared) => prepared,
+        Err(errno) => return Ok(errno),
+    };
+    if total == 0 {
+        return Ok(0);
+    }
+    // SAFETY: the installed descriptor snapshot owns this read-only memfd.
+    let position = unsafe { libc::lseek(host_fd, 0, libc::SEEK_CUR) };
+    if position < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // Preserve the regular carrier's rw_verify_area overflow check before any
+    // copyout, including requests whose destination would fault later.
+    if position.checked_add(total as libc::off_t).is_none() {
+        return Ok(negative_errno(libc::EINVAL));
+    }
+    let mut chunk = [0_u8; 4096];
+    let mut copied = 0usize;
+    'vectors: for vector in vectors {
+        let mut vector_copied = 0usize;
+        while vector_copied < vector.length {
+            let length = (vector.length - vector_copied).min(chunk.len());
+            for (index, byte) in chunk[..length].iter_mut().enumerate() {
+                *byte = deterministic_random_device_byte(
+                    description.seed,
+                    position as u64 + copied as u64 + index as u64,
+                );
+            }
+            let written = match memory
+                .user()
+                .copy_to_user_prefix(vector.base + vector_copied as u64, &chunk[..length])
+            {
+                Ok(written) => written,
+                Err(_) => {
+                    check_random_copy_failure(memory)?;
+                    break 'vectors;
+                }
+            };
+            copied += written;
+            vector_copied += written;
+            #[cfg(test)]
+            if let Some(cause) = description.poison_after_copy.lock().unwrap().take() {
+                memory
+                    .entry_gate()
+                    .poison(None, crate::Error::SharedFailure(cause));
+            }
+            if written != length {
+                break 'vectors;
+            }
+        }
+    }
+    check_random_copy_failure(memory)?;
+    if copied == 0 {
+        return Ok(negative_errno(libc::EFAULT));
+    }
+    #[cfg(test)]
+    if description.fail_cursor_commit.swap(false, Ordering::SeqCst) {
+        return Err(std::io::Error::from_raw_os_error(libc::EIO).into());
+    }
+    let committed_position = position + copied as libc::off_t;
+    // SAFETY: the live owned memfd is seekable; the nonnegative target was
+    // bounded before copyout. Every supported current-position user holds
+    // this description's guard, and unmodeled exports are refused.
+    let result = unsafe { libc::lseek(host_fd, committed_position, libc::SEEK_SET) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if result != committed_position {
+        return Err(std::io::Error::other("KVM random-device cursor commit mismatch").into());
+    }
+    check_random_copy_failure(memory)?;
+    Ok(copied as i64)
 }
 
 fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -6630,6 +6837,7 @@ fn sendfile(
     state: &LoadedStaticElf,
     args: &[u64; 6],
     output: Option<&mut CapturedOutput>,
+    position_guard: Option<std::sync::MutexGuard<'_, ()>>,
 ) -> i64 {
     // Linux syscall `int` arguments consume only the low descriptor word.
     let out_fd = args[0] as libc::c_int;
@@ -6785,6 +6993,9 @@ fn sendfile(
             )
         }
     };
+    // The input position has committed. Do not make another random read wait
+    // for an unrelated potentially blocking standard-stream output operation.
+    drop(position_guard);
     if read < 0 {
         return io_error(std::io::Error::last_os_error());
     }
@@ -7271,6 +7482,10 @@ fn open_file(
             && let Ok(fd) = libc::c_int::try_from(result)
         {
             state.random_device_fds.insert(fd);
+            state.random_device_descriptions.insert(
+                fd,
+                Arc::new(RandomDeviceDescription::new(state.random_seed)),
+            );
         }
         return result;
     }
@@ -7596,7 +7811,11 @@ fn open_guest_fd_path(
         }
         return negative_errno(libc::EEXIST);
     }
-    if state.fdinfo_files.contains_key(&guest_fd) {
+    if state.fdinfo_files.contains_key(&guest_fd) || state.random_device_fds.contains(&guest_fd) {
+        // Random-only prerequisite from https://github.com/rrnewton/reverie/pull/610
+        // at acffb228964041190ff9aa071454a5f0017e34a1. Native random-device
+        // aliases are valid, but this private carrier would lose its stream
+        // metadata and permit writable reopening. Refuse that unsupported route.
         return negative_errno(libc::ENOSYS);
     }
     if flags & libc::O_TMPFILE as u64 == libc::O_TMPFILE as u64 {
@@ -7977,6 +8196,7 @@ struct DuplicateFdSource {
     fdinfo: Option<Arc<FdinfoDescription>>,
     object_inode: Arc<GuestFileIdentity>,
     is_random: bool,
+    random_description: Option<Arc<RandomDeviceDescription>>,
     signalfd_mask: Option<Arc<KernelSigset>>,
 }
 
@@ -8086,6 +8306,9 @@ fn duplicate_fd_at_or_above(
     if source.is_random {
         state.random_device_fds.insert(fd);
     }
+    if let Some(description) = source.random_description {
+        state.random_device_descriptions.insert(fd, description);
+    }
     replace_signalfd_mask(state, fd, source.signalfd_mask);
     if close_on_exec {
         state.cloexec_fds.insert(fd);
@@ -8138,6 +8361,7 @@ fn duplicate_fd(
     let source_synthetic_proc_nofollow = state.synthetic_proc_nofollow_fds.contains(&old_fd);
     let source_fdinfo = state.fdinfo_files.get(&old_fd).cloned();
     let source_is_random = state.random_device_fds.contains(&old_fd);
+    let source_random_description = state.random_device_descriptions.get(&old_fd).cloned();
     let source_signalfd_mask = signalfd_mask(state, old_fd);
     let Some(old_host_fd) = host_fd(state, old_fd) else {
         return negative_errno(libc::EBADF);
@@ -8173,6 +8397,9 @@ fn duplicate_fd(
     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
     if let Some(new_fd) = new_fd {
         let retired = state.insert_file(new_fd, file);
+        if let Some(description) = source_random_description {
+            state.random_device_descriptions.insert(new_fd, description);
+        }
         state.fd_object_inodes.insert(new_fd, source_object_inode);
         if source_is_random {
             state.random_device_fds.insert(new_fd);
@@ -8213,6 +8440,11 @@ fn duplicate_fd(
     } else {
         let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
         if new_fd >= 0 {
+            if let Some(description) = source_random_description {
+                state
+                    .random_device_descriptions
+                    .insert(new_fd as libc::c_int, description);
+            }
             state
                 .fd_object_inodes
                 .insert(new_fd as libc::c_int, source_object_inode);
@@ -10440,9 +10672,12 @@ fn translate_outgoing_control(control: &mut [u8], state: &LoadedStaticElf) -> Re
             let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
             if state.fdinfo_files.contains_key(&guest_fd)
                 || signalfd_mask(state, guest_fd).is_some()
+                || state.random_device_fds.contains(&guest_fd)
             {
-                // Receiving this private carrier without its virtual signalfd metadata
-                // would create an alias that can escape the nonblocking guard.
+                // Random-only prerequisite from https://github.com/rrnewton/reverie/pull/610
+                // at acffb228964041190ff9aa071454a5f0017e34a1. The receiver
+                // cannot reconstruct private stream/signalfd metadata. Refuse
+                // before host sendmsg delivers any payload or descriptors.
                 return Err(negative_errno(libc::ENOSYS));
             }
             write_control_fd(control, offset, host_fd)?;
@@ -13647,6 +13882,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
     let source_synthetic_proc_nofollow = state.synthetic_proc_nofollow_fds.contains(&guest_fd);
     let source_fdinfo = state.fdinfo_files.get(&guest_fd).cloned();
     let source_is_random = state.random_device_fds.contains(&guest_fd);
+    let source_random_description = state.random_device_descriptions.get(&guest_fd).cloned();
     let source_signalfd_mask = signalfd_mask(state, guest_fd);
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
@@ -13665,6 +13901,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 fdinfo: source_fdinfo,
                 object_inode: source_object_inode,
                 is_random: source_is_random,
+                random_description: source_random_description,
                 signalfd_mask: source_signalfd_mask,
             },
         ),
@@ -13680,6 +13917,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 fdinfo: source_fdinfo,
                 object_inode: source_object_inode,
                 is_random: source_is_random,
+                random_description: source_random_description,
                 signalfd_mask: source_signalfd_mask,
             },
         ),
@@ -15238,19 +15476,19 @@ fn deterministic_random_salt(value: u64, domain: u64) -> u64 {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-228): Review cross-backend random-device stream parity.
 fn deterministic_random_device_bytes(seed: u64, length: usize) -> Vec<u8> {
+    (0..length)
+        .map(|index| deterministic_random_device_byte(seed, index as u64))
+        .collect()
+}
+
+fn deterministic_random_device_byte(seed: u64, index: u64) -> u8 {
     const BYTE_STRIDE: u8 = 73;
     const FIRST_BYTE: u8 = 41;
-
-    (0..length)
-        .map(|index| {
-            let index = index as u64;
-            let seed_byte = seed.rotate_right(((index % 8) * 8) as u32) as u8;
-            (index as u8)
-                .wrapping_mul(BYTE_STRIDE)
-                .wrapping_add(FIRST_BYTE)
-                ^ seed_byte
-        })
-        .collect()
+    let seed_byte = seed.rotate_right(((index % 8) * 8) as u32) as u8;
+    (index as u8)
+        .wrapping_mul(BYTE_STRIDE)
+        .wrapping_add(FIRST_BYTE)
+        ^ seed_byte
 }
 
 // Child processes and guest workers bypass Detcore's virtual scheduler. Validate
@@ -16651,6 +16889,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         file_retirement: crate::elf::FileRetirement::default(),
         fd_entry_ids: std::collections::BTreeMap::new(),
         random_device_fds: std::collections::BTreeSet::new(),
+        random_device_descriptions: std::collections::BTreeMap::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
         stderr_alias_fds: std::collections::BTreeSet::new(),
         cloexec_fds: std::collections::BTreeSet::new(),
@@ -16679,6 +16918,7 @@ pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf
 
 #[cfg(test)]
 mod tests {
+    include!("executor/random_device_stream_tests.rs");
     use std::collections::BTreeMap;
     use std::io::Read;
     use std::io::Seek;
@@ -17399,6 +17639,9 @@ mod tests {
                 panic!("filesystem syscall changed a segment base")
             }
             SyscallAction::Exit(code) => panic!("filesystem syscall exited with {code:?}"),
+            SyscallAction::Failure(error) => {
+                panic!("filesystem syscall failed internally: {error}")
+            }
         }
     }
 
@@ -17424,6 +17667,9 @@ mod tests {
                 segment: Some(_), ..
             } => panic!("filesystem syscall changed a segment base"),
             SyscallAction::Exit(code) => panic!("filesystem syscall exited with {code:?}"),
+            SyscallAction::Failure(error) => {
+                panic!("filesystem syscall failed internally: {error}")
+            }
         }
     }
 
@@ -20889,7 +21135,6 @@ mod tests {
         const BUFFER: u64 = 0x200;
         for path in [
             "/proc/self/loginuid",
-            "/dev/urandom",
             "/sys/devices/system/cpu/cpufreq/boost",
         ] {
             let root = TestDir::new();
@@ -22558,6 +22803,7 @@ mod tests {
                             &state,
                             &[raw_stdin, 3, offset, count, 0, 0],
                             capture.then_some(&mut output),
+                            None,
                         ),
                         count as i64,
                         "writable stdin {raw_stdin:#x}, capture={capture}, offset={offset:#x}"
@@ -44793,6 +45039,7 @@ mod tests {
                 SyscallAction::Continue { .. } => {
                     panic!("exit syscall with raw status {raw:#x} did not exit");
                 }
+                SyscallAction::Failure(error) => panic!("exit syscall failed internally: {error}"),
             }
         }
     }
@@ -45479,6 +45726,9 @@ mod tests {
         match action {
             SyscallAction::Continue { result, .. } => result,
             SyscallAction::Exit(code) => panic!("expected Continue, got Exit({code:?})"),
+            SyscallAction::Failure(error) => {
+                panic!("expected Continue, got internal failure: {error}")
+            }
         }
     }
 

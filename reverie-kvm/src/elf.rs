@@ -831,6 +831,8 @@ pub(crate) struct LoadedStaticElf {
     // AUTONOMOUS-BOT-IMPLEMENTED: Keep deterministic random descriptors on the Tool path.
     // TODO-HUMAN-REVIEW(PR-235): Review random-device descriptor lifecycle parity.
     pub random_device_fds: std::collections::BTreeSet<i32>,
+    pub random_device_descriptions:
+        std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::RandomDeviceDescription>>,
     pub stdout_alias_fds: std::collections::BTreeSet<i32>,
     pub stderr_alias_fds: std::collections::BTreeSet<i32>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Model guest close-on-exec state independently.
@@ -875,6 +877,7 @@ impl LoadedStaticElf {
     /// callers retire them after both the authoritative file-table and
     /// signal-transaction guards are released.
     pub(crate) fn insert_file(&mut self, fd: i32, file: std::fs::File) -> Vec<std::fs::File> {
+        self.random_device_descriptions.remove(&fd);
         let mut retired: Vec<_> = self.files.insert(fd, file).into_iter().collect();
         if fd == libc::STDIN_FILENO {
             retired.extend(self.take_stdin());
@@ -892,6 +895,7 @@ impl LoadedStaticElf {
     }
 
     pub(crate) fn remove_file(&mut self, fd: i32) -> Option<std::fs::File> {
+        self.random_device_descriptions.remove(&fd);
         let file = self.files.remove(&fd);
         self.fd_entry_ids.remove(&fd);
         file
@@ -997,6 +1001,7 @@ impl LoadedStaticElf {
             file_retirement: FileRetirement::default(),
             fd_entry_ids: self.fd_entry_ids.clone(),
             random_device_fds: self.random_device_fds.clone(),
+            random_device_descriptions: self.random_device_descriptions.clone(),
             stdout_alias_fds: self.stdout_alias_fds.clone(),
             stderr_alias_fds: self.stderr_alias_fds.clone(),
             cloexec_fds: self.cloexec_fds.clone(),
@@ -1057,6 +1062,11 @@ impl LoadedStaticElf {
             .random_device_fds
             .into_iter()
             .filter(|fd| files.contains_key(fd))
+            .collect();
+        let random_device_descriptions = previous
+            .random_device_descriptions
+            .into_iter()
+            .filter(|(fd, _)| files.contains_key(fd))
             .collect();
         let stdout_alias_fds = previous
             .stdout_alias_fds
@@ -1177,6 +1187,7 @@ impl LoadedStaticElf {
         self.file_retirement = previous.file_retirement;
         self.fd_entry_ids = fd_entry_ids;
         self.random_device_fds = random_device_fds;
+        self.random_device_descriptions = random_device_descriptions;
         self.stdout_alias_fds = stdout_alias_fds;
         self.stderr_alias_fds = stderr_alias_fds;
         self.cloexec_fds = std::collections::BTreeSet::new();
@@ -1557,6 +1568,7 @@ fn load_executable(
         file_retirement: FileRetirement::default(),
         fd_entry_ids: std::collections::BTreeMap::new(),
         random_device_fds: std::collections::BTreeSet::new(),
+        random_device_descriptions: std::collections::BTreeMap::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
         stderr_alias_fds: std::collections::BTreeSet::new(),
         cloexec_fds: std::collections::BTreeSet::new(),
