@@ -42,6 +42,27 @@ pub trait MemoryAccess {
         write_to: &mut [io::IoSliceMut],
     ) -> Result<usize, Errno>;
 
+    /// Performs one synchronous native write to the exact expected task.
+    ///
+    /// An implementation must check its actual task against `expected_tid`
+    /// before any effect, respect the target's VMA access permissions, and
+    /// return the unmodified native byte count or errno. It must not retry a
+    /// short transfer, collapse `EFAULT` to zero, or fall back to ptrace writes.
+    /// All effects must finish before return: no detached work or retained
+    /// buffer references are permitted. Remote protection keys are not proved
+    /// by this interface; the caller separately owns task-generation, mapping,
+    /// foreground and lifetime authority throughout the operation.
+    ///
+    /// Backends without this exact capability refuse without accessing memory.
+    fn write_native_user_vectored(
+        &mut self,
+        _expected_tid: i32,
+        _local: &[io::IoSlice],
+        _remote: &mut [io::IoSliceMut],
+    ) -> Result<usize, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+
     /// Performs a read starting at the given address. The number of bytes read
     /// is returned. The buffer is not guaranteed to be completely filled.
     fn read<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<usize, Errno>
@@ -425,5 +446,41 @@ mod user_access_default_tests {
         }
         assert_eq!(memory.write(address, &[0; 8]), Ok(8));
         assert_eq!(memory.calls, 1);
+    }
+}
+
+#[cfg(test)]
+mod native_user_write_tests {
+    use super::*;
+
+    #[test]
+    fn native_user_write_default_refuses_without_using_ordinary_memory_access() {
+        struct Unsupported;
+        impl MemoryAccess for Unsupported {
+            fn read_vectored(
+                &self,
+                _: &[io::IoSlice],
+                _: &mut [io::IoSliceMut],
+            ) -> Result<usize, Errno> {
+                panic!("native write must not call ordinary read");
+            }
+
+            fn write_vectored(
+                &mut self,
+                _: &[io::IoSlice],
+                _: &mut [io::IoSliceMut],
+            ) -> Result<usize, Errno> {
+                panic!("native write must not call ordinary write");
+            }
+        }
+
+        let mut memory = Unsupported;
+        let mut target = [0xa5; 8];
+        let local = [io::IoSlice::new(b"newbytes")];
+        let result =
+            memory.write_native_user_vectored(1, &local, &mut [io::IoSliceMut::new(&mut target)]);
+        assert_eq!(result, Err(Errno::EOPNOTSUPP));
+        assert_eq!(Errno::EOPNOTSUPP, Errno::new(libc::ENOTSUP));
+        assert_eq!(target, [0xa5; 8]);
     }
 }
