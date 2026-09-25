@@ -48,35 +48,14 @@ use reverie::syscalls::Errno;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie_memory::MemoryAccess;
+pub use reverie_narf_core::NarfSyscallOutcome;
+pub use reverie_narf_core::NarfSyscallRequest;
+pub use reverie_narf_core::OriginalAlreadyExecuted;
+pub use reverie_narf_core::RawSyscallArgs;
 
 const TAIL_NONE: u8 = 0;
 const TAIL_RETURNED: u8 = 1;
 const TAIL_CONTEXT_MANAGED: u8 = 2;
-
-/// Six raw Linux syscall arguments in architecture register order.
-pub type RawSyscallArgs = [u64; 6];
-
-/// One explicit native syscall request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NarfSyscallRequest {
-    /// Linux syscall number for the current architecture.
-    pub number: i64,
-    /// Six raw register arguments.
-    pub args: RawSyscallArgs,
-}
-
-/// Outcome reported by Narf's kernel-owned native transition.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NarfSyscallOutcome {
-    /// The handler returned a raw Linux result (`>= 0` or `-errno`).
-    Returned(i64),
-    /// The handler parked, execed, exited, or redirected the task.
-    ContextManaged,
-}
-
-/// The original transition had already been consumed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct OriginalAlreadyExecuted;
 
 /// Direct Narf services required by one stopped guest thread.
 ///
