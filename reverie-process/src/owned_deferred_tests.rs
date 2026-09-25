@@ -219,62 +219,113 @@ mod owned_deferred_tests {
         });
     }
 
+    fn missing_pidfd_drained_result(payload: Vec<u8>, deadline: Instant) {
+        let (mapping, shared) = new_shared_drop_state();
+        let _fault = OwnedCloneFaultGuard::install(
+            super::super::super::clone::OwnedCloneTestFault::MissingPidfd,
+        );
+        OWNED_DEFERRED_DRAIN_HOOK.with(|hook| {
+            hook.set(Some(|fd| {
+                OWNED_RESULT_PIPE_CAPACITY.with(|capacity| {
+                    capacity.set(Some(
+                        Errno::result(unsafe { libc::fcntl(fd, libc::F_GETPIPE_SZ) }).unwrap(),
+                    ));
+                });
+            }))
+        });
+        let expected = bincode::serde::encode_to_vec(
+            Ok::<_, StartupError>(&payload),
+            bincode::config::legacy(),
+        )
+        .unwrap();
+        let failed = Container::new()
+            .run_with_deferred_drop_owned(&mut || {
+                unsafe { &*shared }.started.store(true, Ordering::Release);
+                (payload.clone(), BlockingDrop { shared })
+            })
+            .unwrap_err();
+        let run = match failed {
+            StartupOwnedFailure::AfterClone { cause, run } => {
+                assert_eq!(cause, OwnedRunFailure::Startup(StartupError::Protocol));
+                run
+            }
+            _ => panic!("must retain actual clone"),
+        };
+        let capacity = OWNED_RESULT_PIPE_CAPACITY.with(|value| value.get());
+        eprintln!(
+            "missing-pidfd original prefix={} expected={} eof={} pipe_capacity={capacity:?} observation={:?} last_error={:?}",
+            run.provisional_bytes().len(),
+            expected.len(),
+            run.result_eof(),
+            run.cleanup().observation(),
+            run.cleanup().last_error()
+        );
+        // This is the same predicate on old/fixed production. Record it before
+        // Drop or the isolated process's distinct two-second rescue.
+        assert!(
+            run.provisional_bytes() == expected,
+            "exact complete encoded bytes"
+        );
+        assert!(run.result_eof());
+        if payload.len() > 65536 {
+            assert!(expected.len() > capacity.unwrap() as usize);
+        }
+        wait_flag(&unsafe { &*shared }.started, deadline);
+        assert!(run.cleanup().pidfd.is_none());
+        assert!(run.cleanup().wait_owned);
+        assert_eq!(
+            run.cleanup().observation(),
+            ChildCleanupObservation::Pending
+        );
+        assert_eq!(
+            run.cleanup().last_error(),
+            None,
+            "no implicit cancellation attempt"
+        );
+        let pid = run.cleanup().child_pid();
+        let run = match run.cancel_until(Instant::now()) {
+            OwnedFinalize::Failed { cause, cleanup } => {
+                assert_eq!(cause, OwnedRunFailure::Startup(StartupError::Protocol));
+                assert_eq!(cleanup.cleanup().last_error(), Some(Errno::EBADF));
+                assert_eq!(
+                    cleanup.cleanup().observation(),
+                    ChildCleanupObservation::Pending
+                );
+                assert_eq!(cleanup.provisional_bytes(), expected);
+                cleanup
+            }
+            other => panic!("missing identity became {}", outcome_kind(&other)),
+        };
+        unsafe { &*shared }.release.store(true, Ordering::Release);
+        match run.retry_until(deadline) {
+            OwnedFinalize::Failed { cause, cleanup } => {
+                assert_eq!(cause, OwnedRunFailure::Startup(StartupError::Protocol));
+                assert_eq!(
+                    cleanup.cleanup().observation(),
+                    ChildCleanupObservation::Reaped(ExitStatus::Exited(0))
+                );
+                assert_eq!(cleanup.cleanup().last_error(), Some(Errno::EBADF));
+                assert_eq!(cleanup.provisional_bytes(), expected);
+                assert!(cleanup.result_eof());
+                eprintln!(
+                    "missing-pidfd settled actual_exit=0 original_wait=true numeric_cancel=false sticky=Protocol bytes={}",
+                    expected.len()
+                );
+            }
+            other => panic!("missing identity became {}", outcome_kind(&other)),
+        }
+        assert_reaped(pid);
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
     #[test]
     fn owned_deferred_missing_pidfd_keeps_original_wait_without_cancel() {
-        isolated(|deadline| {
-            let (mapping, shared) = new_shared_drop_state();
-            let _fault = OwnedCloneFaultGuard::install(
-                super::super::super::clone::OwnedCloneTestFault::MissingPidfd,
-            );
-            let failed = Container::new()
-                .run_with_deferred_drop_owned(&mut || {
-                    unsafe { &*shared }.started.store(true, Ordering::Release);
-                    wait_flag(&unsafe { &*shared }.release, deadline);
-                    (31_u32, ())
-                })
-                .unwrap_err();
-            let run = match failed {
-                StartupOwnedFailure::AfterClone { cause, run } => {
-                    assert_eq!(cause, OwnedRunFailure::Startup(StartupError::Protocol));
-                    run
-                }
-                _ => panic!("must retain actual clone"),
-            };
-            wait_flag(&unsafe { &*shared }.started, deadline);
-            assert!(run.cleanup().pidfd.is_none());
-            assert!(run.cleanup().wait_owned);
-            assert_eq!(
-                run.cleanup().observation(),
-                ChildCleanupObservation::Pending
-            );
-            assert_eq!(
-                run.cleanup().last_error(),
-                None,
-                "no implicit cancellation attempt"
-            );
-            assert!(run.provisional_bytes().is_empty());
-            assert!(!run.result_eof());
-            let pid = run.cleanup().child_pid();
-            unsafe { &*shared }.release.store(true, Ordering::Release);
-            match run.retry_until(deadline) {
-                OwnedFinalize::Failed { cause, cleanup } => {
-                    assert_eq!(cause, OwnedRunFailure::Startup(StartupError::Protocol));
-                    assert_eq!(
-                        cleanup.cleanup().observation(),
-                        ChildCleanupObservation::Reaped(ExitStatus::Exited(0))
-                    );
-                    assert_eq!(cleanup.cleanup().last_error(), Some(Errno::EBADF));
-                    assert!(
-                        cleanup.provisional_bytes().is_empty(),
-                        "failed owner never redrains"
-                    );
-                    assert!(!cleanup.result_eof());
-                }
-                other => panic!("missing identity became {}", outcome_kind(&other)),
-            }
-            assert_reaped(pid);
-            unsafe { unmap_shared_drop_state(mapping, shared) };
-        });
+        isolated(|deadline| missing_pidfd_drained_result(vec![31; 4], deadline));
+    }
+
+    #[test]
+    fn owned_deferred_missing_pidfd_drains_larger_than_pipe_before_refusal() {
+        isolated(|deadline| missing_pidfd_drained_result(vec![37; 1024 * 1024], deadline));
     }
 
     thread_local! {
@@ -385,6 +436,140 @@ mod owned_deferred_tests {
             assert_reaped(pid);
             unsafe { unmap_shared_drop_state(mapping, shared) };
         });
+    }
+
+    #[derive(Debug)]
+    struct LargeHeldSerializer {
+        shared: *mut SharedDropState,
+        deadline: Instant,
+    }
+    impl serde::Serialize for LargeHeldSerializer {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeSeq;
+            let mut seq = serializer.serialize_seq(Some(1024 * 1024))?;
+            for _ in 0..16 * 1024 {
+                seq.serialize_element(&91_u8)?;
+            }
+            unsafe { &*self.shared }
+                .started
+                .store(true, Ordering::Release);
+            wait_flag(&unsafe { &*self.shared }.release, self.deadline);
+            for _ in 16 * 1024..1024 * 1024 {
+                seq.serialize_element(&91_u8)?;
+            }
+            seq.end()
+        }
+    }
+
+    fn compound_missing_pidfd_read_error(deadline: Instant, implicit_drop: bool) {
+        let (mapping, shared) = new_shared_drop_state();
+        let _fault = OwnedCloneFaultGuard::install(
+            super::super::super::clone::OwnedCloneTestFault::MissingPidfd,
+        );
+        READ_DEADLINE.with(|value| value.set(Some(deadline)));
+        OWNED_DEFERRED_DRAIN_HOOK.with(|hook| hook.set(Some(partial_read_hook)));
+        let failed = Container::new()
+            .run_with_deferred_drop_owned(&mut || {
+                // Bind the precise broken-pipe outcome; Rust normally ignores it.
+                assert_ne!(
+                    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) },
+                    libc::SIG_ERR
+                );
+                let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+                assert_eq!(unsafe { libc::sigemptyset(&mut mask) }, 0);
+                assert_eq!(unsafe { libc::sigaddset(&mut mask, libc::SIGPIPE) }, 0);
+                assert_eq!(
+                    unsafe { libc::sigprocmask(libc::SIG_UNBLOCK, &mask, std::ptr::null_mut()) },
+                    0
+                );
+                (LargeHeldSerializer { shared, deadline }, ())
+            })
+            .unwrap_err();
+        let run = match failed {
+            StartupOwnedFailure::AfterClone { cause, run } => {
+                assert_eq!(cause, OwnedRunFailure::ResultRead(Errno::EAGAIN));
+                run
+            }
+            _ => panic!("actual read error must retain original clone"),
+        };
+        let expected = bincode::serde::encode_to_vec(
+            Ok::<_, StartupError>(vec![91_u8; 1024 * 1024]),
+            bincode::config::legacy(),
+        )
+        .unwrap();
+        let bytes = run.provisional_bytes().to_vec();
+        assert!(!bytes.is_empty() && bytes.len() < expected.len());
+        assert!(expected.starts_with(&bytes));
+        assert!(run.reader.is_some());
+        assert!(!run.result_reader_abandoned());
+        assert!(!run.result_eof());
+        assert!(run.cleanup().pidfd.is_none());
+        assert!(run.cleanup().wait_owned);
+        assert_eq!(run.cleanup().last_error(), None);
+        assert_eq!(
+            run.cleanup().observation(),
+            ChildCleanupObservation::Pending
+        );
+        let pid = run.cleanup().child_pid();
+        eprintln!(
+            "compound original primary=ResultRead(EAGAIN) prefix={} expected={} reader_retained=true eof=false wait_owned=true pidfd_missing=true automatic_cleanup=false drop={implicit_drop}",
+            bytes.len(),
+            expected.len()
+        );
+        unsafe { &*shared }.release.store(true, Ordering::Release);
+        if implicit_drop {
+            drop(run);
+            assert!(Instant::now() < deadline);
+            assert_reaped(pid);
+            eprintln!("compound Drop returned before original deadline; original child reaped");
+        } else {
+            match run.retry_until(deadline) {
+                OwnedFinalize::Failed { cause, cleanup } => {
+                    eprintln!(
+                        "compound original cleanup primary={cause:?} observation={:?} last_error={:?} abandoned={} eof={} bytes={}",
+                        cleanup.cleanup().observation(),
+                        cleanup.cleanup().last_error(),
+                        cleanup.result_reader_abandoned(),
+                        cleanup.result_eof(),
+                        cleanup.provisional_bytes().len()
+                    );
+                    assert_eq!(cause, OwnedRunFailure::ResultRead(Errno::EAGAIN));
+                    assert_eq!(
+                        cleanup.cleanup().observation(),
+                        ChildCleanupObservation::Reaped(ExitStatus::Signaled(
+                            Signal::SIGPIPE,
+                            false
+                        ))
+                    );
+                    assert_eq!(cleanup.cleanup().last_error(), Some(Errno::EBADF));
+                    assert!(cleanup.result_reader_abandoned());
+                    assert!(!cleanup.result_eof());
+                    assert_eq!(cleanup.provisional_bytes(), bytes);
+                    let cleanup = match cleanup.retry_until(deadline) {
+                        OwnedFinalize::Failed { cause, cleanup } => {
+                            assert_eq!(cause, OwnedRunFailure::ResultRead(Errno::EAGAIN));
+                            cleanup
+                        }
+                        other => panic!("sticky read failure became {}", outcome_kind(&other)),
+                    };
+                    assert!(cleanup.result_reader_abandoned());
+                    assert_eq!(cleanup.provisional_bytes(), bytes);
+                }
+                other => panic!("compound refusal became {}", outcome_kind(&other)),
+            }
+            assert_reaped(pid);
+        }
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn owned_deferred_compound_missing_pidfd_read_error_releases_reader_before_wait() {
+        isolated(|deadline| compound_missing_pidfd_read_error(deadline, false));
+    }
+
+    #[test]
+    fn owned_deferred_compound_missing_pidfd_read_error_drop_releases_reader() {
+        isolated(|deadline| compound_missing_pidfd_read_error(deadline, true));
     }
 
     #[test]

@@ -1317,6 +1317,9 @@ impl Container {
     /// any external parent resources must remain alive through every returned
     /// owner, including errors. Ownership here covers the direct child, not
     /// arbitrary descendants.
+    /// A normal raw-clone callback return exits only its calling thread. Join
+    /// worker threads before returning, or arrange an explicit group exit
+    /// (for example `_exit` in `D`) if those workers must end with the callback.
     ///
     /// The child publishes and closes its encoded result before dropping `D`.
     /// Linux pidfd support is required and probed before clone. After clone,
@@ -1325,6 +1328,9 @@ impl Container {
     /// before such a failure is detected. Call the retained owner's explicit
     /// cancellation/observation methods with an absolute deadline; failed
     /// results stay failed even when the child later exits successfully.
+    /// Atomic pidfd availability is validated after the initial drain: a real
+    /// read failure is reported first; otherwise missing identity is a protocol
+    /// refusal with complete encoded bytes and EOF retained.
     ///
     /// Initial result acquisition blocks draining the pipe before wait, without
     /// a workload deadline or size cap. Explicit finalization bounds do not
@@ -1402,13 +1408,13 @@ impl Container {
         // original wait owner after clone has succeeded.
         let mut owned = OwnedFinalization::new(child, reader);
         drop(writer);
-        if owned.cleanup().pidfd.is_none() {
-            return Err(owned.refuse(OwnedRunFailure::Startup(StartupError::Protocol)));
-        }
         #[cfg(test)]
         owned_deferred_before_drain(&mut owned);
         if let Err(error) = owned.drain() {
             return Err(owned.refuse(error));
+        }
+        if owned.cleanup().pidfd.is_none() {
+            return Err(owned.refuse(OwnedRunFailure::Startup(StartupError::Protocol)));
         }
         Ok(OwnedDeferredContainerRun { inner: owned })
     }
@@ -2321,6 +2327,12 @@ impl<T> OwnedFinalization<T> {
     pub fn result_eof(&self) -> bool {
         self.eof
     }
+    /// Whether cleanup abandoned an unread result reader because a failed
+    /// owner lacked a pidfd. Collected bytes and the first failure stay intact;
+    /// abandonment is not EOF, cancellation, or proof of child termination.
+    pub fn result_reader_abandoned(&self) -> bool {
+        !self.eof && self.reader.is_none()
+    }
     /// Borrows diagnostic identity and cleanup observations without disarming ownership.
     pub fn cleanup(&self) -> &OwnedContainerCleanup {
         self.child.as_ref().unwrap()
@@ -2360,9 +2372,16 @@ impl<T> OwnedFinalization<T> {
             ))),
         }
     }
-    /// Retries observation/cancellation without losing bytes, FD or child identity.
+    /// Retries observation/cancellation while preserving bytes and the original
+    /// child identity, with unread-reader abandonment only as described below.
     /// A previously failed result stays failed even if cleanup later succeeds.
+    /// If that failed owner has no pidfd, close its unread result reader before
+    /// waiting: retaining it could block the child serializer forever while
+    /// waiting for that same child. This preserves the original wait and bytes,
+    /// but permits the child to observe a broken pipe. It does not guarantee
+    /// arbitrary workers or a child ignoring write failures will terminate.
     pub fn retry_until(mut self, deadline: std::time::Instant) -> OwnedFinalize<T> {
+        self.abandon_unread_result_without_pidfd();
         let child = self.child.as_mut().unwrap();
         if let Some(cause) = self.failure {
             child.cancel_and_wait_until(deadline);
@@ -2421,11 +2440,25 @@ impl<T> OwnedFinalization<T> {
         self.failure.get_or_insert(OwnedRunFailure::Cancelled);
         self.retry_until(deadline)
     }
+
+    fn abandon_unread_result_without_pidfd(&mut self) {
+        if self.failure.is_some()
+            && self
+                .child
+                .as_ref()
+                .is_some_and(|child| child.pidfd.is_none())
+        {
+            self.reader.take();
+        }
+    }
 }
 
 impl<T> Drop for OwnedFinalization<T> {
     fn drop(&mut self) {
-        // Explicit, rather than relying on field order or generic T destruction.
+        // An unread serializer cannot make progress while this owner both
+        // keeps its reader open and waits without a cancellation capability.
+        // Keep the original child wait; only abandon that pipe endpoint.
+        self.abandon_unread_result_without_pidfd();
         drop(self.child.take());
         self.reader.take();
     }
