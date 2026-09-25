@@ -278,6 +278,11 @@ impl Publication {
         *self.join_result.lock().unwrap()
     }
 
+    #[cfg(test)]
+    pub(super) fn recorded_join_for_test(&self) -> Option<bool> {
+        *self.join_result.lock().unwrap()
+    }
+
     pub(super) fn join_blocking(&self) -> bool {
         self.close();
         let mut thread = self.thread.lock().unwrap();

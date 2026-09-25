@@ -274,6 +274,8 @@ pub(super) struct TaskExits {
     pub(super) collector: Option<TaskExit>,
     barrier_complete: bool,
     barrier: ExitBarrier,
+    #[cfg(test)]
+    join_completion_probe: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Default for TaskExits {
@@ -283,6 +285,8 @@ impl Default for TaskExits {
             collector: None,
             barrier_complete: false,
             barrier: Arc::new(rusage_self_barrier),
+            #[cfg(test)]
+            join_completion_probe: None,
         }
     }
 }
@@ -295,6 +299,31 @@ impl TaskExits {
             completed.store(true, std::sync::atomic::Ordering::Release);
             Ok(())
         });
+    }
+
+    #[cfg(test)]
+    pub(super) fn install_drop_order_probes(
+        &mut self,
+        joins_completed: Arc<std::sync::atomic::AtomicBool>,
+        barrier_completed: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        self.join_completion_probe = Some(joins_completed.clone());
+        self.barrier = Arc::new(move || {
+            assert!(
+                joins_completed.load(std::sync::atomic::Ordering::Acquire),
+                "task-exit barrier ran before both blocking joins completed"
+            );
+            rusage_self_barrier()?;
+            barrier_completed.store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        });
+    }
+
+    #[cfg(test)]
+    pub(super) fn publish_blocking_joins_for_test(&self) {
+        if let Some(completed) = &self.join_completion_probe {
+            completed.store(true, std::sync::atomic::Ordering::Release);
+        }
     }
 
     pub(super) fn recover_startup_until(&self, deadline: Instant) -> io::Result<bool> {
@@ -446,6 +475,7 @@ mod tests {
                 barrier_events.lock().unwrap().push("barrier");
                 Ok(())
             }),
+            join_completion_probe: None,
         };
         assert_eq!(exits.settle_until(Instant::now()), Settlement::Pending);
         events.lock().unwrap().push("after-pending");
@@ -466,6 +496,7 @@ mod tests {
                 collector: None,
                 barrier_complete: false,
                 barrier: Arc::new(|| panic!("fault must not reach barrier")),
+                join_completion_probe: None,
             };
             assert!(matches!(
                 exits.settle_until(Instant::now() + Duration::from_secs(1)),
@@ -580,6 +611,7 @@ mod tests {
             collector: None,
             barrier_complete: false,
             barrier: Arc::new(|| panic!("fault must not reach barrier")),
+            join_completion_probe: None,
         };
         let pauses = Arc::new(Mutex::new(Vec::new()));
         let observed_pauses = pauses.clone();
