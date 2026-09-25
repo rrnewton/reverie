@@ -44,7 +44,7 @@ REG
 export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry.json
 
 # Exact landed production primary under review. The independent literals below
-# bind all 23 primary paths and blobs plus the exact staged PR 3212 transition.
+# bind all 23 primary paths and blobs plus the exact staged PR 3216 transition.
 # Historical maps remain planted negatives at the current commit and positives
 # only at their exact bounded commits.
 # The synthetic repository below retains all transition lifecycle controls.
@@ -81,28 +81,28 @@ PRODUCTION_DEFINITION
 )
 production_transition=$(cat <<'PRODUCTION_TRANSITION'
 {
-  "id": "rrnewton-hermit-pr-3212",
-  "registered_at": "5066b0a5b73d54c2c6709c8344cec6f3eb84a917",
+  "id": "rrnewton-hermit-pr-3216",
+  "registered_at": "b6c6db017f1d97bbe08736dc8519c171d3814b02",
   "provenance": {
     "repository": "rrnewton/hermit",
-    "pull_request": 3212,
-    "head": "5066b0a5b73d54c2c6709c8344cec6f3eb84a917"
+    "pull_request": 3216,
+    "head": "b6c6db017f1d97bbe08736dc8519c171d3814b02"
   },
-  "finalize_after": "2026-09-24T15:30:00Z",
-  "expires_at": "2026-09-25T15:30:00Z",
+  "finalize_after": "2026-09-25T07:30:00Z",
+  "expires_at": "2026-09-26T07:30:00Z",
   "candidate_coverage_status": "complete",
   "added_paths": [],
   "candidate": {
     ".config/nextest.toml": "b409b5170b8d6b9aecb1c35707aa1bd6f10045c0",
-    ".github/workflows/ci-portable.yml": "a4a487afc421501837f4ac027ab83942cfe52e5e",
+    ".github/workflows/ci-portable.yml": "03cf982edf2beaf74b27422cb9f356ff21a5e850",
     "ci/manifest-plan/src/bin/nextest-cpu-wrapper.rs": "40561f929a199c853dd5c00f190d3542b08efae6",
     "ci/manifest-plan/src/ledger.rs": "0b36d76824b0b345ef9129f8d15f822eb38ac7f9",
     "ci/manifest-plan/src/lib.rs": "9e343ba1f12d04fc0cadde246a9c49dd74cb5600",
     "ci/manifest-plan/src/nextest_binaries.rs": "6d39d8ab9a225cecb044cbfbca7773513e32cfc6",
     "ci/manifest-plan/src/nextest_cpu.rs": "f06d6cd11c3c5bffbab0a7d9267b1ede4af49f76",
-    "ci/manifest-plan/src/runner.rs": "a960679a6a61deb371071dc001a7d7d8bde347f4",
+    "ci/manifest-plan/src/runner.rs": "65a94d64181950c91dda5269a6648caaed9d9ad2",
     "ci/manifest-plan/src/service_result.rs": "b138f1937c2af8269755cfeb3311c4f2dec3c8b8",
-    "ci/manifest-plan/src/timeouts.rs": "65ecae4916d76749f0970b077e9399a3a4355776",
+    "ci/manifest-plan/src/timeouts.rs": "3fc546733c390c7b0ca6612c6d10717633ed072e",
     "ci/nextest-binaries.rs": "6ca925dd2d7eac953e85f9c48796c8baee58220c",
     "ci/nextest-test-results.rs": "f5a10d1f2c42d6b0a4077dc7118293aa3183af11",
     "ci/nextest-timeout-config.rs": "74e194d8762b744d77a16479b76373ed3a400173",
