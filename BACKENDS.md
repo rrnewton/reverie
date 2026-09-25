@@ -42,15 +42,25 @@ implement that common launch contract
 [SaBRe adapter][sabre-adapter]). This is an API-status distinction, not a claim
 that the latter paths are simulations.
 
-`reverie-narf-core` provides the dependency-free `no_std` request, outcome,
-native-transition, and direct-state driver boundary. `reverie-narf` reuses
-those wire types and currently implements the generic per-syscall Tool/Guest
-driver over a direct kernel trait, including original and repeated injected
-syscalls, register/memory/stack providers, timers, per-thread state, and direct
-singleton calls. It does **not** yet implement the `Backend` launch/lifecycle contract or
-link into a Narf kernel image: Reverie's current public API is Linux/`std`, while
-the Narf kernel is `no_std`. Until that split and the Narf adapter land, this is
-an executable driver component, not a claim of a working Narf backend
+`reverie-narf-core` is the `no_std` (`core` + `alloc`) execution core the
+Narf kernel is meant to link. It hosts any unmodified `T: reverie::Tool` over
+a narrow `KernelServices` trait (current task IDs, auxiliary vector, memory,
+register snapshot, the kernel-owned native transition, created-task reports
+and daemonize). It owns the run's `GlobalTool` singleton, one Tool per process
+and one `ThreadState` per thread; polls each Tool callback exactly once and
+fails closed with a named error if the future is still pending; calls
+`GlobalTool::receive_rpc` directly; and runs `on_exit_thread` and
+`on_exit_process` exactly once. `reverie-narf` is its host (`std`) face: it
+re-exports the core and adds a `std::sync::Mutex` task lock. The core builds
+for `x86_64-unknown-none` in `nostd-gate`, and its tests drive reverie-examples'
+counter1 and counter2 through a fake kernel. Timers, `read_clock` and
+`set_regs` return `ENOSYS`, and signal callbacks are never delivered. A Tool
+that subscribes to CPUID or RDTSC events, asks for host-owned threads or
+observes signal dequeues is refused when the host is created. The previous
+std-only `reverie-narf` driver routed timers and register writes to its kernel
+trait; that routing returns when Narf provides those services. It does **not**
+implement the `Backend` launch contract, and no Narf kernel implements `KernelServices` yet,
+so this is an executable core, not a claim of a working Narf backend
 ([Narf driver][narf-driver]).
 
 ## Mechanism matrix
@@ -65,7 +75,7 @@ an executable driver component, not a claim of a working Narf backend
 | **e9patch, direct opt-in** | The same AOT frame calls the shared dispatcher directly in ordinary guest context ([AOT bridge][e9-aot]). | The shared preload seccomp/SIGSYS runtime traps residual post-constructor syscalls and enforces its documented fail-closed guards. Its stated boundary excludes static/`AT_SECURE` guests, early loader calls, and exec ([preload boundary][preload-lib], [trap flow][preload-trap]). | A tool-specific preload hosts `T`; a UDS `RpcServer` owns the singleton and the guest uses the preload coordinator client ([direct launch][e9-direct], [e9 RPC][e9-rpc]). Direct lifecycle coverage is currently single-process and single-thread, so this path does not replace the generic backend yet ([direct boundary][e9-direct-boundary]). |
 | **LiteInst, direct `Backend`** (a.k.a. "Mode A": in-guest, no per-syscall ptrace round-trip) | The first execution of a syscall site reaches seccomp/SIGSYS. The dispatcher installs a replace-first LiteInst hook, then changes the saved signal-context RIP to its trampoline. The first and subsequent calls therefore enter the same normal-context tool callback ([dispatcher][lite-dispatch], [patch install][lite-patch]). | The shared trap catches first use and residual sites. An unpatchable generic-tool site fails with `EOPNOTSUPP` instead of running arbitrary Rust in signal context ([LiteInst fallback][lite-fallback], [shared trap][preload-trap]). | A tool DSO hosts process/thread state. `CoordinatorRpc` sends typed requests to the launcher's shared `RpcServer` ([tool host][lite-tool-host], [LiteInst RPC][lite-rpc], [launcher][lite-launcher]). The current generic backend supports one process and one thread ([LiteInst boundaries][lite-readme]). |
 | **LiteInst, ptrace-owned hybrid** (a.k.a. "Mode B": ptrace tracer owns the tool; every installed hook returns through the ptrace-host SIGTRAP path) | On a first seccomp stop, ptrace skips the original call, rewrites the tracee RIP/stack to call the in-guest installer, validates the resulting hook footprint, and later accepts injected hot-site traps ([site install][lite-ptrace-site], [helper call][lite-ptrace-helper], [hot-site trap][lite-ptrace-trap]). | If installation cannot produce a validated hook, ptrace remains the slow path. This mode fails closed on fork/thread expansion today ([hybrid API][lite-hybrid-api], [hybrid provenance][lite-hybrid-provenance]). | Ptrace owns the sole tool and singleton; the preload contributes patch installation and the injected event frame ([hybrid API][lite-hybrid-api]). |
-| **Narf driver (in progress)** | Narf's kernel syscall dispatcher lends a kernel-owned native transition to `reverie-narf`; the driver hosts any `T: Tool` and implements `Guest::inject`/`tail_inject` without recursively intercepting its own calls ([Narf driver][narf-driver]). | The intended boundary is Narf's first-class syscall and nondeterministic-instruction traps. The current Reverie crate has only a fake-kernel executable test; no Narf-linked runtime or lifecycle proof exists yet. | Per-thread state is borrowed directly by `NarfGuest`; `GlobalRPC::send_rpc` calls the run-owned singleton's `receive_rpc` directly in the shared address space. There is no coordinator IPC in this path. |
+| **Narf driver (in progress)** | Narf's kernel syscall interceptor is meant to lend its native transition to `reverie-narf-core` through `KernelServices`; the core hosts any `T: Tool` and implements `Guest::inject`/`tail_inject` on that transition without recursively intercepting its own calls ([Narf driver][narf-driver]). | The intended boundary is Narf's first-class syscall and nondeterministic-instruction traps. The current Reverie crates have only fake-kernel executable tests; no Narf-linked runtime or lifecycle proof exists yet. | `NarfToolHost` keeps one Tool per process and one `ThreadState` per thread, lent to `NarfGuest` for one callback; `GlobalRPC::send_rpc` calls the run-owned singleton's `receive_rpc` directly in the shared address space. There is no coordinator IPC in this path. |
 
 ## Shared components
 
@@ -244,7 +254,7 @@ not as a prerequisite for sharing code ([direct boundary][e9-direct-boundary]).
 [lite-ptrace-site]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-ptrace/src/task.rs#L3538-L3578
 [lite-ptrace-helper]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-ptrace/src/task.rs#L3328-L3507
 [lite-ptrace-trap]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-ptrace/src/task.rs#L2330-L2378
-[narf-driver]: reverie-narf/src/lib.rs
+[narf-driver]: reverie-narf-core/src/lib.rs
 [preload-lib]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-preload/src/lib.rs#L9-L43
 [preload-dispatch]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-preload/src/dispatch.rs#L9-L30
 [preload-trap]: https://github.com/rrnewton/reverie/blob/2f812840b718a6ac2a772a56cd05490765465ebf/reverie-preload/src/trap.rs#L9-L20
