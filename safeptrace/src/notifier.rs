@@ -379,6 +379,7 @@ impl WakerSlot {
 #[derive(Debug, Default)]
 struct ExitWaiter {
     waker: WakerSlot,
+    epoch: usize,
 }
 
 #[derive(Debug, Default)]
@@ -444,6 +445,9 @@ struct Event {
     /// Linear claim for the one stopped-state capability represented by this
     /// exact Event generation's retained exit-stop observation.
     exit_capability: AtomicU8,
+    /// Actual exec after an exit stop invalidates old waiters before a new
+    /// image can publish another exit on the same retained leader pidfd.
+    exit_epoch: AtomicUsize,
 
     /// Last notifier registration error. Resource/read failures are retryable
     /// and must not be collapsed into terminal ECHILD.
@@ -466,6 +470,8 @@ struct Event {
     new_child_decode_pause: Mutex<Option<NewChildDecodePause>>,
     #[cfg(test)]
     cleanup_return_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    terminal_publish_pause: Mutex<Option<BoundedTestPause>>,
 }
 
 #[derive(Debug)]
@@ -671,6 +677,7 @@ impl Event {
             status_changed: Condvar::new(),
             exit_status: AtomicI32::new(EXIT_PENDING),
             exit_capability: AtomicU8::new(EXIT_CAP_PENDING),
+            exit_epoch: AtomicUsize::new(0),
             registration_error: Mutex::new(None),
             worker_state: AtomicI32::new(WORKER_NOT_STARTED),
             worker_done_lock: Mutex::new(()),
@@ -684,6 +691,8 @@ impl Event {
             new_child_decode_pause: Mutex::new(None),
             #[cfg(test)]
             cleanup_return_pause: Mutex::new(None),
+            #[cfg(test)]
+            terminal_publish_pause: Mutex::new(None),
         }
     }
 
@@ -813,12 +822,33 @@ impl Event {
         }
     }
 
+    fn observe_exec_after_exit(&self) {
+        let publication = self.exit_publication.lock();
+        if self.exit_status.load(Ordering::Acquire) != EXIT_STOPPED {
+            return;
+        }
+        // Only a real kernel PTRACE_EVENT_EXEC publication invokes this. It
+        // proves the earlier exit stop was advanced; a numeric PID, ESRCH or
+        // /proc disappearance is insufficient. Every old waiter keeps its old
+        // epoch and cannot claim the replacement image's exit stop.
+        self.exit_epoch.fetch_add(1, Ordering::AcqRel);
+        self.exit_capability
+            .store(EXIT_CAP_PENDING, Ordering::Release);
+        self.exit_status.store(EXIT_PENDING, Ordering::Release);
+        drop(publication);
+        self.exit_waiters.wake_all();
+    }
+
     /// Replaces the status and notifies the notifier of the change. Returns the
     /// old status if there was one.
     pub fn update(&self, status: i32) -> Option<i32> {
         if status == PTRACE_EVENT_EXIT_STOP {
             self.publish_exit_stop(|| {});
             return None;
+        }
+
+        if status == ((libc::PTRACE_EVENT_EXEC << 16) | (libc::SIGTRAP << 8) | 0x7f) {
+            self.observe_exec_after_exit();
         }
 
         let terminal = libc::WIFEXITED(status) || libc::WIFSIGNALED(status);
@@ -1399,6 +1429,23 @@ impl Event {
         // Register before checking publication to avoid a lost wake. The weak
         // Event registration is pruned automatically if this future is dropped.
         self.exit_waiters.register(waiter, waker);
+        // Serialize epoch validation with claim and kernel exec rearming.
+        // A half-published status must yield Pending, never block the executor.
+        let Some(publication) = self.exit_publication.try_lock() else {
+            return Poll::Pending;
+        };
+        let result = self.poll_exit_epoch(waiter);
+        drop(publication);
+        if result.is_ready() {
+            self.exit_waiters.wake_all();
+        }
+        result
+    }
+
+    fn poll_exit_epoch(&self, waiter: &ExitWaiter) -> Poll<Result<(), Errno>> {
+        if waiter.epoch != self.exit_epoch.load(Ordering::Acquire) {
+            return Poll::Ready(Err(Errno::EALREADY));
+        }
 
         loop {
             match self.exit_status.load(Ordering::Acquire) {
@@ -1799,9 +1846,10 @@ fn spawn_worker(
     })
 }
 
-/// Waits on one exact kernel task lifetime and returns its lossless raw status.
-/// Returns `None` once that pidfd is no longer waitable. There is deliberately
-/// no numeric-PID fallback after identity capture.
+/// Waits on the retained PID object and returns its lossless raw status.
+/// Exec can change the task attached to a PID object; callers must use the
+/// actual Exec edge for state handoffs, not infer them from a numeric PID.
+/// Returns `None` once the pidfd is no longer waitable, without PID fallback.
 fn wait_pidfd_status(identity: &WorkerIdentity) -> Option<i32> {
     let flags = WaitPidFlag::from_bits_retain(
         WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
@@ -1848,6 +1896,15 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
             break;
         };
         retrying_echild = false;
+        #[cfg(test)]
+        if (libc::WIFEXITED(status) || libc::WIFSIGNALED(status))
+            && let Some(pause) = event.terminal_publish_pause.lock().take()
+        {
+            // Test-only interval after the sole real wait reaped the child,
+            // before publication. Disconnection also releases the worker.
+            let _ = pause.captured.send(());
+            let _ = pause.resume.recv_timeout(Duration::from_secs(2));
+        }
         event.update(status);
 
         // Try to avoid reaching an ECHILD error by terminating the loop on the
@@ -2694,6 +2751,258 @@ impl Drop for Notifier {
     }
 }
 
+/// A raw GETSIGINFO observation, not an owning stopped capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StopSiginfo {
+    /// The observed signal number.
+    pub signo: i32,
+    /// The observed signal code, interpreted in conjunction with the held class.
+    pub code: i32,
+    /// The signal union's sender PID; its meaning depends on the code.
+    pub sender_pid: i32,
+    /// The signal union's sender UID; its meaning depends on the code.
+    pub sender_uid: u32,
+}
+impl StopSiginfo {
+    /// Whether the fields have the ptrace EXIT signature. A guest can forge it
+    /// at a SIGTRAP delivery stop, so this is not proof of a lifecycle event.
+    pub fn has_exit_signature(&self) -> bool {
+        self.signo == libc::SIGTRAP && self.code == (libc::PTRACE_EVENT_EXIT << 8) | libc::SIGTRAP
+    }
+}
+
+/// A bounded read or parse refusal from the retained proc directory.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ProcStatError {
+    /// The exact open/read errno.
+    #[error("retained proc stat I/O: {0}")]
+    Io(Errno),
+    /// The fixed-size record was incomplete, malformed, or too large.
+    #[error("retained proc stat: {0}")]
+    Format(&'static str),
+    /// The record named another numeric PID.
+    #[error("retained proc stat names a different PID")]
+    PidMismatch,
+}
+
+/// A non-owning refusal before or after a stopped-generation observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum StopObservationError {
+    /// The observer was used from a different thread than its stopped token.
+    #[error("stopped observation used from another thread")]
+    WrongThread,
+    /// No existing bound identity is available; no new capture was attempted.
+    #[error("stopped observation has no registered identity: {0}")]
+    Identity(Errno),
+    /// The original Event reference has changed.
+    #[error("stopped observation Event generation changed")]
+    GenerationMismatch,
+    /// An actual Exec has retired the observer's exit epoch.
+    #[error("stopped observation exec epoch changed")]
+    ExecEpochMismatch,
+    /// The bound worker identity does not name the original PID.
+    #[error("stopped observation PID binding changed")]
+    PidMismatch,
+}
+
+/// All attempted facts from one bounded observation, including partial failures.
+/// None of these facts acknowledges terminal completion or owns a wait result.
+#[derive(Clone, Debug, Default)]
+pub struct StopObservationSample {
+    siginfo: Option<Result<StopSiginfo, Errno>>,
+    flags: Option<Result<u32, ProcStatError>>,
+    pidfd_live: Option<Result<bool, Errno>>,
+    refusal: Option<StopObservationError>,
+}
+impl StopObservationSample {
+    /// The raw siginfo result, or None if refused before issuing the query.
+    pub fn siginfo(&self) -> Option<Result<StopSiginfo, Errno>> {
+        self.siginfo
+    }
+    /// Field9 read relative to the existing proc fd, when requested and needed.
+    pub fn flags(&self) -> Option<&Result<u32, ProcStatError>> {
+        self.flags.as_ref()
+    }
+    /// The exact thread-pidfd signal0 result, issued after all numeric/proc reads.
+    pub fn pidfd_live(&self) -> Option<Result<bool, Errno>> {
+        self.pidfd_live
+    }
+    /// A binding refusal, without discarding any facts already obtained.
+    pub fn refusal(&self) -> Option<StopObservationError> {
+        self.refusal
+    }
+}
+
+/// Read-only observation derived from an actual stopped token.
+///
+/// This retains the original Event and exec epoch, but cannot resume, signal,
+/// reap or create a stopped capability. The caller must still own the current
+/// stop and exclude control mutations outside its execution API. In particular,
+/// GETSIGINFO success is not durable liveness, and ESRCH is not terminal proof.
+/// An observation never registers/captures a new identity or polls a waiter.
+pub struct StoppedObservation {
+    pid: Pid,
+    event: EventHandle,
+    generation: Arc<Event>,
+    epoch: usize,
+    thread: thread::ThreadId,
+}
+impl StoppedObservation {
+    pub(super) fn new(pid: Pid, token: &TraceeToken) -> Self {
+        let event = token.event().clone();
+        let generation = event.event().clone();
+        let epoch = generation.exit_epoch.load(Ordering::Acquire);
+        Self {
+            pid,
+            event,
+            generation,
+            epoch,
+            thread: thread::current().id(),
+        }
+    }
+
+    /// Compare existing Event references without looking up or capturing a PID.
+    pub fn same_generation(&self, terminal: &TerminalCleanup) -> bool {
+        self.pid == terminal.pid && Arc::ptr_eq(&self.generation, terminal.event.event())
+    }
+
+    fn binding_error(&self) -> Option<StopObservationError> {
+        if self.thread != thread::current().id() {
+            Some(StopObservationError::WrongThread)
+        } else if !Arc::ptr_eq(&self.generation, self.event.event()) {
+            Some(StopObservationError::GenerationMismatch)
+        } else if self.epoch != self.generation.exit_epoch.load(Ordering::Acquire) {
+            Some(StopObservationError::ExecEpochMismatch)
+        } else {
+            None
+        }
+    }
+
+    /// Sample one raw siginfo and, only for an EXIT signature when requested,
+    /// bounded fd-relative stat flags. The final kernel observation is signal0
+    /// through the already retained PIDFD_THREAD. Every refusal stays typed.
+    ///
+    /// `flags_for_exit_siginfo` is needed for a held SIGTRAP delivery stop,
+    /// where the guest can forge EXIT-like siginfo. The sample makes no policy
+    /// decision from that flag. It never retries, resumes or waits for an event.
+    pub fn sample(&self, flags_for_exit_siginfo: bool) -> StopObservationSample {
+        let mut result = StopObservationSample::default();
+        if let Some(error) = self.binding_error() {
+            result.refusal = Some(error);
+            return result;
+        }
+        let Some(identity) = self.event.identity() else {
+            result.refusal = Some(StopObservationError::Identity(
+                self.generation
+                    .registration_error
+                    .lock()
+                    .unwrap_or(Errno::ENODATA),
+            ));
+            return result;
+        };
+        if identity.pid != self.pid {
+            result.refusal = Some(StopObservationError::PidMismatch);
+            return result;
+        }
+        result.siginfo = Some(
+            nix::sys::ptrace::getsiginfo(self.pid.into())
+                .map(|info| StopSiginfo {
+                    signo: info.si_signo,
+                    code: info.si_code,
+                    sender_pid: unsafe { info.si_pid() },
+                    sender_uid: unsafe { info.si_uid() },
+                })
+                .map_err(|error| Errno::new(error as i32)),
+        );
+        if flags_for_exit_siginfo
+            && result
+                .siginfo
+                .is_some_and(|info| info.is_ok_and(|info| info.has_exit_signature()))
+        {
+            result.flags = Some(read_bound_stat_flags(identity));
+        }
+        result.pidfd_live = Some(identity.pidfd_is_live());
+        result.refusal = self.binding_error();
+        result
+    }
+}
+
+fn read_bound_stat_flags(identity: &WorkerIdentity) -> Result<u32, ProcStatError> {
+    let raw = unsafe {
+        libc::openat(
+            identity.proc_dir.as_raw_fd(),
+            c"stat".as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if raw < 0 {
+        return Err(ProcStatError::Io(Errno::last()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let mut bytes = [0u8; 4097];
+    let count = unsafe { libc::read(fd.as_raw_fd(), bytes.as_mut_ptr().cast(), bytes.len()) };
+    if count < 0 {
+        return Err(ProcStatError::Io(Errno::last()));
+    }
+    if count as usize > 4096 {
+        return Err(ProcStatError::Format("record exceeds 4096 bytes"));
+    }
+    let mut extra = 0u8;
+    let eof = unsafe { libc::read(fd.as_raw_fd(), (&mut extra as *mut u8).cast(), 1) };
+    if eof < 0 {
+        return Err(ProcStatError::Io(Errno::last()));
+    }
+    if eof != 0 {
+        return Err(ProcStatError::Format("record continued after bounded read"));
+    }
+    parse_bound_stat_flags(&bytes[..count as usize], identity.pid)
+}
+
+fn parse_bound_stat_flags(bytes: &[u8], pid: Pid) -> Result<u32, ProcStatError> {
+    if bytes.len() > 4096 {
+        return Err(ProcStatError::Format("record exceeds 4096 bytes"));
+    }
+    let open = bytes
+        .windows(2)
+        .position(|part| part == b" (")
+        .ok_or(ProcStatError::Format("missing comm opening delimiter"))?;
+    let actual = std::str::from_utf8(&bytes[..open])
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .ok_or(ProcStatError::Format("invalid PID"))?;
+    if actual != pid.as_raw() {
+        return Err(ProcStatError::PidMismatch);
+    }
+    let close = bytes
+        .iter()
+        .rposition(|byte| *byte == b')')
+        .filter(|close| *close > open)
+        .ok_or(ProcStatError::Format("missing comm closing delimiter"))?;
+    if bytes.get(close + 1) != Some(&b' ') {
+        return Err(ProcStatError::Format("invalid comm separator"));
+    }
+    let mut fields = bytes[close + 2..]
+        .split(|byte| byte.is_ascii_whitespace())
+        .filter(|field| !field.is_empty());
+    let state = fields
+        .next()
+        .ok_or(ProcStatError::Format("missing state"))?;
+    if state.len() != 1 || !state[0].is_ascii_alphabetic() {
+        return Err(ProcStatError::Format("invalid state"));
+    }
+    // After state(field3), skip ppid,pgrp,session,tty_nr,tpgid (fields4..8).
+    let flags = fields
+        .nth(5)
+        .ok_or(ProcStatError::Format("missing flags"))?;
+    if flags.is_empty() || !flags.iter().all(u8::is_ascii_digit) {
+        return Err(ProcStatError::Format("flags are not unsigned decimal"));
+    }
+    std::str::from_utf8(flags)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .ok_or(ProcStatError::Format("flags overflow u32"))
+}
+
 /// A synchronous acknowledgment that a PID's notifier worker has observed a
 /// terminal state and removed its registry entry.
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -2734,6 +3043,47 @@ impl TerminalCleanup {
         *self.event.event().registration_error.lock()
     }
 
+    /// Requests fatal cancellation of this already-bound tracee generation.
+    ///
+    /// Uses the notifier's retained thread pidfd; this never captures a new
+    /// identity or signals a numeric PID. Registration failure is returned
+    /// without a fallback. Neither success nor ESRCH acknowledges an exit:
+    /// callers must still consume the actual exit and terminal wait status.
+    pub fn request_sigkill(&self) -> Result<(), Errno> {
+        self.request_cancellation_signal(libc::SIGKILL)
+    }
+
+    /// Stops this already-bound generation for fatal tree cancellation.
+    /// Like `request_sigkill`, delivery is not a stopped-state acknowledgment.
+    /// The caller must consume an actual owned ptrace stop before discovery.
+    pub fn request_sigstop(&self) -> Result<(), Errno> {
+        self.request_cancellation_signal(libc::SIGSTOP)
+    }
+
+    fn request_cancellation_signal(&self, signal: i32) -> Result<(), Errno> {
+        if let Some(error) = self.registration_error() {
+            return Err(error);
+        }
+        let identity = self
+            .event
+            .identity()
+            .ok_or_else(|| self.registration_error().unwrap_or(Errno::ENODATA))?;
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                identity.pidfd.as_raw_fd(),
+                signal,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io_errno(io::Error::last_os_error()))
+        }
+    }
+
     #[cfg(test)]
     fn try_claim_unstarted_raw_cleanup(&self) -> Result<RawCleanupClaim, Errno> {
         NOTIFIER.try_claim_unstarted_raw_cleanup(self.pid, &self.event)
@@ -2758,6 +3108,21 @@ impl TerminalCleanup {
     /// thread remains the sole owner of wait statuses for the PID.
     pub fn wait(&self, timeout: Duration) -> bool {
         self.event.event().wait_worker_done(timeout)
+    }
+
+    /// Reads this exact generation's immutable final wait status, if published.
+    ///
+    /// This is observational: it creates no stopped capability, claims no new
+    /// waiter, and does not itself prove notifier retirement. Callers that own
+    /// teardown must also require [`Self::wait`] to acknowledge retirement.
+    /// ECHILD without a retained final status is an error, never an inferred exit.
+    pub fn observed_exit_status(&self) -> Result<Option<crate::ExitStatus>, Errno> {
+        let status = self.event.event().status.lock().terminal;
+        match status {
+            INVALID_STATUS => Ok(None),
+            ECHILD_STATUS => Err(Errno::ECHILD),
+            status => Ok(Some(crate::ExitStatus::from_raw(status))),
+        }
     }
 
     /// Reserves the oldest queued nonterminal state after cancellation.
@@ -2847,12 +3212,17 @@ impl PendingStatusReservation<'_> {
 
 /// A future representing a process state change.
 pub struct WaitFuture {
-    running: Running,
+    pid: Pid,
+    token: TraceeToken,
 }
 
 impl WaitFuture {
-    pub(super) fn new(running: Running) -> Self {
-        Self { running }
+    pub(super) fn new(Running(pid, token): Running) -> Self {
+        Self { pid, token }
+    }
+
+    fn from_stopped(Stopped(pid, token): Stopped) -> Self {
+        Self { pid, token }
     }
 }
 
@@ -2861,8 +3231,8 @@ impl Future for WaitFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let pid = this.running.pid();
-        let event_handle = match NOTIFIER.event(pid, this.running.token().event()) {
+        let pid = this.pid;
+        let event_handle = match NOTIFIER.event(pid, this.token.event()) {
             Ok(event) => event,
             Err(error) => return Poll::Ready(Err(error.into())),
         };
@@ -2881,13 +3251,77 @@ impl Future for WaitFuture {
     }
 }
 
+/// A non-owning refusal from an original-generation retained wait.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum OwnedWaitError {
+    /// The exact registration or decoding errno. This does not prove exit.
+    #[error("owned ptrace wait refused: {0}")]
+    Errno(Errno),
+    /// A backend operation observed death while decoding; the wait retains the
+    /// sole original owner and must still observe actual terminal status.
+    #[error("owned ptrace wait observed death during decoding; original owner retained")]
+    Died,
+    /// A successful prior poll already transferred ownership into its Wait.
+    #[error("owned ptrace wait already transferred its successful result")]
+    Completed,
+}
+
+/// A wait that retains its original capability on non-owning errors.
+///
+/// It may be polled again after handling an error. A successful return removes
+/// its old owner before transferring the actual Wait, preventing a second
+/// successful return even if the caller polls it again.
+#[must_use = "this future owns an unfinished generation-bound wait"]
+pub struct OwnedWaitFuture {
+    inner: Option<WaitFuture>,
+}
+impl OwnedWaitFuture {
+    pub(super) fn new(running: Running) -> Self {
+        Self {
+            inner: Some(WaitFuture::new(running)),
+        }
+    }
+
+    pub(super) fn from_stopped(stopped: Stopped) -> Self {
+        Self {
+            inner: Some(WaitFuture::from_stopped(stopped)),
+        }
+    }
+}
+impl Future for OwnedWaitFuture {
+    type Output = Result<Wait, OwnedWaitError>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let Some(inner) = this.inner.as_mut() else {
+            return Poll::Ready(Err(OwnedWaitError::Completed));
+        };
+        match Pin::new(inner).poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(wait)) => {
+                this.inner.take();
+                Poll::Ready(Ok(wait))
+            }
+            Poll::Ready(Err(Error::Errno(errno))) => Poll::Ready(Err(OwnedWaitError::Errno(errno))),
+            Poll::Ready(Err(Error::Died(zombie))) => {
+                // This internal decoder diagnostic carries a cloned token.
+                // Keep only the original wait owner before exposing the error.
+                drop(zombie);
+                Poll::Ready(Err(OwnedWaitError::Died))
+            }
+        }
+    }
+}
+
 /// A future representing PTRACE_EVENT_EXIT. The future resolves when the process
 /// receives a PTRACE_EVENT_EXIT. A process can receive this event at any time,
 /// even when in another ptrace stop state.
 ///
-/// The next state after this should be the final exit status.
-/// Exactly one future for an immutable Event generation can claim and return
-/// the stopped-state capability. Duplicate or re-polled futures return
+/// The next state is normally final exit, but a nonleader exec can replace the
+/// exiting leader and publish an actual Exec stop through the same pidfd.
+/// Exactly one future per immutable Event generation and observed exec epoch
+/// can claim and return the stopped-state capability. An actual kernel Exec
+/// after an exit stop retires the previous epoch; all its old futures remain
+/// rejected, while a newly created future can observe the new image's exit. Duplicate or re-polled futures return
 /// [`Errno::EALREADY`]. An unclaimed capability also expires before terminal
 /// publication or cancellation cleanup advances the tracee; terminal status
 /// remains independently retained for ordinary waiters.
@@ -2905,7 +3339,10 @@ impl ExitFuture {
         Self {
             pid,
             event: token.event().clone(),
-            waiter: Arc::new(ExitWaiter::default()),
+            waiter: Arc::new(ExitWaiter {
+                waker: WakerSlot::default(),
+                epoch: token.event().event().exit_epoch.load(Ordering::Acquire),
+            }),
         }
     }
 }
@@ -2932,6 +3369,7 @@ impl Future for ExitFuture {
 
 #[cfg(test)]
 mod test {
+    include!("stop_observation_tests.rs");
     use std::collections::hash_map::DefaultHasher;
     use std::env;
     use std::io;
@@ -4361,6 +4799,204 @@ mod test {
     }
 
     #[test]
+    fn exec_rearms_exit_only_after_a_real_exec_status_and_rejects_old_waiters() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let event = Event::new();
+        let winner = Arc::new(ExitWaiter::default());
+        let duplicate = Arc::new(ExitWaiter::default());
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(event.poll_exit(&winner, &waker), Poll::Ready(Ok(())));
+        let signal = (libc::SIGSTOP << 8) | 0x7f;
+        event.update(signal);
+        assert_eq!(
+            event.poll_exit(&duplicate, &waker),
+            Poll::Ready(Err(Errno::EALREADY))
+        );
+        let exec = (libc::PTRACE_EVENT_EXEC << 16) | (libc::SIGTRAP << 8) | 0x7f;
+        event.update(exec);
+        let current = Arc::new(ExitWaiter {
+            epoch: 1,
+            ..ExitWaiter::default()
+        });
+        let competitor = Arc::new(ExitWaiter {
+            epoch: 1,
+            ..ExitWaiter::default()
+        });
+        assert_eq!(event.poll_exit(&current, &waker), Poll::Pending);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        for old in [&winner, &duplicate] {
+            assert_eq!(
+                event.poll_exit(old, &waker),
+                Poll::Ready(Err(Errno::EALREADY))
+            );
+        }
+        assert_eq!(event.poll_exit(&current, &waker), Poll::Ready(Ok(())));
+        assert_eq!(
+            event.poll_exit(&competitor, &waker),
+            Poll::Ready(Err(Errno::EALREADY))
+        );
+        event.update(0);
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(signal)));
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(exec)));
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(0)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn actual_nonleader_exec_rearms_one_exit_and_refuses_old_and_competing_owners() {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let root = match unsafe { fork() }.unwrap() {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                crate::traceme_and_stop().unwrap();
+                std::thread::spawn(|| {
+                    let args = [c"/bin/true".as_ptr(), std::ptr::null()];
+                    unsafe {
+                        libc::execv(args[0], args.as_ptr());
+                        libc::_exit(127);
+                    }
+                });
+                loop {
+                    unsafe {
+                        libc::pause();
+                    }
+                }
+            }
+        };
+        let mut root_cleanup = TraceeCleanupGuard::new(root).unwrap();
+        let status = waitpid_status_bounded(
+            root,
+            libc::WUNTRACED,
+            deadline.saturating_duration_since(Instant::now()),
+        )
+        .unwrap();
+        assert!(libc::WIFSTOPPED(status));
+        assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
+        let stopped = Stopped::new_unchecked(root.into());
+        stopped
+            .setoptions(
+                Options::PTRACE_O_TRACECLONE
+                    | Options::PTRACE_O_TRACEEXEC
+                    | Options::PTRACE_O_TRACEEXIT
+                    | Options::PTRACE_O_EXITKILL,
+            )
+            .unwrap();
+        root_cleanup.bind_notifier(&stopped).unwrap();
+        let terminal = stopped.terminal_cleanup();
+        let mut old_exit = Box::pin(stopped.exit_event());
+        let mut old_duplicate = Box::pin(stopped.exit_event());
+        let wait = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            stopped.resume(None).unwrap().wait_owned(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let (parent, crate::Event::NewChild(crate::ChildOp::Clone, child)) = wait.assume_stopped()
+        else {
+            panic!("missing actual clone")
+        };
+        let former = child.pid();
+        let child_terminal = child.terminal_cleanup();
+        let child_identity = child_terminal.event.identity().unwrap();
+        let fd = unsafe { libc::fcntl(child_identity.pidfd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+        assert!(fd >= 0);
+        let mut child_cleanup = TraceeCleanupGuard {
+            pid: former.into(),
+            pidfd: unsafe { OwnedFd::from_raw_fd(fd) },
+            ownership: TraceeCleanupOwnership::PreRegistration,
+            armed: true,
+        };
+        child_cleanup.bind_running_notifier(&child).unwrap();
+        let initial = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            child.wait_owned(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let (child, event) = initial.assume_stopped();
+        assert_eq!(event, crate::Event::Signal(Signal::SIGSTOP));
+        let mut former_wait = Box::pin(child.resume(None).unwrap().wait_owned());
+        let old_running = parent.resume(None).unwrap();
+        let first = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            old_exit.as_mut(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        root_cleanup.mark_claimed_exit();
+        drop(old_running); // superseded by the sole claimed actual exit stop
+        let old_status = first.getevent().unwrap();
+        let next = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            first.resume_retaining(None).unwrap().wait_owned(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let (replacement, crate::Event::Exec(actual_former)) = next.assume_stopped() else {
+            panic!("missing actual replacement exec")
+        };
+        assert_eq!(actual_former, former);
+        assert_eq!(replacement.pid(), root.into());
+        assert!(replacement.terminal_cleanup().same_generation(&terminal));
+        let mut next_exit = Box::pin(replacement.exit_event());
+        let mut next_duplicate = Box::pin(replacement.exit_event());
+        for old in [&mut old_exit, &mut old_duplicate] {
+            assert!(matches!(
+                old.as_mut().await,
+                Err(Error::Errno(Errno::EALREADY))
+            ));
+        }
+        let replacement_running = replacement.resume(None).unwrap();
+        let second = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            next_exit.as_mut(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(replacement_running);
+        assert!(matches!(
+            next_duplicate.as_mut().await,
+            Err(Error::Errno(Errno::EALREADY))
+        ));
+        assert!(matches!(
+            old_exit.as_mut().await,
+            Err(Error::Errno(Errno::EALREADY))
+        ));
+        let second_status = second.getevent().unwrap();
+        let final_wait = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            second.resume_retaining(None).unwrap().wait_owned(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            final_wait.assume_exited(),
+            (root.into(), crate::ExitStatus::Exited(0))
+        );
+        assert!(matches!(
+            tokio::time::timeout(
+                deadline.saturating_duration_since(Instant::now()),
+                former_wait.as_mut()
+            )
+            .await
+            .unwrap(),
+            Err(OwnedWaitError::Errno(Errno::ECHILD))
+        ));
+        assert!(terminal.wait(deadline.saturating_duration_since(Instant::now())));
+        assert!(child_terminal.wait(deadline.saturating_duration_since(Instant::now())));
+        eprintln!(
+            "actual owned exec: leader={root}, former={former}, first_exit_event={old_status}, actual_exec_former={actual_former}, second_exit_event={second_status}, final=Exited(0), former=ECHILD (no fabricated status)"
+        );
+        root_cleanup.disarm();
+        child_cleanup.disarm(); // actual Exec proves ownership transferred to reaped leader
+    }
+
+    #[test]
     fn cleanup_requires_exclusive_transfer_of_claimed_exit_stop() {
         let waker = Waker::from(Arc::new(WakeCounter::default()));
         let event = Event::new();
@@ -4660,6 +5296,99 @@ mod test {
         assert!(Arc::ptr_eq(first.event(), second.event()));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn retaining_resume_refuses_wrong_ptracer_then_transfers_the_same_owner_once() {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (pid, stopped, mut cleanup) = spawn_traced_process(None).unwrap();
+        stopped.setoptions(Options::PTRACE_O_TRACEEXIT).unwrap();
+        let terminal = stopped.terminal_cleanup();
+        let original = stopped.1.clone();
+        let mut exit = Box::pin(cleanup.exit_event(&stopped).unwrap());
+        let duplicate = stopped.exit_event();
+        let (retained, errno) = thread::spawn(move || stopped.resume_retaining(None))
+            .join()
+            .unwrap()
+            .expect_err("wrong ptracer thread resumed the child");
+        assert_eq!(errno, Errno::ESRCH);
+        assert_eq!(retained.1, original);
+        assert!(retained.terminal_cleanup().same_generation(&terminal));
+        let running = retained.resume_retaining(None).unwrap();
+        let stopped = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            &mut exit,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        cleanup.mark_claimed_exit();
+        drop(running); // superseded only by the actually claimed exit stop
+        assert!(matches!(
+            duplicate.await,
+            Err(Error::Errno(Errno::EALREADY))
+        ));
+        let mut terminal_wait = stopped.resume_retaining(None).unwrap().wait_owned();
+        let result = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            &mut terminal_wait,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            result.assume_exited(),
+            (pid.into(), crate::ExitStatus::Exited(42))
+        );
+        assert!(matches!(
+            (&mut terminal_wait).await,
+            Err(OwnedWaitError::Completed)
+        ));
+        assert!(terminal.wait(deadline.saturating_duration_since(Instant::now())));
+        cleanup.disarm();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn owned_wait_registration_refusal_retains_original_and_then_reaps() {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (pid, mut cleanup) = spawn_stopped_process(None).unwrap();
+        let running = Running::new(pid.into());
+        let original = running.1.clone();
+        let terminal = TerminalCleanup::new_unregistered(pid.into(), &original);
+        CAPTURE_ERRORS.lock().insert(pid.into(), Errno::EMFILE);
+        let mut wait = running.wait_owned();
+        assert!(matches!(
+            (&mut wait).await,
+            Err(OwnedWaitError::Errno(Errno::EMFILE))
+        ));
+        assert_eq!(wait.inner.as_ref().unwrap().token, original);
+        assert!(!terminal.wait(Duration::ZERO));
+        cleanup.store_terminal(terminal).unwrap();
+        cleanup.terminal().unwrap().ensure_registered().unwrap();
+        pidfd_send_signal(&cleanup.pidfd, libc::SIGKILL).unwrap();
+        let result = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            &mut wait,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            result.assume_exited(),
+            (
+                pid.into(),
+                crate::ExitStatus::Signaled(Signal::SIGKILL, false)
+            )
+        );
+        assert!(wait.inner.is_none());
+        assert!(matches!((&mut wait).await, Err(OwnedWaitError::Completed)));
+        assert!(
+            cleanup
+                .terminal()
+                .unwrap()
+                .wait(deadline.saturating_duration_since(Instant::now()))
+        );
+        cleanup.disarm();
+    }
+
     #[test]
     fn terminal_cleanup_removes_stale_pid_registration() {
         let pid = Pid::from_raw(i32::MAX - 17);
@@ -4734,6 +5463,105 @@ mod test {
 
             reap_stopped_process(cleanup);
         }
+    }
+
+    #[test]
+    fn fatal_signal_preserves_registration_refusal() {
+        let (pid, mut cleanup) = spawn_stopped_process(None).expect("spawn registration control");
+        let running = Running::new(pid.into());
+        let terminal = TerminalCleanup::new_unregistered(pid.into(), &running.1);
+        CAPTURE_ERRORS.lock().insert(pid.into(), Errno::EMFILE);
+        assert_eq!(terminal.ensure_registered(), Err(Errno::EMFILE));
+        assert_eq!(terminal.request_sigkill(), Err(Errno::EMFILE));
+        assert!(
+            terminal.event.identity().is_none(),
+            "signal recaptured identity"
+        );
+        assert!(!terminal.wait(Duration::ZERO));
+        assert!(
+            !pidfd_exited(&cleanup.pidfd).unwrap(),
+            "refusal signalled the child"
+        );
+        cleanup
+            .cleanup()
+            .expect("reap refused control through its test-owned pidfd");
+    }
+
+    #[test]
+    fn fatal_signal_preserves_worker_spawn_refusal() {
+        let (pid, mut cleanup) = spawn_stopped_process(None).unwrap();
+        let running = Running::new(pid.into());
+        SPAWN_WORKER_ERRORS.lock().insert(pid.into(), libc::EAGAIN);
+        assert!(cleanup.bind_running_notifier(&running).is_err());
+        let terminal = cleanup.terminal().unwrap();
+        assert_eq!(terminal.registration_error(), Some(Errno::EAGAIN));
+        assert_eq!(terminal.request_sigkill(), Err(Errno::EAGAIN));
+        assert!(!terminal.wait(Duration::ZERO));
+        assert!(!pidfd_exited(&cleanup.pidfd).unwrap());
+        cleanup.cleanup().unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fatal_signal_requires_real_exit_and_exclusive_exit_capability() {
+        let (pid, stopped, mut cleanup) = spawn_traced_process(None).unwrap();
+        stopped.setoptions(Options::PTRACE_O_TRACEEXIT).unwrap();
+        let exit = cleanup.exit_event(&stopped).unwrap();
+        let duplicate = stopped.exit_event();
+        let terminal = stopped.terminal_cleanup();
+        terminal.request_sigkill().unwrap();
+        drop(stopped);
+        let exit_stopped = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, exit)
+            .await
+            .unwrap()
+            .unwrap();
+        cleanup.mark_claimed_exit();
+        assert!(
+            !terminal.wait(Duration::ZERO),
+            "signal fabricated terminal acknowledgment"
+        );
+        assert!(matches!(
+            tokio::time::timeout(TRACEE_WAIT_TIMEOUT, duplicate)
+                .await
+                .unwrap(),
+            Err(Error::Errno(Errno::EALREADY))
+        ));
+        let waited = tokio::time::timeout(
+            TRACEE_WAIT_TIMEOUT,
+            exit_stopped.resume(None).unwrap().next_state(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            waited.assume_exited(),
+            (
+                pid.into(),
+                crate::ExitStatus::Signaled(Signal::SIGKILL, false)
+            )
+        );
+        assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        assert_eq!(terminal.request_sigkill(), Err(Errno::ESRCH));
+        cleanup.disarm();
+    }
+
+    #[test]
+    fn fatal_signal_does_not_follow_a_replaced_numeric_pid_label() {
+        let (pid, mut cleanup) = spawn_stopped_process(None).unwrap();
+        let running = Running::new(pid.into());
+        cleanup.bind_running_notifier(&running).unwrap();
+        let mut stale = running.terminal_cleanup();
+        stale.request_sigkill().unwrap();
+        assert!(stale.wait(TRACEE_WAIT_TIMEOUT));
+        cleanup.disarm();
+        let (other_pid, other_cleanup) = spawn_stopped_process(None).unwrap();
+        // Model an adversarial replacement of the numeric routing label while
+        // retaining the real, already-reaped old pidfd. This is not a claim
+        // that the kernel reused the same PID during this control.
+        stale.pid = other_pid.into();
+        assert_eq!(stale.request_sigkill(), Err(Errno::ESRCH));
+        assert!(!pidfd_exited(&other_cleanup.pidfd).unwrap());
+        reap_stopped_process(other_cleanup);
     }
 
     #[test]

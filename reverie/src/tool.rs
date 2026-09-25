@@ -168,7 +168,7 @@ pub trait GlobalTool: Send + Sync + Default {
     /// It receives a shared reference to the global state object, which must
     /// manage its own synchronization.
     ///
-    /// On a fatal KVM run failure, an in-flight Tool callback and its inline
+    /// On a fatal KVM or ordinary-ptrace run failure, an in-flight Tool callback and its inline
     /// RPC future may be dropped at any await point. RPC implementations must
     /// leave shared state safe for concurrent consuming cleanup when dropped;
     /// a normal response is not manufactured to complete the abandoned RPC.
@@ -235,6 +235,9 @@ pub trait GlobalTool: Send + Sync + Default {
 
 /// The location of a fatal backend failure. The backend retains its typed cause;
 /// this notification only ends dependent waits and must not invent guest status.
+/// Host-side ordinary-ptrace capture failures use the run root's PID/TID with
+/// a `ptrace stdout capture` or `ptrace stderr capture` phase. Those locations
+/// identify the host run owner, not an inferred guest writer or guest failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BackendFailure {
     /// Guest process owning the failed operation.
@@ -330,6 +333,22 @@ impl GlobalTool for () {
 /// or a normal response from an abandoned callback. This contract covers
 /// returned runtime errors; arbitrary panic unwinding is not guaranteed to
 /// invoke consuming hooks.
+///
+/// The ordinary ptrace backend owns execution-control state and wait statuses.
+/// Tools must use Guest/backend APIs for resumes, stepping, detach/attach,
+/// tracing options, wait/reap, and mutations of registers or signal information
+/// (including PTRACE_SETSIGINFO). Raw operations outside those APIs invalidate
+/// its current-stop ownership contract. Read-only ptrace/memory observations
+/// are permitted; supported Guest injection can replace the current stop.
+///
+/// For ordinary non-syscall Errno-only callbacks, the return type erases causal
+/// provenance. If a same-generation observation justifies yielding to the
+/// original lifecycle owner, the callback's errno is retained as a diagnostic
+/// while that owner supplies actual exit or exec status. A live callback error
+/// remains fatal; an actually received Error::Tool or Error::Io is always fatal.
+/// This is cancellation/death precedence, not attribution of an errno to a
+/// memory access. The ptrace completion API exposes these records; successful
+/// legacy waits project them away. No host timeout is used to choose death.
 ///
 /// # Example
 ///

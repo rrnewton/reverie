@@ -31,6 +31,7 @@
 #![feature(internal_output_capture)]
 
 mod backend;
+mod capture;
 mod children;
 mod cp;
 #[allow(unused)]
@@ -39,6 +40,7 @@ mod debug;
 #[cfg(target_arch = "x86_64")]
 pub mod decoder;
 mod error;
+mod failure;
 mod gdbstub;
 mod in_guest;
 mod injected_syscall;
@@ -57,6 +59,16 @@ mod validation;
 mod vdso;
 
 pub use backend::PtraceBackend;
+pub use failure::CapturedPrefix;
+pub use failure::LegacyFailureProjection;
+pub use failure::PtraceCallbackDecision;
+pub use failure::PtraceCallbackDiagnostic;
+pub use failure::PtraceCallbackOutcome;
+pub use failure::PtraceCallbackRefusal;
+pub use failure::PtraceCallbackStop;
+pub use failure::PtraceCleanupFailure;
+pub use failure::PtraceRunFailure;
+pub use failure::ToolRunCompletion;
 pub use in_guest::InGuestRcbCounter;
 pub use injected_syscall::InjectedSyscallFrame;
 pub use liteinst_stats::LiteinstInstrumentationStats;
@@ -67,7 +79,13 @@ pub use stats::PtraceBackendStatsSource;
 pub use timer::PmuConfig;
 pub use timer::SKID_OVERSHOOT_MARKER;
 pub use timer::set_pmu_config;
+pub use tracer::CleanupAdmissionRefused;
+pub use tracer::CleanupLookupError;
+pub use tracer::CleanupUnconfirmed;
 pub use tracer::GdbConnection;
+pub use tracer::PendingPtraceCleanup;
+pub use tracer::PtraceTerminationHandle;
+pub use tracer::ToolRunOutcome;
 pub use tracer::Tracer;
 pub use tracer::TracerBuilder;
 pub use tracer::spawn_fn;

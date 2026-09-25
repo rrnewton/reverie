@@ -35,6 +35,16 @@ use syscalls::Sysno;
 use thiserror::Error;
 
 #[cfg(feature = "notifier")]
+pub use crate::notifier::ProcStatError;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::StopObservationError;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::StopObservationSample;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::StopSiginfo;
+#[cfg(feature = "notifier")]
+pub use crate::notifier::StoppedObservation;
+#[cfg(feature = "notifier")]
 pub use crate::notifier::TerminalCleanup;
 pub use crate::regs::*;
 use crate::waitid::IdType;
@@ -105,6 +115,11 @@ impl From<nix::errno::Errno> for Error {
         Self::Errno(Errno::new(err as i32))
     }
 }
+
+#[cfg(feature = "notifier")]
+pub use notifier::OwnedWaitError;
+#[cfg(feature = "notifier")]
+pub use notifier::OwnedWaitFuture;
 
 /// Represents an invalid state. Useful for errors.
 #[derive(Debug, Eq, PartialEq)]
@@ -223,12 +238,11 @@ impl Event {
                 ))
             }
             libc::PTRACE_EVENT_EXEC => {
-                // Get the pid of the thread group leader that this call to exec
-                // is replacing. This is not necessarily equal to `pid` since
-                // another thread besides the main thread can call `exec`. This
-                // information is necessary to track the "death" of a process.
-                let new_pid = Pid::from_raw(task.getevent()? as i32);
-                Ok(Self::Exec(new_pid))
+                // The event arrives under the current leader TID. GETEVENTMSG
+                // identifies the executing thread's former TID; it is not a
+                // newly allocated PID or a terminal status for that thread.
+                let former_tid = Pid::from_raw(task.getevent()? as i32);
+                Ok(Self::Exec(former_tid))
             }
             libc::PTRACE_EVENT_VFORK_DONE => Ok(Self::VforkDone),
             libc::PTRACE_EVENT_EXIT => {
@@ -583,6 +597,15 @@ impl Stopped {
         TerminalCleanup::new(self.0, &self.1)
     }
 
+    /// Retain a read-only observer for this actual token and its current exec epoch.
+    /// It cannot resume, wait, or mint another owning capability, and makes no
+    /// new PID/proc capture. Use it only while the original current stop remains
+    /// under this caller's execution-control ownership.
+    #[cfg(feature = "notifier")]
+    pub fn observation(&self) -> StoppedObservation {
+        StoppedObservation::new(self.0, &self.1)
+    }
+
     /// Creates a new stopped state. This is useful when we know the process is
     /// in a stopped state already.
     ///
@@ -753,6 +776,49 @@ impl Stopped {
     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         ptrace::cont(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
         Ok(Running::from_token(self.0, self.1))
+    }
+
+    /// Attempts to resume while retaining the original capability on error.
+    ///
+    /// The error arm returns the same generation-bound value, not a new value
+    /// constructed from its numeric PID. This retains ownership; it does not
+    /// guarantee that the kernel state is unchanged after every ptrace error.
+    /// The refusal is a non-owning errno, including ESRCH: no second Zombie
+    /// capability escapes beside the retained Stopped. An errno alone does not
+    /// acknowledge terminal status or guarantee the same physical kernel stop.
+    /// Callers must use their original event owner before another transition.
+    pub fn resume_retaining<T: Into<Option<Signal>>>(
+        self,
+        sig: T,
+    ) -> Result<Running, (Self, Errno)> {
+        let result = ptrace::cont(self.0.into(), sig);
+        self.finish_retained_resume(result)
+    }
+
+    /// Transfers the original capability into a retained notifier wait.
+    ///
+    /// This performs no resume and constructs no replacement running or stopped
+    /// value. Use it when an external lifecycle transition may have superseded
+    /// this stop, such as an actual ESRCH from [`Stopped::resume_retaining`].
+    /// The error is not an exit acknowledgement: only this same generation's
+    /// actual next event settles the wait. If the task remains stopped, this
+    /// future can remain pending; the caller must retain its ownership and
+    /// arrange any necessary termination through its existing supervisor.
+    /// Registration/decoding refusals obey [`Running::wait_owned`]'s retry
+    /// contract and never return a second owning capability.
+    #[cfg(feature = "notifier")]
+    pub fn wait_owned(self) -> notifier::OwnedWaitFuture {
+        notifier::OwnedWaitFuture::from_stopped(self)
+    }
+
+    pub(crate) fn finish_retained_resume(
+        self,
+        result: Result<(), nix::Error>,
+    ) -> Result<Running, (Self, Errno)> {
+        match result {
+            Ok(()) => Ok(Running::from_token(self.0, self.1)),
+            Err(error) => Err((self, Errno::new(error as i32))),
+        }
     }
 
     /// Advances the execution of the process by a single step optionally
@@ -973,11 +1039,6 @@ impl Running {
         Ok(Self::from_token(pid, TraceeToken::current_or_new(pid)?))
     }
 
-    #[cfg(feature = "notifier")]
-    fn token(&self) -> &TraceeToken {
-        &self.1
-    }
-
     /// Attaches to a running process. The process becomes a tracee and a SIGSTOP
     /// is sent to it. By the time this function ends, the tracee may not yet
     /// have actually stopped. Thus, the tracee is still considered to be in a
@@ -1101,6 +1162,19 @@ impl Running {
         TerminalCleanup::new(self.0, &self.1)
     }
 
+    /// Transfers this generation into an owned notifier wait.
+    ///
+    /// Unlike the convenience async wrapper, this future retains its original
+    /// generation after a returned error. It may be polled again after the
+    /// caller has handled a registration or status-decoding refusal. An error
+    /// does not prove exit. Its [`OwnedWaitError`] contains no second owning
+    /// Zombie. After a successful state return this future releases its old
+    /// owner and every subsequent poll returns `OwnedWaitError::Completed`.
+    #[cfg(feature = "notifier")]
+    pub fn wait_owned(self) -> notifier::OwnedWaitFuture {
+        notifier::OwnedWaitFuture::new(self)
+    }
+
     /// Like `wait`, but wait asynchronously for the next state change.
     ///
     /// NOTE: This call should not be mixed with [`Running::wait`]!! Once
@@ -1127,6 +1201,16 @@ impl Zombie {
     /// Returns the PID of the zombie.
     pub fn pid(&self) -> Pid {
         self.0.pid()
+    }
+
+    /// Transfers the original generation into a retained notifier wait.
+    ///
+    /// The same retry contract as [`Running::wait_owned`] applies. A subsequent
+    /// stop still requires its actual stopped capability to be continued; this
+    /// method does not manufacture or acknowledge terminal status.
+    #[cfg(feature = "notifier")]
+    pub fn wait_owned(self) -> notifier::OwnedWaitFuture {
+        self.0.wait_owned()
     }
 
     /// Reaps the zombie by waiting for it to fully exit.
@@ -1539,6 +1623,88 @@ mod test {
             Err(Error::Errno(Errno::ECHILD))
         );
 
+        Ok(())
+    }
+
+    #[cfg(feature = "notifier")]
+    #[cfg(not(sanitized))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn owned_wait_clone_parent_decode_refusal_retains_same_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        for injected in [Errno::EMFILE, Errno::EIO] {
+            let (pid, tracee) = trace(
+                || {
+                    let flags = libc::CLONE_PARENT | libc::SIGCHLD;
+                    let result = unsafe {
+                        libc::syscall(libc::SYS_clone, flags, 0usize, 0usize, 0usize, 0usize)
+                    };
+                    if result == 0 {
+                        unsafe { libc::_exit(0) };
+                    }
+                    i32::from(result == -1)
+                },
+                Options::PTRACE_O_EXITKILL | Options::PTRACE_O_TRACEFORK,
+            )?;
+            let running = tracee.resume_retaining(None).map_err(|(_, error)| error)?;
+            let cleanup = running.terminal_cleanup();
+            let mut owner = running.wait_owned();
+
+            notifier::inject_capture_error_for_current_thread(injected);
+            assert_eq!(
+                tokio::time::timeout(
+                    deadline.saturating_duration_since(std::time::Instant::now()),
+                    &mut owner
+                )
+                .await?,
+                Err(OwnedWaitError::Errno(injected)),
+                "first CLONE_PARENT decode did not surface the injected capture error"
+            );
+
+            let (parent, event) = tokio::time::timeout(
+                deadline.saturating_duration_since(std::time::Instant::now()),
+                &mut owner,
+            )
+            .await??
+            .assume_stopped();
+            assert_eq!(parent.pid(), pid);
+            assert!(parent.terminal_cleanup().same_generation(&cleanup));
+            assert!(matches!((&mut owner).await, Err(OwnedWaitError::Completed)));
+            let child = match event {
+                Event::NewChild(ChildOp::Fork, child) => child,
+                event => panic!("retry lost the CLONE_PARENT event: {event:?}"),
+            };
+            let (child, event) = tokio::time::timeout(
+                deadline.saturating_duration_since(std::time::Instant::now()),
+                child.wait_owned(),
+            )
+            .await??
+            .assume_stopped();
+            assert!(matches!(
+                event,
+                Event::Stop | Event::Signal(Signal::SIGSTOP)
+            ));
+            assert_eq!(
+                tokio::time::timeout(
+                    deadline.saturating_duration_since(std::time::Instant::now()),
+                    child.resume(None)?.wait_owned()
+                )
+                .await??
+                .assume_exited()
+                .1,
+                ExitStatus::Exited(0)
+            );
+            assert_eq!(
+                tokio::time::timeout(
+                    deadline.saturating_duration_since(std::time::Instant::now()),
+                    parent.resume(None)?.wait_owned()
+                )
+                .await??
+                .assume_exited()
+                .1,
+                ExitStatus::Exited(0)
+            );
+        }
         Ok(())
     }
 

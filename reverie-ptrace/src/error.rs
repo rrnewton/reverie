@@ -163,6 +163,10 @@ pub(crate) fn liteinst_activation_failure_category(
 /// user.
 #[derive(Error, Debug)]
 pub enum Error {
+    /// Private terminal control: the run already retained and published its cause.
+    #[error("ordinary ptrace run already failed")]
+    RunFailed,
+
     /// An internal error that is only ever meant to be used as a reverie-ptrace
     /// implementation detail. None of these errors should make it through to the
     /// user.

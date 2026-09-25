@@ -417,6 +417,22 @@ impl PerfCounter {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn exec_test_fd(&self) -> libc::c_int {
+        self.fd
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exec_test_signal_owner(&self) -> Result<Tid, Errno> {
+        const F_GETOWN_EX: libc::c_int = 16;
+        let mut owner = f_owner_ex { type_: -1, pid: -1 };
+        Errno::result(unsafe { libc::fcntl(self.fd, F_GETOWN_EX, &mut owner as *mut _) })?;
+        if owner.type_ != F_OWNER_TID {
+            return Err(Errno::EINVAL);
+        }
+        Ok(Tid::from_raw(owner.pid))
+    }
+
     /// Read the current value of the counter.
     pub fn ctr_value(&self) -> Result<u64, Errno> {
         let mut value = 0u64;
@@ -749,6 +765,32 @@ impl PerfCounter {
     pub fn raw_fd(&self) -> libc::c_int {
         self.fd
     }
+
+    /// Consume terminal resources without allowing a release error to skip the
+    /// other release or panic over the run's original failure. Each resource is
+    /// taken before the syscall: Linux may have released an fd even when close
+    /// reports an error, so neither this path nor Drop may retry its number.
+    pub(crate) fn close_after_failure(
+        mut self,
+        mmap_phase: &'static str,
+        fd_phase: &'static str,
+    ) -> Vec<(&'static str, Errno)> {
+        let mut errors = Vec::new();
+        if let Some(ptr) = self.mmap.take() {
+            let result = terminal_mmap_size()
+                .and_then(|size| try_close_mmap(ptr.as_ptr(), size, self.raw_syscall));
+            if let Err(error) = result {
+                errors.push((mmap_phase, error));
+            }
+        }
+        let fd = std::mem::replace(&mut self.fd, -1);
+        if fd >= 0
+            && let Err(error) = try_close_perf_fd(fd, self.raw_syscall)
+        {
+            errors.push((fd_phase, error));
+        }
+        errors
+    }
 }
 
 /// Execute the `rdpmc` instruction to read hardware performance counter number
@@ -780,39 +822,54 @@ unsafe fn rdpmc(counter: u32) -> u64 {
 }
 
 fn close_perf_fd(fd: libc::c_int, raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>) {
+    try_close_perf_fd(fd, raw_syscall).expect("Could not close perf fd");
+}
+
+fn try_close_perf_fd(
+    fd: libc::c_int,
+    raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>,
+) -> Result<(), Errno> {
     if let Some(raw_syscall) = raw_syscall {
         Errno::from_ret(unsafe {
             raw_syscall(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) as usize
         })
-        .expect("Could not close perf fd");
+        .map(|_| ())
     } else {
-        Errno::result(unsafe { libc::close(fd) }).expect("Could not close perf fd");
+        Errno::result(unsafe { libc::close(fd) }).map(|_| ())
     }
 }
+
 fn close_mmap(
     ptr: *mut perf::perf_event_mmap_page,
     raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>,
 ) {
+    try_close_mmap(ptr, get_mmap_size(), raw_syscall).expect("Could not munmap ring buffer");
+}
+
+fn try_close_mmap(
+    ptr: *mut perf::perf_event_mmap_page,
+    size: usize,
+    raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>,
+) -> Result<(), Errno> {
     if let Some(raw_syscall) = raw_syscall {
         Errno::from_ret(unsafe {
-            raw_syscall(
-                libc::SYS_munmap,
-                [ptr as u64, get_mmap_size() as u64, 0, 0, 0, 0],
-            ) as usize
+            raw_syscall(libc::SYS_munmap, [ptr as u64, size as u64, 0, 0, 0, 0]) as usize
         })
-        .expect("Could not munmap ring buffer");
+        .map(|_| ())
     } else {
-        Errno::result(unsafe { libc::munmap(ptr as *mut _, get_mmap_size()) })
-            .expect("Could not munmap ring buffer");
+        Errno::result(unsafe { libc::munmap(ptr as *mut _, size) }).map(|_| ())
     }
 }
 
 impl Drop for PerfCounter {
     fn drop(&mut self) {
-        if let Some(ptr) = self.mmap {
+        if let Some(ptr) = self.mmap.take() {
             close_mmap(ptr.as_ptr(), self.raw_syscall);
         }
-        close_perf_fd(self.fd, self.raw_syscall);
+        let fd = std::mem::replace(&mut self.fd, -1);
+        if fd >= 0 {
+            close_perf_fd(fd, self.raw_syscall);
+        }
     }
 }
 
@@ -830,6 +887,15 @@ fn get_mmap_size() -> usize {
         .expect("the system did not report a page size")
         .try_into()
         .expect("the system page size must fit in usize")
+}
+
+// Terminal cleanup must also retain a page-size query failure instead of
+// entering get_mmap_size's ordinary invariant panics before closing the fd.
+fn terminal_mmap_size() -> Result<usize, Errno> {
+    let size = sysconf(SysconfVar::PAGE_SIZE)
+        .map_err(|error| Errno::new(error as i32))?
+        .ok_or(Errno::EINVAL)?;
+    usize::try_from(size).map_err(|_| Errno::EOVERFLOW)
 }
 
 /// Force a relaxed atomic load. Like Linux's READ_ONCE.
@@ -979,6 +1045,169 @@ mod support_test {
 #[cfg(all(test, target_arch = "x86_64"))]
 #[path = "perf/tests.rs"]
 mod paused_tests;
+
+#[cfg(test)]
+pub(crate) mod terminal_close_tests {
+    use std::cell::Cell;
+    use std::cell::RefCell;
+    use std::os::fd::AsRawFd;
+    use std::os::fd::FromRawFd;
+    use std::os::fd::IntoRawFd;
+    use std::os::fd::OwnedFd;
+
+    use super::*;
+
+    thread_local! {
+        static RELEASES: RefCell<Vec<(i64, u64)>> = const { RefCell::new(Vec::new()) };
+        static REPLACEMENT_SOURCE: Cell<libc::c_int> = const { Cell::new(-1) };
+        static REPLACED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    // Real kernel resources make leaks and descriptor reuse observable without
+    // requiring PMU access. These resource tests do not qualify PMU behavior.
+    pub(crate) fn counter(raw_syscall: unsafe fn(i64, [u64; 6]) -> i64) -> PerfCounter {
+        let fd = Errno::result(unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) })
+            .unwrap();
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let mapping = Errno::result(unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                get_mmap_size(),
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        })
+        .unwrap();
+        PerfCounter {
+            fd: fd.into_raw_fd(),
+            mmap: Some(NonNull::new(mapping.cast()).unwrap()),
+            raw_syscall: Some(raw_syscall),
+        }
+    }
+
+    pub(crate) fn reset_releases() {
+        RELEASES.with_borrow_mut(Vec::clear);
+    }
+
+    pub(crate) fn releases() -> Vec<(i64, u64)> {
+        RELEASES.with_borrow(Clone::clone)
+    }
+
+    pub(crate) unsafe fn release(number: i64, arguments: [u64; 6]) -> i64 {
+        RELEASES.with_borrow_mut(|calls| calls.push((number, arguments[0])));
+        let result = match number {
+            libc::SYS_munmap => unsafe {
+                libc::munmap(arguments[0] as *mut _, arguments[1] as usize)
+            },
+            libc::SYS_close => unsafe { libc::close(arguments[0] as libc::c_int) },
+            _ => panic!("unexpected non-release syscall {number}"),
+        };
+        assert_eq!(result, 0, "real resource release failed: {}", Errno::last());
+        0
+    }
+
+    pub(crate) unsafe fn release_with_errors(number: i64, arguments: [u64; 6]) -> i64 {
+        // Exercise the ambiguous case: the resource was released, but the
+        // caller observes an error and must consume it without retrying.
+        unsafe { release(number, arguments) };
+        match number {
+            libc::SYS_munmap => -(libc::EIO as i64),
+            libc::SYS_close => -(libc::EINTR as i64),
+            _ => unreachable!(),
+        }
+    }
+
+    unsafe fn release_with_fd_reuse(number: i64, arguments: [u64; 6]) -> i64 {
+        if number != libc::SYS_close || REPLACED.replace(true) {
+            return unsafe { release(number, arguments) };
+        }
+        RELEASES.with_borrow_mut(|calls| calls.push((number, arguments[0])));
+        // dup3 releases the original owned fd and replaces it atomically. No
+        // interval lets a parallel test acquire the numeric fd being reused.
+        let fd = arguments[0] as libc::c_int;
+        assert_eq!(
+            unsafe { libc::dup3(REPLACEMENT_SOURCE.get(), fd, libc::O_CLOEXEC) },
+            fd
+        );
+        -(libc::EINTR as i64)
+    }
+
+    #[test]
+    fn terminal_close_retains_both_release_errors_once() {
+        reset_releases();
+        let counter = counter(release_with_errors);
+        let expected = vec![
+            (libc::SYS_munmap, counter.mmap.unwrap().as_ptr() as u64),
+            (libc::SYS_close, counter.raw_fd() as u64),
+        ];
+        assert_eq!(
+            counter.close_after_failure("mapping", "fd"),
+            vec![("mapping", Errno::EIO), ("fd", Errno::EINTR)]
+        );
+        // The consuming method has returned and Drop has already run.
+        assert_eq!(releases(), expected);
+    }
+
+    #[test]
+    fn terminal_close_and_ordinary_drop_release_the_same_resources() {
+        for terminal in [false, true] {
+            reset_releases();
+            let counter = counter(release);
+            let expected = vec![
+                (libc::SYS_munmap, counter.mmap.unwrap().as_ptr() as u64),
+                (libc::SYS_close, counter.raw_fd() as u64),
+            ];
+            if terminal {
+                assert!(counter.close_after_failure("mapping", "fd").is_empty());
+            } else {
+                drop(counter);
+            }
+            assert_eq!(releases(), expected);
+        }
+    }
+
+    #[test]
+    fn terminal_close_does_not_retry_a_reused_descriptor() {
+        reset_releases();
+        REPLACED.set(false);
+        let source =
+            Errno::result(unsafe { libc::eventfd(42, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) })
+                .unwrap();
+        let source = unsafe { OwnedFd::from_raw_fd(source) };
+        REPLACEMENT_SOURCE.set(source.as_raw_fd());
+        let counter = counter(release_with_fd_reuse);
+        let fd = counter.raw_fd();
+        let expected = vec![
+            (libc::SYS_munmap, counter.mmap.unwrap().as_ptr() as u64),
+            (libc::SYS_close, fd as u64),
+        ];
+        let errors = counter.close_after_failure("mapping", "fd");
+        // The replacement is now this fixture's resource, not the consumed
+        // PerfCounter's. Take ownership only if it survived the counter's Drop.
+        let replacement = if unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0 {
+            Some(unsafe { OwnedFd::from_raw_fd(fd) })
+        } else {
+            None
+        };
+        assert_eq!(errors, vec![("fd", Errno::EINTR)]);
+        assert_eq!(releases(), expected);
+        let replacement = replacement.expect("Drop closed the reused descriptor");
+        let mut value = 0_u64;
+        assert_eq!(
+            unsafe {
+                libc::read(
+                    replacement.as_raw_fd(),
+                    (&raw mut value).cast(),
+                    std::mem::size_of_val(&value),
+                )
+            },
+            std::mem::size_of_val(&value) as isize
+        );
+        assert_eq!(value, 42, "the exact replacement eventfd must remain open");
+    }
+}
 
 // NOTE: aarch64 doesn't work with
 // `Event::Hardware(HardwareEvent::BranchInstructions)`, so these tests are

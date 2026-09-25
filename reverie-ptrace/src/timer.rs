@@ -394,6 +394,21 @@ pub enum HandleFailure {
     ImproperSignal(Stopped),
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExecTimerIdentity {
+    pub clock_fd: i32,
+    pub timer_fd: i32,
+    pub clock_event_id: u64,
+    pub timer_event_id: u64,
+    pub artificial_pending: bool,
+    pub artificial_signal_sent: bool,
+    pub cancelled: bool,
+    pub guest_pid: Pid,
+    pub guest_tid: Tid,
+    pub kernel_owner_tid: Tid,
+}
+
 impl Timer {
     /// Create a new timer monitoring the specified thread.
     pub fn new(guest_pid: Pid, guest_tid: Tid) -> Self {
@@ -532,14 +547,82 @@ impl Timer {
         self.inner_noinit().map(|t| t.cancel()).unwrap_or(Ok(()))
     }
 
+    /// Consume both counters after failed-run physical cleanup has settled.
+    /// The caller publishes the failure and cancels notifications before that
+    /// cleanup. This only releases resources; it never finalizes a request,
+    /// re-arms a counter, or sends an artificial timer signal. Taking the inner
+    /// owner also makes repeated terminal closure a no-op, including on error.
+    pub(crate) fn close_after_failure(&mut self) -> Vec<(&'static str, Errno)> {
+        let Some(timer) = self.inner.take() else {
+            return Vec::new();
+        };
+        let mut errors = timer
+            .clock
+            .close_after_failure("ptrace clock munmap", "ptrace clock close");
+        errors.extend(
+            timer
+                .timer
+                .close_after_failure("ptrace timer munmap", "ptrace timer close"),
+        );
+        errors
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exec_test_identity(&self) -> Result<Option<ExecTimerIdentity>, Errno> {
+        self.inner
+            .as_ref()
+            .map(|timer| {
+                Ok(ExecTimerIdentity {
+                    clock_fd: timer.clock.exec_test_fd(),
+                    timer_fd: timer.timer.exec_test_fd(),
+                    clock_event_id: timer.clock.id()?,
+                    timer_event_id: timer.timer.id()?,
+                    artificial_pending: timer.send_artificial_signal,
+                    artificial_signal_sent: timer.artificial_signal_sent,
+                    cancelled: timer.timer_status == EventStatus::Cancelled,
+                    guest_pid: timer.guest_pid,
+                    guest_tid: timer.guest_tid,
+                    kernel_owner_tid: timer.timer.exec_test_signal_owner()?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Retarget the surviving thread's counters at an observed nonleader exec.
+    /// The caller owns the actual replacement Exec stop and has transferred
+    /// these counters with that former thread's state. This never reopens a
+    /// counter against a numeric PID, resets its clock, or finalizes requests.
+    pub(crate) fn retarget_after_exec(&mut self, pid: Pid, tid: Tid) -> Vec<(&'static str, Errno)> {
+        let Some(timer) = self.inner.as_mut() else {
+            return Vec::new();
+        };
+        let mut errors = Vec::new();
+        // Disabling/retargeting cannot drain a previously queued perf signal.
+        // Retire the old logical request as well. Existing signal handling
+        // rejects cancelled or premature notifications before Tool delivery.
+        timer.schedule_cancellation();
+        timer.send_artificial_signal = false;
+        if let Err(error) = timer.cancel() {
+            errors.push(("ptrace exec timer cancellation", error));
+        }
+        // perf's task attachment survives exec, while F_OWNER_TID and the
+        // artificial tgkill target still name the former numeric TID.
+        if let Err(error) = timer.timer.set_signal_delivery(tid, MARKER_SIGNAL) {
+            errors.push(("ptrace exec timer signal owner", error));
+        }
+        timer.guest_pid = pid;
+        timer.guest_tid = tid;
+        errors
+    }
+
     /// Perform finalization actions on requests for timer events before guest
     /// resumption. See the module-level documentation for rules about when this can and
     /// should be called.
     ///
     /// Currently, this will, if necessary, `tgkill` a timer signal to the guest
     /// thread.
-    pub fn finalize_requests(&self) {
-        if let Some(t) = self.inner_noinit() {
+    pub fn finalize_requests(&mut self) {
+        if let Some(t) = self.inner_mut_noinit() {
             t.finalize_requests();
         }
     }
@@ -576,6 +659,24 @@ impl Timer {
     }
 }
 
+// Raw observations from the actual delivered marker signal, for finite exec
+// controls. This neither consumes a wait status nor changes classification.
+#[cfg(test)]
+type ExecSignalObservation = (i32, i32, i32, i32, u64, bool, bool);
+#[cfg(test)]
+type ExecSignalObservations = std::sync::Arc<std::sync::Mutex<Vec<ExecSignalObservation>>>;
+#[cfg(test)]
+type ControllerQueryHook = Box<dyn FnOnce(&Stopped)>;
+#[cfg(test)]
+type ControllerQueryLog = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+#[cfg(test)]
+thread_local! {
+    pub(crate) static EXEC_SIGNAL_OBSERVATIONS: std::cell::RefCell<Option<ExecSignalObservations>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static CONTROLLER_NAMESPACE_PATH: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static CONTROLLER_QUERY_EDGE: std::cell::RefCell<Option<ControllerQueryHook>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static CONTROLLER_QUERY_LOG: std::cell::RefCell<Option<ControllerQueryLog>> = const { std::cell::RefCell::new(None) };
+}
+
 /// The lazy-initialized part of a `Timer` that holds the functionality.
 #[derive(Debug)]
 struct TimerImpl {
@@ -594,6 +695,12 @@ struct TimerImpl {
 
     /// Whether or not the active timer event requires an artificial signal
     send_artificial_signal: bool,
+
+    /// A successful controller tgkill has not yet been consumed at a signal
+    /// stop. Standard signals coalesce, so this is ownership of a possible
+    /// queued signal, not a count. Logical cancellation, disable and exec do
+    /// not flush kernel queues and must not clear this record.
+    artificial_signal_sent: bool,
 
     initial_command: InitialCommand,
 
@@ -804,6 +911,7 @@ impl TimerImpl {
             },
             timer_status: EventStatus::Cancelled,
             send_artificial_signal: false,
+            artificial_signal_sent: false,
             initial_command: if initial_command {
                 InitialCommand::WaitingForExec
             } else {
@@ -921,15 +1029,63 @@ impl TimerImpl {
                 || signal.si_code == i32::from(libc::POLLHUP))
     }
 
-    fn generated_signal(&self, signal: &libc::siginfo_t) -> bool {
+    fn controller_artificial_signal(&self, signal: &libc::siginfo_t) -> Result<bool, TraceError> {
+        if !self.artificial_signal_sent
+            || signal.si_signo != MARKER_SIGNAL as i32
+            || signal.si_code != libc::SI_TKILL
+        {
+            return Ok(false);
+        }
+        let sender = unsafe { signal.si_pid() };
+        let controller = unsafe { libc::getpid() };
+        if sender != 0 && sender != controller {
+            return Ok(false);
+        }
+        // This runs while handle_signal owns the tracee's actual stop, before
+        // any resumption. A task visible to this ptracer is in the same PID
+        // namespace or a descendant. Linux translates an ancestor's tgkill
+        // sender to zero; a positive numerical match alone is insufficient
+        // because a descendant's local PID can equal our PID.
+        let guest_path = format!("/proc/{}/ns/pid", self.guest_tid);
+        #[cfg(test)]
+        let guest_path = CONTROLLER_NAMESPACE_PATH.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or(guest_path)
+        });
+        let ours = nix::sys::stat::stat("/proc/thread-self/ns/pid")?;
+        let theirs = nix::sys::stat::stat(guest_path.as_str());
+        #[cfg(test)]
+        CONTROLLER_QUERY_LOG.with(|slot| {
+            if let Some(log) = slot.borrow().as_ref() {
+                log.lock().unwrap().push(format!(
+                    "actual namespace stat: tid={}, result={:?}",
+                    self.guest_tid,
+                    theirs.as_ref().map(|stat| (stat.st_dev, stat.st_ino))
+                ));
+            }
+        });
+        let theirs = theirs?;
+        let same_namespace = (ours.st_dev, ours.st_ino) == (theirs.st_dev, theirs.st_ino);
+        // Namespace lookup failure propagates through the held-stop error
+        // path; it neither accepts an unknown sender nor makes construction
+        // newly fallible. This discriminates accidental guest markers under
+        // the existing reserved-signal convention, not hostile forgery:
+        // another ancestor also maps to zero and self rt_tgsigqueueinfo can
+        // supply SI_TKILL with a forged sender in either namespace.
+        Ok(sender == if same_namespace { controller } else { 0 })
+    }
+
+    fn generated_signal(&self, signal: &libc::siginfo_t, controller: bool) -> bool {
         self.initial_command == InitialCommand::Ordinary
             && signal.si_signo == MARKER_SIGNAL as i32
-            // If we sent an artificial signal, it doesn't have any siginfo
-            && (self.send_artificial_signal
-            // If not, the fd should match. This could possibly lead to a
-            // collision, because an fd comparing-equal to this one in another
-            // process could also send a signal. However, that it would also do so
-            // as SIGSTKFLT is effectively not going to happen.
+            && (controller
+                // Existing backend convention reserves this marker for perf.
+                // Numeric fd equality alone is not a global signal identity:
+                // an external sender can reuse a fd number. The controller
+                // kick path above also checks the namespace-translated sender
+                // and code, subject to the same reserved-signal convention.
                 || (Self::is_timer_generated_signal(signal)
                     && get_si_fd(signal) == self.timer.raw_fd()))
     }
@@ -938,7 +1094,7 @@ impl TimerImpl {
         self.clock.ctr_value_fast().expect("Failed to read clock")
     }
 
-    pub fn finalize_requests(&self) {
+    pub fn finalize_requests(&mut self) {
         if self.initial_command != InitialCommand::Ordinary {
             debug_assert!(!self.send_artificial_signal);
             return;
@@ -957,6 +1113,7 @@ impl TimerImpl {
                 )
             })
             .expect("Timer tgkill error indicates a bug");
+            self.artificial_signal_sent = true;
         }
     }
 
@@ -967,7 +1124,26 @@ impl TimerImpl {
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
         let signal = task.getsiginfo()?;
-        if !self.generated_signal(&signal) {
+        #[cfg(test)]
+        EXEC_SIGNAL_OBSERVATIONS.with(|slot| {
+            if let Some(observed) = slot.borrow().as_ref() {
+                observed.lock().unwrap().push((
+                    self.guest_tid.as_raw(),
+                    signal.si_signo,
+                    signal.si_code,
+                    unsafe { signal.si_pid() },
+                    self.read_clock(),
+                    self.timer_status == EventStatus::Cancelled,
+                    self.send_artificial_signal,
+                ));
+            }
+        });
+        #[cfg(test)]
+        if let Some(hook) = CONTROLLER_QUERY_EDGE.with(|slot| slot.borrow_mut().take()) {
+            hook(&task);
+        }
+        let controller = self.controller_artificial_signal(&signal)?;
+        if !self.generated_signal(&signal, controller) {
             warn!(
                 ?signal,
                 "Passed a signal that wasn't for this timer, likely indicating a bug!",
@@ -975,6 +1151,9 @@ impl TimerImpl {
             return Err(HandleFailure::ImproperSignal(task));
         }
 
+        if controller {
+            self.artificial_signal_sent = false;
+        }
         match self.timer_status {
             EventStatus::Scheduled => panic!(
                 "Timer event status should tick at least once before the signal \
@@ -1165,6 +1344,68 @@ mod tests {
     use super::ClockCounter;
     #[cfg(target_arch = "x86_64")]
     use super::PmuConfig;
+
+    #[test]
+    fn terminal_close_attempts_both_counters_after_cancellation_error() {
+        use super::*;
+        use crate::perf::terminal_close_tests;
+
+        terminal_close_tests::reset_releases();
+        let clock = terminal_close_tests::counter(terminal_close_tests::release_with_errors);
+        let counter = terminal_close_tests::counter(terminal_close_tests::release_with_errors);
+        let clock_fd = clock.raw_fd();
+        let timer_fd = counter.raw_fd();
+        let event = ActiveEvent::Precise {
+            clock_target: 1,
+            offset: 0,
+        };
+        let mut timer = Timer {
+            inner: Some(TimerImpl {
+                clock,
+                timer: counter,
+                event,
+                timer_status: EventStatus::Scheduled,
+                send_artificial_signal: true,
+                artificial_signal_sent: false,
+                initial_command: InitialCommand::Ordinary,
+                held_initial_event: Some(event),
+                fail_next_notification: None,
+                // A terminal close must not try to finalize the pending kick.
+                guest_pid: Pid::from_raw(0),
+                guest_tid: Tid::from_raw(0),
+            }),
+        };
+        // The fixture owns real eventfds, not PMU fds. Their failed disable
+        // produces a real cancellation error without interfering with release.
+        assert_eq!(timer.cancel(), Err(Errno::ENOTTY));
+        assert_eq!(
+            timer.close_after_failure(),
+            vec![
+                ("ptrace clock munmap", Errno::EIO),
+                ("ptrace clock close", Errno::EINTR),
+                ("ptrace timer munmap", Errno::EIO),
+                ("ptrace timer close", Errno::EINTR),
+            ]
+        );
+        assert!(timer.inner.is_none());
+        let releases = terminal_close_tests::releases();
+        assert_eq!(releases.len(), 4);
+        assert_eq!(releases[0].0, libc::SYS_munmap);
+        assert_eq!(releases[1], (libc::SYS_close, clock_fd as u64));
+        assert_eq!(releases[2].0, libc::SYS_munmap);
+        assert_ne!(releases[0].1, releases[2].1);
+        assert_eq!(releases[3], (libc::SYS_close, timer_fd as u64));
+        assert!(timer.close_after_failure().is_empty());
+        drop(timer);
+        assert_eq!(terminal_close_tests::releases(), releases);
+    }
+
+    #[test]
+    fn terminal_close_without_perf_resources_is_idempotent() {
+        let mut timer = super::Timer { inner: None };
+        assert!(timer.close_after_failure().is_empty());
+        assert!(timer.close_after_failure().is_empty());
+    }
 
     #[test]
     fn initial_command_requests_retire_without_physical_notification() {
