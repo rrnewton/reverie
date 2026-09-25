@@ -1,6 +1,6 @@
 [package]
 name = "reverie-narf"
-description = "Standard Reverie Tool adapter component for a future Narf backend"
+description = "Host (std) face of the Narf Reverie backend"
 version = "0.2.0"
 authors = ["Meta Platforms"]
 edition = "2024"
@@ -8,12 +8,11 @@ repository = "https://github.com/facebookexperimental/reverie"
 license = "BSD-2-Clause"
 
 [dependencies]
-async-trait = "0.1.86"
-libc = "0.2.186"
+# Host builds of the core use Reverie with its default `std` feature.
 reverie = { package = "reverie-core", version = "0.2.0", path = "../reverie" }
-reverie-memory = { version = "0.2.0", path = "../reverie-memory" }
 reverie-narf-core = { version = "0.2.0", path = "../reverie-narf-core" }
-reverie-syscalls = { version = "0.2.0", path = "../reverie-syscalls" }
 
 [dev-dependencies]
-futures = { version = "0.3.31", features = ["executor"] }
+async-trait = "0.1.86"
+libc = "0.2.186"
+reverie-memory = { version = "0.2.0", path = "../reverie-memory" }
