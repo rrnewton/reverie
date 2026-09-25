@@ -8,11 +8,13 @@
 
 use std::process::Command;
 
+mod parallel_tasks_child;
+
 #[test]
 fn parallel_tasks_reports_switch_points() {
-    let output = Command::new(env!("CARGO_BIN_EXE_parallel_tasks"))
-        .output()
-        .expect("failed to run parallel_tasks");
+    let output =
+        parallel_tasks_child::output(&mut Command::new(env!("CARGO_BIN_EXE_parallel_tasks")))
+            .expect("failed to run parallel_tasks");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
