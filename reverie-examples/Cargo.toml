@@ -10,6 +10,8 @@
 # exact Tool path. Keep the internal target synchronized before the next export.
 # PR-491 adds the parallel_tasks standalone program to the OSS Cargo build and
 # validation. Keep the internal target synchronized before the next export.
+# The Narf backend round adds the OSS-only narf_canonical_ptrace Linux reference
+# host over reverie-narf-tools. Keep the internal target synchronized.
 
 [package]
 name = "reverie-examples"
@@ -61,6 +63,10 @@ name = "debug"
 path = "debug.rs"
 
 [[bin]]
+name = "narf_canonical_ptrace"
+path = "narf_canonical_ptrace.rs"
+
+[[bin]]
 name = "noop"
 path = "noop.rs"
 
@@ -92,6 +98,7 @@ reverie = { version = "0.2.0", path = "../reverie", package = "reverie-core" }
 reverie-e9patch = { version = "0.2.0", path = "../reverie-e9patch", default-features = false }
 reverie-kvm = { version = "0.2.0", path = "../reverie-kvm" }
 reverie-liteinst = { version = "0.2.0", path = "../reverie-liteinst", default-features = false }
+reverie-narf-tools = { version = "0.2.0", path = "../reverie-narf-tools" }
 reverie-ptrace = { version = "0.2.0", path = "../reverie-ptrace" }
 reverie-util = { version = "0.2.0", path = "../reverie-util" }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
