@@ -38,7 +38,7 @@ negative-control mutation.
 ## Narf syscall-interception milestone
 
 Current local Narf head:
-`c3a92bbbe38b59649316f5d39ddd0f61fba690ef`.
+`d87869d24fb9b104ed04b3910d9b2289a63d6fce`.
 
 Commits:
 
@@ -47,6 +47,10 @@ Commits:
 - `c3a92bbbe38b59649316f5d39ddd0f61fba690ef` — type-safe callback
   authority, atomic one-shot global publication, unknown-syscall lifecycle
   parity, and stronger executable tests.
+- `d87869d24fb9b104ed04b3910d9b2289a63d6fce` — make the ordinary
+  reset crate-private, expose an out-of-crate reset only under the explicit
+  `verification-test-reset` feature, and compile-check that production callers
+  cannot name the private reset.
 
 The current interface provides an immutable `SyscallInvocation` snapshot,
 entry control (`Continue` or `Complete`), a return-only replacement callback,
@@ -100,8 +104,38 @@ REQUESTED**. Its byte-identical report is tracked at
 It identified four substantive gaps: mutable trap-context authority, replaceable
 global identity and unsafe reset reclamation, an early-returning unknown syscall
 path, and insufficient executable coverage. Head `c3a92bbb...` addresses the
-first three and adds the bounded tests listed above. A fresh exact-head review
-has been requested; no claim of independent approval is made here.
+first three and adds the bounded tests listed above. A fresh review at exact
+head `c3a92bbb...` again returned **CHANGES REQUESTED**. Its byte-identical
+report is tracked at
+[`audits/narf-syscall-interception-c3a92bb.md`](audits/narf-syscall-interception-c3a92bb.md)
+(SHA-256
+`e5823d11c21a5697ab4bfc37842acd13cb6c088fbf46db51b2444f051f3995b1`).
+It confirmed the mutable-context, reader-UAF, and unknown-syscall fixes, then
+found the still-public reset as the remaining blocking interface issue. Commit
+`d87869d...` fixes that issue. The review also retained major evidence gaps for
+live architecture entries, concurrent publication, and final I/O accounting;
+those are not relabeled as proven.
+
+## Full-suite failure provenance
+
+The full x86_64 kernel-test gate is not green. The same module-unload page fault
+reproduces on the untouched Narf base and on implementation head
+`d87869d24fb9b104ed04b3910d9b2289a63d6fce`:
+
+- Base `87b7cd1048a9492fccb4339558038c06d862e0b4`:
+  `XTASK_QEMU_TIMEOUT_SECS=300 cargo xtask test --arch=x86_64` returned 1 after
+  `smoke_module_load_real_ko_round_trip` printed module init and exit, then
+  page-faulted at `rip=0xffffffffc0000030`. Output SHA-256
+  `c1301d0bd423fcc6deb9d8bbce0e8ea141e019a12b05603bc319b7b12ea3e15a`.
+- Head `d87869d24fb9b104ed04b3910d9b2289a63d6fce`: the same command returned
+  1 at the same test and instruction address after the same init/exit sequence.
+  Output SHA-256
+  `e1c068c984f404dcc8af61ef9b314f280f8e2553e2b2a71a75be41972fee0d1f`.
+
+This establishes that the module-unload crash predates this branch; it does not
+turn the full gate green. The focused syscall QEMU gate at `d87869d...` passed
+all three selected cases and exited without panic. The temporary detached base
+worktree was removed after its output was captured under `/tmp`.
 
 ## Next gates
 
