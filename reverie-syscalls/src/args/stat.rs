@@ -11,6 +11,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::libc;
+
 /// A serializable version of `libc::stat`.
 #[cfg(target_arch = "x86_64")]
 #[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq, Debug)]

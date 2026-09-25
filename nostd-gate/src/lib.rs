@@ -59,3 +59,33 @@ pub fn describe_exit(pid: reverie_process::Pid, raw: i32) -> Option<reverie_proc
         ExitStatus::Signaled(sig, _) => Signal::try_from(sig as i32).ok(),
     }
 }
+
+/// Exercises the syscall types the `Tool` contract hands to tools: decoding,
+/// `Display` against guest memory, reading a path argument, and the libc
+/// layouts guest memory is read as.
+pub fn describe_syscall(
+    memory: &SameAddressSpace,
+    sysno: syscalls::Sysno,
+    args: syscalls::SyscallArgs,
+) -> alloc::string::String {
+    use core::fmt::Write;
+
+    use reverie_syscalls::Displayable;
+    use reverie_syscalls::ReadAddr;
+    use reverie_syscalls::Syscall;
+
+    let syscall = Syscall::from_raw(sysno, args);
+    let mut out = alloc::string::String::new();
+    let _ = write!(out, "{}", syscall.display(memory));
+    if let Syscall::Openat(openat) = syscall {
+        // Without `std` a path is read as the `CString` of its bytes.
+        let path: Option<alloc::ffi::CString> = openat.path().and_then(|p| p.read(memory).ok());
+        let _ = write!(out, " {path:?} {:?}", openat.flags());
+    }
+    let _ = write!(
+        out,
+        " stat={}",
+        core::mem::size_of::<reverie_syscalls::libc::stat>()
+    );
+    out
+}

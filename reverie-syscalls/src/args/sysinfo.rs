@@ -11,6 +11,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::libc;
+
 /// Type safe structure representing 'sysinfo' system call argument
 ///
 /// This mirrors the ABI fields of `libc::sysinfo` but deliberately does *not*
@@ -72,7 +74,7 @@ impl From<SysInfo> for libc::sysinfo {
     fn from(sys_info: SysInfo) -> libc::sysinfo {
         // SAFETY: `libc::sysinfo` is a plain-old-data C struct of integers; the
         // all-zero bit pattern is a valid value for every field.
-        let mut out: libc::sysinfo = unsafe { std::mem::zeroed() };
+        let mut out: libc::sysinfo = unsafe { core::mem::zeroed() };
         out.uptime = sys_info.uptime as libc::c_long;
         out.loads = [sys_info.loads_1, sys_info.loads_5, sys_info.loads_15];
         out.totalram = sys_info.total_ram;

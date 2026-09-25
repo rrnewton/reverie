@@ -6,24 +6,24 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use nix::fcntl::AtFlags;
-use nix::fcntl::OFlag;
-use nix::sched::CloneFlags;
-use nix::sys::epoll::EpollCreateFlags;
-use nix::sys::eventfd::EfdFlags;
-use nix::sys::inotify::InitFlags;
-use nix::sys::mman::MapFlags;
-use nix::sys::mman::ProtFlags;
-use nix::sys::signalfd::SfdFlags;
-use nix::sys::socket::SockFlag;
-use nix::sys::stat::Mode;
-use nix::sys::timerfd::TimerFlags;
-use nix::sys::wait::WaitPidFlag;
-use nix::unistd::Pid;
-
 use crate::Addr;
 use crate::AddrMut;
 use crate::Errno;
+use crate::libc;
+use crate::nix::fcntl::AtFlags;
+use crate::nix::fcntl::OFlag;
+use crate::nix::sched::CloneFlags;
+use crate::nix::sys::epoll::EpollCreateFlags;
+use crate::nix::sys::eventfd::EfdFlags;
+use crate::nix::sys::inotify::InitFlags;
+use crate::nix::sys::mman::MapFlags;
+use crate::nix::sys::mman::ProtFlags;
+use crate::nix::sys::signalfd::SfdFlags;
+use crate::nix::sys::socket::SockFlag;
+use crate::nix::sys::stat::Mode;
+use crate::nix::sys::timerfd::TimerFlags;
+use crate::nix::sys::wait::WaitPidFlag;
+use crate::nix::unistd::Pid;
 
 /// Trait representing a raw value. Note that the assertion
 /// `assert_eq!(T::from_raw(x).into_raw(), x)` should hold true for every
