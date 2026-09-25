@@ -650,7 +650,10 @@ impl Workers {
             }
             owner.shared.publication.join_blocking();
             #[cfg(test)]
-            self.task_exits.publish_blocking_joins_for_test();
+            self.task_exits.publish_blocking_joins_for_test(
+                *owner.shared.collector_join.lock().unwrap(),
+                owner.shared.publication.recorded_join_for_test(),
+            );
             owner.finalized = true;
         }
     }

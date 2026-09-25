@@ -407,41 +407,134 @@ fn split_collector_anchor_failure_retains_both_workers_and_factories_until_recov
     assert_eq!(factory_drops.load(Ordering::Acquire), 2);
 }
 
-#[test]
-fn split_drop_waits_for_collector_anchor_and_barrier_before_resource_release() {
-    const CHILD_ENV: &str = "REVERIE_RPC_SPLIT_DROP_ORDER_CHILD";
-    const TEST_NAME: &str = "guest_log::capture::split::tests::split_drop_waits_for_collector_anchor_and_barrier_before_resource_release";
+const DROP_ORDER_PARENT_ENV: &str = "REVERIE_RPC_SPLIT_DROP_ORDER_PARENT";
+const DROP_ORDER_TOKEN_PATH_ENV: &str = "REVERIE_RPC_SPLIT_DROP_ORDER_TOKEN_PATH";
+const DROP_ORDER_TOKEN_VALUE_ENV: &str = "REVERIE_RPC_SPLIT_DROP_ORDER_TOKEN_VALUE";
 
-    if std::env::var_os(CHILD_ENV).is_none() {
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", TEST_NAME, "--nocapture"])
-            .env(CHILD_ENV, "1")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
-            .expect("spawn isolated Drop scenario");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            match child.try_wait().expect("observe isolated Drop scenario") {
-                Some(status) => {
-                    assert!(status.success(), "isolated Drop scenario failed: {status}");
-                    return;
+fn drop_order_child_context() -> Option<(std::path::PathBuf, String)> {
+    let expected_parent = std::env::var(DROP_ORDER_PARENT_ENV)
+        .ok()?
+        .parse::<u32>()
+        .ok()?;
+    let actual_parent = unsafe { libc::getppid() } as u32;
+    if actual_parent != expected_parent {
+        return None;
+    }
+    Some((
+        std::env::var_os(DROP_ORDER_TOKEN_PATH_ENV)?.into(),
+        std::env::var(DROP_ORDER_TOKEN_VALUE_ENV).ok()?,
+    ))
+}
+
+fn run_isolated_drop_order_test(test_name: &str, bound: Duration) -> Result<(), String> {
+    static NEXT_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let parent = std::process::id();
+    let (token_dir, token_value) = (0..100)
+        .find_map(|_| {
+            let sequence = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
+            let directory =
+                std::env::temp_dir().join(format!("reverie-rpc-split-drop-{parent}-{sequence}"));
+            match std::fs::create_dir(&directory) {
+                Ok(()) => Some((
+                    directory,
+                    format!("split-drop-complete:{parent}:{sequence}\n"),
+                )),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => None,
+                Err(error) => panic!("create completion-token directory: {error}"),
+            }
+        })
+        .expect("fresh completion-token directory");
+    let token_path = token_dir.join("complete");
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test_name, "--nocapture"])
+        .env(DROP_ORDER_PARENT_ENV, parent.to_string())
+        .env(DROP_ORDER_TOKEN_PATH_ENV, &token_path)
+        .env(DROP_ORDER_TOKEN_VALUE_ENV, &token_value)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(error) => {
+            let cleanup = std::fs::remove_dir(&token_dir);
+            return Err(format!(
+                "spawn isolated Drop scenario: {error}; cleanup={cleanup:?}"
+            ));
+        }
+    };
+    let deadline = Instant::now() + bound;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    let kill = child.kill();
+                    let wait = child.wait();
+                    break Err(format!(
+                        "isolated Drop scenario exceeded {bound:?}; kill={kill:?}, wait={wait:?}"
+                    ));
                 }
-                None => {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        let kill = child.kill();
-                        let status = child.wait();
-                        panic!(
-                            "isolated Drop scenario exceeded five seconds; kill={kill:?}, wait={status:?}"
-                        );
-                    }
-                    std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
-                }
+                std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
+            }
+            Err(error) => {
+                let kill = child.kill();
+                let wait = child.wait();
+                break Err(format!(
+                    "observe isolated Drop scenario: {error}; kill={kill:?}, wait={wait:?}"
+                ));
             }
         }
+    };
+    let token = std::fs::read(&token_path);
+    let remove_token = match std::fs::remove_file(&token_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    };
+    let remove_dir = std::fs::remove_dir(&token_dir);
+    remove_token.map_err(|error| format!("remove completion token: {error}"))?;
+    remove_dir.map_err(|error| format!("remove completion-token directory: {error}"))?;
+    let status = status?;
+    if !status.success() {
+        return Err(format!("isolated Drop scenario failed: {status}"));
     }
+    match token {
+        Ok(bytes) if bytes == token_value.as_bytes() => Ok(()),
+        Ok(bytes) => Err(format!(
+            "isolated Drop scenario wrote wrong completion token: {bytes:?}"
+        )),
+        Err(error) => Err(format!(
+            "isolated Drop scenario exited successfully without exact completion token: {error}"
+        )),
+    }
+}
+
+#[test]
+fn split_drop_waits_for_collector_anchor_and_barrier_before_resource_release() {
+    let child_context = drop_order_child_context();
+    if child_context.is_none() {
+        let module = module_path!();
+        let crate_prefix = format!("{}::", env!("CARGO_CRATE_NAME"));
+        let harness_module = module.strip_prefix(&crate_prefix).unwrap_or(module);
+        let test_name = format!(
+            "{harness_module}::split_drop_waits_for_collector_anchor_and_barrier_before_resource_release"
+        );
+        let stale_name = format!("{test_name}_stale");
+        let stale = run_isolated_drop_order_test(&stale_name, Duration::from_secs(5));
+        assert!(
+            stale
+                .as_ref()
+                .is_err_and(|error| error.contains("without exact completion token")),
+            "successful zero-test child was not rejected: {stale:?}"
+        );
+        run_isolated_drop_order_test(&test_name, Duration::from_secs(5))
+            .expect("isolated Drop scenario completed exact token");
+        return;
+    }
+    let (completion_path, completion_value) = child_context.unwrap();
 
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
@@ -546,6 +639,17 @@ fn split_drop_waits_for_collector_anchor_and_barrier_before_resource_release() {
     workers
         .task_exits
         .install_drop_order_probes(joins_completed.clone(), barrier_completed.clone());
+    let early_collector_result = *shared.collector_join.lock().unwrap();
+    let early_publication_result = shared.publication.recorded_join_for_test();
+    assert_eq!(early_collector_result, None);
+    assert_eq!(early_publication_result, None);
+    workers
+        .task_exits
+        .publish_blocking_joins_for_test(early_collector_result, early_publication_result);
+    assert!(
+        !joins_completed.load(Ordering::Acquire),
+        "an n6-equivalent early hook published joins without recorded results"
+    );
 
     let mut run = SplitCaptureRun::<u8, FactoryProbe, FactoryProbe> {
         parent_factory: Some(FactoryProbe {
@@ -603,6 +707,15 @@ fn split_drop_waits_for_collector_anchor_and_barrier_before_resource_release() {
     assert!(barrier_completed.load(Ordering::Acquire));
     assert_eq!(destination_drops.load(Ordering::Acquire), 1);
     assert_eq!(factory_drops.load(Ordering::Acquire), 2);
+    let mut completion = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&completion_path)
+        .expect("create exact completion token");
+    completion
+        .write_all(completion_value.as_bytes())
+        .expect("write exact completion token");
+    completion.sync_all().expect("sync exact completion token");
 }
 
 #[test]
