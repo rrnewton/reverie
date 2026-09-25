@@ -83,6 +83,15 @@ fn vectored_result(result: Result<usize, Errno>) -> Result<usize, Errno> {
 }
 
 impl MemoryAccess for LocalMemory {
+    fn write_with_user_access(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        // The scalar method already uses one checked numeric-iovec kernel copy,
+        // with raw errno and VMA permissions (including at exactly eight bytes).
+        match self.write(addr, buf)? {
+            0 if !buf.is_empty() => Err(Errno::EFAULT),
+            copied => Ok(copied),
+        }
+    }
+
     fn read_vectored(
         &self,
         read_from: &[io::IoSlice],

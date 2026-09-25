@@ -1014,6 +1014,42 @@ impl MemoryAccess for SabreMemory {
         };
         Self::transfer_result(result)
     }
+
+    fn write_with_user_access(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        addr.as_raw().checked_add(buf.len()).ok_or(Errno::EFAULT)?;
+        let local = libc::iovec {
+            iov_base: buf.as_ptr().cast_mut().cast(),
+            iov_len: buf.len(),
+        };
+        let remote = libc::iovec {
+            iov_base: addr.as_raw() as *mut libc::c_void,
+            iov_len: buf.len(),
+        };
+        // SAFETY: the local descriptor borrows buf for this call; the remote
+        // descriptor is a numeric address checked by the kernel. Keep the raw
+        // syscall convention used by the other SaBRe memory operations.
+        let written = unsafe {
+            syscall!(
+                Sysno::process_vm_writev,
+                self.pid.as_raw() as usize,
+                &local as *const libc::iovec as usize,
+                1,
+                &remote as *const libc::iovec as usize,
+                1,
+                0
+            )
+        }?;
+        // Do not use transfer_result: this operation reports a first-byte
+        // fault as EFAULT and preserves every other syscall error unchanged.
+        if written == 0 {
+            Err(Errno::EFAULT)
+        } else {
+            Ok(written)
+        }
+    }
 }
 
 fn poll_once<F: Future>(future: F) -> Poll<F::Output> {
@@ -1726,6 +1762,130 @@ mod tests {
         assert_eq!(memory.read_exact(invalid, &mut byte), Err(Errno::EFAULT));
         assert_eq!(memory.write(invalid_mut, &byte), Ok(0));
         assert_eq!(memory.write_exact(invalid_mut, &byte), Err(Errno::EFAULT));
+    }
+
+    struct UserCopyPages {
+        base: *mut u8,
+        length: usize,
+        page: usize,
+    }
+
+    impl UserCopyPages {
+        fn new() -> Self {
+            let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+            assert!(page > 0);
+            let page = page as usize;
+            let length = 3 * page;
+            let base = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    length,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            assert_ne!(base, libc::MAP_FAILED);
+            Self {
+                base: base.cast(),
+                length,
+                page,
+            }
+        }
+
+        fn protect_middle(&self, protection: libc::c_int) {
+            assert_eq!(
+                unsafe { libc::mprotect(self.base.add(self.page).cast(), self.page, protection) },
+                0
+            );
+        }
+    }
+
+    impl Drop for UserCopyPages {
+        fn drop(&mut self) {
+            assert_eq!(unsafe { libc::munmap(self.base.cast(), self.length) }, 0);
+        }
+    }
+
+    #[test]
+    fn sabre_user_copy_checks_permissions_at_every_size_and_preserves_prefixes() {
+        let mut memory = SabreMemory::new(current_pid());
+        let pages = UserCopyPages::new();
+        for protection in [libc::PROT_READ, libc::PROT_NONE] {
+            for offset in [0, pages.page - 3, pages.page] {
+                for length in [0, 1, 7, 8, 9, pages.page + 8] {
+                    pages.protect_middle(libc::PROT_READ | libc::PROT_WRITE);
+                    unsafe { std::ptr::write_bytes(pages.base, 0xa5, pages.length) };
+                    pages.protect_middle(protection);
+                    let source: Vec<_> = (0..length + 1).map(|i| (19 + i * 37) as u8).collect();
+                    let source = &source[1..];
+                    let destination = AddrMut::from_raw(pages.base as usize + offset).unwrap();
+                    let expected = if offset < pages.page {
+                        (pages.page - offset).min(length)
+                    } else {
+                        0
+                    };
+                    assert_eq!(
+                        memory.write_with_user_access(destination, source),
+                        if expected != 0 || length == 0 {
+                            Ok(expected)
+                        } else {
+                            Err(Errno::EFAULT)
+                        },
+                        "protection={protection} offset={offset} length={length}"
+                    );
+                    // Restore read access only after the real API call, then
+                    // inspect the entire mapping, including protected canaries.
+                    pages.protect_middle(libc::PROT_READ | libc::PROT_WRITE);
+                    let actual = unsafe { std::slice::from_raw_parts(pages.base, pages.length) };
+                    for (index, &byte) in actual.iter().enumerate() {
+                        let expected_byte = if index >= offset && index - offset < expected {
+                            source[index - offset]
+                        } else {
+                            0xa5
+                        };
+                        assert_eq!(byte, expected_byte, "destination byte {index}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sabre_user_copy_empty_and_invalid_addresses_preserve_memory() {
+        let mut memory = SabreMemory::new(current_pid());
+        let pages = UserCopyPages::new();
+        unsafe { std::ptr::write_bytes(pages.base, 0xa5, pages.length) };
+        for invalid in [1, usize::MAX - 3, usize::MAX] {
+            let destination = AddrMut::from_raw(invalid).unwrap();
+            assert_eq!(memory.write_with_user_access(destination, &[]), Ok(0));
+            for source in [&b"x"[..], &b"rejected"[..]] {
+                assert_eq!(
+                    memory.write_with_user_access(destination, source),
+                    Err(Errno::EFAULT)
+                );
+                let actual = unsafe { std::slice::from_raw_parts(pages.base, pages.length) };
+                assert!(actual.iter().all(|&byte| byte == 0xa5));
+            }
+        }
+    }
+
+    #[test]
+    fn sabre_user_copy_preserves_non_fault_errno() {
+        // A negative PID is invalid, so this error case has no PID-reuse race.
+        let mut memory = SabreMemory::new(Pid::from_raw(-1));
+        let mut destination = [0xa5; 8];
+        let address = AddrMut::from_ptr(destination.as_mut_ptr()).unwrap();
+        assert_eq!(
+            memory.write_with_user_access(address, b"rejected"),
+            Err(Errno::ESRCH)
+        );
+        assert_eq!(destination, [0xa5; 8]);
+        assert_eq!(
+            memory.write_with_user_access(AddrMut::from_raw(usize::MAX).unwrap(), &[]),
+            Ok(0)
+        );
     }
 
     #[derive(Default)]
