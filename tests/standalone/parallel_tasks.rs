@@ -9,6 +9,7 @@
 use std::cell::UnsafeCell;
 use std::env;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -63,17 +64,19 @@ impl SharedCells {
     }
 }
 
-/// In guest mode two threads will try to fill up half of the data array with their thread id as
-/// value. The threads grab indices through an atomic int. For sufficiently large arrays we expect
-/// the thread ids to show up interleaved.
+/// In guest mode two threads each fill half of the data array with their worker tag.
+/// Atomic index claims and a shared midpoint require both workers to make progress
+/// before either finishes, so their actual writes must appear interleaved.
 fn guest_mode() {
     let shared_data = SharedCells::zeroed(NUM_ELEMENTS);
     let shared_idx = Arc::new(AtomicUsize::new(0));
+    let midpoint = Arc::new(Barrier::new(2));
 
     let handles: Vec<thread::JoinHandle<_>> = (0..2)
         .map(|rank| {
             let idx = shared_idx.clone();
             let data = shared_data.clone();
+            let midpoint = Arc::clone(&midpoint);
             thread::spawn(move || {
                 // Distinct nonzero value per worker. This used to be the thread id, but
                 // `ThreadId` has no stable numeric accessor and the switch-point count
@@ -81,11 +84,18 @@ fn guest_mode() {
                 // adjacent elements and never inspects the value itself.
                 let tid = rank as u64 + 1;
 
-                // Give each thread half of the fetch_add attempts.
-                for _ in 0..(NUM_ELEMENTS / 2) {
-                    let idx = idx.fetch_add(1, Ordering::SeqCst);
-                    data.set(idx, tid);
-                }
+                // Each call performs half of this worker's fetch_add attempts.
+                let write_half = || {
+                    for _ in 0..(NUM_ELEMENTS / 4) {
+                        let idx = idx.fetch_add(1, Ordering::SeqCst);
+                        data.set(idx, tid);
+                    }
+                };
+                write_half();
+                // Require real progress from both workers even on one CPU or when
+                // one worker starts late. Neither worker can finish before this.
+                midpoint.wait();
+                write_half();
             })
         })
         .collect();
