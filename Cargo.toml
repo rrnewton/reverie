@@ -21,6 +21,7 @@ members = [
     "reverie-liteinst",
     "reverie-memory",
     "reverie-narf",
+    "reverie-narf-core",
     "reverie-process",
     "reverie-ptrace",
     "reverie-rpc-transport",
