@@ -18,7 +18,8 @@
 //! after the syscall has been entered.
 //!
 //! A guest's own signal of the same number pending at such an injection is not
-//! the timer's and must still reach the guest.
+//! the timer's and must still reach the guest, including a file notification
+//! whose siginfo is identical to the timer's.
 
 #![cfg(target_arch = "x86_64")]
 
@@ -37,6 +38,7 @@ use reverie::TimerSchedule;
 use reverie::Tool;
 use reverie::syscalls::Getpid;
 use reverie::syscalls::Syscall;
+use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_ptrace::testing::do_branches;
@@ -383,4 +385,281 @@ fn guest_signal_interrupts_injected_syscall() {
 #[test]
 fn guest_signal_is_delivered_after_retry() {
     run_foreign(true);
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+enum CollisionReport {
+    TimerEvent,
+    Probe { fd: i32, result: i64 },
+}
+
+#[derive(Debug, Default)]
+struct CollisionLog {
+    timer_events: AtomicU64,
+    probes: Mutex<Vec<(i32, i64)>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for CollisionLog {
+    type Request = CollisionReport;
+    type Response = ();
+    type Config = Config;
+
+    async fn receive_rpc(&self, _from: Pid, report: CollisionReport) {
+        match report {
+            CollisionReport::TimerEvent => {
+                self.timer_events.fetch_add(1, Ordering::SeqCst);
+            }
+            CollisionReport::Probe { fd, result } => self
+                .probes
+                .lock()
+                .expect("probe log lock poisoned")
+                .push((fd, result)),
+        }
+    }
+}
+
+/// Guest descriptors of a nonblocking pipe whose read end notifies the guest
+/// thread with the timer's signal number.
+const NOTIFY_READ_FD: usize = 900;
+const NOTIFY_WRITE_FD: usize = 901;
+
+// `fcntl(2)` definitions missing from `libc`.
+const F_SETOWN_EX: libc::c_int = 15;
+const F_SETSIG: libc::c_int = 10;
+const F_OWNER_TID: libc::c_int = 0;
+
+#[repr(C)]
+struct FOwnerEx {
+    kind: libc::c_int,
+    pid: libc::pid_t,
+}
+
+static NOTIFY_BYTE: u8 = b'x';
+static mut NOTIFY_SINK: [u8; 8] = [0; 8];
+
+/// Descriptor numbers of the tracer's perf events, among them every timer
+/// counter.
+fn tracer_perf_fds() -> Vec<usize> {
+    std::fs::read_dir("/proc/self/fd")
+        .expect("read tracer descriptors")
+        .flatten()
+        .filter(|entry| {
+            std::fs::read_link(entry.path())
+                .is_ok_and(|target| target.to_string_lossy().contains("perf_event"))
+        })
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .collect()
+}
+
+fn raw_syscall(nr: Sysno, args: [usize; 3]) -> Syscall {
+    Syscall::from_raw(nr, SyscallArgs::new(args[0], args[1], args[2], 0, 0, 0))
+}
+
+#[derive(Debug, Default, Clone)]
+struct CollidingDescriptorTool;
+
+#[reverie::tool]
+impl Tool for CollidingDescriptorTool {
+    type GlobalState = CollisionLog;
+    type ThreadState = ();
+
+    fn subscriptions(_cfg: &Config) -> Subscription {
+        Subscription::all()
+    }
+
+    async fn handle_syscall_event<T: Guest<Self>>(
+        &self,
+        guest: &mut T,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        match syscall.number() {
+            Sysno::clock_getres => {
+                let timeout = TimerSchedule::Rcbs(guest.config().timeout_rcbs);
+                guest.set_timer_precise(timeout)?;
+                Ok(0)
+            }
+            Sysno::getppid => {
+                // Give the guest's notifying pipe each descriptor number of a
+                // tracer perf event in turn. A guest notification then has the
+                // timer's signal number, code, and descriptor number, and is
+                // pending at the stop that precedes the injected syscall.
+                // Duplicates share one open file description, whose fasync
+                // entry keeps the descriptor number it was registered with
+                // until `O_ASYNC` is cleared and set again.
+                for fd in tracer_perf_fds() {
+                    for (nr, args) in [
+                        (Sysno::dup2, [NOTIFY_READ_FD, fd, 0]),
+                        (
+                            Sysno::fcntl,
+                            [fd, libc::F_SETFL as usize, libc::O_NONBLOCK as usize],
+                        ),
+                        (
+                            Sysno::fcntl,
+                            [
+                                fd,
+                                libc::F_SETFL as usize,
+                                (libc::O_NONBLOCK | libc::O_ASYNC) as usize,
+                            ],
+                        ),
+                        (
+                            Sysno::write,
+                            [NOTIFY_WRITE_FD, &raw const NOTIFY_BYTE as usize, 1],
+                        ),
+                    ] {
+                        guest
+                            .inject(raw_syscall(nr, args))
+                            .await
+                            .unwrap_or_else(|errno| panic!("{nr} failed: {errno}"));
+                    }
+                    let result = match guest.inject(Getpid::new()).await {
+                        Ok(pid) => pid,
+                        Err(errno) => -i64::from(errno.into_raw()),
+                    };
+                    guest
+                        .send_rpc(CollisionReport::Probe {
+                            fd: fd as i32,
+                            result,
+                        })
+                        .await;
+                    for (nr, args) in [
+                        (
+                            Sysno::read,
+                            [NOTIFY_READ_FD, &raw mut NOTIFY_SINK as usize, 8],
+                        ),
+                        (Sysno::close, [fd, 0, 0]),
+                    ] {
+                        guest
+                            .inject(raw_syscall(nr, args))
+                            .await
+                            .unwrap_or_else(|errno| panic!("{nr} failed: {errno}"));
+                    }
+                }
+                Ok(0)
+            }
+            _ => guest.tail_inject(syscall).await,
+        }
+    }
+
+    async fn handle_timer_event<T: Guest<Self>>(&self, guest: &mut T) {
+        guest.send_rpc(CollisionReport::TimerEvent).await;
+    }
+}
+
+static COLLIDING_SIGNALS_HANDLED: AtomicU64 = AtomicU64::new(0);
+
+extern "C" fn count_colliding_signal(_signo: libc::c_int) {
+    COLLIDING_SIGNALS_HANDLED.fetch_add(1, Ordering::SeqCst);
+}
+
+/// How far the guest runs its precise timer before the probing syscall.
+#[derive(Clone, Copy)]
+enum TimerProgress {
+    NotRequested,
+    NotOverflowed,
+    Fired,
+}
+
+fn run_colliding_descriptor(progress: TimerProgress) {
+    // The notification collides with a perf event descriptor; without a PMU
+    // there is none.
+    if !reverie_ptrace::is_perf_supported() {
+        return;
+    }
+    let timeout_rcbs = match progress {
+        TimerProgress::NotRequested => 0,
+        TimerProgress::NotOverflowed => 1_000_000,
+        TimerProgress::Fired => 50_000,
+    };
+    let (output, log) = test_fn_with_config::<CollidingDescriptorTool, _>(
+        move || {
+            // SAFETY: the handler only touches an atomic, and the descriptor
+            // operations use valid arguments.
+            unsafe {
+                let mut action: libc::sigaction = core::mem::zeroed();
+                action.sa_sigaction = count_colliding_signal as extern "C" fn(libc::c_int) as usize;
+                libc::sigemptyset(&mut action.sa_mask);
+                assert_eq!(
+                    libc::sigaction(libc::SIGSTKFLT, &action, core::ptr::null_mut()),
+                    0
+                );
+                let mut pipe = [0; 2];
+                assert_eq!(libc::pipe2(pipe.as_mut_ptr(), libc::O_NONBLOCK), 0);
+                assert_eq!(
+                    libc::dup2(pipe[0], NOTIFY_READ_FD as i32),
+                    NOTIFY_READ_FD as i32
+                );
+                assert_eq!(
+                    libc::dup2(pipe[1], NOTIFY_WRITE_FD as i32),
+                    NOTIFY_WRITE_FD as i32
+                );
+                let owner = FOwnerEx {
+                    kind: F_OWNER_TID,
+                    pid: libc::syscall(libc::SYS_gettid) as libc::pid_t,
+                };
+                assert_eq!(libc::fcntl(NOTIFY_READ_FD as i32, F_SETOWN_EX, &owner), 0);
+                assert_eq!(
+                    libc::fcntl(NOTIFY_READ_FD as i32, F_SETSIG, libc::SIGSTKFLT),
+                    0
+                );
+            }
+            match progress {
+                TimerProgress::NotRequested => {}
+                TimerProgress::NotOverflowed => arm_precise_timer(),
+                TimerProgress::Fired => {
+                    arm_precise_timer();
+                    do_branches(timeout_rcbs * 3);
+                }
+            }
+            syscall_with_injection();
+            assert!(COLLIDING_SIGNALS_HANDLED.load(Ordering::SeqCst) > 0);
+        },
+        Config {
+            timeout_rcbs,
+            retry: false,
+        },
+        true,
+    )
+    .expect("run colliding-descriptor guest");
+
+    if output.status != ExitStatus::Exited(0) {
+        print_tracee_output(&output);
+    }
+    assert_eq!(output.status, ExitStatus::Exited(0));
+    let expected_timer_events = match progress {
+        TimerProgress::Fired => 1,
+        TimerProgress::NotRequested | TimerProgress::NotOverflowed => 0,
+    };
+    assert_eq!(
+        log.timer_events.load(Ordering::SeqCst),
+        expected_timer_events
+    );
+    let probes = log.probes.lock().expect("probe log lock poisoned").clone();
+    assert!(
+        !probes.is_empty(),
+        "the tracer has no perf event descriptor"
+    );
+    // Each notification interrupts the injection instead of being discarded.
+    for (fd, result) in probes {
+        assert_eq!(
+            result,
+            -i64::from(reverie::Errno::ERESTARTSYS.into_raw()),
+            "the guest notification on descriptor {fd} was discarded"
+        );
+    }
+}
+
+#[test]
+fn colliding_guest_notification_without_timer_request_is_delivered() {
+    run_colliding_descriptor(TimerProgress::NotRequested);
+}
+
+#[test]
+fn colliding_guest_notification_before_overflow_is_delivered() {
+    run_colliding_descriptor(TimerProgress::NotOverflowed);
+}
+
+#[test]
+fn colliding_guest_notification_after_timer_event_is_delivered() {
+    run_colliding_descriptor(TimerProgress::Fired);
 }

@@ -5350,7 +5350,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         // descriptor number, so a match also requires an overflow whose
         // notification has not been consumed. The kernel coalesces the two
         // into one pending signal if both are raised, which no check can
-        // separate.
+        // separate. A notification that reached the guest through a path that
+        // does not consume it, such as `skip_seccomp_syscall` or the exact
+        // pending-syscall injection, leaves its overflow looking unconsumed
+        // until the counter is reprogrammed.
         while let Wait::Stopped(stopped, Event::Signal(sig)) = &wait
             && *sig == Timer::signal_type()
             && stopped.getregs()?.ip() as usize == cp::PRIVATE_PAGE_OFFSET
