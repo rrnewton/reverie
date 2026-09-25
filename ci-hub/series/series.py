@@ -4048,11 +4048,13 @@ def _declared_failure_matches(
     if not isinstance(outputs, dict) or set(outputs) != {"left", "right"}:
         return False
     left, right = outputs["left"], outputs["right"]
-    return (
-        _is_canonical_compared_output(left)
-        and left == right
-        and names_declaration(left["exit_code"], left["signal"])
-    )
+    # Type each side before comparing: Python's == equates 7 with 7.0 and 1
+    # with True, which Hermit's typed reader refuses on either side.
+    return all(
+        _is_canonical_compared_output(side)
+        and names_declaration(side["exit_code"], side["signal"])
+        for side in (left, right)
+    ) and left == right
 
 
 _COMPARED_OUTPUT_FIELDS = frozenset({
@@ -4060,11 +4062,40 @@ _COMPARED_OUTPUT_FIELDS = frozenset({
 })
 
 
+def _is_u64(value: Any) -> bool:
+    return type(value) is int and 0 <= value <= 2**64 - 1
+
+
+def _is_typed_runtime(runtime: Any) -> bool:
+    """Whether ``runtime`` reads as Hermit's ``Option<VerificationRuntime>``.
+
+    Each present run is a ``RuntimeStats``: ``scheduler_turns`` and
+    ``virtual_nanoseconds`` are required u64s and ``syscalls`` an optional u64.
+    Neither Rust type denies unknown fields, so other fields are not refused.
+    """
+    if runtime is None:
+        return True
+    if not isinstance(runtime, dict):
+        return False
+    for run in ("run1", "run2"):
+        stats = runtime.get(run)
+        if stats is None:
+            continue
+        if (
+            not isinstance(stats, dict)
+            or not _is_u64(stats.get("scheduler_turns"))
+            or not _is_u64(stats.get("virtual_nanoseconds"))
+            or not (stats.get("syscalls") is None or _is_u64(stats["syscalls"]))
+        ):
+            return False
+    return True
+
+
 def _is_canonical_compared_output(output: Any) -> bool:
     """Whether one side of ``compared_outputs`` has exactly Hermit's fields.
 
     ``exit_code`` and ``signal`` are typed by ``names_declaration``, which
-    every caller applies to the same output.
+    every caller applies to the same output, on both sides.
     """
     return (
         isinstance(output, dict)
@@ -4075,8 +4106,7 @@ def _is_canonical_compared_output(output: Any) -> bool:
             for field in ("stdout_sha256", "stderr_sha256")
         )
         and all(
-            type(output[field]) is int and 0 <= output[field] <= 2**64 - 1
-            for field in ("stdout_bytes", "stderr_bytes")
+            _is_u64(output[field]) for field in ("stdout_bytes", "stderr_bytes")
         )
     )
 
@@ -4287,7 +4317,9 @@ def _typed_comparison_attempt(
     must end exactly as declared and nothing else. A matched attempt the
     runner FAILed for a failed declared stdout, which
     :func:`_expected_output_failure_reason` verifies, is ``failed_match``
-    however it ended: the runner checks declared stdout before the exit.
+    however it ended: the runner checks declared stdout before the exit. A
+    matched attempt the runner failed because it did not end as its row
+    allows is ``failed_match`` too. Either is red evidence, never credit.
     """
     if not isinstance(attempt, dict):
         raise MalformedRow(f"cell attempt {index} must be an object")
@@ -4328,20 +4360,37 @@ def _typed_comparison_attempt(
             f"cell attempt {index} verification report has non-JSON constant {value}"
         )
 
+    def finite_float(text):
+        value = float(text)
+        if not math.isfinite(value):
+            raise MalformedRow(
+                f"cell attempt {index} verification report has out-of-range number {text}"
+            )
+        return value
+
     try:
         # Read the evidence from the original bytes: an ordinary dict has
         # already collapsed duplicate keys to whichever came last, and Python
-        # accepts NaN and Infinity, which Hermit's serde_json never writes.
-        # Every later reader of this report relies on this parse.
+        # accepts NaN and Infinity, and parses 1e999 as infinity, none of which
+        # Hermit's serde_json reads. Every later reader of this report relies
+        # on this parse.
         report = json.loads(
-            raw, object_pairs_hook=unique_fields, parse_constant=invalid_constant
+            raw,
+            object_pairs_hook=unique_fields,
+            parse_constant=invalid_constant,
+            parse_float=finite_float,
         )
-    except json.JSONDecodeError as error:
+    except ValueError as error:
+        # JSONDecodeError, and an integer past Python's digit limit.
         raise MalformedRow(
             f"cell attempt {index} verification report is malformed: {error}"
         ) from error
     if not isinstance(report, dict):
         raise MalformedRow(f"cell attempt {index} verification report must be an object")
+    if not _is_typed_runtime(report.get("runtime")):
+        raise MalformedRow(
+            f"cell attempt {index} verification report runtime is not Hermit's typed runtime"
+        )
 
     verdict = report.get("verdict")
     # A tuple, not a set: a JSON array or object here is malformed data and
@@ -4450,18 +4499,53 @@ def _typed_comparison_attempt(
                 disposition_consistent = mode == "verify" and _declared_failure_matches(
                     attempt, report, expected_guest_exit
                 )
+            if report.get("verified") is not True or report.get("bitwise_parity") is not True:
+                raise MalformedRow(
+                    f"cell attempt {index} matched report is internally inconsistent"
+                )
+            if attempt.get("outcome") == "PASS":
+                if (
+                    attempt.get("timed_out") is not False
+                    or attempt.get("error_kind") is not None
+                    or not disposition_consistent
+                ):
+                    raise MalformedRow(
+                        f"cell attempt {index} matched report is internally inconsistent"
+                    )
+                return "matched"
+            # The runner's other red for a match: a declared cell that ended
+            # differently, or an undeclared verify that exited nonzero, is an
+            # attempt FAIL with no timeout or error kind inside a crash-error
+            # row. It earns no credit but is kept as red evidence rather than
+            # refusing every sibling, exactly as Hermit's scorecard reader
+            # retains it. Only its contradictions refuse: a divergence
+            # coordinate or first-divergent message, or an attempt that in
+            # fact ended as its row allows.
             if (
-                report.get("verified") is not True
-                or report.get("bitwise_parity") is not True
-                or attempt.get("outcome") != "PASS"
+                attempt.get("outcome") != "FAIL"
                 or attempt.get("timed_out") is not False
                 or attempt.get("error_kind") is not None
-                or not disposition_consistent
             ):
                 raise MalformedRow(
                     f"cell attempt {index} matched report is internally inconsistent"
                 )
-            return "matched"
+            divergence_keys = (
+                *COORDINATE_KEYS,
+                *(f"first_divergent_{side}_message" for side in FIRST_DIVERGENT_MESSAGE_KEYS),
+            )
+            if any(report.get(key) is not None for key in divergence_keys) or any(
+                attempt.get(key) is not None for key in divergence_keys
+            ):
+                raise MalformedRow(
+                    f"cell attempt {index} matched report the runner failed carries a divergence coordinate"
+                )
+            if disposition_consistent:
+                raise MalformedRow(
+                    f"cell attempt {index} matched report is internally inconsistent: "
+                    "the runner failed it without a failed declared stdout, but it ends "
+                    "as its row allows"
+                )
+            return "failed_match"
         if report.get("verified") is not False or report.get("bitwise_parity") is not False:
             raise MalformedRow(
                 f"cell attempt {index} divergence report is internally inconsistent"
@@ -4921,13 +5005,21 @@ def _cell_outcome(row: dict) -> str:
         )
         for index, attempt in enumerate(attempts, 1)
     ]
-    if "failed_match" in dispositions and classification != ("crash-error", "product_failure"):
-        # Hermit's runner types a matched attempt it FAILed as crash-error,
-        # and the shared failed_match evidence requires exactly that result.
-        raise MalformedRow(
-            "a matched attempt failed by its declared expected output supports only "
-            f"a crash-error result: result={result!r} failure_class={failure_class!r}"
-        )
+    if "failed_match" in dispositions:
+        # A retained failed match is the runner's crash-error red. Hermit's
+        # runner types a matched attempt it FAILed as crash-error, and the
+        # shared failed_match evidence requires exactly that result, so it
+        # cannot sit in any other row, or beside a divergence.
+        if classification != ("crash-error", "product_failure"):
+            raise MalformedRow(
+                f"row retaining a matched attempt the runner failed records result {result!r} "
+                f"with failure_class {failure_class!r}, but that attempt supports only a "
+                "crash-error result"
+            )
+        if any(row.get(key) is not None for key in COORDINATE_KEYS):
+            raise MalformedRow(
+                "row retaining a matched attempt the runner failed carries a divergence coordinate"
+            )
     if has_parity:
         _typed_backend_parity(row, dispositions)
         return projected
@@ -5023,7 +5115,12 @@ def _cell_result_evidence_sha256(row: dict) -> str:
     encoded = json.dumps(
         evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
-    return hashlib.sha256(encoded.encode()).hexdigest()
+    try:
+        data = encoded.encode()
+    except UnicodeEncodeError as error:
+        # A lone surrogate: Python accepts it; serde_json refuses it.
+        raise MalformedRow(f"cell result is not valid Unicode: {error}") from error
+    return hashlib.sha256(data).hexdigest()
 
 
 def _rewrite_recorded_root(value: str, root: str) -> str:
@@ -5417,9 +5514,16 @@ def _no_verdict_evidence(row: dict, projected_outcome: str) -> dict | None:
             report = json.loads(attempt["verification_report"])
             retained["detail"] = report["no_result_reason"]["detail"]
         elif retained["kind"] == "failed_match":
-            # The runner's reason is the only record of why the attempt
-            # failed; _typed_comparison_attempt verified it above.
-            retained["detail"] = attempt["reason"]
+            # The runner's reason for a failed declared stdout is the only
+            # record of that failure; _typed_comparison_attempt verified it
+            # above. Hermit's shared checker admits no other detail: a match
+            # the runner failed by its exit is told by its status or signal
+            # and the row's declaration.
+            report = json.loads(attempt["verification_report"])
+            if _expected_output_failure_reason(
+                attempt, report, mode=mode, index=ordinal
+            ) is not None:
+                retained["detail"] = attempt["reason"]
         dispositions.append(retained)
     if not dispositions:
         if projected_outcome == "errored" and row.get("result") == "crash-error":
@@ -6046,8 +6150,12 @@ def _stdin_rows() -> tuple[list[dict] | None, int]:
             if isinstance(row, dict) and "backend_parity" in row:
                 row = json.loads(line, object_pairs_hook=_parity_unique_fields,
                                  parse_constant=_parity_nonfinite_constant)
+            # serde_json refuses a lone surrogate anywhere in a row.
+            json.dumps(row, ensure_ascii=False).encode()
             rows.append(row)
-        except (json.JSONDecodeError, MalformedRow) as error:
+        except (ValueError, MalformedRow) as error:
+            # ValueError covers JSONDecodeError, an integer past Python's digit
+            # limit and UnicodeEncodeError.
             print(f"series: stdin line {number} is not JSON: {error}", file=sys.stderr)
             return None, 2
     return rows, 0
@@ -6084,7 +6192,11 @@ def _stdin_cell_results() -> tuple[
             line = raw.decode("utf-8")
             row = json.loads(line, object_pairs_hook=_stdin_unique_fields,
                              parse_constant=_stdin_nonjson_constant)
-        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, MalformedRow) as error:
+            # serde_json refuses a lone surrogate anywhere in a row.
+            json.dumps(row, ensure_ascii=False).encode()
+        except (ValueError, RecursionError, MalformedRow) as error:
+            # ValueError covers UnicodeDecodeError, JSONDecodeError, an integer
+            # past Python's digit limit and UnicodeEncodeError.
             failures.append((
                 number, raw, type(error).__name__, f"stdin line {number} is not JSON: {error}",
             ))

@@ -4324,6 +4324,27 @@ class CellResultProjection(unittest.TestCase):
                 ]),
                 inconsistent,
             ))
+        # One side only: Python's == equates 12 with 12.0 and 1 with True, so
+        # equality with a well-typed left side cannot type the right one.
+        for side in ("left", "right"):
+            cases += [
+                (f"{side} alone has fractional stdout byte count",
+                 output_edit(side, stdout_bytes=12.0), inconsistent),
+                (f"{side} alone has fractional exit_code",
+                 output_edit(side, exit_code=7.0), inconsistent),
+            ]
+        cases += [
+            ("right alone has boolean stderr byte count",
+             report_edit(cell(), lambda r: (
+                 r["compared_outputs"]["left"].update(stderr_bytes=1),
+                 r["compared_outputs"]["right"].update(stderr_bytes=True),
+             )), inconsistent),
+            ("right alone has boolean exit_code for declared 1",
+             report_edit(
+                 cell(status=1, guest_exit_code=1, declared=(1, None)),
+                 lambda r: r["compared_outputs"]["right"].update(exit_code=True),
+             ), inconsistent),
+        ]
         cases.append((
             "unknown compared_outputs member",
             report_edit(cell(), lambda r: r["compared_outputs"].update(
@@ -4390,6 +4411,263 @@ class CellResultProjection(unittest.TestCase):
         (7, None, "d\u00e9clar\u00e9 \u2014 on purpose"):
             "32fab131e58b1532412f050c8a4f48e6bb9e44e0286cc207c55009c1709d5b4c",
     }
+
+    def _runner_red(self, cell):
+        """The runner's own red for a matched comparison: attempt FAIL inside
+        a crash-error/product_failure row (runner.rs, the matched branch)."""
+        cell["attempts"][0]["outcome"] = "FAIL"
+        cell.update(outcome="FAIL", result="crash-error", failure_class="product_failure")
+        return cell
+
+    def test_matched_attempt_the_runner_failed_is_retained_red_beside_a_valid_sibling(self):
+        """A declared cell that no longer ends as declared, or an undeclared
+        verify that exited nonzero, is kept as a red row. It must not refuse
+        the batch: the valid sibling still projects as passed, exactly as the
+        pinned Hermit scorecard retains the same row."""
+        for label, red in (
+            ("declared 7, observed 0", self._expected_exit_cell(
+                status=0, signal=None, guest_exit_code=0, guest_signal=None,
+                declared=(7, None))),
+            ("declared 7, observed 5", self._expected_exit_cell(
+                status=5, signal=None, guest_exit_code=5, guest_signal=None,
+                declared=(7, None))),
+            ("declared signal 11, observed exit 3", self._expected_exit_cell(
+                status=3, signal=None, guest_exit_code=3, guest_signal=None,
+                declared=(None, 11))),
+            ("undeclared verify exited 3", self._expected_exit_cell(
+                status=3, signal=None, guest_exit_code=3, guest_signal=None,
+                declared=None)),
+        ):
+            with self.subTest(label=label):
+                red = self._runner_red(red)
+                red["test"] = red["test"] + "-red"
+                sibling = self._validate_cell(1)
+                rows = series.rows_from_cell_results(
+                    [sibling, red],
+                    parent=self.parent,
+                    producer="validate",
+                    run_id="validate-runner-red-" + label.replace(" ", "-").replace(",", ""),
+                    tree=self.tree,
+                    emitted_at="2026-09-25T12:00:00Z",
+                )
+                series.validate_rows(rows)
+                outcomes = sorted(row["series"]["outcome"] for row in rows)
+                self.assertEqual(outcomes, ["errored", "passed"], label)
+                (red_row,) = [row for row in rows if row["series"]["outcome"] == "errored"]
+                # The red is retained as typed evidence, never as a verdict.
+                (evidence,) = red_row["series"]["no_verdict_evidence"]["attempts"]
+                self.assertEqual(evidence["kind"], "failed_match", label)
+                self.assertEqual(evidence["disposition"], "errored", label)
+                self.assertEqual(evidence["attempt_outcome"], "FAIL", label)
+                self.assertIs(evidence["timed_out"], False, label)
+                self.assertIsNone(evidence["error_kind"], label)
+                self.assertEqual(red_row["series"]["result"], "crash-error", label)
+                if red.get("expected_guest_exit") is not None:
+                    self.assertEqual(
+                        red_row["series"]["declared_guest_exit"]["code"],
+                        red["expected_guest_exit"]["code"],
+                    )
+
+    def test_matched_attempt_the_runner_failed_by_its_exit_retains_no_detail(self):
+        """The runner writes a reason for every FAIL. For a match that did not
+        end as its row allows, the reason names the exit, not a failed
+        declared stdout, and Hermit's shared checker admits a failed_match
+        detail only as the latter. The evidence carries no detail, and the
+        shared checker admits the row."""
+        for label, red, reason in (
+            ("declared 7, observed 0", self._expected_exit_cell(
+                status=0, signal=None, guest_exit_code=0, guest_signal=None,
+                declared=(7, None)),
+             "guest ended with exit code 0, but the manifest expects exit code 7"),
+            ("declared 7, observed 5", self._expected_exit_cell(
+                status=5, signal=None, guest_exit_code=5, guest_signal=None,
+                declared=(7, None)),
+             "guest ended with exit code 5, but the manifest expects exit code 7"),
+            ("declared signal 11, observed exit 3", self._expected_exit_cell(
+                status=3, signal=None, guest_exit_code=3, guest_signal=None,
+                declared=(None, 11)),
+             "guest ended with exit code 3, but the manifest expects signal 11"),
+            ("undeclared verify exited 3", self._expected_exit_cell(
+                status=3, signal=None, guest_exit_code=3, guest_signal=None,
+                declared=None),
+             "verify exited with status 3"),
+        ):
+            with self.subTest(label=label):
+                red = self._runner_red(red)
+                red["attempts"][0]["reason"] = reason
+                (row,) = self._project_validate(
+                    red, "runner-red-reason-" + label.replace(" ", "-").replace(",", "")
+                )
+                self.assertEqual(row["series"]["outcome"], "errored", label)
+                (evidence,) = row["series"]["no_verdict_evidence"]["attempts"]
+                self.assertEqual(evidence["kind"], "failed_match", label)
+                self.assertNotIn("detail", evidence, label)
+
+    def test_matched_attempt_the_runner_failed_refuses_its_contradictions(self):
+        """Retention is for the runner's red alone. A FAIL that in fact ended
+        as its row allows, a divergence coordinate, a passing or
+        comparison-failure row, or a FAIL carrying a timeout or error kind
+        without being the runner's timeout is evidence it cannot write."""
+        def red(**overrides):
+            fields = dict(status=5, signal=None, guest_exit_code=5, guest_signal=None,
+                          declared=(7, None))
+            fields.update(overrides)
+            return self._runner_red(self._expected_exit_cell(**fields))
+
+        def edit(target, fn):
+            fn(target)
+            return target
+
+        def report_coordinate(target):
+            attempt = target["attempts"][0]
+            report = json.loads(attempt["verification_report"])
+            report["first_divergent_record"] = 12
+            self._replace_comparison_report(attempt, report)
+
+        def report_message(target):
+            attempt = target["attempts"][0]
+            report = json.loads(attempt["verification_report"])
+            report["first_divergent_left_message"] = "INFO detcore: result=1"
+            self._replace_comparison_report(attempt, report)
+
+        cases = [
+            ("FAIL that ended as declared",
+             red(status=7, guest_exit_code=7), "ends as its row allows"),
+            ("undeclared FAIL that exited 0",
+             red(status=0, guest_exit_code=0, declared=None), "ends as its row allows"),
+            ("divergence coordinate in the report",
+             edit(red(), report_coordinate), "carries a divergence coordinate"),
+            ("divergence coordinate on the attempt",
+             edit(red(), lambda c: c["attempts"][0].update(first_divergent_syscall=4)),
+             "carries a divergence coordinate"),
+            ("divergence coordinate on the row",
+             edit(red(), lambda c: c.update(first_divergent_scheduler_turn=4)),
+             "carries a divergence coordinate"),
+            ("first-divergent message in the report",
+             edit(red(), report_message), "carries a divergence coordinate"),
+            ("first-divergent message on the attempt",
+             edit(red(), lambda c: c["attempts"][0].update(
+                 first_divergent_right_message="INFO detcore: result=2")),
+             "carries a divergence coordinate"),
+            ("retained in a PASS row",
+             edit(red(), lambda c: c.update(outcome="PASS", result="pass", failure_class=None)),
+             "records result 'pass'"),
+            ("retained in a determinism-failure row",
+             edit(red(), lambda c: c.update(result="determinism-failure")),
+             "records result 'determinism-failure'"),
+            ("FAIL carrying an error kind",
+             edit(red(), lambda c: c["attempts"][0].update(error_kind="wall-timeout")),
+             "matched report is internally inconsistent"),
+            ("FAIL marked timed out without the runner's timeout row",
+             edit(red(), lambda c: c["attempts"][0].update(timed_out=True)),
+             "matched report is internally inconsistent"),
+            ("ERROR attempt",
+             edit(red(), lambda c: c["attempts"][0].update(outcome="ERROR")),
+             "matched report is internally inconsistent"),
+        ]
+        for label, cell, message in cases:
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(series.MalformedRow, message):
+                    self._project_validate(cell, label.replace(" ", "-"))
+
+    def test_report_numbers_and_runtime_are_typed_as_hermit_reads_them(self):
+        """A report Hermit's typed reader refuses is refused, declared or not:
+        a non-finite number (1e999 parses to infinity in Python), a runtime of
+        the wrong type, and an integer past Python's digit limit."""
+        def declared():
+            return self._expected_exit_cell(
+                status=7, signal=None, guest_exit_code=7, guest_signal=None,
+                declared=(7, None),
+            )
+
+        def undeclared():
+            return self._validate_cell(1)
+
+        def with_runtime(target, runtime):
+            attempt = target["attempts"][0]
+            report = json.loads(attempt["verification_report"])
+            report["runtime"] = runtime
+            self._replace_comparison_report(attempt, report)
+            return target
+
+        def with_raw(target, member):
+            attempt = target["attempts"][0]
+            raw = attempt["verification_report"]
+            raw = raw[:-1] + "," + member + "}"
+            attempt["verification_report"] = raw
+            attempt["verification_report_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+            return target
+
+        valid = {"run1": {"scheduler_turns": 12, "virtual_nanoseconds": 34, "syscalls": 5},
+                 "run2": {"scheduler_turns": 13, "virtual_nanoseconds": 35}}
+        for make in (declared, undeclared):
+            label = make.__name__
+            for runtime in (None, valid, {}, {"run1": None}):
+                with self.subTest(label=label, runtime=runtime):
+                    rows = self._project_validate(with_runtime(make(), runtime), f"rt-{label}")
+                    self.assertEqual(rows[0]["series"]["outcome"], "passed")
+            typed = "runtime is not Hermit's typed runtime"
+            cases = [
+                ("runtime integer", with_runtime(make(), 5), typed),
+                ("runtime string", with_runtime(make(), "x"), typed),
+                ("runtime array", with_runtime(make(), []), typed),
+                ("run1 string", with_runtime(make(), {"run1": "x"}), typed),
+                ("turns omitted", with_runtime(make(), {"run1": {"virtual_nanoseconds": 1}}), typed),
+                ("turns negative",
+                 with_runtime(make(), {"run1": {"scheduler_turns": -1, "virtual_nanoseconds": 1}}),
+                 typed),
+                ("turns fractional",
+                 with_runtime(make(), {"run1": {"scheduler_turns": 1.0, "virtual_nanoseconds": 1}}),
+                 typed),
+                ("nanoseconds boolean",
+                 with_runtime(make(), {"run2": {"scheduler_turns": 1, "virtual_nanoseconds": True}}),
+                 typed),
+                ("nanoseconds past u64",
+                 with_runtime(make(), {"run2": {"scheduler_turns": 1,
+                                                "virtual_nanoseconds": 2**64}}),
+                 typed),
+                ("syscalls string",
+                 with_runtime(make(), {"run1": {"scheduler_turns": 1, "virtual_nanoseconds": 1,
+                                                "syscalls": "5"}}),
+                 typed),
+                ("runtime 1e999", with_raw(make(), '"runtime_probe":1e999'), "out-of-range number"),
+                ("runtime -1e999", with_raw(make(), '"runtime_probe":-1e999'), "out-of-range number"),
+                ("5000-digit integer", with_raw(make(), '"runtime_probe":' + "1" * 5000),
+                 "verification report is malformed"),
+            ]
+            for case, target, message in cases:
+                with self.subTest(label=label, case=case), self.assertRaisesRegex(
+                    series.MalformedRow, message
+                ):
+                    self._project_validate(target, f"bad-{label}")
+
+    def test_a_lone_surrogate_is_a_named_refusal_not_a_crash(self):
+        """serde_json refuses a lone surrogate; Python accepts it and then
+        cannot encode it. The identity hash and both stdin readers refuse it
+        by name."""
+        target = self._expected_exit_cell(
+            status=7, signal=None, guest_exit_code=7, guest_signal=None, declared=(7, None),
+        )
+        target["expected_guest_exit"]["reason"] = "fails \ud800 on purpose"
+        with self.assertRaisesRegex(series.MalformedRow, "not valid Unicode"):
+            self._project_validate(target, "surrogate")
+        for label, line, error_type in (
+            ("surrogate", '{"test": "\\ud800"}', "UnicodeEncodeError"),
+            ("5000-digit integer", '{"attempt": ' + "1" * 5000 + "}", "ValueError"),
+        ):
+            # Plain append refuses its batch; append-cells quarantines the line.
+            with self.subTest(label=label, reader="append"), \
+                    mock.patch.object(series.sys, "stdin", io.StringIO(line + "\n")), \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(series._stdin_rows(), (None, 2))
+                self.assertIn("stdin line 1 is not JSON", stderr.getvalue())
+            with self.subTest(label=label, reader="append-cells"), \
+                    mock.patch.object(series.sys, "stdin", io.StringIO(line + "\n")):
+                parsed, failures = series._stdin_cell_results()
+                self.assertEqual(parsed, [])
+                [(number, raw, error, reason)] = failures
+                self.assertEqual((number, raw, error), (1, line.encode(), error_type))
+                self.assertTrue(reason.startswith("stdin line 1 is not JSON: "), reason)
 
     def test_declaration_is_bound_into_the_rust_and_python_evidence_identity(self):
         ordinary = json.loads(self._SCORECARD_ORDINARY_ROW)
