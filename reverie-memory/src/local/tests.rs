@@ -564,3 +564,48 @@ fn cstring_address_advancement_is_checked_after_examining_the_chunk() {
         CString::new("").unwrap()
     );
 }
+
+#[test]
+fn user_access_writes_match_native_counts_and_every_destination_byte() {
+    let page = Mapping::new().page;
+    for protection in [libc::PROT_NONE, libc::PROT_READ] {
+        for offset in [0, page - 3, page] {
+            for length in [0, 1, 7, 8, 9, page + 8] {
+                let control = Mapping::new();
+                let candidate = Mapping::new();
+                control.protect_second(protection);
+                candidate.protect_second(protection);
+                let source: Vec<_> = (0..length + 1).map(|i| (19 + i * 37) as u8).collect();
+                let source = &source[1..];
+                let expected = native(
+                    true,
+                    &[iovec(source.as_ptr() as usize, source.len())],
+                    &[iovec(control.address(offset), source.len())],
+                );
+                let observed = LocalMemory::new().write_with_user_access(
+                    AddrMut::from_raw(candidate.address(offset)).unwrap(),
+                    source,
+                );
+                assert_eq!(
+                    observed, expected,
+                    "prot={protection} offset={offset} len={length}"
+                );
+                assert_eq!(candidate.snapshot(), control.snapshot());
+            }
+        }
+    }
+}
+#[test]
+fn user_access_empty_invalid_and_wrapping_addresses_are_bounded() {
+    for address in [1, usize::MAX - 3, usize::MAX, 0x0100_0000_0000_0000] {
+        let address = AddrMut::from_raw(address).unwrap();
+        let mut memory = LocalMemory::new();
+        assert_eq!(memory.write_with_user_access(address, &[]), Ok(0));
+        for size in [1, 7, 8, 9] {
+            assert_eq!(
+                memory.write_with_user_access(address, &[0x73; 9][..size]),
+                Err(Errno::EFAULT)
+            );
+        }
+    }
+}
