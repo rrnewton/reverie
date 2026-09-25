@@ -37,6 +37,8 @@ fn split_each_worker_startup_failure_retains_destination_until_actual_joins() {
         let allowed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut workers = Workers {
+            #[cfg(feature = "test-guest-log")]
+            observations: None,
             owner: None,
             escrow: None,
         };
@@ -81,6 +83,36 @@ fn split_each_worker_startup_failure_retains_destination_until_actual_joins() {
         }
         workers.join_blocking();
         assert_eq!(workers.joins(), (Some(true), Some(true)));
+        #[cfg(feature = "test-guest-log")]
+        {
+            let snapshot = workers.observations.as_ref().unwrap().snapshot();
+            assert_eq!(snapshot.owner_pid, std::process::id());
+            if fault == StartFault::PublicationSpawn {
+                assert_eq!(snapshot.publication.spawned, Some(false));
+                assert_eq!(snapshot.publication.tid, None);
+                assert_eq!(snapshot.publication.join_succeeded, None);
+                assert_eq!(snapshot.collector.spawned, None);
+                assert_eq!(snapshot.collector.join_succeeded, None);
+            } else {
+                assert_eq!(snapshot.publication.spawned, Some(true));
+                assert!(snapshot.publication.tid.is_some());
+                assert_eq!(snapshot.publication.body_returned, Some(true));
+                assert_eq!(snapshot.publication.join_succeeded, Some(true));
+                assert!(snapshot.publication.join_path.is_some());
+                if fault == StartFault::CollectorSpawn {
+                    assert_eq!(snapshot.collector.spawned, Some(false));
+                    assert_eq!(snapshot.collector.tid, None);
+                    assert_eq!(snapshot.collector.join_succeeded, None);
+                } else {
+                    assert_eq!(snapshot.collector.spawned, Some(true));
+                    assert!(snapshot.collector.tid.is_some());
+                    assert_eq!(snapshot.collector.body_returned, Some(true));
+                    assert_eq!(snapshot.collector.join_succeeded, Some(true));
+                    assert!(snapshot.collector.join_path.is_some());
+                    assert_ne!(snapshot.collector.tid, snapshot.publication.tid);
+                }
+            }
+        }
         assert!(!dropped.load(Ordering::Acquire));
         allowed.store(true, Ordering::Release);
         drop(workers.escrow.take());

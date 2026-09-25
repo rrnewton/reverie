@@ -9,6 +9,13 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+mod workers;
+pub use workers::CaptureWorkerObservations;
+pub use workers::CaptureWorkerSnapshot;
+pub use workers::JoinPath;
+pub(crate) use workers::WorkerObservation;
+pub use workers::WorkerSnapshot;
+
 const MAGIC: u64 = 0x4649585455524533;
 
 #[repr(C)]

@@ -53,6 +53,8 @@ pub struct Publication {
     thread: Mutex<Option<JoinHandle<()>>>,
     blocked_budget: Duration,
     join_result: Mutex<Option<bool>>,
+    #[cfg(feature = "test-guest-log")]
+    observation: Option<Arc<super::super::fixture::WorkerObservation>>,
 }
 
 fn failure(state: &mut State, message: &str) {
@@ -114,6 +116,9 @@ impl Publication {
         records: usize,
         diagnostic_bytes: usize,
         blocked_budget: Duration,
+        #[cfg(feature = "test-guest-log")] observation: Option<
+            Arc<super::super::fixture::WorkerObservation>,
+        >,
     ) -> io::Result<Self> {
         Self::start_with(
             destination,
@@ -125,6 +130,8 @@ impl Publication {
                     .name("capture-output".into())
                     .spawn(worker)
             },
+            #[cfg(feature = "test-guest-log")]
+            observation,
         )
     }
 
@@ -134,6 +141,9 @@ impl Publication {
         diagnostic_bytes: usize,
         blocked_budget: Duration,
         spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
+        #[cfg(feature = "test-guest-log")] observation: Option<
+            Arc<super::super::fixture::WorkerObservation>,
+        >,
     ) -> io::Result<Self> {
         if records == 0 || records > 4096 || diagnostic_bytes == 0 {
             return Err(io::Error::other("invalid capture publication bounds"));
@@ -164,21 +174,38 @@ impl Publication {
         ));
         let (sender, receiver) = mpsc::sync_channel(records);
         let worker = shared.clone();
+        #[cfg(feature = "test-guest-log")]
+        let worker_observation = observation.clone();
         let thread = spawn(Box::new(move || {
+            #[cfg(feature = "test-guest-log")]
+            if let Some(observation) = &worker_observation {
+                observation.entered();
+            }
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run(destination, receiver, &worker)
             }));
+            #[cfg(feature = "test-guest-log")]
+            if let Some(observation) = &worker_observation {
+                observation.body_returned(result.is_ok());
+            }
             if result.is_err() {
                 failure(&mut worker.0.lock().unwrap(), "destination worker panicked");
             }
             worker.1.notify_all();
-        }))?;
+        }));
+        #[cfg(feature = "test-guest-log")]
+        if let Some(observation) = &observation {
+            observation.spawned(thread.is_ok());
+        }
+        let thread = thread?;
         Ok(Self {
             shared,
             sender: Mutex::new(Some(sender)),
             thread: Mutex::new(Some(thread)),
             blocked_budget,
             join_result: Mutex::new(None),
+            #[cfg(feature = "test-guest-log")]
+            observation,
         })
     }
 
@@ -265,7 +292,13 @@ impl Publication {
     fn join_finished(&self) -> bool {
         let mut thread = self.thread.lock().unwrap();
         if thread.as_ref().is_some_and(|thread| thread.is_finished()) {
-            let succeeded = thread.take().unwrap().join().is_ok();
+            let succeeded = super::join_worker(
+                thread.take().unwrap(),
+                #[cfg(feature = "test-guest-log")]
+                self.observation.as_deref(),
+                #[cfg(feature = "test-guest-log")]
+                super::super::fixture::JoinPath::Finished,
+            );
             *self.join_result.lock().unwrap() = Some(succeeded);
         }
         thread.is_none()
@@ -282,7 +315,13 @@ impl Publication {
         self.close();
         let mut thread = self.thread.lock().unwrap();
         if let Some(handle) = thread.take() {
-            *self.join_result.lock().unwrap() = Some(handle.join().is_ok());
+            *self.join_result.lock().unwrap() = Some(super::join_worker(
+                handle,
+                #[cfg(feature = "test-guest-log")]
+                self.observation.as_deref(),
+                #[cfg(feature = "test-guest-log")]
+                super::super::fixture::JoinPath::Blocking,
+            ));
         }
         self.join_result.lock().unwrap().unwrap_or(false)
     }

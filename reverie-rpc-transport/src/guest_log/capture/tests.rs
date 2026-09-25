@@ -718,6 +718,8 @@ fn queued_and_direct_discard_share_checked_accounting_and_bounded_diagnostics() 
         8,
         8,
         Duration::from_secs(5),
+        #[cfg(feature = "test-guest-log")]
+        None,
     )
     .unwrap();
     assert!(publication.wait_ready(Instant::now() + Duration::from_secs(2)));
@@ -767,8 +769,15 @@ fn empty_record_discard_retains_its_order_without_inventing_bytes() {
     let buffer = unsafe { ordered::Buffer::receive(socket.as_raw_fd()) }.unwrap();
     let mut writer = unsafe { buffer.activate(0, i64::from(std::process::id())) }.unwrap();
     let mut collector = buffer.collector().unwrap();
-    let publication =
-        publication::Publication::start(Output::default(), 8, 8, Duration::from_secs(2)).unwrap();
+    let publication = publication::Publication::start(
+        Output::default(),
+        8,
+        8,
+        Duration::from_secs(2),
+        #[cfg(feature = "test-guest-log")]
+        None,
+    )
+    .unwrap();
     writer.write_record(b"", wait).unwrap();
     publication.discard(collector.poll().unwrap().unwrap());
     let report = publication.finish_until(Instant::now() + Duration::from_secs(2));
@@ -1104,16 +1113,29 @@ fn thread_start_failures_retain_cause_and_close_started_destination() {
     assert_eq!(report.publication.stability, ArtifactStability::Stable);
     assert_eq!(report.guest.phase, Phase::Incomplete);
     assert!(!report.qualifies());
+    #[cfg(feature = "test-guest-log")]
+    let observations = super::super::fixture::CaptureWorkerObservations::new();
     let error = publication::Publication::start_with(
         Output::default(),
         8,
         64,
         Duration::from_secs(2),
         |_| Err(io::Error::from_raw_os_error(libc::EAGAIN)),
+        #[cfg(feature = "test-guest-log")]
+        Some(observations.publication.clone()),
     )
     .err()
     .expect("injected destination start failure");
     assert_eq!(error.raw_os_error(), Some(libc::EAGAIN));
+    #[cfg(feature = "test-guest-log")]
+    {
+        let snapshot = observations.snapshot().publication;
+        assert_eq!(snapshot.spawned, Some(false));
+        assert_eq!(snapshot.tid, None);
+        assert_eq!(snapshot.body_returned, None);
+        assert_eq!(snapshot.join_path, None);
+        assert_eq!(snapshot.join_succeeded, None);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1281,4 +1303,86 @@ fn formatter_failures_are_sticky_without_closing_host_cleanup() {
         assert!(!report.guest.issues.is_empty());
         assert_eq!(&*bytes.lock().unwrap(), b"cleanup");
     }
+}
+
+#[test]
+#[cfg(feature = "test-guest-log")]
+fn worker_observations_distinguish_unknown_success_and_actual_join_panic() {
+    use super::super::fixture::CaptureWorkerObservations;
+    use super::super::fixture::JoinPath;
+    let observations = CaptureWorkerObservations::new();
+    let unknown = observations.snapshot();
+    assert_eq!(unknown.collector.spawned, None);
+    assert_eq!(unknown.collector.tid, None);
+    assert_eq!(unknown.collector.join_path, None);
+    assert_eq!(unknown.collector.join_succeeded, None);
+    for (panic, path) in [(false, JoinPath::Finished), (true, JoinPath::Blocking)] {
+        let observations = CaptureWorkerObservations::new();
+        let worker = observations.collector.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            sender
+                .send(unsafe { libc::syscall(libc::SYS_gettid) as u32 })
+                .unwrap();
+            worker.entered();
+            assert!(!panic, "injected uncaught thread panic");
+            worker.body_returned(true);
+        });
+        observations.collector.spawned(true);
+        assert_eq!(
+            join_worker(handle, Some(&observations.collector), path),
+            !panic
+        );
+        let snapshot = observations.snapshot().collector;
+        assert_eq!(snapshot.spawned, Some(true));
+        assert_eq!(snapshot.tid, Some(receiver.recv().unwrap()));
+        assert_eq!(snapshot.body_returned, (!panic).then_some(true));
+        assert_eq!(snapshot.join_path, Some(path));
+        assert_eq!(
+            snapshot.joining_tid,
+            Some(unsafe { libc::syscall(libc::SYS_gettid) as u32 })
+        );
+        assert_ne!(snapshot.joining_tid, snapshot.tid);
+        assert_eq!(snapshot.join_succeeded, Some(!panic));
+    }
+}
+
+#[test]
+#[cfg(feature = "test-guest-log")]
+fn worker_observations_separate_caught_body_panic_from_successful_join() {
+    struct PanicFlush;
+    impl Write for PanicFlush {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            panic!("injected caught flush panic")
+        }
+    }
+    impl CaptureDestination for PanicFlush {
+        fn progress(&self) -> DestinationProgress {
+            DestinationProgress::default()
+        }
+    }
+    let observations = super::super::fixture::CaptureWorkerObservations::new();
+    let publication = publication::Publication::start(
+        PanicFlush,
+        8,
+        64,
+        Duration::from_secs(2),
+        Some(observations.publication.clone()),
+    )
+    .unwrap();
+    assert!(publication.wait_ready(Instant::now() + Duration::from_secs(2)));
+    assert!(publication.join_blocking());
+    let snapshot = observations.snapshot().publication;
+    assert_eq!(snapshot.spawned, Some(true));
+    assert!(snapshot.tid.is_some());
+    assert_eq!(snapshot.body_returned, Some(false));
+    assert_eq!(snapshot.join_succeeded, Some(true));
+    assert_eq!(
+        snapshot.join_path,
+        Some(super::super::fixture::JoinPath::Blocking)
+    );
+    assert!(publication.snapshot().error.unwrap().contains("panicked"));
 }

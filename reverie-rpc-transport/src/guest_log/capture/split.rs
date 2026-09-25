@@ -378,6 +378,8 @@ impl<D: CaptureDestination> CaptureDestination for Destination<D> {
     }
 }
 struct Workers {
+    #[cfg(feature = "test-guest-log")]
+    observations: Option<super::super::fixture::CaptureWorkerObservations>,
     owner: Option<CaptureOwner>,
     escrow: Option<Box<dyn std::any::Any>>,
 }
@@ -411,6 +413,13 @@ impl Workers {
         destination: D,
         deadline: Instant,
     ) -> Result<(), StartupError> {
+        // This function runs only in O after clone. No observer Arc is inherited.
+        #[cfg(feature = "test-guest-log")]
+        let observations = super::super::fixture::CaptureWorkerObservations::new();
+        #[cfg(feature = "test-guest-log")]
+        {
+            self.observations = Some(observations.clone());
+        }
         let escrow = Arc::new(Mutex::new(destination));
         self.escrow = Some(Box::new(escrow.clone()));
         let (options, buffer, host, guest) = plan.inert.into_local_parts();
@@ -429,6 +438,8 @@ impl Workers {
         drop(sink);
         #[cfg(test)]
         if startup_fault(StartFault::PublicationSpawn) {
+            #[cfg(feature = "test-guest-log")]
+            observations.publication.spawned(false);
             return Err(StartupError::Protocol);
         }
         let publication = publication::Publication::start(
@@ -436,6 +447,8 @@ impl Workers {
             options.limits.pending_records,
             options.limits.diagnostic_bytes,
             options.timeouts.blocked_publication,
+            #[cfg(feature = "test-guest-log")]
+            Some(observations.publication.clone()),
         )
         .map_err(|_| StartupError::Protocol)?;
         let shared = Arc::new(Shared {
@@ -459,6 +472,8 @@ impl Workers {
             host: None,
             split: Some(Arc::new(plan.lifecycle)),
             collector_join: Mutex::new(None),
+            #[cfg(feature = "test-guest-log")]
+            collector_observation: Some(observations.collector.clone()),
             host_complete: std::sync::atomic::AtomicBool::new(false),
             active_host_calls: AtomicUsize::new(0),
             late_host_writes: AtomicU64::new(0),
@@ -475,15 +490,25 @@ impl Workers {
         let worker = shared.clone();
         #[cfg(test)]
         if startup_fault(StartFault::CollectorSpawn) {
+            #[cfg(feature = "test-guest-log")]
+            observations.collector.spawned(false);
             return Err(StartupError::Protocol);
         }
         let thread =
             std::thread::Builder::new()
                 .name("split-capture-collector".into())
                 .spawn(move || {
+                    #[cfg(feature = "test-guest-log")]
+                    if let Some(observation) = &worker.collector_observation {
+                        observation.entered();
+                    }
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         collect(&worker, host, collector)
                     }));
+                    #[cfg(feature = "test-guest-log")]
+                    if let Some(observation) = &worker.collector_observation {
+                        observation.body_returned(result.is_ok());
+                    }
                     if result.is_err() {
                         worker.fail("split collector panicked");
                     }
@@ -503,8 +528,10 @@ impl Workers {
                         });
                     worker.publication.finish_until(deadline);
                     worker.notify();
-                })
-                .map_err(|_| StartupError::Protocol)?;
+                });
+        #[cfg(feature = "test-guest-log")]
+        observations.collector.spawned(thread.is_ok());
+        let thread = thread.map_err(|_| StartupError::Protocol)?;
         *shared.collector.lock().unwrap() = Some(thread);
         #[cfg(test)]
         if startup_fault(StartFault::PublicationReady) {
@@ -562,7 +589,13 @@ impl Workers {
                 .shared
                 .close(Instant::now() + owner.shared.options.timeouts.final_drain);
             if let Some(thread) = owner.shared.collector.lock().unwrap().take() {
-                *owner.shared.collector_join.lock().unwrap() = Some(thread.join().is_ok());
+                *owner.shared.collector_join.lock().unwrap() = Some(super::join_worker(
+                    thread,
+                    #[cfg(feature = "test-guest-log")]
+                    owner.shared.collector_observation.as_deref(),
+                    #[cfg(feature = "test-guest-log")]
+                    super::super::fixture::JoinPath::Blocking,
+                ));
             }
             owner.shared.publication.join_blocking();
             owner.finalized = true;
@@ -634,6 +667,12 @@ pub struct JoinedCapture<T> {
 }
 
 impl<T, P, B> SplitCaptureRun<T, P, B> {
+    /// Default-off process-local observations, not a quiescence certificate.
+    #[cfg(feature = "test-guest-log")]
+    pub fn worker_observations(&self) -> Option<super::super::fixture::CaptureWorkerObservations> {
+        self.workers.observations.clone()
+    }
+
     fn fail(&mut self, fault: IntegrityFault, reason: impl Into<String>) {
         self.integrity_faults.insert(fault);
         self.failure.get_or_insert_with(|| reason.into());
@@ -968,6 +1007,8 @@ where
         child_factory: Some(child_factory),
         plan: Cell::new(Some(plan)),
         workers: Workers {
+            #[cfg(feature = "test-guest-log")]
+            observations: None,
             owner: None,
             escrow: None,
         },

@@ -6,6 +6,32 @@ use std::os::unix::process::CommandExt;
 use std::time::Duration;
 
 mod owned_lifecycle;
+mod task_snapshot;
+
+// First initialized in O after run_split_capture returns. C never reads this
+// process-local diagnostic handle, and it retains no capture resources.
+#[cfg(feature = "test-guest-log")]
+thread_local! {
+    static SPLIT_WORKERS: std::cell::RefCell<Option<reverie_rpc_transport::guest_log::fixture::CaptureWorkerObservations>> = const { std::cell::RefCell::new(None) };
+}
+
+fn assert_one_split_task(site: &str, mode: &str, turn: usize) {
+    task_snapshot::assert_one_owner_task(site, mode, turn, || {
+        #[cfg(feature = "test-guest-log")]
+        {
+            SPLIT_WORKERS.with(|workers| {
+                format!(
+                    "{:?}",
+                    workers.borrow().as_ref().map(|workers| workers.snapshot())
+                )
+            })
+        }
+        #[cfg(not(feature = "test-guest-log"))]
+        {
+            "test-guest-log disabled; worker identity unavailable".to_owned()
+        }
+    });
+}
 
 use reverie_rpc_transport::guest_log::Options;
 use reverie_rpc_transport::guest_log::Phase;
@@ -592,6 +618,8 @@ fn split_rpc_shutdown(mode: &str) {
 }
 
 struct SplitOutput {
+    mode: String,
+    turn: usize,
     file: std::fs::File,
     bytes: u64,
     gate: Option<std::os::unix::net::UnixStream>,
@@ -603,7 +631,7 @@ struct SplitOutput {
 impl Drop for SplitOutput {
     fn drop(&mut self) {
         if let Some(path) = &self.drop_marker {
-            assert_eq!(std::fs::read_dir("/proc/self/task").unwrap().count(), 1);
+            assert_one_split_task("destination Drop after actual joins", &self.mode, self.turn);
             std::fs::write(path, b"D-drop after actual joins").unwrap();
         }
     }
@@ -644,6 +672,8 @@ impl reverie_rpc_transport::guest_log::CaptureDestination for SplitOutput {
     }
 }
 struct SplitFactoryDrop {
+    mode: String,
+    turn: usize,
     file: std::fs::File,
     owner_pid: u32,
     panic_after_cleanup: bool,
@@ -656,11 +686,7 @@ impl Drop for SplitFactoryDrop {
             self.owner_pid,
             "borrowed O factory was dropped in C"
         );
-        assert_eq!(
-            std::fs::read_dir("/proc/self/task").unwrap().count(),
-            1,
-            "factory freed before actual O joins"
-        );
+        assert_one_split_task("factory Drop after actual O joins", &self.mode, self.turn);
         self.file.write_all(b"factory-drop\n").unwrap();
         assert!(
             !self.panic_after_cleanup,
@@ -1028,6 +1054,8 @@ fn split_lifecycle(case: &str) {
         let output_path = root.join(format!("output-{turn}"));
         let factory_path = root.join(format!("factory-{turn}"));
         let factory = SplitFactoryDrop {
+            mode: mode.to_owned(),
+            turn,
             file: std::fs::File::create(&factory_path).unwrap(),
             owner_pid: std::process::id(),
             panic_after_cleanup: mode == "factory-drop-panic",
@@ -1121,6 +1149,8 @@ fn split_lifecycle(case: &str) {
                         );
                     }
                     Ok(SplitOutput {
+                        mode: mode.to_owned(),
+                        turn,
                         file: std::fs::File::create(&destination_path).unwrap(),
                         bytes: 0,
                         gate: gate_reader.take(),
@@ -1290,6 +1320,8 @@ fn split_lifecycle(case: &str) {
                 },
             )
         };
+        #[cfg(feature = "test-guest-log")]
+        SPLIT_WORKERS.with(|workers| *workers.borrow_mut() = run.worker_observations());
         if matches!(mode, "cancel-pending" | "drop-pending") {
             let deadline = Instant::now() + Duration::from_secs(2);
             while !marker.exists() {
@@ -1636,6 +1668,11 @@ fn split_lifecycle(case: &str) {
             "actual split {mode}/{turn}: {:?}; facts={:?}",
             joined.report, joined.facts
         );
+        // The next second-clone turn inherits no prior observer Arc.
+        #[cfg(feature = "test-guest-log")]
+        SPLIT_WORKERS.with(|workers| {
+            workers.borrow_mut().take();
+        });
     }
     // The external disposal controller transfers one inherited descriptor to
     // this fixture; reclaim it too. All other modes restore their whole entry
@@ -1665,11 +1702,15 @@ fn split_startup_failure(mode: &str) {
     let child_path = root.join("child-factory");
     let pid_path = root.join("real-child-pid");
     let parent_factory = SplitFactoryDrop {
+        mode: mode.to_owned(),
+        turn: 0,
         file: std::fs::File::create(&parent_path).unwrap(),
         owner_pid: std::process::id(),
         panic_after_cleanup: false,
     };
     let child_factory = SplitFactoryDrop {
+        mode: mode.to_owned(),
+        turn: 0,
         file: std::fs::File::create(&child_path).unwrap(),
         owner_pid: std::process::id(),
         panic_after_cleanup: false,

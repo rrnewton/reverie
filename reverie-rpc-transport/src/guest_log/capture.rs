@@ -240,6 +240,8 @@ pub(super) struct Shared {
     host: Option<Mutex<ordered::Writer>>,
     split: Option<Arc<split::lifecycle::Lifecycle>>,
     collector_join: Mutex<Option<bool>>,
+    #[cfg(feature = "test-guest-log")]
+    collector_observation: Option<Arc<super::fixture::WorkerObservation>>,
     host_complete: std::sync::atomic::AtomicBool,
     active_host_calls: AtomicUsize,
     late_host_writes: AtomicU64,
@@ -316,10 +318,34 @@ impl Shared {
     fn join_finished(&self) -> bool {
         let mut thread = self.collector.lock().unwrap();
         if thread.as_ref().is_some_and(|thread| thread.is_finished()) {
-            *self.collector_join.lock().unwrap() = Some(thread.take().unwrap().join().is_ok());
+            *self.collector_join.lock().unwrap() = Some(join_worker(
+                thread.take().unwrap(),
+                #[cfg(feature = "test-guest-log")]
+                self.collector_observation.as_deref(),
+                #[cfg(feature = "test-guest-log")]
+                super::fixture::JoinPath::Finished,
+            ));
         }
         thread.is_none()
     }
+}
+
+// Consume the real join in every path; observations never substitute for it.
+fn join_worker(
+    handle: JoinHandle<()>,
+    #[cfg(feature = "test-guest-log")] observation: Option<&super::fixture::WorkerObservation>,
+    #[cfg(feature = "test-guest-log")] path: super::fixture::JoinPath,
+) -> bool {
+    #[cfg(feature = "test-guest-log")]
+    if let Some(observation) = observation {
+        observation.joining(path);
+    }
+    let succeeded = handle.join().is_ok();
+    #[cfg(feature = "test-guest-log")]
+    if let Some(observation) = observation {
+        observation.joined(succeeded);
+    }
+    succeeded
 }
 
 pub struct CaptureOwner {
@@ -561,6 +587,8 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
         options.limits.pending_records,
         options.limits.diagnostic_bytes,
         options.timeouts.blocked_publication,
+        #[cfg(feature = "test-guest-log")]
+        None,
     )
     .map_err(|cause| CaptureStartError {
         cause,
@@ -587,6 +615,8 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
         host: Some(Mutex::new(writer)),
         split: None,
         collector_join: Mutex::new(None),
+        #[cfg(feature = "test-guest-log")]
+        collector_observation: None,
         host_complete: std::sync::atomic::AtomicBool::new(false),
         active_host_calls: AtomicUsize::new(0),
         late_host_writes: AtomicU64::new(0),
