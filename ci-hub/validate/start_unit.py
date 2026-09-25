@@ -22,7 +22,7 @@ import tempfile
 import sys
 import time
 from contextlib import contextmanager, suppress
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -68,6 +68,9 @@ HOST_TMP_ROOT = Path("/tmp").resolve()
 # current temporary socket fixture appends 77 bytes including its separator.
 MAX_RUNTIME_ROOT_BYTES = 30
 VALIDATE_CLEANUP_BATCH_LIMIT = 8
+# Separate from payload/queue deadlines: admission observed 10.612s for eight
+# retained groups. Every read-only child shares this finite classification budget.
+VALIDATE_ENTRY_CLASSIFICATION_SECONDS = 30.0
 WRKSLOTS_MACHINE = socket.gethostname().split(".", 1)[0]
 
 
@@ -2960,8 +2963,15 @@ def recorded_cleanup_path_exists(root: Path, record: Mapping[str, Any]) -> bool:
 
 def read_cleanup_record_object(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as error:
+        # Inspect the opened object, not an earlier pathname stat. A FIFO must
+        # not block before the admission deadline can even be checked, and a
+        # replacement/symlink must not redirect a handle read to another object.
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, encoding="utf-8") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise RuntimeError(f"validation handle {path} is not a regular file")
+            value = json.load(stream)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise RuntimeError(f"cannot read validation handle {path}: {error}") from error
     if not isinstance(value, dict):
         raise RuntimeError(f"validation handle {path} is not an object")
@@ -2990,8 +3000,51 @@ def cleanup_checkout_reference(root: Path, record: Mapping[str, Any]) -> Path | 
     )
 
 
+class CleanupClassificationExpired(RuntimeError):
+    """Incomplete read-only evidence must never admit a new checkout."""
+
+
+@dataclass(frozen=True)
+class CleanupClassificationBudget:
+    deadline: float
+    runner: Runner
+
+    def remaining(self, context: str) -> float:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise CleanupClassificationExpired(
+                "read-only entry classification budget expired while "
+                f"{context}; unresolved storage remains retained"
+            )
+        return remaining
+
+    def run(
+        self, command: Sequence[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        context = shlex.join(command)
+        remaining = self.remaining(context)
+        timeout = kwargs.get("timeout")
+        kwargs["timeout"] = remaining if timeout is None else min(timeout, remaining)
+        try:
+            result = self.runner(command, **kwargs)
+        except subprocess.TimeoutExpired as error:
+            raise CleanupClassificationExpired(
+                "read-only entry classification command timed out after "
+                f"{kwargs['timeout']:g}s: {context}; unresolved storage remains retained"
+            ) from error
+        self.remaining(context)
+        return result
+
+    def groups(self, groups: Sequence[CleanupGroup]) -> Iterator[CleanupGroup]:
+        for offset in range(0, len(groups), VALIDATE_CLEANUP_BATCH_LIMIT):
+            self.remaining(f"starting classification page at {groups[offset].checkout}")
+            for group in groups[offset : offset + VALIDATE_CLEANUP_BATCH_LIMIT]:
+                self.remaining(f"classifying {group.checkout}")
+                yield group
+
+
 def discover_cleanup_groups(
-    root: Path, runs: Path
+    root: Path, runs: Path, *, budget: CleanupClassificationBudget | None = None
 ) -> tuple[
     dict[str, CleanupGroup],
     list[CleanupRow],
@@ -3014,6 +3067,8 @@ def discover_cleanup_groups(
         "run_handle_candidates": 0,
     }
     for path in sorted(runs.glob("*.json")):
+        if budget is not None:
+            budget.remaining(f"reading {path}")
         discovery_counts["json_files_seen"] += 1
         # ⚠️ A VALIDATION COMPANION SIDECAR IS NOT A RUN HANDLE. Both live
         # here and both end `.json`, so this glob sees them; parsing one as a
@@ -3135,6 +3190,8 @@ def terminal_cleanup_unit(
     try:
         unit = sanitize_unit(str(record.get("unit", path.stem)))
         properties, unit_absent = service_properties_with_absence(unit, run=run)
+    except CleanupClassificationExpired:
+        raise
     except (OSError, RuntimeError, ValueError) as error:
         return CleanupUnitObservation(
             None, CleanupUnitState.INDETERMINATE, str(error), cleanup_failed=True
@@ -3274,8 +3331,21 @@ def sweep_completed_checkouts(
     prospective_checkout: Path | None = None,
 ) -> dict[str, Any]:
     """Hand off scorecards and remove terminal checkouts left by interrupted waiters."""
+    # Admission only observes retained storage. Its complete classification has
+    # a separate wall budget; the destructive sweep still removes at most eight
+    # groups and keeps its persistent cursor and publication prerequisites.
+    budget = (
+        CleanupClassificationBudget(
+            time.monotonic() + VALIDATE_ENTRY_CLASSIFICATION_SECONDS, run
+        )
+        if classify_ownerless_only
+        else None
+    )
+    if budget is not None:
+        run = budget.run
     journal_scopes: tuple[CreateJournalScope, ...] = ()
     if classify_ownerless_only:
+        assert budget is not None
         if prospective_slot is None or prospective_checkout is None:
             raise ValueError(
                 "read-only entry classification requires the prospective validation slot"
@@ -3287,6 +3357,7 @@ def sweep_completed_checkouts(
             run=run,
             tool_root=tool_root,
         )
+        budget.remaining("classifying create journals")
     runs = root / "ignored" / "validate" / "runs"
     removed: list[str] = []
     removed_cargo_homes: list[str] = []
@@ -3343,6 +3414,8 @@ def sweep_completed_checkouts(
         registration_status = value
         return registration_status
     if not runs.is_dir():
+        if budget is not None:
+            budget.remaining("finishing empty run discovery")
         # Absent is a real answer and it carries its own zeros, so a reader can
         # tell "there was nothing to look at" from "the counts are missing".
         return {
@@ -3361,11 +3434,15 @@ def sweep_completed_checkouts(
         }
 
     groups, singles, _rows, discovery_errors, discovery = discover_cleanup_groups(
-        root, runs
+        root, runs, budget=budget
     )
+    if budget is not None:
+        budget.remaining("finishing run discovery")
     retained.extend(discovery_errors)
 
     for row in singles:
+        if budget is not None:
+            budget.remaining(f"classifying {row.path}")
         observation = terminal_cleanup_unit(row.path, row.record, run=run)
         row.unit = observation.unit
         if (
@@ -3547,9 +3624,12 @@ def sweep_completed_checkouts(
 
     managed = {key: group for key, group in groups.items() if group.managed}
     try:
-        selected, later = select_cleanup_groups(
-            root, managed, persist_cursor=not classify_ownerless_only
-        )
+        if classify_ownerless_only:
+            # A read-only pass cannot advance by deleting its first page. All
+            # pages must be classified before readiness, under the one budget.
+            selected, later = [managed[key] for key in sorted(managed)], []
+        else:
+            selected, later = select_cleanup_groups(root, managed)
     except (OSError, RuntimeError, ValueError) as error:
         selected, later = [], list(managed.values())
         bookkeeping_errors.append({"record": str(root / "ignored/validate/checkout-cleanup-cursor.json"), "reason": str(error)})
@@ -3585,7 +3665,7 @@ def sweep_completed_checkouts(
     )
 
     prepared: list[CleanupGroup] = []
-    for group in selected:
+    for group in budget.groups(selected) if budget is not None else selected:
         if group.reasons:
             continue
         for hold in preflight_cleanup_group(
@@ -3824,6 +3904,8 @@ def sweep_completed_checkouts(
 
     cargo_candidates: dict[str, tuple[Path, list[CleanupRow]]] = {}
     for row in singles + [row for group in selected for row in group.rows]:
+        if budget is not None:
+            budget.remaining(f"classifying Cargo storage for {row.path}")
         if row.unit is None:
             continue
         cargo_home, cargo_error = classify_recorded_cargo_home(root, row.record)
@@ -3935,6 +4017,8 @@ def sweep_completed_checkouts(
                 )
             except (OSError, RuntimeError, ValueError) as error:
                 bookkeeping_errors.append({"record": str(row.path), "reason": str(error)})
+    if budget is not None:
+        budget.remaining("finishing complete storage classification")
     return {
         "removed": removed,
         "removed_cargo_homes": removed_cargo_homes,
@@ -3958,12 +4042,13 @@ def require_validate_entry_cleanup(
     run: Runner,
     tool_root: Path = ROOT,
 ) -> None:
-    """Run one bounded cleanup batch and refuse entry while old work remains.
+    """Classify retained storage within one deadline before creating a checkout.
 
     An active managed validation is not old work and does not block another
     admitted run.  A provider-classified pre-proof historical checkout also
-    remains visible without blocking.  Every retained row without that explicit
-    disposition, a bookkeeping error, or a deferred checkout prevents entry.
+    remains visible without blocking. Every managed page is classified without
+    changing storage. An unresolved row, bookkeeping error, or expired budget
+    prevents entry; bounded removal remains a separate operation.
     """
     started = time.monotonic()
     try:

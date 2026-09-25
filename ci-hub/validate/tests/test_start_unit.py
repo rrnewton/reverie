@@ -3119,25 +3119,40 @@ class StartUnitTest(unittest.TestCase):
         ]
         self.assertEqual(1, len(commands))
 
-    def test_entry_cleanup_refuses_after_one_read_only_bounded_backlog_batch(self) -> None:
+    def require_read_only_entry(self, *, run: start_unit.Runner | None = None) -> str:
+        prospective = "validate-fresh-aaaaaaaaaaaa-read-only"
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error):
+            start_unit.require_validate_entry_cleanup(
+                self.root,
+                prospective_slot=prospective,
+                prospective_checkout=self.root / "worktrees/validate" / prospective,
+                run=run or self.fake,
+                tool_root=self.root,
+            )
+        return error.getvalue()
+
+    def test_entry_cleanup_classifies_every_read_only_backlog_page(self) -> None:
         stale = [
             self.managed_cleanup_record(f"entry-backlog-{index:03d}")[0]
             for index in range(130)
         ]
+        before = self.filesystem_snapshot(self.root)
 
         started = time.monotonic()
-        rc, _output, error = self.invoke()
+        error = self.require_read_only_entry()
         elapsed = time.monotonic() - started
 
-        self.assertEqual(start_unit.EXIT_REFUSED, rc)
         self.assertLess(elapsed, 1.0)
         self.assertEqual(0, sum(not path.exists() for path in stale))
         self.assertEqual(130, sum(path.exists() for path in stale))
-        self.assertIn("removed 0 checkout(s)", error)
-        self.assertIn("waiting on 122 deferred checkout(s)", error)
-        self.assertIn(str(stale[8]), error)
-        self.assertIn("ci-hub validate-run --sweep-completed", error)
-        self.assertIn("the validate NEVER RAN", error)
+        self.assertEqual(before, self.filesystem_snapshot(self.root))
+        self.assertIn("removed=0 removed-cargo-homes=0 retained-nonblocking=130", error)
+        self.assertEqual(
+            [f"validate-entry-backlog-{index:03d}.service" for index in range(130)],
+            [command[3] for command in self.fake.commands
+             if command[:3] == ["systemctl", "--user", "show"]],
+        )
         self.assertFalse(
             any(wrkslots_action(command, "create") for command in self.fake.commands)
         )
@@ -3147,6 +3162,209 @@ class StartUnitTest(unittest.TestCase):
                 for command in self.fake.commands
             )
         )
+
+    def test_entry_retains_failed_ledger_records_and_failed_ninth_run(self) -> None:
+        self.fake.collected_unit = True
+        for index in range(9):
+            fresh, record = self.current_unknown_cleanup_record(
+                f"entry-ledger-{index:03d}",
+                {
+                    "state": "refused", "recorded_at": "2026-09-04T12:00:00+00:00",
+                    "reason": "stale-base", "exit_code": 3,
+                },
+            )
+            record.update(
+                materialized_target=True,
+                ledger_mirror={
+                    **publication_report(SHA),
+                    "recorded_at": "2026-09-04T12:01:00+00:00",
+                    "state": "derived-failed",
+                    "detail": "no unique canonical terminal",
+                    "raw_publication": {"attempts": 0, "published": 0},
+                    "scorecard": {"state": "failed", "error": "no unique canonical terminal"},
+                },
+            )
+            if index == 8:
+                # The ninth retained checkout ran seven nodes and FAILED.
+                # Read-only admission must preserve that negative evidence.
+                record.update(
+                    state="completed", result="failure", materialized_target=False,
+                    admission_result={"state": "admitted", "run_number": 1900,
+                                      "recorded_at": "2026-09-04T12:00:00+00:00"},
+                    final_validate_status="FAILED", exit_code=1,
+                    service_result_schema=start_unit.service_result.SCHEMA_VERSION,
+                    selection_mode="only",
+                    executed_nodes=7, executed_tests=None, passed_tests=None, detail=None,
+                    canonical_verdict="NOT-VALIDATED", scorecard_writeback=None,
+                )
+            start_unit.run_registry.write_record(
+                self.root / "ignored/validate/runs" / f"validate-entry-ledger-{index:03d}.json",
+                record,
+            )
+            (fresh / "retained-receipt.jsonl").write_text("failed execution evidence\n")
+        before = self.filesystem_snapshot(self.root)
+
+        def forbidden(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("read-only classification attempted publication or disposal")
+
+        with mock.patch.object(
+            start_unit, "publish_recorded_scorecard_handoff", side_effect=forbidden
+        ), mock.patch.object(
+            start_unit, "archive_orphaned_receipts", side_effect=forbidden
+        ), mock.patch.object(
+            start_unit, "remove_fresh_checkouts_batch", side_effect=forbidden
+        ), mock.patch.object(
+            start_unit.run_registry, "update_record", side_effect=forbidden
+        ):
+            error = self.require_read_only_entry()
+
+        self.assertEqual(before, self.filesystem_snapshot(self.root))
+        self.assertIn("retained-nonblocking=9", error)
+        self.assertEqual(9, sum(command[:3] == ["systemctl", "--user", "show"]
+                                for command in self.fake.commands))
+
+    def test_entry_refuses_unsafe_ninth_managed_group(self) -> None:
+        self.fake.collected_unit = True
+        for index in range(8):
+            self.managed_cleanup_record(f"entry-ninth-{index:03d}")
+        _fresh, ninth = self.managed_cleanup_record("entry-ninth-008")
+        original = start_unit.run_registry.read_record(ninth)
+        for changes, reason in (
+            ({"state": "unknown"}, "run record is not terminal"),
+            ({"wrkslots_generation": None}, "generation is not positive"),
+            ({"wrkslots_generation": True}, "generation is not positive"),
+            ({"wrkslots_slot": "another-slot"}, "slot does not match"),
+            ({"schema_version": "1"}, "unsupported schema"),
+        ):
+            with self.subTest(changes=changes):
+                # Model a malformed retained artifact, which the current writer
+                # correctly refuses to produce itself.
+                ninth.write_text(json.dumps({**original, **changes}) + "\n")
+                before = self.filesystem_snapshot(self.root)
+                rc, _output, error = self.invoke()
+                self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
+                self.assertIn(reason, error)
+                self.assertIn("entry-ninth-008", error)
+                self.assertIn("the validate NEVER RAN", error)
+                self.assertEqual(before, self.filesystem_snapshot(self.root))
+                self.assertFalse(any(wrkslots_action(command, "create")
+                                     for command in self.fake.commands))
+
+        start_unit.run_registry.write_record(ninth, original)
+        contradictory = ninth.with_name("validate-entry-ninth-conflicting.json")
+        start_unit.run_registry.write_record(
+            contradictory,
+            {**original, "wrkslots_generation": original["wrkslots_generation"] + 1},
+        )
+        before = self.filesystem_snapshot(self.root)
+        rc, _output, error = self.invoke()
+        self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
+        self.assertIn("run records disagree about the wrkslots generation", error)
+        self.assertIn("entry-ninth-008", error)
+        self.assertEqual(before, self.filesystem_snapshot(self.root))
+        self.assertFalse(any(wrkslots_action(command, "create")
+                             for command in self.fake.commands))
+
+    def test_entry_budget_expiry_after_first_page_refuses_without_writes(self) -> None:
+        for index in range(9):
+            self.managed_cleanup_record(f"entry-expiry-{index:03d}")
+        before = self.filesystem_snapshot(self.root)
+        elapsed = [0.0]
+        original_preflight = start_unit.preflight_cleanup_group
+
+        def preflight(root, group, **kwargs):
+            result = original_preflight(root, group, **kwargs)
+            if group.checkout.name.endswith("007"):
+                elapsed[0] = start_unit.VALIDATE_ENTRY_CLASSIFICATION_SECONDS
+            return result
+
+        with mock.patch.object(start_unit.time, "monotonic", side_effect=lambda: elapsed[0]), \
+             mock.patch.object(start_unit, "preflight_cleanup_group", side_effect=preflight):
+            rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
+        self.assertIn("classification budget expired", error)
+        self.assertIn("entry-expiry-008", error)
+        self.assertEqual(8, sum(command[:3] == ["systemctl", "--user", "show"]
+                                for command in self.fake.commands))
+        self.assertEqual(before, self.filesystem_snapshot(self.root))
+        self.assertFalse(any(wrkslots_action(command, "create")
+                             for command in self.fake.commands))
+
+    def test_entry_child_timeout_and_late_result_refuse_before_creation(self) -> None:
+        for index in range(9):
+            self.managed_cleanup_record(f"entry-timeout-{index:03d}")
+        before = self.filesystem_snapshot(self.root)
+        for late_result in (False, True):
+            with self.subTest(late_result=late_result):
+                elapsed = [0.0]
+
+                def run(command, **kwargs):
+                    if command[:3] == ["systemctl", "--user", "show"]:
+                        self.assertGreater(kwargs["timeout"], 0)
+                        self.assertLessEqual(kwargs["timeout"], 30)
+                        if command[3] == "validate-entry-timeout-008.service":
+                            if late_result:
+                                elapsed[0] = 30.0
+                            else:
+                                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+                    return self.fake(command, **kwargs)
+
+                with mock.patch.object(start_unit.time, "monotonic", side_effect=lambda: elapsed[0]):
+                    rc, _output, error = self.invoke(run=run)
+                self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
+                self.assertIn("entry-timeout-008", error)
+                self.assertIn("unresolved storage remains retained", error)
+                self.assertEqual(before, self.filesystem_snapshot(self.root))
+                self.assertFalse(any(wrkslots_action(command, "create")
+                                     for command in self.fake.commands))
+
+    def test_entry_budget_preserves_tighter_child_timeout(self) -> None:
+        observed = []
+        elapsed = [0.0]
+
+        def run(command, **kwargs):
+            observed.append(kwargs["timeout"])
+            return completed(command)
+
+        with mock.patch.object(start_unit.time, "monotonic", side_effect=lambda: elapsed[0]):
+            budget = start_unit.CleanupClassificationBudget(30.0, run)
+            budget.run(["probe"], timeout=2.0)
+            elapsed[0] = 29.0
+            budget.run(["probe"], timeout=2.0)
+        self.assertEqual([2.0, 1.0], observed)
+
+    def test_cleanup_handle_fifo_is_refused_without_waiting_for_a_writer(self) -> None:
+        fifo = self.root / "blocked-handle.json"
+        os.mkfifo(fifo)
+        probe = subprocess.run(
+            [sys.executable, "-c",
+             "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+             "import start_unit\n"
+             "try: start_unit.read_cleanup_record_object(Path(sys.argv[2]))\n"
+             "except RuntimeError as error: print(error)\n"
+             "else: raise SystemExit('nonregular handle was accepted')\n",
+             str(Path(start_unit.__file__).parent), str(fifo)],
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(0, probe.returncode, probe.stderr)
+        self.assertIn("is not a regular file", probe.stdout)
+        self.assertTrue(stat.S_ISFIFO(fifo.stat().st_mode))
+
+    def test_entry_refuses_symlink_run_handle_without_following_it(self) -> None:
+        fresh, record = self.managed_cleanup_record("entry-symlink")
+        original = record.read_bytes()
+        target = self.root / "preserved-handle.json"
+        record.rename(target)
+        record.symlink_to(target)
+        rc, _output, error = self.invoke()
+        self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
+        self.assertIn(str(record), error)
+        self.assertEqual(original, target.read_bytes())
+        self.assertTrue(record.is_symlink())
+        self.assertTrue(fresh.is_dir())
+        self.assertFalse(any(wrkslots_action(command, "create")
+                             for command in self.fake.commands))
 
     def test_entry_cleanup_does_not_probe_or_remove_completed_managed_slot(self) -> None:
         stale, _record = self.managed_cleanup_record("entry-live")
