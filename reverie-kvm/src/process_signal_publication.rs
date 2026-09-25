@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 
 use reverie::SignalEvent;
@@ -80,6 +81,8 @@ pub(super) struct ProcessBinding {
     transaction: Weak<Mutex<()>>,
     lifecycle: Weak<Mutex<TaskLifecycleTable>>,
     image: Mutex<CurrentImage>,
+    // Shared with every thread and exec image of this exact generation.
+    orphan_reaper_pid: Arc<AtomicI32>,
 }
 
 impl ProcessBinding {
@@ -114,6 +117,12 @@ pub(crate) enum ProcessFamilyExit {
     RunTeardownChild {
         status: reverie::ExitStatus,
     },
+    /// This exact generation was orphaned while live and adopted by a
+    /// namespace init outside the traced tree. That init reaps it; no traced
+    /// process observes a wait status or `SIGCHLD`.
+    ReapedByNamespaceInit {
+        status: reverie::ExitStatus,
+    },
     DescendantReparentingUnsupported {
         child: SignalProcessId,
     },
@@ -145,13 +154,57 @@ enum ProcessFamilyAncestryError {
     },
 }
 
+/// Linux `find_new_reaper` without a same-group survivor (family exits are
+/// whole-process) and without subreapers: `PR_SET_CHILD_SUBREAPER` is not
+/// modeled, so the orphan's PID-namespace init is always its new parent.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum NamespaceReaper {
+    /// No traced root has declared its namespace; orphaning fails closed.
+    #[default]
+    Unknown,
+    /// The traced root is itself PID-namespace init. Adopting a live child or
+    /// zombie would move host wait ownership and Tool child state into the
+    /// root's executor, which this backend does not implement.
+    TracedRoot,
+    /// Namespace init is outside the traced tree, as under the ptrace backend
+    /// (root PID 3 beneath init PID 1). It reaps every orphan it adopts.
+    Outside { pid: i32 },
+}
+
 #[derive(Default)]
 struct ProcessFamilyState {
     direct_children: BTreeMap<ProcessKey, BTreeMap<ProcessKey, DirectChildState>>,
     terminal: BTreeMap<ProcessKey, ProcessFamilyExit>,
+    reaper: NamespaceReaper,
+    // Live exact generations adopted by an outside namespace init. An entry is
+    // removed only by that generation's own exit or failure.
+    namespace_orphans: BTreeSet<ProcessKey>,
 }
 
 impl ProcessFamilyState {
+    /// Linux `forget_original_parent` for an outside namespace reaper, applied
+    /// in the family critical section that makes `process` terminal. Each exact
+    /// child edge moves once: a live child becomes a namespace orphan, and an
+    /// already-published zombie is reaped by init, retiring the exiting
+    /// parent's claim on its status. Returns the adopted live children.
+    fn reparent_children_to_outside_init(&mut self, process: ProcessKey) -> Vec<ProcessKey> {
+        let Some(children) = self.direct_children.remove(&process) else {
+            return Vec::new();
+        };
+        let mut adopted = Vec::new();
+        for (child, state) in children {
+            match state {
+                DirectChildState::Live => {
+                    let inserted = self.namespace_orphans.insert(child);
+                    debug_assert!(inserted, "KVM orphan adopted twice");
+                    adopted.push(child);
+                }
+                DirectChildState::WaitableZombie => {}
+            }
+        }
+        adopted
+    }
+
     fn has_terminal_ancestor(
         &self,
         mut ancestor: ProcessKey,
@@ -188,9 +241,10 @@ impl ProcessFamilyState {
 pub(super) struct ProcessSignalRegistry {
     processes: Mutex<BTreeMap<(i32, u64), Weak<ProcessBinding>>>,
     // Logical process ancestry is independent of host join-handle placement.
-    // It is retained by exact generation until a wait consumes a zombie or an
-    // exit-time auto-reap decision removes it. This is the fail-closed boundary
-    // for reparenting, which this change does not claim to implement.
+    // It is retained by exact generation until a wait consumes a zombie, an
+    // exit-time auto-reap decision removes it, or the parent's exit reparents
+    // it to an outside namespace init. Reparenting to an in-tree init fails
+    // closed.
     family: Mutex<ProcessFamilyState>,
     // Run-scoped at-most-once admission. Standard-signal coalescing is not an
     // operation ledger: after dequeue, the same child could otherwise enqueue
@@ -234,6 +288,7 @@ impl ProcessSignalRegistry {
                 files: Arc::downgrade(files),
                 signals: Arc::downgrade(&state.process_signals),
             }),
+            orphan_reaper_pid: state.orphan_reaper_pid.clone(),
         });
         if let Some(parent) = parent {
             let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
@@ -252,6 +307,18 @@ impl ProcessSignalRegistry {
         processes.retain(|_, process| process.strong_count() != 0);
         processes.insert((state.pid, generation), Arc::downgrade(&binding));
         Ok(binding)
+    }
+
+    /// Declare the traced root's PID namespace. A root with no guest-visible
+    /// parent is itself namespace init (see `vm::root_parent_pid`); otherwise
+    /// its guest-visible parent is the outside init that adopts orphans.
+    pub(super) fn install_namespace_reaper(&self, root: &LoadedStaticElf) {
+        debug_assert!(root.is_traced_tree_root);
+        self.family.lock().unwrap_or_else(|p| p.into_inner()).reaper = if root.ppid == 0 {
+            NamespaceReaper::TracedRoot
+        } else {
+            NamespaceReaper::Outside { pid: root.ppid }
+        };
     }
 
     fn lookup(&self, identity: SignalProcessId) -> Option<Arc<ProcessBinding>> {
@@ -276,6 +343,7 @@ impl ProcessSignalRegistry {
                 ProcessFamilyExit::Root
                     | ProcessFamilyExit::Child(_)
                     | ProcessFamilyExit::RunTeardownChild { .. }
+                    | ProcessFamilyExit::ReapedByNamespaceInit { .. }
             )
         );
         if !replace_success {
@@ -286,6 +354,7 @@ impl ProcessSignalRegistry {
         family
             .terminal
             .insert(process_family_key, ProcessFamilyExit::Failed);
+        family.namespace_orphans.remove(&process_family_key);
         if let Some(parent) = parent {
             let parent_key = process_key(parent);
             if let Some(children) = family.direct_children.get_mut(&parent_key) {
@@ -362,6 +431,17 @@ impl ProcessSignalRegistry {
         if let Some(exit) = family.terminal.get(&process_key(process)).copied() {
             return exit;
         }
+        if family.namespace_orphans.remove(&process_key(process)) {
+            // The original parent's exit already transferred this exact
+            // generation to the outside init. Its fork-time parent binding is
+            // history; neither it nor a later process reusing its PID owns
+            // this status.
+            let exit = ProcessFamilyExit::ReapedByNamespaceInit { status };
+            family.terminal.insert(process_key(process), exit);
+            let adopted = family.reparent_children_to_outside_init(process_key(process));
+            self.label_orphans(&family, &adopted);
+            return exit;
+        }
         let blocking_descendant = family
             .direct_children
             .get(&process_key(process))
@@ -418,7 +498,9 @@ impl ProcessSignalRegistry {
             // generation and takes this same branch.
             family.direct_children.remove(&process_key(process));
             ProcessFamilyExit::RunTeardownChild { status }
-        } else if let Some(child) = blocking_descendant {
+        } else if let (Some(child), NamespaceReaper::Unknown | NamespaceReaper::TracedRoot) =
+            (blocking_descendant, family.reaper)
+        {
             ProcessFamilyExit::DescendantReparentingUnsupported { child }
         } else if let Some((parent, disposition, waitable, pending_generation)) = parent_snapshot {
             let completion = reverie::ChildExitCompletion {
@@ -469,7 +551,28 @@ impl ProcessSignalRegistry {
             }
         };
         family.terminal.insert(process_key(process), exit);
+        if matches!(exit, ProcessFamilyExit::Root | ProcessFamilyExit::Child(_))
+            && matches!(family.reaper, NamespaceReaper::Outside { .. })
+        {
+            let adopted = family.reparent_children_to_outside_init(process_key(process));
+            self.label_orphans(&family, &adopted);
+        }
         exit
+    }
+
+    /// Publish each adoption to its exact generation's guest-visible parent
+    /// before the family critical section ends. Lock order: family, then the
+    /// binding table.
+    fn label_orphans(&self, family: &ProcessFamilyState, adopted: &[ProcessKey]) {
+        let NamespaceReaper::Outside { pid } = family.reaper else {
+            debug_assert!(adopted.is_empty());
+            return;
+        };
+        for child in adopted {
+            if let Some(binding) = self.lookup(process_identity(*child)) {
+                binding.orphan_reaper_pid.store(pid, Ordering::SeqCst);
+            }
+        }
     }
 
     pub(super) fn process_family_exit(
@@ -3016,6 +3119,381 @@ mod tests {
                 .direct_children
                 .is_empty(),
             "terminal-root consumption must retire the same family's exact edges",
+        );
+    }
+
+    /// A traced root beneath an outside PID-namespace init, as Hermit runs KVM
+    /// (root PID 3, `getppid() == 1`). `executor()` is instead itself init.
+    fn outside_init_root() -> ElfExecutor {
+        let mut state = native_loaded_state(std::path::Path::new("/tmp"));
+        state.pid = 3;
+        state.pgid = 3;
+        state.tid = 3;
+        state.ppid = 1;
+        state.task_lifecycle = Arc::new(Mutex::new(TaskLifecycleTable::with_root(3, 3, 3, true)));
+        ElfExecutor::new(state, false)
+    }
+
+    fn getppid(executor: &mut ElfExecutor) -> i64 {
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        call(executor, &memory, libc::SYS_getppid, [0; 6])
+    }
+
+    fn family_snapshot(
+        executor: &ElfExecutor,
+    ) -> (
+        BTreeMap<ProcessKey, BTreeMap<ProcessKey, DirectChildState>>,
+        BTreeSet<ProcessKey>,
+    ) {
+        let family = executor
+            .signal_registry
+            .family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        (
+            family.direct_children.clone(),
+            family.namespace_orphans.clone(),
+        )
+    }
+
+    #[test]
+    fn outside_init_adopts_live_and_zombie_orphans_by_exact_generation() {
+        let root = outside_init_root();
+        let root_id = identity(&root);
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let parent_id = identity(&parent);
+        let mut orphan = parent.fork_child(7, false, false).unwrap();
+        let orphan_id = identity(&orphan);
+        let mut orphan_thread = orphan.thread_child(10).unwrap();
+        let mut zombie = parent.fork_child(8, false, false).unwrap();
+        let zombie_id = identity(&zombie);
+        assert_eq!(getppid(&mut orphan), 6);
+        assert_eq!(getppid(&mut orphan_thread), 6);
+
+        zombie.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+        assert!(matches!(
+            zombie.signal_registry.process_family_exit(zombie_id),
+            Some(ProcessFamilyExit::Child(snapshot))
+                if snapshot.completion.parent == parent_id && snapshot.completion.waitable
+        ));
+
+        // The failing Hermit shape: a middle process exits under its live
+        // parent while it still has a running child and an unreaped zombie.
+        parent.retire_current_thread(reverie::ExitStatus::Exited(4), false);
+        assert!(matches!(
+            parent.signal_registry.process_family_exit(parent_id),
+            Some(ProcessFamilyExit::Child(snapshot))
+                if snapshot.completion.parent == root_id
+                    && snapshot.completion.child == parent_id
+                    && snapshot.completion.status == reverie::ExitStatus::Exited(4)
+                    && snapshot.completion.waitable
+        ));
+        let (edges, orphans) = family_snapshot(&root);
+        assert_eq!(
+            edges,
+            BTreeMap::from([(
+                process_key(root_id),
+                BTreeMap::from([(process_key(parent_id), DirectChildState::WaitableZombie)]),
+            )]),
+            "the exiting parent keeps only its own wait edge; its children moved atomically",
+        );
+        assert_eq!(orphans, BTreeSet::from([process_key(orphan_id)]));
+        assert!(
+            !root.signal_registry.consume_child_wait(parent_id, 8),
+            "init reaped the zombie; its former parent cannot reap it again",
+        );
+        assert_eq!(getppid(&mut orphan), 1);
+        assert_eq!(
+            getppid(&mut orphan_thread),
+            1,
+            "threads share the process parent"
+        );
+        assert_eq!(
+            orphan.parent_pid(),
+            Some(reverie::Pid::from_raw(6)),
+            "the traced-tree parent stays the fork-time parent, as under ptrace",
+        );
+
+        // An adopted orphan's own children are reparented when it exits.
+        let mut grandchild = orphan.fork_child(9, false, false).unwrap();
+        let grandchild_id = identity(&grandchild);
+        assert_eq!(getppid(&mut grandchild), 7);
+        orphan_thread.retire_current_thread(reverie::ExitStatus::Exited(5), true);
+        orphan.retire_current_thread(reverie::ExitStatus::Exited(5), false);
+        assert_eq!(
+            orphan.signal_registry.process_family_exit(orphan_id),
+            Some(ProcessFamilyExit::ReapedByNamespaceInit {
+                status: reverie::ExitStatus::Exited(5),
+            }),
+        );
+        assert_eq!(
+            family_snapshot(&root).1,
+            BTreeSet::from([process_key(grandchild_id)])
+        );
+        assert_eq!(getppid(&mut grandchild), 1);
+        grandchild.retire_current_thread(
+            reverie::ExitStatus::Signaled(reverie::Signal::SIGTERM, false),
+            false,
+        );
+        assert_eq!(
+            grandchild
+                .signal_registry
+                .process_family_exit(grandchild_id),
+            Some(ProcessFamilyExit::ReapedByNamespaceInit {
+                status: reverie::ExitStatus::Signaled(reverie::Signal::SIGTERM, false),
+            }),
+        );
+
+        assert!(root.signal_registry.consume_child_wait(root_id, 6));
+        assert!(!root.signal_registry.consume_child_wait(root_id, 6));
+        let (edges, orphans) = family_snapshot(&root);
+        assert!(edges.is_empty(), "no stale family edge survives: {edges:?}");
+        assert!(orphans.is_empty(), "no stale orphan survives: {orphans:?}");
+    }
+
+    #[test]
+    fn outside_init_adopts_a_terminal_roots_children() {
+        let mut root = outside_init_root();
+        let root_id = identity(&root);
+        let mut child = root.fork_child(6, false, false).unwrap();
+        let child_id = identity(&child);
+        let mut zombie = root.fork_child(7, false, false).unwrap();
+        zombie.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        assert_eq!(
+            root.signal_registry.process_family_exit(root_id),
+            Some(ProcessFamilyExit::Root),
+        );
+        assert_eq!(
+            family_snapshot(&root),
+            (BTreeMap::new(), BTreeSet::from([process_key(child_id)])),
+        );
+        assert_eq!(getppid(&mut child), 1);
+        child.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::ReapedByNamespaceInit {
+                status: reverie::ExitStatus::Exited(3),
+            }),
+        );
+        assert_eq!(family_snapshot(&root), (BTreeMap::new(), BTreeSet::new()));
+    }
+
+    #[test]
+    fn outside_init_orphan_is_not_claimed_by_a_process_reusing_its_parent_pid() {
+        let root = outside_init_root();
+        let root_id = identity(&root);
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let parent_id = identity(&parent);
+        let mut orphan = parent.fork_child(7, false, false).unwrap();
+        let orphan_id = identity(&orphan);
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        assert!(root.signal_registry.consume_child_wait(root_id, 6));
+        drop(parent);
+
+        let mut reused = root.fork_child(6, false, false).unwrap();
+        let reused_id = identity(&reused);
+        assert_ne!(reused_id, parent_id);
+        assert_eq!(reused_id.tgid, parent_id.tgid);
+
+        orphan.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        assert_eq!(
+            orphan.signal_registry.process_family_exit(orphan_id),
+            Some(ProcessFamilyExit::ReapedByNamespaceInit {
+                status: reverie::ExitStatus::Exited(7),
+            }),
+        );
+        assert!(
+            !root.signal_registry.consume_child_wait(reused_id, 7),
+            "a reused parent PID never inherits the orphan's status",
+        );
+        reused.retire_current_thread(reverie::ExitStatus::Exited(8), false);
+        assert!(matches!(
+            reused.signal_registry.process_family_exit(reused_id),
+            Some(ProcessFamilyExit::Child(snapshot))
+                if snapshot.completion.parent == root_id && snapshot.completion.child == reused_id
+        ));
+        assert_eq!(
+            family_snapshot(&root),
+            (
+                BTreeMap::from([(
+                    process_key(root_id),
+                    BTreeMap::from([(process_key(reused_id), DirectChildState::WaitableZombie)]),
+                )]),
+                BTreeSet::new(),
+            ),
+        );
+    }
+
+    #[test]
+    fn outside_init_orphan_record_never_classifies_another_generation_of_its_pid() {
+        // Ledger-level PID-reuse control: two generations share numeric PID 7.
+        // Only the exact generation that was orphaned belongs to init; the
+        // other remains the live root's waitable child with its own parent.
+        let root = outside_init_root();
+        let root_id = identity(&root);
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let orphan = parent.fork_child(7, false, false).unwrap();
+        let orphan_id = identity(&orphan);
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        assert_eq!(
+            family_snapshot(&root).1,
+            BTreeSet::from([process_key(orphan_id)])
+        );
+
+        let mut same_pid = root.fork_child(7, false, false).unwrap();
+        let same_pid_id = identity(&same_pid);
+        assert_eq!(same_pid_id.tgid, orphan_id.tgid);
+        assert_ne!(same_pid_id.generation, orphan_id.generation);
+        assert_eq!(getppid(&mut same_pid), 3);
+        same_pid.retire_current_thread(reverie::ExitStatus::Exited(5), false);
+        assert!(matches!(
+            same_pid.signal_registry.process_family_exit(same_pid_id),
+            Some(ProcessFamilyExit::Child(snapshot))
+                if snapshot.completion.parent == root_id
+                    && snapshot.completion.child == same_pid_id
+                    && snapshot.completion.waitable
+        ));
+        assert_eq!(
+            family_snapshot(&root).1,
+            BTreeSet::from([process_key(orphan_id)]),
+            "the orphan record belongs to its exact generation only",
+        );
+        assert_eq!(orphan.state.orphan_reaper_pid.load(Ordering::SeqCst), 1);
+        assert_eq!(same_pid.state.orphan_reaper_pid.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn outside_init_reparenting_and_child_exit_serialize_exactly_once() {
+        let run = |parent_first: Option<bool>| {
+            let root = outside_init_root();
+            let root_id = identity(&root);
+            let mut parent = root.fork_child(6, false, false).unwrap();
+            let parent_id = identity(&parent);
+            let mut child = parent.fork_child(7, false, false).unwrap();
+            let child_id = identity(&child);
+            match parent_first {
+                Some(true) => {
+                    parent.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+                    child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+                }
+                Some(false) => {
+                    child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+                    parent.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+                }
+                None => {
+                    let barrier = std::sync::Barrier::new(2);
+                    std::thread::scope(|scope| {
+                        scope.spawn(|| {
+                            barrier.wait();
+                            parent.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+                        });
+                        scope.spawn(|| {
+                            barrier.wait();
+                            child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+                        });
+                    });
+                }
+            }
+            assert!(matches!(
+                parent.signal_registry.process_family_exit(parent_id),
+                Some(ProcessFamilyExit::Child(snapshot)) if snapshot.completion.parent == root_id
+            ));
+            let child_exit = child.signal_registry.process_family_exit(child_id).unwrap();
+            let reaper = child.state.orphan_reaper_pid.load(Ordering::SeqCst);
+            let child_first = match child_exit {
+                // Child first: the parent owned and was notified of the exit;
+                // its own exit then retired that unreaped zombie edge.
+                ProcessFamilyExit::Child(snapshot) => {
+                    assert_eq!(snapshot.completion.parent, parent_id);
+                    assert_eq!(reaper, 0);
+                    true
+                }
+                // Parent first: init adopted the live child and reaps it.
+                ProcessFamilyExit::ReapedByNamespaceInit { status } => {
+                    assert_eq!(status, reverie::ExitStatus::Exited(2));
+                    assert_eq!(reaper, 1);
+                    false
+                }
+                other => panic!("child exit lost its single owner: {other:?}"),
+            };
+            assert_eq!(
+                family_snapshot(&root),
+                (
+                    BTreeMap::from([(
+                        process_key(root_id),
+                        BTreeMap::from([(
+                            process_key(parent_id),
+                            DirectChildState::WaitableZombie
+                        )]),
+                    )]),
+                    BTreeSet::new(),
+                ),
+            );
+            child_first
+        };
+        assert!(!run(Some(true)));
+        assert!(run(Some(false)));
+        for _ in 0..64 {
+            run(None);
+        }
+    }
+
+    #[test]
+    fn failed_adopted_orphan_leaves_no_namespace_orphan_record() {
+        let root = outside_init_root();
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let mut orphan = parent.fork_child(7, false, false).unwrap();
+        let orphan_id = identity(&orphan);
+        let mut worker = orphan.thread_child(8).unwrap();
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        assert_eq!(
+            family_snapshot(&root).1,
+            BTreeSet::from([process_key(orphan_id)])
+        );
+
+        worker.retire_failed_thread();
+        orphan.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        assert_eq!(
+            orphan.signal_registry.process_family_exit(orphan_id),
+            Some(ProcessFamilyExit::Failed),
+            "adoption never replaces an exact process failure",
+        );
+        assert!(family_snapshot(&root).1.is_empty());
+    }
+
+    #[test]
+    fn traced_root_init_still_refuses_to_adopt_orphans() {
+        // `executor()` is PID 1 and therefore namespace init itself. Adoption
+        // would move host wait ownership into its executor, which is refused.
+        let root = executor();
+        let mut parent = root.fork_child(2, false, false).unwrap();
+        let mut child = parent.fork_child(3, false, false).unwrap();
+        let parent_id = identity(&parent);
+        let child_id = identity(&child);
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        assert_eq!(
+            parent.signal_registry.process_family_exit(parent_id),
+            Some(ProcessFamilyExit::DescendantReparentingUnsupported { child: child_id }),
+        );
+        assert_eq!(getppid(&mut child), 2);
+        assert!(family_snapshot(&root).1.is_empty());
+    }
+
+    #[test]
+    fn child_subreapers_remain_unmodeled_so_namespace_init_is_the_reaper() {
+        let mut root = outside_init_root();
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        assert_eq!(
+            call(
+                &mut root,
+                &memory,
+                libc::SYS_prctl,
+                [libc::PR_SET_CHILD_SUBREAPER as u64, 1, 0, 0, 0, 0],
+            ),
+            -i64::from(libc::ENOSYS),
+            "modeling subreapers requires find_new_reaper to consult them",
         );
     }
 

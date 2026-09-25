@@ -3103,9 +3103,17 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
                         }
                     }
                 }
-                Ok(crate::executor::ProcessFamilyExit::RunTeardownChild {
-                    status: family_status,
-                }) => {
+                // An orphan reaped by an outside namespace init completes
+                // exactly like teardown: the host slot is auto-reaped and no
+                // traced parent receives a Tool child event.
+                Ok(
+                    crate::executor::ProcessFamilyExit::RunTeardownChild {
+                        status: family_status,
+                    }
+                    | crate::executor::ProcessFamilyExit::ReapedByNamespaceInit {
+                        status: family_status,
+                    },
+                ) => {
                     if let Err(error) =
                         validate_tool_child_status(family_status, status, context.raw_child_pid)
                     {

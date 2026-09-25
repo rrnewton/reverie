@@ -858,7 +858,7 @@ fn execute_basic_syscall_inner(
         // TODO-HUMAN-REVIEW(PR-132): Review distinct KVM thread IDs.
         i64::from(state.tid)
     } else if number == libc::SYS_getppid as u64 {
-        i64::from(state.ppid)
+        i64::from(state.guest_parent_pid())
     } else if number == libc::SYS_getpgrp as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-92): Review virtual process-group identity.
@@ -2542,6 +2542,7 @@ impl ElfExecutor {
         let signal_binding = signal_registry
             .register(&state, &file_table, process_generation, None)
             .expect("a traced root has no parent registration to reject");
+        signal_registry.install_namespace_reaper(&state);
         let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
         Self {
             state,
@@ -3064,6 +3065,7 @@ impl ElfExecutor {
         _child_retirement = state.file_retirement.hold();
         state.pid = self.state.pid;
         state.ppid = self.state.ppid;
+        state.orphan_reaper_pid = self.state.orphan_reaper_pid.clone();
         // A CLONE_THREAD worker stays inside the same process, so it inherits the
         // thread group leader's position in the traced process tree.
         state.is_traced_tree_root = self.state.is_traced_tree_root;
@@ -3727,6 +3729,9 @@ impl ElfExecutor {
     /// returning `None`, and Detcore only registers the root thread with its
     /// scheduler when `Guest::is_root_thread()` is true, so reporting the
     /// synthetic parent here makes the root guest permanently unschedulable.
+    /// Like the ptrace backend's `Guest::ppid`, it also keeps the fork-time
+    /// parent after an orphan is reparented; only `getppid(2)` reports the
+    /// namespace reaper.
     pub(crate) fn parent_pid(&self) -> Option<reverie::Pid> {
         if self.is_traced_tree_root() {
             return None;
@@ -4706,7 +4711,8 @@ impl ElfExecutor {
         match self.signal_registry.process_family_exit(process) {
             Some(exit @ ProcessFamilyExit::Root)
             | Some(exit @ ProcessFamilyExit::Child(_))
-            | Some(exit @ ProcessFamilyExit::RunTeardownChild { .. }) => Ok(exit),
+            | Some(exit @ ProcessFamilyExit::RunTeardownChild { .. })
+            | Some(exit @ ProcessFamilyExit::ReapedByNamespaceInit { .. }) => Ok(exit),
             Some(ProcessFamilyExit::Failed) => Err(crate::Error::RunAborted),
             Some(ProcessFamilyExit::DescendantReparentingUnsupported { child }) => {
                 Err(crate::Error::DescendantReparentingUnsupported { process, child })
@@ -13690,7 +13696,7 @@ fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
     // file has 52 fields; pad with zeros so field-counting parsers are satisfied.
     let mut line = format!("{} (", state.pid).into_bytes();
     line.extend_from_slice(&proc_comm(state));
-    line.extend_from_slice(format!(") R {} 0 0 0 -1 0", state.ppid).as_bytes());
+    line.extend_from_slice(format!(") R {} 0 0 0 -1 0", state.guest_parent_pid()).as_bytes());
     for _ in 0..44 {
         line.extend_from_slice(b" 0");
     }
@@ -13717,7 +13723,7 @@ fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
          Threads:\t1\n",
             umask = state.umask,
             pid = state.pid,
-            ppid = state.ppid,
+            ppid = state.guest_parent_pid(),
         )
         .as_bytes(),
     );
@@ -17151,6 +17157,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         pgid: 1,
         tid: 1,
         ppid: 0,
+        orphan_reaper_pid: Arc::new(AtomicI32::new(0)),
         is_traced_tree_root: true,
         logical_clock_ns: 0,
         umask: 0o022,
