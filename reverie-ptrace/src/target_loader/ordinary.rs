@@ -50,9 +50,11 @@ pub struct TargetHostInitializer {
 /// Resolve the exact unversioned host initializer without running target code.
 ///
 /// The controller supplies independently bound runtime bytes. All tasks sharing
-/// this image must remain stopped. The complete provider, map, and readback
-/// contract of [`resolve_dlopen`] applies; this does not authorize executing the
-/// result.
+/// this image must remain stopped. The mapping, default-namespace link-map,
+/// exact non-writable PT_LOAD file-byte comparison, and before/after snapshot
+/// readback checks of [`resolve_dlopen`] apply. Provider selection requires an
+/// ordinary unversioned initializer, without `dlopen`'s versioned libc/libdl
+/// export policy. This does not authorize executing the result.
 pub fn resolve_host_initializer(
     task: &Stopped,
     expected_runtime: &[u8],
