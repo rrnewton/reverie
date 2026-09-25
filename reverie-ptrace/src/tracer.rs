@@ -107,8 +107,9 @@ pub struct Tracer<G> {
     stdout: Option<ChildStdout>,
     stderr: Option<ChildStderr>,
 
-    // Present only for the single-process dynamic LiteInst host. Ordinary
-    // ptrace and e9patch lifecycles retain their existing teardown behavior.
+    // Dynamic LiteInst keeps its established session guard. Static injected
+    // traps use ordinary stopped-task ownership internally, while their public
+    // completion API remains explicitly unsupported.
     liteinst_cleanup: Option<LiteinstTraceeCleanup>,
     liteinst_instrumentation_stats: Option<Arc<StdMutex<LiteinstInstrumentationStats>>>,
 
@@ -119,6 +120,39 @@ pub struct Tracer<G> {
     ordinary_completion_supported: bool,
 }
 
+struct LegacyInjectedOwner<G> {
+    tracer: Tracer<G>,
+    local: tokio::task::LocalSet,
+    stdout: crate::capture::CaptureDrain,
+    stderr: crate::capture::CaptureDrain,
+    permit: Option<QuarantinePermit>,
+    // The diagnostic may be dropped while cleanup is still unconfirmed. Keep
+    // the identical primary, secondary errors, and captured bytes with its owner.
+    failure: Option<Arc<crate::PtraceRunFailure>>,
+}
+
+/// An injected-mode run failed and its original guard could not confirm cleanup.
+///
+/// The guard, task futures, GlobalTool, and output readers remain deliberately
+/// retained on the original ptracer thread, even if this diagnostic is dropped.
+/// This is not successful cleanup and offers no public resume operation. New
+/// spawns are refused; retained resources live until process exit, with the
+/// existing PTRACE_O_EXITKILL policy. Callers must retain their own resources
+/// needed by this guest as well.
+#[derive(Debug, thiserror::Error)]
+#[error("injected ptrace cleanup unconfirmed; original owner {id} retained: {failure}")]
+pub struct InjectedCleanupUnconfirmed {
+    id: u64,
+    failure: Arc<crate::PtraceRunFailure>,
+}
+
+impl InjectedCleanupUnconfirmed {
+    /// Original typed cause, actual later cleanup failures, and captured prefix.
+    pub fn failure(&self) -> &crate::PtraceRunFailure {
+        &self.failure
+    }
+}
+
 struct LiteinstTraceeCleanup {
     identity: TraceeIdentity,
     newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
@@ -127,10 +161,16 @@ struct LiteinstTraceeCleanup {
     notifier_owner: Option<ThreadId>,
     retained_descendants: HashMap<Pid, RegisteredTraceeCleanup>,
     retained_terminal_descendants: HashMap<Pid, TraceeIdentity>,
+    // Fatal injected callbacks request stronger confirmation than the legacy
+    // ownership policy. These generations are already notifier-terminal and
+    // confer no further signaling, ptrace, or natural-parent wait authority.
+    fatal_terminal_observations: Option<HashMap<Pid, TraceeIdentity>>,
     held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
     root_frozen: bool,
     #[cfg(test)]
     fail_discovery_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    fail_discovery_while: Option<Arc<AtomicBool>>,
     #[cfg(test)]
     fail_after_scan_once: Option<Arc<AtomicBool>>,
     #[cfg(test)]
@@ -1163,6 +1203,20 @@ impl TraceeIdentity {
             && current.start_time == self.snapshot.start_time
     }
 
+    fn observe_same_process(&self) -> std::io::Result<bool> {
+        let observe = || -> std::io::Result<bool> {
+            let current = tracee_snapshot(self.tid)?;
+            Ok(fd_inode(&self.proc_dir)? == self.proc_inode
+                && fs::metadata(format!("/proc/{}", self.tid))?.ino() == self.proc_inode
+                && current.tgid == self.snapshot.tgid
+                && current.start_time == self.snapshot.start_time)
+        };
+        match observe() {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            result => result,
+        }
+    }
+
     fn is_our_tracee(&self) -> bool {
         self.same_process()
             && tracee_snapshot(self.tid).ok().is_some_and(|current| {
@@ -1230,10 +1284,13 @@ impl LiteinstTraceeCleanup {
             notifier_owner: None,
             retained_descendants: HashMap::new(),
             retained_terminal_descendants: HashMap::new(),
+            fatal_terminal_observations: None,
             held_root_stop,
             root_frozen: false,
             #[cfg(test)]
             fail_discovery_once: None,
+            #[cfg(test)]
+            fail_discovery_while: None,
             #[cfg(test)]
             fail_after_scan_once: None,
             #[cfg(test)]
@@ -1270,7 +1327,7 @@ impl LiteinstTraceeCleanup {
         Ok(())
     }
 
-    fn freeze_root_generation(&mut self) -> std::io::Result<()> {
+    fn freeze_root_generation(&mut self, deadline: Option<Instant>) -> std::io::Result<()> {
         let terminal = self
             .terminal
             .as_ref()
@@ -1336,7 +1393,7 @@ impl LiteinstTraceeCleanup {
             Err(error) => return Err(std::io::Error::from_raw_os_error(error.into_raw())),
         }
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(2));
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if let Some(reservation) = terminal.reserve_pending_for_cleanup(remaining) {
@@ -1400,8 +1457,12 @@ impl LiteinstTraceeCleanup {
         let identity_absent = !self.identity.same_process();
         let unregistered_absent = self.terminal.is_none() && identity_absent;
         let newborns_empty = self.newborn_tracees.lock().unwrap().is_empty();
-        let retained_empty =
-            self.retained_descendants.is_empty() && self.retained_terminal_descendants.is_empty();
+        let retained_empty = self.retained_descendants.is_empty()
+            && self.retained_terminal_descendants.is_empty()
+            && self
+                .fatal_terminal_observations
+                .as_ref()
+                .is_none_or(HashMap::is_empty);
         if newborns_empty
             && retained_empty
             && ((notifier_finished && identity_absent) || unregistered_absent)
@@ -1417,14 +1478,44 @@ impl LiteinstTraceeCleanup {
     }
 
     fn terminate_and_confirm(&mut self) -> std::io::Result<()> {
+        self.terminate_and_confirm_before(None)
+    }
+
+    fn terminate_fatal_and_confirm(
+        &mut self,
+        deadline: Instant,
+        mut record_refusal: impl FnMut(std::io::Error),
+    ) -> bool {
+        self.fatal_terminal_observations
+            .get_or_insert_with(HashMap::new);
+        // The original failure deadline covers freezing, physical cleanup,
+        // retries, and external terminal observation. Every refused attempt
+        // restores its ownership records before another attempt can begin.
+        loop {
+            match self.terminate_and_confirm_before(Some(deadline)) {
+                Ok(()) => return true,
+                Err(error) => record_refusal(error),
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(1)));
+        }
+    }
+
+    fn terminate_and_confirm_before(&mut self, deadline: Option<Instant>) -> std::io::Result<()> {
         if self.confirm_reaped().is_ok() {
             return Ok(());
         }
 
         let mut descendants = std::mem::take(&mut self.retained_descendants);
         let mut terminal_descendants = std::mem::take(&mut self.retained_terminal_descendants);
-        let result =
-            self.terminate_and_confirm_attempt(&mut descendants, &mut terminal_descendants);
+        let result = self.terminate_and_confirm_attempt(
+            &mut descendants,
+            &mut terminal_descendants,
+            deadline,
+        );
         if result.is_err() {
             self.retained_descendants.extend(descendants);
             self.retained_terminal_descendants
@@ -1437,6 +1528,7 @@ impl LiteinstTraceeCleanup {
         &mut self,
         descendants: &mut HashMap<Pid, RegisteredTraceeCleanup>,
         terminal_descendants: &mut HashMap<Pid, TraceeIdentity>,
+        deadline: Option<Instant>,
     ) -> std::io::Result<()> {
         if self.terminal.is_none() {
             terminate_and_reap_new_child_with_identity(Running::new(self.pid()), &self.identity)
@@ -1448,7 +1540,7 @@ impl LiteinstTraceeCleanup {
         }
 
         if self.identity.same_process() {
-            self.freeze_root_generation()?;
+            self.freeze_root_generation(deadline)?;
         } else {
             // The exact root generation is already gone, so it cannot create
             // another descendant. Drain any child event the notifier published
@@ -1489,7 +1581,7 @@ impl LiteinstTraceeCleanup {
             send_identity_sigkill(&tracee.identity)?;
         }
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(2));
         while Instant::now() < deadline {
             if let Some(terminal) = self.terminal.as_ref() {
                 self.capture_pending_children(terminal)?;
@@ -1521,22 +1613,51 @@ impl LiteinstTraceeCleanup {
                 let tracee = descendants
                     .remove(&pid)
                     .expect("completed descendant must remain registered");
-                if tracee.identity.same_process() {
-                    terminal_descendants.insert(pid, tracee.identity);
-                }
+                terminal_descendants.insert(pid, tracee.identity);
             }
             // Once the exact notifier generation is terminal, retain its proc
-            // identity only while it remains our tracee or its recorded parent
-            // still owns the zombie. After reparenting, waiting for another
-            // process to reap it cannot strengthen our cleanup proof and can
-            // never make progress here.
-            terminal_descendants.retain(|_, identity| terminal_descendant_remains_owned(identity));
+            // identity as ownership only while it remains our tracee or its
+            // recorded parent still owns the zombie. Reparenting cannot grant
+            // natural-parent wait authority. Fatal injected cleanup separately
+            // retains read-only observation for its stronger confirmation.
+            let released = terminal_descendants
+                .iter()
+                .filter_map(|(pid, identity)| {
+                    (!terminal_descendant_remains_owned(identity)).then_some(*pid)
+                })
+                .collect::<Vec<_>>();
+            for pid in released {
+                let identity = terminal_descendants
+                    .remove(&pid)
+                    .expect("retained terminal generation");
+                if let Some(observations) = self.fatal_terminal_observations.as_mut() {
+                    observations.insert(pid, identity);
+                }
+            }
+            if let Some(observations) = self.fatal_terminal_observations.as_mut() {
+                // This map never authorizes a signal or wait: Linux may leave a
+                // terminal zombie for a different natural parent after our
+                // ptracer wait. Only observe that same retained generation.
+                let mut absent = Vec::new();
+                for (pid, identity) in observations.iter() {
+                    if !identity.observe_same_process()? {
+                        absent.push(*pid);
+                    }
+                }
+                for pid in absent {
+                    observations.remove(&pid);
+                }
+            }
             let root_absent = !self.identity.same_process();
             let newborns_empty = self.newborn_tracees.lock().unwrap().is_empty();
             if root_done
                 && root_absent
                 && descendants.is_empty()
                 && terminal_descendants.is_empty()
+                && self
+                    .fatal_terminal_observations
+                    .as_ref()
+                    .is_none_or(HashMap::is_empty)
                 && newborns_empty
             {
                 self.armed = false;
@@ -1573,10 +1694,17 @@ impl LiteinstTraceeCleanup {
 
         Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
-            format!(
-                "notifier did not acknowledge terminal cleanup for LiteInst tracee {}",
-                self.pid()
-            ),
+            if self.fatal_terminal_observations.is_some() {
+                format!(
+                    "LiteInst tracee {} cleanup or fatal terminal-disappearance confirmation timed out",
+                    self.pid()
+                )
+            } else {
+                format!(
+                    "notifier did not acknowledge terminal cleanup for LiteInst tracee {}",
+                    self.pid()
+                )
+            },
         ))
     }
 
@@ -1652,6 +1780,15 @@ impl LiteinstTraceeCleanup {
             transferred.push(tid);
         }
 
+        #[cfg(test)]
+        if self
+            .fail_discovery_while
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            self.restore_transferred_newborns(descendants, &mut transferred, &mut absorbed);
+            return Err(std::io::Error::from_raw_os_error(libc::EIO));
+        }
         #[cfg(test)]
         if self
             .fail_discovery_once
@@ -2066,7 +2203,7 @@ thread_local! {
 static NEXT_QUARANTINE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 // Serializes both admission and quarantine publication. An admitted spawn is
 // the one which passed this mutex before any Tool init, pipe, or fork effects.
-// Already-admitted trees remain owned. No later ordinary spawn may add resources
+// Already-admitted trees remain owned. No later ptrace spawn may add resources
 // until each quarantined tree has actually completed, even on another thread.
 static UNCONFIRMED_QUARANTINES: StdMutex<usize> = StdMutex::new(0);
 
@@ -2109,20 +2246,142 @@ impl QuarantinePermit {
 // Deliberately no Drop decrement: abandoning or losing the original ptracer
 // thread is not successful cleanup and cannot reopen admission.
 
-/// A new ordinary spawn was refused before Tool initialization, pipes, or fork.
+/// A new ptrace spawn was refused before Tool initialization, pipes, or fork.
 ///
 /// Previously admitted trees remain owned. Recover and complete each retained
 /// legacy cleanup on its original thread before admitting additional trees.
 #[derive(Debug, thiserror::Error)]
-#[error("ordinary ptrace spawn refused while {retained} cleanup owners remain unconfirmed")]
+#[error("ptrace spawn refused while {retained} cleanup owners remain unconfirmed")]
 pub struct CleanupAdmissionRefused {
     retained: usize,
 }
 impl CleanupAdmissionRefused {
-    /// Number of legacy trees whose cleanup has not actually completed.
+    /// Number of retained cleanup owners, including permanently unbound guards.
     pub fn retained(&self) -> usize {
         self.retained
     }
+}
+
+/// A resource needed by a failed traced tree until cleanup is confirmed.
+///
+/// `cleanup` runs on the original ptracer thread after physical task, consuming
+/// callback, and requested output cleanup. On error it must retain its original
+/// resource so a later bounded cleanup attempt can retry. It must not block
+/// indefinitely; a synchronous cleanup operation cannot be preempted by a timer.
+pub trait PtraceCleanupResource {
+    /// Release the original resource, or retain it and return the actual error.
+    fn cleanup(&mut self) -> Result<(), Error>;
+}
+
+/// Permanently retain an original resource whose cleanup cannot be confirmed.
+///
+/// This closes later ptrace spawn admission and offers no recovery operation.
+/// It neither runs cleanup nor resumes guest work. Already-admitted trees keep
+/// their existing owners. TLS teardown or a borrowed registry deliberately leaks
+/// the same allocation and permit; dropping a diagnostic cannot release either.
+pub fn quarantine_cleanup_resource<C: PtraceCleanupResource + 'static>(resource: C) {
+    quarantine_boxed_resource(std::mem::ManuallyDrop::new(Box::new(resource)));
+}
+
+fn quarantine_boxed_resource(resource: std::mem::ManuallyDrop<Box<dyn PtraceCleanupResource>>) {
+    let permit = QuarantinePermit::new();
+    let id = permit.id;
+    let mut owner = Some(std::mem::ManuallyDrop::new(
+        Box::new(UnboundCleanupResource {
+            _resource: std::mem::ManuallyDrop::into_inner(resource),
+            _permit: permit,
+        }) as Box<dyn std::any::Any>,
+    ));
+    let stored = CLEANUP_QUARANTINE
+        .try_with(|owners| {
+            let Ok(mut owners) = owners.try_borrow_mut() else {
+                return false;
+            };
+            // Keep ownership even in the otherwise-impossible key collision.
+            let std::collections::hash_map::Entry::Vacant(entry) = owners.entry(id) else {
+                return false;
+            };
+            entry.insert(owner.take().unwrap());
+            true
+        })
+        .unwrap_or(false);
+    if !stored {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "ptrace cleanup unconfirmed: registry unavailable; original resource {id} and permanent admission permit retained"
+        );
+        // `owner` contains ManuallyDrop. TLS refusal does not run its destructor
+        // or release the permanent permit, even during an existing unwind.
+    }
+}
+
+#[derive(Debug)]
+struct CleanupOwnerIdentity {
+    pid: libc::pid_t,
+    namespace: fs::File,
+    namespace_device: u64,
+    namespace_inode: u64,
+    pidfd: OwnedFd,
+}
+
+impl CleanupOwnerIdentity {
+    fn capture() -> std::io::Result<Self> {
+        let namespace = fs::File::open("/proc/self/ns/pid")?;
+        let metadata = namespace.metadata()?;
+        let pid = unsafe { libc::getpid() };
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        if raw == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self {
+            pid,
+            namespace,
+            namespace_device: metadata.dev(),
+            namespace_inode: metadata.ino(),
+            pidfd: unsafe { OwnedFd::from_raw_fd(raw as i32) },
+        })
+    }
+
+    fn verify(&self) -> Result<(), CleanupLookupError> {
+        if unsafe { libc::getpid() } != self.pid {
+            return Err(CleanupLookupError::WrongProcess);
+        }
+        let metadata = fs::metadata("/proc/self/ns/pid")
+            .map_err(|error| CleanupLookupError::Identity(Arc::new(error)))?;
+        let retained = self
+            .namespace
+            .metadata()
+            .map_err(|error| CleanupLookupError::Identity(Arc::new(error)))?;
+        if (metadata.dev(), metadata.ino()) != (self.namespace_device, self.namespace_inode)
+            || (retained.dev(), retained.ino()) != (self.namespace_device, self.namespace_inode)
+        {
+            return Err(CleanupLookupError::WrongProcess);
+        }
+        let mut poll = libc::pollfd {
+            fd: self.pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        match unsafe { libc::poll(&mut poll, 1, 0) } {
+            0 => Ok(()),
+            -1 => Err(CleanupLookupError::Identity(Arc::new(
+                std::io::Error::last_os_error(),
+            ))),
+            _ if poll.revents & libc::POLLIN != 0 => Err(CleanupLookupError::WrongProcess),
+            _ => Err(CleanupLookupError::Identity(Arc::new(
+                std::io::Error::other(format!(
+                    "original process pidfd poll refused with events {}",
+                    poll.revents
+                )),
+            ))),
+        }
+    }
+}
+
+struct UnboundCleanupResource {
+    _resource: Box<dyn PtraceCleanupResource>,
+    _permit: QuarantinePermit,
 }
 
 /// A legacy wait reached its bound while its complete cleanup owner was retained.
@@ -2133,11 +2392,16 @@ impl CleanupAdmissionRefused {
 /// still relies on the existing PTRACE_O_EXITKILL option. At ptracer-thread exit
 /// the retained owner is deliberately not dropped: Tool/timer destructors cannot
 /// run safely there. Its fds and allocations remain until process exit, and new
-/// ordinary spawns stay refused. Notifier workers retain their own exact waits.
+/// ptrace spawns in every instrumentation mode stay refused. Notifier workers
+/// retain their own exact waits.
 ///
 /// Downcast the legacy error to this type, then inspect [`Self::primary`]. The
 /// pending route cannot move the original non-clone Tool marker into the legacy
 /// error because that primary remains with its quarantined owner.
+///
+/// Static injected traps can reach this failed-cleanup recovery route through
+/// legacy waits. Recovering an already-owned failed tree does not opt that
+/// backend into the normal `wait_*_completion` or supervisor-start contract.
 #[derive(Debug, thiserror::Error)]
 #[error("ordinary ptrace cleanup unconfirmed; owner {id} retained on {thread:?}: {primary}")]
 pub struct CleanupUnconfirmed {
@@ -2145,11 +2409,21 @@ pub struct CleanupUnconfirmed {
     thread: ThreadId,
     primary: Arc<Error>,
     origin: reverie::BackendFailure,
+    owner_identity: Arc<Result<CleanupOwnerIdentity, Arc<std::io::Error>>>,
 }
 
 /// A quarantine lookup failed without removing or changing the retained owner.
 #[derive(Debug, thiserror::Error)]
 pub enum CleanupLookupError {
+    /// A copied diagnostic is not in its original process generation/namespace.
+    #[error("cleanup belongs to a different original process")]
+    WrongProcess,
+    /// The retained original-process identity could not be established.
+    #[error("cleanup owner identity could not be confirmed: {0}")]
+    Identity(#[source] Arc<std::io::Error>),
+    /// The keyed entry does not carry the diagnostic's original failure/permit.
+    #[error("cleanup owner generation does not match the diagnostic")]
+    WrongGeneration,
     /// Ptrace operations require the thread which created the tracer.
     #[error("cleanup belongs to a different ptracer thread")]
     WrongThread,
@@ -2159,6 +2433,9 @@ pub enum CleanupLookupError {
     /// The owner was already recovered by an earlier lookup.
     #[error("cleanup owner was already recovered")]
     AlreadyTaken,
+    /// The original thread's registry is borrowed or unavailable during teardown.
+    #[error("cleanup owner storage is unavailable")]
+    StorageUnavailable,
 }
 
 impl CleanupUnconfirmed {
@@ -2177,6 +2454,73 @@ impl CleanupUnconfirmed {
         &self.primary
     }
 
+    fn verify_owner(&self) -> Result<(), CleanupLookupError> {
+        if self.thread != std::thread::current().id() {
+            return Err(CleanupLookupError::WrongThread);
+        }
+        self.owner_identity
+            .as_ref()
+            .as_ref()
+            .map_err(|error| CleanupLookupError::Identity(error.clone()))?
+            .verify()
+    }
+
+    fn matches_owner<G, R>(&self, owner: &PendingPtraceCleanup<G, R>) -> bool {
+        owner
+            .driver
+            .quarantine
+            .as_ref()
+            .is_some_and(|permit| permit.id == self.id)
+            && Arc::ptr_eq(&self.primary, &owner.failure.primary)
+    }
+
+    /// Retain an executable or similar guard with this already-failed cleanup.
+    ///
+    /// `G` and `R` have the same meaning as in [`Self::take_cleanup`]. No guest
+    /// work is resumed here. The exact resource follows this owner across
+    /// quarantine/recovery and is released before spawn admission reopens.
+    /// A cleanup error remains diagnostic and retains the resource for retry.
+    ///
+    /// If identity/type lookup refuses, the resource is deliberately retained
+    /// in a separate process-lifetime quarantine and spawns remain refused even
+    /// if the original owner later completes. The returned error does not imply
+    /// that the resource was dropped or released; there is no recovery API for
+    /// this unbound-resource case. Dropping the marker never releases a guard.
+    pub fn retain_cleanup_resource<G: 'static, R: 'static, C: PtraceCleanupResource + 'static>(
+        &self,
+        resource: C,
+    ) -> Result<(), CleanupLookupError> {
+        // Protect the original before *any* identity or TLS lookup, not merely
+        // in the eventual unbound fallback.
+        let mut resource = Some(std::mem::ManuallyDrop::new(
+            Box::new(resource) as Box<dyn PtraceCleanupResource>
+        ));
+        let result = self.verify_owner().and_then(|()| {
+            CLEANUP_QUARANTINE
+                .try_with(|owners| {
+                    let mut owners = owners
+                        .try_borrow_mut()
+                        .map_err(|_| CleanupLookupError::StorageUnavailable)?;
+                    let owner = owners
+                        .get_mut(&self.id)
+                        .ok_or(CleanupLookupError::AlreadyTaken)?;
+                    let owner = owner
+                        .downcast_mut::<PendingPtraceCleanup<G, R>>()
+                        .ok_or(CleanupLookupError::WrongType)?;
+                    if !self.matches_owner(owner) {
+                        return Err(CleanupLookupError::WrongGeneration);
+                    }
+                    owner.driver.resources.push(resource.take().unwrap());
+                    Ok(())
+                })
+                .unwrap_or(Err(CleanupLookupError::StorageUnavailable))
+        });
+        if let Some(resource) = resource {
+            quarantine_boxed_resource(resource);
+        }
+        result
+    }
+
     /// Recover the same pending owner without executing it or reconstructing state.
     ///
     /// `G` is the original GlobalTool type; `R` is `ExitStatus` for plain/discard
@@ -2184,16 +2528,17 @@ impl CleanupUnconfirmed {
     pub fn take_cleanup<G: 'static, R: 'static>(
         &self,
     ) -> Result<PendingPtraceCleanup<G, R>, CleanupLookupError> {
-        if self.thread != std::thread::current().id() {
-            return Err(CleanupLookupError::WrongThread);
-        }
+        self.verify_owner()?;
         CLEANUP_QUARANTINE.with(|owners| {
             let mut owners = owners.borrow_mut();
             let owner = owners
                 .get(&self.id)
                 .ok_or(CleanupLookupError::AlreadyTaken)?;
-            if !owner.is::<PendingPtraceCleanup<G, R>>() {
-                return Err(CleanupLookupError::WrongType);
+            let pending = owner
+                .downcast_ref::<PendingPtraceCleanup<G, R>>()
+                .ok_or(CleanupLookupError::WrongType)?;
+            if !self.matches_owner(pending) {
+                return Err(CleanupLookupError::WrongGeneration);
             }
             let owner = std::mem::ManuallyDrop::into_inner(owners.remove(&self.id).unwrap());
             Ok(*owner
@@ -2210,7 +2555,13 @@ impl<G: 'static, R: 'static> PendingPtraceCleanup<G, R> {
             .quarantine
             .get_or_insert_with(QuarantinePermit::new)
             .id;
+        let owner_identity = self
+            .driver
+            .owner_identity
+            .get_or_insert_with(|| Arc::new(CleanupOwnerIdentity::capture().map_err(Arc::new)))
+            .clone();
         let error = CleanupUnconfirmed {
+            owner_identity,
             id,
             thread: self.driver.work.tracer.ptracer_thread,
             primary: self.failure.primary.clone(),
@@ -2254,13 +2605,16 @@ pub enum ToolRunOutcome<G, R = ExitStatus> {
     Complete(crate::ToolRunCompletion<G, R>),
     /// The same owners remain available for another bounded cleanup attempt.
     CleanupPending(PendingPtraceCleanup<G, R>),
-    /// The configured injected-trap or LiteInst route has no ordinary cleanup
-    /// guarantee. The original tracer is untouched and remains usable through
-    /// its existing legacy wait API; no pipe or task future has been consumed.
+    /// This instrumentation route does not support starting the public ordinary
+    /// completion contract. The original tracer and its pipes remain untouched.
+    /// Legacy static-injected waits nevertheless retain failed cleanup through
+    /// [`CleanupUnconfirmed`]; dynamic LiteInst uses [`InjectedCleanupUnconfirmed`].
+    /// Neither route makes normal completion or supervisor setup supported.
     UnsupportedBackend(Box<Tracer<G>>),
 }
 
-/// Retained ordinary-ptrace cleanup, bound to its original ptracer thread.
+/// Retained ordinary-owned cleanup, bound to its original ptracer thread.
+/// This includes failed static-injected legacy waits.
 ///
 /// This value is neither Send nor Sync. Dropping it, or abandoning an in-flight
 /// wait, is not a completed-cleanup operation. Legacy waits retain a refused
@@ -2273,6 +2627,10 @@ pub struct PendingPtraceCleanup<G, R = ExitStatus> {
 
 struct CompletionDriver<G, R> {
     quarantine: Option<QuarantinePermit>,
+    owner_identity: Option<Arc<Result<CleanupOwnerIdentity, Arc<std::io::Error>>>>,
+    // Abandonment does not release guards. Successful cleanup explicitly takes
+    // and drops each one before completing the quarantine permit.
+    resources: Vec<std::mem::ManuallyDrop<Box<dyn PtraceCleanupResource>>>,
     local: tokio::task::LocalSet,
     work: Box<CompletionWork<G, R>>,
 }
@@ -2405,12 +2763,34 @@ impl<G, R> CompletionDriver<G, R> {
             std::thread::current().id(),
             "ptrace cleanup must stay on its original thread"
         );
-        let complete = self.local.run_until(self.work.round()).await;
+        let mut complete = self.local.run_until(self.work.round()).await;
         let session = self.work.tracer.ordinary_session.clone();
         if complete && Arc::strong_count(&self.work.tracer.gref) != 1 {
             session.fail(
                 anyhow::anyhow!("global Tool still has owners after the task tree joined").into(),
             );
+        }
+        if complete && Arc::strong_count(&self.work.tracer.gref) == 1 {
+            let mut index = 0;
+            while index < self.resources.len() {
+                match self.resources[index].cleanup() {
+                    Ok(()) => drop(std::mem::ManuallyDrop::into_inner(
+                        self.resources.remove(index),
+                    )),
+                    Err(error) => {
+                        session.fail_at(
+                            reverie::BackendFailure {
+                                pid: self.work.tracer.guest_pid,
+                                tid: self.work.tracer.guest_pid,
+                                phase: "ptrace retained cleanup resource",
+                            },
+                            error,
+                        );
+                        complete = false;
+                        index += 1;
+                    }
+                }
+            }
         }
         if !complete || Arc::strong_count(&self.work.tracer.gref) != 1 {
             let mut failure = session
@@ -2484,6 +2864,8 @@ impl<G: Default + 'static> Tracer<G> {
         };
         CompletionDriver {
             quarantine: None,
+            owner_identity: None,
+            resources: Vec::new(),
             local: tokio::task::LocalSet::new(),
             work: Box::new(CompletionWork {
                 tracer: self,
@@ -2574,9 +2956,16 @@ impl<G: Default + 'static> Tracer<G> {
     ///
     /// This legacy result projects away nonfatal callback diagnostics. Use the
     /// additive completion API when those raw errors and owner outcomes matter.
-    pub async fn wait_with_output(mut self) -> Result<(Output, G), Error> {
-        if self.ordinary_completion_supported {
-            let outcome = self.wait_with_output_completion().await;
+    pub async fn wait_with_output(self) -> Result<(Output, G), Error> {
+        if self.liteinst_cleanup.is_none() {
+            let outcome = self
+                .completion(1, |status, stdout, stderr| Output {
+                    status,
+                    stdout,
+                    stderr,
+                })
+                .drive()
+                .await;
             return match outcome {
                 ToolRunOutcome::Complete(completion) => completion
                     .result
@@ -2588,33 +2977,7 @@ impl<G: Default + 'static> Tracer<G> {
                 }
             };
         }
-        use tokio::io::AsyncRead;
-        use tokio::io::AsyncReadExt;
-
-        async fn read_to_end<A: AsyncRead + Unpin>(io: Option<A>) -> Result<Vec<u8>, Error> {
-            let mut vec = Vec::new();
-            if let Some(mut io) = io {
-                io.read_to_end(&mut vec).await?;
-            }
-            Ok(vec)
-        }
-
-        drop(self.stdin.take());
-
-        let stdout = read_to_end(self.stdout.take());
-        let stderr = read_to_end(self.stderr.take());
-
-        let ((status, state), stdout, stderr) =
-            future::try_join3(self.wait(), stdout, stderr).await?;
-
-        Ok((
-            Output {
-                status,
-                stdout,
-                stderr,
-            },
-            state,
-        ))
+        self.wait_injected_legacy(1).await
     }
 
     /// Waits for the tracee to exit while concurrently draining and discarding
@@ -2631,9 +2994,9 @@ impl<G: Default + 'static> Tracer<G> {
     /// pipes, so a guest that fills the (64 KiB by default) pipe buffer blocks
     /// in `write(2)` forever while the parent waits for a process that can
     /// never exit.
-    pub async fn wait_discarding_output(mut self) -> Result<(ExitStatus, G), Error> {
-        if self.ordinary_completion_supported {
-            let outcome = self.wait_discarding_output_completion().await;
+    pub async fn wait_discarding_output(self) -> Result<(ExitStatus, G), Error> {
+        if self.liteinst_cleanup.is_none() {
+            let outcome = self.completion(2, |status, _, _| status).drive().await;
             return match outcome {
                 ToolRunOutcome::Complete(completion) => completion
                     .result
@@ -2645,23 +3008,9 @@ impl<G: Default + 'static> Tracer<G> {
                 }
             };
         }
-        use tokio::io::AsyncRead;
-
-        async fn drain<A: AsyncRead + Unpin>(io: Option<A>) -> Result<(), Error> {
-            if let Some(mut io) = io {
-                tokio::io::copy(&mut io, &mut tokio::io::sink()).await?;
-            }
-            Ok(())
-        }
-
-        drop(self.stdin.take());
-
-        let stdout = drain(self.stdout.take());
-        let stderr = drain(self.stderr.take());
-
-        let ((status, state), (), ()) = future::try_join3(self.wait(), stdout, stderr).await?;
-
-        Ok((status, state))
+        self.wait_injected_legacy(2)
+            .await
+            .map(|(output, state)| (output.status, state))
     }
 
     /// Waits for the tracee to exit and returns its exit status and global
@@ -2674,9 +3023,9 @@ impl<G: Default + 'static> Tracer<G> {
     ///
     /// This legacy result projects away nonfatal callback diagnostics. Use the
     /// additive completion API when those raw errors and owner outcomes matter.
-    pub async fn wait(mut self) -> Result<(ExitStatus, G), Error> {
-        if self.ordinary_completion_supported {
-            let outcome = self.wait_completion().await;
+    pub async fn wait(self) -> Result<(ExitStatus, G), Error> {
+        if self.liteinst_cleanup.is_none() {
+            let outcome = self.completion(0, |status, _, _| status).drive().await;
             return match outcome {
                 ToolRunOutcome::Complete(completion) => completion
                     .result
@@ -2686,40 +3035,187 @@ impl<G: Default + 'static> Tracer<G> {
                 ToolRunOutcome::UnsupportedBackend(tracer) => Box::pin(tracer.wait()).await,
             };
         }
-        // Note: The usage of LocalSet is *very* important here. Once polled,
-        // the `tracer` future drives all tracees to completion. The `fork` for
-        // the root tracee and all subsequent ptrace operations *MUST* be done
-        // on the same thread. Thus, we use `LocalSet` in combination with
-        // `tokio::task::spawn_local` to ensure that everything happens on the
-        // same thread. Otherwise, ptrace operations will start returning
-        // `ESRCH` errors and they will be (incorrectly) interpretted to mean
-        // that the tracee has died unexpectedly.
-        let local_set = tokio::task::LocalSet::new();
-        let exit_status = match local_set.run_until(self.tracer).await {
-            Ok(status) => {
-                if let Some(cleanup) = self.liteinst_cleanup.as_mut() {
-                    cleanup.disarm();
-                }
-                status
-            }
-            Err(error) => {
-                if let Some(cleanup) = self.liteinst_cleanup.as_mut()
-                    && let Err(cleanup_error) = cleanup.terminate_and_confirm()
-                {
-                    return Err(anyhow::anyhow!(
-                        "LiteInst tracee cleanup failed after {error}: {cleanup_error}"
-                    )
-                    .into());
-                }
-                return Err(error);
-            }
-        };
+        self.wait_injected_legacy(0)
+            .await
+            .map(|(output, state)| (output.status, state))
+    }
 
-        let g = Arc::try_unwrap(self.gref).unwrap_or_else(|_| {
+    async fn wait_injected_legacy(mut self, mode: u8) -> Result<(Output, G), Error> {
+        use std::task::Poll;
+
+        use crate::capture::BoxedRead;
+        use crate::capture::CaptureDrain;
+        use crate::capture::DrainEvent;
+
+        assert_eq!(self.ptracer_thread, std::thread::current().id());
+        if mode != 0 {
+            drop(self.stdin.take());
+        }
+        let stdout = (mode != 0)
+            .then(|| self.stdout.take())
+            .flatten()
+            .map(|io| Box::pin(io) as BoxedRead);
+        let stderr = (mode != 0)
+            .then(|| self.stderr.take())
+            .flatten()
+            .map(|io| Box::pin(io) as BoxedRead);
+        let mut owner = LegacyInjectedOwner {
+            tracer: self,
+            local: tokio::task::LocalSet::new(),
+            stdout: if mode == 1 {
+                CaptureDrain::capture(stdout)
+            } else {
+                CaptureDrain::discard(stdout)
+            },
+            stderr: if mode == 1 {
+                CaptureDrain::capture(stderr)
+            } else {
+                CaptureDrain::discard(stderr)
+            },
+            permit: None,
+            failure: None,
+        };
+        let session = owner.tracer.ordinary_session.clone();
+        let mut status = None;
+        let work = future::poll_fn(|cx| {
+            if session.is_failed() {
+                return Poll::Ready(());
+            }
+            if status.is_none() {
+                match owner.tracer.tracer.as_mut().poll(cx) {
+                    Poll::Ready(Ok(value)) => status = Some(value),
+                    Poll::Ready(Err(error)) => session.fail(error),
+                    Poll::Pending => {}
+                }
+            }
+            if session.is_failed() {
+                return Poll::Ready(());
+            }
+            for (drain, phase) in [
+                (&mut owner.stdout, "injected stdout capture"),
+                (&mut owner.stderr, "injected stderr capture"),
+            ] {
+                match drain.poll(cx) {
+                    Poll::Ready(DrainEvent::Error(error)) => session.fail_at(
+                        reverie::BackendFailure {
+                            pid: owner.tracer.guest_pid,
+                            tid: owner.tracer.guest_pid,
+                            phase,
+                        },
+                        error.into(),
+                    ),
+                    Poll::Ready(DrainEvent::Progress) => cx.waker().wake_by_ref(),
+                    _ => {}
+                }
+            }
+            if session.is_failed()
+                || (status.is_some() && owner.stdout.is_finished() && owner.stderr.is_finished())
+            {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        });
+        // Register a failure wake independently of the root: a descendant can
+        // fail while the root is blocked in a guest wait or consuming callback.
+        owner
+            .local
+            .run_until(async {
+                tokio::select! {
+                    biased;
+                    () = session.cancelled() => {},
+                    () = work => {},
+                }
+            })
+            .await;
+        if session.is_failed() {
+            // Cancel the root run-loop before transferring its held-stop lease
+            // to the guard. Child futures stay owned by this same LocalSet and
+            // cannot run while synchronous physical cleanup is in progress.
+            owner.tracer.tracer = Box::pin(future::pending());
+            let origin = reverie::BackendFailure {
+                pid: owner.tracer.guest_pid,
+                tid: owner.tracer.guest_pid,
+                phase: "injected tracee cleanup confirmation",
+            };
+            if !owner
+                .tracer
+                .liteinst_cleanup
+                .as_mut()
+                .expect("legacy injected owner has its original guard")
+                .terminate_fatal_and_confirm(session.deadline(), |error| {
+                    session.fail_at(origin, error.into());
+                })
+            {
+                let mut failure = session
+                    .failure_snapshot()
+                    .expect("published original failure");
+                if mode == 1 {
+                    failure.captured_prefix = Some(crate::CapturedPrefix {
+                        stdout: owner
+                            .stdout
+                            .take_prefix()
+                            .expect("one stdout owner")
+                            .unwrap(),
+                        stderr: owner
+                            .stderr
+                            .take_prefix()
+                            .expect("one stderr owner")
+                            .unwrap(),
+                    });
+                }
+                let permit = QuarantinePermit::new();
+                let id = permit.id;
+                owner.permit = Some(permit);
+                let failure = Arc::new(failure);
+                owner.failure = Some(failure.clone());
+                let error = InjectedCleanupUnconfirmed { id, failure };
+                CLEANUP_QUARANTINE.with(|owners| {
+                    assert!(
+                        owners
+                            .borrow_mut()
+                            .insert(id, std::mem::ManuallyDrop::new(Box::new(owner)))
+                            .is_none()
+                    );
+                });
+                return Err(anyhow::Error::new(error).into());
+            }
+            // Only confirmed physical cleanup permits destruction of remaining
+            // child handlers/global state. No fabricated guest status is used.
+            drop(owner);
+            return Err(session
+                .take_public_failure()
+                .await
+                .expect("published failure")
+                .into_legacy_error());
+        }
+        owner
+            .tracer
+            .liteinst_cleanup
+            .as_mut()
+            .expect("original guard")
+            .disarm();
+        let stdout = owner
+            .stdout
+            .take_prefix()
+            .expect("one stdout owner")
+            .unwrap_or_default();
+        let stderr = owner
+            .stderr
+            .take_prefix()
+            .expect("one stderr owner")
+            .unwrap_or_default();
+        let global = Arc::try_unwrap(owner.tracer.gref).unwrap_or_else(|_| {
             panic!("Reverie internal invariant broken. Arc::try_unwrap on global state failed.")
         });
-
-        Ok((exit_status, g))
+        Ok((
+            Output {
+                status: status.expect("completed tree has a real status"),
+                stdout,
+                stderr,
+            },
+            global,
+        ))
     }
 }
 
@@ -3038,8 +3534,7 @@ async fn postspawn<L: Tool + 'static>(
     let (orphan_sender, orphan_receiver) = mpsc::channel(1);
     let (daemon_kill, _) = broadcast::channel(1);
     let liteinst_fail_closed = options.liteinst_runtime.is_some();
-    let ordinary_owned =
-        options.liteinst_runtime.is_none() && options.injected_syscall_trap.is_none();
+    let ordinary_owned = options.liteinst_runtime.is_none();
 
     // This is the root task, so there's no reason to make run its init routine
     // asynchronously, as there isn't any other work to do.
@@ -3557,12 +4052,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
     /// Spawns the tracer.
     pub async fn spawn(self) -> Result<Tracer<T::GlobalState>, Error> {
-        let _ordinary_admission =
-            if self.liteinst_runtime.is_none() && self.injected_syscall_trap.is_none() {
-                Some(OrdinaryAdmission::acquire()?)
-            } else {
-                None
-            };
+        // A retained failed tree must not acquire peers through another mode.
+        let _ordinary_admission = OrdinaryAdmission::acquire()?;
         if self.liteinst_runtime.is_some() && self.gdbserver.is_some() {
             return Err(Error::Tool(anyhow::anyhow!(
                 "LiteInst runtime activation with a GDB server is unsupported ({}): both controllers would own the executable-entry software breakpoint",
@@ -3938,6 +4429,10 @@ mod clock_origin_tests;
 #[cfg(all(test, target_arch = "x86_64"))]
 #[path = "injection_stop_tests.rs"]
 mod injection_stop_tests;
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "injected_error_tests.rs"]
+mod injected_error_tests;
 
 #[cfg(test)]
 mod tests {
