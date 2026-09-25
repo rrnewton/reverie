@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock as StdOnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -2255,6 +2256,9 @@ fn set_ret(task: &Stopped, ret: Reg) -> Result<Reg, TraceError> {
     Ok(old)
 }
 
+/// Late timer overflow signals discarded at injected syscalls, for tests.
+pub(crate) static LATE_TIMER_SIGNALS_DISCARDED: AtomicU64 = AtomicU64::new(0);
+
 /// Canonical marker emitted when a guest-thread task dies of a panic.
 ///
 /// The token is what a harness greps for, in the same spirit as
@@ -2917,6 +2921,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(regs)
     }
 
+    /// Whether a signal-delivery stop reports this thread's own unconsumed
+    /// precise-timer overflow notification, which must never be delivered to
+    /// the guest. A match is recorded as consumed.
+    fn consume_own_timer_overflow(&mut self, task: &Stopped) -> Result<bool, TraceError> {
+        let siginfo = task.getsiginfo()?;
+        self.timer
+            .consume_overflow_signal(&siginfo)
+            .map_err(TraceError::Errno)
+    }
+
     /// Returns `true` if the signal was actually meant for the timer, and
     /// therefore should not be forwarded to the tool / guest.
     async fn handle_timer(&mut self, task: Stopped) -> Result<(bool, Stopped), TraceError> {
@@ -2982,6 +2996,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
         self.timer.observe_event();
+        // The guest can remove a timer notification between two stops without
+        // an injection seeing the queue. See `untraced_syscall`.
+        self.timer.expire_overflow_records(&stopped);
         let tid = self.tid();
 
         #[cfg(test)]
@@ -7053,6 +7070,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         args: SyscallArgs,
     ) -> Result<Result<i64, Errno>, TraceError> {
         self.validate_liteinst_mapping_execution(nr, args)?;
+        self.timer.expire_overflow_records(&task);
         tracing::trace!(
             "[scheduler/tool] (pid = {}) untraced syscall: {:?}",
             task.pid(),
@@ -7085,8 +7103,70 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         // Step to run the syscall instruction.
-        let wait = self.step_stopped(task, None)?.next_state().await?;
+        let mut wait = self.step_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait);
+
+        // A late overflow notification of the timer can be pending when the
+        // step starts. Its delivery stop precedes the syscall instruction. No
+        // guest branch runs during an injection, so the overflow predates the
+        // current stop, which ends the event it belongs to. The notification
+        // has nothing to deliver: discard it and step again.
+        //
+        // A guest signal can carry the same signal number, code, and file
+        // descriptor number, so a match also requires a kernel record of an
+        // overflow whose notification has not been consumed. At each stop and
+        // before each injection, the records expire unless such a
+        // notification is pending for the thread. This still leaves these
+        // cases:
+        //
+        // - A guest signal with the same siginfo that is pending when the
+        //   injection starts is discarded while a record is unconsumed and
+        //   its notification
+        //   - is pending too, since the kernel keeps one instance of a
+        //     standard signal;
+        //   - left the queue after the last check, for example because
+        //     another guest thread flushed it;
+        //   - never had a queue entry of its own, because it coalesced into
+        //     a pending guest signal of the same number with other siginfo,
+        //     such as one sent by `tgkill`. That signal does not consume the
+        //     record.
+        // - A late notification reaches the guest when no record backs it or
+        //   its records expired early:
+        //   - the kernel also notifies when a non-sample record, such as a
+        //     throttling record, crosses the buffer's wakeup watermark, and
+        //     when a full buffer loses the sample;
+        //   - another guest thread removed an earlier queue entry while the
+        //     queue was being read, so the read skipped the notification;
+        //   - the queue was read after the kernel wrote the record but before
+        //     it queued the notification, which follows from an irq_work;
+        //   - the timer's records could not be mapped, or the kernel is or
+        //     may be PREEMPT_RT, where a notification can follow its record,
+        //     so records are not used.
+        while let Wait::Stopped(stopped, Event::Signal(sig)) = &wait
+            && *sig == Timer::signal_type()
+            && stopped.getregs()?.ip() as usize == cp::PRIVATE_PAGE_OFFSET
+            && self.consume_own_timer_overflow(stopped)?
+        {
+            self.validate_nested_liteinst_activation_signal(
+                stopped,
+                *sig,
+                LiteinstActivationOperation::FinishInjectedSyscall,
+                NestedTrapExpectation::PrivateSyscall(
+                    (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64,
+                ),
+                false,
+            )?;
+            tracing::debug!(
+                "[{}] discarding a late timer overflow signal before an injected syscall",
+                stopped.pid()
+            );
+            LATE_TIMER_SIGNALS_DISCARDED.fetch_add(1, Ordering::Relaxed);
+            let Wait::Stopped(stopped, _) = wait else {
+                unreachable!("the loop condition matched a stopped task")
+            };
+            wait = self.step_stopped(stopped, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+        }
 
         // Get the result of the syscall to return to the caller.
         let result = self
