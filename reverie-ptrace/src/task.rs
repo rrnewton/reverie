@@ -163,6 +163,30 @@ use crate::tracer::RootStopLease;
 use crate::tracer::TraceeIdentity;
 use crate::vdso;
 
+// A lifecycle association failure must prevent the following resume, not just
+// report a flag whose waiter may be polled after this future resumes the guest.
+fn observe_ready_thread_state<T: Tool>(
+    tool: &T,
+    pid: Pid,
+    tid: Tid,
+    global: &T::GlobalState,
+    state: &T::ThreadState,
+) -> Result<(), Errno> {
+    tool.on_thread_state_ready(tid, global, state)
+        .map_err(|error| {
+            tracing::error!(%pid, %tid, %error, "owned Tool state association failed");
+            global.report_backend_failure(reverie::BackendFailure {
+                pid,
+                tid,
+                phase: "owned Tool state association failed",
+            });
+            Errno::EPROTO
+        })
+}
+
+#[cfg(test)]
+mod thread_state_ready_tests;
+
 #[cfg(target_arch = "x86_64")]
 fn validate_liteinst_user_regs_update(
     current: &libc::user_regs_struct,
@@ -7197,6 +7221,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.ordinary_callback_errno("ptrace post-exec callback", result)
             .await?;
         self.ordinary_trace_continuation()?;
+        self.observe_ready_thread_state()?;
         self.timer.finalize_requests();
 
         if self.attached_by_gdb {
@@ -9587,20 +9612,34 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    fn observe_ready_thread_state(&self) -> Result<(), Errno> {
+        observe_ready_thread_state(
+            self.process_state.as_ref(),
+            self.pid(),
+            self.tid(),
+            self.global_state.gs_ref.as_ref(),
+            &self.thread_state,
+        )
+    }
+
     async fn run_loop_internal(&mut self, task: Stopped) -> Result<ExitStatus, Error> {
         // This is the beginning of the life of the guest. Allow the tool to
         // inject syscalls as soon as the thread starts.
-        if let Some(Err(err)) = cancellable(self.cancel_handler.clone(), async {
+        match cancellable(self.cancel_handler.clone(), async {
             self.process_state.clone().handle_thread_start(self).await
         })
         .await
         {
-            if self.ordinary_failure_enabled() && !matches!(err, reverie::Error::Errno(_)) {
-                self.publish_ordinary_failure("ptrace thread start", err);
-                return Err(Error::RunFailed);
+            Some(Ok(())) => self.observe_ready_thread_state()?,
+            Some(Err(err)) => {
+                if self.ordinary_failure_enabled() && !matches!(err, reverie::Error::Errno(_)) {
+                    self.publish_ordinary_failure("ptrace thread start", err);
+                    return Err(Error::RunFailed);
+                }
+                // Legitimate guest errno keeps the existing startup behavior.
+                err.into_errno()?;
             }
-            // Legitimate guest errno keeps the existing startup behavior.
-            err.into_errno()?;
+            None => {}
         }
         self.ordinary_continuation()?;
         self.ordinary_trace_continuation()?;
