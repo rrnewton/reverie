@@ -1728,6 +1728,81 @@ impl UserMemory {
         self.write_user_prefix(guest_address, source, true)
     }
 
+    /// Copy the readable prefix under one admission and one permission/backing
+    /// transaction. Unlike a separate probe followed by read, mappings cannot
+    /// change between deciding the prefix and consuming its actual bytes.
+    pub(crate) fn copy_from_user_prefix(
+        &self,
+        guest_address: u64,
+        destination: &mut [u8],
+    ) -> Result<usize> {
+        self.memory.with_copy(|copy| {
+            if destination.is_empty() {
+                return Ok(0);
+            }
+            self.translate_admitted(guest_address, 1, copy)?;
+            let end = guest_address
+                .checked_add(destination.len() as u64)
+                .ok_or(Error::GuestMemoryAccessDenied {
+                    address: guest_address,
+                    length: destination.len(),
+                })?
+                .min(self.guest_end());
+            let access = self
+                .memory
+                .mapping
+                .address_space
+                .lock()
+                .expect("guest memory access map lock poisoned");
+            let mut cursor = guest_address;
+            while cursor < end {
+                if access.enabled
+                    && !matches!(
+                        access.pages.get(&(cursor / PAGE_SIZE as u64)),
+                        Some(UserPageState::Accessible { .. })
+                    )
+                {
+                    break;
+                }
+                cursor = ((cursor / PAGE_SIZE as u64 + 1) * PAGE_SIZE as u64).min(end);
+            }
+            let length = (cursor - guest_address) as usize;
+            if length != 0 {
+                let physical = access.translate(guest_address, length)?;
+                let offset = self.memory.checked_offset(physical, length)?;
+                let chunks = self
+                    .memory
+                    .mapping
+                    .host_chunks_from_state(&access, offset, length);
+                let _backing = self
+                    .memory
+                    .mapping
+                    .slice
+                    .backing
+                    .host_access
+                    .lock()
+                    .expect("guest memory lock poisoned");
+                let mut copied = 0;
+                for chunk in chunks {
+                    // SAFETY: the address-space lock retains these mappings,
+                    // backing is locked, and the destination is a distinct host
+                    // slice with space for the complete validated prefix.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            chunk.mapping.as_ptr(),
+                            destination.as_mut_ptr().add(copied),
+                            chunk.length,
+                        );
+                    }
+                    copied += chunk.length;
+                }
+                debug_assert_eq!(copied, length);
+            }
+            drop(access);
+            Ok(length)
+        })
+    }
+
     fn write_user(&self, guest_address: u64, source: &[u8], partial: bool) -> Result<()> {
         if self.write_user_prefix(guest_address, source, partial)? != source.len() {
             return Err(Error::GuestMemoryAccessDenied {

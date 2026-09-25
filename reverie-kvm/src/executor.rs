@@ -489,6 +489,13 @@ fn execute_basic_syscall_inner(
         return continue_with(error);
     }
 
+    if let Some(result) = random_device_early(memory, state, number as libc::c_long, args) {
+        return match result {
+            Ok(result) => continue_with(result),
+            Err(error) => SyscallAction::Failure(error),
+        };
+    }
+
     // Only these supported operations use a random carrier's current OFD
     // position. Writes cannot advance it: its sole exposed host description
     // is O_RDONLY, and proc-fd/SCM_RIGHTS metadata-losing exports are refused.
@@ -1743,22 +1750,40 @@ impl ChildCompletionSlot {
 #[derive(Debug)]
 pub(crate) struct RandomDeviceDescription {
     seed: u64,
+    access: i32,
+    minor: u32,
+    nofollow: bool,
+    async_opened: bool,
+    async_set: Mutex<bool>,
     position: Mutex<()>,
     #[cfg(test)]
     fail_cursor_commit: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     poison_after_copy: Mutex<Option<Arc<crate::Error>>>,
+    #[cfg(test)]
+    consumed_input: std::sync::atomic::AtomicUsize,
 }
 
 impl RandomDeviceDescription {
-    fn new(seed: u64) -> Self {
+    fn new(seed: u64, flags: i32, minor: u32) -> Self {
         Self {
             seed,
+            access: if flags & libc::O_PATH != 0 {
+                libc::O_PATH
+            } else {
+                flags & libc::O_ACCMODE
+            },
+            minor,
+            nofollow: flags & libc::O_NOFOLLOW != 0,
+            async_opened: flags & libc::O_PATH == 0 && flags & libc::O_ASYNC != 0,
+            async_set: Mutex::new(false),
             position: Mutex::new(()),
             #[cfg(test)]
             fail_cursor_commit: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             poison_after_copy: Mutex::new(None),
+            #[cfg(test)]
+            consumed_input: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -5756,7 +5781,8 @@ fn prepare_random_device_read(
         ))
     } else {
         ensure_readable(file)?;
-        let (vectors, total, kernel_total) = decode_guest_iovecs(memory, args[1], args[2])?;
+        let (vectors, total, kernel_total) =
+            decode_guest_iovecs(memory, args[1], u64::from(args[2] as u32))?;
         // Retain the ordinary vector path's staging-bound refusal even though
         // tmpfs itself does not impose O_DIRECT alignment on this carrier.
         if kernel_total > total && file_status_flags(file)? & libc::O_DIRECT != 0 {
@@ -6566,7 +6592,12 @@ fn vectored_io(
         return error;
     }
 
-    let (guest_iovecs, total, kernel_total) = match decode_guest_iovecs(memory, args[1], args[2]) {
+    let count = if state.random_device_descriptions.contains_key(&guest_fd) {
+        u64::from(args[2] as u32)
+    } else {
+        args[2]
+    };
+    let (guest_iovecs, total, kernel_total) = match decode_guest_iovecs(memory, args[1], count) {
         Ok(decoded) => decoded,
         Err(error) => return error,
     };
@@ -6847,7 +6878,18 @@ fn sendfile(
         (None, Some(negative_errno(libc::EBADF)))
     } else {
         match state.files.get(&out_fd) {
-            Some(file) => (Some(file), ensure_writable(file).err()),
+            Some(file) => (
+                Some(file),
+                if let Some(random) = state.random_device_descriptions.get(&out_fd) {
+                    Some(negative_errno(if random.writable() {
+                        libc::ENOSYS
+                    } else {
+                        libc::EBADF
+                    }))
+                } else {
+                    ensure_writable(file).err()
+                },
+            ),
             None if is_open_standard(state, out_fd) => {
                 let error = if out_fd == libc::STDIN_FILENO {
                     let stdin = state
@@ -6864,6 +6906,16 @@ fn sendfile(
         }
     };
     let in_fd = args[1] as libc::c_int;
+    if let Some(random) = state.random_device_descriptions.get(&in_fd)
+        && !random.readable()
+    {
+        if args[2] != 0
+            && let Err(error) = read_sendfile_offset(memory, args[2])
+        {
+            return error;
+        }
+        return negative_errno(libc::EBADF);
+    }
     let in_file = match resolve_sendfile_input(state, in_fd) {
         Ok(file) => file,
         Err(error) => {
@@ -7474,7 +7526,12 @@ fn open_file(
         return open_guest_fd_path(state, guest_fd, flags, guest_cloexec);
     }
     if path == b"/dev/random" || path == b"/dev/urandom" {
-        return open_random_device(state, flags, guest_cloexec);
+        return open_random_device(
+            state,
+            flags,
+            guest_cloexec,
+            if path == b"/dev/random" { 8 } else { 9 },
+        );
     }
     if path == b"/proc/uptime" {
         return open_virtual_file(state, b"0.00 0.00\n", flags, guest_cloexec);
@@ -7553,15 +7610,15 @@ fn open_file(
     if let Err(error) = ensure_not_procfs(&file) {
         return error;
     }
-    match is_host_random_device(&file) {
-        Ok(true) => {
+    match host_random_device_minor(&file) {
+        Ok(Some(minor)) => {
             // Resolve the original name/flags first, then classify this held
             // object. Re-resolving a pathname would race rename/symlink changes.
             // Drop the real device before creating or publishing its carrier.
             drop(file);
-            return open_random_device(state, flags, guest_cloexec);
+            return open_random_device(state, flags, guest_cloexec, minor);
         }
-        Ok(false) => {}
+        Ok(None) => {}
         Err(error) => return error,
     }
     if uses_mode && created {
@@ -7577,7 +7634,7 @@ fn open_file(
 /// Recognize Linux's random devices by the opened object, including relative
 /// names, ordinary symlinks and alternate device nodes. O_PATH|O_NOFOLLOW on a
 /// symlink observes S_IFLNK here and must retain that symlink object unchanged.
-fn is_host_random_device(file: &std::fs::File) -> Result<bool, i64> {
+fn host_random_device_minor(file: &std::fs::File) -> Result<Option<u32>, i64> {
     #[cfg(test)]
     tests::random_path_before_classification(file)?;
     let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
@@ -7587,31 +7644,87 @@ fn is_host_random_device(file: &std::fs::File) -> Result<bool, i64> {
     }
     // SAFETY: fstat initialized stat on success.
     let stat = unsafe { stat.assume_init() };
-    Ok(stat.st_mode & libc::S_IFMT == libc::S_IFCHR
+    Ok((stat.st_mode & libc::S_IFMT == libc::S_IFCHR
         && libc::major(stat.st_rdev) == 1
         && matches!(libc::minor(stat.st_rdev), 8 | 9))
+    .then_some(libc::minor(stat.st_rdev)))
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-228): Review cross-backend random-device stream parity.
-fn open_random_device(state: &mut LoadedStaticElf, flags: u64, close_on_exec: bool) -> i64 {
+fn open_random_device(
+    state: &mut LoadedStaticElf,
+    flags: u64,
+    close_on_exec: bool,
+    minor: u32,
+) -> i64 {
     #[cfg(test)]
     if let Err(error) = tests::random_path_before_carrier() {
         return error;
     }
+    let flags = flags as i32;
+    let path_only = flags & libc::O_PATH != 0;
+    if !path_only && flags & (libc::O_CREAT | libc::O_EXCL) == libc::O_CREAT | libc::O_EXCL {
+        return negative_errno(libc::EEXIST);
+    }
+    if flags & libc::O_DIRECTORY != 0 {
+        return negative_errno(libc::ENOTDIR);
+    }
+    if !path_only && flags & libc::O_DIRECT != 0 {
+        return negative_errno(libc::EINVAL);
+    }
     let bytes = deterministic_random_device_bytes(state.random_seed, 64 * 1024);
-    let result = open_virtual_file(state, &bytes, flags, close_on_exec);
-    if result >= 0
-        && let Ok(fd) = libc::c_int::try_from(result)
-    {
+    let host = unsafe { libc::memfd_create(c"reverie-kvm-virtual".as_ptr(), libc::MFD_CLOEXEC) };
+    if host < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // The setup writer never enters any guest table or shared description.
+    let mut setup = unsafe { std::fs::File::from_raw_fd(host) };
+    if let Err(error) = setup.write_all(&bytes) {
+        return io_error(error);
+    }
+    // Present ordinary random-device DAC bits, while open access remains an
+    // immutable property of the shared description even after chmod.
+    if unsafe { libc::fchmod(host, 0o666) } != 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    let physical = if path_only {
+        libc::O_PATH
+    } else {
+        libc::O_RDONLY
+            | (flags
+                & (libc::O_APPEND
+                    | libc::O_NONBLOCK
+                    | libc::O_NOATIME
+                    | libc::O_DSYNC
+                    | libc::O_SYNC))
+    };
+    let target =
+        CString::new(format!("/proc/self/fd/{host}")).expect("numeric descriptor has no NUL");
+    // Follow our private setup descriptor even for guest NOFOLLOW: the guest's
+    // named-object resolution already happened, and NOFOLLOW is presented by
+    // the description. Never return an O_PATH handle to a supervisor symlink.
+    let carrier = unsafe { libc::open(target.as_ptr(), physical | libc::O_CLOEXEC) };
+    if carrier < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(carrier) };
+    drop(setup);
+    let description = Arc::new(RandomDeviceDescription::new(
+        state.random_seed,
+        flags,
+        minor,
+    ));
+    let result = insert_file_with_flags(state, file, close_on_exec, None);
+    if result >= 0 {
+        let fd = result as i32;
         state.random_device_fds.insert(fd);
-        state.random_device_descriptions.insert(
-            fd,
-            Arc::new(RandomDeviceDescription::new(state.random_seed)),
-        );
+        state.random_device_descriptions.insert(fd, description);
     }
     result
 }
+
+include!("executor/random_device.rs");
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-92): Review deterministic random-device and procfs virtual files.
@@ -7897,14 +8010,14 @@ fn open_guest_fd_path(
         Ok(file) => file,
         Err(error) => return error,
     };
-    match is_host_random_device(&file) {
-        Ok(true) => {
+    match host_random_device_minor(&file) {
+        Ok(Some(minor)) => {
             drop(file);
             // A freshly virtualized endpoint must not inherit the source's
             // host-device inode or captured-output alias identity.
-            return open_random_device(state, flags, close_on_exec);
+            return open_random_device(state, flags, close_on_exec, minor);
         }
-        Ok(false) => {}
+        Ok(None) => {}
         Err(error) => return error,
     }
     let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
@@ -12080,8 +12193,8 @@ fn fstatat_impl(
     }
     // SAFETY: fstat initialized stat on success.
     let mut stat = unsafe { stat.assume_init() };
-    if let Some(metadata) = guest_path {
-        sanitize_guest_fd_stat(state, metadata.guest_fd, &mut stat);
+    if let Some(fd) = descriptor {
+        sanitize_guest_fd_stat(state, fd, &mut stat);
     } else {
         // AT_EMPTY_PATH stat of a synthetic /proc descriptor.
         let empty_path_proc_inode = path
@@ -12256,8 +12369,8 @@ fn statx(
     }
     // SAFETY: statx initialized stat on success.
     let mut stat = unsafe { stat.assume_init() };
-    if let Some(metadata) = guest_path {
-        sanitize_guest_fd_statx(state, metadata.guest_fd, &mut stat);
+    if let Some(fd) = descriptor {
+        sanitize_guest_fd_statx(state, fd, &mut stat);
     } else {
         sanitize_statx_timestamps(&mut stat);
     }
@@ -13800,6 +13913,18 @@ fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: 
         sanitize_proc_stat(stat, inode);
         return;
     }
+    if let Some(random) = state.random_device_descriptions.get(&guest_fd) {
+        stat.st_mode = libc::S_IFCHR | (stat.st_mode & 0o7777);
+        stat.st_rdev = libc::makedev(1, random.minor);
+        stat.st_size = 0;
+        stat.st_blocks = 0;
+        stat.st_nlink = 1;
+        stat.st_uid = 0;
+        stat.st_gid = 0;
+        let identity = guest_fd_object_identity(state, guest_fd);
+        stat.st_dev = synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR);
+        stat.st_ino = identity.inode;
+    }
     sanitize_stat_timestamps(stat);
 }
 
@@ -13807,6 +13932,20 @@ fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat:
     if let Some(&inode) = state.proc_files.get(&guest_fd) {
         *stat = synthetic_proc_statx(inode, stat.stx_size);
         return;
+    }
+    if let Some(random) = state.random_device_descriptions.get(&guest_fd) {
+        stat.stx_mode = libc::S_IFCHR as u16 | (stat.stx_mode & 0o7777);
+        stat.stx_rdev_major = 1;
+        stat.stx_rdev_minor = random.minor;
+        stat.stx_size = 0;
+        stat.stx_blocks = 0;
+        stat.stx_nlink = 1;
+        stat.stx_uid = 0;
+        stat.stx_gid = 0;
+        let identity = guest_fd_object_identity(state, guest_fd);
+        stat.stx_dev_major = libc::major(synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
+        stat.stx_dev_minor = libc::minor(synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
+        stat.stx_ino = identity.inode;
     }
     sanitize_statx_timestamps(stat);
 }
@@ -14714,6 +14853,11 @@ fn find_mmap_address(memory: &GuestMemory, state: &LoadedStaticElf, length: u64)
 }
 
 fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if args[3] & libc::MAP_ANONYMOUS as u64 == 0
+        && let Some(random) = state.random_device_descriptions.get(&(args[4] as i32))
+    {
+        return random_device_mmap(memory, state, args, random);
+    }
     if args[1] == 0 {
         return negative_errno(libc::EINVAL);
     }
@@ -16966,6 +17110,7 @@ pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf
 #[cfg(test)]
 mod tests {
     include!("executor/random_device_stream_tests.rs");
+    include!("executor/random_device_carrier_tests.rs");
     use std::collections::BTreeMap;
     use std::io::Read;
     use std::io::Seek;
@@ -17207,7 +17352,7 @@ mod tests {
     }
 
     #[test]
-    fn random_paths_keep_legacy_opener_restrictions_for_named_aliases() {
+    fn random_paths_preserve_modes_and_marks_for_named_aliases() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
@@ -17217,33 +17362,38 @@ mod tests {
             "/dev/urandom",
             "/dev/./urandom",
         ] {
-            for (flags, error) in [
-                (libc::O_WRONLY, libc::EACCES),
-                (libc::O_RDWR, libc::EACCES),
-                (libc::O_PATH, libc::EINVAL),
-            ] {
-                assert_eq!(
-                    open_with_flags(&mut memory, &mut state, path, flags),
-                    negative_errno(error)
+            for flags in [libc::O_WRONLY, libc::O_RDWR, libc::O_PATH] {
+                let fd = open_with_flags(&mut memory, &mut state, path, flags);
+                assert!(fd >= 0, "open {path} flags {flags}: {fd}");
+                assert!(state.random_device_fds.contains(&(fd as i32)));
+                assert!(state.random_device_descriptions.contains_key(&(fd as i32)));
+                let status = syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_fcntl,
+                    [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
                 );
+                assert_eq!(status as i32 & (libc::O_ACCMODE | libc::O_PATH), flags);
+                assert_eq!(close(&mut state, fd as u64), 0);
                 assert!(state.files.is_empty());
                 assert!(state.fd_object_inodes.is_empty());
                 assert!(state.random_device_fds.is_empty());
                 assert!(state.random_device_descriptions.is_empty());
             }
         }
-        // creat resolves its existing target but cannot bypass the incumbent
-        // virtual opener's unsupported O_CREAT|O_TRUNC policy. No data write.
+        // Linux creat on an existing random character device neither truncates
+        // it nor performs a data write. The private result retains its mark.
         write_c_string(&mut memory, 0x100, "/dev//urandom");
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_creat,
-                [0x100, 0o600, 0, 0, 0, 0]
-            ),
-            negative_errno(libc::EINVAL)
+        let fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_creat,
+            [0x100, 0o600, 0, 0, 0, 0],
         );
+        assert!(fd >= 0);
+        assert!(state.random_device_fds.contains(&(fd as i32)));
+        assert_eq!(state.files[&(fd as i32)].metadata().unwrap().len(), 65536);
+        assert_eq!(close(&mut state, fd as u64), 0);
         assert!(state.files.is_empty());
         assert!(state.random_device_fds.is_empty());
         assert!(state.random_device_descriptions.is_empty());
@@ -21368,22 +21518,25 @@ mod tests {
     }
 
     #[test]
-    fn virtual_identity_and_random_direct_opens_are_read_only() {
+    fn virtual_identity_stays_read_only_and_random_access_is_separate() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
 
         for (path, first_byte) in [("/dev/urandom", 41), ("/proc/self/loginuid", b'0')] {
             write_c_string(&mut memory, 0x100, path);
-            assert_eq!(
-                syscall_result(
-                    &mut memory,
-                    &mut state,
-                    libc::SYS_openat,
-                    [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0]
-                ),
-                negative_errno(libc::EACCES)
+            let writable = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_openat,
+                [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0],
             );
+            if path == "/dev/urandom" {
+                assert!(writable >= 0);
+                assert_eq!(close(&mut state, writable as u64), 0);
+            } else {
+                assert_eq!(writable, negative_errno(libc::EACCES));
+            }
 
             let fd = open_readonly(&mut memory, &mut state, path);
             assert!(fd >= 0, "open {path} failed: {fd}");
