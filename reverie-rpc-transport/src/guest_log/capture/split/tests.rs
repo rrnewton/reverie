@@ -92,9 +92,13 @@ fn split_each_worker_startup_failure_retains_destination_until_actual_joins() {
 
 #[test]
 fn split_publication_anchor_failure_retains_escrow_and_factories_until_recovery() {
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
 
-    struct DestinationProbe(Arc<AtomicUsize>);
+    struct DestinationProbe {
+        drops: Arc<AtomicUsize>,
+        barrier_completed: Arc<AtomicBool>,
+    }
     impl Write for DestinationProbe {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             Ok(bytes.len())
@@ -110,19 +114,31 @@ fn split_publication_anchor_failure_retains_escrow_and_factories_until_recovery(
     }
     impl Drop for DestinationProbe {
         fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::AcqRel);
+            assert!(
+                self.barrier_completed.load(Ordering::Acquire),
+                "destination released before task-exit barrier"
+            );
+            self.drops.fetch_add(1, Ordering::AcqRel);
         }
     }
-    struct FactoryProbe(Arc<AtomicUsize>);
+    struct FactoryProbe {
+        drops: Arc<AtomicUsize>,
+        barrier_completed: Arc<AtomicBool>,
+    }
     impl Drop for FactoryProbe {
         fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::AcqRel);
+            assert!(
+                self.barrier_completed.load(Ordering::Acquire),
+                "factory released before task-exit barrier"
+            );
+            self.drops.fetch_add(1, Ordering::AcqRel);
         }
     }
 
     let destination_drops = Arc::new(AtomicUsize::new(0));
     let factory_drops = Arc::new(AtomicUsize::new(0));
-    let blocked = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let barrier_completed = Arc::new(AtomicBool::new(false));
+    let blocked = Arc::new(AtomicBool::new(true));
     ANCHOR_FAULT.with(|fault| {
         assert!(fault.borrow().is_none());
         *fault.borrow_mut() = Some((AnchorWorker::Publication, blocked.clone()));
@@ -152,7 +168,10 @@ fn split_publication_anchor_failure_retains_escrow_and_factories_until_recovery(
     assert_eq!(
         workers.start(
             plan,
-            DestinationProbe(destination_drops.clone()),
+            DestinationProbe {
+                drops: destination_drops.clone(),
+                barrier_completed: barrier_completed.clone(),
+            },
             Instant::now() + Duration::from_secs(2),
         ),
         Err(StartupError::Protocol)
@@ -161,10 +180,19 @@ fn split_publication_anchor_failure_retains_escrow_and_factories_until_recovery(
     assert!(workers.owner.is_some());
     assert!(workers.task_exits.publication.is_some());
     assert!(workers.task_exits.collector.is_none());
+    workers
+        .task_exits
+        .install_barrier_probe(barrier_completed.clone());
 
     let mut run = SplitCaptureRun::<u8, FactoryProbe, FactoryProbe> {
-        parent_factory: Some(FactoryProbe(factory_drops.clone())),
-        child_factory: Some(FactoryProbe(factory_drops.clone())),
+        parent_factory: Some(FactoryProbe {
+            drops: factory_drops.clone(),
+            barrier_completed: barrier_completed.clone(),
+        }),
+        child_factory: Some(FactoryProbe {
+            drops: factory_drops.clone(),
+            barrier_completed: barrier_completed.clone(),
+        }),
         plan: Cell::new(None),
         workers,
         child: None,
@@ -186,6 +214,7 @@ fn split_publication_anchor_failure_retains_escrow_and_factories_until_recovery(
     };
     assert_eq!(destination_drops.load(Ordering::Acquire), 0);
     assert_eq!(factory_drops.load(Ordering::Acquire), 0);
+    assert!(!barrier_completed.load(Ordering::Acquire));
 
     blocked.store(false, Ordering::Release);
     let joined = match run.settle_until(Instant::now() + Duration::from_secs(2)) {
@@ -203,6 +232,7 @@ fn split_publication_anchor_failure_retains_escrow_and_factories_until_recovery(
         joined.report.failure.as_deref(),
         Some("injected publication anchor startup failure")
     );
+    assert!(barrier_completed.load(Ordering::Acquire));
     assert_eq!(destination_drops.load(Ordering::Acquire), 1);
     assert_eq!(factory_drops.load(Ordering::Acquire), 2);
 }
@@ -212,7 +242,10 @@ fn split_collector_anchor_failure_retains_both_workers_and_factories_until_recov
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
 
-    struct DestinationProbe(Arc<AtomicUsize>);
+    struct DestinationProbe {
+        drops: Arc<AtomicUsize>,
+        barrier_completed: Arc<AtomicBool>,
+    }
     impl Write for DestinationProbe {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             Ok(bytes.len())
@@ -228,18 +261,30 @@ fn split_collector_anchor_failure_retains_both_workers_and_factories_until_recov
     }
     impl Drop for DestinationProbe {
         fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::AcqRel);
+            assert!(
+                self.barrier_completed.load(Ordering::Acquire),
+                "destination released before task-exit barrier"
+            );
+            self.drops.fetch_add(1, Ordering::AcqRel);
         }
     }
-    struct FactoryProbe(Arc<AtomicUsize>);
+    struct FactoryProbe {
+        drops: Arc<AtomicUsize>,
+        barrier_completed: Arc<AtomicBool>,
+    }
     impl Drop for FactoryProbe {
         fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::AcqRel);
+            assert!(
+                self.barrier_completed.load(Ordering::Acquire),
+                "factory released before task-exit barrier"
+            );
+            self.drops.fetch_add(1, Ordering::AcqRel);
         }
     }
 
     let destination_drops = Arc::new(AtomicUsize::new(0));
     let factory_drops = Arc::new(AtomicUsize::new(0));
+    let barrier_completed = Arc::new(AtomicBool::new(false));
     let blocked = Arc::new(AtomicBool::new(true));
     ANCHOR_FAULT.with(|fault| {
         assert!(fault.borrow().is_none());
@@ -270,7 +315,10 @@ fn split_collector_anchor_failure_retains_both_workers_and_factories_until_recov
     assert_eq!(
         workers.start(
             plan,
-            DestinationProbe(destination_drops.clone()),
+            DestinationProbe {
+                drops: destination_drops.clone(),
+                barrier_completed: barrier_completed.clone(),
+            },
             Instant::now() + Duration::from_secs(2),
         ),
         Err(StartupError::Protocol)
@@ -288,14 +336,19 @@ fn split_collector_anchor_failure_retains_both_workers_and_factories_until_recov
     }
     let publication_exit = workers.task_exits.publication.as_ref().unwrap().clone();
     let collector_exit = workers.task_exits.collector.as_ref().unwrap().clone();
-    let barrier_completed = Arc::new(AtomicBool::new(false));
     workers
         .task_exits
         .install_barrier_probe(barrier_completed.clone());
 
     let mut run = SplitCaptureRun::<u8, FactoryProbe, FactoryProbe> {
-        parent_factory: Some(FactoryProbe(factory_drops.clone())),
-        child_factory: Some(FactoryProbe(factory_drops.clone())),
+        parent_factory: Some(FactoryProbe {
+            drops: factory_drops.clone(),
+            barrier_completed: barrier_completed.clone(),
+        }),
+        child_factory: Some(FactoryProbe {
+            drops: factory_drops.clone(),
+            barrier_completed: barrier_completed.clone(),
+        }),
         plan: Cell::new(None),
         workers,
         child: None,
