@@ -28,8 +28,12 @@ use serde::de::DeserializeOwned;
 
 use super::*;
 pub(super) mod lifecycle;
+mod task_exit;
 use lifecycle::Lifecycle;
 pub use lifecycle::LifecycleSnapshot;
+use task_exit::Settlement as TaskExitSettlement;
+use task_exit::TaskExit;
+use task_exit::TaskExits;
 
 /// Sticky classes of independently fatal capture faults. Detailed legacy
 /// reports retain their original text; these bits never depend on that text.
@@ -380,6 +384,7 @@ impl<D: CaptureDestination> CaptureDestination for Destination<D> {
 struct Workers {
     owner: Option<CaptureOwner>,
     escrow: Option<Box<dyn std::any::Any>>,
+    task_exits: TaskExits,
 }
 // Unit-only fault injection at each startup ownership boundary. Production
 // always uses the real spawn/readiness paths below; no public bypass exists.
@@ -391,8 +396,19 @@ enum StartFault {
     PublicationReady,
     CollectorReady,
 }
+#[derive(Clone, Copy, PartialEq)]
+enum AnchorWorker {
+    Publication,
+    Collector,
+}
 #[cfg(test)]
 thread_local! { static START_FAULT: Cell<Option<StartFault>> = const { Cell::new(None) }; }
+#[cfg(test)]
+thread_local! {
+    static ANCHOR_FAULT: std::cell::RefCell<
+        Option<(AnchorWorker, Arc<std::sync::atomic::AtomicBool>)>
+    > = const { std::cell::RefCell::new(None) };
+}
 #[cfg(test)]
 fn startup_fault(stage: StartFault) -> bool {
     START_FAULT.with(|fault| {
@@ -403,6 +419,25 @@ fn startup_fault(stage: StartFault) -> bool {
             false
         }
     })
+}
+fn task_exit(worker: AnchorWorker) -> TaskExit {
+    #[cfg(test)]
+    if let Some(blocked) = ANCHOR_FAULT.with(|fault| {
+        let mut fault = fault.borrow_mut();
+        if fault
+            .as_ref()
+            .is_some_and(|(selected, _)| *selected == worker)
+        {
+            fault.take().map(|(_, blocked)| blocked)
+        } else {
+            None
+        }
+    }) {
+        return TaskExit::fail_while(blocked);
+    }
+    #[cfg(not(test))]
+    let _ = worker;
+    TaskExit::new()
 }
 impl Workers {
     fn start<D: CaptureDestination>(
@@ -431,13 +466,21 @@ impl Workers {
         if startup_fault(StartFault::PublicationSpawn) {
             return Err(StartupError::Protocol);
         }
-        let publication = publication::Publication::start(
+        let publication_exit = task_exit(AnchorWorker::Publication);
+        let publication_worker_exit = publication_exit.clone();
+        let publication = publication::Publication::start_with(
             Destination(escrow),
             options.limits.pending_records,
             options.limits.diagnostic_bytes,
             options.timeouts.blocked_publication,
+            move |worker| {
+                std::thread::Builder::new()
+                    .name("capture-output".into())
+                    .spawn(move || publication_worker_exit.run(worker))
+            },
         )
         .map_err(|_| StartupError::Protocol)?;
+        self.task_exits.publication = Some(publication_exit);
         let shared = Arc::new(Shared {
             retention: Arc::downgrade(&handle.0),
             options,
@@ -472,15 +515,28 @@ impl Workers {
             shared: shared.clone(),
             finalized: false,
         });
+        match self
+            .task_exits
+            .publication
+            .as_ref()
+            .expect("spawned publication has task-exit owner")
+            .initial_until(deadline)
+        {
+            Ok(true) => {}
+            Ok(false) => return Err(StartupError::TimedOut),
+            Err(_) => return Err(StartupError::Protocol),
+        }
         let worker = shared.clone();
         #[cfg(test)]
         if startup_fault(StartFault::CollectorSpawn) {
             return Err(StartupError::Protocol);
         }
-        let thread =
-            std::thread::Builder::new()
-                .name("split-capture-collector".into())
-                .spawn(move || {
+        let collector_exit = task_exit(AnchorWorker::Collector);
+        let collector_worker_exit = collector_exit.clone();
+        let thread = std::thread::Builder::new()
+            .name("split-capture-collector".into())
+            .spawn(move || {
+                collector_worker_exit.run(Box::new(move || {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         collect(&worker, host, collector)
                     }));
@@ -503,9 +559,22 @@ impl Workers {
                         });
                     worker.publication.finish_until(deadline);
                     worker.notify();
-                })
-                .map_err(|_| StartupError::Protocol)?;
+                }));
+            })
+            .map_err(|_| StartupError::Protocol)?;
+        self.task_exits.collector = Some(collector_exit);
         *shared.collector.lock().unwrap() = Some(thread);
+        match self
+            .task_exits
+            .collector
+            .as_ref()
+            .expect("spawned collector has task-exit owner")
+            .initial_until(deadline)
+        {
+            Ok(true) => {}
+            Ok(false) => return Err(StartupError::TimedOut),
+            Err(_) => return Err(StartupError::Protocol),
+        }
         #[cfg(test)]
         if startup_fault(StartFault::PublicationReady) {
             return Err(StartupError::Protocol);
@@ -556,6 +625,21 @@ impl Workers {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+    fn recover_startup_until(&self, deadline: Instant) -> io::Result<bool> {
+        self.task_exits.recover_startup_until(deadline)
+    }
+    fn settle_task_exits(&mut self, deadline: Instant) -> TaskExitSettlement {
+        let joins = self.joins();
+        if joins.0.is_none() || joins.1.is_none() {
+            return TaskExitSettlement::Fault(
+                "task-exit barrier requested before actual worker joins".into(),
+            );
+        }
+        self.task_exits.settle_until(deadline)
+    }
+    fn recover_startup_blocking(&self) {
+        self.task_exits.recover_startup_blocking();
+    }
     fn join_blocking(&mut self) {
         if let Some(owner) = &mut self.owner {
             owner
@@ -567,6 +651,9 @@ impl Workers {
             owner.shared.publication.join_blocking();
             owner.finalized = true;
         }
+    }
+    fn settle_task_exits_blocking(&mut self) {
+        self.task_exits.settle_blocking();
     }
 }
 
@@ -797,6 +884,25 @@ impl<T, P, B> SplitCaptureRun<T, P, B> {
     where
         T: DeserializeOwned,
     {
+        match self.workers.recover_startup_until(deadline) {
+            Ok(true) => {}
+            Ok(false) => {
+                self.fail(
+                    IntegrityFault::Teardown,
+                    "capture worker proc task anchor unsettled at observation deadline",
+                );
+                self.freeze(self.report(None));
+                return SplitCaptureOutcome::Unjoined(Box::new(self));
+            }
+            Err(error) => {
+                self.fail(
+                    IntegrityFault::Teardown,
+                    format!("capture worker proc task anchor failed: {error}"),
+                );
+                self.freeze(self.report(None));
+                return SplitCaptureOutcome::Unjoined(Box::new(self));
+            }
+        }
         self.observe(deadline, self.failure.is_some());
         if self.child.is_some() {
             self.fail(
@@ -841,6 +947,20 @@ impl<T, P, B> SplitCaptureRun<T, P, B> {
         if collector.is_none() || publication.is_none() {
             self.fail(IntegrityFault::Teardown, "capture workers remain unjoined");
             return SplitCaptureOutcome::Unjoined(Box::new(self));
+        }
+        match self.workers.settle_task_exits(deadline) {
+            TaskExitSettlement::Complete => {}
+            TaskExitSettlement::Pending => {
+                self.fail(
+                    IntegrityFault::Teardown,
+                    "capture worker task removal unsettled at observation deadline",
+                );
+                return SplitCaptureOutcome::Unjoined(Box::new(self));
+            }
+            TaskExitSettlement::Fault(reason) => {
+                self.fail(IntegrityFault::Teardown, reason);
+                return SplitCaptureOutcome::Unjoined(Box::new(self));
+            }
         }
         // Resources and generic factories are reclaimed before arbitrary decode.
         drop(self.workers.escrow.take());
@@ -928,10 +1048,14 @@ impl<T, P, B> Drop for SplitCaptureRun<T, P, B> {
                 owner.shared.fail("split owner disposed before settlement");
             }
         }
+        // A failed proc anchor leaves the real drainer parked. Recover it before
+        // owned child cleanup, which may itself depend on active drainers.
+        self.workers.recover_startup_blocking();
         // Owned A2 Drop settles the real child (possibly blocking), never a PID
         // guess. Drainers remain alive until this completes.
         drop(self.child.take());
         self.workers.join_blocking();
+        self.workers.settle_task_exits_blocking();
         drop(self.workers.escrow.take());
         drop(self.parent_factory.take());
         drop(self.child_factory.take());
@@ -970,6 +1094,7 @@ where
         workers: Workers {
             owner: None,
             escrow: None,
+            task_exits: TaskExits::default(),
         },
         child: None,
         result: None,
