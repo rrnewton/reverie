@@ -36,6 +36,7 @@ use futures::future::FutureExt;
 use futures::future::TryFutureExt;
 use nix::sys::mman::ProtFlags;
 use nix::sys::signal::Signal;
+use reverie::BackendFailure;
 use reverie::Backtrace;
 use reverie::Errno;
 use reverie::ExitStatus;
@@ -70,7 +71,6 @@ use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
@@ -85,6 +85,8 @@ use crate::error::LiteinstActivationOperation;
 use crate::error::LiteinstActivationStage;
 use crate::error::TraceResultExt;
 use crate::error::liteinst_activation_failure_reason;
+use crate::failure::PtraceCleanupFailure;
+use crate::failure::PtraceRunFailure;
 use crate::gdbstub::BreakpointType;
 use crate::gdbstub::CoreRegs;
 use crate::gdbstub::GdbRequest;
@@ -102,6 +104,8 @@ use crate::stack::GuestStack;
 use crate::timer::HandleFailure;
 use crate::timer::Timer;
 use crate::timer::TimerEventRequest;
+use crate::tracer::FatalNewborn;
+use crate::tracer::FatalTaskStop;
 use crate::tracer::HeldRootStop;
 use crate::tracer::NewbornTracee;
 use crate::tracer::RootStopLease;
@@ -188,6 +192,41 @@ enum ExpectedGdbResume {
     StepOnly,
 }
 
+enum OrdinaryStart {
+    Stopped(Stopped),
+    Exec(Stopped, Pid),
+    Newborn(Running, Option<Box<libc::user_regs_struct>>),
+}
+
+/// A same-process task rendezvous authorized only by an actual leader Exec
+/// event naming this former TID. No numeric-PID inference can request it.
+struct OrdinaryExecSlot<L: Tool> {
+    stop: Arc<FatalTaskStop>,
+    requested: AtomicBool,
+    changed: Notify,
+    transferred: StdMutex<Option<Box<TracedTask<L>>>>,
+}
+impl<L: Tool> OrdinaryExecSlot<L> {
+    async fn requested(&self) {
+        loop {
+            let changed = self.changed.notified();
+            if self.requested.load(Ordering::Acquire) {
+                return;
+            }
+            changed.await;
+        }
+    }
+    async fn take(&self) -> Box<TracedTask<L>> {
+        loop {
+            let changed = self.changed.notified();
+            if let Some(task) = self.transferred.lock().unwrap().take() {
+                return task;
+            }
+            changed.await;
+        }
+    }
+}
+
 pub struct Child {
     id: Pid,
     /// Task is suspended, either stopped by gdb (client), or received
@@ -199,7 +238,9 @@ pub struct Child {
     /// `daemonize()` is called.
     pub(crate) daemonizer_rx: Option<mpsc::Receiver<broadcast::Receiver<()>>>,
     /// Join handle to let child task exit gracefully.
-    pub(crate) handle: JoinHandle<ExitStatus>,
+    pub(crate) handle: ChildCompletion,
+    /// Non-consuming original generation for ordinary orphan group signaling.
+    pub(crate) ordinary_terminal: Option<safeptrace::TerminalCleanup>,
 }
 
 impl Child {
@@ -215,8 +256,28 @@ impl fmt::Debug for Child {
     }
 }
 
+pub(crate) enum ChildCompletion {
+    Legacy(JoinHandle<Option<ExitStatus>>),
+    Owned(oneshot::Receiver<Option<ExitStatus>>),
+}
+
+impl Future for ChildCompletion {
+    type Output = Result<Option<ExitStatus>, reverie::Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.get_mut() {
+            Self::Legacy(handle) => handle
+                .poll_unpin(cx)
+                .map_err(|error| anyhow::Error::new(error).into()),
+            Self::Owned(receiver) => receiver
+                .poll_unpin(cx)
+                .map_err(|error| anyhow::Error::new(error).into()),
+        }
+    }
+}
+
 impl Future for Child {
-    type Output = Result<ExitStatus, JoinError>;
+    type Output = Result<Option<ExitStatus>, reverie::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         self.handle.poll_unpin(cx)
@@ -862,11 +923,688 @@ impl LiteinstRuntimeState {
     }
 }
 
+fn callback_owner_decision(
+    held: crate::PtraceCallbackStop,
+    sample: &safeptrace::StopObservationSample,
+) -> Result<bool, crate::PtraceCallbackRefusal> {
+    callback_observation_decision(
+        held,
+        sample.refusal(),
+        sample.siginfo(),
+        sample.flags(),
+        sample.pidfd_live(),
+    )
+}
+
+// Keep the observed fields separate from physical ownership. The private seam
+// also lets refusal tests supply exact failures without inventing kernel events.
+fn callback_observation_decision(
+    held: crate::PtraceCallbackStop,
+    refusal: Option<safeptrace::StopObservationError>,
+    siginfo: Option<Result<safeptrace::StopSiginfo, Errno>>,
+    flags: Option<&Result<u32, safeptrace::ProcStatError>>,
+    pidfd_live: Option<Result<bool, Errno>>,
+) -> Result<bool, crate::PtraceCallbackRefusal> {
+    use crate::PtraceCallbackRefusal as Refusal;
+    use crate::PtraceCallbackStop as Stop;
+    if let Some(error) = refusal {
+        return Err(Refusal::Binding(error));
+    }
+    let info = siginfo.ok_or(Refusal::Inconsistent("missing siginfo query"))?;
+    if let Err(error) = info
+        && error != Errno::ESRCH
+    {
+        return Err(Refusal::Query(error));
+    }
+    let live = pidfd_live
+        .ok_or(Refusal::Inconsistent("missing final pidfd query"))?
+        .map_err(Refusal::Pidfd)?;
+    if let Some(Err(error)) = flags {
+        if !live
+            && matches!(
+                error,
+                safeptrace::ProcStatError::Io(Errno::ESRCH | Errno::ENOENT)
+            )
+        {
+            return Ok(true);
+        }
+        return Err(Refusal::Proc(error.clone()));
+    }
+    if !live || info == Err(Errno::ESRCH) {
+        return Ok(true);
+    }
+    let info = info.map_err(Refusal::Query)?;
+    if held == Stop::Stop {
+        return Err(Refusal::Inconsistent("unexpected group-stop class"));
+    }
+    if info.has_exit_signature() {
+        if held != Stop::Signal(libc::SIGTRAP) {
+            return Ok(true);
+        }
+        let flags = flags
+            .ok_or(Refusal::Inconsistent("missing ambiguous EXIT flags"))?
+            .as_ref()
+            .map_err(|error| Refusal::Proc(error.clone()))?;
+        // PF_SIGNALED precedes EXIT for killed/zapped ordinary user tasks.
+        // It permits waiting on the original owner, never terminal inference.
+        return Ok(flags & 0x400 != 0);
+    }
+    let matches = match held {
+        Stop::Signal(signal) => info.signo == signal,
+        Stop::Event(event) => {
+            info.signo == libc::SIGTRAP && info.code == (event << 8) | libc::SIGTRAP
+        }
+        Stop::Syscall => info.signo == libc::SIGTRAP && info.code == libc::SIGTRAP | 0x80,
+        Stop::Stop => false,
+    };
+    if matches {
+        Ok(false)
+    } else {
+        Err(Refusal::Inconsistent(
+            "siginfo disagrees with held stop class",
+        ))
+    }
+}
+
 enum LiteinstTrap {
     HandshakeBegin,
     HandshakeReady,
     Syscall(usize),
     Invalid,
+}
+
+/// The first ordinary-ptrace fatal error cancels every followed task. Keep the
+/// actual error until the entire tree has completed its real terminal waits.
+#[derive(Default)]
+pub(crate) struct FatalSession {
+    ptracer_thread: Option<std::thread::ThreadId>,
+    callback_diagnostics: StdMutex<Vec<crate::PtraceCallbackDiagnostic>>,
+    backend_signalling: AtomicBool,
+    failure: StdMutex<Option<PtraceRunFailure>>,
+    published: AtomicBool,
+    reporter: Option<Box<dyn Fn(BackendFailure) -> bool + Send + Sync>>,
+    closed: AtomicBool,
+    root: Option<Pid>,
+    changed: Notify,
+    tree: StdMutex<FatalTree>,
+    joins: StdMutex<Vec<JoinHandle<()>>>,
+    retry_epoch: AtomicUsize,
+    retry_changed: Notify,
+    groups: StdMutex<Vec<FatalGroup>>,
+    cleanup_deadline: StdMutex<Option<std::time::Instant>>,
+    #[cfg(test)]
+    pub(crate) observed_child_ops: StdMutex<Vec<(Pid, ChildOp, Pid)>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("original global Tool owner was unavailable for synchronous failure publication")]
+struct GlobalFailurePublicationLost;
+
+struct FatalGroup {
+    terminal: safeptrace::TerminalCleanup,
+    identity: crate::tracer::TraceeIdentity,
+}
+
+#[derive(Default)]
+struct FatalTree {
+    tasks: Vec<Arc<FatalTaskStop>>,
+    newborns: Vec<FatalNewborn>,
+    // Retained across initialization: a handed vfork child can still block its parent.
+    vfork_children: Vec<Arc<safeptrace::TerminalCleanup>>,
+    unconfirmed_newborns: Vec<(Pid, Arc<safeptrace::TerminalCleanup>)>,
+    killing: bool,
+    cleanup_refusal: Option<String>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct FatalForkPause {
+    pub(crate) ready: Notify,
+    pub(crate) child: StdMutex<Option<Running>>,
+    pub(crate) waiting_word: std::sync::atomic::AtomicUsize,
+    pub(crate) generation: StdMutex<Option<(u64, u64)>>,
+    pub(crate) terminal_status: StdMutex<Option<(Pid, ExitStatus)>>,
+    pub(crate) live_stop_opponent: AtomicBool,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct FatalSetupControl {
+    pub(crate) child: StdMutex<Option<(Pid, Arc<safeptrace::TerminalCleanup>)>>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct FatalFreezeControl {
+    pub(crate) calls: std::sync::atomic::AtomicUsize,
+    pub(crate) session: StdMutex<Option<Arc<FatalSession>>>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct ExecTimerTransfer {
+    pub displaced: Option<crate::timer::ExecTimerIdentity>,
+    pub before: Option<crate::timer::ExecTimerIdentity>,
+    pub after: Option<crate::timer::ExecTimerIdentity>,
+    pub displaced_fds_closed: bool,
+}
+#[cfg(test)]
+thread_local! {
+    pub(crate) static EXEC_TIMER_TRANSFERS: std::cell::RefCell<Option<Arc<StdMutex<Vec<ExecTimerTransfer>>>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FATAL_FORK_PAUSE: std::cell::RefCell<Option<Arc<FatalForkPause>>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static FATAL_SETUP_CONTROL: std::cell::RefCell<Option<Arc<FatalSetupControl>>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static FATAL_FREEZE_CONTROL: std::cell::RefCell<Option<Arc<FatalFreezeControl>>> = const { std::cell::RefCell::new(None) };
+}
+
+impl FatalSession {
+    fn capture(&self, parent: Pid, op: ChildOp, child: &Running) {
+        let mut tree = self.tree.lock().unwrap();
+        let terminal = child.terminal_cleanup();
+        if tree
+            .newborns
+            .iter()
+            .any(|entry| entry.terminal.same_generation(&terminal))
+            || tree
+                .tasks
+                .iter()
+                .any(|entry| entry.terminal.same_generation(&terminal))
+        {
+            return;
+        }
+        if op == ChildOp::Vfork {
+            tree.vfork_children.push(Arc::new(child.terminal_cleanup()));
+        }
+        #[cfg(test)]
+        self.observed_child_ops
+            .lock()
+            .unwrap()
+            .push((parent, op, child.pid()));
+        // Store the original receiver before any fallible group capture.
+        tree.newborns.push(FatalNewborn::new(parent, child));
+        drop(tree);
+        match crate::tracer::TraceeIdentity::capture_event_child(child.pid(), parent, op) {
+            Ok(identity) => self
+                .groups
+                .lock()
+                .unwrap()
+                .push(FatalGroup { terminal, identity }),
+            Err(error) => self.fail_at(
+                BackendFailure {
+                    pid: parent,
+                    tid: child.pid(),
+                    phase: "ptrace child group capture",
+                },
+                error.into(),
+            ),
+        }
+    }
+
+    pub(crate) fn capture_root(&self, stopped: &Stopped) {
+        let root = stopped.pid();
+        match crate::tracer::TraceeIdentity::open_root(root) {
+            Ok(identity) => self.groups.lock().unwrap().push(FatalGroup {
+                terminal: stopped.terminal_cleanup(),
+                identity,
+            }),
+            Err(error) => self.fail_at(
+                BackendFailure {
+                    pid: root,
+                    tid: root,
+                    phase: "ptrace root group capture",
+                },
+                error.into(),
+            ),
+        }
+    }
+
+    pub(crate) fn signal_groups(&self) -> Vec<Errno> {
+        self.groups
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|group| {
+                group
+                    .identity
+                    .signal_owned_group()
+                    .err()
+                    .filter(|error| *error != Errno::ESRCH)
+            })
+            .collect()
+    }
+
+    fn handed(&self, child: Pid) {
+        let mut tree = self.tree.lock().unwrap();
+        tree.newborns
+            .iter_mut()
+            .find(|entry| entry.tid == child)
+            .expect("child handoff requires retained kernel edge")
+            .handed = true;
+    }
+
+    fn newborn_exited(&self, child: Pid) {
+        self.tree
+            .lock()
+            .unwrap()
+            .newborns
+            .retain(|entry| entry.tid != child);
+        self.changed.notify_waiters();
+    }
+
+    fn refuse_cleanup(&self, error: reverie::Error) -> reverie::Error {
+        let message = error.to_string();
+        self.fail(error);
+        self.tree
+            .lock()
+            .unwrap()
+            .cleanup_refusal
+            .get_or_insert(message.clone());
+        // Retain every unconfirmed task/newborn authority. Refusal releases
+        // other barrier waiters, but never marks those tracees as completed.
+        self.changed.notify_waiters();
+        anyhow::anyhow!("fatal ptrace cleanup refused: {message}").into()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unconfirmed_task_count(&self) -> usize {
+        self.tree.lock().unwrap().tasks.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cleanup_was_refused(&self) -> bool {
+        self.tree.lock().unwrap().cleanup_refusal.is_some()
+    }
+
+    fn register(&self, task: Arc<FatalTaskStop>) -> Option<FatalNewborn> {
+        #[cfg(test)]
+        crate::tracer::record_fatal_task_for_test(&task);
+        let mut tree = self.tree.lock().unwrap();
+        let newborn = tree
+            .newborns
+            .iter()
+            .position(|entry| {
+                entry.tid == task.tid && entry.terminal.same_generation(&task.terminal)
+            })
+            .map(|index| tree.newborns.remove(index));
+        assert!(
+            !tree
+                .tasks
+                .iter()
+                .any(|entry| entry.terminal.same_generation(&task.terminal))
+        );
+        tree.tasks.push(task);
+        self.changed.notify_waiters();
+        newborn
+    }
+
+    fn finished(&self, stop: &FatalTaskStop) {
+        let mut tree = self.tree.lock().unwrap();
+        tree.tasks
+            .retain(|task| !task.terminal.same_generation(&stop.terminal));
+        tree.vfork_children
+            .retain(|child| !child.same_generation(&stop.terminal));
+        drop(tree);
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) fn ordinary_receipt(&self) -> crate::tracer::OrdinaryReceipt {
+        crate::tracer::OrdinaryReceipt {
+            failure_published: self.is_failed(),
+            backend_signalling: self.backend_signalling.load(Ordering::Acquire),
+        }
+    }
+
+    pub(crate) fn owned_daemon_signal(
+        &self,
+        terminal: &safeptrace::TerminalCleanup,
+    ) -> Result<(), Errno> {
+        self.backend_signalling.store(true, Ordering::Release);
+        // The orphan carries its original generation across late exit hooks.
+        // A numeric PID match could select a later captured process. A thread
+        // pidfd can also accept SIGKILL without reaching an exited leader's
+        // live siblings; use this generation's captured regular group pidfd.
+        self.groups
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|group| group.terminal.same_generation(terminal))
+            .ok_or(Errno::ESTALE)?
+            .identity
+            .signal_owned_process_group()
+    }
+
+    pub(crate) async fn retry_after(&self, error: reverie::Error) {
+        let epoch = self.retry_epoch.load(Ordering::Acquire);
+        let _ = self.refuse_cleanup(error);
+        self.wait_retry(epoch).await;
+    }
+
+    async fn freeze_and_kill(&self, task: &FatalTaskStop) {
+        self.backend_signalling.store(true, Ordering::Release);
+        // A vfork parent can be kernel-blocked behind a captured child. Signal
+        // these exact child generations before waiting for the parent stop.
+        loop {
+            let error = {
+                let tree = self.tree.lock().unwrap();
+                tree.vfork_children
+                    .iter()
+                    .find_map(|child| {
+                        child
+                            .request_sigkill()
+                            .err()
+                            .filter(|error| *error != Errno::ESRCH)
+                    })
+                    .or_else(|| {
+                        tree.newborns.iter().find_map(|child| {
+                            child.signal().err().filter(|error| *error != Errno::ESRCH)
+                        })
+                    })
+            };
+            if let Some(error) = error {
+                self.retry_after(error.into()).await;
+            } else {
+                break;
+            }
+        }
+        loop {
+            match task
+                .freeze(self.deadline(), |parent, op, child| {
+                    self.capture(parent, op, child)
+                })
+                .await
+            {
+                Ok(()) => break,
+                Err(error) => self.retry_after(error).await,
+            }
+        }
+        #[cfg(test)]
+        if FATAL_FREEZE_CONTROL.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .is_some_and(|control| control.calls.fetch_add(1, Ordering::SeqCst) == 1)
+        }) {
+            self.retry_after(
+                anyhow::anyhow!("injected refusal after actual owned freeze stop").into(),
+            )
+            .await;
+        }
+        task.frozen.store(true, Ordering::Release);
+        self.changed.notify_waiters();
+        if self
+            .tree
+            .lock()
+            .unwrap()
+            .vfork_children
+            .iter()
+            .any(|child| child.same_generation(&task.terminal))
+        {
+            // This captured vfork child has already been signalled through its
+            // exact generation. Its existing exit owner must advance the real
+            // EXIT stop before the kernel can release its suspended parent.
+            // Waiting for that parent at the all-task barrier would deadlock.
+            return;
+        }
+        loop {
+            let changed = self.changed.notified();
+            let cleanup = {
+                let mut tree = self.tree.lock().unwrap();
+                if tree.killing {
+                    return;
+                }
+                if tree
+                    .tasks
+                    .iter()
+                    .all(|task| task.frozen.load(Ordering::Acquire))
+                    && tree.newborns.iter().all(|child| !child.handed)
+                {
+                    tree.killing = true;
+                    tree.unconfirmed_newborns = tree
+                        .newborns
+                        .iter()
+                        .map(|child| (child.tid, child.terminal.clone()))
+                        .collect();
+                    Some((tree.tasks.clone(), std::mem::take(&mut tree.newborns)))
+                } else {
+                    None
+                }
+            };
+            if let Some((tasks, mut newborns)) = cleanup {
+                // This future, retained by the run driver on refusal, is the
+                // sole owner of these unhanded child receivers until reaping.
+                for newborn in &mut newborns {
+                    loop {
+                        let signal = newborn.signal();
+                        match signal {
+                            Ok(()) | Err(Errno::ESRCH) => break,
+                            Err(error) => self.retry_after(error.into()).await,
+                        }
+                    }
+                }
+                loop {
+                    let errors = self.signal_groups();
+                    if errors.is_empty() {
+                        break;
+                    }
+                    for error in errors {
+                        self.retry_after(error.into()).await;
+                    }
+                }
+                for task in &tasks {
+                    loop {
+                        match task.terminal.request_sigkill() {
+                            Ok(()) | Err(Errno::ESRCH) => break,
+                            Err(error) => self.retry_after(error.into()).await,
+                        }
+                    }
+                }
+                self.changed.notify_waiters();
+                future::join_all(newborns.into_iter().map(|child| async move {
+                    let tid = child.tid;
+                    child.reap_owned(self).await;
+                    self.tree
+                        .lock()
+                        .unwrap()
+                        .unconfirmed_newborns
+                        .retain(|(pid, _)| *pid != tid);
+                }))
+                .await;
+                return;
+            }
+            changed.await;
+        }
+    }
+    fn new<G: GlobalTool + 'static>(global: &Arc<G>, root: Pid) -> Self {
+        let weak = Arc::downgrade(global);
+        Self {
+            root: Some(root),
+            ptracer_thread: Some(std::thread::current().id()),
+            reporter: Some(Box::new(move |origin| {
+                if let Some(global) = weak.upgrade() {
+                    global.report_backend_failure(origin);
+                    true
+                } else {
+                    false
+                }
+            })),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn fail_at(&self, origin: BackendFailure, error: reverie::Error) {
+        self.try_fail_at(origin, error);
+    }
+
+    fn try_fail_at(&self, origin: BackendFailure, error: reverie::Error) -> bool {
+        let first = {
+            let mut failure = self.failure.lock().unwrap();
+            if self.closed.load(Ordering::Acquire) {
+                return false;
+            }
+            if let Some(failure) = failure.as_mut() {
+                failure.secondary.push(PtraceCleanupFailure {
+                    origin,
+                    error: Arc::new(error),
+                });
+                false
+            } else {
+                *failure = Some(PtraceRunFailure {
+                    primary: Arc::new(error),
+                    origin,
+                    secondary: Vec::new(),
+                    captured_prefix: None,
+                });
+                true
+            }
+        };
+        if first {
+            *self.cleanup_deadline.lock().unwrap() =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+            // No cause/tree lock spans the synchronous Tool transition. Local
+            // observers cannot see publication until the Tool closes its waits.
+            if !self.reporter.as_ref().is_some_and(|report| report(origin)) {
+                self.failure
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .expect("stored primary")
+                    .secondary
+                    .push(PtraceCleanupFailure {
+                        origin: BackendFailure {
+                            phase: "ptrace failure publication",
+                            ..origin
+                        },
+                        error: Arc::new(anyhow::Error::new(GlobalFailurePublicationLost).into()),
+                    });
+            }
+            self.published.store(true, Ordering::Release);
+        }
+        self.changed.notify_waiters();
+        true
+    }
+
+    pub(crate) fn request_termination(&self, error: reverie::Error) -> bool {
+        let Some(root) = self.root else {
+            return false;
+        };
+        self.try_fail_at(
+            BackendFailure {
+                pid: root,
+                tid: root,
+                phase: "ptrace supervisor termination",
+            },
+            error,
+        )
+    }
+
+    pub(crate) fn fail(&self, error: reverie::Error) {
+        let root = self.root.expect("ordinary failure has a root owner");
+        self.fail_at(
+            BackendFailure {
+                pid: root,
+                tid: root,
+                phase: "ptrace tree cleanup",
+            },
+            error,
+        );
+    }
+
+    pub(crate) fn is_failed(&self) -> bool {
+        self.published.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn callback_diagnostics(&self) -> Vec<crate::PtraceCallbackDiagnostic> {
+        self.callback_diagnostics.lock().unwrap().clone()
+    }
+
+    pub(crate) fn take_callback_diagnostics(&self) -> Vec<crate::PtraceCallbackDiagnostic> {
+        std::mem::take(&mut *self.callback_diagnostics.lock().unwrap())
+    }
+
+    pub(crate) fn failure_snapshot(&self) -> Option<PtraceRunFailure> {
+        self.failure
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(PtraceRunFailure::snapshot)
+    }
+
+    pub(crate) async fn take_public_failure(&self) -> Option<PtraceRunFailure> {
+        loop {
+            let changed = self.changed.notified();
+            {
+                let mut failure = self.failure.lock().unwrap();
+                // A supervisor can publish from another thread. Do not move
+                // its cause while its synchronous logical publication runs.
+                if failure.is_none() || self.published.load(Ordering::Acquire) {
+                    self.closed.store(true, Ordering::Release);
+                    return failure.take();
+                }
+            }
+            changed.await;
+        }
+    }
+
+    pub(crate) fn deadline(&self) -> std::time::Instant {
+        self.cleanup_deadline
+            .lock()
+            .unwrap()
+            .expect("cleanup follows failure publication")
+    }
+
+    pub(crate) fn resume_cleanup(&self) {
+        self.tree.lock().unwrap().cleanup_refusal = None;
+        *self.cleanup_deadline.lock().unwrap() =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+        self.retry_epoch.fetch_add(1, Ordering::AcqRel);
+        self.retry_changed.notify_waiters();
+    }
+
+    async fn wait_retry(&self, epoch: usize) {
+        loop {
+            let changed = self.retry_changed.notified();
+            if self.retry_epoch.load(Ordering::Acquire) != epoch {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    pub(crate) async fn join_owned(&self) {
+        loop {
+            let handles = std::mem::take(&mut *self.joins.lock().unwrap());
+            if handles.is_empty() {
+                break;
+            }
+            for handle in handles {
+                if let Err(error) = handle.await {
+                    self.fail(anyhow::Error::new(error).into());
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn cancelled(&self) {
+        loop {
+            let changed = self.changed.notified();
+            if self.is_failed() {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    pub(crate) async fn cleanup_refused(&self) -> reverie::Error {
+        loop {
+            let changed = self.changed.notified();
+            if let Some(message) = &self.tree.lock().unwrap().cleanup_refusal {
+                return anyhow::anyhow!("fatal ptrace cleanup refused: {message}").into();
+            }
+            changed.await;
+        }
+    }
 }
 
 /// All the info needed to be able to interact with the global state.
@@ -890,6 +1628,8 @@ struct GlobalState<G: GlobalTool> {
     /// Optional dynamic LiteInst runtime configuration.
     liteinst_runtime: Option<LiteinstRuntimeConfig>,
 
+    fatal_session: Arc<FatalSession>,
+
     /// Optional collector for general ptrace lifecycle activity.
     backend_stats: Option<PtraceBackendStatsSource>,
 }
@@ -903,6 +1643,7 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             sequentialized_guest: self.sequentialized_guest.clone(),
             injected_syscall_trap: self.injected_syscall_trap.clone(),
             liteinst_runtime: self.liteinst_runtime.clone(),
+            fatal_session: self.fatal_session.clone(),
             backend_stats: self.backend_stats.clone(),
         }
     }
@@ -957,6 +1698,11 @@ pub(crate) struct TracedTaskOptions<'a> {
 /// Our runtime representation of what Reverie knows about a guest thread. Its
 /// lifetime matches the lifetime of the thread.
 pub struct TracedTask<L: Tool> {
+    ordinary_held_stop: Arc<StdMutex<Option<HeldRootStop>>>,
+    // Session diagnostics are append-only until every task owner completes.
+    // Therefore another task cannot invalidate this private entry index.
+    pending_callback_diagnostic: Option<usize>,
+    ordinary_exec: Arc<StdMutex<HashMap<Pid, Arc<OrdinaryExecSlot<L>>>>>,
     /// Thread ID.
     tid: Pid,
 
@@ -1137,8 +1883,12 @@ impl<L: Tool> TracedTask<L> {
         orphanage: mpsc::Sender<Child>,
         daemon_kill_switch: broadcast::Sender<()>,
         mut gdbserver: Option<GdbServer>,
-    ) -> Self {
+    ) -> Self
+    where
+        L::GlobalState: 'static,
+    {
         let process_state = Arc::new(L::new(tid, &cfg));
+        let fatal_session = Arc::new(FatalSession::new(&gs_ref, tid));
         let global_state = GlobalState {
             gs_ref,
             cfg,
@@ -1151,6 +1901,7 @@ impl<L: Tool> TracedTask<L> {
             ),
             injected_syscall_trap: options.injected_syscall_trap.clone(),
             liteinst_runtime: options.liteinst_runtime,
+            fatal_session,
             backend_stats: options.backend_stats,
         };
         let thread_state = process_state.init_thread_state(tid, None);
@@ -1166,6 +1917,9 @@ impl<L: Tool> TracedTask<L> {
             thread_state,
             process_state,
             global_state,
+            ordinary_held_stop: Arc::new(StdMutex::new(None)),
+            pending_callback_diagnostic: None,
+            ordinary_exec: Arc::new(StdMutex::new(HashMap::new())),
             command_bootstrap: options.command_bootstrap,
             has_cpuid_interception: false,
             pending_syscall: None,
@@ -1231,6 +1985,9 @@ impl<L: Tool> TracedTask<L> {
             thread_state,
             process_state,
             global_state,
+            ordinary_held_stop: Arc::new(StdMutex::new(None)),
+            pending_callback_diagnostic: None,
+            ordinary_exec: self.ordinary_exec.clone(),
             command_bootstrap: false,
             has_cpuid_interception: self.has_cpuid_interception,
             pending_syscall: None,
@@ -1289,6 +2046,9 @@ impl<L: Tool> TracedTask<L> {
             thread_state,
             process_state,
             global_state: self.global_state.clone(),
+            ordinary_held_stop: Arc::new(StdMutex::new(None)),
+            pending_callback_diagnostic: None,
+            ordinary_exec: Arc::new(StdMutex::new(HashMap::new())),
             command_bootstrap: false,
             has_cpuid_interception: self.has_cpuid_interception,
             pending_syscall: None,
@@ -1501,6 +2261,10 @@ fn log_guest_exit(tid: Pid, pid: Pid, exit_status: ExitStatus) {
 
 /// Handles a potentially internal error, converting it to an exit status.
 async fn handle_internal_error(err: Error) -> Result<ExitStatus, reverie::Error> {
+    #[cfg(test)]
+    crate::tracer::record_fatal_phase_for_test(|| {
+        format!("handle_internal_error entered: {err:?}")
+    });
     match err {
         Error::Internal(TraceError::Died(zombie))
         | Error::Tracee {
@@ -1522,6 +2286,7 @@ async fn handle_internal_error(err: Error) -> Result<ExitStatus, reverie::Error>
             message,
         } => Err(anyhow::anyhow!("{operation} failed for tracee {pid}: {message}").into()),
         Error::External(err) => Err(err),
+        Error::RunFailed => future::pending().await,
     }
 }
 
@@ -1662,9 +2427,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     pub async fn tracee_preinit(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
         // A forked child can initialize a replacement image too. It must not
         // consume or overwrite the session root's held-stop cleanup lease.
-        let held_root_stop = self
-            .liteinst_root_runtime(&task)
-            .map(|runtime| Arc::clone(&runtime.held_root_stop));
+        let held_root_stop = self.liteinst_root_stop_slot(&task);
         let reject_activation_signals = self.global_state.liteinst_runtime.is_some();
         let unexpected_preinit_signal = Arc::new(StdMutex::new(None));
         #[cfg(test)]
@@ -2031,16 +2794,20 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> Result<libc::user_regs_struct, TraceError> {
         let eax = regs.rax as u32;
         let ecx = regs.rcx as u32;
-        let cpuid = self
+        let result = self
             .process_state
             .clone()
             .handle_cpuid_event(self, eax, ecx)
+            .await;
+        let cpuid = self
+            .ordinary_callback_errno("ptrace cpuid callback", result)
             .await?;
         regs.rax = cpuid.eax as u64;
         regs.rbx = cpuid.ebx as u64;
         regs.rcx = cpuid.ecx as u64;
         regs.rdx = cpuid.edx as u64;
         regs.rip += 2;
+        self.ordinary_trace_continuation()?;
         self.timer.finalize_requests();
         Ok(regs)
     }
@@ -2051,10 +2818,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         mut regs: libc::user_regs_struct,
         request: Rdtsc,
     ) -> Result<libc::user_regs_struct, TraceError> {
-        let retval = self
+        let result = self
             .process_state
             .clone()
             .handle_rdtsc_event(self, request)
+            .await;
+        let retval = self
+            .ordinary_callback_errno("ptrace rdtsc callback", result)
             .await?;
         regs.rax = retval.tsc & 0xffff_ffffu64;
         regs.rdx = retval.tsc >> 32;
@@ -2067,6 +2837,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 regs.rcx = retval.aux.unwrap_or(0) as u64;
             }
         }
+        self.ordinary_trace_continuation()?;
         self.timer.finalize_requests();
         Ok(regs)
     }
@@ -2092,7 +2863,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         {
             Err(HandleFailure::ImproperSignal(task)) => return Ok((false, task)),
             Err(HandleFailure::Cancelled(task)) => return Ok((true, task)),
-            Err(HandleFailure::TraceError(e)) => return Err(e),
+            Err(HandleFailure::TraceError(e)) => {
+                #[cfg(test)]
+                crate::tracer::record_fatal_phase_for_test(|| {
+                    format!("handle_timer TraceError: {e:?}")
+                });
+                if self.ordinary_failure_enabled()
+                    && let TraceError::Errno(errno) = &e
+                {
+                    // Keep the actual timer/query errno before the generic
+                    // signal-delivery context projects it into a message.
+                    // The existing task owner still owns physical cleanup.
+                    self.publish_ordinary_failure("ptrace timer signal", (*errno).into());
+                }
+                return Err(e);
+            }
             Err(HandleFailure::Event(wait)) => self.abort(Ok(wait)).await,
             Ok(task) => task,
         };
@@ -2107,6 +2892,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             future::pending::<()>().await;
         }
         self.process_state.clone().handle_timer_event(self).await;
+        self.ordinary_trace_continuation()?;
         self.timer.finalize_requests();
         Ok((true, task))
     }
@@ -2152,6 +2938,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         }
 
+        self.ordinary_continuation()?;
         match event {
             Event::Signal(sig) => self
                 .handle_signal(stopped, sig)
@@ -2259,6 +3046,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             })
             .await;
 
+            self.ordinary_trace_continuation()?;
             self.timer.finalize_requests();
 
             if let Some(retval) = retval {
@@ -2843,11 +3631,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         match result {
             HandleSignalResult::SignalSuppressed(wait) => Ok(wait),
             HandleSignalResult::SignalToDeliver(task, sig) => {
-                let sig = self
+                let result = self
                     .process_state
                     .clone()
                     .handle_signal_event(self, sig)
+                    .await;
+                let sig = self
+                    .ordinary_callback_errno("ptrace signal callback", result)
                     .await?;
+                self.ordinary_trace_continuation()?;
                 self.timer.finalize_requests();
                 Ok(self.resume_stopped(task, sig)?.next_state().await?)
             }
@@ -3054,7 +3846,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         if initial_command {
             self.timer.finish_initial_exec();
         }
-        self.process_state.clone().handle_post_exec(self).await?;
+        let result = self.process_state.clone().handle_post_exec(self).await;
+        self.ordinary_callback_errno("ptrace post-exec callback", result)
+            .await?;
+        self.ordinary_trace_continuation()?;
         self.timer.finalize_requests();
 
         if self.attached_by_gdb {
@@ -3102,12 +3897,26 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await?;
             Ok(running.next_state().await?)
         } else {
-            let running = if self.global_state.liteinst_runtime.is_some() {
-                self.resume_stopped(task, None)?
-            } else {
-                self.step_stopped(task, None)?
-            };
-            Ok(running.next_state().await?)
+            if self.global_state.liteinst_runtime.is_some() {
+                return self.resume_stopped(task, None)?.next_state().await;
+            }
+            let wait = self.step_stopped(task, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            match wait {
+                Wait::Stopped(task, Event::Signal(Signal::SIGTRAP))
+                    if task.getsiginfo()?.si_code == libc::TRAP_TRACE =>
+                {
+                    // This is the directly awaited controller single-step,
+                    // with no debugger attached. It is not a Tool event and
+                    // must not cancel the timer just requested in post-exec.
+                    // A real signal, breakpoint, instruction fault, or other
+                    // stop still goes through ordinary event accounting.
+                    self.ordinary_trace_continuation()?;
+                    self.timer.finalize_requests();
+                    self.resume_stopped(task, None)?.next_state().await
+                }
+                wait => Ok(wait),
+            }
         }
     }
 
@@ -4117,6 +4926,19 @@ impl<L: Tool + 'static> TracedTask<L> {
             })
             .await;
 
+            let retval = if self.ordinary_failure_enabled() {
+                match retval {
+                    Some(Err(error)) if !matches!(error, reverie::Error::Errno(_)) => {
+                        self.publish_ordinary_failure("ptrace syscall callback", error);
+                        return Err(Error::RunFailed);
+                    }
+                    result => result,
+                }
+            } else {
+                retval
+            };
+            self.ordinary_continuation()?;
+
             // A returned emulation must consume its original stop just like an
             // injection. Keeping Some after skipping would let a later signal
             // or timer callback mistake an ordinary stop for a seccomp entry.
@@ -4132,6 +4954,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .tracee_context(tid, "skip intercepted syscall")?;
             }
 
+            self.ordinary_trace_continuation()?;
             self.timer.finalize_requests();
 
             if let Some(retval) = retval {
@@ -4221,15 +5044,19 @@ impl<L: Tool + 'static> TracedTask<L> {
         &self,
         task: &Stopped,
     ) -> Option<Arc<StdMutex<Option<HeldRootStop>>>> {
-        self.liteinst_root_runtime(task)
-            .map(|runtime| Arc::clone(&runtime.held_root_stop))
+        if self.ordinary_failure_enabled() {
+            Some(self.ordinary_held_stop.clone())
+        } else {
+            self.liteinst_root_runtime(task)
+                .map(|runtime| Arc::clone(&runtime.held_root_stop))
+        }
     }
 
     fn liteinst_root_stop_armer(&self, task: &Stopped) -> Option<LiteinstRootStopArmer> {
-        let runtime = self.liteinst_root_runtime(task)?;
+        let slot = self.liteinst_root_stop_slot(task)?;
         Some(LiteinstRootStopArmer {
             root_tid: task.pid(),
-            held_root_stop: Arc::clone(&runtime.held_root_stop),
+            held_root_stop: slot,
         })
     }
 
@@ -4250,6 +5077,14 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// A grandchild is reported to its own non-root parent, so scoping this to
     /// the root leaves it unregistered.
     fn register_liteinst_newborn(&self, task: &Stopped, event: &Event) {
+        if self.ordinary_failure_enabled() {
+            if let Event::NewChild(op, child) = event {
+                self.global_state
+                    .fatal_session
+                    .capture(task.pid(), *op, child);
+            }
+            return;
+        }
         let Some(runtime) = self.global_state.liteinst_runtime.as_ref() else {
             return;
         };
@@ -4292,6 +5127,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<Running, TraceError> {
+        if self.ordinary_failure_enabled() && self.global_state.fatal_session.is_failed() {
+            return Err(Errno::ECANCELED.into());
+        }
         self.lease_liteinst_root_stop(task).resume(signal)
     }
 
@@ -4300,6 +5138,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<Running, TraceError> {
+        if self.ordinary_failure_enabled() && self.global_state.fatal_session.is_failed() {
+            return Err(Errno::ECANCELED.into());
+        }
         self.lease_liteinst_root_stop(task).step(signal)
     }
 
@@ -4308,6 +5149,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<Running, TraceError> {
+        if self.ordinary_failure_enabled() && self.global_state.fatal_session.is_failed() {
+            return Err(Errno::ECANCELED.into());
+        }
         self.lease_liteinst_root_stop(task).syscall(signal)
     }
 
@@ -4467,6 +5311,34 @@ impl<L: Tool + 'static> TracedTask<L> {
             op
         );
 
+        #[cfg(test)]
+        if matches!(op, ChildOp::Fork | ChildOp::Vfork) && self.ordinary_failure_enabled() {
+            let pause = FATAL_FORK_PAUSE.with(|slot| slot.borrow().clone());
+            if let Some(pause) = pause {
+                // Retain this real Event::NewChild capability for emergency
+                // test cleanup, before any child TracedTask has been created.
+                child.terminal_cleanup();
+                let stat = std::fs::read_to_string(format!("/proc/{}/stat", child.pid())).unwrap();
+                let start = stat
+                    .rsplit_once(") ")
+                    .unwrap()
+                    .1
+                    .split_whitespace()
+                    .nth(19)
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                use std::os::unix::fs::MetadataExt;
+                let inode = std::fs::metadata(format!("/proc/{}", child.pid()))
+                    .unwrap()
+                    .ino();
+                *pause.generation.lock().unwrap() = Some((start, inode));
+                *pause.child.lock().unwrap() = Some(child);
+                pause.ready.notify_waiters();
+                return future::pending().await;
+            }
+        }
+
         let mut child_task = match op {
             ChildOp::Clone => self.cloned(child.pid()),
             ChildOp::Fork => self.forked(child.pid()),
@@ -4482,47 +5354,69 @@ impl<L: Tool + 'static> TracedTask<L> {
         let suspended = child_task.suspended.clone();
 
         // TODO-HUMAN-REVIEW(PR-103): Review rewritten clone parent/child restoration.
-        if let Some(context) = context {
-            restore_context(
-                &parent,
-                context,
-                Some(child.pid().as_raw() as u64),
-                child_context.is_some(),
-            )?;
-        }
+        let parent_restore = context
+            .map(|context| {
+                restore_context(
+                    &parent,
+                    context,
+                    Some(child.pid().as_raw() as u64),
+                    child_context.is_some(),
+                )
+            })
+            .transpose();
+        let parent_restore = if !self.ordinary_failure_enabled() {
+            parent_restore?;
+            Ok(None)
+        } else {
+            parent_restore
+        };
         let child_restore_context = child_context.or(context);
 
         let id = child.pid();
-        // Under the LiteInst runtime the cleanup guard registers every newborn
-        // with the notifier the moment its parent reports `Event::NewChild`, so
+        // Both cancellation domains register every newborn with the notifier
+        // the moment its parent reports `Event::NewChild`, so
         // the "notifier is not yet aware of this PID" precondition for the raw
         // `wait` below no longer holds: the notifier worker would consume the
         // initial stop and the raw `wait` would block forever. Take the initial
         // stop from the notifier instead, which is the same state by a
         // registered route.
-        let notifier_owns_initial_stop = self.global_state.liteinst_runtime.is_some();
 
         // A panic anywhere in this body would otherwise be caught by tokio's
         // task harness and silently wedge the whole run; see
         // `guest_task_panic_is_fatal`. The body is built as its own future so
         // the catch sits at the task boundary and covers all of it.
         let panic_tid = id;
+        let ordinary_failure = self
+            .ordinary_failure_enabled()
+            .then(|| self.fatal_session());
+        let report_failure = ordinary_failure.clone();
+        let ordinary_terminal = ordinary_failure.as_ref().map(|_| child.terminal_cleanup());
         let body = async move {
+            if ordinary_failure.is_some() {
+                return child_task
+                    .run_ordinary_newborn(child, child_restore_context)
+                    .await;
+            }
             // The child could potentially exit here. In most cases the first
             // event we get here should be `Event::Signal(Signal::SIGSTOP)`, but
             // we can also receive `Event::Exit` if a thread is created via
             // `clone`, but immediately killed via an `exit_group`. We have to
             // handle that rare case here.
             //
-            // NOTE: It is okay to call `wait` instead of the async `next_state`
-            // here because the notifier is not yet aware of the new process.
-            let initial_stop = if notifier_owns_initial_stop {
-                child.next_state().await
-            } else {
+            // The notifier already owns this exact child generation.
+            let initial_stop = if child_task.global_state.liteinst_runtime.is_none() {
                 child.wait()
+            } else {
+                child.next_state().await
             };
             let (child, event) = match initial_stop {
-                Ok(wait) => wait.assume_stopped(),
+                Ok(Wait::Stopped(child, event)) => (child, event),
+                Ok(Wait::Exited(_, exit_status)) => {
+                    if let Some(failure) = &ordinary_failure {
+                        failure.newborn_exited(id);
+                    }
+                    return Ok(Some(exit_status));
+                }
                 Err(TraceError::Died(zombie)) => {
                     let exit_status = match zombie.reap().await {
                         Ok(exit_status) => exit_status,
@@ -4533,7 +5427,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                                 %error,
                                 "failed to reap new tracee after its initial-stop race"
                             );
-                            return ExitStatus::Exited(1);
+                            if ordinary_failure.is_some() {
+                                return Err(anyhow::anyhow!(
+                                    "newborn {id} terminal wait failed: {error}"
+                                )
+                                .into());
+                            }
+                            return Ok(Some(ExitStatus::Exited(1)));
                         }
                     };
                     tracing::error!(
@@ -4542,7 +5442,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                         ?exit_status,
                         "new tracee exited before its initial stop"
                     );
-                    return exit_status;
+                    if let Some(failure) = &ordinary_failure {
+                        failure.newborn_exited(id);
+                    }
+                    return Ok(Some(exit_status));
                 }
                 Err(TraceError::Errno(errno)) => {
                     tracing::error!(
@@ -4551,7 +5454,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                         %errno,
                         "failed waiting for new tracee initial stop"
                     );
-                    return ExitStatus::Exited(1);
+                    if ordinary_failure.is_some() {
+                        return Err(errno.into());
+                    }
+                    return Ok(Some(ExitStatus::Exited(1)));
                 }
             };
 
@@ -4561,6 +5467,19 @@ impl<L: Tool + 'static> TracedTask<L> {
                 event
             );
 
+            child_task.arm_liteinst_root_stop(&child, &event);
+            #[cfg(test)]
+            if ordinary_failure.is_some() {
+                let control = FATAL_SETUP_CONTROL.with(|slot| slot.borrow_mut().take());
+                if let Some(control) = control {
+                    *control.child.lock().unwrap() = Some((id, Arc::new(child.terminal_cleanup())));
+                    return Err(
+                        anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EIO))
+                            .context("injected newborn setup refusal after its actual initial stop")
+                            .into(),
+                    );
+                }
+            }
             if let Some(context) = child_restore_context {
                 // Restore context, but only if the child hasn't arrived at
                 // `Event::Exit`.
@@ -4572,7 +5491,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                         error = %err,
                         "failed to restore new tracee register context"
                     );
-                    return ExitStatus::Exited(1);
+                    if ordinary_failure.is_some() {
+                        return Err(anyhow::anyhow!(
+                            "restore newborn {id} register context failed: {err}"
+                        )
+                        .into());
+                    }
+                    return Ok(Some(ExitStatus::Exited(1)));
                 }
             }
 
@@ -4584,7 +5509,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             let detach_held_root_stop = child_task
                 .liteinst_root_config()
                 .map(|runtime| Arc::clone(&runtime.held_root_stop));
-            match child_task.run(child).await {
+            let result = child_task.run(child).await;
+            if ordinary_failure.is_some() {
+                // A failed cleanup has no exit status. Never detach it or
+                // invent one; the session retains its original fatal error.
+                return result.map(Some);
+            }
+            Ok(Some(match result {
                 Err(err) => {
                     tracing::error!("Error in tracee tid {}: {}", tid, err);
 
@@ -4596,7 +5527,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         // before that notifier acknowledges terminal status.
                         // This includes failed reactivation after exec, as well
                         // as a refused exec or a kernel-frozen vfork parent.
-                        return ExitStatus::Exited(1);
+                        return Ok(Some(ExitStatus::Exited(1)));
                     }
 
                     // We assume the tracee is stopped since this error likely
@@ -4620,7 +5551,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             // If we get an error here, the child process may
                             // not be in a ptrace stop.
                             tracing::error!("Failed to detach from {}: {}", tid, err);
-                            return ExitStatus::Exited(1);
+                            return Ok(Some(ExitStatus::Exited(1)));
                         }
                         Ok(running) => running,
                     };
@@ -4650,14 +5581,39 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }
                 }
                 Ok(exit_status) => exit_status,
-            }
+            }))
         };
-        let task = tokio::task::spawn_local(async move {
+        if self.ordinary_failure_enabled() {
+            self.global_state.fatal_session.handed(id);
+        }
+        let task_body = async move {
             match AssertUnwindSafe(body).catch_unwind().await {
-                Ok(exit_status) => exit_status,
+                Ok(Ok(exit_status)) => exit_status,
+                Ok(Err(error)) => {
+                    if let Some(failure) = report_failure {
+                        failure.fail(error);
+                    }
+                    None
+                }
                 Err(payload) => guest_task_panic_is_fatal(panic_tid, payload),
             }
-        });
+        };
+        let task = if self.ordinary_failure_enabled() {
+            let (sender, receiver) = oneshot::channel();
+            let handle = tokio::task::spawn_local(async move {
+                let result = task_body.await;
+                let _ = sender.send(result);
+            });
+            self.global_state
+                .fatal_session
+                .joins
+                .lock()
+                .unwrap()
+                .push(handle);
+            ChildCompletion::Owned(receiver)
+        } else {
+            ChildCompletion::Legacy(tokio::task::spawn_local(task_body))
+        };
 
         if op == ChildOp::Clone {
             let mut child_threads = self.child_threads.lock().await;
@@ -4667,6 +5623,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 wait_all_stop_tx: None,
                 daemonizer_rx,
                 handle: task,
+                ordinary_terminal,
             });
         } else {
             let mut child_procs = self.child_procs.lock().await;
@@ -4676,9 +5633,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                 wait_all_stop_tx: None,
                 daemonizer_rx,
                 handle: task,
+                ordinary_terminal,
             });
         }
 
+        // Even a failed parent restoration leaves the initialized child owned
+        // by the registered task before the error crosses the callback boundary.
+        parent_restore?;
         let parent_regs = parent.getregs()?;
         if self.attached_by_gdb {
             // NB: We report T05;create event (for clone). However gdbserver
@@ -4894,6 +5855,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn run_loop(&mut self, task: Stopped) -> Result<ExitStatus, reverie::Error> {
         match self.run_loop_internal(task).await {
             Ok(exit_status) => Ok(exit_status),
+            Err(Error::RunFailed) => future::pending().await,
             Err(err) => {
                 if self.global_state.liteinst_runtime.is_some() {
                     // Return immediately to the outer LiteInst cleanup guard.
@@ -4919,9 +5881,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         })
         .await
         {
-            // Propagate user errors. Don't care about the result of syscall injections.
+            if self.ordinary_failure_enabled() && !matches!(err, reverie::Error::Errno(_)) {
+                self.publish_ordinary_failure("ptrace thread start", err);
+                return Err(Error::RunFailed);
+            }
+            // Legitimate guest errno keeps the existing startup behavior.
             err.into_errno()?;
         }
+        self.ordinary_continuation()?;
+        self.ordinary_trace_continuation()?;
         self.timer.finalize_requests();
 
         // Resume the guest for the first time. Note that the root task and
@@ -4945,10 +5913,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         }
 
-        let mut task_state = running
+        let task_state = running
             .next_state()
             .await
             .tracee_context(self.tid(), "wait after initial tracee resume")?;
+        self.run_loop_events(task_state).await
+    }
+
+    async fn run_loop_events(&mut self, mut task_state: Wait) -> Result<ExitStatus, Error> {
         let mut next_state_rx = self.next_state_rx.take().ok_or_else(|| {
             Error::runtime(
                 self.tid(),
@@ -5000,9 +5972,698 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// Errno erases causal provenance. Resolve against the current held stop,
+    /// retaining the original return while only the original owner can exit.
+    async fn ordinary_callback_errno<T>(
+        &mut self,
+        phase: &'static str,
+        result: Result<T, Errno>,
+    ) -> Result<T, TraceError> {
+        let errno = match result {
+            Ok(value) => return Ok(value),
+            Err(errno) if !self.ordinary_failure_enabled() => return Err(errno.into()),
+            Err(errno) => errno,
+        };
+        use crate::PtraceCallbackDecision as Decision;
+        use crate::PtraceCallbackRefusal as Refusal;
+        let session = self.fatal_session();
+        let mut diagnostic = crate::PtraceCallbackDiagnostic {
+            origin: BackendFailure {
+                pid: self.pid(),
+                tid: self.tid(),
+                phase,
+            },
+            errno,
+            held: None,
+            sample: None,
+            refusal: None,
+            decision: Decision::AwaitingOwner,
+            outcome: None,
+            failure_published_at_outcome: false,
+            backend_signalling_at_outcome: false,
+        };
+        let decision = if session.is_failed() {
+            diagnostic.decision = Decision::Cancelled;
+            session.fail_at(diagnostic.origin, errno.into());
+            Ok(true)
+        } else if session.ptracer_thread != Some(std::thread::current().id()) {
+            Err(Refusal::WrongThread)
+        } else {
+            let stop = session
+                .tree
+                .lock()
+                .unwrap()
+                .tasks
+                .iter()
+                .find(|stop| stop.tid == self.tid())
+                .cloned();
+            let observation = match stop {
+                Some(stop) => self
+                    .ordinary_held_stop
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .ok_or(Refusal::HeldStop)
+                    .and_then(|held| held.callback_observation(self.tid(), &stop.terminal)),
+                None => Err(Refusal::HeldStop),
+            };
+            match observation {
+                Ok((held, sample)) => {
+                    let result = callback_owner_decision(held, &sample);
+                    diagnostic.held = Some(held);
+                    diagnostic.sample = Some(sample);
+                    result
+                }
+                Err(error) => Err(error),
+            }
+        };
+        let park = match decision {
+            Ok(park) => {
+                if !park {
+                    diagnostic.decision = Decision::Fatal;
+                }
+                park
+            }
+            Err(refusal) => {
+                diagnostic.decision = Decision::Refused;
+                diagnostic.refusal = Some(refusal);
+                false
+            }
+        };
+        let refusal = diagnostic.refusal.clone();
+        {
+            let mut records = session.callback_diagnostics.lock().unwrap();
+            self.pending_callback_diagnostic = Some(records.len());
+            records.push(diagnostic);
+        }
+        if park {
+            // No timer finalization, result encoding, continuation or new wait.
+            // drive_ordinary retains and polls the one existing exit receiver.
+            return future::pending().await;
+        }
+        self.publish_ordinary_failure(phase, errno.into());
+        if let Some(refusal) = refusal {
+            session.fail_at(
+                BackendFailure {
+                    pid: self.pid(),
+                    tid: self.tid(),
+                    phase: "ptrace callback lifecycle observation",
+                },
+                anyhow::Error::new(refusal).into(),
+            );
+        }
+        Err(errno.into())
+    }
+
+    fn resolve_callback_diagnostic(
+        &mut self,
+        outcome: crate::PtraceCallbackOutcome,
+        receipt: crate::tracer::OrdinaryReceipt,
+    ) {
+        if let Some(index) = self.pending_callback_diagnostic.take() {
+            let session = self.fatal_session();
+            let mut records = session.callback_diagnostics.lock().unwrap();
+            let record = &mut records[index];
+            record.outcome = Some(outcome);
+            record.failure_published_at_outcome = receipt.failure_published;
+            record.backend_signalling_at_outcome = receipt.backend_signalling;
+            if record.decision == crate::PtraceCallbackDecision::AwaitingOwner
+                && receipt.failure_published
+            {
+                record.decision = crate::PtraceCallbackDecision::Cancelled;
+            }
+        }
+    }
+
+    fn publish_ordinary_failure(&self, phase: &'static str, error: reverie::Error) {
+        self.global_state.fatal_session.fail_at(
+            BackendFailure {
+                pid: self.pid(),
+                tid: self.tid(),
+                phase,
+            },
+            error,
+        );
+        if let Err(error) = self.timer.cancel() {
+            self.global_state.fatal_session.fail_at(
+                BackendFailure {
+                    pid: self.pid(),
+                    tid: self.tid(),
+                    phase: "ptrace timer cancellation",
+                },
+                error.into(),
+            );
+        }
+    }
+
+    fn ordinary_failure_enabled(&self) -> bool {
+        self.global_state.liteinst_runtime.is_none()
+            && self.global_state.injected_syscall_trap.is_none()
+    }
+
+    fn ordinary_trace_continuation(&self) -> Result<(), TraceError> {
+        if self.ordinary_failure_enabled() && self.global_state.fatal_session.is_failed() {
+            Err(Errno::ECANCELED.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ordinary_continuation(&self) -> Result<(), Error> {
+        if self.ordinary_failure_enabled() && self.global_state.fatal_session.is_failed() {
+            Err(Error::RunFailed)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn fatal_session(&self) -> Arc<FatalSession> {
+        self.global_state.fatal_session.clone()
+    }
+
+    async fn ordinary_start(&mut self, start: OrdinaryStart) -> Result<ExitStatus, reverie::Error> {
+        let child = match start {
+            OrdinaryStart::Exec(child, former) => {
+                let result = match self.handle_exec_event(child, former).await {
+                    Ok(state) => self.run_loop_events(state).await,
+                    Err(error) => Err(Error::Internal(error)),
+                };
+                return match result {
+                    Ok(status) => Ok(status),
+                    Err(Error::RunFailed) => future::pending().await,
+                    Err(error) => handle_internal_error(error).await,
+                };
+            }
+            OrdinaryStart::Stopped(child) => child,
+            OrdinaryStart::Newborn(child, context) => {
+                let wait = match child.next_state().await {
+                    Ok(wait) => wait,
+                    Err(TraceError::Died(zombie)) => {
+                        return zombie
+                            .reap()
+                            .await
+                            .map_err(|error| anyhow::Error::new(error).into());
+                    }
+                    Err(error) => return Err(anyhow::Error::new(error).into()),
+                };
+                let (child, event) = match wait {
+                    Wait::Exited(_, status) => return Ok(status),
+                    Wait::Stopped(child, event) => (child, event),
+                };
+                self.arm_liteinst_root_stop(&child, &event);
+                #[cfg(test)]
+                if let Some(control) = FATAL_SETUP_CONTROL.with(|slot| slot.borrow_mut().take()) {
+                    *control.child.lock().unwrap() =
+                        Some((self.tid(), Arc::new(child.terminal_cleanup())));
+                    return Err(
+                        anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EIO))
+                            .context("injected newborn setup refusal after its actual initial stop")
+                            .into(),
+                    );
+                }
+                if event == Event::Exit {
+                    return future::pending().await;
+                }
+                if event != Event::Signal(Signal::SIGSTOP) {
+                    return Err(
+                        anyhow::anyhow!("unexpected newborn initial event: {event:?}").into(),
+                    );
+                }
+                if let Some(context) = context {
+                    restore_context(&child, *context, None, false).map_err(anyhow::Error::new)?;
+                }
+                child
+            }
+        };
+        self.run_loop(child).await
+    }
+
+    async fn run_ordinary_newborn(
+        self,
+        child: Running,
+        context: Option<libc::user_regs_struct>,
+    ) -> Result<Option<ExitStatus>, reverie::Error> {
+        self.run_ordinary_owned(OrdinaryStart::Newborn(child, context.map(Box::new)))
+            .await
+    }
+
+    async fn run_ordinary(self, child: Stopped) -> Result<ExitStatus, reverie::Error> {
+        match self
+            .run_ordinary_owned(OrdinaryStart::Stopped(child))
+            .await?
+        {
+            Some(status) => Ok(status),
+            None => unreachable!("only a nonleader child can transfer at exec"),
+        }
+    }
+
+    async fn run_ordinary_owned(
+        mut self,
+        mut start: OrdinaryStart,
+    ) -> Result<Option<ExitStatus>, reverie::Error> {
+        let session = self.fatal_session();
+        #[cfg(test)]
+        FATAL_FREEZE_CONTROL.with(|slot| {
+            if let Some(control) = slot.borrow().as_ref() {
+                *control.session.lock().unwrap() = Some(session.clone());
+            }
+        });
+        let terminal = match &start {
+            OrdinaryStart::Stopped(child) | OrdinaryStart::Exec(child, _) => {
+                child.terminal_cleanup()
+            }
+            OrdinaryStart::Newborn(child, _) => child.terminal_cleanup(),
+        };
+        let stop = Arc::new(FatalTaskStop {
+            tid: self.tid(),
+            terminal,
+            held: self.ordinary_held_stop.clone(),
+            frozen: AtomicBool::new(false),
+        });
+        let slot = Arc::new(OrdinaryExecSlot {
+            stop: stop.clone(),
+            requested: AtomicBool::new(false),
+            changed: Notify::new(),
+            transferred: StdMutex::new(None),
+        });
+        self.ordinary_exec
+            .lock()
+            .unwrap()
+            .insert(self.tid(), slot.clone());
+        let newborn = session.register(stop.clone());
+        let mut exit_event = match newborn {
+            Some(newborn) => newborn.into_exit(),
+            None => match &start {
+                OrdinaryStart::Stopped(child) | OrdinaryStart::Exec(child, _) => {
+                    Box::pin(child.exit_event())
+                }
+                OrdinaryStart::Newborn(_, _) => {
+                    panic!("initialized newborn lost its original exit receiver")
+                }
+            },
+        };
+        if matches!(&start, OrdinaryStart::Newborn(..)) && self.is_a_daemon {
+            self.ndaemons.fetch_add(1, Ordering::SeqCst);
+        }
+        loop {
+            // Covers the entire run, parked callbacks, terminal waits, and
+            // failure cleanup. The actual Exec requester owns the replacement
+            // stop before this original task can transfer its state.
+            let outcome = {
+                let drive = self
+                    .drive_ordinary(start, &mut exit_event, &stop, &session)
+                    .fuse();
+                let transfer = slot.requested().fuse();
+                futures::pin_mut!(drive, transfer);
+                futures::select_biased! {
+                    () = transfer => None,
+                    result = drive => Some(result),
+                }
+            };
+            match outcome {
+                None => {
+                    *slot.transferred.lock().unwrap() = Some(Box::new(self));
+                    slot.changed.notify_waiters();
+                    // No on_exit hook or fabricated ExitStatus for the
+                    // surviving former thread. Its state now has one owner.
+                    return Ok(None);
+                }
+                Some(crate::tracer::OrdinaryTerminal::Exited(status, receipt)) => {
+                    self.resolve_callback_diagnostic(
+                        crate::PtraceCallbackOutcome::Exited(status),
+                        receipt,
+                    );
+                    self.ordinary_exec.lock().unwrap().remove(&self.tid());
+                    if let Some(stats) = &self.global_state.backend_stats {
+                        stats.record_tracee_exit();
+                    }
+                    log_guest_exit(self.tid(), self.pid(), status);
+                    self.tool_exit_ordinary(status).await;
+                    session.finished(&stop);
+                    return Ok(Some(status));
+                }
+                Some(crate::tracer::OrdinaryTerminal::Exec {
+                    stopped,
+                    former,
+                    replaced_status,
+                    receipt,
+                }) => {
+                    self.resolve_callback_diagnostic(
+                        crate::PtraceCallbackOutcome::Exec {
+                            former,
+                            exit_stop_status: replaced_status,
+                        },
+                        receipt,
+                    );
+                    let former_slot = loop {
+                        let candidate = self.ordinary_exec.lock().unwrap().get(&former).cloned();
+                        if former != self.tid()
+                            && self.is_main_thread()
+                            && stopped.pid() == self.tid()
+                            && stopped.terminal_cleanup().same_generation(&stop.terminal)
+                            && let Some(candidate) = candidate
+                        {
+                            break candidate;
+                        }
+                        session.retry_after(anyhow::anyhow!("actual exec former {former} has no same-process initialized owner").into()).await;
+                    };
+                    former_slot.requested.store(true, Ordering::Release);
+                    former_slot.changed.notify_waiters();
+                    let mut former_task = former_slot.take().await;
+                    while !former_slot.stop.terminal.wait(std::time::Duration::ZERO) {
+                        tokio::task::yield_now().await;
+                    }
+                    // Registry membership and immutable stop generation bind
+                    // the request; the actual kernel Exec supplies the edge.
+                    assert!(Arc::ptr_eq(&self.process_state, &former_task.process_state));
+                    self.ordinary_exec.lock().unwrap().remove(&former);
+                    session.finished(&former_slot.stop);
+                    #[cfg(test)]
+                    let timer_before = EXEC_TIMER_TRANSFERS.with(|control| {
+                        control.borrow().as_ref().map(|_| {
+                            (
+                                self.timer
+                                    .exec_test_identity()
+                                    .expect("read old leader perf identity"),
+                                former_task
+                                    .timer
+                                    .exec_test_identity()
+                                    .expect("read former perf identity"),
+                            )
+                        })
+                    });
+                    std::mem::swap(&mut self.thread_state, &mut former_task.thread_state);
+                    std::mem::swap(&mut self.timer, &mut former_task.timer);
+                    std::mem::swap(&mut self.is_a_daemon, &mut former_task.is_a_daemon);
+                    former_task
+                        .retire_replaced_leader(self.tid(), replaced_status)
+                        .await;
+                    for (phase, error) in self.timer.retarget_after_exec(self.pid(), self.tid()) {
+                        session.fail_at(
+                            BackendFailure {
+                                pid: self.pid(),
+                                tid: self.tid(),
+                                phase,
+                            },
+                            error.into(),
+                        );
+                    }
+                    #[cfg(test)]
+                    if let Some((displaced, before)) = timer_before {
+                        let after = self
+                            .timer
+                            .exec_test_identity()
+                            .expect("read replacement perf identity");
+                        let closed = displaced.as_ref().is_some_and(|old| {
+                            [old.clock_fd, old.timer_fd].into_iter().all(|fd| {
+                                (unsafe { libc::fcntl(fd, libc::F_GETFD) }) == -1
+                                    && std::io::Error::last_os_error().raw_os_error()
+                                        == Some(libc::EBADF)
+                            })
+                        });
+                        EXEC_TIMER_TRANSFERS.with(|control| {
+                            control.borrow().as_ref().unwrap().lock().unwrap().push(
+                                ExecTimerTransfer {
+                                    displaced,
+                                    before,
+                                    after,
+                                    displaced_fds_closed: closed,
+                                },
+                            )
+                        });
+                    }
+                    // The old callback and its receiver were cancelled. A new
+                    // channel carries only events from the replacement image.
+                    let (tx, rx) = mpsc::channel(1);
+                    self.next_state = tx;
+                    self.next_state_rx = Some(rx);
+                    self.pending_signal = None;
+                    self.pending_syscall = None;
+                    self.pending_syscall_already_skipped = false;
+                    self.cancel_handler.store(false, Ordering::Release);
+                    stop.frozen.store(false, Ordering::Release);
+                    self.arm_liteinst_root_stop(&stopped, &Event::Exec(former));
+                    exit_event = Box::pin(stopped.exit_event());
+                    start = OrdinaryStart::Exec(stopped, former);
+                }
+            }
+        }
+    }
+
+    async fn retire_replaced_leader(mut self, leader: Pid, status: ExitStatus) {
+        let session = self.fatal_session();
+        let former = self.tid();
+        let pid = self.pid();
+        if let Err(error) = self.timer.cancel() {
+            session.fail_at(
+                BackendFailure {
+                    pid,
+                    tid: leader,
+                    phase: "ptrace replaced leader timer cancellation",
+                },
+                error.into(),
+            );
+        }
+        for (phase, error) in self.timer.close_after_failure() {
+            session.fail_at(
+                BackendFailure {
+                    pid,
+                    tid: leader,
+                    phase,
+                },
+                error.into(),
+            );
+        }
+        let wrapped = WrappedFrom(leader, &self.global_state);
+        if let Err(error) = self
+            .process_state
+            .on_exit_thread(leader, &wrapped, self.thread_state, status)
+            .await
+        {
+            session.fail_at(
+                BackendFailure {
+                    pid,
+                    tid: leader,
+                    phase: "ptrace replaced leader on_exit_thread",
+                },
+                error,
+            );
+        }
+        // The process and surviving thread have not exited. Only the old
+        // leader's actual Exit-event state is consumed here.
+        self.child_threads
+            .lock()
+            .await
+            .retain(|child| child.id() != former);
+        self.ntasks.fetch_sub(1, Ordering::SeqCst);
+        if self.is_a_daemon {
+            self.ndaemons.fetch_sub(1, Ordering::SeqCst);
+        }
+        if let Some(stats) = &self.global_state.backend_stats {
+            stats.record_tracee_exit();
+        }
+    }
+
+    async fn drive_ordinary(
+        &mut self,
+        start: OrdinaryStart,
+        exit_event: &mut futures::future::BoxFuture<'static, Result<Stopped, TraceError>>,
+        stop: &Arc<FatalTaskStop>,
+        session: &Arc<FatalSession>,
+    ) -> crate::tracer::OrdinaryTerminal {
+        let global = self.global_state.gs_ref.clone();
+        let outcome = {
+            let run_loop = self.ordinary_start(start).fuse();
+            let cancelled = session.cancelled().fuse();
+            let global_failure = global.wait_for_backend_failure().fuse();
+            futures::pin_mut!(run_loop, cancelled, global_failure);
+            let exit = (&mut *exit_event).fuse();
+            futures::pin_mut!(exit);
+            futures::select_biased! {
+                () = cancelled => None,
+                () = global_failure => {
+                    if !session.is_failed() {
+                        session.fail(anyhow::anyhow!("GlobalTool reported a failed ptrace run").into());
+                    }
+                    None
+                },
+                task = exit => Some(Either::Left(task)),
+                result = run_loop => Some(Either::Right(result)),
+            }
+        };
+        drop(global);
+        match outcome {
+            Some(Either::Right(Ok(status))) => {
+                crate::tracer::OrdinaryTerminal::Exited(status, session.ordinary_receipt())
+            }
+            Some(Either::Left(mut stopped)) => {
+                while let Err(TraceError::Errno(error)) = stopped {
+                    if stop
+                        .terminal
+                        .observed_exit_status()
+                        .ok()
+                        .flatten()
+                        .is_some()
+                    {
+                        break;
+                    }
+                    if error == Errno::ECHILD && !self.is_main_thread() {
+                        // A former TID can lose its pidfd wait during exec. It
+                        // has no terminal status to consume. The outer owner
+                        // remains available for the leader's actual Exec edge;
+                        // ECHILD itself authorizes neither transfer nor exit.
+                        return future::pending().await;
+                    }
+                    session.retry_after(error.into()).await;
+                    stopped = (&mut *exit_event).await;
+                }
+                stop.frozen.store(true, Ordering::Release);
+                session.changed.notify_waiters();
+                crate::tracer::finish_ordinary_exit(stopped, stop, session).await
+            }
+            failure => {
+                if let Some(Either::Right(Err(error))) = failure {
+                    self.publish_ordinary_failure("ptrace task callback", error);
+                } else if let Err(error) = self.timer.cancel() {
+                    session.fail_at(
+                        BackendFailure {
+                            pid: self.pid(),
+                            tid: self.tid(),
+                            phase: "ptrace timer cancellation",
+                        },
+                        error.into(),
+                    );
+                }
+                session.freeze_and_kill(stop).await;
+                let stopped = loop {
+                    match (&mut *exit_event).await {
+                        Ok(stopped) => break Ok(stopped),
+                        Err(TraceError::Died(zombie)) => break Err(TraceError::Died(zombie)),
+                        Err(error) => session.retry_after(anyhow::Error::new(error).into()).await,
+                    }
+                };
+                crate::tracer::finish_ordinary_exit(stopped, stop, session).await
+            }
+        }
+    }
+
+    async fn tool_exit_ordinary(mut self, status: ExitStatus) {
+        let session = self.fatal_session();
+        let pid = self.pid();
+        let tid = self.tid();
+        let main = self.is_main_thread();
+        if main {
+            let children = self.child_threads.lock().await.take_inner();
+            for result in future::join_all(children).await {
+                if let Err(error) = result {
+                    session.fail_at(
+                        BackendFailure {
+                            pid,
+                            tid,
+                            phase: "ptrace thread join",
+                        },
+                        error,
+                    );
+                }
+            }
+            let (orphans, _) = {
+                let mut children = self.child_procs.lock().await;
+                children.deref_mut().await
+            };
+            for orphan in orphans.into_inner() {
+                if let Err(error) = self.orphanage.send(orphan).await
+                    && let Err(error) = error.0.await
+                {
+                    session.fail(error);
+                }
+            }
+        }
+        let reason = if main {
+            StopReason::Exited(pid, status)
+        } else {
+            StopReason::ThreadExited(tid, pid, status)
+        };
+        let _ = self.notify_gdb_stop(reason).await;
+        let wrapped = WrappedFrom(tid, &self.global_state);
+        if let Err(error) = self
+            .process_state
+            .on_exit_thread(tid, &wrapped, self.thread_state, status)
+            .await
+        {
+            session.fail_at(
+                BackendFailure {
+                    pid,
+                    tid,
+                    phase: "ptrace on_exit_thread",
+                },
+                error,
+            );
+        }
+        if main {
+            let mut process = self.process_state;
+            let process = loop {
+                match Arc::try_unwrap(process) {
+                    Ok(process) => break process,
+                    Err(retained) => {
+                        process = retained;
+                        session
+                            .retry_after(
+                                anyhow::anyhow!("process Tool still has owners after child joins")
+                                    .into(),
+                            )
+                            .await;
+                    }
+                }
+            };
+            if let Err(error) = process.on_exit_process(tid, &wrapped, status).await {
+                session.fail_at(
+                    BackendFailure {
+                        pid,
+                        tid,
+                        phase: "ptrace on_exit_process",
+                    },
+                    error,
+                );
+            }
+        } else {
+            // The session still owns the actual JoinHandle. Removing this
+            // completion subscription cannot detach a pending consuming hook.
+            self.child_threads
+                .lock()
+                .await
+                .retain(|child| child.id() != tid);
+        }
+        if session.is_failed() {
+            if let Err(error) = self.timer.cancel() {
+                session.fail_at(
+                    BackendFailure {
+                        pid,
+                        tid,
+                        phase: "ptrace timer cancellation",
+                    },
+                    error.into(),
+                );
+            }
+            for (phase, error) in self.timer.close_after_failure() {
+                session.fail_at(BackendFailure { pid, tid, phase }, error.into());
+            }
+        }
+        let remaining = self.ntasks.fetch_sub(1, Ordering::SeqCst);
+        let daemons = self.ndaemons.load(Ordering::SeqCst);
+        if self.is_a_daemon {
+            self.ndaemons.fetch_sub(1, Ordering::SeqCst);
+        }
+        if main && remaining == 1 + daemons {
+            let _ = self.daemon_kill_switch.send(());
+        }
+    }
+
     /// Drive a single guest thread to completion. Returns the final exit code
     /// when that guest thread exits.
     pub async fn run(mut self, child: Stopped) -> Result<ExitStatus, reverie::Error> {
+        if self.ordinary_failure_enabled() {
+            return self.run_ordinary(child).await;
+        }
         // Only the session root owns the shared root-stop lease; a child task
         // that superseded it would strand the root's cleanup handoff.
         let exit_held_root_stop = self
@@ -6218,6 +7879,112 @@ impl<'a, G: GlobalTool> GlobalRPC<G> for WrappedFrom<'a, G> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn callback_observation_refuses_typed_faults_and_only_defers_disappearance_with_gone_identity()
+    {
+        use safeptrace::ProcStatError as P;
+        use safeptrace::StopObservationError as B;
+        use safeptrace::StopSiginfo;
+
+        use crate::PtraceCallbackRefusal as R;
+        use crate::PtraceCallbackStop as S;
+        // These are explicitly projected field failures, not claims that the
+        // kernel returned these errno values in the real lifecycle fixtures.
+        let info = StopSiginfo {
+            signo: libc::SIGTRAP,
+            code: 1541,
+            sender_pid: 42,
+            sender_uid: 1,
+        };
+        fn decide(
+            binding: Option<B>,
+            query: Option<Result<StopSiginfo, Errno>>,
+            flags: Option<&Result<u32, P>>,
+            live: Option<Result<bool, Errno>>,
+        ) -> Result<bool, R> {
+            super::callback_observation_decision(
+                S::Signal(libc::SIGTRAP),
+                binding,
+                query,
+                flags,
+                live,
+            )
+        }
+
+        for error in [Errno::EPERM, Errno::EIO, Errno::EINVAL] {
+            assert_eq!(
+                decide(None, Some(Err(error)), None, Some(Ok(false))),
+                Err(R::Query(error))
+            );
+        }
+        assert_eq!(
+            decide(None, Some(Ok(info)), None, Some(Err(Errno::EPERM))),
+            Err(R::Pidfd(Errno::EPERM))
+        );
+        for error in [
+            P::Io(Errno::EPERM),
+            P::Io(Errno::EIO),
+            P::Io(Errno::EINTR),
+            P::Format("short record"),
+            P::PidMismatch,
+        ] {
+            for live in [false, true] {
+                let result = Err(error.clone());
+                assert_eq!(
+                    decide(None, Some(Ok(info)), Some(&result), Some(Ok(live))),
+                    Err(R::Proc(error.clone()))
+                );
+            }
+        }
+        for errno in [Errno::ESRCH, Errno::ENOENT] {
+            let flags = Err(P::Io(errno));
+            assert_eq!(
+                decide(None, Some(Ok(info)), Some(&flags), Some(Ok(false))),
+                Ok(true)
+            );
+            assert_eq!(
+                decide(None, Some(Ok(info)), Some(&flags), Some(Ok(true))),
+                Err(R::Proc(P::Io(errno)))
+            );
+        }
+        for error in [
+            B::WrongThread,
+            B::GenerationMismatch,
+            B::ExecEpochMismatch,
+            B::PidMismatch,
+            B::Identity(Errno::ENODATA),
+        ] {
+            assert_eq!(
+                decide(Some(error), None, None, None),
+                Err(R::Binding(error))
+            );
+        }
+        assert_eq!(
+            decide(None, None, None, None),
+            Err(R::Inconsistent("missing siginfo query"))
+        );
+        assert_eq!(
+            decide(None, Some(Ok(info)), None, None),
+            Err(R::Inconsistent("missing final pidfd query"))
+        );
+        assert_eq!(
+            decide(None, Some(Ok(info)), None, Some(Ok(true))),
+            Err(R::Inconsistent("missing ambiguous EXIT flags"))
+        );
+        assert_eq!(
+            decide(None, Some(Err(Errno::ESRCH)), None, Some(Ok(true))),
+            Ok(true)
+        );
+        assert_eq!(
+            decide(None, Some(Ok(info)), Some(&Ok(0)), Some(Ok(true))),
+            Ok(false)
+        );
+        assert_eq!(
+            decide(None, Some(Ok(info)), Some(&Ok(0x400)), Some(Ok(true))),
+            Ok(true)
+        );
+    }
+
     #[test]
     fn command_bootstrap_arguments_preserve_types_and_raw_tail() {
         let args = super::SyscallArgs::new(0x1000, 0x2000, 0, 41, 0x3000, 43);
