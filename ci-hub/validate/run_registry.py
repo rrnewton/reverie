@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import fcntl
 import json
 import os
 import re
+import secrets
 import socket
 import stat
 import sys
@@ -83,6 +86,14 @@ class RuntimeRootIdentityRecord(TypedDict):
     mode: int
     uid: int
     gid: int
+
+
+class CleanupRemovalIntentRecord(TypedDict, total=False):
+    recorded_at: str
+    path: str
+    identity: RuntimeRootIdentityRecord
+    wrkslots_slot: str
+    wrkslots_generation: int
 
 
 class AdmissionResultRecord(TypedDict, total=False):
@@ -197,10 +208,12 @@ class RunRecord(TypedDict, total=False):
     termination_requests: list[TerminationRequestRecord]
     measured_result: str
     checkout_removed_at: str
+    checkout_removal_intent: CleanupRemovalIntentRecord
     wrkslots_slot: str
     wrkslots_generation: int
     archived_orphaned_receipts: list[str]
     cargo_home_removed_at: str
+    cargo_home_removal_intent: CleanupRemovalIntentRecord
     runtime_root_removed_at: str
     host: str
     results: str
@@ -363,10 +376,12 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "ledger_mirror",
         "measured_result",
         "checkout_removed_at",
+        "checkout_removal_intent",
         "wrkslots_slot",
         "wrkslots_generation",
         "archived_orphaned_receipts",
         "cargo_home_removed_at",
+        "cargo_home_removal_intent",
         "runtime_root_removed_at",
         "host",
         "termination_requests",
@@ -648,6 +663,52 @@ def _optional_string_list(value: Mapping[str, Any], field: str) -> None:
         return
     if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
         raise _error(field, "must be a list of strings or null")
+
+
+def _cleanup_removal_intent(
+    record: Mapping[str, Any], field: str
+) -> None:
+    value = record.get(field)
+    if not isinstance(value, dict):
+        raise _error(field, "must be an object")
+    target_field = (
+        "checkout" if field == "checkout_removal_intent" else "cargo_home"
+    )
+    expected = {"recorded_at", "path", "identity"}
+    if field == "checkout_removal_intent" and "wrkslots_slot" in record:
+        expected.update(("wrkslots_slot", "wrkslots_generation"))
+    if set(value) != expected:
+        raise _error(field, f"must contain exactly {', '.join(sorted(expected))}")
+    _timestamp(value, "recorded_at", error_field=f"{field}.recorded_at")
+    path = _required_text(value, "path")
+    if not Path(path).is_absolute() or path != record.get(target_field):
+        raise _error(field, f"must bind the exact absolute {target_field} path")
+    identity = value.get("identity")
+    identity_fields = {"device", "inode", "mode", "uid", "gid"}
+    if (
+        not isinstance(identity, dict)
+        or set(identity) != identity_fields
+        or any(
+            type(identity.get(item)) is not int or identity[item] < 0
+            for item in identity_fields
+        )
+        or not stat.S_ISDIR(identity["mode"])
+    ):
+        raise _error(field, "must bind an exact nonnegative directory identity")
+    if field == "checkout_removal_intent":
+        if record.get("temporary_checkout") is not True:
+            raise _error(field, "requires temporary_checkout=true")
+        if "wrkslots_slot" in expected:
+            if (
+                not isinstance(value.get("wrkslots_slot"), str)
+                or not value["wrkslots_slot"]
+                or type(value.get("wrkslots_generation")) is not int
+                or value["wrkslots_generation"] < 0
+                or value.get("wrkslots_slot") != record.get("wrkslots_slot")
+                or value.get("wrkslots_generation")
+                != record.get("wrkslots_generation")
+            ):
+                raise _error(field, "must bind the exact wrkslots identity")
 
 
 def _scorecard_writeback(value: Any) -> dict[str, str] | None:
@@ -1017,6 +1078,12 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
                     "runtime_root_identity",
                     "must be an exact nonnegative directory identity",
                 )
+        for intent_field in (
+            "checkout_removal_intent",
+            "cargo_home_removal_intent",
+        ):
+            if intent_field in value:
+                _cleanup_removal_intent(value, intent_field)
         for field in (
             "source_checkout",
             "cargo_home",
@@ -1892,6 +1959,195 @@ def _write_unlocked(
             pass
 
 
+RUN_RECORD_IDENTITY_FIELDS = (
+    "st_dev",
+    "st_ino",
+    "st_mode",
+    "st_uid",
+    "st_gid",
+    "st_nlink",
+    "st_size",
+    "st_mtime_ns",
+    "st_ctime_ns",
+)
+
+
+def _run_record_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return tuple(int(getattr(metadata, field)) for field in RUN_RECORD_IDENTITY_FIELDS)
+
+
+@contextmanager
+def _pinned_parent_directory(path: Path):
+    """Pin and verify the no-follow directory that will own a new handle."""
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path.parent, flags)
+    try:
+        opened = os.fstat(descriptor)
+        named = os.stat(path.parent, follow_symlinks=False)
+        identity = _directory_identity(opened)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or not stat.S_ISDIR(named.st_mode)
+            or _directory_identity(named) != identity
+        ):
+            raise RuntimeError(
+                f"validation handle parent is not canonical before creation: {path.parent}"
+            )
+        yield descriptor, identity
+    finally:
+        os.close(descriptor)
+
+
+def _make_created_record_durable(
+    path: Path,
+    *,
+    parent_descriptor: int,
+    parent_identity: tuple[int, ...],
+    record_descriptor: int,
+) -> None:
+    """Sync the pinned parent and prove it still names the installed inode."""
+
+    os.fsync(parent_descriptor)
+    try:
+        opened_parent = os.fstat(parent_descriptor)
+        named_parent = os.stat(path.parent, follow_symlinks=False)
+        opened_record = os.fstat(record_descriptor)
+        pinned_record = os.stat(
+            path.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        named_record = os.lstat(path)
+    except OSError as error:
+        raise RuntimeError(
+            "validation handle parent or installed record changed before "
+            f"creation became durable: {path}: {error}"
+        ) from error
+    record_identities = {
+        _run_record_identity(item)
+        for item in (opened_record, pinned_record, named_record)
+    }
+    if (
+        not stat.S_ISDIR(opened_parent.st_mode)
+        or _directory_identity(opened_parent) != parent_identity
+        or not stat.S_ISDIR(named_parent.st_mode)
+        or _directory_identity(named_parent) != parent_identity
+        or not stat.S_ISREG(opened_record.st_mode)
+        or opened_record.st_nlink != 1
+        or len(record_identities) != 1
+    ):
+        raise RuntimeError(
+            "validation handle parent or installed record changed before "
+            f"creation became durable: {path}"
+        )
+
+
+def _create_unlocked(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    parent_descriptor: int,
+    parent_identity: tuple[int, ...],
+) -> None:
+    """Create without clobbering, entirely through the pinned parent fd."""
+
+    if not is_current_schema_version(value.get("schema_version")):
+        raise RuntimeError(f"validation handle {path} has an unsupported schema")
+    if value.get("producer") == PRODUCER:
+        parse_current_record(value)
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    temporary_name: str | None = None
+    descriptor: int | None = None
+    for _attempt in range(128):
+        candidate = f".{path.name}.{secrets.token_hex(16)}.tmp"
+        try:
+            descriptor = os.open(
+                candidate,
+                flags,
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+        except FileExistsError:
+            continue
+        temporary_name = candidate
+        break
+    if descriptor is None or temporary_name is None:
+        raise RuntimeError(
+            f"cannot allocate a unique temporary validation handle for {path}"
+        )
+
+    try:
+        record_descriptor = os.dup(descriptor)
+    except BaseException:
+        os.close(descriptor)
+        with suppress(FileNotFoundError):
+            os.unlink(temporary_name, dir_fd=parent_descriptor)
+        raise
+    try:
+        try:
+            stream = os.fdopen(descriptor, "w")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with stream:
+            json.dump(dict(value), stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        _rename_noreplace(parent_descriptor, temporary_name, path.name, path)
+        _make_created_record_durable(
+            path,
+            parent_descriptor=parent_descriptor,
+            parent_identity=parent_identity,
+            record_descriptor=record_descriptor,
+        )
+    finally:
+        os.close(record_descriptor)
+        with suppress(FileNotFoundError):
+            os.unlink(temporary_name, dir_fd=parent_descriptor)
+
+
+def _rename_noreplace(
+    parent_descriptor: int,
+    temporary_name: str,
+    destination_name: str,
+    path: Path,
+) -> None:
+    """Publish one inode through a pinned directory without any clobber window."""
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise RuntimeError(
+            f"atomic no-replace validation handle creation is unavailable: {path}"
+        )
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    if renameat2(
+        parent_descriptor,
+        os.fsencode(temporary_name),
+        parent_descriptor,
+        os.fsencode(destination_name),
+        1,  # RENAME_NOREPLACE
+    ) == 0:
+        return
+    number = ctypes.get_errno()
+    if number == errno.EEXIST:
+        raise RuntimeError(f"validation handle already exists: {path}")
+    raise OSError(number, os.strerror(number), path)
+
+
 def write_record(
     path: Path,
     value: Mapping[str, Any],
@@ -1926,9 +2182,30 @@ def create_record(
         path, blocking=True, authority=_population_authority
     ):
         with exclusive_record(path):
-            if path.exists() or path.is_symlink():
-                raise RuntimeError(f"validation handle already exists: {path}")
-            _write_unlocked(path, value)
+            with _pinned_parent_directory(path) as (
+                parent_descriptor,
+                parent_identity,
+            ):
+                try:
+                    os.stat(
+                        path.name,
+                        dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise RuntimeError(f"validation handle already exists: {path}")
+                # The file, publication, and durability barrier all resolve
+                # through the pre-install directory descriptor. This makes a
+                # parent rename detectable without ever overwriting a row in a
+                # replacement directory.
+                _create_unlocked(
+                    path,
+                    value,
+                    parent_descriptor=parent_descriptor,
+                    parent_identity=parent_identity,
+                )
 
 
 def create_current_record(

@@ -419,25 +419,34 @@ DESTRUCTIVE_CLEANUP_ROLLOUT_REASON = (
 )
 
 
+@dataclass(frozen=True)
+class DestructiveCleanupAuthority:
+    """Exclusive generation authority plus its narrowly scoped fence policy."""
+
+    generation: run_registry.RunWriterGenerationAuthority
+    same_launch: bool = False
+
+
 def require_destructive_cleanup_authority(
-    root: Path, authority: run_registry.RunWriterGenerationAuthority
+    root: Path, authority: DestructiveCleanupAuthority
 ) -> None:
-    if not DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED:
+    if not DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED and not authority.same_launch:
         raise CleanupRolloutUnavailable(DESTRUCTIVE_CLEANUP_ROLLOUT_REASON)
     run_registry.require_run_writer_generation_authority(
-        root, authority, exclusive=True
+        root, authority.generation, exclusive=True
     )
 
 
 @contextmanager
-def destructive_cleanup_authority(root: Path):
+def destructive_cleanup_authority(root: Path, *, same_launch: bool = False):
     """Take the outer exclusive generation boundary for one cleanup action."""
 
-    if not DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED:
+    if not DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED and not same_launch:
         raise CleanupRolloutUnavailable(DESTRUCTIVE_CLEANUP_ROLLOUT_REASON)
     with run_registry.run_writer_generation_lock(
         root, exclusive=True, blocking=False
-    ) as authority:
+    ) as generation:
+        authority = DestructiveCleanupAuthority(generation, same_launch=same_launch)
         require_destructive_cleanup_authority(root, authority)
         yield authority
         require_destructive_cleanup_authority(root, authority)
@@ -1799,6 +1808,7 @@ def prepare_fresh_checkout(
             run=run,
             tool_root=tool_root,
             wrkslots=identity,
+            _same_launch=True,
         )
         disposition = "removed" if removed else f"RETAINED at {fresh}"
         return RuntimeError(f"{detail}; registered checkout was {disposition}")
@@ -1865,8 +1875,9 @@ def remove_fresh_checkout(
     tool_root: Path = ROOT,
     completed_record: Path | None = None,
     wrkslots: WrkslotsIdentity | None = None,
-    cleanup_authority: run_registry.RunWriterGenerationAuthority | None = None,
+    cleanup_authority: DestructiveCleanupAuthority | None = None,
     record_authority: CleanupRecordAuthority | None = None,
+    _same_launch: bool = False,
 ) -> bool:
     """Remove the temp worktree AND deregister it; return observed absence."""
     try:
@@ -1953,7 +1964,9 @@ def remove_fresh_checkout(
                 f"checkout is outside the managed or frozen validation roots: {fresh}"
             )
         if cleanup_authority is None:
-            with destructive_cleanup_authority(state_root) as acquired:
+            with destructive_cleanup_authority(
+                state_root, same_launch=_same_launch
+            ) as acquired:
                 return remove_fresh_checkout(
                     source,
                     fresh,
@@ -1964,13 +1977,14 @@ def remove_fresh_checkout(
                     wrkslots=wrkslots,
                     cleanup_authority=acquired,
                     record_authority=record_authority,
+                    _same_launch=_same_launch,
                 )
         require_destructive_cleanup_authority(state_root, cleanup_authority)
         if completed_record is not None and record_authority is None:
             with exclusive_cleanup_record(
                 state_root,
                 completed_record,
-                generation_authority=cleanup_authority,
+                generation_authority=cleanup_authority.generation,
             ) as acquired_record:
                 return remove_fresh_checkout(
                     source,
@@ -2153,7 +2167,7 @@ def remove_fresh_checkouts_batch(
     *,
     run: Runner,
     tool_root: Path = ROOT,
-    cleanup_authority: run_registry.RunWriterGenerationAuthority | None = None,
+    cleanup_authority: DestructiveCleanupAuthority | None = None,
     record_authorities: Mapping[Path, CleanupRecordAuthority] | None = None,
 ) -> dict[str, str | None]:
     if cleanup_authority is None:
@@ -2284,7 +2298,7 @@ def remove_ownerless_checkouts_batch(
     tool_root: Path = ROOT,
     frozen: bool = False,
     classify_only: bool = False,
-    cleanup_authority: run_registry.RunWriterGenerationAuthority | None = None,
+    cleanup_authority: DestructiveCleanupAuthority | None = None,
     record_authorities: Mapping[Path, CleanupRecordAuthority] | None = None,
 ) -> dict[str, "OwnerlessCleanupOutcome"]:
     """Remove or read-only classify a bounded ownerless validation batch."""
@@ -3412,7 +3426,8 @@ def _cleanup_recorded_checkout_impl(
     record_lock_held: bool = False,
     record_parent_identity: tuple[int, ...] | None = None,
     record_authority: CleanupRecordAuthority | None = None,
-    cleanup_authority: run_registry.RunWriterGenerationAuthority | None = None,
+    population_authority: run_registry.RunPopulationAuthority | None = None,
+    cleanup_authority: DestructiveCleanupAuthority | None = None,
     receipt_locations: Sequence[str] | None = None,
 ) -> tuple[bool, list[str], str | None]:
     """Archive local receipt evidence and remove one terminal temp checkout."""
@@ -3471,7 +3486,18 @@ def _cleanup_recorded_checkout_impl(
     require_cleanup_record_authority(record_authority)
     if cleanup_authority is None:
         raise RuntimeError("destructive cleanup generation authority is absent")
+    if population_authority is None:
+        raise RuntimeError("cleanup run-population authority is absent")
     require_destructive_cleanup_authority(root, cleanup_authority)
+    record = ensure_cleanup_removal_intent(
+        record,
+        field="checkout_removal_intent",
+        path=checkout,
+        role="validation checkout",
+        record_authority=record_authority,
+        population_authority=population_authority,
+        wrkslots=wrkslots,
+    )
     removed = remove_fresh_checkout(
         source,
         checkout,
@@ -3510,7 +3536,7 @@ def cleanup_recorded_checkout(
                 root,
                 blocking=False,
                 reject_same_process=True,
-                _generation_authority=generation_authority,
+                _generation_authority=generation_authority.generation,
             ) as population_authority, exclusive_cleanup_record(
                 root,
                 record_path,
@@ -3534,6 +3560,7 @@ def cleanup_recorded_checkout(
                     record_lock_held=True,
                     record_parent_identity=record_authority.parent_identity,
                     record_authority=record_authority,
+                    population_authority=population_authority,
                     cleanup_authority=generation_authority,
                 )
                 if cleaned:
@@ -3559,7 +3586,7 @@ def cleanup_recorded_checkout(
                         )
                 return cleaned, archived, reason
     except (OSError, RuntimeError, ValueError) as error:
-        return False, [], f"run record is being updated; retained: {error}"
+        return False, [], f"cleanup authority unavailable; retained: {error}"
 
 
 def classify_recorded_cargo_home(
@@ -3628,7 +3655,8 @@ def _cleanup_recorded_cargo_home_impl(
     record_lock_held: bool = False,
     record_parent_identity: tuple[int, ...] | None = None,
     record_authority: CleanupRecordAuthority | None = None,
-    cleanup_authority: run_registry.RunWriterGenerationAuthority | None = None,
+    population_authority: run_registry.RunPopulationAuthority | None = None,
+    cleanup_authority: DestructiveCleanupAuthority | None = None,
 ) -> tuple[bool, str | None]:
     """Recover one recorded per-run Cargo home after its unit is terminal."""
     if record_claims_refused_admission(record) and not (
@@ -3691,7 +3719,17 @@ def _cleanup_recorded_cargo_home_impl(
     require_cleanup_record_authority(record_authority)
     if cleanup_authority is None:
         raise RuntimeError("destructive cleanup generation authority is absent")
+    if population_authority is None:
+        raise RuntimeError("cleanup run-population authority is absent")
     require_destructive_cleanup_authority(root, cleanup_authority)
+    record = ensure_cleanup_removal_intent(
+        record,
+        field="cargo_home_removal_intent",
+        path=private,
+        role="validation Cargo home",
+        record_authority=record_authority,
+        population_authority=population_authority,
+    )
     removal = run(
         wrkslots_command(
             tool_root,
@@ -3736,7 +3774,7 @@ def cleanup_recorded_cargo_home(
                 root,
                 blocking=False,
                 reject_same_process=True,
-                _generation_authority=generation_authority,
+                _generation_authority=generation_authority.generation,
             ) as population_authority, exclusive_cleanup_record(
                 root,
                 record_path,
@@ -3758,6 +3796,7 @@ def cleanup_recorded_cargo_home(
                     record_lock_held=True,
                     record_parent_identity=record_authority.parent_identity,
                     record_authority=record_authority,
+                    population_authority=population_authority,
                     cleanup_authority=generation_authority,
                 )
                 if cleaned:
@@ -3782,7 +3821,7 @@ def cleanup_recorded_cargo_home(
                         )
                 return cleaned, reason
     except (OSError, RuntimeError, ValueError) as error:
-        return False, f"run record is being updated; retained: {error}"
+        return False, f"cleanup authority unavailable; retained: {error}"
 
 
 def classify_recorded_runtime_root(
@@ -3836,7 +3875,7 @@ def cleanup_recorded_runtime_root(
                 root,
                 blocking=False,
                 reject_same_process=True,
-                _generation_authority=generation_authority,
+                _generation_authority=generation_authority.generation,
             ) as population_authority, exclusive_cleanup_record(
                 root,
                 record_path,
@@ -3895,10 +3934,31 @@ def cleanup_recorded_runtime_root(
                             "runtime root retained until checkout cleanup completes",
                         )
                     if not isinstance(durable.get("checkout_removed_at"), str):
-                        return False, (
-                            "runtime root retained because checkout absence has no "
-                            "durable stamp"
+                        checkout_wrkslots = recorded_wrkslots_identity(
+                            durable, checkout
                         )
+                        require_matching_removal_intent(
+                            durable,
+                            "checkout_removal_intent",
+                            checkout,
+                            role="validation checkout",
+                            wrkslots=checkout_wrkslots,
+                            target_present=False,
+                        )
+                        require_absent_cleanup_target(
+                            checkout, role="validation checkout"
+                        )
+                        durable = update_authorized_cleanup_record(
+                            record_authority,
+                            population_authority,
+                            checkout_removed_at=datetime.now(
+                                timezone.utc
+                            ).isoformat(),
+                        )
+                        if read_authorized_cleanup_record(record_authority) != durable:
+                            raise RuntimeError(
+                                "recovered checkout-absence bookkeeping readback changed"
+                            )
                 else:
                     raw_source = durable.get("source_checkout")
                     if (
@@ -3921,9 +3981,32 @@ def cleanup_recorded_runtime_root(
                 if cargo_home.exists() or cargo_home.is_symlink():
                     return False, "runtime root retained until Cargo-home cleanup completes"
                 if not isinstance(durable.get("cargo_home_removed_at"), str):
-                    return False, (
-                        "runtime root retained because Cargo-home absence has no durable stamp"
+                    _classified_cargo, cargo_error = classify_recorded_cargo_home(
+                        root, durable
                     )
+                    if cargo_error is not None:
+                        return False, cargo_error
+                    require_matching_removal_intent(
+                        durable,
+                        "cargo_home_removal_intent",
+                        cargo_home,
+                        role="validation Cargo home",
+                        target_present=False,
+                    )
+                    require_absent_cleanup_target(
+                        cargo_home, role="validation Cargo home"
+                    )
+                    durable = update_authorized_cleanup_record(
+                        record_authority,
+                        population_authority,
+                        cargo_home_removed_at=datetime.now(
+                            timezone.utc
+                        ).isoformat(),
+                    )
+                    if read_authorized_cleanup_record(record_authority) != durable:
+                        raise RuntimeError(
+                            "recovered Cargo-home-absence bookkeeping readback changed"
+                        )
 
                 if not runtime_root_identity_matches(
                     runtime, durable.get("runtime_root_identity")
@@ -3949,7 +4032,7 @@ def cleanup_recorded_runtime_root(
                     )
                 return True, None
     except (OSError, RuntimeError, ValueError) as error:
-        return False, f"run record is being updated; retained: {error}"
+        return False, f"cleanup authority unavailable; retained: {error}"
 
 
 def recorded_runtime_root_owners(root: Path, runtime_root: Path) -> list[Path]:
@@ -4697,8 +4780,11 @@ def sweep_completed_checkouts(
             if not (checkout.exists() or checkout.is_symlink()):
                 raw_cargo_home = row.record.get("cargo_home")
                 if isinstance(raw_cargo_home, str):
-                    recorded_cargo_home = Path(raw_cargo_home).resolve()
-                    if recorded_cargo_home.exists():
+                    recorded_cargo_home = _lexical_absolute_path(raw_cargo_home)
+                    if (
+                        recorded_cargo_home.exists()
+                        or recorded_cargo_home.is_symlink()
+                    ):
                         blocker = recorded_cargo_home
                         subject = "cargo home"
                         absent_detail = (
@@ -4871,7 +4957,7 @@ def sweep_completed_checkouts(
                         root,
                         blocking=False,
                         reject_same_process=True,
-                        _generation_authority=generation_authority,
+                        _generation_authority=generation_authority.generation,
                     )
                 )
             except (OSError, RuntimeError, ValueError) as error:
@@ -4980,6 +5066,72 @@ def sweep_completed_checkouts(
                 stable.append(group)
         return stable
 
+    def groups_with_durable_removal_intents(
+        candidates: Sequence[CleanupGroup],
+        population_authority: run_registry.RunPopulationAuthority,
+        record_authorities: Mapping[Path, CleanupRecordAuthority],
+    ) -> list[CleanupGroup]:
+        """Persist exact target identity before any batch provider deletion."""
+
+        authorised: list[CleanupGroup] = []
+        for group in candidates:
+            try:
+                target_present = (
+                    group.checkout.exists() or group.checkout.is_symlink()
+                )
+                for row in group.rows:
+                    record_authority = record_authorities[row.path]
+                    durable = read_authorized_cleanup_record(record_authority)
+                    wrkslots = recorded_wrkslots_identity(
+                        durable, group.checkout
+                    )
+                    if group.managed and wrkslots != group.identity:
+                        raise RuntimeError(
+                            "managed checkout removal intent lost its exact "
+                            "wrkslots identity"
+                        )
+                    if target_present:
+                        row.record = ensure_cleanup_removal_intent(
+                            durable,
+                            field="checkout_removal_intent",
+                            path=group.checkout,
+                            role="validation checkout",
+                            record_authority=record_authority,
+                            population_authority=population_authority,
+                            wrkslots=wrkslots,
+                        )
+                    elif isinstance(durable.get("checkout_removed_at"), str):
+                        row.record = durable
+                    else:
+                        bookkeeping: dict[str, Any] = {}
+                        if row.archived:
+                            bookkeeping["archived_orphaned_receipts"] = row.archived
+                        if row.scorecard_handoff is not None:
+                            bookkeeping["scorecard_handoff"] = row.scorecard_handoff
+                        row.record = recover_absent_cleanup_stamp(
+                            durable,
+                            intent_field="checkout_removal_intent",
+                            stamp_field="checkout_removed_at",
+                            path=group.checkout,
+                            role="validation checkout",
+                            record_authority=record_authority,
+                            population_authority=population_authority,
+                            wrkslots=wrkslots,
+                            bookkeeping_fields=bookkeeping,
+                        )
+            except (OSError, RuntimeError, ValueError) as error:
+                retained.append(
+                    {
+                        "checkout": str(group.checkout),
+                        "cleanup_failed": True,
+                        "reason": str(error),
+                    }
+                )
+            else:
+                if target_present:
+                    authorised.append(group)
+        return authorised
+
     def stamp_removed_group(
         group: CleanupGroup,
         population_authority: run_registry.RunPopulationAuthority,
@@ -5042,6 +5194,16 @@ def sweep_completed_checkouts(
                 authorised_ownerless = groups_with_stable_record_parents(
                     authorised_ownerless, ownerless_parent_identities
                 )
+                if authorised_ownerless:
+                    if ownerless_population_authority is None:
+                        raise RuntimeError(
+                            "ownerless cleanup population authority is absent"
+                        )
+                    authorised_ownerless = groups_with_durable_removal_intents(
+                        authorised_ownerless,
+                        ownerless_population_authority,
+                        ownerless_parent_identities,
+                    )
             ownerless_inputs: list[tuple[Path, Path, Path]] = []
             for group in authorised_ownerless:
                 row = group.rows[0]
@@ -5129,6 +5291,16 @@ def sweep_completed_checkouts(
                 authorised_frozen = groups_with_stable_record_parents(
                     authorised_frozen, frozen_parent_identities
                 )
+                if authorised_frozen:
+                    if frozen_population_authority is None:
+                        raise RuntimeError(
+                            "frozen cleanup population authority is absent"
+                        )
+                    authorised_frozen = groups_with_durable_removal_intents(
+                        authorised_frozen,
+                        frozen_population_authority,
+                        frozen_parent_identities,
+                    )
             frozen_inputs: list[tuple[Path, Path, Path]] = []
             for group in authorised_frozen:
                 row = group.rows[0]
@@ -5282,6 +5454,16 @@ def sweep_completed_checkouts(
                 authorised = groups_with_stable_record_parents(
                     authorised, managed_parent_identities
                 )
+                if authorised:
+                    if managed_population_authority is None:
+                        raise RuntimeError(
+                            "managed cleanup population authority is absent"
+                        )
+                    authorised = groups_with_durable_removal_intents(
+                        authorised,
+                        managed_population_authority,
+                        managed_parent_identities,
+                    )
 
                 try:
                     outcomes = (
@@ -5532,26 +5714,16 @@ def sweep_completed_checkouts(
                 or _lexical_absolute_path(raw_cargo).is_symlink()
             )
         )
-        checkout_stamped = (
-            durable.get("temporary_checkout") is not True
-            or isinstance(durable.get("checkout_removed_at"), str)
-        )
-        cargo_stamped = isinstance(durable.get("cargo_home_removed_at"), str)
         temporary_checkout_present = (
             durable.get("temporary_checkout") is True and checkout_present
         )
-        if (
-            temporary_checkout_present
-            or cargo_present
-            or not checkout_stamped
-            or not cargo_stamped
-        ):
+        if temporary_checkout_present or cargo_present:
             deferred.append(
                 {
                     "checkout": str(runtime),
                     "reason": (
                         "runtime-root cleanup deferred until checkout and Cargo-home "
-                        "absence are durably confirmed"
+                        "storage are absent"
                     ),
                 }
             )
@@ -5632,18 +5804,23 @@ def _is_owned_validation_companion_sidecar(path: Path) -> bool:
     except (OSError, RuntimeError, ValueError):
         return False
     if sidecar_kind == "service-result":
-        target = owner.get("target")
         marker = owner.get("service_result_schema")
+        result_commit = candidate.get("commit") if candidate is not None else None
         if (
-            not isinstance(target, str)
-            or not service_result.is_supported_schema_version(marker)
+            not service_result.is_supported_schema_version(marker)
             or candidate is None
+            or not isinstance(result_commit, str)
+            or not result_commit
         ):
             return False
         try:
             evidence = service_result.read_framework_result_bytes(
                 json.dumps(candidate).encode("utf-8"),
-                expected_commit=target,
+                # Pairing and storage authority come from the exact sidecar
+                # name plus its present owner's declared schema. A differing
+                # result commit can invalidate that run's verdict, but it does
+                # not turn this storage-free evidence sidecar into a run handle.
+                expected_commit=result_commit,
             )
         except (OSError, RuntimeError, ValueError):
             return False
@@ -5903,6 +6080,21 @@ def remove_private_cargo_home(private: Path | None, *, run: Runner) -> None:
     run(["rm", "-rf", str(private)], check=False)
 
 
+class CanonicalReceiptFailure(Enum):
+    STATUS_UNREADABLE = "status-unreadable"
+    STATUS_INCONSISTENT = "status-inconsistent"
+    NO_RECEIPTS = "no-receipts"
+    LEDGER_UNREADABLE = "ledger-unreadable"
+    RUN_RECEIPT_MISSING = "run-receipt-missing"
+    QUALIFYING_RECEIPT_MISSING = "qualifying-receipt-missing"
+
+
+class CanonicalReceiptUnavailable(RuntimeError):
+    def __init__(self, reason: CanonicalReceiptFailure, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
+
+
 def assert_row_readable_from_canonical_ledger(
     state_root: Path,
     target: str,
@@ -5967,7 +6159,10 @@ def assert_row_readable_from_canonical_ledger(
             or status.stdout.strip()
             or f"exit {status.returncode}"
         )
-        raise RuntimeError(f"canonical validate-status unreadable ({detail}; {error})") from error
+        raise CanonicalReceiptUnavailable(
+            CanonicalReceiptFailure.STATUS_UNREADABLE,
+            f"canonical validate-status unreadable ({detail}; {error})",
+        ) from error
     expected_exit = canonical_verdict_exit_code(verdict)
     if (
         expected_exit is None
@@ -5976,14 +6171,16 @@ def assert_row_readable_from_canonical_ledger(
         or reported_sha != target
     ):
         detail = status.stderr.strip() or f"exit {status.returncode}, sha {reported_sha}"
-        raise RuntimeError(
+        raise CanonicalReceiptUnavailable(
+            CanonicalReceiptFailure.STATUS_INCONSISTENT,
             "canonical validate-status refused or was internally inconsistent "
             f"({detail}; verdict={verdict}, reported_exit={reported_exit}, "
-            f"expected_exit={expected_exit})"
+            f"expected_exit={expected_exit})",
         )
     if receipt_count == 0:
-        raise RuntimeError(
-            f"canonical validate-status reports no receipt for commit {target}"
+        raise CanonicalReceiptUnavailable(
+            CanonicalReceiptFailure.NO_RECEIPTS,
+            f"canonical validate-status reports no receipt for commit {target}",
         )
 
     # `validate-status` is the verdict authority. Its JSON intentionally
@@ -6003,7 +6200,10 @@ def assert_row_readable_from_canonical_ledger(
     )
     if rows.returncode != 0:
         detail = rows.stderr.strip() or rows.stdout.strip() or f"exit {rows.returncode}"
-        raise RuntimeError(f"canonical ledger union unreadable ({detail})")
+        raise CanonicalReceiptUnavailable(
+            CanonicalReceiptFailure.LEDGER_UNREADABLE,
+            f"canonical ledger union unreadable ({detail})",
+        )
     matched: list[tuple[str, Mapping[str, Any]]] = []
     for line in rows.stdout.splitlines():
         try:
@@ -6022,9 +6222,10 @@ def assert_row_readable_from_canonical_ledger(
         if row_start >= handle_start:
             matched.append((line, row))
     if not matched:
-        raise RuntimeError(
+        raise CanonicalReceiptUnavailable(
+            CanonicalReceiptFailure.RUN_RECEIPT_MISSING,
             f"no row for commit {target} with cwd {cwd} at or after {run_started_at} "
-            "is readable from the canonical ledger; an older row cannot bind this run"
+            "is readable from the canonical ledger; an older row cannot bind this run",
         )
     if verdict == "VALIDATED":
         # A qualifying tuple does not authenticate a different raw row with
@@ -6043,9 +6244,10 @@ def assert_row_readable_from_canonical_ledger(
             and row_is_selected_qualifying_receipt(candidate[1], qualifying_receipts)
         ]
         if not selected:
-            raise RuntimeError(
+            raise CanonicalReceiptUnavailable(
+                CanonicalReceiptFailure.QUALIFYING_RECEIPT_MISSING,
                 "canonical VALIDATED verdict contains no qualifying receipt belonging "
-                "to this run; refusing to inherit another run's green"
+                "to this run; refusing to inherit another run's green",
             )
         matched = selected
     matched.sort(key=lambda candidate: str(candidate[1].get("finished_at") or ""))
@@ -6135,6 +6337,7 @@ class FreshCheckoutCleanup:
     archived: tuple[str, ...]
     removed: bool
     error: str | None = None
+    receipt_classified: bool = False
 
 
 @dataclass(frozen=True)
@@ -6178,6 +6381,198 @@ def _exact_recorded_cleanup_path(
     return candidate
 
 
+def require_absent_cleanup_target(path: Path, *, role: str) -> None:
+    """Prove one absent target through a stable, no-follow parent directory."""
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path.parent, flags)
+    try:
+        opened_before = os.fstat(descriptor)
+        named_before = os.stat(path.parent, follow_symlinks=False)
+        identity = _metadata_identity(
+            opened_before, RUN_RECORD_PARENT_IDENTITY_FIELDS
+        )
+        if (
+            not stat.S_ISDIR(opened_before.st_mode)
+            or not stat.S_ISDIR(named_before.st_mode)
+            or _metadata_identity(named_before, RUN_RECORD_PARENT_IDENTITY_FIELDS)
+            != identity
+        ):
+            raise RuntimeError(
+                f"{role} parent changed before absence could be verified: {path.parent}"
+            )
+        try:
+            os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise RuntimeError(f"{role} is not absent: {path}")
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            pass
+        else:
+            raise RuntimeError(f"{role} is not absent at its canonical path: {path}")
+        opened_after = os.fstat(descriptor)
+        named_after = os.stat(path.parent, follow_symlinks=False)
+        if (
+            _metadata_identity(opened_after, RUN_RECORD_PARENT_IDENTITY_FIELDS)
+            != identity
+            or _metadata_identity(named_after, RUN_RECORD_PARENT_IDENTITY_FIELDS)
+            != identity
+        ):
+            raise RuntimeError(
+                f"{role} parent changed while absence was verified: {path.parent}"
+            )
+    finally:
+        os.close(descriptor)
+
+
+def cleanup_target_identity(path: Path, *, role: str) -> dict[str, int]:
+    metadata = os.lstat(path)
+    if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
+        raise RuntimeError(f"{role} still exists but is not a directory: {path}")
+    return {
+        "device": int(metadata.st_dev),
+        "inode": int(metadata.st_ino),
+        "mode": int(metadata.st_mode),
+        "uid": int(metadata.st_uid),
+        "gid": int(metadata.st_gid),
+    }
+
+
+def cleanup_removal_intent(
+    path: Path, *, role: str, wrkslots: WrkslotsIdentity | None = None
+) -> dict[str, object]:
+    intent: dict[str, object] = {
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "path": str(path),
+        "identity": cleanup_target_identity(path, role=role),
+    }
+    if wrkslots is not None:
+        intent.update(
+            wrkslots_slot=wrkslots.slot,
+            wrkslots_generation=wrkslots.generation,
+        )
+    return intent
+
+
+def require_matching_removal_intent(
+    record: Mapping[str, Any],
+    field: str,
+    path: Path,
+    *,
+    role: str,
+    wrkslots: WrkslotsIdentity | None = None,
+    target_present: bool,
+) -> dict[str, Any]:
+    raw = record.get(field)
+    if not isinstance(raw, dict) or raw.get("path") != str(path):
+        raise RuntimeError(f"{role} absence has no matching durable removal intent")
+    expected_fields = {"recorded_at", "path", "identity"}
+    if wrkslots is not None:
+        expected_fields.update(("wrkslots_slot", "wrkslots_generation"))
+    identity = raw.get("identity")
+    identity_fields = {"device", "inode", "mode", "uid", "gid"}
+    if (
+        set(raw) != expected_fields
+        or not isinstance(identity, dict)
+        or set(identity) != identity_fields
+        or any(
+            type(identity.get(item)) is not int or identity[item] < 0
+            for item in identity_fields
+        )
+        or not stat.S_ISDIR(identity["mode"])
+    ):
+        raise RuntimeError(f"{role} removal intent is malformed")
+    parse_utc_timestamp(raw.get("recorded_at"), role=f"{role} removal intent")
+    if wrkslots is None:
+        if "wrkslots_slot" in raw or "wrkslots_generation" in raw:
+            raise RuntimeError(f"{role} removal intent has an unexpected wrkslots identity")
+    elif (
+        raw.get("wrkslots_slot") != wrkslots.slot
+        or raw.get("wrkslots_generation") != wrkslots.generation
+    ):
+        raise RuntimeError(f"{role} removal intent has a mismatched wrkslots identity")
+    if target_present and raw.get("identity") != cleanup_target_identity(
+        path, role=role
+    ):
+        raise RuntimeError(f"{role} changed after its removal intent was recorded")
+    return raw
+
+
+def ensure_cleanup_removal_intent(
+    record: Mapping[str, Any],
+    *,
+    field: str,
+    path: Path,
+    role: str,
+    record_authority: CleanupRecordAuthority,
+    population_authority: run_registry.RunPopulationAuthority,
+    wrkslots: WrkslotsIdentity | None = None,
+) -> dict[str, Any]:
+    """Durably bind an exact present inode before its provider may remove it."""
+
+    if record.get(field) is None:
+        updated = update_authorized_cleanup_record(
+            record_authority,
+            population_authority,
+            **{
+                field: cleanup_removal_intent(
+                    path, role=role, wrkslots=wrkslots
+                )
+            },
+        )
+        if read_authorized_cleanup_record(record_authority) != updated:
+            raise RuntimeError(f"{role} removal-intent readback changed")
+        return updated
+    require_matching_removal_intent(
+        record,
+        field,
+        path,
+        role=role,
+        wrkslots=wrkslots,
+        target_present=True,
+    )
+    return dict(record)
+
+
+def recover_absent_cleanup_stamp(
+    record: Mapping[str, Any],
+    *,
+    intent_field: str,
+    stamp_field: str,
+    path: Path,
+    role: str,
+    record_authority: CleanupRecordAuthority,
+    population_authority: run_registry.RunPopulationAuthority,
+    wrkslots: WrkslotsIdentity | None = None,
+    bookkeeping_fields: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Complete bookkeeping after a durable intent outlives its deletion."""
+
+    require_matching_removal_intent(
+        record,
+        intent_field,
+        path,
+        role=role,
+        wrkslots=wrkslots,
+        target_present=False,
+    )
+    require_absent_cleanup_target(path, role=role)
+    updated = update_authorized_cleanup_record(
+        record_authority,
+        population_authority,
+        **dict(bookkeeping_fields or {}),
+        **{stamp_field: datetime.now(timezone.utc).isoformat()},
+    )
+    if read_authorized_cleanup_record(record_authority) != updated:
+        raise RuntimeError(f"recovered {role} bookkeeping readback changed")
+    return updated
+
+
 def _remove_temporary_tree_checked(
     path: Path, *, role: str, run: Runner
 ) -> tuple[bool, str | None]:
@@ -6209,11 +6604,13 @@ def cleanup_recorded_run_storage(
     expected_wrkslots: WrkslotsIdentity | None,
     expected_cargo_home: Path,
     expected_runtime_root: Path | None,
+    expected_started_at: str,
     unit: str,
     run: Runner,
     tool_root: Path = ROOT,
     remove_runtime: bool = True,
     require_typed_refusal: bool = False,
+    _same_launch: bool = False,
 ) -> RecordedRunStorageCleanup:
     """Remove one launch's storage under one durable row transaction.
 
@@ -6239,12 +6636,14 @@ def cleanup_recorded_run_storage(
         )
 
     try:
-        with destructive_cleanup_authority(root) as generation_authority:
+        with destructive_cleanup_authority(
+            root, same_launch=_same_launch
+        ) as generation_authority:
             with run_registry.run_population_lock(
                 root,
                 blocking=False,
                 reject_same_process=True,
-                _generation_authority=generation_authority,
+                _generation_authority=generation_authority.generation,
             ) as population_authority, exclusive_cleanup_record(
                 root,
                 record_path,
@@ -6289,6 +6688,10 @@ def cleanup_recorded_run_storage(
                 if durable.get("unit") != f"{sanitize_unit(unit)}.service":
                     raise RuntimeError(
                         "durable run record unit does not match this launch"
+                    )
+                if durable.get("started_at") != expected_started_at:
+                    raise RuntimeError(
+                        "durable run record start identity does not match this launch"
                     )
                 if expected_temporary_checkout:
                     identity = recorded_wrkslots_identity(durable, durable_checkout)
@@ -6335,6 +6738,12 @@ def cleanup_recorded_run_storage(
                             )
                         except OSError as error:
                             return outcome(f"receipt scan failed: {error}")
+                        # Preserve the completed classification even if
+                        # archiving, provider removal, or later bookkeeping
+                        # raises before the normal result is assembled.
+                        checkout_result = FreshCheckoutCleanup(
+                            tuple(locations), (), False, receipt_classified=True
+                        )
                         cleaned, archived, checkout_reason = (
                             _cleanup_recorded_checkout_impl(
                                 root,
@@ -6347,6 +6756,7 @@ def cleanup_recorded_run_storage(
                                 record_lock_held=True,
                                 record_parent_identity=record_authority.parent_identity,
                                 record_authority=record_authority,
+                                population_authority=population_authority,
                                 cleanup_authority=generation_authority,
                                 receipt_locations=locations,
                             )
@@ -6356,6 +6766,7 @@ def cleanup_recorded_run_storage(
                             tuple(archived),
                             cleaned,
                             checkout_reason,
+                            True,
                         )
                         if not cleaned:
                             return outcome(
@@ -6375,13 +6786,37 @@ def cleanup_recorded_run_storage(
                                 "checkout-removal bookkeeping readback changed"
                             )
                     else:
-                        checkout_result = FreshCheckoutCleanup((), (), True)
+                        if not isinstance(durable.get("checkout_removed_at"), str):
+                            durable = recover_absent_cleanup_stamp(
+                                durable,
+                                intent_field="checkout_removal_intent",
+                                stamp_field="checkout_removed_at",
+                                path=durable_checkout,
+                                role="validation checkout",
+                                record_authority=record_authority,
+                                population_authority=population_authority,
+                                wrkslots=expected_wrkslots,
+                            )
+                        archived_value = durable.get("archived_orphaned_receipts")
+                        checkout_result = FreshCheckoutCleanup(
+                            (),
+                            tuple(archived_value)
+                            if isinstance(archived_value, list)
+                            and all(
+                                isinstance(item, str) for item in archived_value
+                            )
+                            else (),
+                            True,
+                            receipt_classified=True,
+                        )
                 else:
                     if classified_checkout is not None:
                         raise RuntimeError(
                             "in-place run unexpectedly authorizes checkout removal"
                         )
-                    checkout_result = FreshCheckoutCleanup((), (), True)
+                    checkout_result = FreshCheckoutCleanup(
+                        (), (), True, receipt_classified=True
+                    )
 
                 require_cleanup_record_authority(record_authority)
                 if durable_cargo.is_symlink():
@@ -6405,6 +6840,7 @@ def cleanup_recorded_run_storage(
                         record_lock_held=True,
                         record_parent_identity=record_authority.parent_identity,
                         record_authority=record_authority,
+                        population_authority=population_authority,
                         cleanup_authority=generation_authority,
                     )
                     if not cleaned_cargo:
@@ -6422,6 +6858,16 @@ def cleanup_recorded_run_storage(
                             "Cargo-home-removal bookkeeping readback changed"
                         )
                 else:
+                    if not isinstance(durable.get("cargo_home_removed_at"), str):
+                        durable = recover_absent_cleanup_stamp(
+                            durable,
+                            intent_field="cargo_home_removal_intent",
+                            stamp_field="cargo_home_removed_at",
+                            path=durable_cargo,
+                            role="validation Cargo home",
+                            record_authority=record_authority,
+                            population_authority=population_authority,
+                        )
                     cargo_removed = True
 
                 if remove_runtime:
@@ -6457,7 +6903,7 @@ def cleanup_fresh_checkout_preserving_receipts(
     tool_root: Path,
     wrkslots: WrkslotsIdentity | None,
     completed_record: Path | None = None,
-    cleanup_authority: run_registry.RunWriterGenerationAuthority | None = None,
+    cleanup_authority: DestructiveCleanupAuthority | None = None,
     record_authority: CleanupRecordAuthority | None = None,
 ) -> FreshCheckoutCleanup:
     """Archive run-produced receipts before reclaiming a managed checkout."""
@@ -6488,7 +6934,11 @@ def cleanup_fresh_checkout_preserving_receipts(
         archived = archive_orphaned_receipts(root, fresh, locations, unit=unit)
     except (OSError, RuntimeError) as error:
         return FreshCheckoutCleanup(
-            tuple(locations), (), False, f"receipt archive failed: {error}"
+            tuple(locations),
+            (),
+            False,
+            f"receipt archive failed: {error}",
+            True,
         )
     removed = remove_fresh_checkout(
         source,
@@ -6502,7 +6952,7 @@ def cleanup_fresh_checkout_preserving_receipts(
         record_authority=record_authority,
     )
     return FreshCheckoutCleanup(
-        tuple(locations), tuple(archived), removed, None
+        tuple(locations), tuple(archived), removed, None, True
     )
 
 
@@ -9254,7 +9704,8 @@ def retire_unit_after_writeback(
         record_lock_held: bool,
         record_parent_identity: tuple[int, ...] | None = None,
         record_authority: CleanupRecordAuthority | None = None,
-        cleanup_authority: run_registry.RunWriterGenerationAuthority | None = None,
+        population_authority: run_registry.RunPopulationAuthority | None = None,
+        cleanup_authority: DestructiveCleanupAuthority | None = None,
     ) -> int:
         current_checkout = current.get("checkout")
         if not isinstance(current_checkout, str):
@@ -9299,7 +9750,11 @@ def retire_unit_after_writeback(
                 file=sys.stderr,
             )
             return EXIT_COULD_NOT_DETERMINE
-        if not (checkout.exists() or checkout.is_symlink()):
+        checkout_present = checkout.exists() or checkout.is_symlink()
+        if not checkout_present and (
+            isinstance(current.get("checkout_removed_at"), str)
+            or current.get("checkout_removal_intent") is None
+        ):
             print(
                 f"validate-run: RETIRE-ALREADY-ABSENT {unit}: {checkout}; "
                 f"retirement evidence {handoff} is durable and no path was removed.",
@@ -9310,15 +9765,16 @@ def retire_unit_after_writeback(
         # THE SAME AUTHORISATION THE SWEEP APPLIES, because this path removes
         # too and must not become the way around it. A checkout holding
         # uncommitted paths is retained whatever its record says.
-        measured = tree_disposition.authored_work(checkout, run=run)
-        if measured is None or measured[0]:
-            print(
-                f"validate-run: RETIRE-REFUSED {unit}: the checkout holds "
-                "authored work or its state could not be read; the retirement "
-                "evidence is durable and the checkout is retained.",
-                file=sys.stderr,
-            )
-            return EXIT_COULD_NOT_DETERMINE
+        if checkout_present:
+            measured = tree_disposition.authored_work(checkout, run=run)
+            if measured is None or measured[0]:
+                print(
+                    f"validate-run: RETIRE-REFUSED {unit}: the checkout holds "
+                    "authored work or its state could not be read; the retirement "
+                    "evidence is durable and the checkout is retained.",
+                    file=sys.stderr,
+                )
+                return EXIT_COULD_NOT_DETERMINE
 
         if record_parent_identity is not None:
             require_run_record_parent_identity(
@@ -9327,8 +9783,36 @@ def retire_unit_after_writeback(
         if record_authority is None:
             raise RuntimeError("cleanup run-record descriptor authority is absent")
         require_cleanup_record_authority(record_authority)
+        if population_authority is None:
+            raise RuntimeError("cleanup run-population authority is absent")
         if cleanup_authority is None:
             raise RuntimeError("destructive cleanup generation authority is absent")
+        if not checkout_present:
+            recover_absent_cleanup_stamp(
+                current,
+                intent_field="checkout_removal_intent",
+                stamp_field="checkout_removed_at",
+                path=checkout,
+                role="validation checkout",
+                record_authority=record_authority,
+                population_authority=population_authority,
+                wrkslots=identity,
+            )
+            print(
+                f"validate-run: RETIRE-RECOVERED {unit}: {checkout}; "
+                f"retirement evidence {handoff} and prior removal intent are durable.",
+                file=sys.stderr,
+            )
+            return 0
+        current = ensure_cleanup_removal_intent(
+            current,
+            field="checkout_removal_intent",
+            path=checkout,
+            role="validation checkout",
+            record_authority=record_authority,
+            population_authority=population_authority,
+            wrkslots=identity,
+        )
         outcomes = remove_fresh_checkouts_batch(
             root,
             [(checkout, identity)],
@@ -9341,15 +9825,27 @@ def retire_unit_after_writeback(
         if reason is not None:
             print(f"validate-run: RETIRE-RETAINED {unit}: {reason}", file=sys.stderr)
             return EXIT_COULD_NOT_DETERMINE
+        current = update_authorized_cleanup_record(
+            record_authority,
+            population_authority,
+            checkout_removed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        if read_authorized_cleanup_record(record_authority) != current:
+            raise RuntimeError("checkout-removal bookkeeping readback changed")
         print(f"validate-run: RETIRED {unit}: handoff {handoff}", file=sys.stderr)
         return 0
 
     try:
         with destructive_cleanup_authority(root) as cleanup_authority:
-            with exclusive_cleanup_record(
+            with run_registry.run_population_lock(
+                root,
+                blocking=False,
+                reject_same_process=True,
+                _generation_authority=cleanup_authority.generation,
+            ) as population_authority, exclusive_cleanup_record(
                 root,
                 record_path,
-                generation_authority=cleanup_authority,
+                population_authority=population_authority,
             ) as record_authority:
                 durable = read_authorized_cleanup_record(record_authority)
                 if durable != record and (
@@ -9367,6 +9863,7 @@ def retire_unit_after_writeback(
                     record_lock_held=True,
                     record_parent_identity=record_authority.parent_identity,
                     record_authority=record_authority,
+                    population_authority=population_authority,
                     cleanup_authority=cleanup_authority,
                 )
     except (OSError, RuntimeError, ValueError) as error:
@@ -10163,6 +10660,7 @@ def main(
     launcher_generation_authority: (
         run_registry.RunWriterGenerationAuthority | None
     ) = None
+    initial_record_durable = False
 
     def begin_launcher_generation() -> None:
         nonlocal launcher_generation_active, launcher_generation_authority
@@ -10213,18 +10711,27 @@ def main(
                 expected_wrkslots=fresh_wrkslots,
                 expected_cargo_home=private_cargo_home,
                 expected_runtime_root=runtime_root,
+                expected_started_at=started_at,
                 unit=unit,
                 run=run,
                 tool_root=tool_root,
                 remove_runtime=remove_runtime,
                 require_typed_refusal=require_typed_refusal,
+                _same_launch=True,
             )
 
-        checkout_result = FreshCheckoutCleanup((), (), fresh_checkout is None)
+        checkout_result = FreshCheckoutCleanup(
+            (),
+            (),
+            fresh_checkout is None,
+            receipt_classified=fresh_checkout is None,
+        )
         cargo_removed = private_cargo_home is None
         runtime_removed: bool | None = None if not remove_runtime else runtime_root is None
         try:
-            with destructive_cleanup_authority(state_root) as cleanup_authority:
+            with destructive_cleanup_authority(
+                state_root, same_launch=True
+            ) as cleanup_authority:
                 if fresh_checkout is not None:
                     if source_checkout is None:
                         raise RuntimeError("source checkout identity is unavailable")
@@ -10291,6 +10798,7 @@ def main(
                     checkout_result.archived,
                     checkout_result.removed,
                     detail,
+                    checkout_result.receipt_classified,
                 ),
                 cargo_removed,
                 runtime_removed,
@@ -10301,8 +10809,15 @@ def main(
     def report_storage_cleanup(cleanup: RecordedRunStorageCleanup) -> None:
         checkout_cleanup = cleanup.checkout
         if checkout_cleanup.error is not None:
+            classification = (
+                "ORPHANED-RECEIPT CHECK REFUSED"
+                if checkout_cleanup.locations
+                else "NO-RECEIPT CLEANUP REFUSED"
+                if checkout_cleanup.receipt_classified
+                else "RECEIPT CLASSIFICATION REFUSED"
+            )
             print(
-                "validate-run: ORPHANED-RECEIPT CHECK REFUSED: "
+                f"validate-run: {classification}: "
                 f"{checkout_cleanup.error}. Temp checkout RETAINED at "
                 f"{fresh_checkout}.",
                 file=sys.stderr,
@@ -10620,6 +11135,7 @@ def main(
                     ),
                 },
             )
+            initial_record_durable = True
             release_launcher_generation()
             try:
                 # Reserve the service's output before creating any observer.
@@ -10733,6 +11249,19 @@ def main(
                 f"RUN CONTINUES independently: {error}",
                 f"do not relaunch; re-attach with `ci-hub validate-run --attach {unit}` "
                 f"and reconcile the durable handle at {record_path}",
+            )
+        if cleanup_record_path is not None and not initial_record_durable:
+            print(
+                "validate-run: checkout, private Cargo home, and runtime root "
+                "RETAINED because the initial run handle was not confirmed "
+                "directory-durable",
+                file=sys.stderr,
+            )
+            return refuse(
+                str(error),
+                "the unit did not start and its initial run handle was not "
+                "confirmed directory-durable; inspect the visible handle and "
+                "retained storage before retrying",
             )
         # Before service acceptance, ask the provider to remove only storage
         # it can prove disposable. Missing proof still retains the checkout.
@@ -11001,6 +11530,10 @@ def main(
             tool_root=tool_root,
         )
     except RuntimeError as error:
+        canonical_reports_zero_receipts = (
+            isinstance(error, CanonicalReceiptUnavailable)
+            and error.reason is CanonicalReceiptFailure.NO_RECEIPTS
+        )
         # THE INNER RUN'S REASON OUTRANKS THE MISSING ROW. If validate refused,
         # it said why -- named the gate, gave the distance, printed the bypass
         # flag -- and that refusal is the answer. Reporting "no receipt"
@@ -11036,13 +11569,33 @@ def main(
             # unconditionally cost 26 MB per failed validate, and because
             # The Rust validation driver is fail-fast; that is most of them.
             checkout_cleanup = storage_cleanup.checkout
-            if storage_cleanup.error is not None:
+            if storage_cleanup.error is not None and checkout_cleanup.locations:
                 return could_not_determine(
                     "ORPHANED-RECEIPT: checkout-local evidence could not be "
                     f"safely classified, archived, or cleaned: "
                     f"{storage_cleanup.error}. Temp checkout "
                     f"RETAINED at {fresh_checkout}.",
                     "preserve the files manually before reclaiming the checkout",
+                )
+            if storage_cleanup.error is not None:
+                classification = (
+                    "RECEIPT-CLASSIFICATION-UNAVAILABLE"
+                    if not checkout_cleanup.receipt_classified
+                    else "NO-RECEIPT-PRODUCED"
+                    if canonical_reports_zero_receipts
+                    else "CANONICAL-VERDICT-UNAVAILABLE"
+                )
+                evidence_detail = (
+                    "checkout-local evidence could not be classified"
+                    if not checkout_cleanup.receipt_classified
+                    else "no checkout-local receipt required preservation"
+                )
+                return could_not_determine(
+                    f"{classification}: {evidence_detail}; storage cleanup was "
+                    f"incomplete: {storage_cleanup.error}. "
+                    f"Temp checkout RETAINED at {fresh_checkout}.",
+                    "inspect the cleanup failure and retained storage before retrying; "
+                    "do not treat the absence of a canonical verdict as an orphaned receipt",
                 )
             if checkout_cleanup.locations:
                 # The run HAPPENED and produced evidence; preserve it in the
@@ -11062,12 +11615,20 @@ def main(
                     "inspect the archived receipt; the run's result exists but is not "
                     "a canonical verdict",
                 )
-            print(
-                "validate-run: NO-RECEIPT-PRODUCED: the run stopped before writing a "
-                "receipt anywhere, so the temp checkout holds no evidence; "
-                "reclaiming it.",
-                file=sys.stderr,
-            )
+            if canonical_reports_zero_receipts:
+                print(
+                    "validate-run: NO-RECEIPT-PRODUCED: the run stopped before "
+                    "writing a receipt anywhere, so the temp checkout holds no "
+                    "evidence; reclaiming it.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "validate-run: CHECKOUT-CLEANUP: no checkout-local receipt "
+                    "required preservation; reclaiming the temp checkout while "
+                    "the canonical verdict remains unavailable.",
+                    file=sys.stderr,
+                )
             # The helper already reclaimed the evidence-free checkout.
         # ⚠️ NOT "failed". No receipt means no verdict was ever recorded, so there
         # is nothing to investigate as a product failure -- the previous wording

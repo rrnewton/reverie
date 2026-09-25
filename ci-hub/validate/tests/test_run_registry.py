@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import select
+import stat
 import subprocess
 import sys
 import tempfile
@@ -113,6 +114,142 @@ def bench_handle(**updates: object) -> dict[str, object]:
 
 
 class RunRegistryContractTests(unittest.TestCase):
+    def test_create_record_refuses_a_parent_replaced_after_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            displaced = root / "displaced-runs"
+            runs.mkdir()
+            path = runs / "validate-test.json"
+            real_rename_noreplace = run_registry._rename_noreplace
+            real_fsync = os.fsync
+            syncs: list[tuple[str, int]] = []
+
+            def rename_then_swap(
+                parent_descriptor: int,
+                source: str,
+                destination: str,
+                create_path: Path,
+            ) -> None:
+                real_rename_noreplace(
+                    parent_descriptor, source, destination, create_path
+                )
+                runs.rename(displaced)
+                runs.mkdir()
+
+            def record_sync(descriptor: int) -> None:
+                metadata = os.fstat(descriptor)
+                syncs.append(
+                    (
+                        "directory" if stat.S_ISDIR(metadata.st_mode) else "file",
+                        metadata.st_ino,
+                    )
+                )
+                real_fsync(descriptor)
+
+            with (
+                mock.patch.object(
+                    run_registry,
+                    "_rename_noreplace",
+                    side_effect=rename_then_swap,
+                ),
+                mock.patch.object(
+                    run_registry.os, "fsync", side_effect=record_sync
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "parent or installed record changed before creation became durable",
+                ):
+                    run_registry.create_record(path, validation_handle())
+
+            self.assertFalse(path.exists())
+            self.assertEqual(
+                validation_handle(),
+                run_registry.read_record(displaced / path.name),
+            )
+            self.assertEqual(["file", "directory"], [kind for kind, _inode in syncs])
+            self.assertEqual(displaced.stat().st_ino, syncs[-1][1])
+            self.assertNotEqual(runs.stat().st_ino, syncs[-1][1])
+
+    def test_create_record_does_not_clobber_after_preinstall_parent_swap(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "runs"
+            displaced = root / "displaced-runs"
+            replacement = root / "replacement-runs"
+            runs.mkdir()
+            replacement.mkdir()
+            path = runs / "validate-test.json"
+            incumbent = validation_handle(agent="incumbent")
+            (replacement / path.name).write_text(json.dumps(incumbent) + "\n")
+            real_create = run_registry._create_unlocked
+
+            def swap_then_create(
+                create_path: Path,
+                value: dict[str, object],
+                *,
+                parent_descriptor: int,
+                parent_identity: tuple[int, ...],
+            ) -> None:
+                runs.rename(displaced)
+                replacement.rename(runs)
+                real_create(
+                    create_path,
+                    value,
+                    parent_descriptor=parent_descriptor,
+                    parent_identity=parent_identity,
+                )
+
+            with mock.patch.object(
+                run_registry, "_create_unlocked", side_effect=swap_then_create
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "parent or installed record changed before creation became durable",
+                ):
+                    run_registry.create_record(path, validation_handle(agent="new"))
+
+            self.assertEqual(incumbent, run_registry.read_record(path))
+            self.assertEqual(
+                validation_handle(agent="new"),
+                run_registry.read_record(displaced / path.name),
+            )
+
+    def test_create_record_atomic_publication_preserves_racing_incumbent(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runs = Path(temporary) / "runs"
+            runs.mkdir()
+            path = runs / "validate-test.json"
+            incumbent = validation_handle(agent="incumbent")
+            real_rename_noreplace = run_registry._rename_noreplace
+
+            def create_incumbent_then_publish(
+                parent_descriptor: int,
+                source: str,
+                destination: str,
+                create_path: Path,
+            ) -> None:
+                path.write_text(json.dumps(incumbent) + "\n")
+                real_rename_noreplace(
+                    parent_descriptor, source, destination, create_path
+                )
+
+            with mock.patch.object(
+                run_registry,
+                "_rename_noreplace",
+                side_effect=create_incumbent_then_publish,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    run_registry.create_record(path, validation_handle(agent="new"))
+
+            self.assertEqual(incumbent, run_registry.read_record(path))
+            self.assertEqual([], list(runs.glob(".*.tmp")))
+
     def test_runtime_root_identity_is_optional_but_strict(self) -> None:
         legacy = run_registry.parse_current_record(validation_handle())
         self.assertNotIn("runtime_root_identity", legacy.raw)

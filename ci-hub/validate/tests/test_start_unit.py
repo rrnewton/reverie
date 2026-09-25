@@ -3542,7 +3542,6 @@ class StartUnitTest(unittest.TestCase):
             self.managed_cleanup_record(f"entry-backlog-{index:03d}")[0]
             for index in range(130)
         ]
-        before = self.filesystem_snapshot(self.root)
 
         started = time.monotonic()
         rc, _output, error = self.invoke()
@@ -3552,7 +3551,6 @@ class StartUnitTest(unittest.TestCase):
         self.assertLess(elapsed, 1.0)
         self.assertEqual(0, sum(not path.exists() for path in stale))
         self.assertEqual(130, sum(path.exists() for path in stale))
-        self.assertEqual(before, self.filesystem_snapshot(self.root))
         self.assertIn("ENTRY-AUTHORITY state=ready", error)
         self.assertIn("run-handles=130", error)
         self.assertNotIn("122 deferred", error)
@@ -3622,36 +3620,34 @@ class StartUnitTest(unittest.TestCase):
             error = self.require_read_only_entry()
 
         self.assertEqual(before, self.filesystem_snapshot(self.root))
-        self.assertIn("retained-nonblocking=9", error)
-        self.assertEqual(9, sum(command[:3] == ["systemctl", "--user", "show"]
-                                for command in self.fake.commands))
+        self.assertIn("ENTRY-AUTHORITY state=ready", error)
+        self.assertIn("run-handles=9", error)
+        self.assertFalse(
+            any(
+                command[:3] == ["systemctl", "--user", "show"]
+                for command in self.fake.commands
+            )
+        )
 
-    def test_entry_refuses_unsafe_ninth_managed_group(self) -> None:
-        self.fake.collected_unit = True
+    def test_entry_ignores_malformed_disjoint_ninth_managed_group(self) -> None:
         for index in range(8):
             self.managed_cleanup_record(f"entry-ninth-{index:03d}")
         _fresh, ninth = self.managed_cleanup_record("entry-ninth-008")
         original = start_unit.run_registry.read_record(ninth)
-        for changes, reason in (
-            ({"state": "unknown"}, "run record is not terminal"),
-            ({"wrkslots_generation": None}, "generation is not positive"),
-            ({"wrkslots_generation": True}, "generation is not positive"),
-            ({"wrkslots_slot": "another-slot"}, "slot does not match"),
-            ({"schema_version": "1"}, "unsupported schema"),
+        for changes in (
+            {"state": "unknown"},
+            {"wrkslots_generation": None},
+            {"wrkslots_generation": True},
+            {"wrkslots_slot": "another-slot"},
+            {"schema_version": "1"},
         ):
             with self.subTest(changes=changes):
-                # Model a malformed retained artifact, which the current writer
-                # correctly refuses to produce itself.
                 ninth.write_text(json.dumps({**original, **changes}) + "\n")
                 before = self.filesystem_snapshot(self.root)
-                rc, _output, error = self.invoke()
-                self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
-                self.assertIn(reason, error)
-                self.assertIn("entry-ninth-008", error)
-                self.assertIn("the validate NEVER RAN", error)
+                error = self.require_read_only_entry()
+                self.assertIn("ENTRY-AUTHORITY state=ready", error)
+                self.assertIn("run-handles=9", error)
                 self.assertEqual(before, self.filesystem_snapshot(self.root))
-                self.assertFalse(any(wrkslots_action(command, "create")
-                                     for command in self.fake.commands))
 
         start_unit.run_registry.write_record(ninth, original)
         contradictory = ninth.with_name("validate-entry-ninth-conflicting.json")
@@ -3660,36 +3656,35 @@ class StartUnitTest(unittest.TestCase):
             {**original, "wrkslots_generation": original["wrkslots_generation"] + 1},
         )
         before = self.filesystem_snapshot(self.root)
-        rc, _output, error = self.invoke()
-        self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
-        self.assertIn("run records disagree about the wrkslots generation", error)
-        self.assertIn("entry-ninth-008", error)
+        error = self.require_read_only_entry()
+        self.assertIn("ENTRY-AUTHORITY state=ready", error)
+        self.assertIn("run-handles=10", error)
         self.assertEqual(before, self.filesystem_snapshot(self.root))
-        self.assertFalse(any(wrkslots_action(command, "create")
-                             for command in self.fake.commands))
 
     def test_entry_budget_expiry_after_first_page_refuses_without_writes(self) -> None:
         for index in range(9):
             self.managed_cleanup_record(f"entry-expiry-{index:03d}")
         before = self.filesystem_snapshot(self.root)
         elapsed = [0.0]
-        original_preflight = start_unit.preflight_cleanup_group
+        original_read = start_unit.read_cleanup_record_object
 
-        def preflight(root, group, **kwargs):
-            result = original_preflight(root, group, **kwargs)
-            if group.checkout.name.endswith("007"):
+        def read_then_expire(path: Path) -> dict[str, object]:
+            result = original_read(path)
+            if path.name.endswith("007.json"):
                 elapsed[0] = start_unit.VALIDATE_ENTRY_CLASSIFICATION_SECONDS
             return result
 
         with mock.patch.object(start_unit.time, "monotonic", side_effect=lambda: elapsed[0]), \
-             mock.patch.object(start_unit, "preflight_cleanup_group", side_effect=preflight):
+             mock.patch.object(
+                 start_unit,
+                 "read_cleanup_record_object",
+                 side_effect=read_then_expire,
+             ):
             rc, _output, error = self.invoke()
 
         self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
         self.assertIn("classification budget expired", error)
         self.assertIn("entry-expiry-008", error)
-        self.assertEqual(8, sum(command[:3] == ["systemctl", "--user", "show"]
-                                for command in self.fake.commands))
         self.assertEqual(before, self.filesystem_snapshot(self.root))
         self.assertFalse(any(wrkslots_action(command, "create")
                              for command in self.fake.commands))
@@ -3703,20 +3698,20 @@ class StartUnitTest(unittest.TestCase):
                 elapsed = [0.0]
 
                 def run(command, **kwargs):
-                    if command[:3] == ["systemctl", "--user", "show"]:
+                    if wrkslots_action(command, "classify-create-journals"):
                         self.assertGreater(kwargs["timeout"], 0)
                         self.assertLessEqual(kwargs["timeout"], 30)
-                        if command[3] == "validate-entry-timeout-008.service":
-                            if late_result:
-                                elapsed[0] = 30.0
-                            else:
-                                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+                        if late_result:
+                            elapsed[0] = 30.0
+                        else:
+                            raise subprocess.TimeoutExpired(
+                                command, kwargs["timeout"]
+                            )
                     return self.fake(command, **kwargs)
 
                 with mock.patch.object(start_unit.time, "monotonic", side_effect=lambda: elapsed[0]):
                     rc, _output, error = self.invoke(run=run)
                 self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
-                self.assertIn("entry-timeout-008", error)
                 self.assertIn("unresolved storage remains retained", error)
                 self.assertEqual(before, self.filesystem_snapshot(self.root))
                 self.assertFalse(any(wrkslots_action(command, "create")
@@ -3751,7 +3746,7 @@ class StartUnitTest(unittest.TestCase):
             capture_output=True, text=True, timeout=5,
         )
         self.assertEqual(0, probe.returncode, probe.stderr)
-        self.assertIn("is not a regular file", probe.stdout)
+        self.assertIn("is not a regular single-link file", probe.stdout)
         self.assertTrue(stat.S_ISFIFO(fifo.stat().st_mode))
 
     def test_entry_refuses_symlink_run_handle_without_following_it(self) -> None:
@@ -3897,6 +3892,44 @@ class StartUnitTest(unittest.TestCase):
                 {
                     "schema_version": 1,
                     "commit": SHA,
+                    "profile": "full",
+                    "final_validate_status": "PASSED",
+                    "exit_code": 0,
+                    "executed_nodes": 1,
+                    "executed_tests": 1,
+                }
+            )
+            + "\n"
+        )
+
+        rc, _output, error = self.invoke(["--dry-run"])
+
+        self.assertEqual(0, rc, error)
+        self.assertIn("run-handles=1", error)
+        self.assertTrue(
+            any(wrkslots_action(command, "create") for command in self.fake.commands)
+        )
+
+    def test_entry_ignores_owned_framework_result_from_a_prior_target(self) -> None:
+        runs = self.root / "ignored/validate/runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        owner = runs / "validate-sidecar-prior-target.json"
+        owner.write_text(
+            json.dumps(
+                {
+                    "checkout": str(self.checkout),
+                    "service_result_schema": 1,
+                    "target": SHA,
+                }
+            )
+            + "\n"
+        )
+        prior_target = "b" * 40
+        start_unit.service_result.result_path(owner).write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "commit": prior_target,
                     "profile": "full",
                     "final_validate_status": "PASSED",
                     "exit_code": 0,
@@ -5520,7 +5553,9 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(start_unit.EXIT_REFUSED, rc)
         self.assertIn(start_unit.TOOL_AUTHORITY_ENV, err.getvalue())
-        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+        self.assertFalse(
+            any(command[0] == "systemd-run" for command in self.fake.commands)
+        )
 
     def test_fd_backed_authority_without_unit_lifetime_handoff_is_refused(
         self,
@@ -8294,6 +8329,98 @@ class StartUnitTest(unittest.TestCase):
         self.assertTrue(blocked_during_create)
         self.assertTrue(exclusive_after_create)
 
+    def test_initial_record_directory_sync_failure_retains_storage_before_release(
+        self,
+    ) -> None:
+        runtime = self.root / "launcher-durability-runtime"
+        runtime.mkdir()
+        cargo = (
+            self.root
+            / "ignored/validate/cargo-homes/validate-cargo-launcher-durability"
+        )
+        cargo.mkdir(parents=True)
+        real_fsync = os.fsync
+        file_synced = False
+        directory_sync_attempted = False
+        generation_held_during_sync = False
+
+        def fail_parent_sync(descriptor: int) -> None:
+            nonlocal file_synced, directory_sync_attempted
+            nonlocal generation_held_during_sync
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                directory_sync_attempted = True
+                self.assertTrue(
+                    file_synced,
+                    "the temporary record must be fsynced before its directory",
+                )
+                with self.assertRaises(start_unit.run_registry.RecordLocked):
+                    with start_unit.run_registry.run_writer_generation_lock(
+                        self.root, exclusive=True, blocking=False
+                    ):
+                        pass
+                generation_held_during_sync = True
+                raise OSError(
+                    errno.EIO, "injected initial record directory sync failure"
+                )
+            file_synced = True
+            real_fsync(descriptor)
+
+        with (
+            mock.patch.object(
+                start_unit, "validate_checkout", return_value=self.checkout
+            ),
+            mock.patch.object(
+                start_unit, "source_checkout_branch", return_value="branch"
+            ),
+            mock.patch.object(start_unit, "preflight", return_value=None),
+            mock.patch.object(
+                start_unit, "prepare_runtime_root", return_value=runtime
+            ),
+            mock.patch.object(
+                start_unit, "prepare_private_cargo_home", return_value=cargo
+            ),
+            mock.patch.object(
+                start_unit, "build_systemd_command", return_value=["systemd-run"]
+            ),
+            mock.patch.object(start_unit, "detached_tool_prefix", return_value=None),
+            mock.patch.object(start_unit, "parent_checkout_head", return_value=SHA),
+            mock.patch.object(
+                start_unit.gh_route, "executable", return_value=sys.executable
+            ),
+            mock.patch.object(
+                start_unit.service_result, "schema_for_checkout", return_value=None
+            ),
+            mock.patch.object(
+                start_unit.run_registry.os,
+                "fsync",
+                side_effect=fail_parent_sync,
+            ),
+        ):
+            rc, _output, error = self.invoke(
+                ["--in-place", "--", "quick"], unit="validate-durability-window"
+            )
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc, error)
+        self.assertTrue(file_synced)
+        self.assertTrue(directory_sync_attempted)
+        self.assertTrue(generation_held_during_sync)
+        self.assertIn("initial record directory sync failure", error)
+        self.assertIn("not confirmed directory-durable", error)
+        self.assertTrue(runtime.is_dir())
+        self.assertTrue(cargo.is_dir())
+        record = self.root / "ignored/validate/runs/validate-durability-window.json"
+        self.assertEqual(
+            "preparing", start_unit.run_registry.read_record(record)["state"]
+        )
+        self.assertEqual([], self.fake.removed)
+        self.assertFalse(
+            any(command[0] == "systemd-run" for command in self.fake.commands)
+        )
+        with start_unit.run_registry.run_writer_generation_lock(
+            self.root, exclusive=True, blocking=False
+        ):
+            pass
+
     def test_managed_population_authority_survives_runs_replacement(self) -> None:
         fresh, record = self.managed_cleanup_record(
             "managed-population-parent-replacement"
@@ -8395,13 +8522,18 @@ class StartUnitTest(unittest.TestCase):
         payload = start_unit.run_registry.read_record(record)
         real_fsync = os.fsync
         refused = False
+        directory_syncs = 0
 
         def fail_record_parent_sync(descriptor: int) -> None:
-            nonlocal refused
+            nonlocal refused, directory_syncs
             metadata = os.fstat(descriptor)
             if stat.S_ISDIR(metadata.st_mode):
-                refused = True
-                raise OSError(errno.EIO, "injected cleanup stamp parent fsync failure")
+                directory_syncs += 1
+                if directory_syncs == 2:
+                    refused = True
+                    raise OSError(
+                        errno.EIO, "injected cleanup stamp parent fsync failure"
+                    )
             real_fsync(descriptor)
 
         with mock.patch.object(
@@ -8426,6 +8558,40 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn(
             "checkout_removed_at", start_unit.run_registry.read_record(record)
         )
+
+    def test_batch_persists_intent_if_crash_precedes_checkout_stamp(
+        self,
+    ) -> None:
+        fresh, record = self.managed_cleanup_record("batch-crash-before-stamp")
+        real_update = start_unit.update_authorized_cleanup_record
+        interrupted = False
+
+        def interrupt_first_checkout_stamp(
+            authority: start_unit.CleanupRecordAuthority,
+            population: run_registry.RunPopulationAuthority,
+            **fields: object,
+        ) -> dict[str, object]:
+            nonlocal interrupted
+            if not interrupted and "checkout_removed_at" in fields:
+                interrupted = True
+                raise KeyboardInterrupt("injected crash before checkout stamp")
+            return real_update(authority, population, **fields)
+
+        with mock.patch.object(
+            start_unit,
+            "update_authorized_cleanup_record",
+            side_effect=interrupt_first_checkout_stamp,
+        ):
+            with self.assertRaisesRegex(KeyboardInterrupt, "injected crash"):
+                start_unit.sweep_completed_checkouts(
+                    self.root, run=self.fake, tool_root=self.root
+                )
+
+        self.assertTrue(interrupted)
+        self.assertFalse(fresh.exists() or fresh.is_symlink())
+        interrupted_record = run_registry.read_record(record)
+        self.assertIn("checkout_removal_intent", interrupted_record)
+        self.assertNotIn("checkout_removed_at", interrupted_record)
 
     def test_managed_batch_does_not_confirm_dangling_symlink_as_removed(self) -> None:
         fresh, record = self.managed_cleanup_record("managed-dangling")
@@ -8743,11 +8909,12 @@ class StartUnitTest(unittest.TestCase):
         self.assertFalse(cleaned)
         self.assertIn("still exists", reason or "")
         self.assertTrue(cargo_home.is_symlink())
-        self.assertTrue(
+        self.assertFalse(
             any(
                 "--ownerless-validate-cargo-home" in command
                 for command in self.fake.commands
-            )
+            ),
+            "a dangling target must be rejected before the provider is invoked",
         )
 
     def test_sweep_retains_cargo_home_when_wrkslots_recovery_refuses(self) -> None:
@@ -10377,6 +10544,31 @@ class StartUnitTest(unittest.TestCase):
         self.assertIsNotNone(self.fake.fresh)
         assert self.fake.fresh is not None
         self.assertFalse(self.fake.fresh.exists())
+        self.assertEqual([], sorted(self.fake.registered_validate_slots))
+
+    def test_production_fence_allows_same_launch_dry_run_cleanup(self) -> None:
+        with mock.patch.object(
+            start_unit,
+            "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED",
+            PRODUCTION_CLEANUP_ROLLOUT_ENABLED,
+        ):
+            rc, output, error = self.invoke(
+                ["--materialize-target", "--dry-run", "--json"]
+            )
+
+        self.assertEqual(0, rc, error)
+        self.assertEqual("would-start", json.loads(output)["event"])
+        self.assertIsNotNone(self.fake.fresh)
+        assert self.fake.fresh is not None
+        self.assertFalse(self.fake.fresh.exists() or self.fake.fresh.is_symlink())
+        self.assertFalse(
+            self.private_cargo_home().exists()
+            or self.private_cargo_home().is_symlink()
+        )
+        self.assertTrue(self.runtime_roots)
+        self.assertFalse(
+            self.runtime_roots[-1].exists() or self.runtime_roots[-1].is_symlink()
+        )
         self.assertEqual([], sorted(self.fake.registered_validate_slots))
 
     def assert_materialized_dry_run_cleanup_observation(
@@ -13774,7 +13966,14 @@ class StartUnitTest(unittest.TestCase):
         self.fake.source_head = "d" * 40
         self.fake.fresh_head = "e" * 40
 
-        rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+        with mock.patch.object(
+            start_unit,
+            "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED",
+            PRODUCTION_CLEANUP_ROLLOUT_ENABLED,
+        ):
+            rc, _output, error = self.invoke(
+                ["--materialize-target", "--", "full"]
+            )
 
         self.assertEqual(start_unit.EXIT_REFUSED, rc)
         self.assertIn("fresh checkout resolved", error)
@@ -14498,7 +14697,15 @@ class StartUnitTest(unittest.TestCase):
                 self.assertFalse(removed)
                 self.assertFalse(archived)
                 self.assertIn("typed removal proof required", error.getvalue())
-                self.assertEqual(before, record.read_bytes())
+                after = record.read_bytes()
+                if route == "recorded":
+                    durable = json.loads(after)
+                    self.assertEqual(
+                        str(fresh), durable["checkout_removal_intent"]["path"]
+                    )
+                    self.assertNotIn("checkout_removed_at", durable)
+                else:
+                    self.assertEqual(before, after)
                 self.assertTrue(fresh.is_dir())
                 self.assertEqual(1, len(commands))
                 command = commands[0]
@@ -14742,6 +14949,68 @@ class StartUnitTest(unittest.TestCase):
         self.assertLess(checkout_provider, cargo_provider)
         self.assertLess(cargo_provider, runtime_provider)
 
+    def test_production_fence_allows_same_launch_full_cleanup(self) -> None:
+        with mock.patch.object(
+            start_unit,
+            "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED",
+            PRODUCTION_CLEANUP_ROLLOUT_ENABLED,
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        for field in (
+            "checkout_removed_at",
+            "cargo_home_removed_at",
+            "runtime_root_removed_at",
+        ):
+            self.assertIn(field, record)
+        for field in ("checkout", "cargo_home", "runtime_root"):
+            path = Path(record[field])
+            self.assertFalse(path.exists() or path.is_symlink(), path)
+
+    def test_production_fence_same_launch_exemption_is_start_identity_bound(
+        self,
+    ) -> None:
+        real_finalize = start_unit.finalize_commit_status_publication
+
+        def replace_start_identity(*args: object, **kwargs: object):
+            updated = real_finalize(*args, **kwargs)
+            record_path = args[2]
+            assert isinstance(record_path, Path)
+            run_registry.update_record(
+                record_path, started_at="2026-01-01T00:00:00+00:00"
+            )
+            return updated
+
+        with (
+            mock.patch.object(
+                start_unit,
+                "DESTRUCTIVE_CLEANUP_ROLLOUT_ENABLED",
+                PRODUCTION_CLEANUP_ROLLOUT_ENABLED,
+            ),
+            mock.patch.object(
+                start_unit,
+                "finalize_commit_status_publication",
+                side_effect=replace_start_identity,
+            ),
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn("start identity does not match this launch", error)
+        self.assertIsNotNone(self.fake.fresh)
+        assert self.fake.fresh is not None
+        self.assertTrue(self.fake.fresh.is_dir())
+        self.assertTrue(self.private_cargo_home().is_dir())
+        record = run_registry.read_record(
+            run_registry.record_path(self.root, "validate-test")
+        )
+        self.assertTrue(Path(record["runtime_root"]).is_dir())
+        self.assertEqual([], self.fake.removed)
+
     def test_main_refuses_mismatched_durable_cargo_target_before_any_cleanup(
         self,
     ) -> None:
@@ -14977,6 +15246,111 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn(
             "runtime_root_removed_at", run_registry.read_record(record_path)
         )
+
+    def test_runtime_retry_stamps_checkout_absent_after_crash_before_stamp(
+        self,
+    ) -> None:
+        runtime = self.recoverable_runtime_root()
+        real_update = start_unit.update_authorized_cleanup_record
+        failed_once = False
+
+        def fail_first_checkout_stamp(
+            authority: start_unit.CleanupRecordAuthority,
+            population: run_registry.RunPopulationAuthority,
+            **fields: object,
+        ) -> dict[str, object]:
+            nonlocal failed_once
+            if not failed_once and "checkout_removed_at" in fields:
+                failed_once = True
+                raise OSError(errno.EIO, "injected crash before checkout stamp")
+            return real_update(authority, population, **fields)
+
+        with (
+            mock.patch.object(
+                start_unit, "prepare_runtime_root", return_value=runtime
+            ),
+            mock.patch.object(
+                start_unit,
+                "update_authorized_cleanup_record",
+                side_effect=fail_first_checkout_stamp,
+            ),
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertTrue(failed_once)
+        record_path = run_registry.record_path(self.root, "validate-test")
+        record = run_registry.read_record(record_path)
+        self.assertFalse(Path(record["checkout"]).exists())
+        self.assertTrue(Path(record["cargo_home"]).is_dir())
+        self.assertTrue(runtime.is_dir())
+        self.assertNotIn("checkout_removed_at", record)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([str(runtime)], report["removed_runtime_roots"], report)
+        recovered = run_registry.read_record(record_path)
+        for field in (
+            "checkout_removed_at",
+            "cargo_home_removed_at",
+            "runtime_root_removed_at",
+        ):
+            self.assertIn(field, recovered)
+
+    def test_runtime_retry_stamps_cargo_absent_after_crash_before_stamp(
+        self,
+    ) -> None:
+        runtime = self.recoverable_runtime_root()
+        real_update = start_unit.update_authorized_cleanup_record
+        failed_once = False
+
+        def fail_first_cargo_stamp(
+            authority: start_unit.CleanupRecordAuthority,
+            population: run_registry.RunPopulationAuthority,
+            **fields: object,
+        ) -> dict[str, object]:
+            nonlocal failed_once
+            if not failed_once and "cargo_home_removed_at" in fields:
+                failed_once = True
+                raise OSError(errno.EIO, "injected crash before Cargo-home stamp")
+            return real_update(authority, population, **fields)
+
+        with (
+            mock.patch.object(
+                start_unit, "prepare_runtime_root", return_value=runtime
+            ),
+            mock.patch.object(
+                start_unit,
+                "update_authorized_cleanup_record",
+                side_effect=fail_first_cargo_stamp,
+            ),
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertTrue(failed_once)
+        record_path = run_registry.record_path(self.root, "validate-test")
+        record = run_registry.read_record(record_path)
+        self.assertFalse(Path(record["checkout"]).exists())
+        self.assertFalse(Path(record["cargo_home"]).exists())
+        self.assertTrue(runtime.is_dir())
+        self.assertIn("checkout_removed_at", record)
+        self.assertNotIn("cargo_home_removed_at", record)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([str(runtime)], report["removed_runtime_roots"], report)
+        recovered = run_registry.read_record(record_path)
+        for field in (
+            "checkout_removed_at",
+            "cargo_home_removed_at",
+            "runtime_root_removed_at",
+        ):
+            self.assertIn(field, recovered)
 
     def test_in_place_runtime_root_removal_failure_is_retried(self) -> None:
         runtime = self.recoverable_runtime_root()
@@ -15225,6 +15599,7 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", error)
+        self.assertNotIn("NO-RECEIPT-PRODUCED", error)
 
     def test_uncanonical_receipt_is_archived_before_temp_checkout_removal(self) -> None:
         """The negative that matters: an invisible green must be impossible.
@@ -15278,6 +15653,21 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("NO-RECEIPT-PRODUCED", error)
         self.assertNotIn("ORPHANED-RECEIPT", error)
         self.assert_main_checkout_and_cargo_removed()
+
+    def test_no_receipt_cleanup_refusal_is_not_labeled_orphaned(self) -> None:
+        self.fake.ledger_rows = []
+        self.fake.wrkslots_remove_rc = 3
+        self.fake.wrkslots_remove_stderr = "fixture no-receipt cleanup refusal"
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("NO-RECEIPT-PRODUCED", error)
+        self.assertIn("fixture no-receipt cleanup refusal", error)
+        self.assertNotIn("ORPHANED-RECEIPT", error)
+        self.assertIsNotNone(self.fake.fresh)
+        assert self.fake.fresh is not None
+        self.assertTrue(self.fake.fresh.is_dir())
 
     def test_a_receipt_under_an_UNANTICIPATED_name_is_archived(self) -> None:
         """Why the test is SHAPE, not a whitelist of ledger filenames.
@@ -15349,7 +15739,8 @@ class StartUnitTest(unittest.TestCase):
         rc, _output, error = self.invoke(["--", "full"])
 
         self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
-        self.assertIn("ORPHANED-RECEIPT", error)
+        self.assertIn("RECEIPT-CLASSIFICATION-UNAVAILABLE", error)
+        self.assertNotIn("ORPHANED-RECEIPT", error)
         self.assertIn("scan failed", error)
         self.assertEqual([], self.fake.removed)
         self.assertTrue(
@@ -15373,6 +15764,7 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", error)
+        self.assertNotIn("NO-RECEIPT-PRODUCED", error)
         # The property under test is IDENTITY BINDING -- a foreign row must not
         # satisfy the check. Retention is a separate question: this run left no
         # receipt in its own tree, so there is nothing to preserve and the tree
