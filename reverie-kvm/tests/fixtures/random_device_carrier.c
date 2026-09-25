@@ -14,6 +14,49 @@
 #define CHECK(e) do { if (!(e)) { fprintf(stderr, "line %d: %s errno=%d\n", __LINE__, #e, errno); return 1; } } while (0)
 #define FAIL(call, err) do { errno=0; CHECK((call)==-1); CHECK(errno==(err)); } while (0)
 
+/* Crossed-error controls use the same native and KVM guest calls. A held
+ * anonymous reservation supplies one occupied page and one deliberately free
+ * hole; every rejected request must preserve both and the descriptor status. */
+static int mapping_errors(long fd, long mode) {
+    unsigned char *pages=(void*)syscall(SYS_mmap,0L,12288L,(long)(PROT_READ|PROT_WRITE),(long)(MAP_PRIVATE|MAP_ANONYMOUS),-1L,0L);
+    CHECK(pages!=MAP_FAILED);
+    memset(pages,0xa5,12288);
+    CHECK(syscall(SYS_munmap,(long)(pages+4096),4096L)==0);
+    long original=syscall(SYS_fcntl,fd,(long)F_GETFL,0L);
+    const long f=MAP_FIXED, n=MAP_FIXED_NOREPLACE, h=MAP_HUGETLB, t=MAP_TYPE;
+    struct { long address,length,flags,offset,error; } cases[]={
+        {(long)pages,4096,MAP_PRIVATE|h|f,0,EINVAL},
+        {(long)pages,4096,MAP_PRIVATE|h|n,0,EINVAL},
+        {-4096L,4096,MAP_PRIVATE|h|f,0,EINVAL},
+        {(long)pages,4096,MAP_PRIVATE|h|f,-4096L,EINVAL},
+        {(long)pages,-1L,MAP_PRIVATE|h|f,0,EINVAL},
+        {(long)pages,4096,MAP_PRIVATE|h|f,1,EINVAL},
+        {(long)pages,4096,t|n,0,EEXIST},
+        {-4096L,4096,t|f,0,ENOMEM},
+        {(long)(pages+4096),4096,t|f,-4096L,EOVERFLOW},
+        {(long)(pages+4096),4096,t|f,0,EINVAL},
+        {(long)(pages+4096),4096,MAP_SHARED_VALIDATE|n,0,EOPNOTSUPP},
+        {(long)pages,4096,MAP_SHARED_VALIDATE|n,0,EEXIST},
+    };
+    for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);++i) {
+        int error=cases[i].offset==1 ? EINVAL : (mode==O_PATH ? EBADF : cases[i].error);
+        FAIL(syscall(SYS_mmap,cases[i].address,cases[i].length,(long)PROT_READ,cases[i].flags,fd,cases[i].offset),error);
+    }
+    const long legacy[]={MAP_GROWSDOWN,0x04000000,0x80,21L<<26,30L<<26};
+    for(unsigned i=0;i<sizeof(legacy)/sizeof(legacy[0]);++i) {
+        int error=mode==O_PATH ? EBADF : (mode==O_WRONLY || mode==3 ? EACCES : ENODEV);
+        FAIL(syscall(SYS_mmap,(long)pages,4096L,(long)PROT_READ,MAP_SHARED_VALIDATE|f|legacy[i],fd,0L),error);
+    }
+    const long extension[]={MAP_SYNC,0x80000000L,0x02000000};
+    for(unsigned i=0;i<sizeof(extension)/sizeof(extension[0]);++i)
+        FAIL(syscall(SYS_mmap,(long)pages,4096L,(long)PROT_READ,MAP_SHARED_VALIDATE|f|extension[i],fd,0L),mode==O_PATH ? EBADF : EOPNOTSUPP);
+    CHECK(syscall(SYS_fcntl,fd,(long)F_GETFL,0L)==original);
+    for(unsigned i=0;i<4096;++i) CHECK(pages[i]==0xa5 && pages[8192+i]==0xa5);
+    CHECK(syscall(SYS_mmap,(long)(pages+4096),4096L,(long)(PROT_READ|PROT_WRITE),(long)(MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE),-1L,0L)==(long)(pages+4096));
+    CHECK(syscall(SYS_munmap,(long)pages,12288L)==0);
+    return 0;
+}
+
 static int one(const char *path, unsigned minor_number, int native) {
     const long modes[]={O_RDONLY,O_WRONLY,O_RDWR,3,O_PATH};
     for (unsigned m=0;m<sizeof(modes)/sizeof(modes[0]);++m) {
@@ -35,6 +78,10 @@ static int one(const char *path, unsigned minor_number, int native) {
         CHECK(at.st_mode==st.st_mode && at.st_rdev==st.st_rdev && at.st_ino==st.st_ino && at.st_dev==st.st_dev);
         long original= mode==O_PATH ? O_PATH : 0100000|mode;
         CHECK(syscall(SYS_fcntl,fd,(long)F_GETFL,0L)==original);
+        FAIL(syscall(SYS_fcntl,alias,(long)F_SETFL,(long)(O_DIRECT|O_ASYNC|O_RDWR|O_APPEND|O_NONBLOCK)),mode==O_PATH ? EBADF : EINVAL);
+        CHECK(syscall(SYS_fcntl,fd,(long)F_GETFL,0L)==original);
+        CHECK(syscall(SYS_fcntl,alias,(long)F_GETFL,0L)==original);
+        CHECK(mapping_errors(fd,mode)==0);
         if (mode==O_PATH) {
             FAIL(syscall(SYS_fcntl,alias,(long)F_SETFL,(long)(O_RDWR|O_NONBLOCK)),EBADF);
             FAIL(syscall(SYS_fcntl,fd,(long)F_SETLK,-1L),EBADF);

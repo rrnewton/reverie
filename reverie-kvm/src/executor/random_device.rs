@@ -39,11 +39,14 @@ impl RandomDeviceDescription {
         if self.access == libc::O_PATH {
             return Ok(negative_errno(libc::EBADF));
         }
+        // Linux random devices lack FMODE_CAN_ODIRECT. Reject before changing
+        // any shared flags, regardless of the private tmpfs carrier's support.
+        if requested & libc::O_DIRECT != 0 {
+            return Ok(negative_errno(libc::EINVAL));
+        }
         let mut async_set = self.status_lock()?;
-        let flags =
-            requested & (libc::O_APPEND | libc::O_NONBLOCK | libc::O_DIRECT | libc::O_NOATIME);
-        // Keep the existing O_DIRECT compatibility policy; no host fasync or
-        // host signal delivery is introduced. Commit virtual flags on success.
+        let flags = requested & (libc::O_APPEND | libc::O_NONBLOCK | libc::O_NOATIME);
+        // No host fasync or signal delivery. Commit virtual flags on success.
         let result = zero_or_errno(unsafe { libc::fcntl(host, libc::F_SETFL, flags) });
         if result == 0 {
             *async_set = requested & libc::O_ASYNC != 0;
@@ -353,20 +356,19 @@ fn random_device_mmap(
     if description.access == libc::O_PATH {
         return negative_errno(libc::EBADF);
     }
+    let flags = args[3] as i32;
+    // ksys_mmap_pgoff rejects a non-hugetlbfs file before entering do_mmap,
+    // including its address, length, overlap and file-offset validation.
+    if flags & libc::MAP_HUGETLB != 0 {
+        return negative_errno(libc::EINVAL);
+    }
     if args[1] == 0 {
         return negative_errno(libc::EINVAL);
     }
     let Some(length) = align_up(args[1], PAGE_SIZE) else {
         return negative_errno(libc::ENOMEM);
     };
-    let flags = args[3] as i32;
     let kind = flags & libc::MAP_TYPE;
-    if !matches!(
-        kind,
-        libc::MAP_PRIVATE | libc::MAP_SHARED | libc::MAP_SHARED_VALIDATE
-    ) {
-        return negative_errno(libc::EINVAL);
-    }
     let fixed = flags & (libc::MAP_FIXED | libc::MAP_FIXED_NOREPLACE) != 0;
     if fixed && !args[0].is_multiple_of(PAGE_SIZE) {
         return negative_errno(libc::EINVAL);
@@ -396,22 +398,36 @@ fn random_device_mmap(
     if args[5].checked_add(length).is_none() {
         return negative_errno(libc::EOVERFLOW);
     }
-    // Supported legacy mmap flags; an unknown SHARED_VALIDATE extension must
-    // not accidentally become ordinary shared mapping semantics.
+    if !matches!(
+        kind,
+        libc::MAP_PRIVATE | libc::MAP_SHARED | libc::MAP_SHARED_VALIDATE
+    ) {
+        return negative_errno(libc::EINVAL);
+    }
+    // Linux v6.18 include/linux/mman.h LEGACY_MAP_MASK with x86 UAPI values.
+    // NOREPLACE is deliberately absent: its overlap check precedes this mask,
+    // but SHARED_VALIDATE still rejects it on a free range. Hugepage selectors
+    // are individual allowed bits even when MAP_HUGETLB is absent.
+    const MAP_ABOVE4G: i32 = 0x80;
+    const MAP_UNINITIALIZED: i32 = 0x04000000;
     const LEGACY: i32 = libc::MAP_SHARED
         | libc::MAP_PRIVATE
         | libc::MAP_FIXED
         | libc::MAP_ANONYMOUS
         | libc::MAP_DENYWRITE
         | libc::MAP_EXECUTABLE
+        | MAP_UNINITIALIZED
+        | libc::MAP_GROWSDOWN
         | libc::MAP_LOCKED
         | libc::MAP_NORESERVE
         | libc::MAP_POPULATE
         | libc::MAP_NONBLOCK
         | libc::MAP_STACK
         | libc::MAP_HUGETLB
-        | libc::MAP_FIXED_NOREPLACE
-        | libc::MAP_32BIT;
+        | libc::MAP_32BIT
+        | MAP_ABOVE4G
+        | libc::MAP_HUGE_2MB
+        | libc::MAP_HUGE_1GB;
     if kind == libc::MAP_SHARED_VALIDATE && flags & !LEGACY != 0 {
         return negative_errno(libc::EOPNOTSUPP);
     }

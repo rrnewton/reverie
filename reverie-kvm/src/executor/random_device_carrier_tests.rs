@@ -240,6 +240,9 @@ fn random_carrier_write_validation_precedes_copy_and_ignores_read_position() {
     let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
     let fd = open_with_flags(&mut memory, &mut state, "/dev/urandom", libc::O_RDWR);
     assert!(fd >= 0);
+    // This is the existing synthetic read cursor, not Linux random f_pos:
+    // native noop_llseek stays at zero. Sink writes must ignore this synthetic
+    // position even at INT64_MAX and leave it unchanged (asserted below).
     assert_eq!(
         syscall_result(
             &mut memory,
@@ -306,6 +309,7 @@ fn random_carrier_write_validation_precedes_copy_and_ignores_read_position() {
         ),
         negative_errno(libc::EOPNOTSUPP)
     );
+    // Sink consumption leaves the deliberate synthetic read cursor unchanged.
     assert_eq!(random_stream_position(&state, fd), i64::MAX);
 }
 
@@ -426,4 +430,278 @@ fn random_carrier_mmap_denial_keeps_memory_and_cursor_unchanged() {
             assert_eq!(state.mmap_next, BOOT_RESERVED_END);
         }
     }
+}
+
+// Native Linux controls for these crossed errors also run in the real guest
+// fixture. These dispatcher tests additionally inspect private carrier effects.
+#[test]
+fn random_carrier_revision_direct_rejection_has_no_effects() {
+    let root = TestDir::new();
+    let mut state = test_state(&root.0);
+    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+    for path in ["/dev/random", "/dev/urandom"] {
+        for mode in [
+            libc::O_RDONLY,
+            libc::O_WRONLY,
+            libc::O_RDWR,
+            3,
+            libc::O_PATH,
+        ] {
+            let fd = open_with_flags(&mut memory, &mut state, path, mode);
+            assert!(fd >= 0);
+            let alias = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup,
+                [fd as u64, 0, 0, 0, 0, 0],
+            );
+            assert!(alias >= 0);
+            let before = random_carrier_flags(&mut memory, &mut state, fd);
+            let host_before = file_status_flags(&state.files[&(fd as i32)]).unwrap();
+            let carrier = if mode != libc::O_PATH {
+                Some(random_stream_carrier_bytes(&state, fd, 0, 65536))
+            } else {
+                None
+            };
+            memory.write(0x300, &[0xa5; 23]).unwrap();
+            for requested in [
+                libc::O_DIRECT,
+                libc::O_DIRECT | libc::O_RDWR | libc::O_ASYNC | libc::O_APPEND | libc::O_NONBLOCK,
+            ] {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_fcntl,
+                        [
+                            alias as u64,
+                            libc::F_SETFL as u64,
+                            requested as u64,
+                            0,
+                            0,
+                            0
+                        ]
+                    ),
+                    negative_errno(if mode == libc::O_PATH {
+                        libc::EBADF
+                    } else {
+                        libc::EINVAL
+                    })
+                );
+                assert_eq!(random_carrier_flags(&mut memory, &mut state, fd), before);
+                assert_eq!(random_carrier_flags(&mut memory, &mut state, alias), before);
+                assert_eq!(
+                    file_status_flags(&state.files[&(fd as i32)]).unwrap(),
+                    host_before
+                );
+                assert_eq!(random_stream_bytes(&memory, 0x300, 23), [0xa5; 23]);
+                if let Some(ref carrier) = carrier {
+                    assert_eq!(random_stream_carrier_bytes(&state, fd, 0, 65536), *carrier);
+                    assert_eq!(random_stream_position(&state, fd), 0);
+                }
+            }
+            assert_eq!(close(&mut state, fd as u64), 0);
+            assert_eq!(close(&mut state, alias as u64), 0);
+        }
+    }
+}
+
+fn random_carrier_revision_mmap_cases(cases: &[(u64, u64, i32, u64, i32)]) {
+    let root = TestDir::new();
+    let mut state = test_state(&root.0);
+    let mut memory = GuestMemory::new(0, (BOOT_RESERVED_END + 4 * PAGE_SIZE) as usize).unwrap();
+    state.mmap_base = BOOT_RESERVED_END;
+    state.mmap_next = BOOT_RESERVED_END;
+    state.mmap_limit = BOOT_RESERVED_END + 4 * PAGE_SIZE;
+    memory
+        .map_user_permissions(BOOT_RESERVED_END, PAGE_SIZE, true, true)
+        .unwrap();
+    memory.write(BOOT_RESERVED_END, &[0xa5; 16]).unwrap();
+    for path in ["/dev/random", "/dev/urandom"] {
+        for mode in [
+            libc::O_RDONLY,
+            libc::O_WRONLY,
+            libc::O_RDWR,
+            3,
+            libc::O_PATH,
+        ] {
+            let fd = open_with_flags(&mut memory, &mut state, path, mode);
+            assert!(fd >= 0);
+            let before = random_carrier_flags(&mut memory, &mut state, fd);
+            let carrier = if mode != libc::O_PATH {
+                Some(random_stream_carrier_bytes(&state, fd, 0, 65536))
+            } else {
+                None
+            };
+            for &(address, length, flags, offset, error) in cases {
+                let error = if !offset.is_multiple_of(PAGE_SIZE) {
+                    libc::EINVAL
+                } else if mode == libc::O_PATH {
+                    libc::EBADF
+                } else if error == libc::ENODEV && (mode == libc::O_WRONLY || mode == 3) {
+                    libc::EACCES
+                } else {
+                    error
+                };
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_mmap,
+                        [
+                            address,
+                            length,
+                            libc::PROT_READ as u64,
+                            flags as u64,
+                            fd as u64,
+                            offset
+                        ]
+                    ),
+                    negative_errno(error),
+                    "{path} mode={mode:#x} address={address:#x} length={length:#x} flags={flags:#x} offset={offset:#x}"
+                );
+                assert_eq!(state.mmap_next, BOOT_RESERVED_END);
+                assert_eq!(
+                    random_stream_bytes(&memory, BOOT_RESERVED_END, 16),
+                    [0xa5; 16]
+                );
+                assert!(memory.user_range_is_mapped(BOOT_RESERVED_END, PAGE_SIZE));
+                for page in 1..4 {
+                    assert!(
+                        !memory
+                            .user_range_is_mapped(BOOT_RESERVED_END + page * PAGE_SIZE, PAGE_SIZE)
+                    );
+                }
+                assert_eq!(random_carrier_flags(&mut memory, &mut state, fd), before);
+                if let Some(ref carrier) = carrier {
+                    assert_eq!(random_stream_carrier_bytes(&state, fd, 0, 65536), *carrier);
+                    assert_eq!(random_stream_position(&state, fd), 0);
+                }
+            }
+            assert_eq!(close(&mut state, fd as u64), 0);
+        }
+    }
+}
+
+#[test]
+fn random_carrier_revision_hugetlb_precedes_mapping_errors() {
+    let flags = libc::MAP_PRIVATE | libc::MAP_HUGETLB;
+    random_carrier_revision_mmap_cases(&[
+        (
+            BOOT_RESERVED_END,
+            PAGE_SIZE,
+            flags | libc::MAP_FIXED,
+            0,
+            libc::EINVAL,
+        ),
+        (
+            BOOT_RESERVED_END,
+            PAGE_SIZE,
+            flags | libc::MAP_FIXED_NOREPLACE,
+            0,
+            libc::EINVAL,
+        ),
+        (
+            u64::MAX - PAGE_SIZE + 1,
+            PAGE_SIZE,
+            flags | libc::MAP_FIXED,
+            0,
+            libc::EINVAL,
+        ),
+        (
+            BOOT_RESERVED_END,
+            PAGE_SIZE,
+            flags | libc::MAP_FIXED,
+            u64::MAX - PAGE_SIZE + 1,
+            libc::EINVAL,
+        ),
+        (
+            BOOT_RESERVED_END,
+            u64::MAX,
+            flags | libc::MAP_FIXED,
+            0,
+            libc::EINVAL,
+        ),
+        (
+            BOOT_RESERVED_END,
+            PAGE_SIZE,
+            flags | libc::MAP_FIXED,
+            1,
+            libc::EINVAL,
+        ),
+    ]);
+}
+
+#[test]
+fn random_carrier_revision_invalid_type_follows_address_and_overflow() {
+    random_carrier_revision_mmap_cases(&[
+        (
+            BOOT_RESERVED_END,
+            PAGE_SIZE,
+            libc::MAP_TYPE | libc::MAP_FIXED_NOREPLACE,
+            0,
+            libc::EEXIST,
+        ),
+        (
+            u64::MAX - PAGE_SIZE + 1,
+            PAGE_SIZE,
+            libc::MAP_TYPE | libc::MAP_FIXED,
+            0,
+            libc::ENOMEM,
+        ),
+        (
+            BOOT_RESERVED_END + PAGE_SIZE,
+            PAGE_SIZE,
+            libc::MAP_TYPE | libc::MAP_FIXED,
+            u64::MAX - PAGE_SIZE + 1,
+            libc::EOVERFLOW,
+        ),
+        (
+            BOOT_RESERVED_END + PAGE_SIZE,
+            PAGE_SIZE,
+            libc::MAP_TYPE | libc::MAP_FIXED,
+            0,
+            libc::EINVAL,
+        ),
+    ]);
+}
+
+#[test]
+fn random_carrier_revision_legacy_mask_matches_x86_linux() {
+    let mut cases = Vec::new();
+    // v6.18 x86 LEGACY_MAP_MASK includes these exact bits, even without
+    // MAP_HUGETLB. This is a bitmask, not a list of permitted hugepage sizes.
+    for legacy in [libc::MAP_GROWSDOWN, 0x04000000, 0x80, 21 << 26, 30 << 26] {
+        cases.push((
+            BOOT_RESERVED_END,
+            PAGE_SIZE,
+            libc::MAP_SHARED_VALIDATE | libc::MAP_FIXED | legacy,
+            0,
+            libc::ENODEV,
+        ));
+    }
+    for extension in [libc::MAP_SYNC, i32::MIN, 0x02000000] {
+        cases.push((
+            BOOT_RESERVED_END,
+            PAGE_SIZE,
+            libc::MAP_SHARED_VALIDATE | libc::MAP_FIXED | extension,
+            0,
+            libc::EOPNOTSUPP,
+        ));
+    }
+    cases.push((
+        BOOT_RESERVED_END + PAGE_SIZE,
+        PAGE_SIZE,
+        libc::MAP_SHARED_VALIDATE | libc::MAP_FIXED_NOREPLACE,
+        0,
+        libc::EOPNOTSUPP,
+    ));
+    cases.push((
+        BOOT_RESERVED_END,
+        PAGE_SIZE,
+        libc::MAP_SHARED_VALIDATE | libc::MAP_FIXED_NOREPLACE,
+        0,
+        libc::EEXIST,
+    ));
+    random_carrier_revision_mmap_cases(&cases);
 }

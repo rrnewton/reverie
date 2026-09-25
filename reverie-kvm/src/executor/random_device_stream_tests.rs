@@ -657,6 +657,8 @@ fn random_device_stream_status_and_mutation_refusals_preserve_carrier() {
         assert_eq!(state.files[&(fd as i32)].metadata().unwrap().len(), 65536);
         assert_eq!(random_stream_carrier_bytes(&state, fd, 0, 65536), carrier);
     }
+    let original_flags = file_status_flags(&state.files[&(fd as i32)]).unwrap();
+    let untouched = random_stream_bytes(&memory, 0x300, 32);
     assert_eq!(
         syscall_result(
             &mut memory,
@@ -671,7 +673,7 @@ fn random_device_stream_status_and_mutation_refusals_preserve_carrier() {
                 0
             ]
         ),
-        0
+        negative_errno(libc::EINVAL)
     );
     let flags = syscall_result(
         &mut memory,
@@ -679,14 +681,21 @@ fn random_device_stream_status_and_mutation_refusals_preserve_carrier() {
         libc::SYS_fcntl,
         [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
     );
-    assert_eq!(flags & libc::O_ACCMODE as i64, libc::O_RDONLY as i64);
-    assert_ne!(flags & libc::O_DIRECT as i64, 0);
-    // The original tmpfs carrier permits unaligned O_DIRECT pread too.
-    let mut direct = [0; 17];
+    // Random devices lack FMODE_CAN_ODIRECT even if their tmpfs carrier
+    // accepts it. The mixed request must not change NONBLOCK or access either.
+    assert_eq!(flags, i64::from(original_flags));
+    assert_eq!(
+        file_status_flags(&state.files[&(fd as i32)]).unwrap(),
+        original_flags
+    );
+    assert_eq!(random_stream_position(&state, fd), 0);
+    assert_eq!(random_stream_carrier_bytes(&state, fd, 0, 65536), carrier);
+    assert_eq!(random_stream_bytes(&memory, 0x300, 32), untouched);
+    let mut positioned = [0; 17];
     state.files[&(fd as i32)]
-        .read_exact_at(&mut direct, 3)
+        .read_exact_at(&mut positioned, 3)
         .unwrap();
-    assert_eq!(direct, carrier[3..20]);
+    assert_eq!(positioned, carrier[3..20]);
     assert_eq!(
         random_stream_read(&mut memory, &mut state, fd, 0x303, 17),
         17
@@ -700,9 +709,52 @@ fn random_device_stream_status_and_mutation_refusals_preserve_carrier() {
             libc::SYS_readv,
             [fd as u64, 0x100, 1, 0, 0, 0]
         ),
-        negative_errno(libc::EOPNOTSUPP)
+        PAGE_SIZE as i64 - 0x300
     );
-    assert_eq!(random_stream_position(&state, fd), 17);
+    let partial = PAGE_SIZE as usize - 0x300;
+    let expected: Vec<u8> = (17..17 + partial)
+        .map(|i| ((i * 73 + 41) & 255) as u8)
+        .collect();
+    assert_eq!(random_stream_bytes(&memory, 0x300, partial), expected);
+    assert_eq!(random_stream_position(&state, fd), 17 + partial as i64);
+    assert_eq!(random_stream_carrier_bytes(&state, fd, 0, 65536), carrier);
+
+    // Keep an actual capacity assertion on the supported buffered path: with
+    // the entire destination accessible, MAX_HOST_IO + 1 still copies only
+    // MAX_HOST_IO and leaves the extra byte untouched. The ordinary-file
+    // vectored_direct_io_above_staging_limit_is_refused_without_effects test
+    // separately retains the direct-I/O EOPNOTSUPP contract for all six routes.
+    let mut large = GuestMemory::new(0, MAX_HOST_IO + 2 * PAGE_SIZE as usize).unwrap();
+    large
+        .write(PAGE_SIZE, &vec![0xa5; MAX_HOST_IO + 1])
+        .unwrap();
+    write_guest_iovecs(&mut large, 0x100, &[(PAGE_SIZE, MAX_HOST_IO + 1)]);
+    let position = random_stream_position(&state, fd);
+    assert_eq!(
+        syscall_result(
+            &mut large,
+            &mut state,
+            libc::SYS_readv,
+            [fd as u64, 0x100, 1, 0, 0, 0]
+        ),
+        MAX_HOST_IO as i64
+    );
+    let expected: Vec<u8> = (position as usize..position as usize + MAX_HOST_IO)
+        .map(|i| ((i * 73 + 41) & 255) as u8)
+        .collect();
+    assert_eq!(
+        random_stream_bytes(&large, PAGE_SIZE, MAX_HOST_IO),
+        expected
+    );
+    assert_eq!(
+        random_stream_bytes(&large, PAGE_SIZE + MAX_HOST_IO as u64, 1),
+        [0xa5]
+    );
+    assert_eq!(
+        random_stream_position(&state, fd),
+        position + MAX_HOST_IO as i64
+    );
+    assert_eq!(random_stream_carrier_bytes(&state, fd, 0, 65536), carrier);
 }
 
 #[test]
