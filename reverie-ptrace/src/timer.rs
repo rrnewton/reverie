@@ -96,12 +96,32 @@ static PMU_CONFIG: OnceLock<PmuConfig> = OnceLock::new();
 pub(crate) static OVERFLOW_RECORDS_EXPIRED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Whether the running kernel is built with `PREEMPT_RT`.
+/// Whether the running kernel may be built with `PREEMPT_RT`. A kernel whose
+/// version cannot be read counts as one.
 fn kernel_is_preempt_rt() -> bool {
     static PREEMPT_RT: OnceLock<bool> = OnceLock::new();
     *PREEMPT_RT.get_or_init(|| {
-        std::fs::read_to_string("/sys/kernel/realtime").is_ok_and(|value| value.trim() == "1")
+        let mut uts = core::mem::MaybeUninit::<libc::utsname>::zeroed();
+        // SAFETY: `uts` is valid for writes, and on success the kernel
+        // NUL-terminates `version`.
+        let version = (unsafe { libc::uname(uts.as_mut_ptr()) } == 0).then(|| {
+            unsafe { std::ffi::CStr::from_ptr(uts.assume_init_ref().version.as_ptr()) }
+                .to_string_lossy()
+                .into_owned()
+        });
+        version.is_none_or(|version| version_is_preempt_rt(&version))
+            || std::fs::read_to_string("/sys/kernel/realtime")
+                .is_ok_and(|value| value.trim() == "1")
     })
+}
+
+/// Whether a `uname` version string names a `PREEMPT_RT` kernel. Mainline
+/// adds the word `PREEMPT_RT` for `CONFIG_PREEMPT_RT` (`init/Makefile`,
+/// `UTS_VERSION`), and `/sys/kernel/realtime` exists only in some
+/// distributions' kernels. The version is cut to 64 bytes, which can drop the
+/// word only after at least 50 bytes of build number and flags.
+fn version_is_preempt_rt(version: &str) -> bool {
+    version.split_whitespace().any(|word| word == "PREEMPT_RT")
 }
 
 pub(crate) fn get_pmu_config() -> &'static PmuConfig {
@@ -509,23 +529,29 @@ impl Timer {
     }
 
     /// Forget recorded overflows whose notification the kernel no longer
-    /// holds for the stopped thread `task`. Called before each injected
-    /// syscall.
+    /// holds for the stopped thread `task`. Called at each stop and before
+    /// each injected syscall.
     ///
     /// A notification can leave the thread's pending queue without a stop
     /// that consumes it: the guest can dequeue it with `sigtimedwait` or a
     /// signalfd, flush it by ignoring the signal, or receive it where a guest
     /// signal was expected. Its records would then authorize discarding a
     /// later guest signal with the same siginfo. Nothing is read unless
-    /// records are unconsumed. If the queue cannot be read, the records
-    /// expire.
+    /// records are unconsumed.
+    ///
+    /// The whole queue is read: real-time signals queue one entry each, so the
+    /// notification can sit behind any number of them. If the queue cannot be
+    /// read, the records are kept. For a stopped thread that happens only when
+    /// the thread has died, and then no discard follows.
     pub(crate) fn expire_overflow_records(&mut self, task: &Stopped) {
         if let Some(timer) = self.inner_mut_noinit()
             && timer.has_overflow_records()
         {
             // The notification is sent to the thread, not the process.
-            let pending = task.peeksiginfo(None).unwrap_or_default();
-            timer.expire_overflow_records(&pending);
+            match task.peeksiginfo_all(None) {
+                Ok(pending) => timer.expire_overflow_records(&pending),
+                Err(err) => debug!("Could not read pending signals of {}: {err}", task.pid()),
+            }
         }
     }
 
@@ -870,14 +896,16 @@ impl TimerImpl {
         let clock = match clock_builder.create() {
             Ok(clock) => clock,
             Err(errno) => {
+                // A failure of the counter itself fails again here.
+                let clock = clock_builder.fast_reads(false).create()?;
                 static WARNED: std::sync::Once = std::sync::Once::new();
                 WARNED.call_once(|| {
                     warn!(
                         %errno,
-                        "Could not create a fast-read clock; reading clocks with read(2)"
+                        "Could not map a clock for fast reads; reading clocks with read(2)"
                     )
                 });
-                clock_builder.fast_reads(false).create()?
+                clock
             }
         };
         // Mapped after the clock, so that it never takes this thread's clock
@@ -1015,9 +1043,7 @@ impl TimerImpl {
     /// Forget the recorded overflows unless `pending`, the stopped thread's
     /// private pending signals, holds a notification with this timer's
     /// siginfo. The thread is stopped, so no overflow can be recorded between
-    /// reading `pending` and this call. A queue longer than `pending` can
-    /// only make records expire early, which forwards a late notification to
-    /// the guest as without records.
+    /// reading `pending` and this call.
     fn expire_overflow_records(&mut self, pending: &[libc::siginfo_t]) {
         if self.overflow_recorded && !pending.iter().any(|s| self.owns_overflow_signal(s)) {
             self.mark_overflows_consumed();
@@ -1530,6 +1556,10 @@ mod tests {
         for period in [PERIOD, PERIOD / 10] {
             timer.prepare_notification(period).unwrap();
             do_branches(period * 7 / 2);
+            // The counter keeps running, so unlike a stopped tracee's, its
+            // overflow interrupt can still be in flight. The kernel writes the
+            // record before it queues the notification.
+            assert!(wait_for_timer_signal_pending());
             assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
             let stopped_at = timer.timer.ctr_value().unwrap();
             do_branches(PERIOD * 3);
@@ -1555,15 +1585,25 @@ mod tests {
         assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
 
         // Records expire unless the thread's pending signals hold a
-        // notification with the timer's siginfo.
-        let mut other = notification;
-        other.si_signo = libc::SIGUSR1;
-        for pending in [&[other][..], &[]] {
+        // notification with the timer's siginfo: signal number, code and
+        // descriptor.
+        let mut other_signo = notification;
+        other_signo.si_signo = libc::SIGUSR1;
+        // `tgkill` sends the timer's signal number with this code.
+        let mut other_code = notification;
+        other_code.si_code = libc::SI_TKILL;
+        let mut other_fd = notification;
+        set_si_fd(&mut other_fd, super::get_si_fd(&notification) + 1);
+        assert!(!timer.owns_overflow_signal(&other_signo));
+        assert!(!timer.owns_overflow_signal(&other_code));
+        assert!(!timer.owns_overflow_signal(&other_fd));
+        let others = [other_signo, other_code, other_fd];
+        for pending in [&[other_signo][..], &[other_code], &[other_fd], &others, &[]] {
             timer.prepare_notification(PERIOD).unwrap();
             do_branches(PERIOD * 3);
             timer.timer.disable().unwrap();
             assert!(timer.has_overflow_records());
-            timer.expire_overflow_records(&[other, notification]);
+            timer.expire_overflow_records(&[other_signo, other_code, other_fd, notification]);
             assert!(timer.has_overflow_records());
             timer.expire_overflow_records(pending);
             assert!(!timer.has_overflow_records());
@@ -1584,6 +1624,54 @@ mod tests {
         unsafe {
             libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, core::ptr::null_mut());
         }
+    }
+
+    /// Overwrite `si_fd`, at the offset `get_si_fd` reads.
+    fn set_si_fd(signal: &mut libc::siginfo_t, fd: libc::c_int) {
+        // Three `int`s, then the pointer-aligned union whose SIGPOLL member
+        // is `{ long si_band; int si_fd; }`.
+        let offset =
+            core::mem::size_of::<*const libc::c_void>() * 2 + core::mem::size_of::<libc::c_long>();
+        unsafe {
+            (signal as *mut libc::siginfo_t)
+                .cast::<u8>()
+                .add(offset)
+                .cast::<libc::c_int>()
+                .write_unaligned(fd);
+        }
+        assert_eq!(super::get_si_fd(signal), fd);
+    }
+
+    #[test]
+    fn preempt_rt_is_read_from_the_kernel_version() {
+        use super::version_is_preempt_rt;
+        assert!(version_is_preempt_rt(
+            "#1 SMP PREEMPT_RT Mon Aug 24 01:30:09 PDT 2026"
+        ));
+        assert!(version_is_preempt_rt("#1 PREEMPT_RT"));
+        assert!(!version_is_preempt_rt(
+            "#1 SMP PREEMPT Mon Aug 24 01:30:09 PDT 2026"
+        ));
+        assert!(!version_is_preempt_rt(
+            "#1 SMP PREEMPT_DYNAMIC Mon Aug 24 01:30:09 PDT 2026"
+        ));
+        assert!(!version_is_preempt_rt("#1 SMP PREEMPT_RTX"));
+        assert!(!version_is_preempt_rt(""));
+    }
+
+    /// Wait up to five seconds for a timer notification to be pending,
+    /// without taking it.
+    fn wait_for_timer_signal_pending() -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(5) {
+            let mut pending: libc::sigset_t = unsafe { core::mem::zeroed() };
+            unsafe { libc::sigpending(&mut pending) };
+            if unsafe { libc::sigismember(&pending, super::MARKER_SIGNAL as i32) } == 1 {
+                return true;
+            }
+            std::hint::spin_loop();
+        }
+        false
     }
 
     fn take_timer_signal_now() -> Option<libc::siginfo_t> {

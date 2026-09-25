@@ -183,7 +183,9 @@ fn serialize() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn run(retry: bool) {
+/// Runs the late-overflow loop. The guest first queues `queued_rt` blocked
+/// real-time signals, which stay pending ahead of every timer notification.
+fn run(retry: bool, queued_rt: usize) {
     let _serial = serialize();
     // Precise timers need a PMU; GitHub-hosted runners have none. The
     // self-hosted hardware job runs this test.
@@ -202,6 +204,25 @@ fn run(retry: bool) {
     let timeout_rcbs = ARM_RCBS + margin;
     let (output, log) = test_fn_with_config::<LateTimerTool, _>(
         move || {
+            if queued_rt > 0 {
+                let rt = libc::SIGRTMIN();
+                // SAFETY: valid signal set arguments.
+                unsafe {
+                    let mut set: libc::sigset_t = core::mem::zeroed();
+                    libc::sigemptyset(&mut set);
+                    libc::sigaddset(&mut set, rt);
+                    assert_eq!(
+                        libc::pthread_sigmask(libc::SIG_BLOCK, &set, core::ptr::null_mut()),
+                        0
+                    );
+                    for _ in 0..queued_rt {
+                        assert_eq!(
+                            libc::syscall(libc::SYS_tgkill, libc::getpid(), libc::gettid(), rt),
+                            0
+                        );
+                    }
+                }
+            }
             for i in 0..ITERS {
                 arm_precise_timer();
                 do_branches(ARM_RCBS + i % overflow_leads);
@@ -242,12 +263,19 @@ fn run(retry: bool) {
 
 #[test]
 fn late_overflow_signal_does_not_interrupt_injected_syscall() {
-    run(false);
+    run(false, 0);
 }
 
 #[test]
 fn late_overflow_signal_is_not_delivered_to_guest_after_retry() {
-    run(true);
+    run(true, 0);
+}
+
+/// Real-time signals queue one entry each, so the notification can sit beyond
+/// any fixed-size read of the pending queue.
+#[test]
+fn late_overflow_signal_behind_queued_realtime_signals_is_discarded() {
+    run(false, 100);
 }
 
 #[derive(Debug, Default)]
@@ -727,4 +755,242 @@ fn colliding_guest_notification_after_timer_event_is_delivered() {
 #[test]
 fn colliding_guest_notification_after_flushed_notification_is_delivered() {
     run_colliding_descriptor(TimerProgress::FlushedByGuest);
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+struct StopWindowConfig {
+    timeout_rcbs: u64,
+    /// Index into the tracer's perf event descriptors of the one the guest's
+    /// notification collides with.
+    candidate: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+enum StopWindowReport {
+    PerfDescriptors(usize),
+    Probe(i64),
+}
+
+#[derive(Debug, Default)]
+struct StopWindowLog {
+    perf_descriptors: Mutex<Option<usize>>,
+    probes: Mutex<Vec<i64>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for StopWindowLog {
+    type Request = StopWindowReport;
+    type Response = ();
+    type Config = StopWindowConfig;
+
+    async fn receive_rpc(&self, _from: Pid, report: StopWindowReport) {
+        match report {
+            StopWindowReport::PerfDescriptors(count) => {
+                *self.perf_descriptors.lock().expect("log lock poisoned") = Some(count)
+            }
+            StopWindowReport::Probe(result) => {
+                self.probes.lock().expect("log lock poisoned").push(result)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct StopWindowTool;
+
+#[reverie::tool]
+impl Tool for StopWindowTool {
+    type GlobalState = StopWindowLog;
+    type ThreadState = ();
+
+    fn subscriptions(_cfg: &StopWindowConfig) -> Subscription {
+        Subscription::all()
+    }
+
+    async fn handle_syscall_event<T: Guest<Self>>(
+        &self,
+        guest: &mut T,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        match syscall.number() {
+            Sysno::clock_getres => {
+                let timeout = TimerSchedule::Rcbs(guest.config().timeout_rcbs);
+                guest.set_timer_precise(timeout)?;
+                Ok(0)
+            }
+            Sysno::getuid => {
+                // Register the guest's notifying pipe under one tracer perf
+                // descriptor number, before the timer is armed again.
+                let fds = tracer_perf_fds();
+                guest
+                    .send_rpc(StopWindowReport::PerfDescriptors(fds.len()))
+                    .await;
+                if let Some(&fd) = fds.get(guest.config().candidate) {
+                    for (nr, args) in [
+                        (Sysno::dup2, [NOTIFY_READ_FD, fd, 0]),
+                        (
+                            Sysno::fcntl,
+                            [
+                                fd,
+                                libc::F_SETFL as usize,
+                                (libc::O_NONBLOCK | libc::O_ASYNC) as usize,
+                            ],
+                        ),
+                    ] {
+                        guest
+                            .inject(raw_syscall(nr, args))
+                            .await
+                            .unwrap_or_else(|errno| panic!("{nr} failed: {errno}"));
+                    }
+                }
+                Ok(0)
+            }
+            Sysno::getppid => {
+                // Make the guest's notification pending before any injection
+                // starts at this stop.
+                use std::io::Write;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(format!("/proc/{}/fd/{NOTIFY_WRITE_FD}", guest.pid()))
+                    .and_then(|mut pipe| pipe.write_all(&[NOTIFY_BYTE]))
+                    .expect("write the guest's notifying pipe");
+                let result = match guest.inject(Getpid::new()).await {
+                    Ok(pid) => pid,
+                    Err(errno) => -i64::from(errno.into_raw()),
+                };
+                guest.send_rpc(StopWindowReport::Probe(result)).await;
+                Ok(0)
+            }
+            _ => guest.tail_inject(syscall).await,
+        }
+    }
+}
+
+static STOP_WINDOW_SIGNALS_HANDLED: AtomicU64 = AtomicU64::new(0);
+
+extern "C" fn count_stop_window_signal(_signo: libc::c_int) {
+    STOP_WINDOW_SIGNALS_HANDLED.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Runs one guest whose notification collides with the tracer perf descriptor
+/// at index `candidate`, and returns how many perf descriptors the tracer had.
+fn run_stop_window(candidate: usize) -> usize {
+    const TIMEOUT_RCBS: u64 = 50_000;
+    let expired_before = timer_overflow_records_expired();
+    let (output, log) = test_fn_with_config::<StopWindowTool, _>(
+        || {
+            // SAFETY: the handler only touches an atomic, and the descriptor
+            // and signal operations use valid arguments.
+            unsafe {
+                let mut action: libc::sigaction = core::mem::zeroed();
+                action.sa_sigaction =
+                    count_stop_window_signal as extern "C" fn(libc::c_int) as usize;
+                libc::sigemptyset(&mut action.sa_mask);
+                assert_eq!(
+                    libc::sigaction(libc::SIGSTKFLT, &action, core::ptr::null_mut()),
+                    0
+                );
+                let mut pipe = [0; 2];
+                assert_eq!(libc::pipe2(pipe.as_mut_ptr(), libc::O_NONBLOCK), 0);
+                assert_eq!(
+                    libc::dup2(pipe[0], NOTIFY_READ_FD as i32),
+                    NOTIFY_READ_FD as i32
+                );
+                assert_eq!(
+                    libc::dup2(pipe[1], NOTIFY_WRITE_FD as i32),
+                    NOTIFY_WRITE_FD as i32
+                );
+                let owner = FOwnerEx {
+                    kind: F_OWNER_TID,
+                    pid: libc::syscall(libc::SYS_gettid) as libc::pid_t,
+                };
+                assert_eq!(libc::fcntl(NOTIFY_READ_FD as i32, F_SETOWN_EX, &owner), 0);
+                assert_eq!(
+                    libc::fcntl(NOTIFY_READ_FD as i32, F_SETSIG, libc::SIGSTKFLT),
+                    0
+                );
+                // The timer's descriptors exist once it has been armed.
+                arm_precise_timer();
+                libc::getuid();
+
+                // The timer overflows while its signal is blocked, and the
+                // guest flushes the notification. None of these syscalls is
+                // injected, so no injection sees the queue until the probe.
+                let mut set: libc::sigset_t = core::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                libc::sigaddset(&mut set, libc::SIGSTKFLT);
+                assert_eq!(
+                    libc::pthread_sigmask(libc::SIG_BLOCK, &set, core::ptr::null_mut()),
+                    0
+                );
+                arm_precise_timer();
+                do_branches(TIMEOUT_RCBS * 3);
+                assert_ne!(libc::signal(libc::SIGSTKFLT, libc::SIG_IGN), libc::SIG_ERR);
+                assert_eq!(
+                    libc::sigaction(libc::SIGSTKFLT, &action, core::ptr::null_mut()),
+                    0
+                );
+                assert_eq!(
+                    libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, core::ptr::null_mut()),
+                    0
+                );
+            }
+            syscall_with_injection();
+            assert_eq!(STOP_WINDOW_SIGNALS_HANDLED.load(Ordering::SeqCst), 1);
+        },
+        StopWindowConfig {
+            timeout_rcbs: TIMEOUT_RCBS,
+            candidate,
+        },
+        true,
+    )
+    .expect("run stop-window guest");
+
+    if output.status != ExitStatus::Exited(0) {
+        print_tracee_output(&output);
+    }
+    let perf_descriptors = log
+        .perf_descriptors
+        .lock()
+        .expect("log lock poisoned")
+        .expect("the guest reached its setup syscall");
+    let probes = log.probes.lock().expect("log lock poisoned").clone();
+    // Each notification interrupts the injection instead of being discarded.
+    assert_eq!(
+        probes,
+        vec![-i64::from(reverie::Errno::ERESTARTSYS.into_raw())],
+        "the guest notification on perf descriptor {candidate} of {perf_descriptors} \
+         was discarded"
+    );
+    assert_eq!(output.status, ExitStatus::Exited(0));
+    // Otherwise no overflow was recorded and nothing was tested.
+    assert!(
+        timer_overflow_records_expired() > expired_before,
+        "the flushed notification's overflow records did not expire"
+    );
+    perf_descriptors
+}
+
+/// A notification the guest flushes between two stops leaves the queue without
+/// an injection seeing it. A guest notification with the timer's siginfo that
+/// is pending when the next injection starts must still be delivered, so the
+/// stop itself expires the overflow records.
+#[test]
+fn colliding_guest_notification_after_flush_between_stops_is_delivered() {
+    let _serial = serialize();
+    if !reverie_ptrace::is_perf_supported() {
+        return;
+    }
+    let mut candidate = 0;
+    loop {
+        let perf_descriptors = run_stop_window(candidate);
+        assert!(
+            perf_descriptors > 0,
+            "the tracer has no perf event descriptor"
+        );
+        candidate += 1;
+        if candidate >= perf_descriptors {
+            break;
+        }
+    }
 }

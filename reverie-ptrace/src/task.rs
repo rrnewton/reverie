@@ -2135,6 +2135,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
         self.timer.observe_event();
+        // The guest can remove a timer notification between two stops without
+        // an injection seeing the queue. See `untraced_syscall`.
+        self.timer.expire_overflow_records(&stopped);
         let tid = self.tid();
 
         #[cfg(test)]
@@ -5353,24 +5356,34 @@ impl<L: Tool + 'static> TracedTask<L> {
         //
         // A guest signal can carry the same signal number, code, and file
         // descriptor number, so a match also requires a kernel record of an
-        // overflow whose notification has not been consumed. Before each
-        // injection the records expire unless such a notification is pending
-        // for the thread. A signal that arrives later finds them expired or
-        // coalesces with the pending notification. This still leaves two
+        // overflow whose notification has not been consumed. At each stop and
+        // before each injection, the records expire unless such a
+        // notification is pending for the thread. This still leaves these
         // cases:
         //
         // - A guest signal with the same siginfo that is pending when the
-        //   injection starts is discarded if the notification is pending too,
-        //   since the kernel keeps one instance of a standard signal. It is
-        //   also discarded if the notification has left the queue without a
-        //   consuming stop since the last injection started: the guest
-        //   dequeued or flushed it, or received it through
-        //   `skip_seccomp_syscall` or the exact pending-syscall injection.
-        // - A notification without an overflow record reaches the guest. The
-        //   kernel sends one when a non-sample record, such as a throttling
-        //   record, crosses the buffer's wakeup watermark. Every late
-        //   notification of a timer whose records could not be mapped, or
-        //   on a PREEMPT_RT kernel, is also delivered.
+        //   injection starts is discarded while a record is unconsumed and
+        //   its notification
+        //   - is pending too, since the kernel keeps one instance of a
+        //     standard signal;
+        //   - left the queue after the last check, for example because
+        //     another guest thread flushed it;
+        //   - never had a queue entry of its own, because it coalesced into
+        //     a pending guest signal of the same number with other siginfo,
+        //     such as one sent by `tgkill`. That signal does not consume the
+        //     record.
+        // - A late notification reaches the guest when no record backs it or
+        //   its records expired early:
+        //   - the kernel also notifies when a non-sample record, such as a
+        //     throttling record, crosses the buffer's wakeup watermark, and
+        //     when a full buffer loses the sample;
+        //   - another guest thread removed an earlier queue entry while the
+        //     queue was being read, so the read skipped the notification;
+        //   - the queue was read after the kernel wrote the record but before
+        //     it queued the notification, which follows from an irq_work;
+        //   - the timer's records could not be mapped, or the kernel is or
+        //     may be PREEMPT_RT, where a notification can follow its record,
+        //     so records are not used.
         while let Wait::Stopped(stopped, Event::Signal(sig)) = &wait
             && *sig == Timer::signal_type()
             && stopped.getregs()?.ip() as usize == cp::PRIVATE_PAGE_OFFSET
