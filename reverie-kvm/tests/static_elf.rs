@@ -8723,8 +8723,10 @@ int main(void) {
 
 #[test]
 fn grandchild_family_transitions_are_causal_on_real_kvm() {
-    // Bounded: an exiting parent that waited for its adopted child would
-    // deadlock mode 9, whose grandchild outlives the root's reap of that parent.
+    // Bounded so a family regression that hangs fails the test instead of the
+    // suite. An exiting parent joining its adopted child is not such a hang:
+    // the root is notified before that join, so mode 9 still passes; the
+    // library orphanage tests own that regression.
     if !leader_self_exec_bounded("grandchild_family_transitions_are_causal_on_real_kvm") {
         return;
     }
