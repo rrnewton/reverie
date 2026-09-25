@@ -32,6 +32,9 @@ const TAIL_NONE: u8 = 0;
 const TAIL_RETURNED: u8 = 1;
 const TAIL_CONTEXT_MANAGED: u8 = 2;
 
+/// Largest errno value reserved by Linux's raw syscall return convention.
+pub const LINUX_MAX_ERRNO: i32 = 4095;
+
 /// Six raw Linux syscall arguments in architecture register order.
 pub type RawSyscallArgs = [u64; 6];
 
@@ -60,7 +63,8 @@ pub struct SyscallEvent {
 /// Outcome reported by Narf's kernel-owned native transition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NarfSyscallOutcome {
-    /// The handler returned a raw Linux result (`>= 0` or `-errno`).
+    /// The handler returned the Linux-ABI value the guest observes after
+    /// Narf's architecture return path has folded its native status.
     Returned(i64),
     /// The handler parked, execed, exited, or redirected the task.
     ContextManaged,
@@ -79,11 +83,32 @@ pub trait KernelTransition {
     fn execute_injected(&mut self, request: NarfSyscallRequest) -> NarfSyscallOutcome;
 }
 
+/// A checked, positive Linux errno.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LinuxErrno(i32);
+
+impl LinuxErrno {
+    /// Constructs an errno when `value` is in Linux's reserved `1..=4095`
+    /// syscall-error range.
+    pub const fn new(value: i32) -> Option<Self> {
+        if value >= 1 && value <= LINUX_MAX_ERRNO {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the positive errno value.
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+}
+
 /// A Tool failure which cannot be represented as an ordinary raw return.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolError {
-    /// Linux errno number, stored as a positive value.
-    Errno(i32),
+    /// Checked positive Linux errno.
+    Errno(LinuxErrno),
     /// Backend/tool-specific fatal class. The integration must stop the run.
     Fatal(u32),
 }
@@ -253,7 +278,7 @@ where
     match future.as_mut().poll(context) {
         Poll::Ready(Ok(value)) => Poll::Ready(DrivenSyscall::Complete(value)),
         Poll::Ready(Err(ToolError::Errno(errno))) => {
-            Poll::Ready(DrivenSyscall::Complete(-(errno as i64)))
+            Poll::Ready(DrivenSyscall::Complete(-i64::from(errno.get())))
         }
         Poll::Ready(Err(ToolError::Fatal(class))) => Poll::Ready(DrivenSyscall::Fatal(class)),
         Poll::Pending => match tail.take() {
@@ -338,6 +363,32 @@ mod tests {
                 return value;
             }
         }
+    }
+
+    fn classify_ready(result: Result<i64, ToolError>) -> DrivenSyscall {
+        let tail = TailCell::default();
+        let mut future = core::pin::pin!(core::future::ready(result));
+        block_on_ready(poll_fn(|context| {
+            poll_tool_future(future.as_mut(), &tail, context)
+        }))
+    }
+
+    #[test]
+    fn errno_range_is_checked_and_maps_to_negative_linux_results() {
+        assert_eq!(LinuxErrno::new(-1), None);
+        assert_eq!(LinuxErrno::new(0), None);
+        assert_eq!(LinuxErrno::new(LINUX_MAX_ERRNO + 1), None);
+
+        let one = LinuxErrno::new(1).expect("one is a Linux errno");
+        let max = LinuxErrno::new(LINUX_MAX_ERRNO).expect("maximum errno is accepted");
+        assert_eq!(
+            classify_ready(Err(ToolError::Errno(one))),
+            DrivenSyscall::Complete(-1)
+        );
+        assert_eq!(
+            classify_ready(Err(ToolError::Errno(max))),
+            DrivenSyscall::Complete(-i64::from(LINUX_MAX_ERRNO))
+        );
     }
 
     #[test]
