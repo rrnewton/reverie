@@ -8,10 +8,13 @@
 
 //! Linux ptrace host for the shared canonical-trace Tool.
 //!
-//! `narf_canonical_ptrace [--with-bootstrap] GUEST [ARGS...]` runs `GUEST`
-//! under reverie-ptrace with `reverie_narf_tools::canonical::CanonicalTrace`
-//! and writes the Tool's canonical records to stderr, one line each. The
-//! guest's own stdout and stderr are inherited. This is the Linux reference
+//! `narf_canonical_ptrace [--with-bootstrap] [--wait-status FILE] GUEST [ARGS...]`
+//! runs `GUEST` under reverie-ptrace with
+//! `reverie_narf_tools::canonical::CanonicalTrace` and writes the Tool's
+//! canonical records to stderr, one line each. The guest's own stdout and
+//! stderr are inherited. `--wait-status FILE` also writes the status the tracer
+//! reaped the guest with, as the raw wait status in the form
+//! `exit wstatus=0x0000`, before this host exits with that same status. This is the Linux reference
 //! cell for comparing the Narf kernel backend against reverie-ptrace: the Tool
 //! source is the same; only the line sink differs.
 //!
@@ -113,13 +116,27 @@ impl Tool for GuestImageOnly {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    const USAGE: &str =
+        "usage: narf_canonical_ptrace [--with-bootstrap] [--wait-status FILE] GUEST [ARGS...]";
     let mut args = std::env::args_os().skip(1).peekable();
-    if args.peek().is_some_and(|arg| arg == "--with-bootstrap") {
-        WITH_BOOTSTRAP.store(true, Ordering::Relaxed);
-        args.next();
+    let mut wait_status = None;
+    loop {
+        if args.peek().is_some_and(|arg| arg == "--with-bootstrap") {
+            WITH_BOOTSTRAP.store(true, Ordering::Relaxed);
+            args.next();
+        } else if args.peek().is_some_and(|arg| arg == "--wait-status") {
+            args.next();
+            let Some(path) = args.next() else {
+                eprintln!("{USAGE}");
+                std::process::exit(2);
+            };
+            wait_status = Some(path);
+        } else {
+            break;
+        }
     }
     let Some(program) = args.next() else {
-        eprintln!("usage: narf_canonical_ptrace [--with-bootstrap] GUEST [ARGS...]");
+        eprintln!("{USAGE}");
         std::process::exit(2);
     };
     let mut command = Command::new(program);
@@ -128,5 +145,15 @@ async fn main() -> Result<(), Error> {
         .spawn()
         .await?;
     let (status, ()) = tracer.wait().await?;
+    if let Some(path) = wait_status {
+        let record = format!("exit wstatus={:#06x}\n", status.into_raw());
+        if let Err(error) = std::fs::write(&path, record) {
+            eprintln!(
+                "narf_canonical_ptrace: cannot write {}: {error}",
+                path.to_string_lossy()
+            );
+            std::process::exit(2);
+        }
+    }
     status.raise_or_exit()
 }
