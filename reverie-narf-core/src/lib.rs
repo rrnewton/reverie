@@ -38,8 +38,8 @@ pub type RawSyscallArgs = [u64; 6];
 /// One explicit native syscall request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NarfSyscallRequest {
-    /// Linux syscall number for the current architecture.
-    pub number: i64,
+    /// Exact unsigned syscall wire number for the current architecture.
+    pub number: u32,
     /// Six raw register arguments.
     pub args: RawSyscallArgs,
 }
