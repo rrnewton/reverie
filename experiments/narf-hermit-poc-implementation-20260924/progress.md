@@ -39,7 +39,7 @@ negative-control mutation.
 ## Narf syscall-interception milestone
 
 Current local Narf head:
-`de6f90306fc754410015a9439121ed8bdeb178be`.
+`81c84ea4d9c5fd4572da2f3b5a480ee64be23f6c`.
 The clean upstream hook stack still ends at
 `d3cd3255357d9a9675b68e3dcebce3b786b3cdf2`; the top commit is the
 POC integration which consumes the separately committed Reverie core.
@@ -81,6 +81,12 @@ Commits:
   an opt-in pass-through Tool on the production syscall table. This TCB commit
   is GPG-signed, adds a machine-checkable safety argument, and is deliberately
   above the clean Narf-hook PR boundary.
+- `81c84ea4d9c5fd4572da2f3b5a480ee64be23f6c` — build one
+  libc-free x86_64 ELF using the modern `syscall` instruction, run it as the
+  sole POC userspace workload, and emit a strict canonical-v1 INFO sequence
+  through the generic Tool path. Any syscall other than the fixture's `write`
+  and `exit` stops the run. This TCB commit is GPG-signed and extends the
+  machine-checkable safety argument.
 
 The current interface provides an immutable `SyscallInvocation` snapshot,
 entry control (`Continue` or `Complete`), a return-only replacement callback,
@@ -311,10 +317,52 @@ This is the first working Narf-linked syscall path through the new backend
 core, but it is not the completed POC. The opt-in Tool is only pass-through;
 the existing full `reverie::Tool` API still depends on Linux/`std`, ordinary
 asynchronous suspension currently fails closed rather than parking on a Narf
-waker, and task teardown does not yet reclaim adapter thread state. There is no
-versioned canonical cross-kernel trace, Linux/Hermit comparison, or negative
-mutation result yet. The production-boot activation line is diagnostic
-evidence, not the required canonical INFO log.
+waker, and task teardown does not yet reclaim adapter thread state. The next
+section records the now-completed bounded trace comparison without widening
+those backend-level claims.
+
+## Cross-kernel canonical equivalence checkpoint
+
+The exact same stripped static ELF (SHA-256
+`73aa2fd968ea9ec9bd8947716903185d72f8cd7f9e3e443f49301a0bc3a7b016`)
+has now executed through both required mechanisms:
+
+- Linux/Hermit ptrace at Hermit revision
+  `22e9e0b5b749013a6cd2729217442255b9b9d0c1`, using the release binary
+  whose SHA-256 was
+  `fe5493fe7c4c8a2b0eea922e9651568d2a918361036547020c1817731eb88500`.
+  The invocation went through the parent `bin/safehermit`, ran in strict mode,
+  returned 0, and wrote exactly `narf-hermit-poc\n` (16 bytes, SHA-256
+  `e06fe061b8ee189294868ba109739cd85f02b79037e4e7a82c5e8bbb75c73e0a`).
+  Its INFO log SHA-256 was
+  `3ac6478402d4fe7c0defb47f2732558d1babebac1771caaa1380ea5fd3c215bc`.
+- Actual Narf at signed revision
+  `81c84ea4d9c5fd4572da2f3b5a480ee64be23f6c`, linked against
+  `reverie-narf-core` revision
+  `08a70a2e1562de1602d20e8bf1f6b2238aec7ee5`. QEMU observed the native
+  write return 16, printed exactly one `narf-hermit-poc` guest line, then
+  observed `exit(0)` through the real syscall instruction and generic adapter.
+  The externally bounded boot transcript SHA-256 was
+  `26d9d827b4dc4a1237c6677938a02e8b49288c55f5c356155a18fd5e308c848d`;
+  QEMU was stopped by the 150-second outer timeout only after the guest had
+  completed.
+
+The tracked [`poc/canonical_trace.rs`](poc/canonical_trace.rs) helper accepts
+the complete Hermit or Narf capture, refuses missing, extra, reordered, or
+malformed guest events, and emits exactly three versioned records: write entry,
+write return, and the non-returning exit entry. Both normalized files were 204
+bytes and byte-identical, with SHA-256
+`c4297f2fa0c65f6de58ab0933c4ceb5773f8d600d2f8db9a2524680c1e9a0be5`.
+The helper's explicit negative-control mutation changed the write result from
+16 to 15; comparison rejected it at byte 143. The mutated trace SHA-256 was
+`c6b8d65a5cce819cdfd689496708d5d129d8a607ca73e17ae80b0a5b65a4985e`.
+
+This proves the bounded runtime POC, not the full landing objective. The
+canonical envelope is intentionally limited to this two-syscall guest and
+stdout is compared separately. Existing `reverie::Tool` implementations still
+need a clean path to the `no_std` core, ordinary async suspension and task-state
+retirement remain incomplete, the exact heads still need adversarial review,
+and neither upstream deliverable has been merged by its human owners.
 
 ## Audit state
 
@@ -368,14 +416,19 @@ worktree was removed after its output was captured under `/tmp`.
 
 ## Next gates
 
-1. Split a `no_std` kernel-facing core from `reverie-narf`, retain the arbitrary
-   Reverie Tool adapter on the `std` side, and compile the core for Narf.
-2. Implement the Narf adapter against the signed native transition and direct
-   task/memory/register interfaces; then add subscription and lifecycle state.
-3. Complete the `Backend` launch/lifecycle contract and the minimal Hermit
-   integration/tool surface in their registered worktrees.
-4. Run the real guest on both backends, compare fail-closed versioned INFO logs
-   byte-for-byte, and show the negative mutation is rejected.
-5. Obtain exact-head adversarial and deterministic-scheduling reviews where
-   applicable, open the upstream Narf PR for human owner/maintainer review, and
-   land only through each repository's supported policy.
+1. Extend the general backend beyond the bounded ready-on-first-poll profile:
+   connect Narf wake/park, retire per-task Tool state on task exit, and expose
+   the memory/register/lifecycle services required by existing arbitrary
+   `reverie::Tool` implementations without introducing IPC.
+2. Preserve clean deliverable boundaries: the Narf upstream hook series ends
+   before the demo integration, while the general core and ordinary Reverie
+   adapter remain in Reverie. Rebase each onto its current upstream head.
+3. Obtain fresh exact-head adversarial review for both deliverables and a
+   deterministic-scheduling review of the Narf scheduler-entry activation
+   changes; repair substantive findings and rerun the bounded acceptance gate.
+4. Open the upstream Narf and Reverie PRs with their required attribution,
+   safety argument, test evidence, and human review bars. Narf TCB changes need
+   two maintainers including a security reviewer; an AI agent cannot merge
+   them.
+5. After human landings, rerun the same ELF and fail-closed comparator against
+   the landed exact heads before marking the persistent goal complete.
