@@ -340,8 +340,9 @@ impl ProcessSignalRegistry {
     /// Descendants may still finish successfully while the runtime unwinds,
     /// but their completion is teardown rather than a new logical child-exit
     /// publication to the failed parent. A failure is a run abort rather than
-    /// a guest exit, so its live children are not reparented to an outside
-    /// namespace init either.
+    /// a guest exit, so it does not itself reparent live children to an
+    /// outside namespace init; children already adopted by an earlier
+    /// successful exit of this generation stay adopted.
     pub(super) fn record_process_failure(&self, process: SignalProcessId) {
         let parent = self.lookup(process).and_then(|binding| binding.parent);
         let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
@@ -3476,6 +3477,81 @@ mod tests {
             orphan.signal_registry.process_family_exit(orphan_id),
             Some(ProcessFamilyExit::Failed),
             "adoption never replaces an exact process failure",
+        );
+        assert!(family_snapshot(&root).1.is_empty());
+    }
+
+    #[test]
+    fn failed_parent_aborts_the_run_without_reparenting_its_children() {
+        let root = outside_init_root();
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let mut child = parent.fork_child(7, false, false).unwrap();
+        let child_id = identity(&child);
+        parent.retire_failed_thread();
+        assert!(matches!(
+            parent.process_family_exit(),
+            Err(crate::Error::RunAborted)
+        ));
+        assert_eq!(getppid(&mut child), 6);
+        assert!(family_snapshot(&root).1.is_empty());
+        child.retire_current_thread(reverie::ExitStatus::Exited(4), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(4),
+            }),
+        );
+
+        // A later peer failure replaces an exit_group success with an abort,
+        // but cannot undo the adoption that success already published.
+        let root = outside_init_root();
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let mut peer = parent.thread_child(8).unwrap();
+        let mut child = parent.fork_child(7, false, false).unwrap();
+        let child_id = identity(&child);
+        peer.retire_current_thread(reverie::ExitStatus::SUCCESS, true);
+        assert_eq!(getppid(&mut child), 1);
+        parent.retire_failed_thread();
+        assert!(matches!(
+            parent.process_family_exit(),
+            Err(crate::Error::RunAborted)
+        ));
+        assert_eq!(getppid(&mut child), 1);
+        child.retire_current_thread(reverie::ExitStatus::Exited(4), false);
+        assert_eq!(
+            child.signal_registry.process_family_exit(child_id),
+            Some(ProcessFamilyExit::ReapedByNamespaceInit {
+                status: reverie::ExitStatus::Exited(4),
+            }),
+        );
+        assert!(family_snapshot(&root).1.is_empty());
+    }
+
+    #[test]
+    fn outside_init_orphan_keeps_its_reaper_across_exec() {
+        fn exec(executor: &mut ElfExecutor) {
+            let replacement = native_loaded_state(std::path::Path::new("/tmp"));
+            let previous = std::mem::replace(&mut executor.state, replacement);
+            executor.state.inherit_process_state(previous);
+        }
+        let root = outside_init_root();
+        let mut parent = root.fork_child(6, false, false).unwrap();
+        let mut orphan = parent.fork_child(7, false, false).unwrap();
+        let orphan_id = identity(&orphan);
+        // Exec before adoption: the later label must reach the new image.
+        exec(&mut orphan);
+        assert_eq!(getppid(&mut orphan), 6);
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        assert_eq!(getppid(&mut orphan), 1);
+        // Exec after adoption: the new image still reports the reaper.
+        exec(&mut orphan);
+        assert_eq!(getppid(&mut orphan), 1);
+        orphan.retire_current_thread(reverie::ExitStatus::Exited(3), false);
+        assert_eq!(
+            orphan.signal_registry.process_family_exit(orphan_id),
+            Some(ProcessFamilyExit::ReapedByNamespaceInit {
+                status: reverie::ExitStatus::Exited(3),
+            }),
         );
         assert!(family_snapshot(&root).1.is_empty());
     }

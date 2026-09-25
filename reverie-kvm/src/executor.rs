@@ -1317,6 +1317,9 @@ pub(crate) struct ElfExecutor {
     file_table: Arc<std::sync::Mutex<FileTableState>>,
     output: Option<CapturedOutput>,
     owns_output: bool,
+    // Run-wide and only incremented, so a numeric PID or TID is never
+    // reissued within a run: exited-process records keyed by number, such as
+    // an orphan's generation, cannot be claimed by a later process.
     next_pid: Arc<AtomicI32>,
     sigchld_auto_reap: Arc<AtomicBool>,
     // TODO-HUMAN-REVIEW(PR-235): Review concurrent KVM process lifecycle ownership.
