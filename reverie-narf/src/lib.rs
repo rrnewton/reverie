@@ -56,6 +56,7 @@ pub use reverie_narf_core::RawSyscallArgs;
 const TAIL_NONE: u8 = 0;
 const TAIL_RETURNED: u8 = 1;
 const TAIL_CONTEXT_MANAGED: u8 = 2;
+const NARF_SYSCALL_NUMBER_MASK: u32 = 0x00ff_ffff;
 
 /// Direct Narf services required by one stopped guest thread.
 ///
@@ -179,9 +180,14 @@ where
     }
 
     fn execute(&mut self, request: NarfSyscallRequest) -> NarfSyscallOutcome {
-        if request == self.original
-            && let Ok(outcome) = self.kernel.execute_original()
-        {
+        // Reverie's typed Syscall carries the architecture number and
+        // arguments, but not Narf's version byte. Treat an unchanged typed
+        // forward as the intercepted original and let the kernel retain its
+        // exact wire version. A genuinely different typed request remains a
+        // version-zero injected syscall.
+        let forwards_original = request.args == self.original.args
+            && request.number == self.original.number & NARF_SYSCALL_NUMBER_MASK;
+        if forwards_original && let Ok(outcome) = self.kernel.execute_original() {
             return outcome;
         }
         self.kernel.execute_injected(request)
@@ -364,6 +370,7 @@ mod tests {
     use reverie::GlobalTool;
     use reverie::Subscription;
     use reverie::syscalls::Getpid;
+    use reverie::syscalls::Getppid;
     use reverie_memory::LocalMemory;
 
     use super::*;
@@ -407,6 +414,30 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct InjectOtherTool;
+
+    #[async_trait]
+    impl Tool for InjectOtherTool {
+        type GlobalState = SharedGlobal;
+        type ThreadState = u64;
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::all_syscalls()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            _syscall: Syscall,
+        ) -> Result<i64, Error> {
+            guest
+                .inject(Syscall::Getppid(Getppid::new()))
+                .await
+                .map_err(Error::from)
+        }
+    }
+
     struct EmptyGuard;
     impl Drop for EmptyGuard {
         fn drop(&mut self) {}
@@ -440,12 +471,14 @@ mod tests {
 
     struct FakeKernel {
         original_calls: AtomicUsize,
+        injected_calls: AtomicUsize,
     }
 
     impl FakeKernel {
         fn new() -> Self {
             Self {
                 original_calls: AtomicUsize::new(0),
+                injected_calls: AtomicUsize::new(0),
             }
         }
     }
@@ -498,6 +531,7 @@ mod tests {
         }
 
         fn execute_injected(&mut self, _request: NarfSyscallRequest) -> NarfSyscallOutcome {
+            self.injected_calls.fetch_add(1, Ordering::Relaxed);
             NarfSyscallOutcome::Returned(99)
         }
 
@@ -515,14 +549,14 @@ mod tests {
     }
 
     #[test]
-    fn arbitrary_tool_uses_direct_global_state_and_original_transition() {
+    fn arbitrary_tool_preserves_versioned_original_and_uses_direct_global_state() {
         let tool = ProbeTool;
         let global = SharedGlobal::default();
         let mut thread_state = 0;
         let mut kernel = FakeKernel::new();
         let syscall = Syscall::Getpid(Getpid::new());
         let original = NarfSyscallRequest {
-            number: libc::SYS_getpid as u32,
+            number: (7 << 24) | libc::SYS_getpid as u32,
             args: [0; 6],
         };
 
@@ -540,5 +574,28 @@ mod tests {
         assert_eq!(thread_state, 1);
         assert_eq!(global.sum.load(Ordering::Relaxed), 5);
         assert_eq!(kernel.original_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(kernel.injected_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn distinct_typed_request_uses_injected_transition() {
+        let mut thread_state = 0;
+        let mut kernel = FakeKernel::new();
+        let outcome = futures::executor::block_on(drive_syscall(
+            &InjectOtherTool,
+            &SharedGlobal::default(),
+            &(),
+            &mut thread_state,
+            &mut kernel,
+            NarfSyscallRequest {
+                number: (7 << 24) | libc::SYS_getpid as u32,
+                args: [0; 6],
+            },
+            Syscall::Getpid(Getpid::new()),
+        ));
+
+        assert!(matches!(outcome, DrivenSyscall::Complete(99)));
+        assert_eq!(kernel.original_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(kernel.injected_calls.load(Ordering::Relaxed), 1);
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "reverie-narf"
-description = "First-class Narf kernel backend for arbitrary Reverie tools"
+description = "Standard Reverie Tool adapter component for a future Narf backend"
 version = "0.2.0"
 authors = ["Meta Platforms"]
 edition = "2024"
