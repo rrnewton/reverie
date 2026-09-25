@@ -2945,6 +2945,8 @@ fn project_series_environment_fields(
                 .map_err(|error| format!("cannot project pressure_evidence: {error}"))?,
         );
     }
+    // The audit of why a nonzero guest exit passed stays public, like the
+    // other typed evidence, so it outlives the transient raw run artifacts.
     if raw.contains_key("declared_guest_exit") {
         public.insert(
             "declared_guest_exit".into(),
@@ -4206,6 +4208,45 @@ mod tests {
             value["product_results"]["event-container-failed"],
             "product_failure"
         );
+    }
+
+    #[test]
+    fn declared_guest_exit_projection_retains_the_full_attempt_audit() {
+        let audit = serde_json::json!({
+            "code": 3, "signal": null, "reason": "the fixture guest exits 3 on purpose",
+            "evidence_sha256": "b".repeat(64),
+            "attempts": [{"index": "1", "outcome": "PASS", "status": 3, "signal": null,
+                "timed_out": false, "verification_report_sha256": "c".repeat(64)}]
+        });
+        let commit = "c".repeat(40);
+        let history = history_row(7, "record-declared", "run-declared", &commit);
+        let mut declared = series("run-declared", &commit, "event-declared");
+        declared["series"]
+            .as_object_mut()
+            .unwrap()
+            .remove("last_run_index");
+        declared["series"]["declared_guest_exit"] = audit.clone();
+        let row: SeriesRow = serde_json::from_value(declared.clone()).unwrap();
+        row.validate_for_write().unwrap();
+        let plain = series("run-declared", &commit, "event-plain");
+        let value = project(
+            &canonical_bytes(&manifest()),
+            &jsonl(&[history]),
+            &jsonl(&[declared, plain]),
+            None,
+            |_| Ok(Some(true)),
+        )
+        .unwrap();
+        let rows = value["series_rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            let projected = row["series"].as_object().unwrap();
+            if row["event_id"] == "event-declared" {
+                assert_eq!(projected["declared_guest_exit"], audit);
+            } else {
+                assert!(!projected.contains_key("declared_guest_exit"));
+            }
+        }
     }
 
     #[test]
