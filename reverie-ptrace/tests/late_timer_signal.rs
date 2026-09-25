@@ -42,6 +42,7 @@ use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_ptrace::testing::do_branches;
+use reverie_ptrace::testing::late_timer_signals_discarded;
 use reverie_ptrace::testing::print_tracee_output;
 use reverie_ptrace::testing::test_fn_with_config;
 use serde::Deserialize;
@@ -172,12 +173,23 @@ fn syscall_with_injection() {
     }
 }
 
+/// The tests in this file run one at a time, so that the process-wide discard
+/// count of each belongs to it alone.
+fn serialize() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: Mutex<()> = Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn run(retry: bool) {
+    let _serial = serialize();
     // Precise timers need a PMU; GitHub-hosted runners have none. The
     // self-hosted hardware job runs this test.
     if !reverie_ptrace::is_perf_supported() {
         return;
     }
+    let discarded_before = late_timer_signals_discarded();
     let margin = reverie_ptrace::PmuConfig::new().skid_margin();
     // Keep the syscall well inside the margin, leaving room for the loop's own
     // branches, so the target is never reached. Supported margins range from
@@ -219,6 +231,12 @@ fn run(retry: bool) {
     );
     assert_eq!(log.injected_syscalls.load(Ordering::SeqCst), ITERS);
     assert_eq!(log.timer_events.load(Ordering::SeqCst), 0);
+    let discarded = late_timer_signals_discarded() - discarded_before;
+    println!("{discarded} late timer signals discarded in {ITERS} injections");
+    assert!(
+        discarded > 0,
+        "no late timer signal reached an injected syscall, so nothing was tested"
+    );
 }
 
 #[test]
@@ -324,6 +342,7 @@ extern "C" fn count_foreign_signal(signo: libc::c_int) {
 }
 
 fn run_foreign(retry: bool) {
+    let _serial = serialize();
     let (output, log) = test_fn_with_config::<ForeignSignalTool, _>(
         || {
             // SAFETY: the handler only touches atomics.
@@ -561,6 +580,7 @@ enum TimerProgress {
 }
 
 fn run_colliding_descriptor(progress: TimerProgress) {
+    let _serial = serialize();
     // The notification collides with a perf event descriptor; without a PMU
     // there is none.
     if !reverie_ptrace::is_perf_supported() {

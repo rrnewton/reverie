@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock as StdOnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -1427,6 +1428,9 @@ fn set_ret(task: &Stopped, ret: Reg) -> Result<Reg, TraceError> {
 /// alone cannot say *why* a run ended, and this failure mode was expensive
 /// precisely because it was unreadable: the run hung, so a panic was
 /// indistinguishable from a slow run to every harness that judges by wall time.
+/// Late timer overflow signals discarded at injected syscalls, for tests.
+pub(crate) static LATE_TIMER_SIGNALS_DISCARDED: AtomicU64 = AtomicU64::new(0);
+
 const TASK_PANIC_MARKER: &str = "HERMIT_TASK_PANIC";
 
 /// Exit status used when a guest-thread task panics.
@@ -5347,13 +5351,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         // has nothing to deliver: discard it and step again.
         //
         // A guest signal can carry the same signal number, code, and file
-        // descriptor number, so a match also requires an overflow whose
-        // notification has not been consumed. The kernel coalesces the two
-        // into one pending signal if both are raised, which no check can
-        // separate. A notification that reached the guest through a path that
-        // does not consume it, such as `skip_seccomp_syscall` or the exact
-        // pending-syscall injection, leaves its overflow looking unconsumed
-        // until the counter is reprogrammed.
+        // descriptor number, so a match also requires a kernel record of an
+        // overflow whose notification has not been consumed. This still
+        // leaves three cases:
+        //
+        // - The kernel coalesces a guest signal and a pending notification
+        //   into one pending signal, which no check can separate.
+        // - A notification that reached the guest through a path that does
+        //   not consume it, such as `skip_seccomp_syscall` or the exact
+        //   pending-syscall injection, leaves its record unconsumed, across
+        //   any reprogramming, until a later notification is consumed.
+        // - A notification without an overflow record reaches the guest. The
+        //   kernel sends one when a non-sample record, such as a throttling
+        //   record, crosses the buffer's wakeup watermark. Every late
+        //   notification of a timer whose records could not be mapped is
+        //   also delivered.
         while let Wait::Stopped(stopped, Event::Signal(sig)) = &wait
             && *sig == Timer::signal_type()
             && stopped.getregs()?.ip() as usize == cp::PRIVATE_PAGE_OFFSET
@@ -5372,6 +5384,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 "[{}] discarding a late timer overflow signal before an injected syscall",
                 stopped.pid()
             );
+            LATE_TIMER_SIGNALS_DISCARDED.fetch_add(1, Ordering::Relaxed);
             let Wait::Stopped(stopped, _) = wait else {
                 unreachable!("the loop condition matched a stopped task")
             };

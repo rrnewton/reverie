@@ -34,6 +34,7 @@ fn paused_fixture() -> (
     let counter = std::mem::ManuallyDrop::new(PerfCounter {
         fd: 99,
         mmap: Some(NonNull::from(page.as_mut())),
+        records: None,
         raw_syscall: Some(paused_read_gate),
     });
     (page, counter)

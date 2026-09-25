@@ -87,7 +87,15 @@ pub enum SoftwareEvent {
 pub struct PerfCounter {
     fd: libc::c_int,
     mmap: Option<NonNull<perf::perf_event_mmap_page>>,
+    records: Option<SampleRecords>,
     raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>,
+}
+
+/// A ring buffer mapping that receives the sample records of a counter.
+#[derive(Debug)]
+struct SampleRecords {
+    page: NonNull<perf::perf_event_mmap_page>,
+    len: usize,
 }
 
 impl Event {
@@ -311,6 +319,7 @@ impl Builder {
         Ok(PerfCounter {
             fd,
             mmap,
+            records: None,
             raw_syscall,
         })
     }
@@ -749,6 +758,101 @@ impl PerfCounter {
     pub fn raw_fd(&self) -> libc::c_int {
         self.fd
     }
+
+    /// Map a ring buffer that receives a record of each overflow the kernel
+    /// handles. The overflow handler writes the record before it queues the
+    /// notification signal, so the record is evidence of that signal. An
+    /// overflow whose interrupt is never handled has neither. The buffer holds
+    /// one page of records; [`PerfCounter::take_sample_records`] must release
+    /// them before it fills, or later records are lost.
+    pub(crate) fn map_sample_records(&mut self) -> Result<(), Errno> {
+        if self.raw_syscall.is_some() || self.records.is_some() {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        let len = 2 * get_mmap_size();
+        // A writable mapping lets the reader advance `data_tail`. The kernel
+        // then never overwrites a record that has not been taken.
+        let ptr = Errno::result(unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                self.fd,
+                0,
+            )
+        })?;
+        let page = NonNull::new(ptr.cast()).ok_or(Errno::ENOMEM)?;
+        self.records = Some(SampleRecords { page, len });
+        Ok(())
+    }
+
+    /// Count the sample records written since the last call and release
+    /// their space. Other record types, such as throttling and loss records,
+    /// are not counted. Returns `None` if no records are mapped.
+    pub(crate) fn take_sample_records(&mut self) -> Option<u64> {
+        use core::ptr::addr_of;
+        use core::ptr::addr_of_mut;
+        use core::sync::atomic::Ordering;
+        use core::sync::atomic::fence;
+
+        let records = self.records.as_ref()?;
+        let page = records.page.as_ptr();
+        let page_size = get_mmap_size() as u64;
+        let mut samples = 0;
+        // SAFETY: `page` maps the metadata page followed by the data pages
+        // for the lifetime of `records`. Only this method writes `data_tail`,
+        // and `&mut self` excludes concurrent calls.
+        unsafe {
+            let head = core::ptr::read_volatile(addr_of!((*page).data_head));
+            // Pairs with the kernel's barrier before it publishes `data_head`.
+            fence(Ordering::Acquire);
+            let mut position = core::ptr::read_volatile(addr_of!((*page).data_tail));
+            // Kernels before 4.1 leave these fields zero and place the data
+            // immediately after the metadata page.
+            let offset = match core::ptr::read_volatile(addr_of!((*page).data_offset)) {
+                0 => page_size,
+                offset => offset,
+            };
+            let size = match core::ptr::read_volatile(addr_of!((*page).data_size)) {
+                0 => records.len as u64 - page_size,
+                size => size,
+            };
+            let data = page.cast::<u8>().add(offset as usize);
+            let header_size = core::mem::size_of::<perf::perf_event_header>() as u64;
+            while head.wrapping_sub(position) >= header_size {
+                // Records are 8-byte aligned and the data size is a multiple
+                // of the page size, so a header never wraps.
+                let header = core::ptr::read_volatile(
+                    data.add((position % size) as usize)
+                        .cast::<perf::perf_event_header>(),
+                );
+                let record_size = u64::from(header.size);
+                if record_size < header_size || record_size > head.wrapping_sub(position) {
+                    error!(
+                        ?header,
+                        position, head, "Malformed perf sample record; ignoring the rest"
+                    );
+                    break;
+                }
+                if header.type_ == perf::PERF_RECORD_SAMPLE {
+                    samples += 1;
+                }
+                position = position.wrapping_add(record_size);
+            }
+            // The records must be read before their space is released.
+            fence(Ordering::SeqCst);
+            core::ptr::write_volatile(addr_of_mut!((*page).data_tail), head);
+        }
+        Some(samples)
+    }
+
+    /// Remove the sample record mapping, leaving the counter without overflow
+    /// evidence.
+    #[cfg(test)]
+    pub(crate) fn unmap_sample_records(&mut self) {
+        self.records = None;
+    }
 }
 
 /// Execute the `rdpmc` instruction to read hardware performance counter number
@@ -807,6 +911,13 @@ fn close_mmap(
     }
 }
 
+impl Drop for SampleRecords {
+    fn drop(&mut self) {
+        Errno::result(unsafe { libc::munmap(self.page.as_ptr().cast(), self.len) })
+            .expect("Could not munmap sample records");
+    }
+}
+
 impl Drop for PerfCounter {
     fn drop(&mut self) {
         if let Some(ptr) = self.mmap {
@@ -817,9 +928,10 @@ impl Drop for PerfCounter {
 }
 
 // Safety:
-// The mmap region is never written to. Multiple readers then race with the
-// kernel as any single thread would. Though the reads are racy, that is the
-// intended behavior of the perf api.
+// The mmap region is never written to through a shared reference. Multiple
+// readers then race with the kernel as any single thread would. Though the
+// reads are racy, that is the intended behavior of the perf api. Only
+// `take_sample_records`, which requires `&mut self`, writes a mapping.
 unsafe impl std::marker::Send for PerfCounter {}
 unsafe impl std::marker::Sync for PerfCounter {}
 
