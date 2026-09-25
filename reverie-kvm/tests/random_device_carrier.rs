@@ -93,7 +93,7 @@ fn run_carrier(tool: bool) {
             )
             .unwrap();
             for name in [
-                "openat", "read", "readv", "write", "writev", "fcntl", "fstat",
+                "openat", "read", "readv", "write", "writev", "fcntl", "fstat", "mmap",
             ] {
                 assert!(
                     log.syscalls().iter().any(|call| call == name),
