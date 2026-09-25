@@ -115,13 +115,15 @@ fn kernel_is_preempt_rt() -> bool {
     })
 }
 
-/// Whether a `uname` version string names a `PREEMPT_RT` kernel. Mainline
-/// adds the word `PREEMPT_RT` for `CONFIG_PREEMPT_RT` (`init/Makefile`,
-/// `UTS_VERSION`), and `/sys/kernel/realtime` exists only in some
-/// distributions' kernels. The version is cut to 64 bytes, which can drop the
-/// word only after at least 50 bytes of build number and flags.
+/// Whether a `uname` version string names a kernel that is or may be
+/// `PREEMPT_RT`. Mainline adds the word `PREEMPT_RT` for `CONFIG_PREEMPT_RT`
+/// (`init/Makefile`, `UTS_VERSION`), and `/sys/kernel/realtime` exists only in
+/// some distributions' kernels. The version is cut to 64 bytes, after the
+/// build version and flags, so a version of that length may have lost the
+/// word and counts as `PREEMPT_RT`.
 fn version_is_preempt_rt(version: &str) -> bool {
-    version.split_whitespace().any(|word| word == "PREEMPT_RT")
+    const UTS_VERSION_MAX: usize = 64;
+    version.len() >= UTS_VERSION_MAX || version.split_whitespace().any(|word| word == "PREEMPT_RT")
 }
 
 pub(crate) fn get_pmu_config() -> &'static PmuConfig {
@@ -1906,6 +1908,18 @@ mod tests {
         ));
         assert!(!version_is_preempt_rt("#1 SMP PREEMPT_RTX"));
         assert!(!version_is_preempt_rt(""));
+        // A build version of 49 digits cuts the word of a PREEMPT_RT kernel
+        // at the 64-byte limit.
+        let cut = format!("#{} SMP PREEMPT_R", "1".repeat(49));
+        assert_eq!(cut.len(), 64);
+        assert!(version_is_preempt_rt(&cut));
+        // One digit less keeps the word.
+        let whole = format!("#{} SMP PREEMPT_RT", "1".repeat(48));
+        assert_eq!(whole.len(), 64);
+        assert!(version_is_preempt_rt(&whole));
+        let short = format!("#{} SMP PREEMPT_DYNAMIC", "1".repeat(42));
+        assert_eq!(short.len(), 63);
+        assert!(!version_is_preempt_rt(&short));
     }
 
     /// Wait up to five seconds for a timer notification to be pending,
