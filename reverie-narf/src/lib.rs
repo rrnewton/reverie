@@ -166,7 +166,7 @@ where
     fn request<S: SyscallInfo>(syscall: S) -> NarfSyscallRequest {
         let (number, args) = syscall.into_parts();
         NarfSyscallRequest {
-            number: number.id() as i64,
+            number: number.id() as u32,
             args: [
                 args.arg0 as u64,
                 args.arg1 as u64,
@@ -522,7 +522,7 @@ mod tests {
         let mut kernel = FakeKernel::new();
         let syscall = Syscall::Getpid(Getpid::new());
         let original = NarfSyscallRequest {
-            number: libc::SYS_getpid,
+            number: libc::SYS_getpid as u32,
             args: [0; 6],
         };
 
