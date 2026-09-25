@@ -43,6 +43,10 @@ mod timestamp;
 mod tools;
 mod vm;
 
+#[cfg(test)]
+#[path = "../tests/support/alias_failure.rs"]
+mod alias_failure;
+
 pub use cpuid::CpuidPolicy;
 pub use error::Error;
 pub use memory::GuestMemory;

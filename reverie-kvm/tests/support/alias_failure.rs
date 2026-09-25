@@ -1,0 +1,175 @@
+// Shared by the unit and KVM integration controls. Every injected run is a
+// separate bounded process, and the shim remains dormant until explicitly armed.
+pub(crate) struct Fault {
+    stage: i32,
+    arm: unsafe extern "C" fn(i32),
+    count: unsafe extern "C" fn(i32) -> libc::c_ulong,
+}
+
+pub(crate) fn child(test: &str) -> Option<Fault> {
+    if std::env::var("REVERIE_ALIAS_FAILURE_TEST").as_deref() == Ok(test) {
+        let stage = std::env::var("REVERIE_ALIAS_FAILURE_STAGE")
+            .unwrap()
+            .parse()
+            .unwrap();
+        // SAFETY: the child is launched with our fixture loaded. Both symbols
+        // have these exact C signatures and outlive the test process.
+        let (arm, count) = unsafe {
+            let arm = libc::dlsym(libc::RTLD_DEFAULT, c"reverie_alias_failure_arm".as_ptr());
+            let count = libc::dlsym(libc::RTLD_DEFAULT, c"reverie_alias_failure_count".as_ptr());
+            assert!(!arm.is_null() && !count.is_null());
+            (
+                std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn(i32)>(arm),
+                std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn(i32) -> libc::c_ulong>(
+                    count,
+                ),
+            )
+        };
+        return Some(Fault { stage, arm, count });
+    }
+    let directory = std::env::temp_dir().join(format!(
+        "reverie-alias-failure-{}-{}",
+        std::process::id(),
+        test.replace(':', "_")
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let library = directory.join("fault.so");
+    let build = std::process::Command::new("timeout")
+        .args([
+            "--kill-after=2s",
+            "30s",
+            "/usr/bin/gcc",
+            "-O2",
+            "-shared",
+            "-fPIC",
+        ])
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/getdents_alias_failure.c"
+        ))
+        .arg("-o")
+        .arg(&library)
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{build:?}");
+    let outputs = ["1", "2"].map(|stage| {
+        std::process::Command::new("timeout")
+            .args(["--kill-after=2s", "30s"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture", "--test-threads=1"])
+            .env("REVERIE_ALIAS_FAILURE_TEST", test)
+            .env("REVERIE_ALIAS_FAILURE_STAGE", stage)
+            .env("LD_PRELOAD", &library)
+            .output()
+            .unwrap()
+    });
+    std::fs::remove_dir_all(directory).unwrap();
+    for (stage, output) in outputs.iter().enumerate() {
+        eprintln!("stage={} {output:?}", stage + 1);
+    }
+    assert!(outputs.iter().all(|output| output.status.success()));
+    None
+}
+
+impl Fault {
+    pub(crate) fn arm(&self) {
+        // SAFETY: resolved from this process's retained test shim above.
+        unsafe { (self.arm)(self.stage) };
+    }
+
+    pub(crate) fn assert_fired(&self) {
+        // SAFETY: all five indices are valid in the retained fixture.
+        let counts = std::array::from_fn::<_, 5, _>(|i| unsafe { (self.count)(i as i32) });
+        let expected = if self.stage == 1 {
+            [1, 0, 1, 0, 0]
+        } else {
+            [1, 2, 1, 1, 1]
+        };
+        assert_eq!(counts, expected);
+        eprintln!("alias failure stage={} counters={counts:?}", self.stage);
+    }
+}
+
+// Ownership may repeat a cause, but every leaf must retain that exact cause.
+// Context-bearing errors are not ownership envelopes and must remain visible.
+pub(crate) fn mapping_cause(error: &crate::Error) -> Option<&crate::Error> {
+    fn visit<'a>(error: &'a crate::Error, original: &mut Option<&'a crate::Error>) -> bool {
+        match error {
+            crate::Error::MemoryMapping(io) if io.raw_os_error() == Some(libc::ENOMEM) => {
+                if let Some(original) = original {
+                    std::ptr::eq(*original, error)
+                } else {
+                    *original = Some(error);
+                    true
+                }
+            }
+            crate::Error::SharedFailure(cause) => visit(cause, original),
+            crate::Error::WithCleanup { primary, cleanup } => {
+                visit(primary, original) && cleanup.iter().all(|cause| visit(cause, original))
+            }
+            _ => false,
+        }
+    }
+    let mut original = None;
+    if visit(error, &mut original) {
+        original
+    } else {
+        None
+    }
+}
+
+#[test]
+fn mapping_failure_oracle_keeps_all_causes_and_context() {
+    use std::sync::Arc;
+
+    use crate::Error;
+
+    let original = Arc::new(Error::MemoryMapping(std::io::Error::from_raw_os_error(
+        libc::ENOMEM,
+    )));
+    let direct = Error::SharedFailure(original.clone());
+    assert!(std::ptr::eq(mapping_cause(&direct).unwrap(), &*original));
+    let positive = Error::WithCleanup {
+        primary: Arc::new(Error::SharedFailure(Arc::new(Error::SharedFailure(
+            original.clone(),
+        )))),
+        cleanup: vec![Arc::new(Error::SharedFailure(original.clone()))],
+    };
+    assert!(std::ptr::eq(mapping_cause(&positive).unwrap(), &*original));
+    for extra in [
+        Error::MemoryMapping(std::io::Error::from_raw_os_error(libc::ENOMEM)),
+        Error::MemoryMapping(std::io::Error::from_raw_os_error(libc::EACCES)),
+        Error::UnexpectedVcpuExit("unrelated cleanup failure".to_owned()),
+    ] {
+        let negative = Error::WithCleanup {
+            primary: original.clone(),
+            cleanup: vec![original.clone(), Arc::new(extra)],
+        };
+        assert!(mapping_cause(&negative).is_none(), "{negative:?}");
+    }
+    for context in [
+        Error::WorkerFailure {
+            tid: 3,
+            error: original.clone(),
+        },
+        Error::Cleanup {
+            phase: "unexpected cleanup context",
+            error: original.clone(),
+        },
+        Error::SignalEffects {
+            cause: original.clone(),
+            dequeues: Vec::new(),
+            acknowledged_through: 0,
+            publications: Vec::new(),
+            raw_result: None,
+            context: None,
+        },
+        Error::ExecWorkerTeardown(Box::new(Error::SharedFailure(original.clone()))),
+    ] {
+        let negative = Error::WithCleanup {
+            primary: original.clone(),
+            cleanup: vec![Arc::new(context)],
+        };
+        assert!(mapping_cause(&negative).is_none(), "{negative:?}");
+    }
+}

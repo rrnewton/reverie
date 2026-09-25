@@ -13567,7 +13567,7 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
-    let mut length = requested_length.min(MAX_HOST_IO);
+    let length = requested_length.min(MAX_HOST_IO);
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -13581,39 +13581,41 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     {
         return 0;
     }
-    if length >= 24 && !range_is_valid(memory, args[1], length as u64) {
-        return negative_errno(libc::EFAULT);
-    }
-    if length >= 24 {
-        let Ok(writable) = memory.user().user_accessible_prefix(args[1], length) else {
-            return negative_errno(libc::EFAULT);
-        };
-        if writable < 24 {
+    // Let the kernel write through a protected shared alias. A snapshot/copyback
+    // would clobber concurrent guest writes to untouched padding or the tail,
+    // including when EOF produces no output at all.
+    let user = memory.user();
+    let alias = match user.writable_alias(args[1], length) {
+        Ok(alias) => alias,
+        Err(error @ crate::Error::MemoryMapping(_)) => {
+            // Alias construction has already released every mapping, lock and
+            // operand. Host resource failure is terminal, not a guest errno:
+            // result publication/injection resume must observe this cause.
+            memory.entry_gate().poison(memory.entry_origin(), error);
             return negative_errno(libc::EFAULT);
         }
-        length = writable;
-    }
-    let mut bytes = vec![0; length];
-    // SAFETY: file owns a live descriptor and bytes is writable for length bytes.
+        Err(_) => return negative_errno(libc::EFAULT),
+    };
+    // SAFETY: file owns a live descriptor; alias retains the current backing,
+    // permissions and host-copy locks for the requested bounded kernel operand.
     let count = unsafe {
         libc::syscall(
             libc::SYS_getdents64,
             file.as_raw_fd(),
-            bytes.as_mut_ptr().cast::<libc::c_void>(),
-            bytes.len(),
+            alias.address(),
+            length,
         )
     };
-    if count < 0 {
-        return io_error(std::io::Error::last_os_error());
+    // Capture errno before dropping the alias invokes munmap.
+    let result = if count < 0 {
+        io_error(std::io::Error::last_os_error())
+    } else {
+        count as i64
+    };
+    if alias.finish().is_err() {
+        return negative_errno(libc::EFAULT);
     }
-    let count = count as usize;
-    if count == 0 {
-        return 0;
-    }
-    match memory.user().write(args[1], &bytes[..count]) {
-        Ok(()) => count as i64,
-        Err(_) => negative_errno(libc::EFAULT),
-    }
+    result
 }
 
 fn is_open_standard(state: &LoadedStaticElf, guest_fd: libc::c_int) -> bool {
@@ -34677,6 +34679,43 @@ mod tests {
             ),
             negative_errno(libc::EBADF)
         );
+    }
+
+    #[test]
+    fn getdents64_alias_mapping_failure_is_terminal_before_directory_io() {
+        let Some(fault) = crate::alias_failure::child(
+            "executor::tests::getdents64_alias_mapping_failure_is_terminal_before_directory_io",
+        ) else {
+            return;
+        };
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut directory = std::fs::File::open(&root.0).unwrap();
+        state.files.insert(0, directory.try_clone().unwrap());
+        let mut memory = GuestMemory::new(0, 3 * PAGE_SIZE as usize).unwrap();
+        memory
+            .write_raw(0, &[0xa5; 3 * PAGE_SIZE as usize])
+            .unwrap();
+        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
+        memory
+            .map_user_range(2 * PAGE_SIZE, PAGE_SIZE, false)
+            .unwrap();
+        memory.enable_user_access();
+        let before = directory.stream_position().unwrap();
+        fault.arm();
+        let _transport_only = getdents64(&mut memory, &state, &[0, 0, 3 * PAGE_SIZE, 0, 0, 0]);
+        fault.assert_fired();
+        let pending = memory.entry_gate().pending_failure().unwrap();
+        let error = pending.error();
+        let cause =
+            crate::alias_failure::mapping_cause(&error).unwrap_or_else(|| panic!("{error:?}"));
+        assert_eq!(directory.stream_position().unwrap(), before);
+        assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
+        let refused = memory.write_raw(0, b"ordinary result").unwrap_err();
+        assert!(std::ptr::eq(
+            cause,
+            crate::alias_failure::mapping_cause(&refused).unwrap_or_else(|| panic!("{refused:?}"))
+        ));
     }
 
     #[test]

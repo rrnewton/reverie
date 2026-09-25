@@ -585,13 +585,6 @@ impl EntryGate {
         self.state.lock().unwrap().check()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "The private unchanged-mapping close protocol has no production closer yet"
-        )
-    )]
     pub(crate) fn poison(
         &self,
         origin: impl Into<EntryOrigin>,
