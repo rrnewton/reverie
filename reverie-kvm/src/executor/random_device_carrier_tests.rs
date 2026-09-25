@@ -507,6 +507,16 @@ fn random_carrier_revision_direct_rejection_has_no_effects() {
 }
 
 fn random_carrier_revision_mmap_cases(cases: &[(u64, u64, i32, u64, i32)]) {
+    // Preserve the exact existing low-word cases, including their raw sign
+    // extension, while also accepting explicit full-width syscall operands.
+    let cases: Vec<_> = cases
+        .iter()
+        .map(|&(a, n, f, o, e)| (a, n, f as u64, o, e))
+        .collect();
+    random_carrier_full_width_mmap_cases(&cases);
+}
+
+fn random_carrier_full_width_mmap_cases(cases: &[(u64, u64, u64, u64, i32)]) {
     let root = TestDir::new();
     let mut state = test_state(&root.0);
     let mut memory = GuestMemory::new(0, (BOOT_RESERVED_END + 4 * PAGE_SIZE) as usize).unwrap();
@@ -516,7 +526,9 @@ fn random_carrier_revision_mmap_cases(cases: &[(u64, u64, i32, u64, i32)]) {
     memory
         .map_user_permissions(BOOT_RESERVED_END, PAGE_SIZE, true, true)
         .unwrap();
-    memory.write(BOOT_RESERVED_END, &[0xa5; 16]).unwrap();
+    memory
+        .write(BOOT_RESERVED_END, &[0xa5; PAGE_SIZE as usize])
+        .unwrap();
     for path in ["/dev/random", "/dev/urandom"] {
         for mode in [
             libc::O_RDONLY,
@@ -552,7 +564,7 @@ fn random_carrier_revision_mmap_cases(cases: &[(u64, u64, i32, u64, i32)]) {
                             address,
                             length,
                             libc::PROT_READ as u64,
-                            flags as u64,
+                            flags,
                             fd as u64,
                             offset
                         ]
@@ -562,8 +574,8 @@ fn random_carrier_revision_mmap_cases(cases: &[(u64, u64, i32, u64, i32)]) {
                 );
                 assert_eq!(state.mmap_next, BOOT_RESERVED_END);
                 assert_eq!(
-                    random_stream_bytes(&memory, BOOT_RESERVED_END, 16),
-                    [0xa5; 16]
+                    random_stream_bytes(&memory, BOOT_RESERVED_END, PAGE_SIZE as usize),
+                    [0xa5; PAGE_SIZE as usize]
                 );
                 assert!(memory.user_range_is_mapped(BOOT_RESERVED_END, PAGE_SIZE));
                 for page in 1..4 {
@@ -704,4 +716,115 @@ fn random_carrier_revision_legacy_mask_matches_x86_linux() {
         libc::EEXIST,
     ));
     random_carrier_revision_mmap_cases(&cases);
+}
+
+#[test]
+fn random_carrier_high_word_mmap_flags_keep_linux_error_order() {
+    let mut cases = Vec::new();
+    let fixed = libc::MAP_FIXED as u64;
+    let validate = libc::MAP_SHARED_VALIDATE as u64;
+    // Raw x86-64 SYS_mmap takes unsigned long flags. Ordinary SHARED/PRIVATE
+    // ignore unknown bits; only SHARED_VALIDATE rejects them. Spell both high
+    // bits independently of the production mask, without signed shifts.
+    for extra in [0, 1_u64 << 32, 1_u64 << 63] {
+        for kind in [
+            libc::MAP_SHARED,
+            libc::MAP_PRIVATE,
+            libc::MAP_SHARED_VALIDATE,
+        ] {
+            cases.push((
+                BOOT_RESERVED_END,
+                PAGE_SIZE,
+                kind as u64 | fixed | extra,
+                0,
+                if kind == libc::MAP_SHARED_VALIDATE && extra != 0 {
+                    libc::EOPNOTSUPP
+                } else {
+                    libc::ENODEV
+                },
+            ));
+        }
+        if extra == 0 {
+            continue;
+        }
+        let flags = validate | extra;
+        cases.extend([
+            (BOOT_RESERVED_END, PAGE_SIZE, flags | fixed, 1, libc::EINVAL),
+            (
+                BOOT_RESERVED_END,
+                PAGE_SIZE,
+                flags | fixed | libc::MAP_HUGETLB as u64,
+                0,
+                libc::EINVAL,
+            ),
+            (BOOT_RESERVED_END, 0, flags | fixed, 0, libc::EINVAL),
+            (BOOT_RESERVED_END, u64::MAX, flags | fixed, 0, libc::ENOMEM),
+            (
+                u64::MAX - PAGE_SIZE + 1,
+                PAGE_SIZE,
+                flags | fixed,
+                0,
+                libc::ENOMEM,
+            ),
+            (
+                BOOT_RESERVED_END,
+                PAGE_SIZE,
+                flags | libc::MAP_FIXED_NOREPLACE as u64,
+                0,
+                libc::EEXIST,
+            ),
+            (
+                BOOT_RESERVED_END,
+                PAGE_SIZE,
+                flags | fixed,
+                u64::MAX - PAGE_SIZE + 1,
+                libc::EOVERFLOW,
+            ),
+            (
+                BOOT_RESERVED_END,
+                PAGE_SIZE,
+                libc::MAP_TYPE as u64 | fixed | extra,
+                0,
+                libc::EINVAL,
+            ),
+        ]);
+    }
+    random_carrier_full_width_mmap_cases(&cases);
+}
+
+#[test]
+fn random_carrier_fixed_range_errors_precede_alignment() {
+    random_carrier_full_width_mmap_cases(&[
+        // Use an upper address below Linux's encoded-error interval and a
+        // length beyond both 4-level and 5-level x86 user address spaces.
+        (
+            u64::MAX - 2 * PAGE_SIZE + 2,
+            PAGE_SIZE,
+            (libc::MAP_PRIVATE | libc::MAP_FIXED) as u64,
+            0,
+            libc::ENOMEM,
+        ),
+        (
+            0x1001,
+            1_u64 << 63,
+            (libc::MAP_PRIVATE | libc::MAP_FIXED) as u64,
+            0,
+            libc::ENOMEM,
+        ),
+        (
+            BOOT_RESERVED_END + 1,
+            PAGE_SIZE,
+            (libc::MAP_PRIVATE | libc::MAP_FIXED) as u64,
+            0,
+            libc::EINVAL,
+        ),
+        // The model's reserved lower range must not hide alignment EINVAL.
+        (
+            0x1001,
+            PAGE_SIZE,
+            (libc::MAP_PRIVATE | libc::MAP_FIXED) as u64,
+            0,
+            libc::EINVAL,
+        ),
+    ]);
 }
