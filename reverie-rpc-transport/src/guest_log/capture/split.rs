@@ -649,6 +649,8 @@ impl Workers {
                 *owner.shared.collector_join.lock().unwrap() = Some(thread.join().is_ok());
             }
             owner.shared.publication.join_blocking();
+            #[cfg(test)]
+            self.task_exits.publish_blocking_joins_for_test();
             owner.finalized = true;
         }
     }

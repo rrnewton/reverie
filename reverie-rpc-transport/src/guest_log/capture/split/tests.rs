@@ -409,12 +409,46 @@ fn split_collector_anchor_failure_retains_both_workers_and_factories_until_recov
 
 #[test]
 fn split_drop_waits_for_collector_anchor_and_barrier_before_resource_release() {
+    const CHILD_ENV: &str = "REVERIE_RPC_SPLIT_DROP_ORDER_CHILD";
+    const TEST_NAME: &str = "guest_log::capture::split::tests::split_drop_waits_for_collector_anchor_and_barrier_before_resource_release";
+
+    if std::env::var_os(CHILD_ENV).is_none() {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST_NAME, "--nocapture"])
+            .env(CHILD_ENV, "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .expect("spawn isolated Drop scenario");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match child.try_wait().expect("observe isolated Drop scenario") {
+                Some(status) => {
+                    assert!(status.success(), "isolated Drop scenario failed: {status}");
+                    return;
+                }
+                None => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        let kill = child.kill();
+                        let status = child.wait();
+                        panic!(
+                            "isolated Drop scenario exceeded five seconds; kill={kill:?}, wait={status:?}"
+                        );
+                    }
+                    std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
+                }
+            }
+        }
+    }
+
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
-    use std::sync::mpsc;
 
     struct DestinationProbe {
         drops: Arc<AtomicUsize>,
+        joins_completed: Arc<AtomicBool>,
         barrier_completed: Arc<AtomicBool>,
     }
     impl Write for DestinationProbe {
@@ -433,6 +467,10 @@ fn split_drop_waits_for_collector_anchor_and_barrier_before_resource_release() {
     impl Drop for DestinationProbe {
         fn drop(&mut self) {
             assert!(
+                self.joins_completed.load(Ordering::Acquire),
+                "Drop released destination before both blocking joins"
+            );
+            assert!(
                 self.barrier_completed.load(Ordering::Acquire),
                 "Drop released destination before task-exit barrier"
             );
@@ -441,10 +479,15 @@ fn split_drop_waits_for_collector_anchor_and_barrier_before_resource_release() {
     }
     struct FactoryProbe {
         drops: Arc<AtomicUsize>,
+        joins_completed: Arc<AtomicBool>,
         barrier_completed: Arc<AtomicBool>,
     }
     impl Drop for FactoryProbe {
         fn drop(&mut self) {
+            assert!(
+                self.joins_completed.load(Ordering::Acquire),
+                "Drop released factory before both blocking joins"
+            );
             assert!(
                 self.barrier_completed.load(Ordering::Acquire),
                 "Drop released factory before task-exit barrier"
@@ -454,131 +497,109 @@ fn split_drop_waits_for_collector_anchor_and_barrier_before_resource_release() {
     }
 
     let blocked = Arc::new(AtomicBool::new(true));
+    let joins_completed = Arc::new(AtomicBool::new(false));
     let barrier_completed = Arc::new(AtomicBool::new(false));
     let destination_drops = Arc::new(AtomicUsize::new(0));
     let factory_drops = Arc::new(AtomicUsize::new(0));
-    let scenario_blocked = blocked.clone();
-    let scenario_barrier = barrier_completed.clone();
-    let scenario_destination_drops = destination_drops.clone();
-    let scenario_factory_drops = factory_drops.clone();
-    let (done_tx, done_rx) = mpsc::sync_channel(1);
-
-    let scenario = std::thread::spawn(move || {
-        ANCHOR_FAULT.with(|fault| {
-            assert!(fault.borrow().is_none());
-            *fault.borrow_mut() = Some((AnchorWorker::Collector, scenario_blocked.clone()));
-        });
-        let options = CaptureOptions {
-            limits: CaptureLimits {
-                producers: 2,
-                slots_per_producer: 8,
-                max_record_bytes: 64,
-                host_pending_bytes: 256,
-                guest_pending_bytes: 256,
-                pending_records: 8,
-                diagnostic_bytes: 128,
+    ANCHOR_FAULT.with(|fault| {
+        assert!(fault.borrow().is_none());
+        *fault.borrow_mut() = Some((AnchorWorker::Collector, blocked.clone()));
+    });
+    let options = CaptureOptions {
+        limits: CaptureLimits {
+            producers: 2,
+            slots_per_producer: 8,
+            max_record_bytes: 64,
+            host_pending_bytes: 256,
+            guest_pending_bytes: 256,
+            pending_records: 8,
+            diagnostic_bytes: 128,
+        },
+        timeouts: CaptureTimeouts {
+            startup: Duration::from_secs(2),
+            blocked_publication: Duration::from_secs(2),
+            final_drain: Duration::from_secs(2),
+        },
+    };
+    let plan = unsafe { SplitCapturePlan::new(options) }.unwrap();
+    let mut workers = Workers {
+        owner: None,
+        escrow: None,
+        task_exits: TaskExits::default(),
+    };
+    assert_eq!(
+        workers.start(
+            plan,
+            DestinationProbe {
+                drops: destination_drops.clone(),
+                joins_completed: joins_completed.clone(),
+                barrier_completed: barrier_completed.clone(),
             },
-            timeouts: CaptureTimeouts {
-                startup: Duration::from_secs(2),
-                blocked_publication: Duration::from_secs(2),
-                final_drain: Duration::from_secs(2),
-            },
-        };
-        let plan = unsafe { SplitCapturePlan::new(options) }.unwrap();
-        let mut workers = Workers {
-            owner: None,
-            escrow: None,
-            task_exits: TaskExits::default(),
-        };
-        assert_eq!(
-            workers.start(
-                plan,
-                DestinationProbe {
-                    drops: scenario_destination_drops.clone(),
-                    barrier_completed: scenario_barrier.clone(),
-                },
-                Instant::now() + Duration::from_secs(2),
-            ),
-            Err(StartupError::Protocol)
-        );
-        ANCHOR_FAULT.with(|fault| assert!(fault.borrow().is_none()));
-        let publication_exit = workers.task_exits.publication.as_ref().unwrap().clone();
-        let collector_exit = workers.task_exits.collector.as_ref().unwrap().clone();
-        let shared = workers.owner.as_ref().unwrap().shared.clone();
-        workers
-            .task_exits
-            .install_barrier_probe(scenario_barrier.clone());
+            Instant::now() + Duration::from_secs(2),
+        ),
+        Err(StartupError::Protocol)
+    );
+    ANCHOR_FAULT.with(|fault| assert!(fault.borrow().is_none()));
+    let publication_exit = workers.task_exits.publication.as_ref().unwrap().clone();
+    let collector_exit = workers.task_exits.collector.as_ref().unwrap().clone();
+    let shared = workers.owner.as_ref().unwrap().shared.clone();
+    workers
+        .task_exits
+        .install_drop_order_probes(joins_completed.clone(), barrier_completed.clone());
 
-        let mut run = SplitCaptureRun::<u8, FactoryProbe, FactoryProbe> {
-            parent_factory: Some(FactoryProbe {
-                drops: scenario_factory_drops.clone(),
-                barrier_completed: scenario_barrier.clone(),
-            }),
-            child_factory: Some(FactoryProbe {
-                drops: scenario_factory_drops.clone(),
-                barrier_completed: scenario_barrier.clone(),
-            }),
-            plan: Cell::new(None),
-            workers,
-            child: None,
-            result: None,
-            status: None,
-            failure: None,
-            frozen: None,
-            integrity_faults: IntegrityFaultSet::default(),
-            frozen_integrity: None,
-            failed_bytes: Vec::new(),
-        };
-        run.fail(
-            IntegrityFault::OwnedChild,
-            "injected collector anchor Drop failure",
-        );
-        assert_eq!(scenario_destination_drops.load(Ordering::Acquire), 0);
-        assert_eq!(scenario_factory_drops.load(Ordering::Acquire), 0);
-        assert!(!scenario_barrier.load(Ordering::Acquire));
+    let mut run = SplitCaptureRun::<u8, FactoryProbe, FactoryProbe> {
+        parent_factory: Some(FactoryProbe {
+            drops: factory_drops.clone(),
+            joins_completed: joins_completed.clone(),
+            barrier_completed: barrier_completed.clone(),
+        }),
+        child_factory: Some(FactoryProbe {
+            drops: factory_drops.clone(),
+            joins_completed: joins_completed.clone(),
+            barrier_completed: barrier_completed.clone(),
+        }),
+        plan: Cell::new(None),
+        workers,
+        child: None,
+        result: None,
+        status: None,
+        failure: None,
+        frozen: None,
+        integrity_faults: IntegrityFaultSet::default(),
+        frozen_integrity: None,
+        failed_bytes: Vec::new(),
+    };
+    run.fail(
+        IntegrityFault::OwnedChild,
+        "injected collector anchor Drop failure",
+    );
+    assert_eq!(destination_drops.load(Ordering::Acquire), 0);
+    assert_eq!(factory_drops.load(Ordering::Acquire), 0);
+    assert!(!joins_completed.load(Ordering::Acquire));
+    assert!(!barrier_completed.load(Ordering::Acquire));
 
-        let release_blocked = scenario_blocked.clone();
-        let observe_retry = collector_exit.clone();
-        let unblocker = std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while observe_retry.startup_attempt_for_test() < 2 && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            let entered_drop_recovery = observe_retry.startup_attempt_for_test() >= 2;
-            release_blocked.store(false, Ordering::Release);
-            entered_drop_recovery
-        });
-
-        drop(run);
-        assert!(
-            unblocker.join().expect("anchor-unblocker panicked"),
-            "Drop never requested a fresh collector anchor attempt"
-        );
-        assert_eq!(*shared.collector_join.lock().unwrap(), Some(true));
-        assert_eq!(shared.publication.joined(), Some(true));
-        assert!(publication_exit.detached_for_test());
-        assert!(collector_exit.detached_for_test());
-        assert!(scenario_barrier.load(Ordering::Acquire));
-        assert_eq!(scenario_destination_drops.load(Ordering::Acquire), 1);
-        assert_eq!(scenario_factory_drops.load(Ordering::Acquire), 2);
-        done_tx
-            .send(())
-            .expect("test owner retained completion receiver");
+    let release_blocked = blocked.clone();
+    let observe_retry = collector_exit.clone();
+    let unblocker = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while observe_retry.startup_attempt_for_test() < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let entered_drop_recovery = observe_retry.startup_attempt_for_test() >= 2;
+        release_blocked.store(false, Ordering::Release);
+        entered_drop_recovery
     });
 
-    match done_rx.recv_timeout(Duration::from_secs(5)) {
-        Ok(()) => scenario.join().expect("Drop scenario panicked"),
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            scenario
-                .join()
-                .expect("Drop scenario panicked before completion");
-            panic!("Drop scenario disconnected without completion");
-        }
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            blocked.store(false, Ordering::Release);
-            panic!("Drop scenario exceeded its five-second bound");
-        }
-    }
+    drop(run);
+    assert!(
+        unblocker.join().expect("anchor-unblocker panicked"),
+        "Drop never requested a fresh collector anchor attempt"
+    );
+    assert!(joins_completed.load(Ordering::Acquire));
+    assert_eq!(*shared.collector_join.lock().unwrap(), Some(true));
+    assert_eq!(shared.publication.recorded_join_for_test(), Some(true));
+    assert!(publication_exit.detached_for_test());
+    assert!(collector_exit.detached_for_test());
     assert!(barrier_completed.load(Ordering::Acquire));
     assert_eq!(destination_drops.load(Ordering::Acquire), 1);
     assert_eq!(factory_drops.load(Ordering::Acquire), 2);
