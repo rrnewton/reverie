@@ -38,7 +38,7 @@ negative-control mutation.
 ## Narf syscall-interception milestone
 
 Current local Narf head:
-`d87869d24fb9b104ed04b3910d9b2289a63d6fce`.
+`5d0270978738be5862eeccd25a1822bfe32d4d29`.
 
 Commits:
 
@@ -51,6 +51,14 @@ Commits:
   reset crate-private, expose an out-of-crate reset only under the explicit
   `verification-test-reset` feature, and compile-check that production callers
   cannot name the private reset.
+- `b312fdc83ee6d74d0550f4773b94174608c56ae0` — exercise known and
+  unknown syscall interception through real x86 `int 0x80`, x86 `syscall`, and
+  AArch64 `svc` architecture entries.
+- `5d0270978738be5862eeccd25a1822bfe32d4d29` — add typed,
+  first-class nondeterministic-instruction interception, initially x86
+  `RDTSC` via CR4.TSD, plus per-CPU activation across legacy entry and
+  own-stack scheduler migration. This TCB commit is GPG-signed and carries the
+  required originating-prompt, model, and Codex co-author attribution.
 
 The current interface provides an immutable `SyscallInvocation` snapshot,
 entry control (`Continue` or `Complete`), a return-only replacement callback,
@@ -92,6 +100,56 @@ publication retaining the original active table after a rejected replacement.
 They do not yet prove a real userspace `syscall` instruction combined with
 ptrace and a pending signal, AArch64 runtime parity, the future
 `reverie-narf` backend, or cross-kernel canonical trace equivalence.
+
+## Live architecture and instruction milestone at `5d027097...`
+
+The current branch now has two independent first-class paths:
+
+- Syscalls enter through their ordinary x86 and AArch64 architecture entry
+  paths, capture an immutable invocation, and allow `Continue` or a typed
+  completed result without exposing the mutable trap context to the tool.
+- Ring-3 x86 `RDTSC` is converted to `#GP` by CR4.TSD. `frame/` guarded-copies
+  and accepts only exact opcode `0f 31`, calls the immutable typed instruction
+  interceptor, writes EDX:EAX, and advances RIP by two bytes. Every other
+  general-protection fault retains the ordinary fault path. No ptrace stop,
+  signal trampoline, binary rewrite, polling loop, or IPC transport is used.
+
+CR4.TSD is per-CPU. `arch/` therefore owns a monotonic kernel-wide request;
+successful interceptor publication raises it, the legacy user-entry path
+applies it before entering ring 3, and the own-stack scheduler applies it
+before every switch-in. The scheduler does not own or dereference tool state.
+A dedicated QEMU test clears only the executing CPU's TSD bit while retaining
+the global request, switches through the real `poll_to_yield` path, and requires
+the bit to be restored before the task runs.
+
+Exact-tree validation:
+
+- Package-scoped `cargo fmt --check` for `narf-arch`, `narf-scheduler`,
+  `narf-userspace`, `narf-frame`, and `narf-verification`: passed.
+- `git diff --check`: passed before the clean signed commit.
+- Warning-as-error clippy for the five affected crates with their kernel-test,
+  verification-reset, and user-mode E2E features: passed.
+- `cargo check -p narf-userspace --tests`, `cargo check -p narf-scheduler
+  --features kernel-test`, `cargo check -p narf-verification --features
+  user-mode-e2e`, and `cargo check -p narf-frame --features
+  kernel-test,user-mode-e2e`: passed.
+- `cargo xtask test --arch x86_64 --subsystem scheduler/stackful --hw-profile
+  minimal`: returned 0. The new
+  `smoke_user_instruction_interception_reapplied_on_switch` case was `[ OK ]`;
+  the selection booted and exited cleanly. Raw output SHA-256:
+  `ed50698b83d68a90fba1ec7fadd74fd036ea1c5191ef82024df1fd7329351e80`.
+- `cargo xtask test --arch x86_64 --features user-mode-e2e --subsystem
+  verification/syscall-entry --hw-profile minimal`: returned 0 at the exact
+  committed tree. The real ring-3 guest executed an unknown `syscall`, observed
+  the hook-supplied result, executed `RDTSC`, observed the return callback's
+  exact `0x123456789abcdef0` result, and exited through `int 0x80`; the selected
+  test was `[ OK ]` and boot exited cleanly. Raw output SHA-256:
+  `22b253d0157a730d58fb9c3aa22267f726efe1650251e42ecd7444688543aeda`.
+
+These tests prove the Narf mechanisms and their real x86 entry paths. They do
+not prove that `reverie-narf` exists, that an arbitrary Reverie tool can use the
+hooks, that a real executable runs under that backend, or that Linux/Hermit and
+Narf traces match. The POC is not complete.
 
 ## Audit state
 
@@ -139,14 +197,13 @@ worktree was removed after its output was captured under `/tmp`.
 
 ## Next gates
 
-1. Resolve every substantive finding from the fresh exact-head Narf review.
-2. Add the narrow nondeterministic-instruction hook needed by P0, with the same
-   first-class ownership and authority discipline.
-3. Implement the general `reverie-narf` backend in the registered Reverie
+1. Resolve every substantive finding from the fresh exact-head Narf review of
+   base `87b7cd10...` through head `5d027097...`.
+2. Implement the general `reverie-narf` backend in the registered Reverie
    worktree, then the minimal Hermit integration/tool surface in its registered
    worktree.
-4. Run the real guest on both backends, compare fail-closed versioned INFO logs
+3. Run the real guest on both backends, compare fail-closed versioned INFO logs
    byte-for-byte, and show the negative mutation is rejected.
-5. Obtain exact-head adversarial and deterministic-scheduling reviews where
+4. Obtain exact-head adversarial and deterministic-scheduling reviews where
    applicable, open the upstream Narf PR for human owner/maintainer review, and
    land only through each repository's supported policy.
