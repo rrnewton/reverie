@@ -130,9 +130,8 @@ PAGE_WORDING = {
         ),
         provenance_heading="Build provenance",
         landing_lead=(
-            "Hermit is a reproducible container for Linux programs. It controls "
-            "thread scheduling, time, and randomness so a program can run the "
-            "same way again."
+            "Current determinism, parity, and coverage evidence for Hermit's "
+            "Linux execution backends."
         ),
         landing_introduction=True,
         cell_table_caption="Green and red result rows in this build.",
@@ -984,6 +983,16 @@ def _layout(
     page_kind: str = "static",
     show_page_heading: bool = True,
 ) -> bytes:
+    def versioned_asset(path: str) -> str:
+        if path == "assets/site.css":
+            contents = _site_css()
+        elif path == "assets/site.js":
+            contents = _site_javascript()
+        else:
+            raise RenderRefused(f"layout references an unsupported asset: {path!r}")
+        version = hashlib.sha256(contents).hexdigest()[:16]
+        return f"{_href(page, path)}?v={version}"
+
     nav = (
         f'<a href="{_escape(_href(page, "index.html"))}">Overview</a>'
         f'<a href="{_escape(_href(page, "cells/index.html"))}">Cells</a>'
@@ -991,8 +1000,12 @@ def _layout(
         f'<a href="{_escape(_href(page, "runs/index.html"))}">Validation runs</a>'
     )
     script_tags = "".join(
-        f'<script src="{_escape(_href(page, script))}" defer></script>'
+        f'<script src="{_escape(versioned_asset(script))}" defer></script>'
         for script in scripts
+    )
+    feedback = _github_link(
+        "https://github.com/rrnewton/hermit/issues",
+        "Questions or feedback? Visit Hermit issues",
     )
     banner = (
         f'<p class="fixture-banner">{_escape(wording.banner)}</p>'
@@ -1034,7 +1047,7 @@ def _layout(
   <meta name="description" content="{_escape(wording.meta_description)}">
   <title>{_escape(title)} · {_escape(wording.title_suffix)}</title>
   <link rel="icon" type="image/svg+xml" href="{_escape(_href(page, 'assets/favicon.svg'))}">
-  <link rel="stylesheet" href="{_escape(_href(page, 'assets/site.css'))}">
+  <link rel="stylesheet" href="{_escape(versioned_asset('assets/site.css'))}">
   {script_tags}
 </head>
 <body data-page-kind="{_escape(page_kind)}" data-site-root="{_escape(_href(page, 'index.html'))}" data-site-manifest="{_escape(_href(page, 'data/site-manifest.json.gz'))}">
@@ -1042,6 +1055,7 @@ def _layout(
   <header class="site-header">
     {banner}
     {disclosure}
+    <p class="site-feedback">{feedback}</p>
     <div class="site-navigation"><p class="site-name">Hermit compatibility</p>
     <nav class="primary-navigation" aria-label="Primary navigation">{nav}</nav></div>
   </header>
@@ -1775,6 +1789,8 @@ def _backend_history_chart(model: SiteModel) -> str:
         '<p>Latest recorded state at each UTC date for the current catalogue and current main ancestry, within that date’s recorded ptrace-result population. '
         'Percentages and counts can fall after regressions. Steps carry recorded state; they are not interpolated measurements. '
         'Gaps mean no supported comparison evidence, including legacy periods. Dashed lines are parity against ptrace.</p>'
+        '<p class="history-instructions"><strong>Use the chart:</strong> Hover over or focus a point to see its exact date and percentage. '
+        'Clear or select a checkbox under <em>Visible lines</em> to hide or show that series.</p>'
         f'<div class="chart-scroll"><svg class="history-chart" viewBox="0 0 {width} {height}" role="group" aria-label="Recorded green-cell percentages over time, by backend and comparison">'
         f'<path d="M {left} {top} V 265 H 875" fill="none" stroke="currentColor"/>'
         f'<text x="{left}" y="18">Green percentage</text><text x="20" y="{top + 5}">100%</text><text x="35" y="270">0%</text>'
@@ -2485,11 +2501,12 @@ def _measurement_freshness(model: SiteModel) -> str:
     recorded = [str(row["emitted_at"]) for row in model.series_rows]
     latest_recorded = max(recorded, key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00"))) if recorded else None
     return (
-        '<p class="measurement-freshness"><strong>Latest selected measurement:</strong> '
+        '<span class="measurement-freshness"><strong>Latest selected measurement:</strong> '
         + _readable_time(latest, "latest selected measurement")
-        + '. <strong>Latest history entry:</strong> '
+        + '; <strong>latest history entry:</strong> '
         + _readable_time(latest_recorded, "latest retained history entry")
-        + '.</p><p>The totals combine qualifying results from multiple runs. History also retains other runs; rebuilding this website does not rerun the tests.</p>'
+        + '. Totals may combine qualifying results from multiple runs; rebuilding '
+        'this website does not rerun the tests.</span>'
     )
 
 
@@ -2599,8 +2616,7 @@ def _landing_introduction(model: SiteModel) -> str:
     measurement_note = _measurement_freshness(model)
     return f"""
     <div class="scorecard-introduction">
-      <p>This scorecard shows which workloads have been tested and how Hermit’s execution backends compare. <strong>Determinism</strong> measures whether repeated runs agree; <strong>parity</strong> measures agreement with the reference ptrace backend. Each test cell is a workload, execution mode, and backend. The tables distinguish passing results, failures, and missing measurements. For context, start with the <a href="https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/">introduction to Hermit</a>, or visit the <a href="https://github.com/rrnewton/hermit/blob/main/README.md">README for setup and usage</a>.</p>
-      {measurement_note}
+      <p>Hermit makes Linux execution repeatable by controlling scheduling, time, and randomness. This scorecard compares its backends: <strong>determinism</strong> asks whether repeated runs agree, while <strong>parity</strong> asks whether a backend agrees with the reference ptrace backend. Each cell is one workload, execution mode, and backend; results distinguish passes, failures, and unmeasured cells. {measurement_note} For context, start with the <a href="https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/">introduction to Hermit</a>, or visit the <a href="https://github.com/rrnewton/hermit/blob/main/README.md">README for setup and usage</a>.</p>
     </div>"""
 
 
@@ -2869,7 +2885,7 @@ def _cell_filter_form(
     return f"""
     <form class="cell-filters" data-cell-filter-form hidden>
       <fieldset><legend>Find cells</legend>
-        <label class="search-control">Search <input name="q" type="search" maxlength="256"></label>
+        <label class="search-control">Search cells (updates as you type) <input name="q" type="search" maxlength="256" aria-controls="cell-results"></label>
         <input name="page" type="hidden" value="1">
         <label>Lane <select name="lane">{_options(values('lane'))}</select></label>
         <label>Category <select name="category">{_options(values('category'))}</select></label>
@@ -2889,6 +2905,7 @@ def _cell_filter_form(
         <label>Direction <select name="direction" aria-label="Sort direction"><option value="asc">Ascending</option><option value="desc">Descending</option></select></label>
       </div>
       <div class="filter-actions"><button type="button" data-clear-cell-filters>Clear filters</button></div>
+      <output class="filter-live-summary" data-cell-filter-live-summary role="status" aria-live="polite" aria-atomic="true">Loading filterable results…</output>
     </form>"""
 
 
@@ -3117,7 +3134,7 @@ def _cells_listing_page(
     )
     content = f"""
     <p class="data-status" data-load-status data-load-state="loading" role="status">Loading verified local data…</p>
-    <section id="cell-filters"><h2>Search and filter</h2><p>{other_view}</p>{fixed_state}{_cell_filter_form(model, cells, fixed_state="never-measured" if explicit_never_measured else None)}
+    <section id="cell-filters"><h2>Search and filter</h2><p>{other_view} The table updates immediately as you type or choose a filter.</p>{fixed_state}{_cell_filter_form(model, cells, fixed_state="never-measured" if explicit_never_measured else None)}
       <p id="cell-filter-error" class="notice" hidden></p><p id="cell-filter-empty" hidden>No rows match these filters.</p>
       <p id="cell-filter-counts" hidden><strong data-matching-count>0</strong> <span data-matching-label>matching cells in the manifest</span>; <span data-evidence-label>those cells have</span> <strong data-physical-count>0</strong> physical rows representing <strong data-represented-count>0</strong> Hermit runs.</p>
     </section>

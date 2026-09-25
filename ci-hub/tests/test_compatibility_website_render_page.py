@@ -902,7 +902,9 @@ def test_every_generated_data_collection_has_file_safe_controls() -> None:
             continue
         structure = _collection_structure(source)
         assert len(structure.scripts) == 1
-        assert structure.scripts[0].endswith("assets/site.js")
+        script = urlsplit(structure.scripts[0])
+        assert script.path.endswith("assets/site.js")
+        assert re.fullmatch(r"v=[0-9a-f]{16}", script.query)
 
     landing = _collection_structure(files["index.html"])
     runs = _collection_structure(files["runs/index.html"])
@@ -1836,7 +1838,8 @@ def test_render_is_deterministic_and_every_internal_link_resolves() -> None:
             split = urlsplit(link)
             if split.scheme or split.netloc:
                 assert re.fullmatch(
-                    r"https://github\.com/rrnewton/(?:hermit|dev-hermit)/commit/[0-9a-f]{40}",
+                    r"https://github\.com/rrnewton/(?:"
+                    r"(?:hermit|dev-hermit)/commit/[0-9a-f]{40}|hermit/issues)",
                     link,
                 )
                 continue
@@ -1849,7 +1852,7 @@ def test_render_is_deterministic_and_every_internal_link_resolves() -> None:
                 assert split.fragment in parsers[normalized].ids
 
 
-def test_assets_are_local_and_only_commit_navigation_is_external() -> None:
+def test_assets_are_local_and_external_navigation_is_allowlisted() -> None:
     data = representative_build_data()
     files = render_page.render_site(_build(data), data)
     inventories = render_page._validate_output_files(files)
@@ -1864,14 +1867,15 @@ def test_assets_are_local_and_only_commit_navigation_is_external() -> None:
             external = [link for link in parser.links if urlsplit(link).scheme]
             assert all(
                 re.fullmatch(
-                    r"https://github\.com/rrnewton/(?:hermit|dev-hermit)/commit/[0-9a-f]{40}",
+                    r"https://github\.com/rrnewton/(?:"
+                    r"(?:hermit|dev-hermit)/commit/[0-9a-f]{40}|hermit/issues)",
                     link,
                 )
                 for link in external
             )
             external_markup = re.findall(
                 r'<a class="external-link"[^>]+href="https://github\.com/rrnewton/'
-                r'(?:hermit|dev-hermit)/commit/[0-9a-f]{40}"[^>]*>.*?</a>',
+                r'(?:(?:hermit|dev-hermit)/commit/[0-9a-f]{40}|hermit/issues)"[^>]*>.*?</a>',
                 source,
                 flags=re.DOTALL,
             )
@@ -3317,6 +3321,8 @@ def test_backend_history_chart_plots_percentages_when_denominator_changes() -> N
     assert 'd="M 65.00 205.00 H 865.00 V 145.00"' in chart
     assert "2026-09-01: 25.0% (1 / 4 recorded ptrace-result cells)" in chart
     assert "2026-09-02: 50.0% (4 / 8 recorded ptrace-result cells)" in chart
+    assert '<p class="history-instructions"><strong>Use the chart:</strong>' in chart
+    assert "Clear or select a checkbox" in chart
 
 
 def _rgb(value: str) -> tuple[int, int, int]:
@@ -4612,6 +4618,113 @@ def _many_browser_cells(files: dict[str, bytes], count: int) -> None:
     _replace_browser_payload(files, "data/site-summary.json.gz", summary)
 
 
+def test_cell_filters_update_rows_and_nearby_status_immediately(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    _many_browser_cells(files, 6)
+    summary = _browser_payload(files, "data/site-summary.json.gz")
+    for index, cell in enumerate(summary["cells"]):
+        backend = "ptrace" if index % 2 == 0 else "kvm"
+        identity = f"tests/live-filter/verify/{backend}-{index:03d}"
+        cell["backend"] = backend
+        cell["cell"] = identity
+        cell["digest"] = _digest_for_identity(identity)
+        cell["url"] = f"cells/detail.html?cell={cell['digest']}"
+    _replace_browser_payload(files, "data/site-summary.json.gz", summary)
+    listing = files["cells/index.html"].decode()
+    listing = listing.replace(
+        '<select name="backend"><option value="">All</option>'
+        '<option value="ptrace">ptrace</option></select>',
+        '<select name="backend"><option value="">All</option>'
+        '<option value="kvm">kvm</option><option value="ptrace">ptrace</option></select>',
+    )
+    files["cells/index.html"] = listing.encode()
+
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    page.goto("http://127.0.0.1/cells/index.html#all-cells")
+    _wait_for_verified_data(page)
+
+    status = page.locator("[data-cell-filter-live-summary]")
+    assert status.inner_text() == "Table updated: 6 matching cells."
+    backend = page.locator("select[name='backend']")
+    backend.select_option("ptrace")
+    assert page.locator("#cell-results > tr").count() == 3
+    assert page.locator("#cell-results > tr").evaluate_all(
+        "rows => rows.every(row => row.dataset.backend === 'ptrace')"
+    )
+    assert "3 matching cells for backend: ptrace" in status.inner_text()
+    assert "backend=ptrace" in urlsplit(page.url).query
+
+    search = page.locator("input[name='q']")
+    search.fill("ptrace-004")
+    assert page.locator("#cell-results > tr").count() == 1
+    assert "1 matching cell for search “ptrace-004”; backend: ptrace" in status.inner_text()
+    assert "ptrace-004" in page.locator("#cell-results > tr").get_attribute("data-cell")
+    assert "q=ptrace-004" in urlsplit(page.url).query
+    page.close()
+
+
+def test_invalid_filter_reset_keeps_live_status_and_controls_consistent(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    _many_browser_cells(files, 125)
+    page = chromium_browser.new_page()
+    page_errors: list[str] = []
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+    _browser_route(page, files)
+    page.goto("http://127.0.0.1/cells/index.html?page=9#all-cells")
+    _wait_for_verified_data(page)
+
+    status = page.locator("[data-cell-filter-live-summary]")
+    assert status.inner_text().startswith("Filters reset because")
+    assert page.locator("#cell-filter-error").is_visible()
+    assert page.locator("[data-cell-pagination]").is_hidden()
+    page.locator("input[name='q']").press("Enter")
+    assert status.inner_text() == "Table updated: 125 matching cells."
+    assert page.locator("#cell-filter-error").is_hidden()
+    assert page.locator("[data-cell-pagination]").is_visible()
+
+    capability = page.locator("select[name='host_capability']")
+    capability.select_option("cpuid-faulting")
+    assert status.inner_text() == (
+        "Choose whether the host capability is present to apply this filter."
+    )
+    capability.select_option("")
+    assert status.inner_text() == "Table updated: 125 matching cells."
+    assert page.locator("#cell-results > tr").count() == 50
+    assert page_errors == []
+    page.close()
+
+
+def test_invalid_filter_reset_sort_is_immediately_usable(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    _many_browser_cells(files, 125)
+    page = chromium_browser.new_page()
+    page_errors: list[str] = []
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+    _browser_route(page, files)
+    page.goto("http://127.0.0.1/cells/index.html?page=9#all-cells")
+    _wait_for_verified_data(page)
+
+    sort_heading = page.locator('[data-cell-sort="test"]')
+    sort_heading.click()
+    page.wait_for_function("location.search.includes('sort=test')")
+    assert sort_heading.locator(".sort-indicator").inner_text() == "▲"
+    assert sort_heading.locator("xpath=..").get_attribute("aria-sort") == "ascending"
+    assert page.locator("#cell-filter-error").is_hidden()
+    assert page.locator("[data-cell-pagination]").is_visible()
+    assert page_errors == []
+    page.close()
+
+
 def test_cell_listing_uses_only_visible_dom_and_transactional_bounded_history(
     chromium_browser: Any,
 ) -> None:
@@ -4640,20 +4753,30 @@ def test_cell_listing_uses_only_visible_dom_and_transactional_bounded_history(
 
     pre_search_url = page.url
     search = page.locator("[name='q']")
-    search.press_sequentially("h")
-    page.wait_for_function("location.search.includes('q=h')")
-    search.press_sequentially("ello")
-    page.wait_for_function("location.search.includes('q=hello')")
+    search.press_sequentially("p")
+    page.wait_for_function("location.search.includes('q=p')")
+    search.press_sequentially("trace-124")
+    page.wait_for_function("location.search.includes('q=ptrace-124')")
+    assert page.locator("#cell-results > tr").count() == 1
+    assert "1 matching cell for search “ptrace-124”" in page.locator(
+        "[data-cell-filter-live-summary]"
+    ).inner_text()
     search_url = page.url
     history_after_search = page.evaluate("history.length")
     search.press("Enter")
     assert page.url == search_url
     assert page.evaluate("history.length") == history_after_search
+    search.press_sequentially("5")
+    page.wait_for_function("location.search.includes('q=ptrace-1245')")
+    assert page.evaluate("history.length") == history_after_search + 1
+    page.go_back()
+    page.wait_for_function("location.search.includes('q=ptrace-124')")
+    assert page.url == search_url
     page.go_back()
     page.wait_for_function("!location.search.includes('q=')")
     assert page.url == pre_search_url
     page.go_forward()
-    page.wait_for_function("location.search.includes('q=hello')")
+    page.wait_for_function("location.search.includes('q=ptrace-124')")
     assert page.url == search_url
 
     capability = page.locator("[name='host_capability']")
@@ -4664,6 +4787,14 @@ def test_cell_listing_uses_only_visible_dom_and_transactional_bounded_history(
     assert page.url == url_before_pair
     assert page.locator("#cell-filter-error").is_hidden()
     assert not presence.is_disabled()
+    assert page.locator("[data-cell-filter-live-summary]").inner_text() == (
+        "Choose whether the host capability is present to apply this filter."
+    )
+    capability.select_option("")
+    assert page.locator("[data-cell-filter-live-summary]").inner_text() == (
+        "Table updated: 1 matching cell for search “ptrace-124”."
+    )
+    capability.select_option("cpuid-faulting")
     presence.select_option("true")
     page.wait_for_function(
         "location.search.includes('host_capability=cpuid-faulting') && "
@@ -4672,7 +4803,7 @@ def test_cell_listing_uses_only_visible_dom_and_transactional_bounded_history(
     paired_url = page.url
     page.go_back()
     page.wait_for_function(
-        "!location.search.includes('host_capability=') && location.search.includes('q=hello')"
+        "!location.search.includes('host_capability=') && location.search.includes('q=ptrace-124')"
     )
     page.go_forward()
     page.wait_for_function(
@@ -5710,19 +5841,30 @@ def test_live_first_visitor_intro_and_dates_keep_measurements_separate() -> None
     source = render_page.render_site(_build(data), data, wording="live", presentation=_presentation(data))["index.html"].decode()
     assert "Recorded data — source commits are on Overview" not in source
     assert "A navigable view of the recorded facts in this build." not in source
-    assert "Hermit is a reproducible container for Linux programs" in source
+    assert "Current determinism, parity, and coverage evidence" in source
+    assert "Hermit makes Linux execution repeatable" in source
     assert "reference ptrace backend" in source
     assert 'href="https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/"' in source
     assert 'href="https://github.com/rrnewton/hermit/blob/main/README.md"' in source
     introduction = source[source.index('<div class="scorecard-introduction">') :]
+    introduction = introduction[: introduction.index("</div>")]
     first_paragraph = introduction[: introduction.index("</p>")]
     assert "For context, start with the" in first_paragraph
-    assert "</p>\n      <p>Start with" not in introduction
+    assert introduction.count("<p>") == 1
+    assert "For context, start with the" in first_paragraph.rsplit(". ", 1)[-1]
     assert "Website build started:" in source and "Sep 21, 2026" in source
     assert "Latest selected measurement:" in source and "Aug 30, 2026" in source
-    assert "Latest history entry:" in source
+    assert "latest history entry:" in source
     assert "Aug 20, 2026" in source
     assert "rebuilding this website does not rerun the tests" in source
+    feedback = "Questions or feedback? Visit Hermit issues"
+    assert feedback in source
+    assert 'href="https://github.com/rrnewton/hermit/issues"' in source
+    assert source.index(feedback) < source.index('class="site-navigation"')
+    css_version = hashlib.sha256(render_page.SITE_CSS_PATH.read_bytes()).hexdigest()[:16]
+    js_version = hashlib.sha256(render_page.SITE_JS_PATH.read_bytes()).hexdigest()[:16]
+    assert f'href="assets/site.css?v={css_version}"' in source
+    assert f'src="assets/site.js?v={js_version}"' in source
     assert f'>{data["provenance"]["hermit_commit"][:12]}</code>' in source
     assert data == original
 

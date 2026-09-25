@@ -568,6 +568,10 @@
     if (sortButtons.some(button => !ENUMS.sort.includes(button.dataset.cellSort))) {
       throw new Error('cell table contains an unsupported sort heading');
     }
+    const filterSummary = form.querySelector('[data-cell-filter-live-summary]');
+    if (!filterSummary) {
+      throw new Error('cell listing has no live filter summary');
+    }
     return {
       form,
       currentRows,
@@ -589,6 +593,7 @@
       counts: document.getElementById('cell-filter-counts'),
       physicalCount: document.querySelector('[data-physical-count]'),
       representedCount: document.querySelector('[data-represented-count]'),
+      filterSummary,
       matchingLabel: document.querySelector('[data-matching-label]'),
       evidenceLabel: document.querySelector('[data-evidence-label]'),
       pagination: document.querySelector('[data-cell-pagination]'),
@@ -600,6 +605,8 @@
       tests: new Map(summary.tests.map(test => [test.id, test])),
       urls,
       state: null,
+      matchingCountValue: null,
+      invalidReset: false,
       searchEditing: false,
     };
   }
@@ -662,13 +669,55 @@
       section.hidden = false;
     }
     view.outsideSection.hidden = true;
-    view.state = defaults('in_manifest');
-    updateCellSortButtons(view, view.state);
+    const fallbackState = defaults('in_manifest');
+    view.state = fallbackState;
+    view.matchingCountValue = view.currentRows.length;
+    view.invalidReset = true;
+    view.filterSummary.textContent = 'Filters reset because the requested filter state was invalid.';
+    updateCellSortButtons(view, fallbackState);
   }
 
   function showFormError(view, message) {
     view.error.textContent = `Filters were not applied: ${message}.`;
     view.error.hidden = false;
+    view.filterSummary.textContent = `The table was not changed: ${message}.`;
+  }
+
+  const LIVE_FILTER_LABELS = new Map([
+    ['lane', 'lane'],
+    ['category', 'category'],
+    ['mode', 'mode'],
+    ['backend', 'backend'],
+    ['state', 'state'],
+    ['result', 'latest result'],
+    ['selected_by_path', 'selected by'],
+    ['current_main_ancestry', 'current main ancestry'],
+    ['host_capability', 'host capability'],
+    ['host_capability_present', 'capability present'],
+  ]);
+
+  function updateLiveFilterSummary(view, state, matchingCount) {
+    const active = [];
+    if (state.q) {
+      active.push(`search “${state.q}”`);
+    }
+    for (const [name, label] of LIVE_FILTER_LABELS) {
+      if (!state[name]) {
+        continue;
+      }
+      const control = view.form.elements.namedItem(name);
+      const selected = control && control.selectedOptions
+        ? control.selectedOptions[0]
+        : null;
+      active.push(`${label}: ${selected ? selected.textContent : state[name]}`);
+    }
+    if (state.population === 'not_in_current_manifest') {
+      active.push('population: recorded outside the current manifest');
+    }
+    const noun = matchingCount === 1 ? 'cell' : 'cells';
+    const scope = active.length ? ` for ${active.join('; ')}` : '';
+    view.filterSummary.textContent =
+      `Table updated: ${formatInteger(matchingCount)} matching ${noun}${scope}.`;
   }
 
   function applyView(view, state, historyAction) {
@@ -705,6 +754,7 @@
       ? "matching cells in the manifest"
       : "matching recorded cell identities not in the current manifest";
     view.evidenceLabel.textContent = current ? "those cells have" : "those identities have";
+    updateLiveFilterSummary(view, state, summary.matching);
     view.empty.hidden = summary.matching !== 0;
     view.counts.hidden = false;
     const first = summary.matching === 0 ? 0 : page.start + 1;
@@ -720,6 +770,8 @@
     }
     view.form.dataset.dependentFilterVisitedRecords = String(visitedRecords);
     view.state = state;
+    view.matchingCountValue = summary.matching;
+    view.invalidReset = false;
     updateCellSortButtons(view, state);
     if (historyAction) {
       updateUrl(state, historyAction === 'push');
@@ -742,6 +794,10 @@
       serializeState(view.state) === serializeState(result.state)
     ) {
       setControls(view.form, result.state);
+      if (view.invalidReset) {
+        return applyView(view, result.state, historyAction);
+      }
+      updateLiveFilterSummary(view, result.state, view.matchingCountValue);
       return true;
     }
     return applyView(view, result.state, historyAction);
@@ -773,6 +829,17 @@
         }
       }
     });
+    form.addEventListener('search', event => {
+      if (
+        event.target.name === 'q' &&
+        (view.state === null || event.target.value.trim() !== view.state.q)
+      ) {
+        const action = view.searchEditing ? 'replace' : 'push';
+        if (applyControls(view, true, action)) {
+          view.searchEditing = true;
+        }
+      }
+    });
     form.addEventListener("change", (event) => {
       if (event.target.name === "population") {
         setCurrentManifestControls(form, event.target.value);
@@ -782,6 +849,8 @@
         if (!event.target.value) {
           present.value = "";
         } else if (!present.value) {
+          view.filterSummary.textContent =
+            'Choose whether the host capability is present to apply this filter.';
           return;
         }
       } else if (

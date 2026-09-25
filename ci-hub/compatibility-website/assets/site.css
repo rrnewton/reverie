@@ -97,6 +97,28 @@ footer {
   color: #ffffff;
 }
 
+.site-feedback {
+  margin: 0 0 0.9rem;
+}
+
+.site-feedback .external-link {
+  background: #ffffff;
+  border: 2px solid #ffffff;
+  border-radius: 0.35rem;
+  color: #102a43;
+  display: inline-block;
+  font-weight: 800;
+  padding: 0.55rem 0.8rem;
+  text-decoration: none;
+}
+
+.site-feedback .external-link:hover,
+.site-feedback .external-link:focus-visible {
+  background: #eaf2f8;
+  color: #102a43;
+  text-decoration: underline;
+}
+
 .site-name {
   font-size: 0.95rem;
   font-weight: 700;
@@ -1062,6 +1084,26 @@ footer {
   display: block;
   min-height: 2.6rem;
   padding: .45rem .65rem;
+}
+
+.history-instructions {
+  background: var(--surface);
+  border-left: 0.3rem solid var(--accent);
+  padding: 0.65rem 0.8rem;
+}
+
+.measurement-freshness {
+  display: inline;
+}
+
+.filter-live-summary {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 0.3rem solid var(--accent);
+  display: block;
+  font-weight: 700;
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.8rem;
 }
 
 /* Keep chart labels readable on phones without widening the page. */

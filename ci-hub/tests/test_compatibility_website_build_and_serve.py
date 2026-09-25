@@ -292,7 +292,7 @@ def test_compose_is_deterministic_and_exactly_binds_fixture_tree(
         value.decode() for path, value in first.items() if path.endswith(".html")
     )
     assert "Recorded data — source commits are on Overview" not in html
-    assert "Hermit is a reproducible container for Linux programs" in html
+    assert "Hermit makes Linux execution repeatable" in html
     assert "Build provenance" in html
     assert "Fixture data — not current Hermit main" not in html
     assert first_manifest["freshness_sha256"] == website._digest(
