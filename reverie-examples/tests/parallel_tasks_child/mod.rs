@@ -203,7 +203,14 @@ impl Drop for OwnedGroup {
 fn read_stat(path: &std::path::Path) -> io::Result<Option<Vec<u8>>> {
     match fs::read(path) {
         Ok(stat) => Ok(Some(stat)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        // procfs can open stat before a task is released and then return ESRCH
+        // from the read. Both errors mean this entry has disappeared.
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(libc::ESRCH) =>
+        {
+            Ok(None)
+        }
         Err(error) => Err(error),
     }
 }
@@ -253,7 +260,12 @@ fn live_group_threads(group: i32) -> io::Result<Vec<u32>> {
         };
         // A group leader can be a zombie while another thread is alive.
         for task in tasks {
-            let task = task?;
+            let task = match task {
+                Ok(task) => task,
+                // The directory may lose its task after read_dir succeeds.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+                Err(error) => return Err(error),
+            };
             let Some(stat) = read_stat(&task.path().join("stat"))? else {
                 continue;
             };
