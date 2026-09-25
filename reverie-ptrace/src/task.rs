@@ -2071,10 +2071,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(regs)
     }
 
-    /// Whether a signal-delivery stop reports this thread's own precise-timer
-    /// overflow notification, which must never be delivered to the guest.
-    fn is_own_timer_overflow(&self, task: &Stopped, sig: Signal) -> Result<bool, TraceError> {
-        Ok(sig == Timer::signal_type() && self.timer.owns_overflow_signal(&task.getsiginfo()?))
+    /// Whether a signal-delivery stop reports this thread's own unconsumed
+    /// precise-timer overflow notification, which must never be delivered to
+    /// the guest. A match is recorded as consumed.
+    fn consume_own_timer_overflow(&mut self, task: &Stopped) -> Result<bool, TraceError> {
+        let siginfo = task.getsiginfo()?;
+        self.timer
+            .consume_overflow_signal(&siginfo)
+            .map_err(TraceError::Errno)
     }
 
     /// Returns `true` if the signal was actually meant for the timer, and
@@ -5339,12 +5343,18 @@ impl<L: Tool + 'static> TracedTask<L> {
         // A late overflow notification of the timer can be pending when the
         // step starts. Its delivery stop precedes the syscall instruction. No
         // guest branch runs during an injection, so the overflow predates the
-        // current stop, which ends the event it belongs to. A timer the Tool
-        // re-armed at this stop cannot have overflowed yet. The notification
+        // current stop, which ends the event it belongs to. The notification
         // has nothing to deliver: discard it and step again.
+        //
+        // A guest signal can carry the same signal number, code, and file
+        // descriptor number, so a match also requires an overflow whose
+        // notification has not been consumed. The kernel coalesces the two
+        // into one pending signal if both are raised, which no check can
+        // separate.
         while let Wait::Stopped(stopped, Event::Signal(sig)) = &wait
+            && *sig == Timer::signal_type()
             && stopped.getregs()?.ip() as usize == cp::PRIVATE_PAGE_OFFSET
-            && self.is_own_timer_overflow(stopped, *sig)?
+            && self.consume_own_timer_overflow(stopped)?
         {
             self.validate_nested_liteinst_activation_signal(
                 stopped,

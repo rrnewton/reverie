@@ -467,16 +467,27 @@ impl Timer {
         (dur.as_secs() * 600_000_000) + (u64::from(dur.subsec_nanos()) * 6 / 10)
     }
 
-    /// Whether `signal` is this timer's own counter-overflow notification.
+    /// Whether `signal` is an unconsumed overflow notification of this timer's
+    /// counter, and if so, record that it has been consumed.
     ///
     /// Such a signal belongs to Reverie and is never guest-visible. An overflow
     /// interrupt can arrive after the guest has reached its next event, which
     /// cancels the timer event, so this can match at stops where the timer
     /// has nothing left to deliver. Artificial timer signals carry no overflow
     /// siginfo and do not match.
-    pub(crate) fn owns_overflow_signal(&self, signal: &libc::siginfo_t) -> bool {
-        self.inner_noinit()
-            .is_some_and(|t| t.owns_overflow_signal(signal))
+    ///
+    /// Matching siginfo alone does not prove provenance: a guest file with
+    /// `F_SETSIG` set to the timer signal reports its own descriptor number,
+    /// which can equal the timer's. The counter must also have overflowed
+    /// without its notification having been consumed.
+    pub(crate) fn consume_overflow_signal(
+        &mut self,
+        signal: &libc::siginfo_t,
+    ) -> Result<bool, Errno> {
+        match self.inner_mut_noinit() {
+            Some(timer) => timer.consume_overflow_signal(signal),
+            None => Ok(false),
+        }
     }
 
     /// Return the signal type sent by the timer. This is intended to allow
@@ -606,6 +617,20 @@ struct TimerImpl {
 
     /// Whether or not the active timer event requires an artificial signal
     send_artificial_signal: bool,
+
+    /// The sample period `timer` was last programmed with after a reset, if
+    /// any. Each overflow of that programming makes `timer` count another
+    /// period.
+    overflow_period: Option<u64>,
+
+    /// Overflows of the current programming whose notification has been
+    /// consumed. Standard signals coalesce, so consuming one notification at a
+    /// stop accounts for every overflow counted by then.
+    consumed_overflows: u64,
+
+    /// Whether an overflow of an earlier programming may still have an
+    /// unconsumed notification pending.
+    earlier_overflow_unconsumed: bool,
 
     initial_command: InitialCommand,
 
@@ -816,6 +841,9 @@ impl TimerImpl {
             },
             timer_status: EventStatus::Cancelled,
             send_artificial_signal: false,
+            overflow_period: None,
+            consumed_overflows: 0,
+            earlier_overflow_unconsumed: false,
             initial_command: if initial_command {
                 InitialCommand::WaitingForExec
             } else {
@@ -857,18 +885,47 @@ impl TimerImpl {
         if let Some(error) = self.fail_next_notification.take() {
             return Err(error);
         }
+        // Reprogramming discards the count that identifies an overflow of the
+        // previous programming, so remember whether one is unconsumed.
+        if self.unconsumed_overflows()? {
+            self.earlier_overflow_unconsumed = true;
+        }
         self.send_artificial_signal = if notification <= SINGLESTEP_TIMEOUT_RCBS {
             // If there's an existing event making use of the timer counter,
             // we need to "overwrite" it the same way setting an actual RCB
             // notification does.
             self.timer.disable()?;
+            self.overflow_period = None;
             true
         } else {
             self.timer.reset()?;
+            self.overflow_period = None;
+            self.consumed_overflows = 0;
             self.timer.set_period(notification)?;
             self.timer.enable()?;
+            self.overflow_period = Some(notification);
             false
         };
+        Ok(())
+    }
+
+    /// Overflows the current programming of `timer` has counted.
+    fn counted_overflows(&self) -> Result<u64, Errno> {
+        match self.overflow_period {
+            Some(period) => Ok(self.timer.ctr_value()? / period),
+            None => Ok(0),
+        }
+    }
+
+    fn unconsumed_overflows(&self) -> Result<bool, Errno> {
+        Ok(self.earlier_overflow_unconsumed || self.counted_overflows()? > self.consumed_overflows)
+    }
+
+    /// Record that the notification of every overflow counted so far has
+    /// been consumed. The thread is stopped, so none can follow unseen.
+    fn mark_overflows_consumed(&mut self) -> Result<(), Errno> {
+        self.consumed_overflows = self.counted_overflows()?;
+        self.earlier_overflow_unconsumed = false;
         Ok(())
     }
 
@@ -950,6 +1007,14 @@ impl TimerImpl {
             && get_si_fd(signal) == self.timer.raw_fd()
     }
 
+    fn consume_overflow_signal(&mut self, signal: &libc::siginfo_t) -> Result<bool, Errno> {
+        if !self.owns_overflow_signal(signal) || !self.unconsumed_overflows()? {
+            return Ok(false);
+        }
+        self.mark_overflows_consumed()?;
+        Ok(true)
+    }
+
     pub fn read_clock(&self) -> u64 {
         self.clock.ctr_value_fast().expect("Failed to read clock")
     }
@@ -989,6 +1054,13 @@ impl TimerImpl {
                 "Passed a signal that wasn't for this timer, likely indicating a bug!",
             );
             return Err(HandleFailure::ImproperSignal(task));
+        }
+        if self.owns_overflow_signal(&signal) {
+            // Record this consumption before anything disables or reprograms
+            // the counter, so a later injected syscall cannot mistake a guest
+            // signal for this notification.
+            self.mark_overflows_consumed()
+                .expect("Failed to read timer counter");
         }
 
         match self.timer_status {
@@ -1260,6 +1332,103 @@ mod tests {
         );
         assert_eq!(timer.fail_next_notification, None);
         assert_eq!(timer.timer_status, EventStatus::Cancelled);
+    }
+
+    /// Takes the pending timer signal of the calling thread, which must have
+    /// blocked it.
+    fn take_timer_signal() -> Option<libc::siginfo_t> {
+        let mut set: libc::sigset_t = unsafe { core::mem::zeroed() };
+        let mut info: libc::siginfo_t = unsafe { core::mem::zeroed() };
+        let timeout = libc::timespec {
+            tv_sec: 5,
+            tv_nsec: 0,
+        };
+        unsafe {
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, super::MARKER_SIGNAL as i32);
+        }
+        let signo = unsafe { libc::sigtimedwait(&set, &mut info, &timeout) };
+        (signo == super::MARKER_SIGNAL as i32).then_some(info)
+    }
+
+    #[test]
+    fn overflow_signal_provenance_requires_an_unconsumed_overflow() {
+        use reverie::Pid;
+
+        use super::TimerImpl;
+        use crate::perf::do_branches;
+
+        // The timer signals this thread; keep its notifications pending so the
+        // test can take their real siginfo.
+        let mut blocked: libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, super::MARKER_SIGNAL as i32);
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, core::ptr::null_mut()),
+                0
+            );
+        }
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        let mut timer = TimerImpl::new(pid, tid, false).expect("control requires a working PMU");
+        const PERIOD: u64 = 10_000;
+
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        let notification = take_timer_signal().expect("the counter overflowed");
+        assert!(timer.owns_overflow_signal(&notification));
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+        // A guest signal can have identical siginfo. With every overflow
+        // consumed, it is not the timer's.
+        assert!(timer.owns_overflow_signal(&notification));
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+
+        // A new programming that has not overflowed owns nothing.
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD / 2);
+        timer.timer.disable().unwrap();
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+        assert!(take_timer_signal_now().is_none());
+
+        // An overflow whose notification is still pending survives both kinds
+        // of reprogramming.
+        for next_period in [PERIOD, super::SINGLESTEP_TIMEOUT_RCBS] {
+            timer.prepare_notification(PERIOD).unwrap();
+            do_branches(PERIOD * 3);
+            timer.timer.disable().unwrap();
+            timer.prepare_notification(next_period).unwrap();
+            timer.timer.disable().unwrap();
+            assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+            assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+            assert!(take_timer_signal().is_some());
+        }
+
+        // A later overflow of a programming whose earlier notification was
+        // consumed is owned again.
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+        assert!(take_timer_signal().is_some());
+
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, core::ptr::null_mut());
+        }
+    }
+
+    fn take_timer_signal_now() -> Option<libc::siginfo_t> {
+        let mut pending: libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe { libc::sigpending(&mut pending) };
+        if unsafe { libc::sigismember(&pending, super::MARKER_SIGNAL as i32) } == 1 {
+            take_timer_signal()
+        } else {
+            None
+        }
     }
 
     #[cfg(target_arch = "x86_64")]

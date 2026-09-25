@@ -16,10 +16,14 @@
 //! no timer event is due, and places the counter overflow a few branches before
 //! the syscall. Ordinary overflow-interrupt latency then lands the interrupt
 //! after the syscall has been entered.
+//!
+//! A guest's own signal of the same number pending at such an injection is not
+//! the timer's and must still reach the guest.
 
 #![cfg(target_arch = "x86_64")]
 
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -223,4 +227,160 @@ fn late_overflow_signal_does_not_interrupt_injected_syscall() {
 #[test]
 fn late_overflow_signal_is_not_delivered_to_guest_after_retry() {
     run(true);
+}
+
+#[derive(Debug, Default)]
+struct ForeignLog {
+    injected_syscalls: AtomicU64,
+    inject_errors: Mutex<Vec<i32>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for ForeignLog {
+    type Request = Report;
+    type Response = ();
+    type Config = Config;
+
+    async fn receive_rpc(&self, _from: Pid, report: Report) {
+        match report {
+            Report::InjectedSyscall => {
+                self.injected_syscalls.fetch_add(1, Ordering::SeqCst);
+            }
+            Report::InjectError(errno) => self
+                .inject_errors
+                .lock()
+                .expect("inject error log lock poisoned")
+                .push(errno),
+            Report::TimerEvent => panic!("no timer was requested"),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct ForeignSignalTool;
+
+#[reverie::tool]
+impl Tool for ForeignSignalTool {
+    type GlobalState = ForeignLog;
+    type ThreadState = ();
+
+    fn subscriptions(_cfg: &Config) -> Subscription {
+        Subscription::all()
+    }
+
+    async fn handle_syscall_event<T: Guest<Self>>(
+        &self,
+        guest: &mut T,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        match syscall.number() {
+            Sysno::getppid => {
+                // Make the timer's signal number pending for the stopped guest, so its
+                // delivery stop precedes the injected syscall instruction exactly as a
+                // late overflow notification's does. Its siginfo is not an overflow
+                // notification's.
+                let sent = unsafe {
+                    libc::syscall(
+                        libc::SYS_tgkill,
+                        guest.pid().as_raw(),
+                        guest.tid().as_raw(),
+                        libc::SIGSTKFLT,
+                    )
+                };
+                assert_eq!(
+                    sent,
+                    0,
+                    "tgkill failed: {}",
+                    std::io::Error::last_os_error()
+                );
+                let result = if guest.config().retry {
+                    guest.inject_with_retry(Getpid::new()).await
+                } else {
+                    guest.inject(Getpid::new()).await
+                };
+                match result {
+                    Ok(_) => guest.send_rpc(Report::InjectedSyscall).await,
+                    Err(errno) => guest.send_rpc(Report::InjectError(errno.into_raw())).await,
+                }
+                Ok(0)
+            }
+            _ => guest.tail_inject(syscall).await,
+        }
+    }
+}
+
+const FOREIGN_ITERS: u64 = 20;
+
+static FOREIGN_SIGNALS_HANDLED: AtomicU64 = AtomicU64::new(0);
+static FOREIGN_SIGNAL_OUTSIDE_HANDLER: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn count_foreign_signal(signo: libc::c_int) {
+    if signo != libc::SIGSTKFLT {
+        FOREIGN_SIGNAL_OUTSIDE_HANDLER.store(true, Ordering::SeqCst);
+    }
+    FOREIGN_SIGNALS_HANDLED.fetch_add(1, Ordering::SeqCst);
+}
+
+fn run_foreign(retry: bool) {
+    let (output, log) = test_fn_with_config::<ForeignSignalTool, _>(
+        || {
+            // SAFETY: the handler only touches atomics.
+            unsafe {
+                let mut action: libc::sigaction = core::mem::zeroed();
+                action.sa_sigaction = count_foreign_signal as extern "C" fn(libc::c_int) as usize;
+                libc::sigemptyset(&mut action.sa_mask);
+                assert_eq!(
+                    libc::sigaction(libc::SIGSTKFLT, &action, core::ptr::null_mut()),
+                    0
+                );
+            }
+            for i in 0..FOREIGN_ITERS {
+                syscall_with_injection();
+                assert_eq!(
+                    FOREIGN_SIGNALS_HANDLED.load(Ordering::SeqCst),
+                    i + 1,
+                    "the guest's signal was not delivered after injection {i}"
+                );
+            }
+            assert!(!FOREIGN_SIGNAL_OUTSIDE_HANDLER.load(Ordering::SeqCst));
+        },
+        Config {
+            timeout_rcbs: 0,
+            retry,
+        },
+        true,
+    )
+    .expect("run foreign-signal guest");
+
+    if output.status != ExitStatus::Exited(0) {
+        print_tracee_output(&output);
+    }
+    assert_eq!(output.status, ExitStatus::Exited(0));
+    let errors = log
+        .inject_errors
+        .lock()
+        .expect("inject error log lock poisoned")
+        .clone();
+    if retry {
+        assert_eq!(errors, Vec::<i32>::new());
+        assert_eq!(log.injected_syscalls.load(Ordering::SeqCst), FOREIGN_ITERS);
+    } else {
+        // The pending signal interrupts the injection instead of being
+        // discarded.
+        assert_eq!(
+            errors,
+            vec![reverie::Errno::ERESTARTSYS.into_raw(); FOREIGN_ITERS as usize]
+        );
+        assert_eq!(log.injected_syscalls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn guest_signal_interrupts_injected_syscall() {
+    run_foreign(false);
+}
+
+#[test]
+fn guest_signal_is_delivered_after_retry() {
+    run_foreign(true);
 }
