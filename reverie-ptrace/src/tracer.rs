@@ -307,6 +307,7 @@ impl FatalNewborn {
             }
         });
         let _ = status;
+        session.finished_unhanded(&self.terminal);
     }
 }
 
@@ -394,12 +395,30 @@ pub(crate) fn record_fatal_phase_for_test(message: impl FnOnce() -> String) {
     });
 }
 #[cfg(test)]
+pub(crate) fn record_capacity_finished_for_test(stop: &FatalTaskStop) {
+    tests::fatal_capacity_tests::record_finished(stop);
+}
+#[cfg(test)]
 pub(crate) fn record_fatal_task_for_test(task: &Arc<FatalTaskStop>) {
     FATAL_REAP_OBSERVATIONS.with(|slot| {
         if let Some(observations) = slot.borrow_mut().as_mut() {
             observations.push(Arc::clone(task));
         }
     });
+}
+
+/// Fence an already observed terminal outcome on its original notifier.
+/// This observes acknowledgement only; it never waits for a new kernel status.
+pub(crate) async fn retire_ordinary_terminal(
+    terminal: &TerminalCleanup,
+    held: &Arc<StdMutex<Option<HeldRootStop>>>,
+) {
+    while !terminal.wait(Duration::ZERO) {
+        tokio::task::yield_now().await;
+    }
+    // A queued stop may have been superseded by the actual terminal result.
+    // Release its lease only after the original worker acknowledges retirement.
+    held.lock().unwrap().take();
 }
 
 /// Own the actual exit capability and its successor wait across refusals.
@@ -539,10 +558,7 @@ async fn finish_ordinary_terminal(
             Err(error) => {
                 if let Ok(Some(status)) = terminal.observed_exit_status() {
                     let receipt = session.ordinary_receipt();
-                    while !terminal.wait(Duration::ZERO) {
-                        tokio::task::yield_now().await;
-                    }
-                    held.lock().unwrap().take();
+                    retire_ordinary_terminal(terminal, held).await;
                     return OrdinaryTerminal::Exited(status, receipt);
                 }
                 // The original ExitFuture remains with its task owner. This
@@ -563,14 +579,7 @@ async fn finish_ordinary_terminal(
                 pause_callback_exit_for_test(session, pid, Some(status)).await;
                 #[cfg(not(test))]
                 let _ = pid;
-                while !terminal.wait(Duration::ZERO) {
-                    // Worker retirement follows status publication. Yield to
-                    // it without admitting another callback or normal event.
-                    tokio::task::yield_now().await;
-                }
-                // A stale queued EXIT capability may have been superseded
-                // by a real terminal result without a resume in this function.
-                held.lock().unwrap().take();
+                retire_ordinary_terminal(terminal, held).await;
                 return OrdinaryTerminal::Exited(status, receipt);
             }
             Wait::Stopped(stopped, event) => {
@@ -2911,11 +2920,11 @@ async fn run_orphaned(orphans: mpsc::Receiver<Child>, session: Option<Arc<FatalS
                                     if let Some(session) = &session {
                                         if !session.is_failed() {
                                             let signal = orphan
-                                                .ordinary_terminal
+                                                .ordinary_group
                                                 .as_ref()
                                                 .ok_or(Errno::ESTALE)
-                                                .and_then(|terminal| {
-                                                    session.owned_daemon_signal(terminal)
+                                                .and_then(|subscription| {
+                                                    session.signal_subscribed_group(subscription)
                                                 });
                                             if let Err(error) = signal
                                                 && error != Errno::ESRCH
@@ -3940,6 +3949,8 @@ mod tests {
     include!("tracer/fatal_namespace_timer_tests.rs");
     include!("tracer/fatal_exit_payload_tests.rs");
     include!("tracer/fatal_daemon_group_tests.rs");
+    include!("tracer/fatal_capacity_tests.rs");
+    include!("tracer/fatal_group_lifetime_tests.rs");
     #[tokio::test(flavor = "current_thread")]
     async fn unsupported_injected_completion_returns_original_pipes_and_usable_tracer() {
         let mut command = Command::new("/bin/sh");
@@ -5522,6 +5533,11 @@ mod tests {
         let session = control.session.lock().unwrap().take().unwrap();
         assert!(session.cleanup_was_refused());
         assert_eq!(session.unconfirmed_task_count(), 2);
+        assert_eq!(
+            session.retained_group_counts_for_test(),
+            (2, 0, 0),
+            "Pending lost active generation group authority"
+        );
         assert_eq!(words.read(0), 0, "failed thread resumed");
         assert!(std::path::Path::new(&format!("/proc/{root}")).exists());
         {
@@ -5549,6 +5565,11 @@ mod tests {
         assert!(error.secondary().iter().any(|item| matches!(item.error(), Error::Tool(error) if error.downcast_ref::<TestDeadline>().is_some())), "later supervisor cause lost");
         assert!(!termination.terminate(Error::Tool(anyhow::Error::new(TestDeadline))));
         assert_eq!(session.unconfirmed_task_count(), 0);
+        assert_eq!(
+            session.retained_group_counts_for_test(),
+            (0, 0, 0),
+            "completed owners retained group descriptors"
+        );
         assert_eq!(
             log.lock()
                 .unwrap()
@@ -5887,6 +5908,15 @@ mod tests {
         let (start, inode) = pause.generation.lock().unwrap().unwrap();
         let terminal = child.terminal_cleanup();
         let acknowledged = terminal.wait(Duration::ZERO);
+        let group_retention = session.retained_group_counts_for_test();
+        eprintln!(
+            "unhanded original generation resource retention: groups/vfork/unconfirmed={group_retention:?}, opponent={opponent}"
+        );
+        assert_eq!(
+            group_retention,
+            if opponent { (1, 0, 1) } else { (0, 0, 0) },
+            "release only the confirmed original newborn generation"
+        );
         let original_error = matches!(&result, Ok(Err(Error::Tool(inner))) if inner.downcast_ref::<NonleaderFailure>().is_some());
         let backend_sigkill = *pause.terminal_status.lock().unwrap()
             == Some((child_pid, ExitStatus::Signaled(Signal::SIGKILL, false)));

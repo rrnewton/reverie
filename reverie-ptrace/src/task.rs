@@ -239,8 +239,10 @@ pub struct Child {
     pub(crate) daemonizer_rx: Option<mpsc::Receiver<broadcast::Receiver<()>>>,
     /// Join handle to let child task exit gracefully.
     pub(crate) handle: ChildCompletion,
-    /// Non-consuming original generation for ordinary orphan group signaling.
-    pub(crate) ordinary_terminal: Option<safeptrace::TerminalCleanup>,
+    /// Subscription to a successfully captured original group. The session
+    /// retains its authority until actual retirement and consuming hooks finish;
+    /// completed Child history must not retain the generation's descriptors.
+    pub(crate) ordinary_group: Option<OrdinaryGroupSubscription>,
 }
 
 impl Child {
@@ -1030,7 +1032,7 @@ pub(crate) struct FatalSession {
     joins: StdMutex<Vec<JoinHandle<()>>>,
     retry_epoch: AtomicUsize,
     retry_changed: Notify,
-    groups: StdMutex<Vec<FatalGroup>>,
+    groups: StdMutex<Vec<Arc<FatalGroup>>>,
     cleanup_deadline: StdMutex<Option<std::time::Instant>>,
     #[cfg(test)]
     pub(crate) observed_child_ops: StdMutex<Vec<(Pid, ChildOp, Pid)>>,
@@ -1043,6 +1045,14 @@ struct GlobalFailurePublicationLost;
 struct FatalGroup {
     terminal: safeptrace::TerminalCleanup,
     identity: crate::tracer::TraceeIdentity,
+}
+
+/// Only subscribe_group constructs this after successful same-generation capture.
+/// Weak expiry therefore means that this session completed that owner, rather
+/// than that an unknown or failed capture may be treated as retired.
+pub(crate) struct OrdinaryGroupSubscription {
+    session: std::sync::Weak<FatalSession>,
+    group: std::sync::Weak<FatalGroup>,
 }
 
 #[derive(Default)]
@@ -1131,7 +1141,7 @@ impl FatalSession {
                 .groups
                 .lock()
                 .unwrap()
-                .push(FatalGroup { terminal, identity }),
+                .push(Arc::new(FatalGroup { terminal, identity })),
             Err(error) => self.fail_at(
                 BackendFailure {
                     pid: parent,
@@ -1146,10 +1156,10 @@ impl FatalSession {
     pub(crate) fn capture_root(&self, stopped: &Stopped) {
         let root = stopped.pid();
         match crate::tracer::TraceeIdentity::open_root(root) {
-            Ok(identity) => self.groups.lock().unwrap().push(FatalGroup {
+            Ok(identity) => self.groups.lock().unwrap().push(Arc::new(FatalGroup {
                 terminal: stopped.terminal_cleanup(),
                 identity,
-            }),
+            })),
             Err(error) => self.fail_at(
                 BackendFailure {
                     pid: root,
@@ -1214,6 +1224,16 @@ impl FatalSession {
     }
 
     #[cfg(test)]
+    pub(crate) fn retained_group_counts_for_test(&self) -> (usize, usize, usize) {
+        let tree = self.tree.lock().unwrap();
+        (
+            self.groups.lock().unwrap().len(),
+            tree.vfork_children.len(),
+            tree.unconfirmed_newborns.len(),
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn cleanup_was_refused(&self) -> bool {
         self.tree.lock().unwrap().cleanup_refusal.is_some()
     }
@@ -1247,7 +1267,67 @@ impl FatalSession {
         tree.vfork_children
             .retain(|child| !child.same_generation(&stop.terminal));
         drop(tree);
+        // Initialized leaders reach this only after child-thread joins and
+        // consuming hooks. In particular, retain the regular group pidfd while
+        // an exited leader still owns live daemon siblings.
+        self.groups
+            .lock()
+            .unwrap()
+            .retain(|group| !group.terminal.same_generation(&stop.terminal));
+        #[cfg(test)]
+        crate::tracer::record_capacity_finished_for_test(stop);
         self.changed.notify_waiters();
+    }
+
+    pub(crate) fn finished_unhanded(&self, terminal: &safeptrace::TerminalCleanup) {
+        // Called by the sole newborn owner only after its actual final status
+        // and worker retirement. A refusal/Pending keeps all these authorities.
+        let mut tree = self.tree.lock().unwrap();
+        tree.unconfirmed_newborns
+            .retain(|(_, entry)| !entry.same_generation(terminal));
+        tree.vfork_children
+            .retain(|entry| !entry.same_generation(terminal));
+        drop(tree);
+        self.groups
+            .lock()
+            .unwrap()
+            .retain(|group| !group.terminal.same_generation(terminal));
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) fn subscribe_group(
+        self: &Arc<Self>,
+        terminal: &safeptrace::TerminalCleanup,
+    ) -> Result<OrdinaryGroupSubscription, Errno> {
+        let groups = self.groups.lock().unwrap();
+        let group = groups
+            .iter()
+            .find(|group| group.terminal.same_generation(terminal))
+            .ok_or(Errno::ESTALE)?;
+        Ok(OrdinaryGroupSubscription {
+            session: Arc::downgrade(self),
+            group: Arc::downgrade(group),
+        })
+    }
+
+    pub(crate) fn signal_subscribed_group(
+        self: &Arc<Self>,
+        subscription: &OrdinaryGroupSubscription,
+    ) -> Result<(), Errno> {
+        if !std::sync::Weak::ptr_eq(&subscription.session, &Arc::downgrade(self)) {
+            return Err(Errno::ESTALE);
+        }
+        let Some(group) = subscription.group.upgrade() else {
+            // This exact successful capture was released at its owner-complete
+            // boundary. Do not capture or signal a possibly reused numeric PID.
+            return Ok(());
+        };
+        let groups = self.groups.lock().unwrap();
+        if !groups.iter().any(|entry| Arc::ptr_eq(entry, &group)) {
+            return Err(Errno::ESTALE);
+        }
+        self.backend_signalling.store(true, Ordering::Release);
+        group.identity.signal_owned_process_group()
     }
 
     pub(crate) fn ordinary_receipt(&self) -> crate::tracer::OrdinaryReceipt {
@@ -1257,6 +1337,7 @@ impl FatalSession {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn owned_daemon_signal(
         &self,
         terminal: &safeptrace::TerminalCleanup,
@@ -1402,13 +1483,7 @@ impl FatalSession {
                 }
                 self.changed.notify_waiters();
                 future::join_all(newborns.into_iter().map(|child| async move {
-                    let tid = child.tid;
                     child.reap_owned(self).await;
-                    self.tree
-                        .lock()
-                        .unwrap()
-                        .unconfirmed_newborns
-                        .retain(|(pid, _)| *pid != tid);
                 }))
                 .await;
                 return;
@@ -5390,7 +5465,22 @@ impl<L: Tool + 'static> TracedTask<L> {
             .ordinary_failure_enabled()
             .then(|| self.fatal_session());
         let report_failure = ordinary_failure.clone();
-        let ordinary_terminal = ordinary_failure.as_ref().map(|_| child.terminal_cleanup());
+        let ordinary_group = ordinary_failure.as_ref().and_then(|session| {
+            match session.subscribe_group(&child.terminal_cleanup()) {
+                Ok(subscription) => Some(subscription),
+                Err(error) => {
+                    session.fail_at(
+                        BackendFailure {
+                            pid: self.pid(),
+                            tid: id,
+                            phase: "ptrace orphan group subscription",
+                        },
+                        error.into(),
+                    );
+                    None
+                }
+            }
+        });
         let body = async move {
             if ordinary_failure.is_some() {
                 return child_task
@@ -5623,7 +5713,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 wait_all_stop_tx: None,
                 daemonizer_rx,
                 handle: task,
-                ordinary_terminal,
+                ordinary_group,
             });
         } else {
             let mut child_procs = self.child_procs.lock().await;
@@ -5633,7 +5723,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 wait_all_stop_tx: None,
                 daemonizer_rx,
                 handle: task,
-                ordinary_terminal,
+                ordinary_group,
             });
         }
 
@@ -6289,6 +6379,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                     return Ok(None);
                 }
                 Some(crate::tracer::OrdinaryTerminal::Exited(status, receipt)) => {
+                    // Every actual terminal route, including direct run-loop
+                    // return, keeps its original owner registered until the
+                    // notifier retires. Announce physical quiescence first so a
+                    // later peer failure does not wait for this finished loop.
+                    stop.frozen.store(true, Ordering::Release);
+                    session.changed.notify_waiters();
+                    crate::tracer::retire_ordinary_terminal(&stop.terminal, &stop.held).await;
                     self.resolve_callback_diagnostic(
                         crate::PtraceCallbackOutcome::Exited(status),
                         receipt,
