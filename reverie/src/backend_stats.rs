@@ -8,9 +8,11 @@
 
 //! Common, lazily collected statistics for Reverie backends.
 
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
-use std::fmt;
+use alloc::collections::BTreeMap;
+use alloc::collections::BTreeSet;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
 
 use serde::Deserialize;
 use serde::Serialize;

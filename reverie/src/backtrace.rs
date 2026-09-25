@@ -6,22 +6,38 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+// Symbolization reads the guest's mapped objects from the host file system,
+// so it (`pretty`, `force_pretty` and the types they return) needs `std`.
+// `Backtrace` and `Frame`, which a backend produces, do not.
+#[cfg(feature = "std")]
 mod cache;
+#[cfg(feature = "std")]
 mod library;
+#[cfg(feature = "std")]
 mod symbols;
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt;
+#[cfg(feature = "std")]
 use std::fs::File;
+#[cfg(feature = "std")]
 use std::io;
+#[cfg(feature = "std")]
 use std::io::Read;
+#[cfg(feature = "std")]
 use std::path::PathBuf;
 
+#[cfg(feature = "std")]
 use addr2line::LookupContinuation;
+#[cfg(feature = "std")]
 use addr2line::LookupResult;
 use serde::Deserialize;
 use serde::Serialize;
 
+#[cfg(feature = "std")]
 use self::cache::cache;
+#[cfg(feature = "std")]
 use self::library::Libraries;
 use super::Pid;
 
@@ -41,6 +57,7 @@ pub struct Backtrace {
     frames: Vec<Frame>,
 }
 
+#[cfg(feature = "std")]
 /// A backtrace with file and line information. This is more heavy-weight than a
 /// normal backtrace.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
@@ -59,6 +76,7 @@ pub struct Frame {
     pub is_signal: bool,
 }
 
+#[cfg(feature = "std")]
 /// A stack frame with debugging information.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct PrettyFrame {
@@ -70,6 +88,7 @@ pub struct PrettyFrame {
     locations: Vec<Location>,
 }
 
+#[cfg(feature = "std")]
 /// A symbol from a frame.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct Symbol {
@@ -81,6 +100,7 @@ pub struct Symbol {
     pub offset: u64,
 }
 
+#[cfg(feature = "std")]
 /// The location of a symbol.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct Location {
@@ -104,6 +124,7 @@ impl fmt::Display for Frame {
     }
 }
 
+#[cfg(feature = "std")]
 impl fmt::Display for Location {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.column != 0 {
@@ -114,6 +135,7 @@ impl fmt::Display for Location {
     }
 }
 
+#[cfg(feature = "std")]
 impl fmt::Display for PrettyFrame {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(location) = self.locations.first() {
@@ -124,6 +146,7 @@ impl fmt::Display for PrettyFrame {
     }
 }
 
+#[cfg(feature = "std")]
 impl fmt::Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{} + {:#x}", self.name, self.offset)
@@ -132,14 +155,23 @@ impl fmt::Display for Symbol {
 
 impl Backtrace {
     /// Creates a backtrace from a thread ID and frames.
+    ///
+    /// With `std` the thread's name is read from `/proc/<tid>/comm`. Without
+    /// it there is no `/proc` to read, so the name is absent, as it is for a
+    /// thread that has already exited.
     pub fn new(thread_id: Pid, frames: Vec<Frame>) -> Self {
+        #[cfg(feature = "std")]
+        let thread_name = thread_name(thread_id).ok();
+        #[cfg(not(feature = "std"))]
+        let thread_name = None;
         Self {
             thread_id,
-            thread_name: thread_name(thread_id).ok(),
+            thread_name,
             frames,
         }
     }
 
+    #[cfg(feature = "std")]
     /// Generates a pretty backtrace that includes file and line information for
     /// each frame.
     pub fn pretty(&self) -> Result<PrettyBacktrace, anyhow::Error> {
@@ -206,6 +238,7 @@ impl Backtrace {
         })
     }
 
+    #[cfg(feature = "std")]
     /// Generates a pretty backtrace that may includes file and line information
     /// for each frame, if available.
     pub fn force_pretty(&self) -> PrettyBacktrace {
@@ -247,6 +280,7 @@ impl Backtrace {
     }
 }
 
+#[cfg(feature = "std")]
 impl PrettyBacktrace {
     /// Returns an iterator over the frames in the backtrace.
     pub fn iter(&self) -> impl Iterator<Item = &PrettyFrame> {
@@ -259,6 +293,7 @@ impl PrettyBacktrace {
     }
 }
 
+#[cfg(feature = "std")]
 impl PrettyFrame {
     /// The symbol for this frame, if any.
     pub fn symbol(&self) -> Option<&Symbol> {
@@ -268,16 +303,17 @@ impl PrettyFrame {
 
 impl IntoIterator for Backtrace {
     type Item = Frame;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+    type IntoIter = alloc::vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.frames.into_iter()
     }
 }
 
+#[cfg(feature = "std")]
 impl IntoIterator for PrettyBacktrace {
     type Item = PrettyFrame;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+    type IntoIter = alloc::vec::IntoIter<Self::Item>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.frames.into_iter()
@@ -310,6 +346,7 @@ impl fmt::Display for Backtrace {
     }
 }
 
+#[cfg(feature = "std")]
 impl fmt::Display for PrettyBacktrace {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let thread_name = self.thread_name();
@@ -339,6 +376,7 @@ impl fmt::Display for PrettyBacktrace {
     }
 }
 
+#[cfg(feature = "std")]
 fn thread_name(thread_id: Pid) -> io::Result<String> {
     let mut name = String::new();
 
