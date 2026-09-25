@@ -181,6 +181,14 @@ class PredicateBrackets(unittest.TestCase):
     def test_only_mode_receipt_refused(self):
         self.assert_refused(self.row(selection_mode="only"), "1-hop")
 
+    def test_buck_release_payload_receipt_refused(self):
+        """A Buck-mode green ran the release payload, without debug assertions
+        or overflow checks; it is supplemental evidence, not an anchor."""
+        self.assert_refused(self.row(release_builder="buck"), "release_builder='buck'")
+        self.assert_refused(self.row(release_builder=None), "release_builder=None")
+        ok, reason = A.row_qualifies(self.row(release_builder="cargo"), self.predicate)
+        self.assertTrue(ok, f"an explicit cargo receipt was refused: {reason}")
+
     def test_compat_only_profile_refused(self):
         """The owner's named hazard: ~164 portable-strict-compat-only rows in the
         live ledger say result=pass. Keying on result would anchor on them."""

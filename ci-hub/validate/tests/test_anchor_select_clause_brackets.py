@@ -29,6 +29,7 @@ PREDICATE = {
         "tree_dirty": False,
         "profile": "full",
         "selection_mode": "full",
+        "release_builder": "cargo",
         "result": "pass",
         "failures_max": 0,
         "executed_tests_min": 1,
@@ -106,6 +107,19 @@ def test_receipt_without_a_usable_commit_is_refused() -> None:
     for missing in ("unknown", "", None):
         ok, reason = A.row_qualifies(_row(commit=missing), PREDICATE)
         assert (ok, reason) == (False, "no-commit"), missing
+
+
+def test_non_cargo_release_builder_is_refused() -> None:
+    """A Buck full run executed the release payload, not the debug binary a
+    receipt certifies. The baseline carries no field and qualifies as a Cargo
+    run, so each refusal here belongs to the release_builder clause."""
+    assert A.row_qualifies(_row(release_builder="cargo"), PREDICATE) == (
+        True,
+        "qualifies",
+    )
+    for builder in ("buck", None, 7, "Cargo"):
+        ok, reason = A.row_qualifies(_row(release_builder=builder), PREDICATE)
+        assert (ok, reason) == (False, f"release_builder={builder!r}"), builder
 
 
 def test_failures_above_the_cap_are_refused() -> None:

@@ -82,6 +82,10 @@ pub struct RequireClause {
     pub tree_dirty: bool,
     pub profile: String,
     pub selection_mode: String,
+    /// Builder whose E2E payload a qualifying green executed. A row without
+    /// the field predates it and was a Cargo run. The predicate file itself
+    /// must name the builder, as the Python loader requires.
+    pub release_builder: String,
     pub result: String,
     pub failures_max: u64,
     pub executed_tests_min: i64,
@@ -1136,6 +1140,13 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
     if row.selection_mode.as_deref() != Some(req.selection_mode.as_str()) {
         return Qualification::refused("selection_mode");
     }
+    let release_builder = match row.extra.get("release_builder") {
+        None => Some("cargo"),
+        Some(value) => value.as_str(),
+    };
+    if release_builder != Some(req.release_builder.as_str()) {
+        return Qualification::refused("release_builder");
+    }
     if row.result.as_deref() != Some(req.result.as_str()) {
         return Qualification::refused("result");
     }
@@ -1474,6 +1485,26 @@ mod tests {
         wrong_result.result = Some("failure".into());
         assert_eq!("result", refusal(&wrong_result));
 
+        // A Buck green executed the release payload; an explicit cargo row is
+        // the legacy row, and a present non-string value is not a builder.
+        let mut buck = good.clone();
+        buck.extra
+            .insert("release_builder".into(), serde_json::json!("buck"));
+        assert_eq!("release_builder", refusal(&buck));
+        let mut malformed_builder = good.clone();
+        malformed_builder
+            .extra
+            .insert("release_builder".into(), serde_json::Value::Null);
+        assert_eq!("release_builder", refusal(&malformed_builder));
+        let mut cargo = good.clone();
+        cargo
+            .extra
+            .insert("release_builder".into(), serde_json::json!("cargo"));
+        assert!(
+            row_qualifies(&cargo, &sha, &pred),
+            "an explicit cargo row must qualify"
+        );
+
         // THE POINT OF THE TEST, not an afterthought: the five causes must be
         // DISTINGUISHABLE. Asserting each string individually would still pass
         // if every clause returned the same one.
@@ -1482,11 +1513,12 @@ mod tests {
             refusal(&wrong_profile),
             refusal(&wrong_selection),
             refusal(&wrong_result),
+            refusal(&buck),
             "no-commit".to_string(),
         ];
         let distinct: std::collections::BTreeSet<_> = causes.iter().collect();
         assert_eq!(
-            5,
+            6,
             distinct.len(),
             "each clause needs its own cause: {causes:?}"
         );
@@ -2461,6 +2493,21 @@ mod tests {
             COUNT_REPRESENTATION_SIGNED_BITS
         );
         assert!(pred.require.executed_tests_min >= 1);
+    }
+
+    /// NEGATIVE: a predicate file that omits require.release_builder is
+    /// refused rather than defaulted to cargo, so Rust is not the permissive
+    /// half beside the Python loader.
+    #[test]
+    fn predicate_without_a_release_builder_is_refused() {
+        let mut value: serde_json::Value = serde_json::from_str(EMBEDDED).unwrap();
+        assert_eq!(value["require"]["release_builder"], "cargo");
+        value["require"]
+            .as_object_mut()
+            .unwrap()
+            .remove("release_builder");
+        let error = QualifyingPredicate::parse(&value.to_string(), "no-builder").unwrap_err();
+        assert!(error.contains("release_builder"), "{error}");
     }
 
     #[test]

@@ -16,11 +16,13 @@
     ],
     "signed_bits": 64
   },
+  "_release_builder_names_the_tested_binary": "A Hermit validate row records release_builder (cargo or buck) and e2e_payload. In Buck mode every E2E cell ran the release target/ci/hermit-strict, without debug assertions or overflow checks, not the debug target/debug/hermit a full-suite receipt certifies. Such a green is supplemental evidence and never qualifies. A row without the field predates it and was a Cargo run. A present non-string value refuses. Only the PASS predicate reads this: a Buck red is still a red for the known-failure paths.",
   "require": {
     "commit_anchored": true,
     "tree_dirty": false,
     "profile": "full",
     "selection_mode": "full",
+    "release_builder": "cargo",
     "result": "pass",
     "failures_max": 0,
     "executed_tests_min": 1

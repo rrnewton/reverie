@@ -954,6 +954,7 @@ def load() -> dict[str, Any]:
         "tree_dirty",
         "profile",
         "selection_mode",
+        "release_builder",
         "result",
         "failures_max",
         "executed_tests_min",
@@ -2448,6 +2449,10 @@ def _row_qualification_without_class(
         return False, f"profile={row.get('profile')!r}"
     if row.get("selection_mode") != req["selection_mode"]:
         return False, f"selection_mode={row.get('selection_mode')!r}(1-hop)"
+    # A row without the field predates it and was a Cargo run; a present
+    # non-string value is not a builder.
+    if row.get("release_builder", "cargo") != req["release_builder"]:
+        return False, f"release_builder={row.get('release_builder')!r}"
     if row.get("result") != req["result"]:
         return False, f"result={row.get('result')!r}"
     # `pass` with a positive failure count is malformed; an absent count on a
