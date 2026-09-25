@@ -173,6 +173,30 @@ fn runtime_with_gnu_hash(keep_sysv: bool) -> Vec<u8> {
     bytes
 }
 
+fn runtime_with_gnu_coverage_hole() -> Vec<u8> {
+    let mut bytes = runtime_with_gnu_hash(true);
+    let strings = b"\0reverie_liteinst_initialize_host\0tail\0";
+    bytes[0x500..0x500 + strings.len()].copy_from_slice(strings);
+    put64(&mut bytes, 0x2118, strings.len() as u64);
+
+    bytes.copy_within(0x618..0x630, 0x630);
+    put32(&mut bytes, 0x618, 34);
+    put64(&mut bytes, 0x620, 0x1120);
+    bytes[0x1120..0x1130].fill(0x90);
+    bytes[0x112f] = 0xc3;
+
+    // SysV defines and reaches all three symbols. GNU starts and terminates at
+    // the selected initializer at index 2, leaving only index 1 uncovered.
+    put32(&mut bytes, 0x704, 3);
+    put32(&mut bytes, 0x710, 2);
+    put32(&mut bytes, 0x714, 0);
+    put16(&mut bytes, 0x744, 1);
+    put32(&mut bytes, 0x798, 2);
+    put32(&mut bytes, 0x79c, 0);
+    put32(&mut bytes, 0x7a0, gnu_hash(INITIALIZER.as_bytes()) | 1);
+    bytes
+}
+
 fn assert_invalid(bytes: &[u8], message: &str) {
     let error = match parse_runtime(bytes) {
         Ok(_) => panic!("runtime unexpectedly accepted"),
@@ -557,8 +581,17 @@ fn refuses_duplicate_named_initializer_even_when_both_are_ordinary() {
     let mut bytes = runtime();
     bytes.copy_within(0x618..0x630, 0x630);
     put32(&mut bytes, 0x704, 3);
+    put32(&mut bytes, 0x710, 2);
     put16(&mut bytes, 0x744, 1);
-    assert!(parse_runtime(&bytes).is_err());
+    assert_invalid(&bytes, "ambiguous ordinary initializer");
+}
+
+#[test]
+fn refuses_gnu_hash_that_does_not_cover_every_symbol() {
+    assert_invalid(
+        &runtime_with_gnu_coverage_hole(),
+        "malformed runtime GNU hash table",
+    );
 }
 
 #[test]
