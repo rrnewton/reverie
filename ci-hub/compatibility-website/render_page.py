@@ -288,7 +288,7 @@ def _historical_wording(provenance: Mapping[str, Any]) -> PageWording:
         ProvenanceFact("Validate path", str(historical["validate_path"])),
         ProvenanceFact(
             "Retained recorded population (planned selection unavailable)" if recorded_only else f"Retained run selected by {historical['validate_path']}",
-            f"{historical['recorded_cell_count'] if recorded_only else selected_count} cells",
+            f"{_integer(historical['recorded_cell_count'] if recorded_only else selected_count)} cells",
         ),
         ProvenanceFact(
             "Run started",
@@ -660,7 +660,7 @@ def _positive_run_number(row: Mapping[str, Any]) -> int | None:
 def _run_display_label(row: Mapping[str, Any]) -> str:
     run_number = _positive_run_number(row)
     if run_number is not None:
-        return f"Run {run_number}"
+        return f"Run {_integer(run_number)}"
     return f"Run id {row['run_id']}"
 
 
@@ -1068,9 +1068,9 @@ def _count_link(
     represented_attribute = (
         f' data-represented-count="{represented}"' if represented is not None else ""
     )
-    visible = f"<strong>{count}</strong> {_escape(label)}"
+    visible = f"<strong>{_integer(count)}</strong> {_escape(label)}"
     if represented is not None:
-        visible += f" representing <strong>{represented}</strong> Hermit runs"
+        visible += f" representing <strong>{_integer(represented)}</strong> Hermit runs"
     return (
         f'<a href="{_escape(_href(source, target, fragment))}" data-count="{count}"'
         f"{represented_attribute}>{visible}</a>"
@@ -1171,7 +1171,7 @@ def _state_summary(model: SiteModel, page: str) -> str:
         )
         cards.append(
             f'<a class="metric state-{state}" href="{_escape(_query_href(page, target, filters, "all-cells"))}" '
-            f'data-count="{count}" data-cell-filter-link="1"><strong>{count} / {denominator} cells</strong>'
+            f'data-count="{count}" data-cell-filter-link="1"><strong>{_integer(count)} / {_integer(denominator)} cells</strong>'
             f"<span>{STATE_LABELS[state]}</span></a>"
         )
     return '<div class="metrics">' + "".join(cards) + "</div>"
@@ -1219,33 +1219,38 @@ def _result_reading(model: SiteModel) -> str:
         red_sentence = "No cell in this snapshot carries a recorded failure."
     elif red_selected == 0:
         red_sentence = (
-            f"None of the {red} red cells is selected by full in this snapshot. "
+            f"None of the {_integer(red)} red cells is selected by full in this snapshot. "
             "These retained failures fall outside this snapshot’s full-profile selection."
         )
     elif red_selected == red:
-        red_sentence = f"All {red} red cells are selected by full in this snapshot."
+        red_sentence = f"All {_integer(red)} red cells are selected by full in this snapshot."
     else:
         red_sentence = (
-            f"{red_selected} of the {red} red cells are selected by full in this "
-            f"snapshot; the other {red - red_selected} are results retained from "
+            f"{_integer(red_selected)} of the {_integer(red)} red cells are selected by full in this "
+            f"snapshot; the other {_integer(red - red_selected)} are results retained from "
             "earlier runs."
         )
 
-    parts = [f"{measured} have a recorded result", f"{never} have never been measured"]
+    parts = [
+        f"{_integer(measured)} have a recorded result",
+        f"{_integer(never)} have never been measured",
+    ]
     if undecided:
-        parts.append(f"{undecided} have evidence that does not establish a result")
+        parts.append(
+            f"{_integer(undecided)} have evidence that does not establish a result"
+        )
     parts.append(
-        f"{omitted} are deliberate omissions with no cell row on this site"
+        f"{_integer(omitted)} are deliberate omissions with no cell row on this site"
     )
     breakdown = ", ".join(parts[:-1]) + f" and {parts[-1]}"
     return (
         '<p class="result-reading"><strong>How to read these.</strong> '
-        f"Green and red are counted over the {measured} cells with a recorded "
+        f"Green and red are counted over the {_integer(measured)} cells with a recorded "
         "result, "
-        f"not over the {in_manifest} in the manifest; quoting red against the "
+        f"not over the {_integer(in_manifest)} in the manifest; quoting red against the "
         "manifest would understate the rate. "
         f"{red_sentence} "
-        f"Of the {in_manifest} cells in the manifest, {breakdown}. "
+        f"Of the {_integer(in_manifest)} cells in the manifest, {breakdown}. "
         "The manifest holds far more cells than any path selects, which is the "
         "intended arrangement and not a backlog.</p>"
     )
@@ -1253,6 +1258,13 @@ def _result_reading(model: SiteModel) -> str:
 
 def _percentage(value: Fraction) -> str:
     return f"{100.0 * value:.1f}%"
+
+
+def _integer(value: int) -> str:
+    """Format a validated display count without changing its numeric identity."""
+    if type(value) is not int:
+        raise RenderRefused("display count is not an integer")
+    return f"{value:,}"
 
 
 def _passing_scheduler_turn_length(
@@ -1471,10 +1483,12 @@ def _cell_metrics(model: SiteModel, cell: Mapping[str, Any]) -> dict[str, Any]:
         partial = None
         if state == "matched":
             partial = Fraction(1)
-        elif state == "diverged" and name == "determinism":
+        elif state == "diverged":
             partial = _red_cell_partial_credit(model, cell)["value"]
-        # Cross-backend summaries have no complete execution length. A loose
-        # divergence position is not a denominator and earns no partial credit.
+        # The outer series coordinate is authenticated against the typed
+        # backend-parity witness by the Stage 1 reader. Use it only with the
+        # complete same-commit ptrace execution length; a loose coordinate or
+        # missing reference still earns no partial credit.
         result[name] = {"state": state, "partial": partial}
     return result
 
@@ -1483,7 +1497,8 @@ def _backend_rows(model: SiteModel) -> tuple[dict[str, Any], ...]:
     reference = {
         (str(cell["test"]), str(cell["mode"]))
         for cell in model.cells
-        if cell["backend"] == "ptrace" and _cell_state(cell) == "green"
+        if cell["backend"] == "ptrace"
+        and _cell_state(cell) in {"green", "red"}
     }
     by_backend: dict[str, dict[tuple[str, str], Mapping[str, Any]]] = {}
     for cell in model.cells:
@@ -1532,8 +1547,8 @@ def _backend_snapshot_position(model: SiteModel) -> str:
     for backend in ("kvm", "liteinst"):
         cells = [cell for cell in model.cells if cell["backend"] == backend]
         observations.append(
-            f"{backend}: {sum(_cell_state(cell) == 'green' for cell in cells)} recorded Green, "
-            f"{sum(_cell_state(cell) == 'red' for cell in cells)} recorded failures"
+            f"{backend}: {_integer(sum(_cell_state(cell) == 'green' for cell in cells))} recorded Green, "
+            f"{_integer(sum(_cell_state(cell) == 'red' for cell in cells))} recorded failures"
         )
     return ('<details class="backend-position"><summary>Recorded outcomes and comparison evidence</summary><p><strong>KVM and LiteInst in this artifact.</strong> '
             'Recorded outcomes (' + _escape('; '.join(observations))
@@ -1543,10 +1558,10 @@ def _backend_snapshot_position(model: SiteModel) -> str:
 
 def _metric_amount(value: Fraction | int) -> str:
     if not isinstance(value, Fraction) or value.denominator == 1:
-        return str(int(value))
+        return _integer(int(value))
     # Keep weighted partial numerators exact; parentheses distinguish this
     # fraction from the separate common-population denominator.
-    return f"({value})"
+    return f"({_integer(value.numerator)}/{_integer(value.denominator)})"
 
 
 def _backend_leaderboard(model: SiteModel) -> str:
@@ -1560,19 +1575,19 @@ def _backend_leaderboard(model: SiteModel) -> str:
                 label = "Not available" if value is None else _percentage(value)
                 columns.append(
                     f'<td><strong>{label}</strong><span class="secondary">'
-                    f'{_metric_amount(metric[amount])} / {item["denominator"]} cells</span></td>'
+                    f'{_metric_amount(metric[amount])} / {_integer(item["denominator"])} cells</span></td>'
                 )
         details = (
-            f'{item["failed"]} failed; {item["missing"]} missing/unmeasured; '
-            f'{item["determinism"]["unavailable"]} without determinism evidence; '
-            f'{item["parity"]["unavailable"]} without parity evidence; '
-            f'{item["excluded"]} outside the reference population'
+            f'{_integer(item["failed"])} failed; {_integer(item["missing"])} missing/unmeasured; '
+            f'{_integer(item["determinism"]["unavailable"])} without determinism evidence; '
+            f'{_integer(item["parity"]["unavailable"])} without parity evidence; '
+            f'{_integer(item["excluded"])} outside the reference population'
         )
         rows.append(f'<tr><th scope="row"><code>{_escape(item["backend"])}</code></th>'
                     + ''.join(columns) + f'<td>{_escape(details)}</td></tr>')
     headings = ''.join(_column_heading(title, help_text) for title, help_text in (
         ("Backend", "Recorded instrumentation backend; native and e9patch preprocessing are excluded."),
-        ("Determinism", "Canonical repeat matches / all distinct ptrace-Green test-and-mode cells."),
+        ("Determinism", "Canonical repeat matches / all distinct test-and-mode cells with a recorded ptrace result."),
         ("Det. w/partial", "Full matches plus recorded qualifying partial fractions / the same common denominator."),
         ("Parity", "Explicit authenticated comparisons against ptrace / the same common denominator. Repeat bitwise_parity is not cross-backend parity."),
         ("Parity w/partial", "Full parity plus qualifying partial parity fractions / the same denominator. Missing complete operand lengths receive no partial credit."),
@@ -1580,13 +1595,14 @@ def _backend_leaderboard(model: SiteModel) -> str:
     ))
     return (
         '<section id="backends"><h2>Backends</h2>' + _backend_snapshot_position(model)
-        + '<p>Every percentage uses the same distinct test-and-mode population recorded Green on ptrace. '
+        + '<p>Every percentage uses the same distinct test-and-mode population with a recorded ptrace result, including ptrace failures. '
         'The <strong>w/partial</strong> columns add qualifying partial fractions to full matches. Missing and failed cells stay in the denominator.</p>'
         '<details><summary>How comparison evidence earns credit</summary><p>'
         'Numerators count demonstrated comparisons, not generic Green labels. '
         'An absent or empty reference population is unavailable. Partial determinism uses the recorded first divergent scheduler turn '
         'and a complete same-commit ptrace execution; no missing measurement is inferred as partial. '
-        'Parity requires explicit cross-backend evidence. A column with no supported observations is unavailable.</p></details>'
+        'Parity requires explicit cross-backend evidence; partial parity additionally requires its authenticated divergence turn and '
+        'a complete same-commit ptrace execution. A column with no supported observations is unavailable.</p></details>'
         '<div class="table-scroll"><table class="backend-leaderboard"><caption>Backend comparison coverage</caption>'
         f'<thead><tr>{headings}</tr></thead><tbody>{"".join(rows)}</tbody></table></div></section>'
     )
@@ -1701,7 +1717,7 @@ def _backend_history_chart(model: SiteModel) -> str:
                     "series": series_id,
                     "label": (
                         f'{backend} {name}, {point["date"]}: {_percentage(value)} '
-                        f'({count} / {point["reference_cells"]} green cells)'
+                        f'({_integer(count)} / {_integer(point["reference_cells"])} recorded ptrace-result cells)'
                     ),
                 })
                 connected = True
@@ -1746,17 +1762,17 @@ def _backend_history_chart(model: SiteModel) -> str:
             count = point[name]["green_cells"]
             value = percentage(point, name)
             values.extend((
-                "Not available" if count is None else str(count),
+                "Not available" if count is None else _integer(count),
                 "Not available" if value is None else _percentage(value),
             ))
         table_rows.append(
             f'<tr><td>{point["date"]}</td><td>{_escape(point["backend"])}</td>'
             + ''.join(f'<td>{value}</td>' for value in values)
-            + f'<td>{point["reference_cells"]}</td></tr>'
+            + f'<td>{_integer(point["reference_cells"])}</td></tr>'
         )
     return (
         '<section id="backend-history" data-history-chart><h2>Backend history</h2>'
-        '<p>Latest recorded state at each UTC date for the current catalogue and current main ancestry, within that date’s ptrace-Green population. '
+        '<p>Latest recorded state at each UTC date for the current catalogue and current main ancestry, within that date’s recorded ptrace-result population. '
         'Percentages and counts can fall after regressions. Steps carry recorded state; they are not interpolated measurements. '
         'Gaps mean no supported comparison evidence, including legacy periods. Dashed lines are parity against ptrace.</p>'
         f'<div class="chart-scroll"><svg class="history-chart" viewBox="0 0 {width} {height}" role="group" aria-label="Recorded green-cell percentages over time, by backend and comparison">'
@@ -1782,11 +1798,11 @@ def _overview(model: SiteModel, page: str) -> str:
     <section id="overview">
       <h2>Overview</h2>
       <div class="metrics compact-metrics">
-        <div class="metric"><strong>{counts['in_manifest_cell_count']}</strong><span>cells in the manifest</span></div>
-        <a class="metric" href="{_escape(_href(page, 'cells/index.html', 'all-cells'))}"><strong>{result_count}</strong><span>result rows shown by default</span></a>
-        <a class="metric" href="{_escape(_href(page, 'cells/never-measured.html', 'all-cells'))}"><strong>{counts['never_measured_cell_count']}</strong><span>never measured cells in the explicit view</span></a>
-        <a class="metric" href="{_escape(_href(page, 'cells/projection-audit.html', 'deliberate-omissions'))}"><strong>{omitted}</strong><span>in the manifest minus rows with a cell page</span></a>
-        <div class="metric"><strong>{result_count}</strong><span>green plus red result denominator</span></div>
+        <div class="metric"><strong>{_integer(counts['in_manifest_cell_count'])}</strong><span>cells in the manifest</span></div>
+        <a class="metric" href="{_escape(_href(page, 'cells/index.html', 'all-cells'))}"><strong>{_integer(result_count)}</strong><span>result rows shown by default</span></a>
+        <a class="metric" href="{_escape(_href(page, 'cells/never-measured.html', 'all-cells'))}"><strong>{_integer(counts['never_measured_cell_count'])}</strong><span>never measured cells in the explicit view</span></a>
+        <a class="metric" href="{_escape(_href(page, 'cells/projection-audit.html', 'deliberate-omissions'))}"><strong>{_integer(omitted)}</strong><span>in the manifest minus rows with a cell page</span></a>
+        <div class="metric"><strong>{_integer(result_count)}</strong><span>green plus red result denominator</span></div>
       </div>
       <p>The difference between cells in the manifest and rows with a cell page is retained as exact arithmetic. It is not assigned a cell result and has no cell row on this site.</p>
       {_state_summary(model, page)}
@@ -1798,7 +1814,7 @@ def _overview(model: SiteModel, page: str) -> str:
         {_count_link(page, 'runs/index.html', 'validation-runs', len(model.history_rows), 'admitted validation ledger rows')}.
         {_count_link(page, 'cells/projection-audit.html', 'series-excluded', runs['projection_excluded_physical_row_count'], 'excluded physical series rows', runs['projection_excluded_represented_run_count'])}.
         {_count_link(page, 'tests/custom-commands.html', 'custom-commands', len(model.custom_commands), 'custom commands selected by full')}.
-        The captured input contained {runs['projection_admitted_physical_row_count'] + runs['projection_excluded_physical_row_count']} physical series rows representing {runs['projection_admitted_represented_run_count'] + runs['projection_excluded_represented_run_count']} Hermit runs.
+        The captured input contained {_integer(runs['projection_admitted_physical_row_count'] + runs['projection_excluded_physical_row_count'])} physical series rows representing {_integer(runs['projection_admitted_represented_run_count'] + runs['projection_excluded_represented_run_count'])} Hermit runs.
       </p>
     </section>"""
 
@@ -1813,7 +1829,7 @@ def _deliberate_omission_audit(model: SiteModel, page: str) -> str:
         event_references = tuple(item["event_references"])
         visible_references = " ".join(
             f'<span id="{_fragment("event", str(reference["event_id"]))}">'
-            f"Recorded evidence {index}</span>"
+            f"Recorded evidence {_integer(index)}</span>"
             for index, reference in enumerate(event_references, start=1)
         )
         identifiers = "<br>".join(
@@ -1821,7 +1837,7 @@ def _deliberate_omission_audit(model: SiteModel, page: str) -> str:
             for reference in event_references
         )
         references = (
-            f"{visible_references}<details><summary>{len(event_references)} exact event "
+            f"{visible_references}<details><summary>{_integer(len(event_references))} exact event "
             f'{"reference" if len(event_references) == 1 else "references"}</summary>'
             f"{identifiers}</details>"
         )
@@ -1829,8 +1845,8 @@ def _deliberate_omission_audit(model: SiteModel, page: str) -> str:
             f'<tr id="{_fragment("omission", str(item["cell"]))}"><th scope="row"><code>{_escape(item["cell"])}</code></th>'
             f"<td>{_test_link(model, page, str(item['test']), label=_test_name(item['test'], test['category']))}</td>"
             f"<td>{_escape(_omission_summary(model, item))}</td>"
-            f"<td>{_escape(item['physical_row_count'])}</td>"
-            f"<td>{_escape(item['represented_run_count'])}</td>"
+            f"<td>{_integer(item['physical_row_count'])}</td>"
+            f"<td>{_integer(item['represented_run_count'])}</td>"
             f"<td>{references}</td></tr>"
         )
     headings = "".join(
@@ -1870,13 +1886,13 @@ def _deliberate_omission_audit(model: SiteModel, page: str) -> str:
     return f"""
     <section id="deliberate-omissions">
       <h2>Deliberate projection omissions</h2>
-      <p>{len(omissions)} manifest cell identities are omitted from result rows by the recorded reducer decision: {physical} physical rows representing {represented} Hermit runs. Published cells plus these omissions equal the manifest population.</p>
+      <p>{_integer(len(omissions))} manifest cell identities are omitted from result rows by the recorded reducer decision: {_integer(physical)} physical rows representing {_integer(represented)} Hermit runs. Published cells plus these omissions equal the manifest population.</p>
       {body}
     </section>"""
 
 
 def _counted(count: int, singular: str, plural: str | None = None) -> str:
-    return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+    return f"{_integer(count)} {singular if count == 1 else (plural or singular + 's')}"
 
 
 def _readable_recorded_term(value: Any) -> str:
@@ -2092,8 +2108,8 @@ def _exclusion_audit(
     rows = "".join(
         f"<tr {_collection_item_attributes(filters={}, sorts={})}>"
         f"<td>{_escape(item['schema'])}</td><td>{_escape(item['reason'])}</td>"
-        f"<td>{_escape(item['physical_row_count'])}</td>"
-        f"<td>{_escape(item['represented_run_count'])}</td></tr>"
+        f"<td>{_integer(item['physical_row_count'])}</td>"
+        f"<td>{_integer(item['represented_run_count'])}</td></tr>"
         for item in items
     )
     controls = _collection_controls(
@@ -2167,7 +2183,7 @@ def _exclusion_audit(
     return f"""
     <section id="series-excluded">
       {heading}
-      <p>{runs['projection_admitted_physical_row_count']} physical rows were admitted and {runs['projection_excluded_physical_row_count']} were excluded. Admitted and excluded counts are disjoint.</p>
+      <p>{_integer(runs['projection_admitted_physical_row_count'])} physical rows were admitted and {_integer(runs['projection_excluded_physical_row_count'])} were excluded. Admitted and excluded counts are disjoint.</p>
       {body}
     </section>"""
 
@@ -2275,7 +2291,7 @@ def _run_listing(model: SiteModel, page: str, *, show_heading: bool = True) -> s
             f'<tr data-run-row="1" data-run-current="{str(index in current).lower()}" {_collection_item_attributes(filters={"record": record}, sorts=collection_values)}>'
             f'<th scope="row"><a{run_link_attributes} href="{_escape(_href(page, model.history_paths[index]))}">{_escape(run_label)}</a></th>'
             f'<td>{record_label}</td><td>{_escape(row["profile"])}</td>'
-            f'<td>{_escape(selected["cell_count"] if selected["cell_count"] is not None else "Not recorded")}</td><td>{_escape(results["recorded"]["cell_count"])}</td>'
+            f'<td>{_integer(selected["cell_count"]) if selected["cell_count"] is not None else "Not recorded"}</td><td>{_integer(results["recorded"]["cell_count"])}</td>'
             f'<td>{_escape(row["result"])}</td><td>{_hermit_commit_link(row["commit"])}</td>'
             f'<td>{_time_element(row["started_at"], "validation run started_at")}</td>'
             f'<td>{_escape(_duration_seconds(row.get("real_seconds"), "validation run real_seconds"))}</td></tr>'
@@ -2583,8 +2599,7 @@ def _landing_introduction(model: SiteModel) -> str:
     measurement_note = _measurement_freshness(model)
     return f"""
     <div class="scorecard-introduction">
-      <p>This scorecard shows which workloads have been tested and how Hermit’s execution backends compare. <strong>Determinism</strong> measures whether repeated runs agree; <strong>parity</strong> measures agreement with the reference ptrace backend. Each test cell is a workload, execution mode, and backend. The tables distinguish passing results, failures, and missing measurements.</p>
-      <p>Start with the <a href="https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/">introduction to Hermit</a>, or visit the <a href="https://github.com/rrnewton/hermit/blob/main/README.md">README for setup and usage</a>.</p>
+      <p>This scorecard shows which workloads have been tested and how Hermit’s execution backends compare. <strong>Determinism</strong> measures whether repeated runs agree; <strong>parity</strong> measures agreement with the reference ptrace backend. Each test cell is a workload, execution mode, and backend. The tables distinguish passing results, failures, and missing measurements. For context, start with the <a href="https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/">introduction to Hermit</a>, or visit the <a href="https://github.com/rrnewton/hermit/blob/main/README.md">README for setup and usage</a>.</p>
       {measurement_note}
     </div>"""
 
@@ -2902,7 +2917,7 @@ def _cell_table_row(model: SiteModel, page: str, cell: Mapping[str, Any]) -> str
     )
     return f"""
       <tr data-cell-row="1" data-cell="{_escape(identity)}" data-test="{_escape(cell['test'])}" data-lane="{_escape(cell['lane'])}" data-category="{_escape(cell['category'])}" data-mode="{_escape(cell['mode'])}" data-backend="{_escape(cell['backend'])}" data-state="{_escape(state)}" data-result="{_escape(result)}" data-selected-by-paths="{_escape(_canonical(selected_paths))}" data-evidence="complete" data-latest-result-time="{_escape(latest_time)}" data-latest-result-tree="{_escape(latest_tree)}" data-search="{_escape(search)}" data-series-filter-facets="{_escape(_series_filter_facets_json(rows))}" data-physical-row-count="{_escape(cell['physical_row_count'])}" data-represented-run-count="{_escape(cell['represented_run_count'])}">
-        <td>{_escape(cell['category'])}</td><th scope="row">{test_link}</th><td>{_escape(cell['mode'])}</td><td>{_escape(cell['backend'])}</td><td>{_escape(cell['lane'])}</td><td>{_latest_result(cell)}</td><td>{_time_element(latest_time, 'cell latest_result_time')}</td><td>{latest_tree_link}</td><td>{_escape(cell['physical_row_count'])}</td><td>{_escape(cell['represented_run_count'])}</td>
+        <td>{_escape(cell['category'])}</td><th scope="row">{test_link}</th><td>{_escape(cell['mode'])}</td><td>{_escape(cell['backend'])}</td><td>{_escape(cell['lane'])}</td><td>{_latest_result(cell)}</td><td>{_time_element(latest_time, 'cell latest_result_time')}</td><td>{latest_tree_link}</td><td>{_integer(cell['physical_row_count'])}</td><td>{_integer(cell['represented_run_count'])}</td>
       </tr>"""
 
 
@@ -2911,7 +2926,7 @@ def _outside_table(model: SiteModel, page: str) -> str:
     for item in model.recorded_outside_manifest[:LIST_PAGE_SIZE]:
         identity = str(item["cell"])
         rows.append(
-            f'<tr data-recorded-not-in-manifest-row="1" data-cell="{_escape(identity)}" data-search="{_escape(identity)}" data-physical-row-count="{item["physical_row_count"]}" data-represented-run-count="{item["represented_run_count"]}"><th scope="row"><code>{_escape(identity)}</code></th><td>{item["physical_row_count"]}</td><td>{item["represented_run_count"]}</td></tr>'
+            f'<tr data-recorded-not-in-manifest-row="1" data-cell="{_escape(identity)}" data-search="{_escape(identity)}" data-physical-row-count="{item["physical_row_count"]}" data-represented-run-count="{item["represented_run_count"]}"><th scope="row"><code>{_escape(identity)}</code></th><td>{_integer(item["physical_row_count"])}</td><td>{_integer(item["represented_run_count"])}</td></tr>'
         )
     headings = "".join(
         (
@@ -3032,7 +3047,7 @@ def _static_cell_pagination(
             f'<a rel="prev" href="{_escape(_href(page, target, "all-cells"))}">Previous page</a>'
         )
     links.append(
-        f"<span>Showing {first}–{last} of {item_count}; page {page_number} of {page_count}.</span>"
+        f"<span>Showing {_integer(first)}–{_integer(last)} of {_integer(item_count)}; page {_integer(page_number)} of {_integer(page_count)}.</span>"
     )
     if page_number < page_count:
         target = _cell_listing_path(
@@ -3108,12 +3123,12 @@ def _cells_listing_page(
     </section>
     <section id="test-matrix"><h2>Test Matrix</h2>{pagination}{static_access}
       <div id="all-cells" data-in-manifest-listing>
-        <p>{model.data['counts']['in_manifest_cell_count']} cells are in the manifest; this table has {len(cells)} rows. {table_explanation}</p>
+        <p>{_integer(model.data['counts']['in_manifest_cell_count'])} cells are in the manifest; this table has {_integer(len(cells))} rows. {table_explanation}</p>
         <div class="table-scroll"><table class="responsive-record-table"><caption>{_escape(table_caption)}</caption><thead><tr>{headings}</tr></thead><tbody id="cell-results">{rows}</tbody></table></div>
       </div>
       {_outside_table(model, page)}
     </section>
-    <section id="series-rows" data-in-manifest-listing><h2>Recorded evidence</h2><p>{model.runs['series_physical_row_count']} admitted physical rows representing {model.runs['series_represented_run_count']} Hermit runs. Each cell row reports its qualifying count separately.</p></section>"""
+    <section id="series-rows" data-in-manifest-listing><h2>Recorded evidence</h2><p>{_integer(model.runs['series_physical_row_count'])} admitted physical rows representing {_integer(model.runs['series_represented_run_count'])} Hermit runs. Each cell row reports its qualifying count separately.</p></section>"""
     return _layout(
         page,
         title,
@@ -3165,12 +3180,12 @@ def _static_cells_listing_page(
     <p><a href="{_escape(_href(page, primary, "cell-filters"))}">Search and filter this population</a> with JavaScript, or continue through every static row below.</p>
     <section id="test-matrix"><h2>Test Matrix</h2>{pagination}
       <div id="all-cells" data-in-manifest-listing>
-        <p>Showing rows {first}–{last} of {len(cells)}.</p>
+        <p>Showing rows {_integer(first)}–{_integer(last)} of {_integer(len(cells))}.</p>
         <div class="table-scroll"><table class="responsive-record-table"><caption>{_escape(table_caption)}</caption><thead><tr>{_cell_table_headings(sortable=False)}</tr></thead><tbody>{rows}</tbody></table></div>
       </div>
       {pagination}
     </section>"""
-    page_title = f"{title}, page {page_number}"
+    page_title = f"{title}, page {_integer(page_number)}"
     return _layout(
         page,
         page_title,
@@ -3179,7 +3194,7 @@ def _static_cells_listing_page(
         (
             ("Overview", "index.html"),
             (title, primary),
-            (f"Page {page_number}", None),
+            (f"Page {_integer(page_number)}", None),
         ),
         model.wording,
         ("assets/site.js",),
@@ -3253,9 +3268,9 @@ def _selected_groups(model: SiteModel, page: str, row: Mapping[str, Any]) -> str
             child_limit=SELECTED_GROUP_CHILD_LIMIT,
         )
         description = (
-            f'<h2>Recorded population</h2><p><strong>{selection["cell_count"]}</strong> cells have writer-verified recorded attempts. This is not the full planned selection or proof that the run completed.</p>'
+            f'<h2>Recorded population</h2><p><strong>{_integer(selection["cell_count"])}</strong> cells have writer-verified recorded attempts. This is not the full planned selection or proof that the run completed.</p>'
             if row.get("derived_cell_results") is not None else
-            f'<h2>Selected by {_escape(path)}</h2><p><strong>{selection["cell_count"]}</strong> cells were selected by {_escape(path)}. Of the selected cells in the manifest, {published_count} have published cell pages. Selected cells with no qualifying admitted row have no cell detail page and are listed as plain text.</p>'
+            f'<h2>Selected by {_escape(path)}</h2><p><strong>{_integer(selection["cell_count"])}</strong> cells were selected by {_escape(path)}. Of the selected cells in the manifest, {_integer(published_count)} have published cell pages. Selected cells with no qualifying admitted row have no cell detail page and are listed as plain text.</p>'
         )
         sections.append(
             f'<section id="{_fragment("selected-by", str(path))}">{description}'
@@ -3362,7 +3377,7 @@ def _recorded_cells(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
             compared = verdict["compared_log_messages"]
             if isinstance(compared, Mapping):
                 details.append(
-                    f"Compared INFO messages: left {compared['left']}; right {compared['right']}"
+                    f"Compared INFO messages: left {_integer(compared['left'])}; right {_integer(compared['right'])}"
                 )
         if verdict.get("reason"):
             details.append(f"Reason: {verdict['reason']}")
@@ -3518,7 +3533,7 @@ def _recorded_cells(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
         ]
         sections.append(
             f'<section id="recorded-cells"><h2>Recorded results for cells selected by {_escape(path_name)}</h2>'
-            f'<p>{len(selected_records)} selected cells have recorded results in this ledger row.</p>'
+            f'<p>{_integer(len(selected_records))} selected cells have recorded results in this ledger row.</p>'
             f'{controls(selected_records, "recorded-cells", "recorded_", "recorded selected cells")}'
             f'<div class="table-scroll"><table class="responsive-record-table"><caption>TEST-RESULT and COMMIT-VERDICT are separate adjacent columns.</caption><thead><tr>{headings(include_reason=False)}</tr></thead>'
             f'<tbody data-list-target="recorded-cells">{"".join(row_html(record, include_reason=False) for record in selected_records[:LIST_PAGE_SIZE])}</tbody></table></div>'
@@ -3527,14 +3542,14 @@ def _recorded_cells(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
     if other_records:
         sections.append(
             f'<section id="recorded-not-selected"><h2>Recorded but not selected by {_escape(path_name)}</h2>'
-            f'<p>{len(other_records)} recorded cells are absent from this run\'s {_escape(path_name)} selection.</p>'
+            f'<p>{_integer(len(other_records))} recorded cells are absent from this run\'s {_escape(path_name)} selection.</p>'
             f'{controls(other_records, "recorded-not-selected", "recorded_other_", "recorded cells not selected by this path")}'
             f'<div class="table-scroll"><table class="responsive-record-table"><caption>Recorded cell results outside this run\'s named selection.</caption><thead><tr>{headings(include_reason=True)}</tr></thead>'
             f'<tbody>{"".join(row_html(record, include_reason=True) for record in other_records)}</tbody></table></div></section>'
         )
     artifact = results["recorded"]["artifact"]
     summary = (
-        f'<section id="recorded-cell-results"><h2>Recorded cell results</h2><p>Artifact rows: {artifact["row_count"]}; '
+        f'<section id="recorded-cell-results"><h2>Recorded cell results</h2><p>Artifact rows: {_integer(artifact["row_count"])}; '
         f'artifact digest <code>{_escape(artifact["sha256"])}</code>.</p></section>'
     )
     return summary + "".join(sections)
@@ -3546,7 +3561,7 @@ def _run_page(model: SiteModel, index: int, row: Mapping[str, Any]) -> bytes:
     results = _cell_evidence(row)
     run_number = _positive_run_number(row)
     run_number_fact = (
-        f"<div><dt>Run number</dt><dd>{run_number}</dd></div>"
+        f"<div><dt>Run number</dt><dd>{_integer(run_number)}</dd></div>"
         if run_number is not None
         else ""
     )
@@ -3727,6 +3742,78 @@ def _browser_cell_record(model: SiteModel, cell: Mapping[str, Any]) -> dict[str,
     return result
 
 
+def _test_source_path(test: Mapping[str, Any]) -> str | None:
+    """Return one manifest-owned repository path, never shell command text."""
+    def repository_path(raw_path: Any) -> str | None:
+        if not isinstance(raw_path, str) or re.fullmatch(
+            r"[A-Za-z0-9._+@/-]+", raw_path
+        ) is None:
+            return None
+        path = PurePosixPath(raw_path)
+        if (
+            path.is_absolute()
+            or not path.parts
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or path.parts[0] == ".git"
+        ):
+            return None
+        return path.as_posix()
+
+    program_path = repository_path(test.get("program"))
+    if program_path is not None:
+        return program_path
+    direct = test.get("direct")
+    if isinstance(direct, Mapping):
+        raw_direct: str | None = None
+        if direct.get("kind") == "shell" and isinstance(direct.get("command"), str):
+            command = str(direct["command"])
+            if re.fullmatch(r"\./[A-Za-z0-9._+@/-]+", command):
+                raw_direct = command
+        elif direct.get("kind") == "argv":
+            argv = direct.get("argv")
+            if (
+                isinstance(argv, Sequence)
+                and not isinstance(argv, (str, bytes))
+                and argv
+                and isinstance(argv[0], str)
+                and re.fullmatch(r"\./[A-Za-z0-9._+@/-]+", argv[0])
+            ):
+                raw_direct = argv[0]
+        if raw_direct is not None:
+            return repository_path(raw_direct.removeprefix("./"))
+    return None
+
+
+def _test_source(model: SiteModel, test: Mapping[str, Any]) -> dict[str, str] | None:
+    """Bind a source path to the newest selected result's exact Hermit tree."""
+    path = _test_source_path(test)
+    if path is None:
+        return None
+    observations = []
+    for identity in test["cells"]:
+        cell = model.cell_by_id.get(str(identity))
+        if cell is None or _cell_state(cell) not in {"green", "red"}:
+            continue
+        recorded_at = cell.get("latest_result_time")
+        commit = cell.get("latest_result_tree")
+        if not isinstance(recorded_at, str) or not isinstance(commit, str):
+            raise RenderRefused("test result source revision is incomplete")
+        try:
+            instant = datetime.fromisoformat(recorded_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise RenderRefused("test result source timestamp is invalid") from error
+        if instant.tzinfo is None or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            raise RenderRefused("test result source revision is invalid")
+        observations.append((instant, commit))
+    if not observations:
+        return None
+    latest = max(instant for instant, _commit in observations)
+    commits = {commit for instant, commit in observations if instant == latest}
+    if len(commits) != 1:
+        raise RenderRefused("newest test results disagree on their Hermit revision")
+    return {"commit": next(iter(commits)), "path": path}
+
+
 def _browser_test_record(
     model: SiteModel,
     test: Mapping[str, Any],
@@ -3742,9 +3829,11 @@ def _browser_test_record(
         raise RenderRefused(
             f"test {identity!r} does not reconcile to cells and omissions"
         )
+    data = _browser_copy(test)
+    data["source"] = _test_source(model, test)
     result = {
         "cell_digests": cell_digests,
-        "data": _browser_copy(test),
+        "data": data,
         "digest": _full_digest(identity),
         "identity": identity,
         "kind": "test",
@@ -3821,13 +3910,51 @@ def _exact_validation_cell(
     ):
         return None
     path = str(reference.get("selection"))
-    matching_facts = [
-        fact
-        for fact in cell.get("selected_by", {}).get(path, ())
-        if fact.get("run_id") == row.get("run_id")
-        and fact.get("tree") == series.get("tree")
-        and fact.get("event_ids") == [event_id]
-    ]
+    raw_latest_event_ids = cell.get("latest_event_ids")
+    if (
+        not isinstance(raw_latest_event_ids, Sequence)
+        or isinstance(raw_latest_event_ids, (str, bytes))
+        or not raw_latest_event_ids
+    ):
+        return None
+    latest_event_ids = tuple(str(value) for value in raw_latest_event_ids)
+    if len(latest_event_ids) != len(set(latest_event_ids)):
+        return None
+    matching_facts = []
+    for fact in cell.get("selected_by", {}).get(path, ()):
+        raw_fact_event_ids = fact.get("event_ids")
+        if (
+            not isinstance(raw_fact_event_ids, Sequence)
+            or isinstance(raw_fact_event_ids, (str, bytes))
+            or not raw_fact_event_ids
+        ):
+            continue
+        fact_event_ids = tuple(str(value) for value in raw_fact_event_ids)
+        if (
+            len(fact_event_ids) != len(set(fact_event_ids))
+            or set(fact_event_ids) != set(latest_event_ids)
+            or event_id not in fact_event_ids
+            or fact.get("run_id") != row.get("run_id")
+            or fact.get("tree") != series.get("tree")
+        ):
+            continue
+        group_is_exact = True
+        for grouped_event_id in fact_event_ids:
+            grouped_row = model.series_by_event.get(grouped_event_id)
+            grouped_reference = model.event_run_references.get(grouped_event_id)
+            if (
+                grouped_row is None
+                or grouped_reference != reference
+                or grouped_row.get("producer") != "validate"
+                or grouped_row.get("run_id") != row.get("run_id")
+                or not isinstance(grouped_row.get("series"), Mapping)
+                or str(grouped_row["series"].get("cell")) != str(cell["cell"])
+                or grouped_row["series"].get("tree") != series.get("tree")
+            ):
+                group_is_exact = False
+                break
+        if group_is_exact:
+            matching_facts.append(fact)
     if len(matching_facts) != 1:
         return None
     history_indices = [

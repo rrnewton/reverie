@@ -2,6 +2,7 @@
 
 (function (root) {
   const HERMIT_COMMIT_BASE = "https://github.com/rrnewton/hermit/commit/";
+  const HERMIT_BLOB_BASE = HERMIT_COMMIT_BASE.replace(/commit\/$/, 'blob/');
   const QUERY_ORDER = [
     'q',
     'lane',
@@ -94,6 +95,16 @@
 
   function invalid(message) {
     return { ok: false, error: message };
+  }
+
+  function formatInteger(value) {
+    if (Number.isSafeInteger(value)) {
+      return value.toLocaleString('en-US');
+    }
+    if (typeof value === 'string' && /^-?[0-9]+$/.test(value)) {
+      return value.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+    throw new Error('display count is not a safe integer');
   }
 
   function allowedValue(name, value, allowed) {
@@ -331,7 +342,9 @@
     }
     const pages = Math.max(1, Math.ceil(records.length / pageSize));
     if (page > pages) {
-      return invalid(`page ${page} exceeds the ${pages} available pages`);
+      return invalid(
+        `page ${formatInteger(page)} exceeds the ${formatInteger(pages)} available pages`,
+      );
     }
     const start = (page - 1) * pageSize;
     return {
@@ -685,9 +698,9 @@
     }
     view.outsideSection.hidden = current;
     const summary = summarize(matching);
-    view.matchingCount.textContent = String(summary.matching);
-    view.physicalCount.textContent = String(summary.physical);
-    view.representedCount.textContent = String(summary.represented);
+    view.matchingCount.textContent = formatInteger(summary.matching);
+    view.physicalCount.textContent = formatInteger(summary.physical);
+    view.representedCount.textContent = formatInteger(summary.represented);
     view.matchingLabel.textContent = current
       ? "matching cells in the manifest"
       : "matching recorded cell identities not in the current manifest";
@@ -696,7 +709,7 @@
     view.counts.hidden = false;
     const first = summary.matching === 0 ? 0 : page.start + 1;
     const last = page.start + page.records.length;
-    view.pageSummary.textContent = `Showing ${first}–${last} of ${summary.matching} matching cells; page ${state.page} of ${page.pages}.`;
+    view.pageSummary.textContent = `Showing ${formatInteger(first)}–${formatInteger(last)} of ${formatInteger(summary.matching)} matching cells; page ${formatInteger(state.page)} of ${formatInteger(page.pages)}.`;
     view.previous.disabled = state.page === 1;
     view.next.disabled = state.page === page.pages;
     view.pagination.hidden = page.pages <= 1;
@@ -1448,7 +1461,9 @@
       const index = Number(source.slice('cell:'.length));
       const cell = record.element.children.item(index);
       if (!cell) {
-        throw new Error(`rendered collection item is missing cell ${index}`);
+          throw new Error(
+            `rendered collection item is missing cell ${formatInteger(index)}`,
+          );
       }
       return cell.textContent.trim();
     }
@@ -1676,8 +1691,8 @@
         button.dataset.groupId = group.groupId;
         button.setAttribute('aria-expanded', String(expanded));
         button.textContent = expanded
-          ? `Show first ${view.childLimit}`
-          : `Show ${children.length - view.childLimit} more`;
+          ? `Show first ${formatInteger(view.childLimit)}`
+          : `Show ${formatInteger(children.length - view.childLimit)} more`;
         group.element.appendChild(button);
       }
     }
@@ -1716,9 +1731,9 @@
     const first = result.matching === 0 ? 0 : result.page.start + 1;
     const last = result.page.start + result.page.records.length;
     const childSummary =
-      result.childCount === null ? '' : `; ${result.childCount} matching tests`;
+      result.childCount === null ? '' : `; ${formatInteger(result.childCount)} matching tests`;
     if (view.pagination !== null) {
-      view.summary.textContent = `Showing ${first}–${last} of ${result.matching}${childSummary}; page ${state.page} of ${result.page.pages}.`;
+      view.summary.textContent = `Showing ${formatInteger(first)}–${formatInteger(last)} of ${formatInteger(result.matching)}${childSummary}; page ${formatInteger(state.page)} of ${formatInteger(result.page.pages)}.`;
       view.previous.disabled = state.page === 1;
       view.next.disabled = state.page === result.page.pages;
     } else if (result.page.pages !== 1) {
@@ -2206,7 +2221,9 @@
   function dataNode(tag, text, className) {
     const element = document.createElement(tag);
     if (text !== undefined && text !== null) {
-      element.textContent = String(text);
+      element.textContent = Number.isSafeInteger(text)
+        ? formatInteger(text)
+        : String(text);
     }
     if (className) {
       element.className = className;
@@ -2410,6 +2427,34 @@
     return link;
   }
 
+  function hermitSourceLink(source) {
+    if (
+      !source ||
+      typeof source !== 'object' ||
+      !/^[0-9a-f]{40}$/.test(source.commit) ||
+      typeof source.path !== 'string' ||
+      !/^[A-Za-z0-9._+@/-]+$/.test(source.path) ||
+      source.path.startsWith('/') ||
+      source.path.split('/').some(part => !part || part === '.' || part === '..') ||
+      source.path.split('/')[0] === '.git'
+    ) {
+      throw new Error('test source link is malformed');
+    }
+    const encodedPath = source.path.split('/').map(encodeURIComponent).join('/');
+    const link = dataNode('a');
+    link.className = 'external-link';
+    link.href = `${HERMIT_BLOB_BASE}${source.commit}/${encodedPath}`;
+    link.setAttribute(
+      'aria-label',
+      `${source.path} at ${source.commit} on GitHub (external link)`,
+    );
+    link.appendChild(dataNode('code', source.path));
+    const indicator = dataNode('span', '↗', 'external-link-indicator');
+    indicator.setAttribute('aria-hidden', 'true');
+    link.appendChild(indicator);
+    return link;
+  }
+
   function appendStructured(parent, label, value) {
     const wrapper = dataNode('div', null, 'structured-value');
     wrapper.appendChild(dataNode('dt', label));
@@ -2430,7 +2475,9 @@
             }
             entry.appendChild(nested);
           } else {
-            entry.textContent = String(item);
+            entry.textContent = Number.isSafeInteger(item)
+              ? formatInteger(item)
+              : String(item);
           }
           list.appendChild(entry);
         }
@@ -2442,6 +2489,8 @@
         appendStructured(nested, name, nestedValue);
       }
       body.appendChild(nested);
+    } else if (Number.isSafeInteger(value)) {
+      body.textContent = formatInteger(value);
     } else {
       body.textContent = value === null ? 'Not recorded' : String(value);
     }
@@ -2513,7 +2562,7 @@
   }
 
   function pagedList(parent, records, noun, collectionId, renderRecord, anchors = () => []) {
-    const caption = dataNode('p', `${records.length} ${noun}.`, 'data-caption');
+    const caption = dataNode('p', `${formatInteger(records.length)} ${noun}.`, 'data-caption');
     const list = dataNode('ol', null, 'browser-record-list');
     const pages = Math.max(1, Math.ceil(records.length / PAGE_SIZE));
     const navigation = pages > 1 ? dataNode('nav', null, 'list-pagination') : null;
@@ -2541,7 +2590,7 @@
       list.replaceChildren(...shown.map(renderRecord));
       const first = shown.length ? start + 1 : 0;
       if (summary !== null) {
-        summary.textContent = `Showing ${first}–${start + shown.length} of ${records.length}; page ${page} of ${pages}.`;
+        summary.textContent = `Showing ${formatInteger(first)}–${formatInteger(start + shown.length)} of ${formatInteger(records.length)}; page ${formatInteger(page)} of ${formatInteger(pages)}.`;
         previous.disabled = page === 1;
         next.disabled = page === pages;
       }
@@ -2598,7 +2647,7 @@
       (typeof runNumber === 'string' && /^[1-9][0-9]*$/.test(runNumber)) ||
       (Number.isSafeInteger(runNumber) && runNumber > 0)
     ) {
-      return `Run ${runNumber}`;
+      return `Run ${formatInteger(runNumber)}`;
     }
     return `Run id ${run.run_id}`;
   }
@@ -2616,13 +2665,13 @@
     if (!Number.isSafeInteger(runIndex) || runIndex < 0) {
       throw new Error('recorded evidence has an invalid run index');
     }
-    context.appendChild(document.createTextNode(` · run index ${runIndex}`));
+    context.appendChild(document.createTextNode(` · run index ${formatInteger(runIndex)}`));
     const attempt = item.series.attempt;
     if (attempt !== null && attempt !== undefined) {
       if (!Number.isSafeInteger(attempt) || attempt < 1) {
         throw new Error('recorded evidence has an invalid attempt');
       }
-      context.appendChild(document.createTextNode(` · attempt ${attempt}`));
+      context.appendChild(document.createTextNode(` · attempt ${formatInteger(attempt)}`));
     }
     context.appendChild(document.createTextNode(` · recorded by ${item.producer} at `));
     context.appendChild(easternTimeNode(item.emitted_at));
@@ -2701,7 +2750,11 @@
       if (value !== null && (typeof value !== 'string' || !/^[0-9]+$/.test(value))) {
         throw new Error(`${field} is invalid`);
       }
-      appendStructured(facts, label, value === null ? 'Not recorded' : value);
+      appendStructured(
+        facts,
+        label,
+        value === null ? 'Not recorded' : formatInteger(value),
+      );
     }
     const partialCredit = exactObject(
       record.partial_credit,
@@ -2759,7 +2812,7 @@
       const value = dataNode('span');
       const sign = difference.value.startsWith('-') || difference.value === '0' ? '' : '+';
       value.append(
-        document.createTextNode(`${sign}${difference.value} scheduler turns compared with `),
+        document.createTextNode(`${sign}${formatInteger(difference.value)} scheduler turns compared with `),
         hermitCommitLink(difference.previous_commit),
       );
       appendStructured(
@@ -2997,8 +3050,8 @@
       const heading = dataNode('th', label);
       heading.scope = 'row';
       row.appendChild(heading);
-      row.appendChild(dataNode('td', left, 'execution-count'));
-      row.appendChild(dataNode('td', right, 'execution-count'));
+      row.appendChild(dataNode('td', formatInteger(left), 'execution-count'));
+      row.appendChild(dataNode('td', formatInteger(right), 'execution-count'));
       body.appendChild(row);
       table.append(head, body);
       return table;
@@ -3069,6 +3122,9 @@
     if (command !== null) {
       appendStructured(facts, 'Direct command', command);
     }
+    if (test.source !== null) {
+      appendStructured(facts, 'Source', hermitSourceLink(test.source));
+    }
     if (test.build !== null) {
       if (!test.build || typeof test.build !== 'object') {
         throw new Error('test build flags are malformed');
@@ -3128,7 +3184,7 @@
       });
       populationControl.append(
         include,
-        document.createTextNode(` Include ${neverMeasuredCount} never measured cells`),
+        document.createTextNode(` Include ${formatInteger(neverMeasuredCount)} never measured cells`),
       );
       section.appendChild(populationControl);
     }
@@ -3168,11 +3224,11 @@
         references.appendChild(
           dataNode(
             'summary',
-            `${item.event_references.length} exact event ${item.event_references.length === 1 ? 'reference' : 'references'}`,
+            `${formatInteger(item.event_references.length)} exact event ${item.event_references.length === 1 ? 'reference' : 'references'}`,
           ),
         );
         item.event_references.forEach((reference, index) => {
-          const visibleReference = dataNode('span', `Recorded evidence ${index + 1}`);
+          const visibleReference = dataNode('span', `Recorded evidence ${formatInteger(index + 1)}`);
           visibleReference.id = reference.anchor;
           row.appendChild(visibleReference);
           row.appendChild(document.createTextNode(' '));
@@ -3211,6 +3267,8 @@
     }
     if (root.Node && value instanceof root.Node) {
       cell.appendChild(value);
+    } else if (Number.isSafeInteger(value)) {
+      cell.textContent = formatInteger(value);
     } else {
       cell.textContent = value === null || value === '' ? 'Not recorded' : String(value);
     }

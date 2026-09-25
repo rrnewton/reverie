@@ -13,6 +13,7 @@ import sys
 import xml.etree.ElementTree as ET
 from collections import Counter
 from dataclasses import replace
+from fractions import Fraction
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
@@ -247,21 +248,41 @@ def _replace_verdict_with_reason(data: dict[str, Any]) -> dict[str, Any]:
     return _validated(data)
 
 
-def _add_runtime_counts(data: dict[str, Any]) -> dict[str, Any]:
+def _add_runtime_counts(
+    data: dict[str, Any], *, large_counts: bool = False
+) -> dict[str, Any]:
+    run_index = 1_234 if large_counts else 1
+    attempt = 2_345 if large_counts else None
+    info_run1 = 12_345 if large_counts else 1
+    info_run2 = 12_345 if large_counts else 1
+    syscalls_run1 = 34_567 if large_counts else 12
+    syscalls_run2 = 45_678 if large_counts else 22
+    data["runs"]["series_rows"][0]["series"].update(
+        run_index=run_index,
+        attempt=attempt,
+    )
     data["runs"]["series_rows"][0]["series"]["runtime"] = {
         "run1": {
             "scheduler_turns": 11,
-            "syscalls": 12,
+            "syscalls": syscalls_run1,
             "virtual_nanoseconds": 13,
         },
         "run2": {
             "scheduler_turns": 21,
-            "syscalls": 22,
+            "syscalls": syscalls_run2,
             "virtual_nanoseconds": 23,
         },
         "wall_time_max_ms": 2.0,
         "wall_time_min_ms": 1.0,
     }
+    for field in ("validation_history_rows", "current_validation_run_rows"):
+        verdict = data["runs"][field][0]["cell_results"]["recorded"]["cells"][0][
+            "cell_verdict"
+        ]
+        verdict["compared_log_messages"] = {
+            "left": info_run1,
+            "right": info_run2,
+        }
     _refresh_projection_digests(data)
     return _validated(data)
 
@@ -558,11 +579,64 @@ def test_series_counts_explicitly_name_hermit_runs() -> None:
     assert ">Represented runs<" not in html_sources
     assert "physical rows representing 2 runs" not in html_sources
     assert "['Represented Hermit runs', cell.represented_run_count]" in javascript
+
+
+def test_visible_integer_counts_use_comma_grouping() -> None:
+    assert render_page._integer(45_990) == "45,990"
+    assert render_page._counted(45_990, "row") == "45,990 rows"
+    assert render_page._metric_amount(Fraction(45_991, 2)) == "(45,991/2)"
+    link = render_page._count_link(
+        "index.html",
+        "cells/index.html",
+        "series-rows",
+        45_990,
+        "physical rows",
+        52_623,
+    )
+    assert 'data-count="45990"' in link
+    assert "<strong>45,990</strong> physical rows" in link
+    assert "<strong>52,623</strong> Hermit runs" in link
+    assert render_page._run_display_label({"run_number": 45_990}) == "Run 45,990"
+    pagination = render_page._static_cell_pagination(
+        "cells/results-1234.html",
+        item_count=123_456,
+        page_number=1_234,
+        explicit_never_measured=False,
+    )
+    assert "page 1,234 of 2,470" in pagination
+    javascript = render_page.SITE_JS_PATH.read_text()
+    assert "value.toLocaleString('en-US')" in javascript
+    python = Path(render_page.__file__).read_text()
+    assert 'f"Recorded evidence {_integer(index)}</span>"' in python
+    assert 'f"Page {_integer(page_number)}"' in python
     assert (
         "['Qualifying represented Hermit runs', "
         "cell.qualifying_represented_run_count]" in javascript
     )
     assert "['Represented runs', cell.represented_run_count]" not in javascript
+
+
+def test_browser_pagination_error_groups_requested_and_available_pages(
+    chromium_browser: Any,
+) -> None:
+    page = chromium_browser.new_page()
+    page.set_content("<!doctype html><html><body><p id='error'></p></body></html>")
+    page.add_script_tag(content=render_page.SITE_JS_PATH.read_text())
+    text = page.evaluate(
+        """() => {
+          const result = globalThis.HermitCompatibilityCellListing.pageRecords(
+            Array.from({length: 1234}),
+            1235,
+            1,
+          );
+          if (result.ok) throw new Error('out-of-range page unexpectedly passed');
+          const error = document.querySelector('#error');
+          error.textContent = `Filters were not applied: ${result.error}.`;
+          return error.innerText;
+        }"""
+    )
+    assert text == "Filters were not applied: page 1,235 exceeds the 1,234 available pages."
+    page.close()
 
 
 def test_test_matrix_uses_compact_columns_links_and_measure_definitions() -> None:
@@ -1117,11 +1191,11 @@ def test_positive_run_number_is_the_primary_label_without_becoming_identity() ->
 
     assert (
         PurePosixPath(run_path).name,
-        f"Run {render_page.MAX_U64}",
+        f"Run {render_page.MAX_U64:,}",
     ) in runs.links
     run_page = files[run_path].decode()
-    assert f"<h1>Run {render_page.MAX_U64}</h1>" in run_page
-    assert f"<dt>Run number</dt><dd>{render_page.MAX_U64}</dd>" in run_page
+    assert f"<h1>Run {render_page.MAX_U64:,}</h1>" in run_page
+    assert f"<dt>Run number</dt><dd>{render_page.MAX_U64:,}</dd>" in run_page
     assert "<dt>Run id</dt><dd><code>validate-run-1</code></dd>" in run_page
 
     summary = _browser_payload(files, "data/site-summary.json.gz")
@@ -2324,8 +2398,74 @@ def test_detail_has_one_reader_title_and_omits_one_page_pagination(
     assert page.locator("main h1").all_inner_texts() == [
         render_page._test_name(test["id"], test["category"])
     ]
+    assert page.locator('a[aria-label^="tests/hello at "]').get_attribute("href") == (
+        "https://github.com/rrnewton/hermit/blob/"
+        + data["cells"][0]["latest_result_tree"]
+        + "/tests/hello"
+    )
     assert page.locator("[data-detail-content] .list-pagination").count() == 0
     page.close()
+
+
+def test_detail_omits_an_unsafe_source_path_without_breaking_hydration(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    data["tests"][0]["program"] = "../source with spaces"
+    files = render_page.render_site(_build(data), data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    page.goto(f"http://127.0.0.1/{model.test_paths[data['tests'][0]['id']]}")
+    _wait_for_verified_data(page)
+    assert page.locator("main h1").inner_text() == "hello"
+    assert "could not be loaded" not in page.locator("body").inner_text()
+    assert page.locator('[data-detail-content] dt', has_text="Source").count() == 0
+    page.close()
+
+
+def test_test_source_uses_repo_local_direct_command_and_latest_result_tree() -> None:
+    data = representative_build_data()
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    test = {
+        **model.tests[0],
+        "program": None,
+        "direct": {"kind": "shell", "command": "./examples/devrand.sh"},
+    }
+    assert render_page._test_source(model, test) == {
+        "commit": "1" * 40,
+        "path": "examples/devrand.sh",
+    }
+    assert render_page._test_source_path(
+        {**test, "direct": {"kind": "shell", "command": "./example.sh --flag"}}
+    ) is None
+    assert render_page._test_source_path(
+        {**test, "program": "../escape", "direct": None}
+    ) is None
+    assert render_page._test_source_path(
+        {**test, "program": ".git/config", "direct": None}
+    ) is None
+
+
+def test_test_source_refuses_ambiguous_latest_result_revisions() -> None:
+    data = representative_build_data()
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    first = model.cells[0]
+    second = {
+        **first,
+        "cell": "tests/hello/verify/kvm",
+        "backend": "kvm",
+        "latest_result_tree": "2" * 40,
+    }
+    test = {**model.tests[0], "cells": [first["cell"], second["cell"]]}
+    ambiguous = replace(
+        model,
+        cells=(first, second),
+        cell_by_id={first["cell"]: first, second["cell"]: second},
+    )
+    with pytest.raises(render_page.RenderRefused, match="newest test results disagree"):
+        render_page._test_source(ambiguous, test)
 
 
 def test_run_number_sort_is_numeric_and_keeps_fallback_rows_last(
@@ -2370,7 +2510,7 @@ def test_run_number_sort_is_numeric_and_keeps_fallback_rows_last(
         "Run 2",
         "Run 2",
         "Run 10",
-        f"Run {render_page.MAX_U64}",
+        f"Run {render_page.MAX_U64:,}",
         "Run id validate-run-without-number",
     ]
     assert page.locator("tbody tr:not([hidden]) th a").evaluate_all(
@@ -2383,7 +2523,7 @@ def test_run_number_sort_is_numeric_and_keeps_fallback_rows_last(
     assert "runs_sort=run" in page.url
     assert "runs_direction=" not in page.url
     assert page.locator("tbody tr:not([hidden]) th a").all_inner_texts() == [
-        f"Run {render_page.MAX_U64}",
+        f"Run {render_page.MAX_U64:,}",
         "Run 10",
         "Run 2",
         "Run 2",
@@ -2986,7 +3126,7 @@ def test_backend_common_reference_includes_missing_and_deduplicates() -> None:
     assert rows["kvm"]["parity"]["percentage"] is None
 
 
-@pytest.mark.parametrize("reference", ["absent", "failed", "unmeasured"])
+@pytest.mark.parametrize("reference", ["absent", "unmeasured"])
 def test_backend_missing_reference_has_no_percentage(reference: str) -> None:
     model, kvm = _typed_kvm_model(matched=True)
     cells = [kvm]
@@ -2997,6 +3137,81 @@ def test_backend_missing_reference_has_no_percentage(reference: str) -> None:
     for name in ("determinism", "parity"):
         assert row[name]["percentage"] is None
         assert row[name]["partial_percentage"] is None
+
+
+def test_backend_failed_reference_remains_in_the_common_denominator() -> None:
+    model, kvm = _typed_kvm_model(matched=True)
+    ptrace = {
+        **model.cells[0],
+        "state": "red",
+        "latest_result": "product_failure",
+    }
+    rows = {
+        row["backend"]: row
+        for row in render_page._backend_rows(replace(model, cells=(ptrace, kvm)))
+    }
+    assert rows["ptrace"]["denominator"] == rows["kvm"]["denominator"] == 1
+    assert rows["ptrace"]["failed"] == 1
+    assert rows["kvm"]["determinism"]["percentage"] == 1
+
+
+def test_grouped_validate_attempts_authenticate_parity_and_partial_credit() -> None:
+    model, kvm = _typed_kvm_model(matched=False, parity=True)
+    kvm = copy.deepcopy(kvm)
+    first = copy.deepcopy(model.series_by_event["event-kvm-current"])
+    second = copy.deepcopy(first)
+    second["event_id"] = "event-kvm-retry"
+    second["series"]["run_index"] = 2
+    kvm["latest_event_ids"] = [first["event_id"], second["event_id"]]
+    kvm["qualifying_event_ids"] = [first["event_id"], second["event_id"]]
+    kvm["selected_by"]["super"][0]["event_ids"] = list(kvm["latest_event_ids"])
+    history = copy.deepcopy(model.history_rows[0])
+    recorded = history["cell_results"]["recorded"]["cells"][1]
+    recorded["ordinary_comparison"] = "matched"
+    recorded["cell_verdict"]["state"] = "compared-and-matched"
+    recorded["cell_verdict"]["bitwise_parity"] = True
+    recorded["backend_parity"]["clean_match"] = False
+    recorded["backend_parity"]["summary"]["attempts"] = [
+        {"cross": {"state": "diverged"}},
+        {"cross": {"state": "diverged"}},
+    ]
+    reference = model.event_run_references[first["event_id"]]
+    grouped = replace(
+        model,
+        cells=(model.cells[0], kvm),
+        cell_by_id={model.cells[0]["cell"]: model.cells[0], kvm["cell"]: kvm},
+        history_rows=(history,),
+        series_rows=(model.series_rows[0], first, second),
+        series_by_cell={**model.series_by_cell, kvm["cell"]: (first, second)},
+        series_by_event={
+            **model.series_by_event,
+            first["event_id"]: first,
+            second["event_id"]: second,
+        },
+        event_run_references={
+            **model.event_run_references,
+            first["event_id"]: reference,
+            second["event_id"]: reference,
+        },
+    )
+    row = {
+        item["backend"]: item for item in render_page._backend_rows(grouped)
+    }["kvm"]
+    assert row["determinism"]["full"] == 1
+    assert row["parity"]["full"] == 0
+    assert row["parity"]["partial_percentage"] == Fraction(1, 2)
+
+    subset = copy.deepcopy(kvm)
+    subset["latest_event_ids"] = [first["event_id"]]
+    assert render_page._exact_validation_cell(grouped, subset, first["event_id"]) is None
+
+    reused = copy.deepcopy(second)
+    reused["series"]["cell"] = "tests/other/verify/kvm"
+    bad = replace(
+        grouped,
+        series_by_event={**grouped.series_by_event, second["event_id"]: reused},
+    )
+    assert render_page._exact_validation_cell(bad, kvm, first["event_id"]) is None
 
 
 def test_backend_parity_is_not_repeat_bitwise_parity() -> None:
@@ -3070,7 +3285,7 @@ def test_backend_history_preserves_regression_then_explicit_gap() -> None:
     assert "<code>kvm</code> parity (no data)" in chart
     assert 'stroke-dasharray="7 4"' in chart
     assert "Green percentage" in chart and "UTC" in chart
-    assert "2026-09-01: 100.0% (1 / 1 green cells)" in chart
+    assert "2026-09-01: 100.0% (1 / 1 recorded ptrace-result cells)" in chart
     assert "Determinism percentage" in chart and "Parity percentage" in chart
     assert "data-history-series-toggle" in chart
     assert "The chart remains visible without JavaScript" in chart
@@ -3100,8 +3315,8 @@ def test_backend_history_chart_plots_percentages_when_denominator_changes() -> N
     chart = render_page._backend_history_chart(model)
 
     assert 'd="M 65.00 205.00 H 865.00 V 145.00"' in chart
-    assert "2026-09-01: 25.0% (1 / 4 green cells)" in chart
-    assert "2026-09-02: 50.0% (4 / 8 green cells)" in chart
+    assert "2026-09-01: 25.0% (1 / 4 recorded ptrace-result cells)" in chart
+    assert "2026-09-02: 50.0% (4 / 8 recorded ptrace-result cells)" in chart
 
 
 def _rgb(value: str) -> tuple[int, int, int]:
@@ -3156,7 +3371,7 @@ def test_backend_history_hover_preserves_overlapping_observations(
         assert "kvm determinism" in marker_label
         assert "ptrace determinism" in marker_label
         assert "2026-09-01" in marker_label
-        assert "100.0% (1 / 1 green cells)" in marker_label
+        assert "100.0% (1 / 1 recorded ptrace-result cells)" in marker_label
         tooltip = page.locator("[data-history-tooltip]")
         assert marker_label in tooltip.inner_text()
         assert page.evaluate("window.markerHovered")
@@ -3222,7 +3437,7 @@ def test_backend_history_points_are_named_images_in_chromium_accessibility_tree(
         )
         label = (
             "kvm determinism, 2026-09-02: 0.0% "
-            "(0 / 1 green cells)"
+            "(0 / 1 recorded ptrace-result cells)"
         )
         marker = page.get_by_role("img", name=label, exact=True)
         assert marker.count() == 1
@@ -3250,7 +3465,7 @@ def test_backend_history_hover_leave_restores_focused_point(
             '.history-chart circle[aria-label*="kvm determinism, 2026-09-01"]'
         )
         hovered = page.locator(
-            '.history-chart circle[aria-label="kvm determinism, 2026-09-02: 0.0% (0 / 1 green cells)"]'
+            '.history-chart circle[aria-label="kvm determinism, 2026-09-02: 0.0% (0 / 1 recorded ptrace-result cells)"]'
         )
         tooltip = page.locator("[data-history-tooltip]")
 
@@ -3421,6 +3636,91 @@ def test_red_cell_browser_record_has_four_coordinates_and_turn_difference() -> N
         "reason": None,
         "value": "50.0%",
     }
+
+
+def test_browser_groups_all_large_divergence_and_reveal_counts(
+    chromium_browser: Any,
+) -> None:
+    model, kvm = _model_with_red_kvm_cell()
+    record = render_page._browser_cell_record(model, kvm)
+    record["latest_divergence"]["coordinates"] = {
+        "first_divergent_record": "1234",
+        "first_divergent_scheduler_turn": "2345",
+        "first_divergent_syscall": "3456",
+        "first_divergent_virtual_nanoseconds": "4567",
+    }
+    record["latest_divergence"]["scheduler_turn_difference"]["value"] = "5678"
+    javascript = render_page.SITE_JS_PATH.read_text().replace(
+        "  if (typeof document !== 'undefined') {",
+        "  root.__scorecardReview = {firstDivergenceSection, applyGroupedGeneric};\n"
+        "  if (typeof document !== 'undefined') {",
+    )
+    page = chromium_browser.new_page()
+    page.set_content("<!doctype html><html><body></body></html>")
+    page.add_script_tag(content=javascript)
+
+    rendered = page.evaluate(
+        """record => {
+          const section = globalThis.__scorecardReview.firstDivergenceSection(record);
+          document.body.appendChild(section);
+          return section.innerText;
+        }""",
+        record,
+    )
+    for value in ("1,234", "2,345", "3,456", "4,567"):
+        assert value in rendered
+    assert "+5,678 scheduler turns" in rendered
+
+    reveal = page.evaluate(
+        """() => {
+          const container = document.createElement('div');
+          const parent = document.createElement('div');
+          const groupElement = document.createElement('div');
+          groupElement.appendChild(document.createElement('strong'));
+          parent.appendChild(groupElement);
+          container.appendChild(parent);
+          document.body.appendChild(container);
+          const children = Array.from({length: 1026}, (_unused, ordinal) => {
+            const element = document.createElement('span');
+            groupElement.appendChild(element);
+            return {element, parent: groupElement, ordinal, search: '', values: {}};
+          });
+          const group = {
+            element: groupElement,
+            parent,
+            ordinal: 0,
+            search: '',
+            values: {},
+            groupId: 'large-group',
+          };
+          const view = {
+            childLimit: 25,
+            childrenByGroup: new Map([['large-group', children]]),
+            collectionId: 'large-collection',
+            filterNames: [],
+            inlineTarget: null,
+            items: [group],
+            pageSize: 8,
+            parents: [parent],
+            sortSources: {hierarchy: 'ordinal'},
+            tieDirection: 'asc',
+            tieSort: 'hierarchy',
+            tieSource: 'ordinal',
+          };
+          const state = {
+            direction: 'asc',
+            expanded: new Set(),
+            filters: {},
+            page: 1,
+            q: '',
+            sort: 'hierarchy',
+          };
+          globalThis.__scorecardReview.applyGroupedGeneric(view, state);
+          return groupElement.querySelector('[data-list-reveal]').textContent;
+        }"""
+    )
+    assert reveal == "Show 1,001 more"
+    page.close()
 
 
 def test_turn_difference_uses_qualifying_divergences() -> None:
@@ -3899,7 +4199,9 @@ def test_file_url_refuses_before_fetch_and_removes_partial_preview(
 def test_verified_http_detail_restores_metadata_labels_and_event_links(
     chromium_browser: Any, automatically_decode_gzip: bool
 ) -> None:
-    data = _add_runtime_counts(data_with_all_three_states_and_one_omitted_row())
+    data = _add_runtime_counts(
+        data_with_all_three_states_and_one_omitted_row(), large_counts=True
+    )
     _set_run_number(data, render_page.MAX_U64)
     files = render_page.render_site(_build(data), data)
     model = render_page._site_model(_build(data), data, wording="fixture")
@@ -3989,7 +4291,7 @@ def test_verified_http_detail_restores_metadata_labels_and_event_links(
         ).all_inner_texts()
     )
     run_links = page.locator(
-        "[data-detail-content] a", has_text=f"Run {render_page.MAX_U64}"
+        "[data-detail-content] a", has_text=f"Run {render_page.MAX_U64:,}"
     )
     assert run_links.count() == 2
     assert set(run_links.evaluate_all("links => links.map(link => link.href)")) == {
@@ -4050,10 +4352,12 @@ def test_verified_http_detail_restores_metadata_labels_and_event_links(
         assert table.locator("tbody tr").count() == 1
     assert comparison_counts.locator("tbody tr").locator(
         "th, td"
-    ).all_inner_texts() == ["INFO messages", "1", "1"]
+    ).all_inner_texts() == ["INFO messages", "12,345", "12,345"]
     assert activity_counts.locator("tbody tr").locator(
         "th, td"
-    ).all_inner_texts() == ["Hermit syscalls", "12", "22"]
+    ).all_inner_texts() == ["Hermit syscalls", "34,567", "45,678"]
+    assert "Run index\n1,234" in metadata
+    assert "Attempt\n2,345" in metadata
     assert (
         "These are the INFO-message populations evaluated by the canonical comparison."
         in count_groups.nth(0).inner_text()
@@ -5410,6 +5714,10 @@ def test_live_first_visitor_intro_and_dates_keep_measurements_separate() -> None
     assert "reference ptrace backend" in source
     assert 'href="https://developers.facebook.com/blog/post/2022/11/22/hermit-deterministic-linux-testing/"' in source
     assert 'href="https://github.com/rrnewton/hermit/blob/main/README.md"' in source
+    introduction = source[source.index('<div class="scorecard-introduction">') :]
+    first_paragraph = introduction[: introduction.index("</p>")]
+    assert "For context, start with the" in first_paragraph
+    assert "</p>\n      <p>Start with" not in introduction
     assert "Website build started:" in source and "Sep 21, 2026" in source
     assert "Latest selected measurement:" in source and "Aug 30, 2026" in source
     assert "Latest history entry:" in source
