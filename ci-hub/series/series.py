@@ -4075,7 +4075,7 @@ def _is_canonical_compared_output(output: Any) -> bool:
             for field in ("stdout_sha256", "stderr_sha256")
         )
         and all(
-            type(output[field]) is int and output[field] >= 0
+            type(output[field]) is int and 0 <= output[field] <= 2**64 - 1
             for field in ("stdout_bytes", "stderr_bytes")
         )
     )
@@ -4313,23 +4313,28 @@ def _typed_comparison_attempt(
     recorded_sha = attempt.get("verification_report_sha256")
     if not isinstance(recorded_sha, str) or hashlib.sha256(raw.encode()).hexdigest() != recorded_sha:
         raise MalformedRow(f"cell attempt {index} verification report hash mismatch")
-    def declared_fields(pairs):
+    def unique_fields(pairs):
         fields = {}
         for name, value in pairs:
             if name in fields:
                 raise MalformedRow(
-                    f"cell attempt {index} declared report has duplicate field {name!r}"
+                    f"cell attempt {index} verification report has duplicate field {name!r}"
                 )
             fields[name] = value
         return fields
 
+    def invalid_constant(value):
+        raise MalformedRow(
+            f"cell attempt {index} verification report has non-JSON constant {value}"
+        )
+
     try:
-        # A declaration is the only authority for a nonzero matched attempt,
-        # so its evidence is read from the original bytes: an ordinary dict
-        # has already collapsed duplicate keys to whichever came last.
+        # Read the evidence from the original bytes: an ordinary dict has
+        # already collapsed duplicate keys to whichever came last, and Python
+        # accepts NaN and Infinity, which Hermit's serde_json never writes.
+        # Every later reader of this report relies on this parse.
         report = json.loads(
-            raw,
-            object_pairs_hook=declared_fields if expected_guest_exit is not None else None,
+            raw, object_pairs_hook=unique_fields, parse_constant=invalid_constant
         )
     except json.JSONDecodeError as error:
         raise MalformedRow(
@@ -6018,6 +6023,19 @@ def _batch_name(rows: Sequence[dict]) -> str:
     return f"{run_id}.jsonl"
 
 
+def _stdin_unique_fields(pairs):
+    fields = {}
+    for key, value in pairs:
+        if key in fields:
+            raise MalformedRow(f"duplicate field {key!r}")
+        fields[key] = value
+    return fields
+
+
+def _stdin_nonjson_constant(value):
+    raise MalformedRow(f"non-JSON numeric constant {value}")
+
+
 def _stdin_rows() -> tuple[list[dict] | None, int]:
     rows = []
     for number, line in enumerate(sys.stdin.read().splitlines(), 1):
@@ -6047,6 +6065,10 @@ def _stdin_cell_results() -> tuple[
     JSON string at U+2028, U+0085 or a form feed, which a JSON writer may emit
     unescaped. Lines of ASCII whitespace are skipped. Nothing is refused here;
     the caller quarantines failures.
+
+    Every line is read refusing duplicate fields and non-JSON constants in
+    every row, as Hermit's serde_json does. A duplicate ``expected_guest_exit``
+    or ``attempts`` would otherwise be collapsed before validation sees it.
     """
     buffer = getattr(sys.stdin, "buffer", None)
     data = buffer.read() if buffer is not None else sys.stdin.read().encode("utf-8")
@@ -6060,10 +6082,8 @@ def _stdin_cell_results() -> tuple[
             continue
         try:
             line = raw.decode("utf-8")
-            row = json.loads(line)
-            if isinstance(row, dict) and "backend_parity" in row:
-                row = json.loads(line, object_pairs_hook=_parity_unique_fields,
-                                 parse_constant=_parity_nonfinite_constant)
+            row = json.loads(line, object_pairs_hook=_stdin_unique_fields,
+                             parse_constant=_stdin_nonjson_constant)
         except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, MalformedRow) as error:
             failures.append((
                 number, raw, type(error).__name__, f"stdin line {number} is not JSON: {error}",

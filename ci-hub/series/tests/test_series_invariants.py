@@ -4640,6 +4640,146 @@ class CellResultProjection(unittest.TestCase):
                 # Restore the readable manifests for the next case.
                 self._commit_manifests({name: None for name in files})
 
+    def _declared_exit_7(self):
+        return self._expected_exit_cell(
+            status=7, signal=None, guest_exit_code=7, guest_signal=None,
+            declared=(7, None),
+        )
+
+    def test_verification_report_refuses_non_json_constants_and_duplicates(self):
+        # Hermit's serde_json never writes NaN, Infinity or a repeated field,
+        # and its readers refuse all of them. Python's json module accepts
+        # both unless told otherwise, declared row or not.
+        def raw_edit(cell, old, new):
+            attempt = cell["attempts"][0]
+            raw = attempt["verification_report"]
+            self.assertEqual(raw.count(old), 1, old)
+            raw = raw.replace(old, new)
+            attempt["verification_report"] = raw
+            attempt["verification_report_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+            return cell
+
+        for label, make in (
+            ("declared", self._declared_exit_7),
+            ("undeclared", lambda: self._validate_cell(1)),
+        ):
+            self.assertEqual(
+                self._project_validate(make(), f"{label}-control")[0]["series"]["outcome"],
+                "passed",
+            )
+            for constant in ("NaN", "Infinity", "-Infinity"):
+                with self.subTest(row=label, constant=constant), self.assertRaisesRegex(
+                    series.MalformedRow, "non-JSON constant"
+                ):
+                    self._project_validate(
+                        raw_edit(make(), '"runtime":null', '"runtime":' + constant),
+                        f"{label}-constant",
+                    )
+            with self.subTest(row=label, duplicate="verdict"), self.assertRaisesRegex(
+                series.MalformedRow, "duplicate field 'verdict'"
+            ):
+                self._project_validate(
+                    raw_edit(make(), '"verdict":"matched"',
+                             '"verdict":"diverged","verdict":"matched"'),
+                    f"{label}-duplicate",
+                )
+
+    def test_compared_output_byte_counts_are_bounded_by_u64(self):
+        def with_bytes(count):
+            cell = self._declared_exit_7()
+            attempt = cell["attempts"][0]
+            report = json.loads(attempt["verification_report"])
+            for side in ("left", "right"):
+                report["compared_outputs"][side]["stdout_bytes"] = count
+                report["compared_outputs"][side]["stderr_bytes"] = count
+            self._replace_comparison_report(attempt, report)
+            return cell
+
+        row = self._project_validate(with_bytes(2**64 - 1), "u64-max")[0]
+        self.assertEqual(row["series"]["outcome"], "passed")
+        for count in (2**64, 2**70):
+            with self.subTest(count=count), self.assertRaisesRegex(
+                series.MalformedRow, "matched report is internally inconsistent"
+            ):
+                self._project_validate(with_bytes(count), "u64-overflow")
+
+    def _assert_stdin_line_quarantined(self, line, run_id, message):
+        # append-cells judges each stdin line on its own. A refused line is
+        # quarantined at parse with its reason and exact text; when it is the
+        # only line, nothing is spooled and the command exits 1.
+        rc, stdout, stderr = self._append_cells(
+            [line], producer="validate", run_id=run_id,
+            emitted_at="2026-09-25T12:00:00Z",
+        )
+        self.assertEqual(rc, 1, stdout + stderr)
+        self.assertIn(message, stderr)
+        [record] = self._quarantined(run_id)
+        [item] = record["inputs"]
+        self.assertEqual(
+            (record["stage"], item["input_row"], item["raw"]), ("parse", 1, line)
+        )
+        self.assertIn(message, record["reason"])
+        self.assertEqual(sorted(series.spool_dir(self.parent).glob("*.jsonl")), [])
+
+    def test_append_cells_refuses_duplicate_fields_and_constants_in_the_outer_row(self):
+        # A null then valid declaration would otherwise collapse to the valid
+        # one, and a valid then null one to undeclared, before validation.
+        declaration = json.dumps(
+            self._declared_exit_7()["expected_guest_exit"], separators=(",", ":")
+        )
+        cases = []
+        for label, first, last in (
+            ("null then valid declaration", "null", declaration),
+            ("valid then null declaration", declaration, "null"),
+            ("valid declaration twice", declaration, declaration),
+        ):
+            cell = self._declared_exit_7()
+            cell.pop("expected_guest_exit")
+            raw = json.dumps(cell, separators=(",", ":"))
+            cases.append((
+                label,
+                raw[:-1] + ',"expected_guest_exit":' + first
+                + ',"expected_guest_exit":' + last + "}",
+                "duplicate field 'expected_guest_exit'",
+            ))
+        undeclared = json.dumps(self._validate_cell(1), separators=(",", ":"))
+        cases.append((
+            "undeclared row with a duplicate outcome",
+            '{"outcome":"FAIL",' + undeclared[1:],
+            "duplicate field 'outcome'",
+        ))
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            cases.append((
+                f"outer {constant}",
+                undeclared[:-1] + ',"extra":' + constant + "}",
+                "non-JSON numeric constant",
+            ))
+        for index, (label, text, message) in enumerate(cases):
+            with self.subTest(label=label):
+                self._assert_stdin_line_quarantined(text, f"outer-mutant-{index}", message)
+        # The same rows written once each are accepted by the same command.
+        spool = series.spool_dir(self.parent)
+        rc, stdout, stderr = self._append_cells(
+            [json.dumps(self._declared_exit_7())], producer="validate",
+            run_id="outer-control", emitted_at="2026-09-25T12:00:00Z",
+        )
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(self._quarantined("outer-control"), [])
+        stored = series.union(sorted(spool.glob("*.jsonl")))
+        self.assertEqual([row["series"]["outcome"] for row in stored], ["passed"])
+        # A refused line does not take a valid sibling with it.
+        _label, text, message = cases[0]
+        rc, stdout, stderr = self._append_cells(
+            [text, json.dumps(self._declared_exit_7())], producer="validate",
+            run_id="outer-sibling", emitted_at="2026-09-25T12:00:00Z",
+        )
+        self.assertEqual(rc, 0, stderr)
+        [record] = self._quarantined("outer-sibling")
+        self.assertEqual((record["stage"], record["inputs"][0]["input_row"]), ("parse", 1))
+        self.assertIn(message, record["reason"])
+        stored = series.union([spool / "outer-sibling.jsonl"])
+        self.assertEqual([row["series"]["outcome"] for row in stored], ["passed"])
+
 
     def test_no_verdict_contradiction_refuses_the_batch(self):
         contradictory = self._validate_no_verdict_cell(
