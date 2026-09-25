@@ -320,9 +320,15 @@ impl TaskExits {
     }
 
     #[cfg(test)]
-    pub(super) fn publish_blocking_joins_for_test(&self) {
-        if let Some(completed) = &self.join_completion_probe {
-            completed.store(true, std::sync::atomic::Ordering::Release);
+    pub(super) fn publish_blocking_joins_for_test(
+        &self,
+        collector_result: Option<bool>,
+        publication_result: Option<bool>,
+    ) {
+        if collector_result.is_some() && publication_result.is_some() {
+            if let Some(completed) = &self.join_completion_probe {
+                completed.store(true, std::sync::atomic::Ordering::Release);
+            }
         }
     }
 
