@@ -9,9 +9,8 @@
 use core::fmt;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
-// Only used for `IoSlice`. To be fully no_std, this should get replaced with a
-// custom `IoSlice` type.
-use std::io;
+use crate::IoSlice;
+use crate::IoSliceMut;
 
 /// An address to some immutable memory. We don't know where the memory lives;
 /// it can be either in the current process or a another process.
@@ -357,8 +356,8 @@ impl<'a> AddrSlice<'a, u8> {
     /// # Safety
     /// This function is unsafe because it gives access to raw pointers, which
     /// may not be valid for the current address space.
-    pub unsafe fn as_ioslice(&self) -> io::IoSlice<'_> {
-        io::IoSlice::new(self.inner)
+    pub unsafe fn as_ioslice(&self) -> IoSlice<'_> {
+        IoSlice::new(self.inner)
     }
 }
 
@@ -423,8 +422,8 @@ impl<'a> AddrSliceMut<'a, u8> {
     /// # Safety
     /// This function is unsafe because it gives access to raw pointers, which
     /// may not be valid for the current address space.
-    pub unsafe fn as_ioslice_mut(&mut self) -> io::IoSliceMut<'_> {
-        io::IoSliceMut::new(self.inner)
+    pub unsafe fn as_ioslice_mut(&mut self) -> IoSliceMut<'_> {
+        IoSliceMut::new(self.inner)
     }
 }
 
