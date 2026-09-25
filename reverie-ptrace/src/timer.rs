@@ -18,7 +18,12 @@
 //! acheived by artificially generating a signal that will then be delivered
 //! immediately upon resumption of the guest. If delivery is already past the
 //! target, the overshoot is recorded and the event is delivered at the observed
-//! counter because single stepping cannot move the guest backward.
+//! counter because single stepping cannot move the guest backward. If another
+//! Tool-observable stop arrives first with the delivery point already reached,
+//! that stop cancels the event and the overshoot is recorded there. An event
+//! retired without such a stop (thread exit, a non-leader exec) or overtaken by
+//! a stop of the timer signal's own type, including a forged one, is not
+//! recorded.
 //!
 //! Proper use of timers requires that all delivered signals of type
 //! `Timer::signal_type()` be passed through `Timer::handle_signal`, and that
@@ -270,6 +275,37 @@ impl PmuConfig {
         }
     }
 
+    /// Single decision-and-record site for a precise event that another
+    /// Tool-observable stop overtook: iff the guest had already reached the
+    /// event's delivery point, emit the canonical [`SKID_OVERSHOOT_MARKER`]
+    /// line, increment the process-global witness counter, and return `true`.
+    ///
+    /// Unlike a late delivery, the event itself is lost here, so reaching the
+    /// delivery point exactly already counts: the event was due before the
+    /// stop. With an instruction offset the delivery point lies `instr_offset`
+    /// instructions past the target branch, and those instructions may include
+    /// further branches (see `ClockCounter::single_step_with_clock`). The
+    /// counter alone cannot show instruction progress, but every branch past
+    /// the target is at least one instruction, so `rcb_actual - rcb_target >=
+    /// instr_offset` proves the guest got there. A stop with fewer branches
+    /// past the target is not recorded, even if the delivery point was in fact
+    /// reached. `TimerImpl::observe_event` is the sole runtime caller.
+    pub fn record_missed_if_target_reached(
+        &self,
+        rcb_actual: u64,
+        rcb_target: u64,
+        instr_offset: u64,
+    ) -> bool {
+        let reached = rcb_actual
+            .checked_sub(rcb_target)
+            .is_some_and(|past| past >= instr_offset);
+        if reached {
+            self.emit_skid_overshoot_marker(rcb_actual, rcb_target);
+            reverie::record_skid_overshoot();
+        }
+        reached
+    }
+
     /// Formats the canonical [`SKID_OVERSHOOT_MARKER`] line. Split out from
     /// [`Self::emit_skid_overshoot_marker`] so the exact shape is unit-testable
     /// without capturing process stderr.
@@ -500,12 +536,14 @@ impl Timer {
             .request_event(evt)
     }
 
-    /// Must be called whenever a Tool-observable reverie event occurs. This
-    /// ensures proper cancellation semantics are observed. See the internal
-    /// `timer::EventStatus` type for details.
-    pub fn observe_event(&mut self) {
+    /// Must be called whenever a Tool-observable reverie event occurs, with the
+    /// ptrace event of that stop. This ensures proper cancellation semantics
+    /// are observed. See the internal `timer::EventStatus` type for details.
+    /// A precise event whose delivery point the guest already reached is
+    /// recorded as a skid overshoot before this stop cancels it.
+    pub fn observe_event(&mut self, event: &TraceEvent) {
         if let Some(t) = self.inner_mut_noinit() {
-            t.observe_event();
+            t.observe_event(event);
         }
     }
 
@@ -1004,7 +1042,31 @@ impl TimerImpl {
         }
     }
 
-    pub fn observe_event(&mut self) {
+    pub fn observe_event(&mut self, event: &TraceEvent) {
+        // The first stop after a request decides the event: a stop by this
+        // timer's signal delivers it, and any other stop cancels it. When that
+        // other stop comes after the guest already reached the delivery point,
+        // the overflow interrupt was late and the event was due first. Stops
+        // with the timer's signal number are left to `handle_signal`, which
+        // records a late delivery itself. Held initial-command requests have
+        // no physical notification to be late.
+        if self.timer_status == EventStatus::Scheduled
+            && self.initial_command == InitialCommand::Ordinary
+            && !matches!(event, TraceEvent::Signal(signal) if *signal == MARKER_SIGNAL)
+            && let ActiveEvent::Precise {
+                clock_target,
+                offset,
+            } = self.event
+        {
+            let ctr = self.read_clock();
+            if get_pmu_config().record_missed_if_target_reached(ctr, clock_target, offset) {
+                warn!(
+                    "Precise timer target {} + {} instructions reached before its interrupt \
+                     was handled; {:?} stop at counter {} cancels the event",
+                    clock_target, offset, event, ctr
+                );
+            }
+        }
         self.timer_status.tick()
     }
 
@@ -1459,7 +1521,7 @@ mod tests {
         );
         assert_eq!(timer.held_initial_event, retained);
         assert_eq!(timer.timer_status, EventStatus::Scheduled);
-        timer.observe_event();
+        timer.observe_event(&safeptrace::Event::Seccomp);
         assert_eq!(timer.timer_status, EventStatus::Armed);
         timer.begin_initial_exec();
         assert_eq!(timer.initial_command, InitialCommand::InitializingExec);
@@ -1574,9 +1636,11 @@ mod tests {
         // decision-and-record method the supervisor calls in
         // `attempt_single_step`, and observes the process-global witness
         // counter — proving the behaviour (a genuine overshoot is recorded),
-        // not merely the marker arithmetic. This test is the only writer of the
-        // witness counter in this test binary, so draining residue first makes
-        // it order-independent; env is untouched, so it is parallel-safe.
+        // not merely the marker arithmetic. This test is the only direct
+        // writer of the witness counter in this test binary, so draining
+        // residue first makes it order-independent; env is untouched, so it is
+        // parallel-safe. The real-guest precise timer tests here write it only
+        // if an interrupt arrives beyond the skid margin, which none provokes.
         let _ = reverie::take_skid_overshoot_count();
 
         // The exact CPU is irrelevant to the decision, which keys only on
@@ -1629,6 +1693,33 @@ mod tests {
         );
         // A run with zero overshoots (the common case) is attributed zero.
         assert_eq!(reverie::take_skid_overshoot_count(), 0);
+
+        // --- An event overtaken by another stop is lost, so reaching the
+        // delivery point exactly already counts. It stays in this test so the
+        // witness counter keeps a single direct writer. ---
+        assert!(!config.record_missed_if_target_reached(32_999, 33_000, 0));
+        assert_eq!(reverie::take_skid_overshoot_count(), 0);
+        assert!(config.record_missed_if_target_reached(33_000, 33_000, 0));
+        assert_eq!(reverie::take_skid_overshoot_count(), 1);
+        assert!(config.record_missed_if_target_reached(33_001, 33_000, 0));
+        assert_eq!(reverie::take_skid_overshoot_count(), 1);
+        // With an instruction offset, the branches past the target must
+        // cover the offset: each is at least one instruction, while one
+        // branch past the target may be far short of the delivery point.
+        assert!(!config.record_missed_if_target_reached(32_999, 33_000, 7));
+        assert!(!config.record_missed_if_target_reached(33_000, 33_000, 7));
+        assert!(!config.record_missed_if_target_reached(33_001, 33_000, 7));
+        assert!(!config.record_missed_if_target_reached(33_006, 33_000, 7));
+        assert_eq!(reverie::take_skid_overshoot_count(), 0);
+        assert!(config.record_missed_if_target_reached(33_007, 33_000, 7));
+        assert_eq!(reverie::take_skid_overshoot_count(), 1);
+        assert!(config.record_missed_if_target_reached(66_000, 33_000, 7));
+        assert_eq!(reverie::take_skid_overshoot_count(), 1);
+        // The comparison cannot wrap at the top of the range.
+        assert!(!config.record_missed_if_target_reached(33_001, 33_000, u64::MAX));
+        assert_eq!(reverie::take_skid_overshoot_count(), 0);
+        assert!(config.record_missed_if_target_reached(u64::MAX, 0, u64::MAX));
+        assert_eq!(reverie::take_skid_overshoot_count(), 1);
     }
 
     #[test_case(ClockCounter::new(0, 0, 10), 0, 1, Some(true))]
