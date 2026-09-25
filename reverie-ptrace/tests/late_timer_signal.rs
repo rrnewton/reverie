@@ -45,6 +45,7 @@ use reverie_ptrace::testing::do_branches;
 use reverie_ptrace::testing::late_timer_signals_discarded;
 use reverie_ptrace::testing::print_tracee_output;
 use reverie_ptrace::testing::test_fn_with_config;
+use reverie_ptrace::testing::timer_overflow_records_expired;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -577,6 +578,10 @@ enum TimerProgress {
     NotRequested,
     NotOverflowed,
     Fired,
+    /// The timer overflows while the guest blocks its signal, and the guest
+    /// then flushes the pending notification by ignoring the signal. No stop
+    /// consumes the notification.
+    FlushedByGuest,
 }
 
 fn run_colliding_descriptor(progress: TimerProgress) {
@@ -589,8 +594,9 @@ fn run_colliding_descriptor(progress: TimerProgress) {
     let timeout_rcbs = match progress {
         TimerProgress::NotRequested => 0,
         TimerProgress::NotOverflowed => 1_000_000,
-        TimerProgress::Fired => 50_000,
+        TimerProgress::Fired | TimerProgress::FlushedByGuest => 50_000,
     };
+    let expired_before = timer_overflow_records_expired();
     let (output, log) = test_fn_with_config::<CollidingDescriptorTool, _>(
         move || {
             // SAFETY: the handler only touches an atomic, and the descriptor
@@ -630,6 +636,31 @@ fn run_colliding_descriptor(progress: TimerProgress) {
                     arm_precise_timer();
                     do_branches(timeout_rcbs * 3);
                 }
+                // SAFETY: valid signal set and handler arguments.
+                TimerProgress::FlushedByGuest => unsafe {
+                    let mut set: libc::sigset_t = core::mem::zeroed();
+                    libc::sigemptyset(&mut set);
+                    libc::sigaddset(&mut set, libc::SIGSTKFLT);
+                    assert_eq!(
+                        libc::pthread_sigmask(libc::SIG_BLOCK, &set, core::ptr::null_mut()),
+                        0
+                    );
+                    arm_precise_timer();
+                    do_branches(timeout_rcbs * 3);
+                    assert_ne!(libc::signal(libc::SIGSTKFLT, libc::SIG_IGN), libc::SIG_ERR);
+                    let mut action: libc::sigaction = core::mem::zeroed();
+                    action.sa_sigaction =
+                        count_colliding_signal as extern "C" fn(libc::c_int) as usize;
+                    libc::sigemptyset(&mut action.sa_mask);
+                    assert_eq!(
+                        libc::sigaction(libc::SIGSTKFLT, &action, core::ptr::null_mut()),
+                        0
+                    );
+                    assert_eq!(
+                        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, core::ptr::null_mut()),
+                        0
+                    );
+                },
             }
             syscall_with_injection();
             assert!(COLLIDING_SIGNALS_HANDLED.load(Ordering::SeqCst) > 0);
@@ -648,8 +679,17 @@ fn run_colliding_descriptor(progress: TimerProgress) {
     assert_eq!(output.status, ExitStatus::Exited(0));
     let expected_timer_events = match progress {
         TimerProgress::Fired => 1,
-        TimerProgress::NotRequested | TimerProgress::NotOverflowed => 0,
+        TimerProgress::NotRequested
+        | TimerProgress::NotOverflowed
+        | TimerProgress::FlushedByGuest => 0,
     };
+    if let TimerProgress::FlushedByGuest = progress {
+        // Otherwise no overflow was recorded and nothing was tested.
+        assert!(
+            timer_overflow_records_expired() > expired_before,
+            "the flushed notification's overflow records did not expire"
+        );
+    }
     assert_eq!(
         log.timer_events.load(Ordering::SeqCst),
         expected_timer_events
@@ -682,4 +722,9 @@ fn colliding_guest_notification_before_overflow_is_delivered() {
 #[test]
 fn colliding_guest_notification_after_timer_event_is_delivered() {
     run_colliding_descriptor(TimerProgress::Fired);
+}
+
+#[test]
+fn colliding_guest_notification_after_flushed_notification_is_delivered() {
+    run_colliding_descriptor(TimerProgress::FlushedByGuest);
 }

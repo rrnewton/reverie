@@ -91,6 +91,19 @@ pub const WITNESS_TOKEN_ENV: &str = "HERMIT_SKID_WITNESS_TOKEN";
 
 static PMU_CONFIG: OnceLock<PmuConfig> = OnceLock::new();
 
+/// Overflow records forgotten because their notification had left the
+/// thread's pending queue, for tests.
+pub(crate) static OVERFLOW_RECORDS_EXPIRED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Whether the running kernel is built with `PREEMPT_RT`.
+fn kernel_is_preempt_rt() -> bool {
+    static PREEMPT_RT: OnceLock<bool> = OnceLock::new();
+    *PREEMPT_RT.get_or_init(|| {
+        std::fs::read_to_string("/sys/kernel/realtime").is_ok_and(|value| value.trim() == "1")
+    })
+}
+
 pub(crate) fn get_pmu_config() -> &'static PmuConfig {
     PMU_CONFIG.get_or_init(PmuConfig::new)
 }
@@ -495,6 +508,27 @@ impl Timer {
         }
     }
 
+    /// Forget recorded overflows whose notification the kernel no longer
+    /// holds for the stopped thread `task`. Called before each injected
+    /// syscall.
+    ///
+    /// A notification can leave the thread's pending queue without a stop
+    /// that consumes it: the guest can dequeue it with `sigtimedwait` or a
+    /// signalfd, flush it by ignoring the signal, or receive it where a guest
+    /// signal was expected. Its records would then authorize discarding a
+    /// later guest signal with the same siginfo. Nothing is read unless
+    /// records are unconsumed. If the queue cannot be read, the records
+    /// expire.
+    pub(crate) fn expire_overflow_records(&mut self, task: &Stopped) {
+        if let Some(timer) = self.inner_mut_noinit()
+            && timer.has_overflow_records()
+        {
+            // The notification is sent to the thread, not the process.
+            let pending = task.peeksiginfo(None).unwrap_or_default();
+            timer.expire_overflow_records(&pending);
+        }
+    }
+
     /// Return the signal type sent by the timer. This is intended to allow
     /// pre-filtering signals without the full overhead of gathering signal info
     /// to pass to ['Timer::generated_signal`].
@@ -815,17 +849,6 @@ impl TimerImpl {
         }
 
         let mut timer = builder.check_for_pmu_bugs().create()?;
-        if let Err(errno) = timer.map_sample_records() {
-            // The mapping counts against the perf mlock limit, which many
-            // threads can exhaust.
-            static WARNED: std::sync::Once = std::sync::Once::new();
-            WARNED.call_once(|| {
-                warn!(
-                    %errno,
-                    "Could not map timer overflow records; late timer signals at injected syscalls will be delivered to the guest"
-                )
-            });
-        }
         timer.set_signal_delivery(guest_tid, MARKER_SIGNAL)?;
         timer.reset()?;
         // measure the target tid irrespective of CPU
@@ -838,7 +861,46 @@ impl TimerImpl {
         if initial_command {
             clock_builder.enable_on_exec();
         }
-        let clock = clock_builder.create()?;
+        // Each thread locks up to three pages of perf buffer: the clock's
+        // fast-read page and the timer's metadata and record pages. The kernel
+        // charges them to a per-user budget of `perf_event_mlock_kb` per online
+        // CPU, then to RLIMIT_MEMLOCK. The record pages make that budget run out
+        // three times as soon, so a clock that cannot map its page falls back to
+        // read(2), which returns the same count.
+        let clock = match clock_builder.create() {
+            Ok(clock) => clock,
+            Err(errno) => {
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| {
+                    warn!(
+                        %errno,
+                        "Could not create a fast-read clock; reading clocks with read(2)"
+                    )
+                });
+                clock_builder.fast_reads(false).create()?
+            }
+        };
+        // Mapped after the clock, so that it never takes this thread's clock
+        // page.
+        if kernel_is_preempt_rt() {
+            // PREEMPT_RT sends the notification from a kernel thread some time
+            // after the record is written, so a record does not show that the
+            // notification is pending.
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                warn!(
+                    "PREEMPT_RT kernel; late timer signals at injected syscalls will be delivered to the guest"
+                )
+            });
+        } else if let Err(errno) = timer.map_sample_records() {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                warn!(
+                    %errno,
+                    "Could not map timer overflow records; late timer signals at injected syscalls will be delivered to the guest"
+                )
+            });
+        }
         clock.reset()?;
         if !initial_command {
             clock.enable()?;
@@ -941,6 +1003,26 @@ impl TimerImpl {
     fn mark_overflows_consumed(&mut self) {
         self.collect_overflow_records();
         self.overflow_recorded = false;
+    }
+
+    /// Whether the kernel has recorded an overflow whose notification has not
+    /// been consumed.
+    fn has_overflow_records(&mut self) -> bool {
+        self.collect_overflow_records();
+        self.overflow_recorded
+    }
+
+    /// Forget the recorded overflows unless `pending`, the stopped thread's
+    /// private pending signals, holds a notification with this timer's
+    /// siginfo. The thread is stopped, so no overflow can be recorded between
+    /// reading `pending` and this call. A queue longer than `pending` can
+    /// only make records expire early, which forwards a late notification to
+    /// the guest as without records.
+    fn expire_overflow_records(&mut self, pending: &[libc::siginfo_t]) {
+        if self.overflow_recorded && !pending.iter().any(|s| self.owns_overflow_signal(s)) {
+            self.mark_overflows_consumed();
+            OVERFLOW_RECORDS_EXPIRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     fn event_at(evt: TimerEventRequest, clock: u64) -> ActiveEvent {
@@ -1471,6 +1553,23 @@ mod tests {
         assert!(timer.timer.ctr_value().unwrap() >= PERIOD);
         assert!(take_timer_signal_now().is_none());
         assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+
+        // Records expire unless the thread's pending signals hold a
+        // notification with the timer's siginfo.
+        let mut other = notification;
+        other.si_signo = libc::SIGUSR1;
+        for pending in [&[other][..], &[]] {
+            timer.prepare_notification(PERIOD).unwrap();
+            do_branches(PERIOD * 3);
+            timer.timer.disable().unwrap();
+            assert!(timer.has_overflow_records());
+            timer.expire_overflow_records(&[other, notification]);
+            assert!(timer.has_overflow_records());
+            timer.expire_overflow_records(pending);
+            assert!(!timer.has_overflow_records());
+            assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+            assert!(take_timer_signal().is_some());
+        }
 
         // Without records, even a real notification is not consumed.
         timer.prepare_notification(PERIOD).unwrap();

@@ -799,15 +799,14 @@ impl PerfCounter {
         let records = self.records.as_ref()?;
         let page = records.page.as_ptr();
         let page_size = get_mmap_size() as u64;
-        let mut samples = 0;
         // SAFETY: `page` maps the metadata page followed by the data pages
         // for the lifetime of `records`. Only this method writes `data_tail`,
         // and `&mut self` excludes concurrent calls.
-        unsafe {
+        let samples = unsafe {
             let head = core::ptr::read_volatile(addr_of!((*page).data_head));
             // Pairs with the kernel's barrier before it publishes `data_head`.
             fence(Ordering::Acquire);
-            let mut position = core::ptr::read_volatile(addr_of!((*page).data_tail));
+            let tail = core::ptr::read_volatile(addr_of!((*page).data_tail));
             // Kernels before 4.1 leave these fields zero and place the data
             // immediately after the metadata page.
             let offset = match core::ptr::read_volatile(addr_of!((*page).data_offset)) {
@@ -819,31 +818,19 @@ impl PerfCounter {
                 size => size,
             };
             let data = page.cast::<u8>().add(offset as usize);
-            let header_size = core::mem::size_of::<perf::perf_event_header>() as u64;
-            while head.wrapping_sub(position) >= header_size {
-                // Records are 8-byte aligned and the data size is a multiple
-                // of the page size, so a header never wraps.
-                let header = core::ptr::read_volatile(
+            // Records are 8-byte aligned and the data size is a multiple of
+            // the page size, so a header never wraps.
+            let samples = count_sample_records(tail, head, |position| {
+                core::ptr::read_volatile(
                     data.add((position % size) as usize)
                         .cast::<perf::perf_event_header>(),
-                );
-                let record_size = u64::from(header.size);
-                if record_size < header_size || record_size > head.wrapping_sub(position) {
-                    error!(
-                        ?header,
-                        position, head, "Malformed perf sample record; ignoring the rest"
-                    );
-                    break;
-                }
-                if header.type_ == perf::PERF_RECORD_SAMPLE {
-                    samples += 1;
-                }
-                position = position.wrapping_add(record_size);
-            }
+                )
+            });
             // The records must be read before their space is released.
             fence(Ordering::SeqCst);
             core::ptr::write_volatile(addr_of_mut!((*page).data_tail), head);
-        }
+            samples
+        };
         Some(samples)
     }
 
@@ -853,6 +840,34 @@ impl PerfCounter {
     pub(crate) fn unmap_sample_records(&mut self) {
         self.records = None;
     }
+}
+
+/// Count the `PERF_RECORD_SAMPLE` records from `tail` to `head` of a ring
+/// buffer, where `read_header` reads the header of the record at a position.
+fn count_sample_records(
+    tail: u64,
+    head: u64,
+    mut read_header: impl FnMut(u64) -> perf::perf_event_header,
+) -> u64 {
+    let header_size = core::mem::size_of::<perf::perf_event_header>() as u64;
+    let mut position = tail;
+    let mut samples = 0;
+    while head.wrapping_sub(position) >= header_size {
+        let header = read_header(position);
+        let record_size = u64::from(header.size);
+        if record_size < header_size || record_size > head.wrapping_sub(position) {
+            error!(
+                ?header,
+                position, head, "Malformed perf sample record; ignoring the rest"
+            );
+            break;
+        }
+        if header.type_ == perf::PERF_RECORD_SAMPLE {
+            samples += 1;
+        }
+        position = position.wrapping_add(record_size);
+    }
+    samples
 }
 
 /// Execute the `rdpmc` instruction to read hardware performance counter number

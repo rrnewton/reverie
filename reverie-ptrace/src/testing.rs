@@ -27,6 +27,13 @@ pub fn late_timer_signals_discarded() -> u64 {
     crate::task::LATE_TIMER_SIGNALS_DISCARDED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The number of times this process forgot timer overflow records because
+/// their notification had left the thread's pending queue. Concurrent tests
+/// in one process share the count.
+pub fn timer_overflow_records_expired() -> u64 {
+    crate::timer::OVERFLOW_RECORDS_EXPIRED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// For some tests, its nice to show what was printed.
 pub fn print_tracee_output(output: &Output) {
     println!(
