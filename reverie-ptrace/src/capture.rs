@@ -134,6 +134,11 @@ impl CaptureDrain {
         self.state != ReadState::Open
     }
 
+    #[cfg(test)]
+    pub(crate) fn observed_prefix_for_test(&self) -> Option<&[u8]> {
+        self.prefix.as_deref()
+    }
+
     /// Suspend this drain and move its prefix out. Capture returns Some even
     /// for an absent pipe or zero bytes; discard returns None. A second take
     /// cannot invent an empty replacement for bytes already moved out.
