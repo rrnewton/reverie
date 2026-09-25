@@ -242,6 +242,15 @@ impl TaskExit {
             Err(error) => Poll::Fault(format!("proc task anchor observation failed: {error}")),
         }
     }
+
+    #[cfg(test)]
+    pub(super) fn detached_for_test(&self) -> bool {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .detached
+    }
 }
 
 /// The split-only pair of worker identities. Ordinary capture keeps its
@@ -265,6 +274,15 @@ impl Default for TaskExits {
 }
 
 impl TaskExits {
+    #[cfg(test)]
+    pub(super) fn install_barrier_probe(&mut self, completed: Arc<std::sync::atomic::AtomicBool>) {
+        self.barrier = Arc::new(move || {
+            rusage_self_barrier()?;
+            completed.store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        });
+    }
+
     pub(super) fn recover_startup_until(&self, deadline: Instant) -> io::Result<bool> {
         for worker in [&self.publication, &self.collector].into_iter().flatten() {
             if !worker.recover_once_until(deadline)? {
