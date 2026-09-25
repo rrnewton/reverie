@@ -50,7 +50,7 @@ use reverie::syscalls::SyscallInfo;
 use reverie_memory::MemoryAccess;
 pub use reverie_narf_core::NarfSyscallOutcome;
 pub use reverie_narf_core::NarfSyscallRequest;
-pub use reverie_narf_core::OriginalAlreadyExecuted;
+pub use reverie_narf_core::OriginalSyscallError;
 pub use reverie_narf_core::RawSyscallArgs;
 
 const TAIL_NONE: u8 = 0;
@@ -87,7 +87,7 @@ pub trait NarfKernel: Send + Sync {
     /// Mark the current task as a daemon.
     fn daemonize(&mut self);
     /// Execute the intercepted original syscall at most once.
-    fn execute_original(&mut self) -> Result<NarfSyscallOutcome, OriginalAlreadyExecuted>;
+    fn execute_original(&mut self) -> Result<NarfSyscallOutcome, OriginalSyscallError>;
     /// Execute one explicit syscall request, bypassing interception.
     fn execute_injected(&mut self, request: NarfSyscallRequest) -> NarfSyscallOutcome;
     /// Program an approximate timer.
@@ -187,8 +187,14 @@ where
         // version-zero injected syscall.
         let forwards_original = request.args == self.original.args
             && request.number == self.original.number & NARF_SYSCALL_NUMBER_MASK;
-        if forwards_original && let Ok(outcome) = self.kernel.execute_original() {
-            return outcome;
+        if forwards_original {
+            match self.kernel.execute_original() {
+                Ok(outcome) => return outcome,
+                Err(OriginalSyscallError::ContextManaged) => {
+                    return NarfSyscallOutcome::ContextManaged;
+                }
+                Err(OriginalSyscallError::AlreadyExecuted) => {}
+            }
         }
         self.kernel.execute_injected(request)
     }
@@ -472,6 +478,7 @@ mod tests {
     struct FakeKernel {
         original_calls: AtomicUsize,
         injected_calls: AtomicUsize,
+        original_context_managed: bool,
     }
 
     impl FakeKernel {
@@ -479,6 +486,7 @@ mod tests {
             Self {
                 original_calls: AtomicUsize::new(0),
                 injected_calls: AtomicUsize::new(0),
+                original_context_managed: false,
             }
         }
     }
@@ -522,11 +530,14 @@ mod tests {
 
         fn daemonize(&mut self) {}
 
-        fn execute_original(&mut self) -> Result<NarfSyscallOutcome, OriginalAlreadyExecuted> {
+        fn execute_original(&mut self) -> Result<NarfSyscallOutcome, OriginalSyscallError> {
+            if self.original_context_managed {
+                return Err(OriginalSyscallError::ContextManaged);
+            }
             if self.original_calls.fetch_add(1, Ordering::Relaxed) == 0 {
                 Ok(NarfSyscallOutcome::Returned(37))
             } else {
-                Err(OriginalAlreadyExecuted)
+                Err(OriginalSyscallError::AlreadyExecuted)
             }
         }
 
@@ -597,5 +608,28 @@ mod tests {
         assert!(matches!(outcome, DrivenSyscall::Complete(99)));
         assert_eq!(kernel.original_calls.load(Ordering::Relaxed), 0);
         assert_eq!(kernel.injected_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn terminal_context_does_not_fall_through_to_injected_dispatch() {
+        let mut thread_state = 0;
+        let mut kernel = FakeKernel::new();
+        kernel.original_context_managed = true;
+        let outcome = futures::executor::block_on(drive_syscall(
+            &ProbeTool,
+            &SharedGlobal::default(),
+            &(),
+            &mut thread_state,
+            &mut kernel,
+            NarfSyscallRequest {
+                number: (7 << 24) | libc::SYS_getpid as u32,
+                args: [0; 6],
+            },
+            Syscall::Getpid(Getpid::new()),
+        ));
+
+        assert!(matches!(outcome, DrivenSyscall::ContextManaged));
+        assert_eq!(kernel.original_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(kernel.injected_calls.load(Ordering::Relaxed), 0);
     }
 }
