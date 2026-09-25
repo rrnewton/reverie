@@ -128,7 +128,8 @@ where
         Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(pidfd) })
     } else {
         // A violated kernel contract still leaves an actual child wait owner.
-        // The caller must refuse permission, not manufacture pidfd authority.
+        // The caller must retain that wait and refuse success, not manufacture
+        // pidfd authority or assume that the child has not started.
         None
     };
     #[cfg(test)]

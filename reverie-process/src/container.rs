@@ -13,6 +13,8 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io::Read;
 use std::io::Write;
+#[cfg(test)]
+use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
@@ -1306,6 +1308,111 @@ impl Container {
         Ok(OwnedDeferredContainerRun { inner: owned })
     }
 
+    /// Runs a deferred workload while retaining the original child/result owner.
+    ///
+    /// This has the fork-safety requirements of [`Self::run`]: call before
+    /// starting threads, with no handler or other thread reaping this child.
+    /// The workload may create its own workers; it is not subject to the
+    /// startup callbacks' no-child-worker contract. The borrowed factory and
+    /// any external parent resources must remain alive through every returned
+    /// owner, including errors. Ownership here covers the direct child, not
+    /// arbitrary descendants.
+    ///
+    /// The child publishes and closes its encoded result before dropping `D`.
+    /// Linux pidfd support is required and probed before clone. After clone,
+    /// failures retain the original wait, reader and exact partial bytes, with
+    /// **no implicit cleanup attempt**. The workload may already have started
+    /// before such a failure is detected. Call the retained owner's explicit
+    /// cancellation/observation methods with an absolute deadline; failed
+    /// results stay failed even when the child later exits successfully.
+    ///
+    /// Initial result acquisition blocks draining the pipe before wait, without
+    /// a workload deadline or size cap. Explicit finalization bounds do not
+    /// bound that acquisition or child serialization. Implicit owner Drop can
+    /// block; callers requiring a hard bound need outer process supervision.
+    /// Generic result decoding is available only after an actual successful
+    /// child wait, including for an encoded container-setup refusal.
+    pub fn run_with_deferred_drop_owned<F, T, D>(
+        &mut self,
+        run: &mut F,
+    ) -> Result<OwnedDeferredContainerRun<T>, StartupOwnedFailure<T>>
+    where
+        F: FnMut() -> (T, D),
+        T: Serialize,
+    {
+        let before = |cause| StartupOwnedFailure::BeforeClone { cause };
+        let mut disposition: libc::sigaction = unsafe { std::mem::zeroed() };
+        Errno::result(unsafe {
+            libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut disposition)
+        })
+        .map_err(|error| before(error.into()))?;
+        if disposition.sa_sigaction == libc::SIG_IGN
+            || disposition.sa_flags & libc::SA_NOCLDWAIT != 0
+        {
+            return Err(before(StartupError::Io(Errno::ECHILD)));
+        }
+        let uid_map = &make_id_map(&self.uid_map);
+        let gid_map = &make_id_map(&self.gid_map);
+        let context = ChildContext {
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            uid_map,
+            gid_map,
+            seccomp_fd: None,
+        };
+        let (reader, writer) = pipe().map_err(|error| before(error.into()))?;
+        let reader_fd = reader.as_raw_fd();
+        let writer_fd = writer.as_raw_fd();
+        let mut stack = child_stack();
+        #[cfg(feature = "nightly")]
+        let output_capture = std::io::set_output_capture(None);
+        let namespace = self.namespace;
+        let result = super::clone::clone_with_stack_owned(
+            || {
+                // Only the child writer is transferred into an owning wrapper.
+                // Close the inherited reader before setup or workload effects.
+                unsafe { libc::close(reader_fd) };
+                let (value, deferred) = match self.setup(&context, &mut []) {
+                    Ok(()) => {
+                        let (value, deferred) = run();
+                        (Ok(value), Some(deferred))
+                    }
+                    Err(error) => (Err(StartupError::Setup(error)), None),
+                };
+                let mut writer = std::io::BufWriter::new(Fd::new(writer_fd));
+                bincode::serde::encode_into_std_write(
+                    &value,
+                    &mut writer,
+                    bincode::config::legacy(),
+                )
+                .expect("Failed to serialize return value");
+                writer.flush().expect("Failed to flush return value");
+                drop(writer);
+                drop(deferred);
+                0
+            },
+            namespace,
+            &mut stack,
+        );
+        #[cfg(feature = "nightly")]
+        std::io::set_output_capture(output_capture);
+        let child = OwnedContainerCleanup::new(result.map_err(|error| before(error.into()))?);
+        // Nothing fallible or user-controlled precedes installation of this
+        // original wait owner after clone has succeeded.
+        let mut owned = OwnedFinalization::new(child, reader);
+        drop(writer);
+        if owned.cleanup().pidfd.is_none() {
+            return Err(owned.refuse(OwnedRunFailure::Startup(StartupError::Protocol)));
+        }
+        #[cfg(test)]
+        owned_deferred_before_drain(&mut owned);
+        if let Err(error) = owned.drain() {
+            return Err(owned.refuse(error));
+        }
+        Ok(OwnedDeferredContainerRun { inner: owned })
+    }
+
     /// Runs a function in a new process, publishes its result, and only then
     /// drops a child-owned cleanup value.
     ///
@@ -2122,8 +2229,16 @@ impl Drop for OwnedContainerCleanup {
 #[cfg(test)]
 std::thread_local! {
     static OWNED_STARTUP_CANCEL_ERROR: std::cell::Cell<Option<Errno>> = const { std::cell::Cell::new(None) };
+    static OWNED_DEFERRED_DRAIN_HOOK: std::cell::Cell<Option<fn(RawFd)>> = const { std::cell::Cell::new(None) };
     static OWNED_RESULT_PIPE_CAPACITY: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
 }
+#[cfg(test)]
+fn owned_deferred_before_drain<T>(owned: &mut OwnedFinalization<T>) {
+    if let Some(hook) = OWNED_DEFERRED_DRAIN_HOOK.with(|hook| hook.take()) {
+        hook(owned.reader.as_ref().unwrap().as_raw_fd());
+    }
+}
+
 #[cfg(test)]
 static OWNED_POLL_INTERRUPTED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
@@ -2146,7 +2261,8 @@ pub enum OwnedRunFailure {
     WaitStatusUnavailable,
 }
 
-/// An owned startup refusal. Every post-clone failure retains the real child.
+/// An owned startup or result-acquisition refusal. Every post-clone failure
+/// retains the real child, including failures from an owned deferred workload.
 #[derive(Debug)]
 pub enum StartupOwnedFailure<T> {
     /// The clone did not create a child.
@@ -2223,6 +2339,11 @@ impl<T> OwnedFinalization<T> {
         self.child.as_mut().unwrap().cancel_and_wait_until(deadline);
         StartupOwnedFailure::AfterClone { cause, run: self }
     }
+    fn refuse(mut self, cause: OwnedRunFailure) -> StartupOwnedFailure<T> {
+        self.failure = Some(cause);
+        StartupOwnedFailure::AfterClone { cause, run: self }
+    }
+
     fn drain(&mut self) -> Result<(), OwnedRunFailure> {
         match self.reader.as_mut().unwrap().read_to_end(&mut self.bytes) {
             Ok(_) => {
@@ -2640,6 +2761,8 @@ mod tests {
     use nix::sys::signal::sigaction;
 
     use super::*;
+
+    include!("owned_deferred_tests.rs");
 
     fn owned_complete<T>(handle: OwnedDeferredContainerRun<T>) -> OwnedReapedResult<T> {
         match handle.finalize_until(Instant::now() + Duration::from_secs(2)) {
