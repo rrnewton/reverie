@@ -74,6 +74,9 @@ use reverie_kvm::StraceTool;
 
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 
+#[path = "support/random_device_stream.rs"]
+mod random_device_stream;
+
 #[test]
 fn file_script_exec_plain() {
     file_script_exec_control("file_script_exec_plain", "plain");
