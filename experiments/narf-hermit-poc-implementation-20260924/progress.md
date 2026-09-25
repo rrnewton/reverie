@@ -29,7 +29,8 @@ negative-control mutation.
   `173929ab38290bd3c5c21fcfda91a58284cd4f61`.
 - Reverie worktree: slot `narf-poc-reverie`, generation 1, branch
   `codex/narf-poc-reverie`, initial revision
-  `1d92000607542a9effc8c7cb4e87ad024e813b79`.
+  `1d92000607542a9effc8c7cb4e87ad024e813b79`, now fast-forwarded cleanly to
+  `4dc9e0bb80ab9a129430a778d5cfe4213832148c`.
 - Narf checkout (as required, outside `dev-hermit`):
   `/home/newton/temp/agent_checkouts/narf-hermit-poc`, branch
   `codex/reverie-interception-hooks`, upstream base
@@ -38,7 +39,7 @@ negative-control mutation.
 ## Narf syscall-interception milestone
 
 Current local Narf head:
-`5d0270978738be5862eeccd25a1822bfe32d4d29`.
+`10dc04b5c2757e8fdecd031bebe30688209b5268`.
 
 Commits:
 
@@ -59,6 +60,12 @@ Commits:
   `RDTSC` via CR4.TSD, plus per-CPU activation across legacy entry and
   own-stack scheduler migration. This TCB commit is GPG-signed and carries the
   required originating-prompt, model, and Codex co-author attribution.
+- `10dc04b5c2757e8fdecd031bebe30688209b5268` — address the first
+  exact-head instruction-interception audit: freeze subscriptions at install,
+  make the exception callback an unsafe contract with fail-closed recursion
+  detection, remove reset APIs from the production boot feature graph, and arm
+  every online CPU through a synchronous IPI rendezvous before install returns.
+  This TCB commit is also GPG-signed with the required AI attribution.
 
 The current interface provides an immutable `SyscallInvocation` snapshot,
 entry control (`Continue` or `Complete`), a return-only replacement callback,
@@ -151,6 +158,65 @@ not prove that `reverie-narf` exists, that an arbitrary Reverie tool can use the
 hooks, that a real executable runs under that backend, or that Linux/Hermit and
 Narf traces match. The POC is not complete.
 
+## Audit fixes and SMP evidence at `10dc04b5...`
+
+The separate exact-head review of `87b7cd10...5d027097...` returned **CHANGES
+REQUESTED**. Its byte-identical report is tracked at
+[`audits/narf-interception-5d027097.md`](audits/narf-interception-5d027097.md)
+(SHA-256
+`a6ff9dbf2b8241dafba433446da3fc7747204b1acc78f6d1f942dadfa799051f`).
+It found three blocking defects: reset capability leaked into production
+`boot-init`, instruction subscriptions were mutable and queried multiple times,
+and install returned before already-running peer CPUs had armed CR4.TSD. It
+also required the exception-context safety contract to become explicit and
+called out missing task-identity and full-lifecycle evidence.
+
+Commit `10dc04b5...` addresses the three blockers and the unsafe-callback gap.
+The production build now passes while a resolved
+`cargo tree -p narf-frame --features boot-init -e features` contains no
+`verification-test-reset` match. A distinct `kernel-test` feature owns the
+out-of-crate reset capability. The interceptor's family mask is captured once
+at installation; the trap path loads one immutable slot and makes one ownership
+decision. `InstructionInterceptor` is unsafe with a no-allocation/no-park/
+no-reentry contract, and a per-CPU recursion guard stops the kernel rather than
+returning an uncontrolled result.
+
+The generic `narf_lib::smp::remote_call` executes a short IRQ-safe function on
+the caller and every selected online peer, waiting for every acknowledgement.
+Instruction installation publishes its frozen slot, raises the monotonic trap
+request, calls the activation function on every online CPU, and only then
+returns. Later CPU bring-up and task migration retain the existing switch-in
+activation backstop.
+
+Validation at the clean signed commit's source state:
+
+- `cargo check -p narf-userspace --tests`, `cargo check -p narf-frame
+  --features boot-init`, `cargo check -p narf-frame --features kernel-test`,
+  and `cargo check -p narf-frame --features user-mode-e2e`: passed.
+- Warning-as-error `cargo clippy --all-targets` for `narf-lib`,
+  `narf-userspace`, `narf-arch`, `narf-frame`, and `narf-verification`: passed;
+  no lint was suppressed.
+- Package formatting checks and `git diff --check`: passed.
+- Two-vCPU x86_64 real ring-3 syscall/RDTSC test: one AP came online, every
+  online CPU reported CR4.TSD armed after installation, the selected test was
+  `[ OK ]`, and boot exited cleanly. Transcript SHA-256:
+  `049dbdf9ac641ea8a2b3039163de3d3b0d6112c60209fcc008372318ecabb37e`.
+- Focused two-vCPU x86_64 cross-CPU-call test: one AP came online, both CPUs
+  executed the action before return, the selected test was `[ OK ]`, and boot
+  exited cleanly. Transcript SHA-256:
+  `54c2a989aa899c301bbcef39838c4f2557e6625a5b204ce5aea497dd2d64c909`.
+- The same focused cross-CPU-call test passed on two-vCPU AArch64 with one AP
+  online and a clean boot. Transcript SHA-256:
+  `c6242815c793824c549d9298750ffb49d99cbd8d4d64568a62217baf4343bb0d`.
+
+A broad x86_64 `syscall_abi` selection also passed the new remote-call and
+membarrier rendezvous tests, but returned nonzero because two unrelated
+existing `/proc` ownership cases failed. Its transcript SHA-256 is
+`2f97e07d259c913daf4f018174772e776bf7954babd8ed91f8b2b6be8f1b13f1`.
+That broad selection is not claimed green. The focused new test was registered
+under `syscall_abi/interception` so its causal result can be run independently;
+no existing assertion, skip, comparator, or tolerance was weakened.
+
 ## Audit state
 
 The first separate adversarial review covered exact head
@@ -173,6 +239,12 @@ found the still-public reset as the remaining blocking interface issue. Commit
 `d87869d...` fixes that issue. The review also retained major evidence gaps for
 live architecture entries, concurrent publication, and final I/O accounting;
 those are not relabeled as proven.
+
+The third report at exact head `5d027097...` is the instruction/SMP audit linked
+above. Head `10dc04b5...` fixes its blocking production-feature,
+subscription-TOCTOU, cross-CPU activation, and safe-trait findings. A fresh
+exact-head review is still required after the syscall transition boundary is
+implemented; the earlier report is not treated as approval of the changed head.
 
 ## Full-suite failure provenance
 
@@ -197,8 +269,9 @@ worktree was removed after its output was captured under `/tmp`.
 
 ## Next gates
 
-1. Resolve every substantive finding from the fresh exact-head Narf review of
-   base `87b7cd10...` through head `5d027097...`.
+1. Add the kernel-owned, at-most-once native syscall transition needed by
+   Reverie `Guest::inject`, without exposing mutable trap state or permitting a
+   dispatcher to run the native handler twice.
 2. Implement the general `reverie-narf` backend in the registered Reverie
    worktree, then the minimal Hermit integration/tool surface in its registered
    worktree.
