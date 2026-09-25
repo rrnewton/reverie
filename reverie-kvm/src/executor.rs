@@ -7474,20 +7474,7 @@ fn open_file(
         return open_guest_fd_path(state, guest_fd, flags, guest_cloexec);
     }
     if path == b"/dev/random" || path == b"/dev/urandom" {
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-228): Review cross-backend random-device stream parity.
-        let bytes = deterministic_random_device_bytes(state.random_seed, 64 * 1024);
-        let result = open_virtual_file(state, &bytes, flags, guest_cloexec);
-        if result >= 0
-            && let Ok(fd) = libc::c_int::try_from(result)
-        {
-            state.random_device_fds.insert(fd);
-            state.random_device_descriptions.insert(
-                fd,
-                Arc::new(RandomDeviceDescription::new(state.random_seed)),
-            );
-        }
-        return result;
+        return open_random_device(state, flags, guest_cloexec);
     }
     if path == b"/proc/uptime" {
         return open_virtual_file(state, b"0.00 0.00\n", flags, guest_cloexec);
@@ -7566,6 +7553,17 @@ fn open_file(
     if let Err(error) = ensure_not_procfs(&file) {
         return error;
     }
+    match is_host_random_device(&file) {
+        Ok(true) => {
+            // Resolve the original name/flags first, then classify this held
+            // object. Re-resolving a pathname would race rename/symlink changes.
+            // Drop the real device before creating or publishing its carrier.
+            drop(file);
+            return open_random_device(state, flags, guest_cloexec);
+        }
+        Ok(false) => {}
+        Err(error) => return error,
+    }
     if uses_mode && created {
         // Override the supervisor umask only for a file created by this call.
         // SAFETY: file is a live owned descriptor and mode is bounded above.
@@ -7574,6 +7572,45 @@ fn open_file(
         }
     }
     insert_file_with_flags(state, file, guest_cloexec, None)
+}
+
+/// Recognize Linux's random devices by the opened object, including relative
+/// names, ordinary symlinks and alternate device nodes. O_PATH|O_NOFOLLOW on a
+/// symlink observes S_IFLNK here and must retain that symlink object unchanged.
+fn is_host_random_device(file: &std::fs::File) -> Result<bool, i64> {
+    #[cfg(test)]
+    tests::random_path_before_classification(file)?;
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: file owns a live fd and stat is writable for the complete result.
+    if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fstat initialized stat on success.
+    let stat = unsafe { stat.assume_init() };
+    Ok(stat.st_mode & libc::S_IFMT == libc::S_IFCHR
+        && libc::major(stat.st_rdev) == 1
+        && matches!(libc::minor(stat.st_rdev), 8 | 9))
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-228): Review cross-backend random-device stream parity.
+fn open_random_device(state: &mut LoadedStaticElf, flags: u64, close_on_exec: bool) -> i64 {
+    #[cfg(test)]
+    if let Err(error) = tests::random_path_before_carrier() {
+        return error;
+    }
+    let bytes = deterministic_random_device_bytes(state.random_seed, 64 * 1024);
+    let result = open_virtual_file(state, &bytes, flags, close_on_exec);
+    if result >= 0
+        && let Ok(fd) = libc::c_int::try_from(result)
+    {
+        state.random_device_fds.insert(fd);
+        state.random_device_descriptions.insert(
+            fd,
+            Arc::new(RandomDeviceDescription::new(state.random_seed)),
+        );
+    }
+    result
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -7860,6 +7897,16 @@ fn open_guest_fd_path(
         Ok(file) => file,
         Err(error) => return error,
     };
+    match is_host_random_device(&file) {
+        Ok(true) => {
+            drop(file);
+            // A freshly virtualized endpoint must not inherit the source's
+            // host-device inode or captured-output alias identity.
+            return open_random_device(state, flags, close_on_exec);
+        }
+        Ok(false) => {}
+        Err(error) => return error,
+    }
     let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
     if new_fd >= 0 {
         state
@@ -16939,6 +16986,268 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
+
+    type RandomPathClassifyHook = Box<dyn FnOnce(&std::fs::File) -> Result<(), i64>>;
+    type RandomPathCarrierHook = Box<dyn FnOnce() -> Result<(), i64>>;
+
+    thread_local! {
+        static RANDOM_PATH_CLASSIFY_HOOK: std::cell::RefCell<Option<RandomPathClassifyHook>> =
+            const { std::cell::RefCell::new(None) };
+        static RANDOM_PATH_CARRIER_HOOK: std::cell::RefCell<Option<RandomPathCarrierHook>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn random_path_before_classification(file: &std::fs::File) -> Result<(), i64> {
+        let hook = RANDOM_PATH_CLASSIFY_HOOK.with(|slot| slot.borrow_mut().take());
+        hook.map_or(Ok(()), |hook| hook(file))
+    }
+
+    pub(super) fn random_path_before_carrier() -> Result<(), i64> {
+        let hook = RANDOM_PATH_CARRIER_HOOK.with(|slot| slot.borrow_mut().take());
+        hook.map_or(Ok(()), |hook| hook())
+    }
+
+    fn with_random_path_hooks<T>(
+        classify: Option<RandomPathClassifyHook>,
+        carrier: Option<RandomPathCarrierHook>,
+        operation: impl FnOnce() -> T,
+    ) -> T {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                RANDOM_PATH_CLASSIFY_HOOK.with(|slot| slot.borrow_mut().take());
+                RANDOM_PATH_CARRIER_HOOK.with(|slot| slot.borrow_mut().take());
+            }
+        }
+        RANDOM_PATH_CLASSIFY_HOOK.with(|slot| {
+            assert!(std::mem::replace(&mut *slot.borrow_mut(), classify).is_none());
+        });
+        RANDOM_PATH_CARRIER_HOOK.with(|slot| {
+            assert!(std::mem::replace(&mut *slot.borrow_mut(), carrier).is_none());
+        });
+        let _reset = Reset;
+        operation()
+    }
+
+    #[test]
+    fn random_paths_classify_the_held_object_after_path_replacement() {
+        for (original, replacement, random) in [
+            ("/dev/random", "/dev/null", true),
+            ("/dev/urandom", "/dev/null", true),
+            ("/dev/null", "/dev/urandom", false),
+        ] {
+            let root = TestDir::new();
+            let path = root.0.join("device");
+            std::os::unix::fs::symlink(original, &path).unwrap();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            let changed_path = path.clone();
+            let fd = with_random_path_hooks(
+                Some(Box::new(move |_| {
+                    std::fs::remove_file(&changed_path).unwrap();
+                    std::os::unix::fs::symlink(replacement, &changed_path).unwrap();
+                    Ok(())
+                })),
+                None,
+                || open_readonly(&mut memory, &mut state, path.to_str().unwrap()),
+            );
+            assert!(fd >= 0);
+            assert_eq!(state.random_device_fds.contains(&(fd as i32)), random);
+            assert_eq!(
+                state.random_device_descriptions.contains_key(&(fd as i32)),
+                random
+            );
+            let result = random_stream_read(&mut memory, &mut state, fd, 0x300, 23);
+            if random {
+                assert_eq!(result, 23);
+                let expected: Vec<u8> = (0..23).map(|i| ((i * 73 + 41) & 255) as u8).collect();
+                assert_eq!(random_stream_bytes(&memory, 0x300, 23), expected);
+                let carrier = file_identity_stat(&state.files[&(fd as i32)]).unwrap();
+                assert_eq!(carrier.st_mode & libc::S_IFMT, libc::S_IFREG);
+                assert_eq!(carrier.st_size, 65536);
+            } else {
+                assert_eq!(result, 0, "the held /dev/null must remain /dev/null");
+            }
+            assert_eq!(std::fs::read_link(&path).unwrap(), Path::new(replacement));
+        }
+    }
+
+    #[test]
+    fn random_paths_reopen_unmarked_devices_without_source_identity_or_output_alias() {
+        for device in ["/dev/random", "/dev/urandom"] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            // Model an inherited, unmarked endpoint. R1 contains its named
+            // reopen; it does not claim to virtualize all inherited descriptors.
+            let source = insert_file_with_flags(
+                &mut state,
+                std::fs::File::open(device).unwrap(),
+                false,
+                Some(OutputAlias::Stdout),
+            ) as i32;
+            assert!(!state.random_device_fds.contains(&source));
+            let source_inode = state.fd_object_inodes[&source].clone();
+            let path = format!("/proc/self/fd/{source}");
+            let fd = open_with_flags(&mut memory, &mut state, &path, libc::O_CLOEXEC);
+            assert!(fd >= 0);
+            let fd = fd as i32;
+            assert!(state.random_device_fds.contains(&fd));
+            assert!(state.random_device_descriptions.contains_key(&fd));
+            assert!(state.cloexec_fds.contains(&fd));
+            assert!(output_alias(&state, fd).is_none());
+            assert!(!Arc::ptr_eq(&source_inode, &state.fd_object_inodes[&fd]));
+            assert!(!state.proc_files.contains_key(&fd));
+            assert!(matches!(
+                output_alias(&state, source),
+                Some(OutputAlias::Stdout)
+            ));
+            state.random_seed = 37;
+            assert_eq!(
+                random_stream_read(&mut memory, &mut state, i64::from(fd), 0x300, 23),
+                23
+            );
+            let expected: Vec<u8> = (0..23).map(|i| ((i * 73 + 41) & 255) as u8).collect();
+            assert_eq!(random_stream_bytes(&memory, 0x300, 23), expected);
+            assert_eq!(
+                open_readonly(&mut memory, &mut state, &format!("/proc/self/fd/{fd}")),
+                negative_errno(libc::ENOSYS)
+            );
+        }
+    }
+
+    #[test]
+    fn random_paths_classification_and_carrier_failures_publish_nothing() {
+        for reopen in [false, true] {
+            for fail_classify in [false, true] {
+                let root = TestDir::new();
+                let mut state = test_state(&root.0);
+                let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+                let source = insert_file_with_flags(
+                    &mut state,
+                    std::fs::File::open("/dev/urandom").unwrap(),
+                    true,
+                    Some(OutputAlias::Stdout),
+                ) as i32;
+                let inode = state.fd_object_inodes[&source].clone();
+                let files: Vec<_> = state
+                    .files
+                    .iter()
+                    .map(|(&fd, file)| (fd, file.as_raw_fd()))
+                    .collect();
+                let next_inode = state.file_identity_table.lock().unwrap().next_inode;
+                let held_fd = std::rc::Rc::new(std::cell::Cell::new(-1));
+                let classify_fd = held_fd.clone();
+                let carrier_called = std::rc::Rc::new(std::cell::Cell::new(false));
+                let called = carrier_called.clone();
+                let result = with_random_path_hooks(
+                    Some(Box::new(move |file| {
+                        classify_fd.set(file.as_raw_fd());
+                        if fail_classify {
+                            Err(negative_errno(libc::EIO))
+                        } else {
+                            Ok(())
+                        }
+                    })),
+                    Some(Box::new(move || {
+                        called.set(true);
+                        Err(negative_errno(libc::EMFILE))
+                    })),
+                    || {
+                        let path = if reopen {
+                            format!("/proc/self/fd/{source}")
+                        } else {
+                            "/dev//urandom".to_owned()
+                        };
+                        open_with_flags(&mut memory, &mut state, &path, libc::O_CLOEXEC)
+                    },
+                );
+                assert_eq!(
+                    result,
+                    negative_errno(if fail_classify {
+                        libc::EIO
+                    } else {
+                        libc::EMFILE
+                    })
+                );
+                assert!(held_fd.get() >= 0);
+                assert_eq!(carrier_called.get(), !fail_classify);
+                // The production drop(file) precedes carrier construction.
+                // A retired numeric fd can already belong to another parallel
+                // test, so its later lookup cannot establish this ownership.
+                assert_eq!(
+                    state
+                        .files
+                        .iter()
+                        .map(|(&fd, file)| (fd, file.as_raw_fd()))
+                        .collect::<Vec<_>>(),
+                    files
+                );
+                assert_eq!(state.fd_object_inodes.len(), 1);
+                assert!(Arc::ptr_eq(&inode, &state.fd_object_inodes[&source]));
+                assert_eq!(
+                    state.file_identity_table.lock().unwrap().next_inode,
+                    next_inode
+                );
+                assert_eq!(
+                    state.cloexec_fds.iter().copied().collect::<Vec<_>>(),
+                    vec![source]
+                );
+                assert_eq!(
+                    state.stdout_alias_fds.iter().copied().collect::<Vec<_>>(),
+                    vec![source]
+                );
+                assert!(state.stderr_alias_fds.is_empty());
+                assert!(state.random_device_fds.is_empty());
+                assert!(state.random_device_descriptions.is_empty());
+                assert!(state.proc_files.is_empty());
+                assert!(state.fdinfo_files.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn random_paths_keep_legacy_opener_restrictions_for_named_aliases() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        for path in [
+            "/dev/random",
+            "/dev//random",
+            "/dev/urandom",
+            "/dev/./urandom",
+        ] {
+            for (flags, error) in [
+                (libc::O_WRONLY, libc::EACCES),
+                (libc::O_RDWR, libc::EACCES),
+                (libc::O_PATH, libc::EINVAL),
+            ] {
+                assert_eq!(
+                    open_with_flags(&mut memory, &mut state, path, flags),
+                    negative_errno(error)
+                );
+                assert!(state.files.is_empty());
+                assert!(state.fd_object_inodes.is_empty());
+                assert!(state.random_device_fds.is_empty());
+                assert!(state.random_device_descriptions.is_empty());
+            }
+        }
+        // creat resolves its existing target but cannot bypass the incumbent
+        // virtual opener's unsupported O_CREAT|O_TRUNC policy. No data write.
+        write_c_string(&mut memory, 0x100, "/dev//urandom");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_creat,
+                [0x100, 0o600, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert!(state.files.is_empty());
+        assert!(state.random_device_fds.is_empty());
+        assert!(state.random_device_descriptions.is_empty());
+    }
 
     include!("capture_identity_tests.rs");
     include!("pipe_fionread_tests.rs");
