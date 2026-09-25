@@ -64,6 +64,33 @@ pub trait MemoryAccess {
         self.write_vectored(&from, &mut to)
     }
 
+    /// Writes one prefix while respecting the target's user mapping permissions.
+    ///
+    /// Unlike debugger writes, this must not force access to read-only memory.
+    /// Supported implementations perform one increasing-address copy, without
+    /// retrying a short transfer. A nonempty first-byte fault is `EFAULT`;
+    /// otherwise the count describes exactly the bytes copied. A short count
+    /// does not imply that the next byte is unwritable or identify a fault.
+    /// Nonempty address-plus-length overflow is `EFAULT` before copying.
+    ///
+    /// A healthy supported empty copy returns zero without inspecting `addr`.
+    /// Other errors retain their identity. A terminal backend failure may
+    /// override a count or ordinary fault after effects, including on an empty
+    /// operation. Callers must preserve those effects, stop, and not commit a
+    /// consuming transaction or retry a terminal error as an ordinary fault.
+    ///
+    /// The default is unsupported, including for empty copies. `ENOSYS` means
+    /// a missing backend capability: the consuming Tool must report a backend
+    /// or Tool failure rather than forwarding it as a guest syscall errno.
+    /// It must not fall back to generic debugger writes.
+    ///
+    /// This synchronous operation may block and adds no scheduling guarantee
+    /// or snapshot of concurrent mapping changes. Permissions are those the
+    /// backend supports; this does not add PKRU or tagged-address emulation.
+    fn write_with_user_access(&mut self, _addr: AddrMut<u8>, _buf: &[u8]) -> Result<usize, Errno> {
+        Err(Errno::ENOSYS)
+    }
+
     /// Reads exactly the number of bytes wanted by `buf`.
     fn read_exact<'a, A>(&self, addr: A, mut buf: &mut [u8]) -> Result<(), Errno>
     where
@@ -356,5 +383,47 @@ where
     fn flush(&mut self) -> io::Result<()> {
         // Flush doesn't make any sense when writing to memory.
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod user_access_default_tests {
+    use super::*;
+    struct LegacyWriter {
+        calls: usize,
+    }
+    impl MemoryAccess for LegacyWriter {
+        fn read_vectored(
+            &self,
+            _: &[io::IoSlice],
+            _: &mut [io::IoSliceMut],
+        ) -> Result<usize, Errno> {
+            panic!("copyout must not probe memory")
+        }
+        fn write_vectored(
+            &mut self,
+            _: &[io::IoSlice],
+            _: &mut [io::IoSliceMut],
+        ) -> Result<usize, Errno> {
+            panic!("new capability must not fall back to vectored debugger writes")
+        }
+        fn write(&mut self, _: AddrMut<u8>, bytes: &[u8]) -> Result<usize, Errno> {
+            self.calls += 1;
+            Ok(bytes.len())
+        }
+    }
+    #[test]
+    fn unsupported_user_copy_never_falls_back_to_debugger_write() {
+        let mut memory = LegacyWriter { calls: 0 };
+        let address = AddrMut::from_raw(usize::MAX).unwrap();
+        for bytes in [&[][..], &[1, 2, 3, 4, 5, 6, 7][..], &[0; 8][..]] {
+            assert_eq!(
+                memory.write_with_user_access(address, bytes),
+                Err(Errno::ENOSYS)
+            );
+            assert_eq!(memory.calls, 0);
+        }
+        assert_eq!(memory.write(address, &[0; 8]), Ok(8));
+        assert_eq!(memory.calls, 1);
     }
 }
