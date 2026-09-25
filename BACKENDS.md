@@ -42,10 +42,12 @@ implement that common launch contract
 [SaBRe adapter][sabre-adapter]). This is an API-status distinction, not a claim
 that the latter paths are simulations.
 
-`reverie-narf` currently implements the generic per-syscall Tool/Guest driver
-over a direct kernel trait, including original and repeated injected syscalls,
-register/memory/stack providers, timers, per-thread state, and direct singleton
-calls. It does **not** yet implement the `Backend` launch/lifecycle contract or
+`reverie-narf-core` provides the dependency-free `no_std` request, outcome,
+native-transition, and direct-state driver boundary. `reverie-narf` reuses
+those wire types and currently implements the generic per-syscall Tool/Guest
+driver over a direct kernel trait, including original and repeated injected
+syscalls, register/memory/stack providers, timers, per-thread state, and direct
+singleton calls. It does **not** yet implement the `Backend` launch/lifecycle contract or
 link into a Narf kernel image: Reverie's current public API is Linux/`std`, while
 the Narf kernel is `no_std`. Until that split and the Narf adapter land, this is
 an executable driver component, not a claim of a working Narf backend
