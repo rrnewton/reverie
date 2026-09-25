@@ -3121,13 +3121,28 @@ impl<L: Tool + 'static> TracedTask<L> {
             })
             .await;
 
+            let retval = match retval {
+                Some(Err(error)) => match error.into_errno() {
+                    Ok(errno) => Some(Err(errno)),
+                    Err(error) => {
+                        // Effects performed by the callback cannot be rolled back.
+                        // Publish the original cause and park this exact stop for
+                        // its tree owner; do not finalize timers, encode a guest
+                        // errno, resume, or enter the legacy child-detach path.
+                        self.publish_ordinary_failure("ptrace injected syscall callback", error);
+                        return future::pending().await;
+                    }
+                },
+                Some(Ok(value)) => Some(Ok(value)),
+                None => None,
+            };
             self.ordinary_trace_continuation()?;
             self.timer.finalize_requests();
 
             if let Some(retval) = retval {
                 let result = match retval {
                     Ok(value) => value,
-                    Err(error) => -(error.into_errno().unwrap_or(Errno::EIO).into_raw() as i64),
+                    Err(errno) => -(errno.into_raw() as i64),
                 };
                 self.write_injected_syscall_result(&task, Ok(result))?;
             }
@@ -5202,7 +5217,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<Running, TraceError> {
-        if self.ordinary_failure_enabled() && self.global_state.fatal_session.is_failed() {
+        if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
         self.lease_liteinst_root_stop(task).resume(signal)
@@ -5213,7 +5228,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<Running, TraceError> {
-        if self.ordinary_failure_enabled() && self.global_state.fatal_session.is_failed() {
+        if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
         self.lease_liteinst_root_stop(task).step(signal)
@@ -5224,7 +5239,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<Running, TraceError> {
-        if self.ordinary_failure_enabled() && self.global_state.fatal_session.is_failed() {
+        if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
         self.lease_liteinst_root_stop(task).syscall(signal)
@@ -6207,12 +6222,13 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     fn ordinary_failure_enabled(&self) -> bool {
+        // Configured static traps use the same stopped-task ownership as
+        // seccomp. Dynamic LiteInst retains its separate session cleanup guard.
         self.global_state.liteinst_runtime.is_none()
-            && self.global_state.injected_syscall_trap.is_none()
     }
 
     fn ordinary_trace_continuation(&self) -> Result<(), TraceError> {
-        if self.ordinary_failure_enabled() && self.global_state.fatal_session.is_failed() {
+        if self.global_state.fatal_session.is_failed() {
             Err(Errno::ECANCELED.into())
         } else {
             Ok(())
@@ -6220,7 +6236,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     fn ordinary_continuation(&self) -> Result<(), Error> {
-        if self.ordinary_failure_enabled() && self.global_state.fatal_session.is_failed() {
+        if self.global_state.fatal_session.is_failed() {
             Err(Error::RunFailed)
         } else {
             Ok(())
@@ -6827,6 +6843,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             Either::Left(Err(error)) => handle_internal_error(error.into()).await,
             Either::Right(outcome) => outcome,
         };
+        if self.global_state.fatal_session.is_failed() {
+            // The legacy session owner will terminate this generation. In
+            // particular, a child must not turn cancellation into detach or a
+            // fabricated exit status, nor run another ordinary Tool observer.
+            return future::pending().await;
+        }
         if outcome.is_ok() && self.global_state.liteinst_runtime.is_some() {
             let phase = self.liteinst_runtime.lock().unwrap().phase;
             if phase != LiteinstRuntimePhase::Ready {

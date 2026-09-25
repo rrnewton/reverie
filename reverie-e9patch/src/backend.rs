@@ -22,6 +22,7 @@ use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -246,34 +247,79 @@ enum ExecutableResource {
 }
 
 impl ExecutableResource {
-    fn cleanup(self) -> io::Result<()> {
-        match self {
-            Self::Temporary(path) => path.close(),
-            Self::Overlay {
-                mut mount,
-                backing_path,
-            } => {
-                let unmount = mount.unmount();
-                let unlink = backing_path.close();
-                unmount.and(unlink)
+    fn cleanup(mut self, completed: bool) -> io::Result<()> {
+        match self.cleanup_in_place(completed) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                // No destructor/unlink fallback after refusal, even if the
+                // traced tasks already physically retired or setup failed.
+                reverie_ptrace::quarantine_cleanup_resource(self);
+                let _ = writeln!(
+                    io::stderr().lock(),
+                    "e9patch cleanup unconfirmed; original resource retained permanently: {error}"
+                );
+                Err(error)
             }
-            Self::Original => Ok(()),
         }
     }
-}
 
-struct ExecutableOverlay {
-    target: CString,
-    target_path: PathBuf,
-    mounted: bool,
-}
+    fn cleanup_in_place(&mut self, completed: bool) -> io::Result<()> {
+        let remove = |path: &Path| match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        };
+        match self {
+            Self::Temporary(path) => remove(path)?,
+            Self::Overlay {
+                mount,
+                backing_path,
+            } => {
+                mount.namespace.verify()?;
+                if mount.mounted && !completed {
+                    // Namespace equality is not exclusive mount authority.
+                    // Fatal cleanup never selects a mount by pathname, even
+                    // after switch-back or removal of a covering mount.
+                    return Err(io::Error::other(
+                        "fatal e9patch overlay cleanup unconfirmed; mounted overlay and backing retained",
+                    ));
+                }
+                // Only an actual Ok legacy result selects the established
+                // pathname cleanup. Its concurrent-topology limitation remains.
+                mount.unmount()?;
+                remove(backing_path)?;
+            }
+            Self::Original => {}
+        }
+        *self = Self::Original;
+        Ok(())
+    }
 
-impl ExecutableOverlay {
-    fn mount(source: &Path, target: &Path) -> io::Result<Self> {
-        let source = path_cstring(source)?;
+    fn overlay(backing_path: tempfile::TempPath, target: &Path) -> io::Result<Self> {
+        Self::overlay_with_remount(backing_path, target, |target| {
+            syscall_result(unsafe {
+                libc::mount(
+                    ptr::null(),
+                    target.as_ptr(),
+                    ptr::null(),
+                    (libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY) as libc::c_ulong,
+                    ptr::null(),
+                )
+            })
+        })
+    }
+
+    fn overlay_with_remount(
+        backing_path: tempfile::TempPath,
+        target: &Path,
+        remount: impl FnOnce(&std::ffi::CStr) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        // Own the backing before bind. All fallible preparation precedes bind;
+        // after it succeeds the full original resource is immediately owned.
+        let namespace = MountNamespace::capture()?;
+        let source = path_cstring(&backing_path)?;
         let target_cstring = path_cstring(target)?;
         let target_path = target.to_owned();
-
         syscall_result(unsafe {
             libc::mount(
                 source.as_ptr(),
@@ -283,28 +329,122 @@ impl ExecutableOverlay {
                 ptr::null(),
             )
         })?;
-
-        let mut overlay = Self {
-            target: target_cstring,
-            target_path,
-            mounted: true,
+        let resource = Self::Overlay {
+            mount: ExecutableOverlay {
+                target: target_cstring,
+                target_path,
+                namespace,
+                mounted: true,
+            },
+            backing_path,
         };
-        if let Err(error) = syscall_result(unsafe {
-            libc::mount(
-                ptr::null(),
-                overlay.target.as_ptr(),
-                ptr::null(),
-                (libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY) as libc::c_ulong,
-                ptr::null(),
-            )
-        }) {
-            let _ = overlay.unmount();
+        let Self::Overlay { mount, .. } = &resource else {
+            unreachable!()
+        };
+        if let Err(error) = remount(&mount.target) {
+            reverie_ptrace::quarantine_cleanup_resource(resource);
+            let _ = writeln!(
+                io::stderr().lock(),
+                "e9patch readonly remount failed; installed overlay and backing retained permanently: {error}"
+            );
             return Err(error);
         }
-        Ok(overlay)
+        Ok(resource)
+    }
+}
+
+impl reverie_ptrace::PtraceCleanupResource for ExecutableResource {
+    fn cleanup(&mut self) -> Result<(), Error> {
+        self.cleanup_in_place(false).map_err(Error::from)
+    }
+}
+
+fn finish_legacy_wait<G: 'static, R: 'static>(
+    result: Result<(R, G), Error>,
+    resource: ExecutableResource,
+) -> Result<(R, G), Error> {
+    match result {
+        Err(Error::Tool(error))
+            if error
+                .downcast_ref::<reverie_ptrace::CleanupUnconfirmed>()
+                .is_some() =>
+        {
+            let retained = error
+                .downcast_ref::<reverie_ptrace::CleanupUnconfirmed>()
+                .unwrap();
+            let attachment = retained.retain_cleanup_resource::<G, R, _>(resource);
+            match attachment {
+                Ok(()) => Err(Error::Tool(error)),
+                // The API retains the exact unbound guard and another admission
+                // permit on refusal. Keep the original typed failure in context.
+                Err(refusal) => Err(Error::Tool(error.context(refusal))),
+            }
+        }
+        Err(error) => {
+            let _ = resource.cleanup(false);
+            Err(error)
+        }
+        Ok(result) => {
+            resource.cleanup(true)?;
+            Ok(result)
+        }
+    }
+}
+
+fn finish_spawn<G>(
+    result: Result<Tracer<G>, Error>,
+    resource: ExecutableResource,
+) -> Result<(Tracer<G>, ExecutableResource), Error> {
+    match result {
+        Ok(tracer) => Ok((tracer, resource)),
+        Err(error) => {
+            let _ = resource.cleanup(false);
+            Err(error)
+        }
+    }
+}
+
+struct ExecutableOverlay {
+    target: CString,
+    target_path: PathBuf,
+    namespace: MountNamespace,
+    mounted: bool,
+}
+
+struct MountNamespace {
+    file: File,
+    device: u64,
+    inode: u64,
+}
+
+impl MountNamespace {
+    fn capture() -> io::Result<Self> {
+        let file = File::open("/proc/thread-self/ns/mnt")?;
+        let metadata = file.metadata()?;
+        Ok(Self {
+            file,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
     }
 
+    fn verify(&self) -> io::Result<()> {
+        let held = self.file.metadata()?;
+        let current = std::fs::metadata("/proc/thread-self/ns/mnt")?;
+        if (held.dev(), held.ino()) != (self.device, self.inode)
+            || (current.dev(), current.ino()) != (self.device, self.inode)
+        {
+            return Err(io::Error::other(
+                "e9patch cleanup refused outside its original thread mount namespace",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl ExecutableOverlay {
     fn unmount(&mut self) -> io::Result<()> {
+        self.namespace.verify()?;
         if self.mounted {
             syscall_result(unsafe { libc::umount2(self.target.as_ptr(), libc::MNT_DETACH) })?;
             self.mounted = false;
@@ -316,7 +456,8 @@ impl ExecutableOverlay {
 impl Drop for ExecutableOverlay {
     fn drop(&mut self) {
         if let Err(error) = self.unmount() {
-            eprintln!(
+            let _ = writeln!(
+                io::stderr().lock(),
                 "warning: failed to remove e9patch executable overlay {}: {error}",
                 self.target_path.display()
             );
@@ -628,15 +769,9 @@ impl E9patchBackend {
         let executable = executable.into_temp_path();
 
         let (resource, mapped_image) = if preserve_executable {
-            let overlay = ExecutableOverlay::mount(&executable, &source)?;
+            let resource = ExecutableResource::overlay(executable, &source)?;
             command.program(&source).arg0(arg0);
-            (
-                ExecutableResource::Overlay {
-                    mount: overlay,
-                    backing_path: executable,
-                },
-                source,
-            )
+            (resource, source)
         } else {
             command.program(&executable).arg0(arg0);
             let mapped_image = executable.to_path_buf();
@@ -649,13 +784,8 @@ impl E9patchBackend {
             Some((mapped_image, image_entry_address, patched_site_addresses)),
         )
         .await;
-        match spawn_result {
-            Ok(tracer) => Ok((tracer, resource, stats)),
-            Err(error) => {
-                let _ = resource.cleanup();
-                Err(error)
-            }
-        }
+        let (tracer, resource) = finish_spawn(spawn_result, resource)?;
+        Ok((tracer, resource, stats))
     }
 
     /// Runs a tool and captures the rewritten guest's stdout and stderr.
@@ -690,13 +820,7 @@ impl E9patchBackend {
         T: Tool + 'static,
     {
         let (tracer, resource, _stats) = Self::spawn::<T>(command, config, true).await?;
-        let result = tracer.wait().await;
-        let cleanup = resource.cleanup();
-        match (result, cleanup) {
-            (Ok(result), Ok(())) => Ok(result),
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error.into()),
-        }
+        finish_legacy_wait(tracer.wait().await, resource)
     }
 
     /// Runs a tool with original executable identity and captures its output.
@@ -717,13 +841,7 @@ impl E9patchBackend {
         T: Tool + 'static,
     {
         let (tracer, resource, _stats) = Self::spawn::<T>(command, config, true).await?;
-        let result = tracer.wait_with_output().await;
-        let cleanup = resource.cleanup();
-        match (result, cleanup) {
-            (Ok(result), Ok(())) => Ok(result),
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error.into()),
-        }
+        finish_legacy_wait(tracer.wait_with_output().await, resource)
     }
 }
 
@@ -1054,13 +1172,7 @@ impl Backend for E9patchBackend {
         T: Tool + 'static,
     {
         let (tracer, resource, _stats) = Self::spawn::<T>(command, config, false).await?;
-        let result = tracer.wait().await;
-        let cleanup = resource.cleanup();
-        match (result, cleanup) {
-            (Ok(result), Ok(())) => Ok(result),
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error.into()),
-        }
+        finish_legacy_wait(tracer.wait().await, resource)
     }
 
     async fn run_with_stats<T>(
@@ -1071,13 +1183,8 @@ impl Backend for E9patchBackend {
         T: Tool + 'static,
     {
         let (tracer, resource, stats) = Self::spawn::<T>(command, config, false).await?;
-        let result = tracer.wait().await;
-        let cleanup = resource.cleanup();
-        match (result, cleanup) {
-            (Ok((status, global)), Ok(())) => Ok((status, global, stats.backend_stats())),
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error.into()),
-        }
+        finish_legacy_wait(tracer.wait().await, resource)
+            .map(|(status, global)| (status, global, stats.backend_stats()))
     }
 
     async fn run_with_output<T>(
@@ -1094,13 +1201,8 @@ impl Backend for E9patchBackend {
         command.stdout(reverie::process::Stdio::piped());
         command.stderr(reverie::process::Stdio::piped());
         let (tracer, resource, stats) = Self::spawn::<T>(command, config, false).await?;
-        let result = tracer.wait_with_output().await;
-        let cleanup = resource.cleanup();
-        match (result, cleanup) {
-            (Ok((output, global)), Ok(())) => Ok((output, global, stats.backend_stats())),
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error.into()),
-        }
+        finish_legacy_wait(tracer.wait_with_output().await, resource)
+            .map(|(output, global)| (output, global, stats.backend_stats()))
     }
 }
 
@@ -1111,6 +1213,482 @@ mod tests {
     use std::os::fd::FromRawFd;
 
     use super::*;
+
+    #[test]
+    fn retained_executable_cleanup_preserves_backing_on_detach_refusal() {
+        let backing = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let path = backing.to_path_buf();
+        let target = tempfile::tempdir().unwrap();
+        // This unique directory is deliberately not a mount. The real umount2
+        // refusal exercises retention, without claiming mounted-overlay coverage.
+        let mut resource = ExecutableResource::Overlay {
+            mount: ExecutableOverlay {
+                target: path_cstring(target.path()).unwrap(),
+                target_path: target.path().to_owned(),
+                namespace: MountNamespace::capture().unwrap(),
+                mounted: true,
+            },
+            backing_path: backing,
+        };
+        // The established success path must still exercise the real syscall;
+        // unconditional fatal retention is not an umount-refusal test.
+        assert!(resource.cleanup_in_place(true).is_err());
+        assert!(path.exists(), "detach refusal unlinked original backing");
+        let ExecutableResource::Overlay {
+            mount,
+            backing_path,
+        } = &mut resource
+        else {
+            panic!("refusal dropped original resource variant")
+        };
+        assert_eq!(backing_path.to_path_buf(), path);
+        // Test-only rescue removes the synthetic mounted claim. No real mount
+        // was installed or recovered by this unit control.
+        mount.mounted = false;
+        reverie_ptrace::PtraceCleanupResource::cleanup(&mut resource).unwrap();
+        assert!(!path.exists());
+        assert!(matches!(resource, ExecutableResource::Original));
+    }
+
+    #[test]
+    fn confirmed_executable_cleanup_preserves_original_error_precedence() {
+        let backing = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let path = backing.to_path_buf();
+        let result: Result<(ExitStatus, ()), Error> = finish_legacy_wait(
+            Err(reverie::Errno::EBADF.into()),
+            ExecutableResource::Temporary(backing),
+        );
+        assert!(matches!(result, Err(Error::Errno(reverie::Errno::EBADF))));
+        assert!(!path.exists());
+    }
+
+    static OVERLAY_EXIT_RELEASE: AtomicBool = AtomicBool::new(true);
+    static OVERLAY_EFFECTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    #[derive(Debug)]
+    struct OverlayToolFailure(Box<u64>);
+    impl std::fmt::Display for OverlayToolFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "typed overlay failure after effect {}", self.0)
+        }
+    }
+    impl std::error::Error for OverlayToolFailure {}
+
+    #[derive(Default)]
+    struct OverlayFailureTool;
+    #[reverie::tool]
+    impl Tool for OverlayFailureTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_: &()) -> reverie::Subscription {
+            reverie::Subscription::none()
+        }
+
+        async fn handle_thread_start<G: reverie::Guest<Self>>(
+            &self,
+            _: &mut G,
+        ) -> Result<(), Error> {
+            OVERLAY_EFFECTS.fetch_add(1, Ordering::SeqCst);
+            Err(anyhow::Error::new(OverlayToolFailure(Box::new(73))).into())
+        }
+
+        async fn on_exit_thread<G: reverie::GlobalRPC<()>>(
+            &self,
+            _: reverie::Tid,
+            _: &G,
+            _: (),
+            _: ExitStatus,
+        ) -> Result<(), Error> {
+            while !OVERLAY_EXIT_RELEASE.load(Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum OverlayCase {
+        Namespace,
+        Cover,
+        Complete,
+        Setup,
+        Constructor,
+        SuccessRefusal,
+    }
+
+    fn overlay_now_ns() -> u64 {
+        let mut now: libc::timespec = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) },
+            0
+        );
+        now.tv_sec as u64 * 1_000_000_000 + now.tv_nsec as u64
+    }
+
+    fn visible_mount_id(path: &Path) -> u64 {
+        let path = path_cstring(path).unwrap();
+        let mut stat = MaybeUninit::<libc::statx>::zeroed();
+        assert_eq!(
+            unsafe {
+                libc::statx(
+                    libc::AT_FDCWD,
+                    path.as_ptr(),
+                    0,
+                    libc::STATX_MNT_ID,
+                    stat.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        let stat = unsafe { stat.assume_init() };
+        assert_ne!(stat.stx_mask & libc::STATX_MNT_ID, 0);
+        stat.stx_mnt_id
+    }
+
+    fn assert_mount_present(id: u64) {
+        assert!(
+            fs::read_to_string("/proc/thread-self/mountinfo")
+                .unwrap()
+                .lines()
+                .any(|line| line.split_once(' ').unwrap().0.parse::<u64>().unwrap() == id)
+        );
+    }
+
+    async fn assert_overlay_admission_closed() {
+        let result = TracerBuilder::<()>::new(Command::new("/bin/true"))
+            .spawn()
+            .await;
+        assert!(
+            matches!(result, Err(Error::Tool(error)) if error.downcast_ref::<reverie_ptrace::CleanupAdmissionRefused>().is_some()),
+            "retained mounted overlay reopened real ptrace admission"
+        );
+    }
+
+    fn assert_overlay_primary(error: &Error) -> usize {
+        let Error::Tool(error) = error else {
+            panic!("original typed Tool failure lost")
+        };
+        let cause = error
+            .downcast_ref::<OverlayToolFailure>()
+            .expect("original cause type");
+        assert_eq!(*cause.0, 73);
+        &*cause.0 as *const u64 as usize
+    }
+
+    async fn run_overlay_case(name: &'static str, case: OverlayCase) {
+        const ROLE: &str = "REVERIE_REAL_OVERLAY_CHILD";
+        const DEADLINE: &str = "REVERIE_REAL_OVERLAY_DEADLINE";
+        if std::env::var(ROLE).as_deref() != Ok(name) {
+            let deadline = overlay_now_ns() + 5_000_000_000;
+            let mut child = std::process::Command::new("/usr/bin/unshare")
+                .args([
+                    "--user",
+                    "--map-root-user",
+                    "--mount",
+                    "--propagation",
+                    "private",
+                    "--",
+                ])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--nocapture", "--test-threads=1"])
+                .env(ROLE, name)
+                .env(DEADLINE, deadline.to_string())
+                .spawn()
+                .unwrap();
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(
+                        status.success(),
+                        "real overlay fixture/environment failed: {status}"
+                    );
+                    assert!(
+                        overlay_now_ns() < deadline,
+                        "original five-second deadline expired"
+                    );
+                    return;
+                }
+                if overlay_now_ns() >= deadline {
+                    let signal = child.kill();
+                    let rescue_deadline = overlay_now_ns() + 2_000_000_000;
+                    let rescue = loop {
+                        let status = child.try_wait().unwrap();
+                        if status.is_some() || overlay_now_ns() >= rescue_deadline {
+                            break status;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    };
+                    panic!(
+                        "original overlay deadline failed; separate rescue only: {signal:?}, {rescue:?}"
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        }
+        assert!(std::env::args().any(|arg| arg == name));
+        assert!(std::env::args().any(|arg| arg == "--exact"));
+        let remaining = std::env::var(DEADLINE)
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            .saturating_sub(overlay_now_ns());
+        tokio::time::timeout(
+            std::time::Duration::from_nanos(remaining),
+            overlay_case_body(case),
+        )
+        .await
+        .expect("real overlay body exceeded original pre-exec deadline");
+    }
+
+    async fn overlay_case_body(case: OverlayCase) {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        fs::write(&target, b"original-file").unwrap();
+        let mut backing = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        backing.write_all(b"original-overlay").unwrap();
+        let backing = backing.into_temp_path();
+        let backing_name = backing.to_path_buf();
+        let original_namespace = MountNamespace::capture().unwrap();
+        let resource = if matches!(case, OverlayCase::Constructor) {
+            // A real MS_BIND followed by an injected returned errno at precisely
+            // the readonly-remount boundary; this is not a kernel EPERM claim.
+            let result = ExecutableResource::overlay_with_remount(backing, &target, |_| {
+                Err(io::Error::from_raw_os_error(libc::EIO))
+            });
+            assert!(matches!(result, Err(ref error) if error.raw_os_error() == Some(libc::EIO)));
+            drop(result);
+            None
+        } else {
+            Some(ExecutableResource::overlay(backing, &target).unwrap())
+        };
+        let original_id = visible_mount_id(&target);
+        assert_ne!(original_id, visible_mount_id(directory.path()));
+        assert_eq!(fs::read(&target).unwrap(), b"original-overlay");
+        assert_mount_present(original_id);
+
+        match case {
+            OverlayCase::Namespace | OverlayCase::Cover => {
+                OVERLAY_EXIT_RELEASE.store(false, Ordering::SeqCst);
+                let tracer = TracerBuilder::<OverlayFailureTool>::new(Command::new("/bin/true"))
+                    .spawn()
+                    .await
+                    .unwrap();
+                let root = tracer.guest_pid();
+                let error = finish_legacy_wait(tracer.wait().await, resource.unwrap())
+                    .expect_err("actual Pending marker");
+                let Error::Tool(error) = error else {
+                    panic!("typed cleanup marker required")
+                };
+                let marker = error
+                    .downcast_ref::<reverie_ptrace::CleanupUnconfirmed>()
+                    .expect("actual Pending owner");
+                let primary = assert_overlay_primary(marker.primary());
+                let mut pending = marker.take_cleanup::<(), ExitStatus>().unwrap();
+                drop(error);
+                OVERLAY_EXIT_RELEASE.store(true, Ordering::SeqCst);
+                let mut cover = None;
+                if matches!(case, OverlayCase::Namespace) {
+                    assert_eq!(
+                        unsafe { libc::unshare(libc::CLONE_NEWNS) },
+                        0,
+                        "thread namespace setup refusal is failure"
+                    );
+                    assert!(original_namespace.verify().is_err());
+                    let leader = fs::metadata("/proc/self/ns/mnt").unwrap();
+                    assert_eq!(
+                        (leader.dev(), leader.ino()),
+                        (original_namespace.device, original_namespace.inode)
+                    );
+                } else {
+                    let mut file = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+                    file.write_all(b"cover-overlay").unwrap();
+                    cover =
+                        Some(ExecutableResource::overlay(file.into_temp_path(), &target).unwrap());
+                    assert_ne!(visible_mount_id(&target), original_id);
+                    assert_eq!(fs::read(&target).unwrap(), b"cover-overlay");
+                    assert_mount_present(original_id);
+                }
+                let visible_before = visible_mount_id(&target);
+                let reverie_ptrace::ToolRunOutcome::CleanupPending(owner) =
+                    pending.resume_cleanup().await
+                else {
+                    panic!("mounted overlay was falsely retired")
+                };
+                pending = owner;
+                assert_eq!(assert_overlay_primary(pending.failure().primary()), primary);
+                assert!(
+                    !Path::new(&format!("/proc/{root}")).exists(),
+                    "resource callback preceded actual task retirement"
+                );
+                assert_eq!(
+                    visible_mount_id(&target),
+                    visible_before,
+                    "fatal cleanup detached a visible mount"
+                );
+                assert!(backing_name.exists());
+                assert_overlay_admission_closed().await;
+                if matches!(case, OverlayCase::Namespace) {
+                    assert_eq!(
+                        unsafe {
+                            libc::setns(original_namespace.file.as_raw_fd(), libc::CLONE_NEWNS)
+                        },
+                        0
+                    );
+                    original_namespace.verify().unwrap();
+                } else {
+                    // Remove only the test-owned cover via the established
+                    // successful path. This is not original-overlay recovery.
+                    cover.take().unwrap().cleanup(true).unwrap();
+                }
+                assert_eq!(visible_mount_id(&target), original_id);
+                assert_mount_present(original_id);
+                let reverie_ptrace::ToolRunOutcome::CleanupPending(pending) =
+                    pending.resume_cleanup().await
+                else {
+                    panic!("switch-back/cover removal falsely certified overlay recovery")
+                };
+                assert_eq!(assert_overlay_primary(pending.failure().primary()), primary);
+                assert!(backing_name.exists());
+                assert_eq!(visible_mount_id(&target), original_id);
+                assert_overlay_admission_closed().await;
+                drop(pending); // Abandonment must not release the original guard.
+                assert_eq!(visible_mount_id(&target), original_id);
+            }
+            OverlayCase::Complete => {
+                let tracer = TracerBuilder::<OverlayFailureTool>::new(Command::new("/bin/true"))
+                    .spawn()
+                    .await
+                    .unwrap();
+                let root = tracer.guest_pid();
+                let result = tracer.wait().await;
+                let primary = assert_overlay_primary(result.as_ref().err().unwrap());
+                assert!(!Path::new(&format!("/proc/{root}")).exists());
+                let error = finish_legacy_wait(result, resource.unwrap()).err().unwrap();
+                assert_eq!(assert_overlay_primary(&error), primary);
+                drop(error);
+            }
+            OverlayCase::Setup => {
+                let result =
+                    TracerBuilder::<()>::new(Command::new(directory.path().join("absent-program")))
+                        .spawn()
+                        .await;
+                let original = result
+                    .as_ref()
+                    .err()
+                    .expect("actual spawn setup error")
+                    .to_string();
+                let error = finish_spawn(result, resource.unwrap()).err().unwrap();
+                assert_eq!(error.to_string(), original);
+                drop(error);
+            }
+            OverlayCase::Constructor => {}
+            OverlayCase::SuccessRefusal => {
+                // Real kernel refusal: clear only this thread's effective
+                // CAP_SYS_ADMIN around the established successful cleanup.
+                let mut header = [0x2008_0522_u32, 0];
+                let mut caps = [[0_u32; 3]; 2];
+                assert_eq!(
+                    unsafe {
+                        libc::syscall(libc::SYS_capget, header.as_mut_ptr(), caps.as_mut_ptr())
+                    },
+                    0
+                );
+                let saved = caps;
+                assert_ne!(caps[0][0] & (1 << 21), 0);
+                caps[0][0] &= !(1 << 21);
+                assert_eq!(
+                    unsafe { libc::syscall(libc::SYS_capset, header.as_ptr(), caps.as_ptr()) },
+                    0
+                );
+                let result =
+                    finish_legacy_wait::<(), _>(Ok((ExitStatus::Exited(0), ())), resource.unwrap());
+                assert_eq!(
+                    unsafe { libc::syscall(libc::SYS_capset, header.as_ptr(), saved.as_ptr()) },
+                    0
+                );
+                assert!(
+                    matches!(result, Err(Error::Io(ref error)) if error.raw_os_error() == Some(libc::EPERM))
+                );
+                drop(result);
+            }
+        }
+        assert_eq!(fs::read(&target).unwrap(), b"original-overlay");
+        assert_eq!(visible_mount_id(&target), original_id);
+        assert_mount_present(original_id);
+        assert!(
+            backing_name.exists(),
+            "fatal/refused cleanup unlinked original backing"
+        );
+        assert_overlay_admission_closed().await;
+        if matches!(
+            case,
+            OverlayCase::Namespace | OverlayCase::Cover | OverlayCase::Complete
+        ) {
+            assert_eq!(
+                OVERLAY_EFFECTS.load(Ordering::SeqCst),
+                1,
+                "original Tool effect count changed"
+            );
+        }
+        // Explicit test teardown only. Product retains its guard/permit even
+        // after this independent test-owned rescue; no recovery pass is claimed.
+        assert_eq!(
+            unsafe { libc::umount2(path_cstring(&target).unwrap().as_ptr(), libc::MNT_DETACH) },
+            0
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"original-file");
+        fs::remove_file(&backing_name).unwrap();
+        assert_overlay_admission_closed().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn overlay_fatal_pending_namespace_retains_original() {
+        run_overlay_case(
+            "backend::tests::overlay_fatal_pending_namespace_retains_original",
+            OverlayCase::Namespace,
+        )
+        .await;
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn overlay_fatal_pending_cover_retains_original() {
+        run_overlay_case(
+            "backend::tests::overlay_fatal_pending_cover_retains_original",
+            OverlayCase::Cover,
+        )
+        .await;
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn overlay_complete_tool_failure_retains_original() {
+        run_overlay_case(
+            "backend::tests::overlay_complete_tool_failure_retains_original",
+            OverlayCase::Complete,
+        )
+        .await;
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn overlay_spawn_setup_failure_retains_original() {
+        run_overlay_case(
+            "backend::tests::overlay_spawn_setup_failure_retains_original",
+            OverlayCase::Setup,
+        )
+        .await;
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn overlay_readonly_remount_refusal_retains_original() {
+        run_overlay_case(
+            "backend::tests::overlay_readonly_remount_refusal_retains_original",
+            OverlayCase::Constructor,
+        )
+        .await;
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn overlay_success_cleanup_refusal_retains_original() {
+        run_overlay_case(
+            "backend::tests::overlay_success_cleanup_refusal_retains_original",
+            OverlayCase::SuccessRefusal,
+        )
+        .await;
+    }
 
     fn captured_ld_preload(command: &Command) -> OsString {
         command
