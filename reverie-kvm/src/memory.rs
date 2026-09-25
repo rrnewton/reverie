@@ -38,6 +38,15 @@ const PAGE_SIZE: usize = 4096;
 #[cfg(test)]
 type SyscallDispatchObserver = Arc<dyn Fn(&crate::SyscallRequest) + Send + Sync>;
 
+/// Passive injection at the new method's result boundary, after its real copy.
+/// No callback or notification runs under the admitted copy for this control.
+#[cfg(test)]
+struct TestUserCopyFailure {
+    cause: Arc<Error>,
+    calls: std::sync::atomic::AtomicUsize,
+    copied: std::sync::atomic::AtomicUsize,
+}
+
 /// A contiguous, page-aligned guest-physical memory region.
 #[derive(Clone)]
 pub struct GuestMemory {
@@ -52,6 +61,10 @@ pub struct GuestMemory {
     test_syscall_dispatch_observer: Option<SyscallDispatchObserver>,
     #[cfg(test)]
     test_backing_contention: Option<Arc<dyn Fn() + Send + Sync>>,
+    #[cfg(test)]
+    test_user_copy_failure: Option<Arc<TestUserCopyFailure>>,
+    #[cfg(test)]
+    test_user_copy_backing_wait: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl std::fmt::Debug for GuestMemory {
@@ -496,6 +509,10 @@ impl GuestMemory {
             test_syscall_dispatch_observer: None,
             #[cfg(test)]
             test_backing_contention: None,
+            #[cfg(test)]
+            test_user_copy_failure: None,
+            #[cfg(test)]
+            test_user_copy_backing_wait: None,
         })
     }
 
@@ -1285,6 +1302,18 @@ impl GuestMemory {
     /// address-space guard. Keeping resolution separate lets permission-aware
     /// copyout retain that guard through the actual write without re-locking.
     fn write_host_chunks(&self, chunks: &[HostChunk], source: &[u8]) {
+        #[cfg(test)]
+        if let Some(observed) = &self.test_user_copy_backing_wait {
+            // Passive observation of an actual failed lock attempt. The test
+            // controller can inspect the still-owned permission guard without
+            // introducing a callback under a copy token or memory lock.
+            if matches!(
+                self.mapping.slice.backing.host_access.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ) {
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
         let _guard = self
             .mapping
             .slice
@@ -1891,6 +1920,14 @@ impl UserMemory {
 }
 
 impl MemoryAccess for GuestMemory {
+    fn write_with_user_access(
+        &mut self,
+        addr: reverie::syscalls::AddrMut<u8>,
+        buf: &[u8],
+    ) -> std::result::Result<usize, Errno> {
+        self.user().write_with_user_access(addr, buf)
+    }
+
     fn read_vectored(
         &self,
         read_from: &[std::io::IoSlice],
@@ -2232,8 +2269,662 @@ impl Drop for Mapping {
     }
 }
 
+#[cfg(test)]
+mod user_copy_tests {
+    use std::future::Future;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Wake;
+    use std::task::Waker;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use futures::FutureExt;
+    use reverie::syscalls::AddrMut;
+
+    use super::*;
+    use crate::entry::PendingFailure;
+    use crate::entry::owner::DriverScope;
+
+    const BASE: u64 = 0x1000;
+    const SOURCE: &[u8] = b"12345678";
+
+    fn fixture() -> GuestMemory {
+        let memory = GuestMemory::new(BASE, 3 * PAGE_SIZE).unwrap();
+        memory.write_raw(BASE, &vec![0xa5; 3 * PAGE_SIZE]).unwrap();
+        memory
+            .map_user_permissions(BASE, (3 * PAGE_SIZE) as u64, true, true)
+            .unwrap();
+        memory.enable_user_access();
+        memory
+    }
+
+    fn observer(memory: &GuestMemory) -> GuestMemory {
+        // Existing test-only independent gate over stable backing. It only
+        // observes effects after the subject gate refuses any further access.
+        GuestMemory::from_backing_slice(BASE, memory.mapping.slice.clone()).unwrap()
+    }
+
+    fn copy(
+        memory: &GuestMemory,
+        user: bool,
+        address: u64,
+        bytes: &[u8],
+    ) -> std::result::Result<usize, Errno> {
+        let address = AddrMut::from_raw(address as usize).unwrap();
+        if user {
+            memory.user().write_with_user_access(address, bytes)
+        } else {
+            memory.clone().write_with_user_access(address, bytes)
+        }
+    }
+
+    fn assert_bytes(memory: &GuestMemory, offset: usize, source: &[u8]) {
+        let mut actual = vec![0; 3 * PAGE_SIZE];
+        memory.read_raw(BASE, &mut actual).unwrap();
+        let mut expected = vec![0xa5; 3 * PAGE_SIZE];
+        expected[offset..offset + source.len()].copy_from_slice(source);
+        assert_eq!(actual, expected);
+    }
+
+    fn assert_released(memory: &GuestMemory) {
+        assert_eq!(memory.entry_gate().test_state().copies, 0);
+        assert!(memory.mapping.address_space.try_lock().is_ok());
+        assert!(memory.mapping.slice.backing.host_access.try_lock().is_ok());
+        assert!(memory.mapping.allocation.try_lock().is_ok());
+    }
+
+    fn primary(failure: &PendingFailure) -> Arc<Error> {
+        assert_eq!(failure.causes().len(), 1, "unexpected cleanup growth");
+        match failure.error() {
+            Error::SharedFailure(primary) => primary,
+            error => panic!("expected exactly one retained primary: {error:?}"),
+        }
+    }
+
+    fn assert_same_failure(
+        memory: &GuestMemory,
+        pending: &Arc<PendingFailure>,
+        original: &Arc<Error>,
+    ) {
+        let current = memory.entry_gate().pending_failure().unwrap();
+        assert!(Arc::ptr_eq(&current, pending));
+        assert!(Arc::ptr_eq(&primary(&current), original));
+    }
+
+    fn cause(operation: &'static str) -> Error {
+        Error::EntryControl {
+            operation,
+            source: io::Error::from_raw_os_error(libc::EBUSY),
+        }
+    }
+
+    fn until(mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !condition() {
+            assert!(
+                Instant::now() < deadline,
+                "controlled copy state was not reached"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn user_copy_permissions_counts_and_all_bytes() {
+        for user in [false, true] {
+            for accessible in [false, true] {
+                for offset in [0, PAGE_SIZE - 3, PAGE_SIZE] {
+                    for length in [0, 1, 7, 8, 9, PAGE_SIZE + 8] {
+                        let memory = fixture();
+                        memory
+                            .map_user_permissions(
+                                BASE + PAGE_SIZE as u64,
+                                PAGE_SIZE as u64,
+                                accessible,
+                                false,
+                            )
+                            .unwrap();
+                        let source: Vec<_> = (0..length).map(|i| (19 + 37 * i) as u8).collect();
+                        let count = if offset < PAGE_SIZE {
+                            length.min(PAGE_SIZE - offset)
+                        } else {
+                            0
+                        };
+                        assert_eq!(
+                            copy(&memory, user, BASE + offset as u64, &source),
+                            if count != 0 || length == 0 {
+                                Ok(count)
+                            } else {
+                                Err(Errno::EFAULT)
+                            }
+                        );
+                        assert_bytes(&memory, offset, &source[..count]);
+                        assert_released(&memory);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn user_copy_geometry_empty_and_disabled_access_contract() {
+        for user in [false, true] {
+            let memory = fixture();
+            for address in [1, BASE - 1, memory.guest_end(), u64::MAX - 3, u64::MAX] {
+                assert_eq!(copy(&memory, user, address, &[]), Ok(0));
+                assert_eq!(copy(&memory, user, address, SOURCE), Err(Errno::EFAULT));
+                assert_bytes(&memory, 0, &[]);
+                assert_released(&memory);
+            }
+            assert_eq!(copy(&memory, user, memory.guest_end() - 3, SOURCE), Ok(3));
+            assert_bytes(&memory, 3 * PAGE_SIZE - 3, &SOURCE[..3]);
+            assert_released(&memory);
+
+            let memory = fixture();
+            memory.clear_user_access();
+            memory
+                .map_user_permissions(BASE, PAGE_SIZE as u64, true, false)
+                .unwrap();
+            assert_eq!(copy(&memory, user, BASE, SOURCE), Ok(8));
+            assert_bytes(&memory, 0, SOURCE);
+            assert_released(&memory);
+            memory.enable_user_access();
+            assert_eq!(copy(&memory, user, BASE, b"muststay"), Err(Errno::EFAULT));
+            assert_bytes(&memory, 0, SOURCE);
+            assert_released(&memory);
+        }
+    }
+
+    #[test]
+    fn user_copy_retained_poison_has_exact_identity_without_cleanup_growth() {
+        for user in [false, true] {
+            for copied in [0, 3, 8] {
+                let mut memory = fixture();
+                memory
+                    .map_user_permissions(BASE + PAGE_SIZE as u64, PAGE_SIZE as u64, true, false)
+                    .unwrap();
+                let observation = observer(&memory);
+                let gate = memory.entry_gate();
+                if copied == 0 {
+                    gate.poison(None, cause("before usercopy admission"));
+                } else {
+                    let gate = gate.clone();
+                    memory.after_vector_copy = Some(Arc::new(move |count| {
+                        assert_eq!(count, copied);
+                        assert_eq!(gate.test_state().copies, 0);
+                        gate.poison(None, cause("after usercopy effects"));
+                    }));
+                }
+                let offset = if copied == 3 { PAGE_SIZE - 3 } else { 0 };
+                assert_eq!(
+                    copy(&memory, user, BASE + offset as u64, SOURCE),
+                    Err(Errno::EIO)
+                );
+                let pending = gate.pending_failure().unwrap();
+                let original = primary(&pending);
+                assert_bytes(&observation, offset, &SOURCE[..copied]);
+                for bytes in [&[][..], SOURCE, b"again"] {
+                    assert_eq!(copy(&memory, user, BASE, bytes), Err(Errno::EIO));
+                    assert_same_failure(&memory, &pending, &original);
+                    assert_bytes(&observation, offset, &SOURCE[..copied]);
+                    assert_released(&memory);
+                }
+                assert_eq!(copy(&memory, user, u64::MAX, &[]), Err(Errno::EIO));
+                assert_same_failure(&memory, &pending, &original);
+            }
+        }
+    }
+
+    #[test]
+    fn user_copy_poison_after_admission_overrides_readonly_fault_and_written_prefix() {
+        for user in [false, true] {
+            for (offset, copied) in [(PAGE_SIZE, 0), (PAGE_SIZE - 3, 3), (0, 8)] {
+                let memory = fixture();
+                memory
+                    .map_user_permissions(BASE + PAGE_SIZE as u64, PAGE_SIZE as u64, true, false)
+                    .unwrap();
+                let observation = observer(&memory);
+                let gate = memory.entry_gate();
+                std::thread::scope(|scope| {
+                    // The method can acquire its real token, but its first
+                    // translation cannot run until this guard is released.
+                    let access = memory.mapping.address_space.lock().unwrap();
+                    let worker = scope.spawn(|| copy(&memory, user, BASE + offset as u64, SOURCE));
+                    until(|| gate.test_state().copies == 1);
+                    let pending =
+                        gate.poison(memory.entry_origin(), cause("poison after admission"));
+                    let original = primary(&pending);
+                    drop(access);
+                    assert_eq!(worker.join().unwrap(), Err(Errno::EIO));
+                    assert_same_failure(&memory, &pending, &original);
+                    assert_eq!(copy(&memory, user, BASE, SOURCE), Err(Errno::EIO));
+                    assert_same_failure(&memory, &pending, &original);
+                });
+                assert_bytes(&observation, offset, &SOURCE[..copied]);
+                assert_released(&memory);
+            }
+        }
+    }
+
+    #[test]
+    fn user_copy_waits_without_memory_locks_and_reopens_or_retains_poison() {
+        for user in [false, true] {
+            for poison in [false, true] {
+                let memory = fixture();
+                let observation = observer(&memory);
+                let gate = memory.entry_gate();
+                let closed = gate
+                    .try_close()
+                    .unwrap()
+                    .unwrap()
+                    .finish()
+                    .now_or_never()
+                    .unwrap()
+                    .unwrap();
+                std::thread::scope(|scope| {
+                    let worker = scope.spawn(|| copy(&memory, user, BASE, SOURCE));
+                    until(|| !gate.test_state().copy_waiters.is_empty());
+                    assert_released(&memory);
+                    let pending = poison.then(|| gate.poison(None, cause("closed copy refused")));
+                    drop(closed);
+                    assert_eq!(
+                        worker.join().unwrap(),
+                        if poison { Err(Errno::EIO) } else { Ok(8) }
+                    );
+                    if let Some(pending) = pending {
+                        let original = primary(&pending);
+                        assert_eq!(copy(&memory, user, BASE, SOURCE), Err(Errno::EIO));
+                        assert_same_failure(&memory, &pending, &original);
+                    }
+                });
+                assert_bytes(&observation, 0, if poison { &[] } else { SOURCE });
+                assert_released(&memory);
+            }
+        }
+    }
+
+    #[test]
+    fn user_copy_keeps_permission_guard_through_actual_backing_contention() {
+        for user in [false, true] {
+            let mut memory = fixture();
+            let waiting = Arc::new(AtomicBool::new(false));
+            memory.test_user_copy_backing_wait = Some(waiting.clone());
+            std::thread::scope(|scope| {
+                let backing = memory.mapping.slice.backing.host_access.lock().unwrap();
+                let writer = scope.spawn(|| copy(&memory, user, BASE, SOURCE));
+                until(|| waiting.load(Ordering::SeqCst));
+                assert_eq!(memory.entry_gate().test_state().copies, 1);
+                assert!(matches!(
+                    memory.mapping.address_space.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                let (started, start) = std::sync::mpsc::channel();
+                let (done, completion) = std::sync::mpsc::channel();
+                let memory = &memory;
+                let updater = scope.spawn(move || {
+                    started.send(()).unwrap();
+                    memory
+                        .map_user_permissions(BASE, PAGE_SIZE as u64, true, false)
+                        .unwrap();
+                    done.send(()).unwrap();
+                });
+                start.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert!(matches!(
+                    completion.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                ));
+                drop(backing);
+                assert_eq!(writer.join().unwrap(), Ok(8));
+                completion.recv_timeout(Duration::from_secs(5)).unwrap();
+                updater.join().unwrap();
+            });
+            assert_bytes(&memory, 0, SOURCE);
+            assert_eq!(copy(&memory, user, BASE, b"muststay"), Err(Errno::EFAULT));
+            assert_bytes(&memory, 0, SOURCE);
+            assert_released(&memory);
+        }
+    }
+
+    struct WakeObservation {
+        copies: usize,
+        address_unlocked: bool,
+        backing_unlocked: bool,
+        returned: bool,
+        pending: Option<Arc<PendingFailure>>,
+    }
+
+    struct ObserveWake {
+        memory: GuestMemory,
+        returned: Arc<AtomicBool>,
+        observations: Mutex<Vec<WakeObservation>>,
+        peer: Mutex<Option<EntryOrigin>>,
+    }
+
+    impl Wake for ObserveWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            let gate = self.memory.entry_gate();
+            let observation = WakeObservation {
+                copies: gate.test_state().copies,
+                address_unlocked: self.memory.mapping.address_space.try_lock().is_ok(),
+                backing_unlocked: self
+                    .memory
+                    .mapping
+                    .slice
+                    .backing
+                    .host_access
+                    .try_lock()
+                    .is_ok(),
+                returned: self.returned.load(Ordering::SeqCst),
+                pending: gate.pending_failure(),
+            };
+            self.observations.lock().unwrap().push(observation);
+            // Release even the test-only observation/peer locks before poison
+            // can synchronously notify another registered waker.
+            let peer = self.peer.lock().unwrap().take();
+            if let Some(origin) = peer {
+                gate.poison(origin, cause("peer captures at copy retirement"));
+            }
+        }
+    }
+
+    fn wake_probe(memory: &GuestMemory, returned: &Arc<AtomicBool>) -> Arc<ObserveWake> {
+        Arc::new(ObserveWake {
+            memory: memory.clone(),
+            returned: returned.clone(),
+            observations: Mutex::new(Vec::new()),
+            peer: Mutex::new(None),
+        })
+    }
+
+    #[test]
+    fn user_copy_fresh_failure_notifies_after_retirement_with_exact_origin_and_effects() {
+        for user in [false, true] {
+            for (offset, copied) in [(PAGE_SIZE, 0), (PAGE_SIZE - 3, 3), (0, 8)] {
+                for other_copy in [false, true] {
+                    let driver = DriverScope::new();
+                    let owner = driver.owner();
+                    let first = owner.begin_callback(None).unwrap();
+                    let first_origin = first.origin();
+                    let second = owner.begin_callback(None).unwrap();
+                    let global = Arc::new(());
+                    let run = crate::failure::RunFailure::new(&global);
+                    let other_run = crate::failure::RunFailure::new(&global);
+                    let mut memory = fixture();
+                    memory
+                        .map_user_permissions(
+                            BASE + PAGE_SIZE as u64,
+                            PAGE_SIZE as u64,
+                            true,
+                            false,
+                        )
+                        .unwrap();
+                    memory.set_operation_origin(Some(first_origin.clone()));
+                    memory.set_failure_context(Some(FailureContext::new(
+                        run.clone(),
+                        reverie::Pid::from_raw(3),
+                        reverie::Pid::from_raw(5),
+                    )));
+                    let original = Arc::new(cause("usercopy unexpected-error control"));
+                    let injection = Arc::new(TestUserCopyFailure {
+                        cause: original.clone(),
+                        calls: AtomicUsize::new(0),
+                        copied: AtomicUsize::new(usize::MAX),
+                    });
+                    memory.test_user_copy_failure = Some(injection.clone());
+                    let issuing = memory.clone();
+                    memory.set_operation_origin(Some(second.origin()));
+                    memory.set_failure_context(Some(FailureContext::new(
+                        other_run.clone(),
+                        reverie::Pid::from_raw(7),
+                        reverie::Pid::from_raw(9),
+                    )));
+                    let observation = observer(&memory);
+                    let gate = memory.entry_gate();
+                    let peer_copy = other_copy.then(|| gate.try_copy(None).unwrap().unwrap());
+                    let returned = Arc::new(AtomicBool::new(false));
+                    let gate_probe = wake_probe(&memory, &returned);
+                    let owner_probe = wake_probe(&memory, &returned);
+                    let mut gate_change = Box::pin(gate.subscribe());
+                    let mut owner_change = Box::pin(owner.subscribe());
+                    assert!(
+                        gate_change
+                            .as_mut()
+                            .poll(&mut Context::from_waker(&Waker::from(gate_probe.clone())))
+                            .is_pending()
+                    );
+                    assert!(
+                        owner_change
+                            .as_mut()
+                            .poll(&mut Context::from_waker(&Waker::from(owner_probe.clone())))
+                            .is_pending()
+                    );
+                    assert_eq!(
+                        copy(&issuing, user, BASE + offset as u64, SOURCE),
+                        Err(Errno::EIO)
+                    );
+                    returned.store(true, Ordering::SeqCst);
+                    let pending = gate.pending_failure().unwrap();
+                    let captured = primary(&pending);
+                    match captured.as_ref() {
+                        Error::SharedFailure(retained) => assert!(Arc::ptr_eq(retained, &original)),
+                        error => panic!("injected typed cause lost: {error:?}"),
+                    }
+                    assert!(
+                        matches!(captured.primary(), Error::EntryControl { operation: "usercopy unexpected-error control", source } if source.raw_os_error() == Some(libc::EBUSY))
+                    );
+                    assert!(
+                        pending
+                            .operation
+                            .as_ref()
+                            .unwrap()
+                            .same_callback(&first_origin)
+                    );
+                    assert!(
+                        !pending
+                            .operation
+                            .as_ref()
+                            .unwrap()
+                            .same_callback(&second.origin())
+                    );
+                    assert!(Arc::ptr_eq(
+                        &pending.origin.as_ref().unwrap().run.upgrade().unwrap(),
+                        &run
+                    ));
+                    assert!(pending.owner_registered());
+                    assert_eq!(owner.pending().len(), 1);
+                    assert!(Arc::ptr_eq(&owner.pending()[0], &pending));
+                    assert!(run.primary().is_none() && other_run.primary().is_none());
+                    for probe in [&gate_probe, &owner_probe] {
+                        let events = probe.observations.lock().unwrap();
+                        assert!(!events.is_empty(), "actual notification was not observed");
+                        for event in events.iter() {
+                            assert_eq!(event.copies, usize::from(other_copy));
+                            assert!(
+                                event.address_unlocked && event.backing_unlocked && !event.returned
+                            );
+                        }
+                    }
+                    assert!(
+                        owner_probe
+                            .observations
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .any(|event| event
+                                .pending
+                                .as_ref()
+                                .is_some_and(|seen| Arc::ptr_eq(seen, &pending)))
+                    );
+                    assert_eq!(injection.calls.load(Ordering::SeqCst), 1);
+                    assert_eq!(injection.copied.load(Ordering::SeqCst), copied);
+                    assert_bytes(&observation, offset, &SOURCE[..copied]);
+                    for (address, bytes) in [(BASE, SOURCE), (u64::MAX, &[][..])] {
+                        assert_eq!(copy(&issuing, user, address, bytes), Err(Errno::EIO));
+                        assert_same_failure(&issuing, &pending, &captured);
+                        assert_bytes(&observation, offset, &SOURCE[..copied]);
+                    }
+                    assert_eq!(injection.calls.load(Ordering::SeqCst), 1);
+                    drop((gate_change, owner_change, gate_probe, owner_probe));
+                    drop(peer_copy);
+                    assert_released(&memory);
+                    drop((first, second));
+                    let retirement = driver.retire();
+                    retirement.result.unwrap();
+                    assert_eq!(retirement.pending.len(), 1);
+                    assert!(Arc::ptr_eq(&retirement.pending[0], &pending));
+                    retirement.notification.notify();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn user_copy_retirement_capture_race_keeps_distinct_local_cause_once() {
+        for user in [false, true] {
+            let driver = DriverScope::new();
+            let owner = driver.owner();
+            let first = owner.begin_callback(None).unwrap();
+            let peer = owner.begin_callback(None).unwrap();
+            let mut memory = fixture();
+            memory.set_operation_origin(Some(first.origin()));
+            let local_cause = Arc::new(cause("local usercopy failure"));
+            memory.test_user_copy_failure = Some(Arc::new(TestUserCopyFailure {
+                cause: local_cause.clone(),
+                calls: AtomicUsize::new(0),
+                copied: AtomicUsize::new(0),
+            }));
+            let observation = observer(&memory);
+            let returned = Arc::new(AtomicBool::new(false));
+            let probe = wake_probe(&memory, &returned);
+            *probe.peer.lock().unwrap() = Some(EntryOrigin {
+                failure: None,
+                operation: Some(peer.origin()),
+            });
+            let gate = memory.entry_gate();
+            let mut changed = Box::pin(gate.subscribe());
+            assert!(
+                changed
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&Waker::from(probe.clone())))
+                    .is_pending()
+            );
+            assert_eq!(copy(&memory, user, BASE, SOURCE), Err(Errno::EIO));
+            let pending = gate.pending_failure().unwrap();
+            assert!(
+                pending
+                    .operation
+                    .as_ref()
+                    .unwrap()
+                    .same_callback(&peer.origin())
+            );
+            assert!(matches!(
+                pending.error().primary(),
+                Error::EntryControl {
+                    operation: "peer captures at copy retirement",
+                    ..
+                }
+            ));
+            let causes = pending.causes();
+            assert_eq!(causes.len(), 2);
+            match causes[1].as_ref() {
+                Error::SharedFailure(retained) => assert!(Arc::ptr_eq(retained, &local_cause)),
+                error => panic!("distinct local cause was rewrapped or replaced: {error:?}"),
+            }
+            for bytes in [SOURCE, &[][..]] {
+                assert_eq!(copy(&memory, user, BASE, bytes), Err(Errno::EIO));
+                let retained = pending.causes();
+                assert_eq!(retained.len(), 2);
+                assert!(retained.iter().zip(&causes).all(|(a, b)| Arc::ptr_eq(a, b)));
+            }
+            for event in probe.observations.lock().unwrap().iter() {
+                assert_eq!(event.copies, 0);
+                assert!(event.address_unlocked && event.backing_unlocked && !event.returned);
+            }
+            assert_bytes(&observation, 0, SOURCE);
+            assert_released(&memory);
+            drop((changed, probe, first, peer));
+            let retirement = driver.retire();
+            retirement.result.unwrap();
+            assert_eq!(retirement.pending.len(), 1);
+            assert!(Arc::ptr_eq(&retirement.pending[0], &pending));
+            retirement.notification.notify();
+        }
+    }
+}
+
 // TODO-HUMAN-REVIEW(PR-132): Review KVM partial user-copy semantics.
 impl MemoryAccess for UserMemory {
+    /// Admission can wait for a closer. The caller must not already own this
+    /// gate's CopyAccess/Closed token or a dependency needed by its closer.
+    /// Disabled user-access tracking retains copy_to_user's coverage-only
+    /// behavior; installed ELF guests enable tracking before execution.
+    fn write_with_user_access(
+        &mut self,
+        addr: reverie::syscalls::AddrMut<u8>,
+        buf: &[u8],
+    ) -> std::result::Result<usize, Errno> {
+        let gate = self.memory.entry_gate();
+        let origin = self.memory.entry_origin();
+        #[cfg(test)]
+        self.memory.before_vector_copy(0);
+        let (local_result, post_copy_failure) = {
+            // Admission failures are already retained. Do not classify them
+            // together with fresh helper errors and poison the same cause again.
+            let copy = gate.copy_blocking(origin.clone()).map_err(|_| Errno::EIO)?;
+            let local_result =
+                self.write_user_prefix_admitted(addr.as_raw() as u64, buf, true, &copy);
+            #[cfg(test)]
+            let local_result = match (local_result, &self.memory.test_user_copy_failure) {
+                (Ok(copied), Some(injection)) => {
+                    use std::sync::atomic::Ordering;
+                    injection.calls.fetch_add(1, Ordering::SeqCst);
+                    injection.copied.store(copied, Ordering::SeqCst);
+                    Err(Error::SharedFailure(injection.cause.clone()))
+                }
+                (result, _) => result,
+            };
+            // Poison after admission may coexist with prefix/full effects.
+            // Keep those bytes, but never return ordinary success or EFAULT
+            // in place of an observed terminal failure, even for an empty copy.
+            let post_copy_failure = gate.pending_failure();
+            // The helper has released address/backing guards and host chunks.
+            // Retirement itself can wake subscribers; they must see this copy
+            // already uncounted before a fresh-error capture notifies owners.
+            drop(copy);
+            (local_result, post_copy_failure)
+        };
+        #[cfg(test)]
+        if let Ok(copied) = &local_result {
+            self.memory.after_vector_copy(*copied);
+        }
+        let ordinary = match local_result {
+            Ok(0) if !buf.is_empty() => Err(Errno::EFAULT),
+            Ok(copied) => Ok(copied),
+            Err(Error::InvalidGuestAddress { .. } | Error::GuestMemoryAccessDenied { .. }) => {
+                Err(Errno::EFAULT)
+            }
+            Err(error) => {
+                // This admitted helper does not capture gate failures itself.
+                // Its fresh unexpected error must remain typed. Capture only
+                // after our token/guards retire; a peer may have captured first,
+                // in which case the gate retains this distinct cause as cleanup.
+                gate.poison(origin, error);
+                return Err(Errno::EIO);
+            }
+        };
+        if post_copy_failure.is_some() || gate.pending_failure().is_some() {
+            Err(Errno::EIO)
+        } else {
+            ordinary
+        }
+    }
+
     fn read_vectored(
         &self,
         read_from: &[std::io::IoSlice],

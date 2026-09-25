@@ -172,6 +172,10 @@ impl Stack for GuestStack {
 }
 
 impl MemoryAccess for GuestStack {
+    fn write_with_user_access(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        self.task.write_with_user_access(addr, buf)
+    }
+
     fn read_vectored(
         &self,
         read_from: &[std::io::IoSlice],
@@ -221,6 +225,110 @@ pub unsafe fn transmute_u64s<T: Sized>(value: T) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_copy_stack_forwarder_enforces_permissions_and_exact_prefix() {
+        struct Child(libc::pid_t);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                if self.0 != 0 {
+                    unsafe {
+                        libc::kill(self.0, libc::SIGKILL);
+                        libc::waitpid(self.0, std::ptr::null_mut(), 0);
+                    }
+                }
+            }
+        }
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+        assert!(page.is_power_of_two());
+        for protection in [libc::PROT_READ, libc::PROT_NONE] {
+            for (offset, count) in [(page, 0), (page - 3, 3), (0, 8)] {
+                let mapping = unsafe {
+                    libc::mmap(
+                        std::ptr::null_mut(),
+                        3 * page,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                        -1,
+                        0,
+                    )
+                };
+                assert_ne!(mapping, libc::MAP_FAILED);
+                unsafe {
+                    std::ptr::write_bytes(mapping.cast::<u8>(), 0xa5, 3 * page);
+                }
+                let pid = unsafe { libc::fork() };
+                assert!(pid >= 0);
+                if pid == 0 {
+                    // Only async-signal-safe libc calls after the test fork.
+                    unsafe {
+                        if libc::mprotect(mapping.cast::<u8>().add(page).cast(), page, protection)
+                            != 0
+                            || libc::ptrace(
+                                libc::PTRACE_TRACEME,
+                                0,
+                                std::ptr::null_mut::<libc::c_void>(),
+                                std::ptr::null_mut::<libc::c_void>(),
+                            ) != 0
+                            || libc::raise(libc::SIGSTOP) != 0
+                        {
+                            libc::_exit(2);
+                        }
+                        libc::_exit(0);
+                    }
+                }
+                let mut child = Child(pid);
+                let mut status = 0;
+                assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+                assert!(libc::WIFSTOPPED(status));
+                assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
+                let flag = Arc::new(AtomicBool::new(false));
+                let mut stack = GuestStack::new(Pid::from_raw(pid), flag.clone()).unwrap();
+                let address = AddrMut::from_raw(mapping as usize + offset).unwrap();
+                assert_eq!(
+                    stack.write_with_user_access(address, b"12345678"),
+                    if count == 0 {
+                        Err(Errno::EFAULT)
+                    } else {
+                        Ok(count)
+                    }
+                );
+                assert_eq!(
+                    stack.write_with_user_access(AddrMut::from_raw(usize::MAX).unwrap(), &[]),
+                    Ok(0)
+                );
+                let memory = Stopped::new_unchecked(Pid::from_raw(pid));
+                let mut actual = vec![0; 3 * page];
+                for (index, bytes) in actual.chunks_mut(8).enumerate() {
+                    assert_eq!(
+                        memory.read(Addr::from_raw(mapping as usize + index * 8).unwrap(), bytes),
+                        Ok(bytes.len())
+                    );
+                }
+                let mut expected = vec![0xa5; 3 * page];
+                expected[offset..offset + count].copy_from_slice(&b"12345678"[..count]);
+                assert_eq!(actual, expected);
+                drop(stack);
+                assert!(!flag.load(Ordering::SeqCst));
+                assert_eq!(
+                    unsafe {
+                        libc::ptrace(
+                            libc::PTRACE_CONT,
+                            pid,
+                            std::ptr::null_mut::<libc::c_void>(),
+                            std::ptr::null_mut::<libc::c_void>(),
+                        )
+                    },
+                    0
+                );
+                assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+                child.0 = 0;
+                assert!(libc::WIFEXITED(status));
+                assert_eq!(libc::WEXITSTATUS(status), 0);
+                assert_eq!(unsafe { libc::munmap(mapping, 3 * page) }, 0);
+            }
+        }
+    }
 
     // Regression test for the "already a StackGuard still alive" panic: a stack
     // checkout dropped without a successful `commit` must release the per-task

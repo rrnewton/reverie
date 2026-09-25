@@ -1776,6 +1776,14 @@ impl Stack for KvmStack {
 }
 
 impl MemoryAccess for KvmStack {
+    fn write_with_user_access(
+        &mut self,
+        addr: AddrMut<u8>,
+        buf: &[u8],
+    ) -> std::result::Result<usize, Errno> {
+        self.memory.write_with_user_access(addr, buf)
+    }
+
     fn read_vectored(
         &self,
         read_from: &[std::io::IoSlice],
@@ -6929,6 +6937,45 @@ mod tests {
         assert!(checked_out.load(Ordering::SeqCst));
         drop(guard);
         assert!(!checked_out.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn user_copy_stack_forwarder_enforces_permissions_and_exact_prefix() {
+        for accessible in [false, true] {
+            for (offset, copied) in [(4096, 0), (4093, 3), (0, 8)] {
+                let memory = GuestMemory::new(0, TOOL_STACK_TOP as usize).unwrap();
+                let base = TOOL_STACK_TOP - 8192;
+                memory.write_raw(base, &[0xa5; 8192]).unwrap();
+                memory.map_user_permissions(base, 8192, true, true).unwrap();
+                memory
+                    .map_user_permissions(base + 4096, 4096, accessible, false)
+                    .unwrap();
+                memory.enable_user_access();
+                let checked_out = Arc::new(AtomicBool::new(false));
+                let mut stack = KvmStack::new(memory.clone(), TOOL_STACK_TOP, checked_out.clone());
+                let address = AddrMut::from_raw((base + offset) as usize).unwrap();
+                assert_eq!(
+                    stack.write_with_user_access(address, b"12345678"),
+                    if copied == 0 {
+                        Err(Errno::EFAULT)
+                    } else {
+                        Ok(copied)
+                    }
+                );
+                assert_eq!(
+                    stack.write_with_user_access(AddrMut::from_raw(usize::MAX).unwrap(), &[]),
+                    Ok(0)
+                );
+                let mut actual = [0; 8192];
+                memory.read_raw(base, &mut actual).unwrap();
+                let mut expected = [0xa5; 8192];
+                expected[offset as usize..offset as usize + copied]
+                    .copy_from_slice(&b"12345678"[..copied]);
+                assert_eq!(actual, expected);
+                drop(stack);
+                assert!(!checked_out.load(Ordering::SeqCst));
+            }
+        }
     }
 
     #[test]
