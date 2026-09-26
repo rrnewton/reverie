@@ -298,7 +298,7 @@ fn counter2_tears_down_each_thread_and_process_exactly_once() {
 
     // A second exit report for any task runs no hook and changes nothing.
     for tid in [1000, 1001, 1002] {
-        let again = host.task_exited(pid(tid), ExitStatus::Exited(0));
+        let again = host.task_exited(pid(tid), ExitStatus::Exited(0), ExitStatus::Exited(0));
         assert!(
             matches!(again, Err(NarfFatal::UnknownTask(t)) if t == pid(tid)),
             "{again:?}"
@@ -762,7 +762,7 @@ fn exit_while_suspended_tears_down_the_process() {
     context_managed(kernel.syscall(&host, root, read));
     // The kernel kills the parked task without re-executing its syscall.
     assert!(matches!(
-        host.task_exited(root, ExitStatus::Exited(9)),
+        host.task_exited(root, ExitStatus::Exited(9), ExitStatus::Exited(9)),
         Ok(TaskExit {
             process_exited: true
         })
@@ -995,4 +995,117 @@ fn event_sources_narf_cannot_deliver_are_refused() {
         FakeHost::<WantsSignalDequeues>::new(()),
         Err(NarfFatal::UnsupportedSignalDequeues)
     ));
+}
+
+// ----------------------------------------------------------------------------
+// Exit statuses: the thread's own for on_exit_thread, the process's for
+// on_exit_process
+
+/// Records the status each exit hook receives.
+#[derive(Default)]
+struct ExitStatuses;
+
+std::thread_local! {
+    /// On this test's thread, in order: `(true, tid, status)` for each
+    /// `on_exit_thread`, `(false, pid, status)` for each `on_exit_process`.
+    static EXIT_STATUSES: core::cell::RefCell<Vec<(bool, i32, ExitStatus)>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+#[async_trait]
+impl Tool for ExitStatuses {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn on_exit_thread<G: reverie::GlobalRPC<Self::GlobalState>>(
+        &self,
+        tid: Pid,
+        _global_state: &G,
+        _thread_state: Self::ThreadState,
+        exit_status: ExitStatus,
+    ) -> Result<(), Error> {
+        EXIT_STATUSES.with_borrow_mut(|seen| seen.push((true, tid.as_raw(), exit_status)));
+        Ok(())
+    }
+
+    async fn on_exit_process<G: reverie::GlobalRPC<Self::GlobalState>>(
+        self,
+        pid: Pid,
+        _global_state: &G,
+        exit_status: ExitStatus,
+    ) -> Result<(), Error> {
+        EXIT_STATUSES.with_borrow_mut(|seen| seen.push((false, pid.as_raw(), exit_status)));
+        Ok(())
+    }
+}
+
+/// A thread's `exit(5)` reaches its `on_exit_thread` as 5, and the leader's
+/// later `exit_group(7)` reaches the leader's `on_exit_thread` and
+/// `on_exit_process` as 7, as reverie-ptrace reports them. When the leader
+/// instead calls `exit(3)` first and a thread calls `exit(5)` last, the
+/// leader's hook gets 3 and the process's gets the last thread's 5, the
+/// status `wait4` reports (Linux's `synchronize_group_exit`). And a last
+/// thread whose own `exit(5)` lost the race to a sibling's `exit_group(7)`
+/// gets 5 while its process gets the group's 7.
+#[test]
+fn exit_hooks_get_the_thread_and_process_statuses() {
+    let exit = |code: u64| request(Sysno::exit, [code, 0, 0, 0, 0, 0]);
+    let exit_group = |code: u64| request(Sysno::exit_group, [code, 0, 0, 0, 0, 0]);
+    let spawn_thread = |kernel: &FakeKernel, host: &FakeHost<ExitStatuses>, root| {
+        pid(complete(kernel.syscall(
+            host,
+            root,
+            request(Sysno::clone, [CLONE_THREAD, 0, 0, 0, 0, 0]),
+        )) as i32)
+    };
+
+    let tools = host::<ExitStatuses>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&tools, BASE);
+    let thread = spawn_thread(&kernel, &tools, root);
+    context_managed(kernel.syscall(&tools, thread, exit(5)));
+    context_managed(kernel.syscall(&tools, root, exit_group(7)));
+    assert_eq!(
+        EXIT_STATUSES.take(),
+        [
+            (true, 1001, ExitStatus::Exited(5)),
+            (true, 1000, ExitStatus::Exited(7)),
+            (false, 1000, ExitStatus::Exited(7)),
+        ]
+    );
+
+    let tools = host::<ExitStatuses>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&tools, BASE);
+    let thread = spawn_thread(&kernel, &tools, root);
+    context_managed(kernel.syscall(&tools, root, exit(3)));
+    context_managed(kernel.syscall(&tools, thread, exit(5)));
+    assert_eq!(
+        EXIT_STATUSES.take(),
+        [
+            (true, 1000, ExitStatus::Exited(3)),
+            (true, 1001, ExitStatus::Exited(5)),
+            (false, 1000, ExitStatus::Exited(5)),
+        ]
+    );
+    assert_eq!(kernel.violations(), []);
+
+    let tools = host::<ExitStatuses>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&tools, BASE);
+    assert_eq!(
+        tools
+            .task_exited(root, ExitStatus::Exited(5), ExitStatus::Exited(7))
+            .ok(),
+        Some(TaskExit {
+            process_exited: true
+        })
+    );
+    assert_eq!(
+        EXIT_STATUSES.take(),
+        [
+            (true, 1000, ExitStatus::Exited(5)),
+            (false, 1000, ExitStatus::Exited(7)),
+        ]
+    );
 }
