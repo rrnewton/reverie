@@ -3218,9 +3218,9 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
             || child_wait.is_err()
             || entry.is_err()
         {
-            executor.join_child_processes_after_failure()
+            executor.join_child_processes_after_failure_async().await
         } else {
-            executor.join_all_child_processes()
+            executor.join_all_child_processes_async().await
         }
     } else {
         executor.transfer_child_processes_to_owner();

@@ -24,6 +24,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 
+use futures::FutureExt;
 use reverie::ExitStatus;
 use reverie::Signal;
 
@@ -1557,15 +1558,74 @@ impl ChildProcessPanicOwner {
     }
 }
 
-struct ChildProcessHandle {
+/// How an exiting owner waits for its children's host threads.
+#[derive(Clone, Copy)]
+enum ChildJoin {
+    Blocking,
+    Suspending,
+}
+
+impl ChildJoin {
+    async fn join(
+        self,
+        handle: ChildProcessHandle,
+        unowned_panic: impl FnOnce() -> crate::Error,
+    ) -> crate::Result<()> {
+        match self {
+            Self::Blocking => handle.join(unowned_panic),
+            Self::Suspending => handle.join_without_blocking(unowned_panic).await,
+        }
+    }
+}
+
+/// A child process's host thread and the exit notice its closure owns. The
+/// notice is dropped when the closure returns or unwinds, so waiting for it
+/// needs neither a blocking join nor another host thread.
+pub(crate) struct ChildThread {
     handle: std::thread::JoinHandle<crate::Result<()>>,
+    exited: futures::channel::oneshot::Receiver<std::convert::Infallible>,
+}
+
+impl ChildThread {
+    /// Spawns like [`crate::failure::spawn_owned`], returning the child state
+    /// if the OS refuses the thread.
+    pub(crate) fn spawn_owned<S, F>(
+        builder: std::thread::Builder,
+        state: S,
+        run: F,
+    ) -> std::result::Result<Self, (std::io::Error, S)>
+    where
+        S: Send + 'static,
+        F: FnOnce(S) -> crate::Result<()> + Send + 'static,
+    {
+        let (notice, exited) = futures::channel::oneshot::channel();
+        match crate::failure::spawn_owned(builder, (state, notice), |(state, notice)| {
+            let _exit_notice = notice;
+            run(state)
+        }) {
+            Ok(handle) => Ok(Self { handle, exited }),
+            Err((error, (state, _))) => Err((error, state)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spawn(run: impl FnOnce() -> crate::Result<()> + Send + 'static) -> Self {
+        match Self::spawn_owned(std::thread::Builder::new(), (), move |()| run()) {
+            Ok(thread) => thread,
+            Err((error, ())) => panic!("failed to spawn KVM child test thread: {error}"),
+        }
+    }
+}
+
+struct ChildProcessHandle {
+    thread: ChildThread,
     panic_owner: Option<Arc<ChildProcessPanicOwner>>,
 }
 
-impl From<std::thread::JoinHandle<crate::Result<()>>> for ChildProcessHandle {
-    fn from(handle: std::thread::JoinHandle<crate::Result<()>>) -> Self {
+impl From<ChildThread> for ChildProcessHandle {
+    fn from(thread: ChildThread) -> Self {
         Self {
-            handle,
+            thread,
             panic_owner: None,
         }
     }
@@ -1573,16 +1633,57 @@ impl From<std::thread::JoinHandle<crate::Result<()>>> for ChildProcessHandle {
 
 impl ChildProcessHandle {
     fn join(self, unowned_panic: impl FnOnce() -> crate::Error) -> crate::Result<()> {
+        let Self {
+            thread,
+            panic_owner,
+        } = self;
+        Self::resolve(
+            Self::join_host_thread(thread.handle),
+            panic_owner,
+            unowned_panic,
+        )
+    }
+
+    /// Joins without blocking the calling executor. An embedder may drive the
+    /// scheduler that grants this child its remaining turns on the same
+    /// single-threaded executor as the exiting owner (Hermit does), so a
+    /// blocking join there starves the child it waits for. This suspends until
+    /// the child's closure has returned or unwound; the join that follows
+    /// waits only for host-thread teardown, which takes no scheduler turn.
+    async fn join_without_blocking(
+        self,
+        unowned_panic: impl FnOnce() -> crate::Error,
+    ) -> crate::Result<()> {
+        let Self {
+            thread: ChildThread { handle, exited },
+            panic_owner,
+        } = self;
+        // Only dropping the notice resolves it; no value exists to send.
+        let Err(futures::channel::oneshot::Canceled) = exited.await;
+        Self::resolve(Self::join_host_thread(handle), panic_owner, unowned_panic)
+    }
+
+    fn join_host_thread(
+        handle: std::thread::JoinHandle<crate::Result<()>>,
+    ) -> std::thread::Result<crate::Result<()>> {
         #[cfg(test)]
-        let target = self.handle.thread().id();
+        let target = handle.thread().id();
         #[cfg(test)]
         crate::entry::driver::test_observation::join(target, true, false);
-        let joined = self.handle.join();
+        let joined = handle.join();
         #[cfg(test)]
         crate::entry::driver::test_observation::join(target, true, true);
+        joined
+    }
+
+    fn resolve(
+        joined: std::thread::Result<crate::Result<()>>,
+        panic_owner: Option<Arc<ChildProcessPanicOwner>>,
+        unowned_panic: impl FnOnce() -> crate::Error,
+    ) -> crate::Result<()> {
         match joined {
             Ok(result) => result,
-            Err(payload) => Err(match self.panic_owner {
+            Err(payload) => Err(match panic_owner {
                 Some(owner) => owner.retain_joined(payload),
                 None => unowned_panic(),
             }),
@@ -3549,7 +3650,7 @@ impl ElfExecutor {
         pid: i32,
         start: std::sync::mpsc::Sender<ChildStartCommand>,
         completion: Arc<ChildCompletionSlot>,
-        handle: std::thread::JoinHandle<crate::Result<()>>,
+        handle: ChildThread,
     ) {
         self.register_child_process_with_gate(pid, ChildStartGate::new(start), completion, handle);
     }
@@ -3560,7 +3661,7 @@ impl ElfExecutor {
         pid: i32,
         start: ChildStartGate,
         completion: Arc<ChildCompletionSlot>,
-        handle: std::thread::JoinHandle<crate::Result<()>>,
+        handle: ChildThread,
     ) {
         self.register_child_process_with_panic_owner(pid, start, completion, handle, None);
     }
@@ -3570,7 +3671,7 @@ impl ElfExecutor {
         pid: i32,
         start: ChildStartGate,
         completion: Arc<ChildCompletionSlot>,
-        handle: std::thread::JoinHandle<crate::Result<()>>,
+        handle: ChildThread,
         panic_owner: Option<Arc<ChildProcessPanicOwner>>,
     ) {
         let previous = self.pending_processes.insert(
@@ -3579,7 +3680,7 @@ impl ElfExecutor {
                 start,
                 completion,
                 handle: ChildProcessHandle {
-                    handle,
+                    thread: handle,
                     panic_owner,
                 },
             },
@@ -3726,15 +3827,34 @@ impl ElfExecutor {
     }
 
     // TODO-HUMAN-REVIEW(PR-235): Review KVM root-exit child synchronization.
+    /// Blocking form for owners that no embedder scheduler depends on: native
+    /// host threads and tests. A Tool process exit uses the async form.
+    #[cfg(test)]
     pub(crate) fn join_all_child_processes(&mut self) -> crate::Result<()> {
-        self.finish_child_processes(false)
+        self.finish_child_processes(false, ChildJoin::Blocking)
+            .now_or_never()
+            .expect("a blocking KVM child join never suspends")
     }
 
     pub(crate) fn join_child_processes_after_failure(&mut self) -> crate::Result<()> {
-        self.finish_child_processes(true)
+        self.finish_child_processes(true, ChildJoin::Blocking)
+            .now_or_never()
+            .expect("a blocking KVM child join never suspends")
     }
 
-    fn finish_child_processes(&mut self, failed: bool) -> crate::Result<()> {
+    /// Suspends, rather than blocks, while a child still runs, so an embedder
+    /// scheduler polled on the same executor can grant that child its turns.
+    pub(crate) async fn join_all_child_processes_async(&mut self) -> crate::Result<()> {
+        self.finish_child_processes(false, ChildJoin::Suspending)
+            .await
+    }
+
+    pub(crate) async fn join_child_processes_after_failure_async(&mut self) -> crate::Result<()> {
+        self.finish_child_processes(true, ChildJoin::Suspending)
+            .await
+    }
+
+    async fn finish_child_processes(&mut self, failed: bool, how: ChildJoin) -> crate::Result<()> {
         let mut errors = Vec::new();
         // Taking ownership first ensures that every handle is joined, even if
         // an earlier child lost its start gate or returned an error. Reusing
@@ -3806,9 +3926,11 @@ impl ElfExecutor {
                     "KVM child process {pid} lost its parent start gate"
                 )));
             }
-            let result = process.handle.join(|| {
-                crate::Error::UnexpectedVcpuExit(format!("KVM child process {pid} panicked"))
-            });
+            let result = how
+                .join(process.handle, || {
+                    crate::Error::UnexpectedVcpuExit(format!("KVM child process {pid} panicked"))
+                })
+                .await;
             match result {
                 Err(error) => errors.push(error),
                 Ok(()) => {
@@ -3841,15 +3963,19 @@ impl ElfExecutor {
             }
         }
         for handle in completed {
-            let result = handle.join(|| {
-                crate::Error::UnexpectedVcpuExit("completed KVM child process panicked".to_owned())
-            });
+            let result = how
+                .join(handle, || {
+                    crate::Error::UnexpectedVcpuExit(
+                        "completed KVM child process panicked".to_owned(),
+                    )
+                })
+                .await;
             if let Err(error) = result {
                 errors.push(error);
             }
         }
         if self.is_thread_group_leader() && self.is_traced_tree_root() {
-            self.join_namespace_orphans(failed, &mut errors);
+            self.join_namespace_orphans(failed, how, &mut errors).await;
         }
         crate::Error::combine(errors)
     }
@@ -3858,7 +3984,12 @@ impl ElfExecutor {
     /// these processes: it joins each one and discards its status, which no
     /// traced process can observe. Every process that can add an orphan is
     /// itself joined, directly or through this loop, before the loop ends.
-    fn join_namespace_orphans(&self, failed: bool, errors: &mut Vec<crate::Error>) {
+    async fn join_namespace_orphans(
+        &self,
+        failed: bool,
+        how: ChildJoin,
+        errors: &mut Vec<crate::Error>,
+    ) {
         loop {
             let orphans = std::mem::take(
                 &mut *self
@@ -3884,9 +4015,13 @@ impl ElfExecutor {
                 }
             }
             for (pid, process) in orphans {
-                let result = process.handle.join(|| {
-                    crate::Error::UnexpectedVcpuExit(format!("KVM orphan process {pid} panicked"))
-                });
+                let result = how
+                    .join(process.handle, || {
+                        crate::Error::UnexpectedVcpuExit(format!(
+                            "KVM orphan process {pid} panicked"
+                        ))
+                    })
+                    .await;
                 if let Err(error) = result {
                     errors.push(error);
                     continue;
@@ -44340,7 +44475,7 @@ mod tests {
         let completion = Arc::new(ChildCompletionSlot::default());
         let child_completion = completion.clone();
         let completion_notifier = executor.child_completion_notifier();
-        let handle = std::thread::spawn(move || {
+        let handle = ChildThread::spawn(move || {
             running_sender.send(()).unwrap();
             start_receiver.recv().unwrap();
             exit_receiver.recv().unwrap();
@@ -44415,7 +44550,7 @@ mod tests {
         let completion = Arc::new(ChildCompletionSlot::with_completion(
             ChildCompletion::Waitable(ExitStatus::Exited(7)),
         ));
-        let handle = std::thread::spawn(move || {
+        let handle = ChildThread::spawn(move || {
             start_receiver.recv().unwrap();
             callback_started_sender.send(()).unwrap();
             callback_release_receiver.recv().unwrap();
@@ -44467,7 +44602,7 @@ mod tests {
             let completion = Arc::new(ChildCompletionSlot::default());
             let child_completion = completion.clone();
             let notifier = executor.child_completion_notifier();
-            let handle = std::thread::spawn(move || {
+            let handle = ChildThread::spawn(move || {
                 start_receiver.recv().unwrap();
                 assert!(child_completion.begin_publication());
                 armed_sender.send(()).unwrap();
@@ -44552,7 +44687,7 @@ mod tests {
     fn register_published_child(executor: &mut ElfExecutor, pid: i32, completion: ChildCompletion) {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let completion = Arc::new(ChildCompletionSlot::with_completion(completion));
-        let handle = std::thread::spawn(move || {
+        let handle = ChildThread::spawn(move || {
             start_receiver.recv().unwrap();
             Ok(())
         });
@@ -44566,7 +44701,7 @@ mod tests {
         let low_completion = Arc::new(ChildCompletionSlot::default());
         let child_low_completion = low_completion.clone();
         let low_notifier = notifier.clone();
-        let low_handle = std::thread::spawn(move || {
+        let low_handle = ChildThread::spawn(move || {
             low_start_receiver.recv().unwrap();
             release_receiver.recv().unwrap();
             assert!(
@@ -44580,7 +44715,7 @@ mod tests {
         let (high_start_sender, high_start_receiver) = std::sync::mpsc::channel();
         let high_completion = Arc::new(ChildCompletionSlot::default());
         let child_high_completion = high_completion.clone();
-        let high_handle = std::thread::spawn(move || {
+        let high_handle = ChildThread::spawn(move || {
             high_start_receiver.recv().unwrap();
             assert!(
                 child_high_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(3)))
@@ -45332,7 +45467,7 @@ mod tests {
         let (started_sender, started_receiver) = std::sync::mpsc::channel();
         let completion = Arc::new(ChildCompletionSlot::default());
         let child_completion = completion.clone();
-        let handle = std::thread::spawn(move || {
+        let handle = ChildThread::spawn(move || {
             ready_sender.send(()).unwrap();
             assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Start);
             started_sender.send(()).unwrap();
@@ -45376,7 +45511,7 @@ mod tests {
                 let pid = tid * 10 + batch;
                 let (start, wait) = std::sync::mpsc::channel();
                 let child_lifetime = lifetime.clone();
-                let handle = std::thread::spawn(move || {
+                let handle = ChildThread::spawn(move || {
                     let _lifetime = child_lifetime;
                     assert_eq!(wait.recv().unwrap(), ChildStartCommand::Start);
                     Err(crate::Error::UnexpectedVcpuExit(format!(
@@ -45391,7 +45526,7 @@ mod tests {
                 );
                 let child_lifetime = lifetime.clone();
                 worker.completed_processes.push(
-                    std::thread::spawn(move || {
+                    ChildThread::spawn(move || {
                         let _lifetime = child_lifetime;
                         Err(crate::Error::UnexpectedVcpuExit(format!(
                             "transferred completed {pid}"
@@ -45527,7 +45662,7 @@ mod tests {
             } else {
                 Some(start_receiver)
             };
-            let handle = std::thread::spawn(move || {
+            let handle = ChildThread::spawn(move || {
                 let _lifetime = child_lifetime;
                 if let Some(receiver) = receiver {
                     assert_eq!(receiver.recv().unwrap(), ChildStartCommand::Start);
@@ -45566,7 +45701,7 @@ mod tests {
         for index in 0..2 {
             let child_lifetime = lifetime.clone();
             executor.completed_processes.push(
-                std::thread::spawn(move || {
+                ChildThread::spawn(move || {
                     let _lifetime = child_lifetime;
                     if index == 0 {
                         Err(crate::Error::UnexpectedVcpuExit(
@@ -45581,7 +45716,7 @@ mod tests {
         }
         let child_lifetime = lifetime.clone();
         executor.completed_processes.push(
-            std::thread::spawn(move || {
+            ChildThread::spawn(move || {
                 let _lifetime = child_lifetime;
                 wait_release
                     .recv_timeout(std::time::Duration::from_secs(5))
@@ -45606,10 +45741,10 @@ mod tests {
         release_thread.join().unwrap();
         for (_, process) in std::mem::take(&mut executor.pending_processes) {
             let _ = process.start.start();
-            let _ = process.handle.handle.join();
+            let _ = process.handle.thread.handle.join();
         }
         for handle in executor.completed_processes.drain(..) {
-            let _ = handle.handle.join();
+            let _ = handle.thread.handle.join();
         }
         wait_finished
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -45657,7 +45792,7 @@ mod tests {
             gates.lock().unwrap().push(gate.clone());
             let wait = if pid == 2 { wait_later.take() } else { None };
             let done = if pid == 3 { later_done.take() } else { None };
-            let handle = std::thread::spawn(move || {
+            let handle = ChildThread::spawn(move || {
                 assert_eq!(
                     receiver.recv().unwrap(),
                     ChildStartCommand::CancelAfterFailure
@@ -45788,7 +45923,7 @@ mod tests {
         let cancelled_in_child = cancelled.clone();
         let (cancel_sender, cancel_receiver) = std::sync::mpsc::channel();
         let cancel_completion = Arc::new(ChildCompletionSlot::default());
-        let cancel_handle = std::thread::spawn(move || match cancel_receiver.recv() {
+        let cancel_handle = ChildThread::spawn(move || match cancel_receiver.recv() {
             Ok(ChildStartCommand::Cancel) => {
                 cancelled_in_child.store(true, Ordering::Release);
                 Ok(())
@@ -45804,7 +45939,7 @@ mod tests {
         let (sibling_start_sender, sibling_start_receiver) = std::sync::mpsc::channel();
         let (sibling_release_sender, sibling_release_receiver) = std::sync::mpsc::channel();
         let sibling_completion = Arc::new(ChildCompletionSlot::default());
-        let sibling_handle = std::thread::spawn(move || {
+        let sibling_handle = ChildThread::spawn(move || {
             assert_eq!(
                 sibling_start_receiver.recv().unwrap(),
                 ChildStartCommand::Start
@@ -45839,7 +45974,7 @@ mod tests {
 
         sibling_release_sender.send(()).unwrap();
         let sibling = executor.pending_processes.remove(&3).unwrap();
-        sibling.handle.handle.join().unwrap().unwrap();
+        sibling.handle.thread.handle.join().unwrap().unwrap();
         assert!(sibling_finished.load(Ordering::Acquire));
     }
 
@@ -45849,7 +45984,7 @@ mod tests {
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let completion = Arc::new(ChildCompletionSlot::default());
-        let handle = std::thread::spawn(move || {
+        let handle = ChildThread::spawn(move || {
             assert_eq!(start_receiver.recv().unwrap(), ChildStartCommand::Cancel);
             Err(crate::Error::UnexpectedVcpuExit(
                 "forced unstarted-child failure".to_owned(),
@@ -49655,7 +49790,7 @@ mod child_panic_owner_tests {
             let completion = Arc::new(ChildCompletionSlot::default());
             let child_completion = completion.clone();
             let (ready, wait_ready) = std::sync::mpsc::channel();
-            let handle = std::thread::spawn(move || -> crate::Result<()> {
+            let handle = ChildThread::spawn(move || -> crate::Result<()> {
                 let command = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
                 assert_eq!(
                     command,

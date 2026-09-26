@@ -17886,5 +17886,197 @@ int main(int argc, char **argv) {
     }
 }
 
+type TurnRequests = futures::channel::mpsc::UnboundedSender<futures::channel::oneshot::Sender<()>>;
+
+/// A scheduler reachable from every guest process's Tool, and the calls those
+/// Tools completed.
+#[derive(Clone)]
+struct CoScheduledConfig {
+    turns: TurnRequests,
+    calls: Arc<Mutex<Vec<(i32, Sysno, i64)>>>,
+}
+
+static CO_SCHEDULED_CONFIGS: LazyLock<Mutex<BTreeMap<u64, CoScheduledConfig>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+static NEXT_CO_SCHEDULED_CONFIG: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Default)]
+struct CoScheduledGlobal;
+
+#[reverie::global_tool]
+impl GlobalTool for CoScheduledGlobal {
+    type Request = ();
+    type Response = ();
+    type Config = u64;
+
+    async fn init_global_state(_config: &u64) -> Self {
+        Self
+    }
+
+    async fn receive_rpc(&self, _from: Pid, (): ()) {}
+}
+
+/// Every intercepted call first waits for a turn from a scheduler that only
+/// the embedder's own executor polls, as Hermit's Detcore scheduler is.
+#[derive(Default)]
+struct CoScheduledTool {
+    pid: i32,
+    config: Option<CoScheduledConfig>,
+}
+
+#[reverie::tool]
+impl Tool for CoScheduledTool {
+    type GlobalState = CoScheduledGlobal;
+    type ThreadState = ();
+
+    fn new(pid: Pid, config: &u64) -> Self {
+        Self {
+            pid: pid.as_raw(),
+            config: CO_SCHEDULED_CONFIGS.lock().unwrap().get(config).cloned(),
+        }
+    }
+
+    fn subscriptions(_config: &u64) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscalls([Sysno::getpid, Sysno::exit_group]);
+        subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        let config = self
+            .config
+            .as_ref()
+            .expect("co-scheduled config disappeared");
+        let (turn, granted) = futures::channel::oneshot::channel();
+        config
+            .turns
+            .unbounded_send(turn)
+            .expect("the embedder's scheduler stopped");
+        granted
+            .await
+            .expect("the embedder's scheduler dropped a turn");
+        let (number, args) = syscall.into_parts();
+        if number == Sysno::exit_group {
+            let status = args.arg0 as i64;
+            config
+                .calls
+                .lock()
+                .unwrap()
+                .push((self.pid, number, status));
+            guest.tail_inject(syscall).await
+        } else {
+            let result = guest.inject(syscall).await?;
+            config
+                .calls
+                .lock()
+                .unwrap()
+                .push((self.pid, number, result));
+            Ok(result)
+        }
+    }
+}
+
+#[test]
+fn traced_root_exit_leaves_the_embedders_scheduler_running_for_its_children() {
+    const TEST: &str = "traced_root_exit_leaves_the_embedders_scheduler_running_for_its_children";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "root-exit-co-scheduled",
+        r#"
+#include <unistd.h>
+
+int main(void) {
+  int hold[2];
+  if (pipe(hold) != 0) return 10;
+  pid_t child = fork();
+  if (child < 0) return 11;
+  if (child == 0) {
+    close(hold[1]);
+    pid_t grandchild = fork();
+    if (grandchild < 0) _exit(12);
+    /* End of file arrives only once the root has exited and released its
+       write end, so both processes still need turns while it exits. The
+       child does not wait, so the grandchild may also be orphaned. */
+    char byte;
+    if (read(hold[0], &byte, 1) != 0) _exit(13);
+    (void)getpid();
+    _exit(grandchild == 0 ? 9 : 0);
+  }
+  close(hold[0]);
+  return 7;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend.set_root_pid(3).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+
+    let (turns, mut requests) = futures::channel::mpsc::unbounded();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let config = NEXT_CO_SCHEDULED_CONFIG.fetch_add(1, Ordering::SeqCst);
+    CO_SCHEDULED_CONFIGS.lock().unwrap().insert(
+        config,
+        CoScheduledConfig {
+            turns,
+            calls: calls.clone(),
+        },
+    );
+    // One thread polls both the run, whose root joins its children when it
+    // exits, and the scheduler those children need. Bounded by the 30s
+    // self-exec timeout.
+    let scheduler = async {
+        while let Some(turn) = futures::StreamExt::next(&mut requests).await {
+            let _ = turn.send(());
+        }
+        unreachable!("the config registry holds a turn sender");
+    };
+    let run = backend.run_static_elf_with_tool::<CoScheduledTool>(config, true);
+    let result = match futures::executor::block_on(futures::future::select(
+        std::pin::pin!(run),
+        std::pin::pin!(scheduler),
+    )) {
+        futures::future::Either::Left((result, _)) => result,
+        futures::future::Either::Right(_) => unreachable!(),
+    };
+    CO_SCHEDULED_CONFIGS.lock().unwrap().remove(&config);
+    let (_, code, _stdout, stderr) = result.unwrap();
+    assert_eq!(code, 7, "stderr={}", String::from_utf8_lossy(&stderr));
+
+    let calls = std::mem::take(&mut *calls.lock().unwrap());
+    let exits = calls
+        .iter()
+        .filter(|(_, number, _)| *number == Sysno::exit_group)
+        .map(|&(pid, _, status)| (pid, status))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        exits,
+        BTreeMap::from([(3, 7), (4, 0), (5, 9)]),
+        "every process ran to exit after the root: {calls:?}"
+    );
+    for pid in [4, 5] {
+        assert!(
+            calls.contains(&(pid, Sysno::getpid, i64::from(pid))),
+            "{pid} took its turn after the root's exit began: {calls:?}"
+        );
+    }
+}
+
 #[path = "support/natural_retirement.rs"]
 mod natural_retirement;

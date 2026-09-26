@@ -17,6 +17,7 @@ use futures::future::BoxFuture;
 use super::*;
 use crate::executor::ChildCompletionSlot;
 use crate::executor::ChildStartCommand;
+use crate::executor::ChildThread;
 use crate::vm::GuestThreadGroup;
 
 /// Install and validate the process-wide KVM entry signal handler once.
@@ -381,7 +382,7 @@ where
         let child_completion = completion.clone();
         let (observed, observations) = std::sync::mpsc::channel();
         let handle =
-            crate::failure::spawn_owned(std::thread::Builder::new(), child, move |mut child| {
+            ChildThread::spawn_owned(std::thread::Builder::new(), child, move |mut child| {
                 let outcome = match receiver.recv() {
                     Ok(
                         command @ (ChildStartCommand::Cancel

@@ -4316,14 +4316,14 @@ mod tests {
     ) -> (
         super::super::ChildStartGate,
         Arc<super::super::ChildCompletionSlot>,
-        std::thread::JoinHandle<crate::Result<()>>,
+        super::super::ChildThread,
         std::sync::mpsc::Sender<()>,
     ) {
         let (start, started) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel::<()>();
         let slot = Arc::new(super::super::ChildCompletionSlot::default());
         let published = slot.clone();
-        let handle = std::thread::spawn(move || {
+        let handle = super::super::ChildThread::spawn(move || {
             assert_eq!(
                 started.recv().unwrap(),
                 super::super::ChildStartCommand::Start
@@ -4416,6 +4416,174 @@ mod tests {
             assert!(error.to_string().contains(expected), "{error}");
             assert!(root.namespace_orphanage.lock().unwrap().is_empty());
         }
+    }
+
+    type TurnRequests =
+        futures::channel::mpsc::UnboundedSender<futures::channel::oneshot::Sender<()>>;
+
+    /// A child whose remaining work, like a Tool exit hook, needs a turn from
+    /// a scheduler that only the exiting root's own executor polls, as Hermit's
+    /// is. It needs the turn whether its gate starts or cancels it, and before
+    /// or after publishing its status.
+    /// The thread holds `lifetime` until it returns.
+    fn co_scheduled_child_thread(
+        turns: TurnRequests,
+        published_first: Option<std::sync::mpsc::Sender<()>>,
+        lifetime: Arc<()>,
+    ) -> (
+        super::super::ChildStartGate,
+        Arc<super::super::ChildCompletionSlot>,
+        super::super::ChildThread,
+    ) {
+        let (start, started) = std::sync::mpsc::channel();
+        let slot = Arc::new(super::super::ChildCompletionSlot::default());
+        let published = slot.clone();
+        let handle = super::super::ChildThread::spawn(move || {
+            let _lifetime = lifetime;
+            started.recv().unwrap();
+            let publish = || {
+                assert!(published.publish(super::super::ChildCompletion::AutoReaped(
+                    reverie::ExitStatus::Exited(3),
+                )));
+            };
+            if let Some(announce) = &published_first {
+                publish();
+                announce.send(()).unwrap();
+            }
+            let (turn, granted) = futures::channel::oneshot::channel();
+            turns.unbounded_send(turn).unwrap();
+            futures::executor::block_on(granted).unwrap();
+            if published_first.is_none() {
+                publish();
+            }
+            Ok(())
+        });
+        (super::super::ChildStartGate::new(start), slot, handle)
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum RootChild {
+        None,
+        Pending,
+        // Collected by a nonblocking wait while its thread still runs.
+        Collected,
+    }
+
+    #[test]
+    fn traced_root_exit_does_not_starve_the_scheduler_its_children_need() {
+        // Without a direct child, the root reaches the orphan drain before the
+        // scheduler has ever run, so each drain is exposed on its own.
+        for direct in [RootChild::Pending, RootChild::Collected, RootChild::None] {
+            for failed in [false, true] {
+                // Host threads can be refused (EAGAIN, ENOMEM). The exit
+                // join must neither need one nor fall back to blocking.
+                for refuse_threads in [false, true] {
+                    root_exit_join_case(direct, failed, refuse_threads);
+                }
+            }
+        }
+    }
+
+    fn root_exit_join_case(direct: RootChild, failed: bool, refuse_threads: bool) {
+        let (turns, mut requests) = futures::channel::mpsc::unbounded();
+        let lifetime = Arc::new(());
+        let mut root = outside_init_root();
+        let mut children = Vec::new();
+        if !matches!(direct, RootChild::None) {
+            children.push(root.fork_child(6, false, false).unwrap());
+            let (announce, announced) = std::sync::mpsc::channel();
+            let collected = matches!(direct, RootChild::Collected);
+            let (gate, slot, handle) = co_scheduled_child_thread(
+                turns.clone(),
+                collected.then_some(announce),
+                lifetime.clone(),
+            );
+            root.register_child_process_with_gate(6, gate, slot, handle);
+            if collected {
+                root.start_pending_child_processes().unwrap();
+                announced.recv().unwrap();
+                assert!(root.collect_child_process(6, false).unwrap());
+                assert_eq!(root.completed_processes.len(), 1);
+            }
+        }
+        let mut parent = root.fork_child(7, false, false).unwrap();
+        children.push(parent.fork_child(8, false, false).unwrap());
+        let (gate, slot, handle) = co_scheduled_child_thread(turns, None, lifetime.clone());
+        parent.register_child_process_with_gate(8, gate, slot, handle);
+
+        // The reparenting parent hands its child over although no scheduler
+        // turn has been granted yet.
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        parent.join_all_child_processes().unwrap();
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+
+        // One thread polls both the root's exit join and the scheduler. A
+        // blocking join never lets it grant the turns.
+        let (joined, root_joined) = std::sync::mpsc::channel();
+        let root_thread = std::thread::spawn(move || {
+            let refusal = refuse_threads.then(|| {
+                let probe = Arc::new(crate::failure::spawn_refusal::Probe::default());
+                let guard = crate::failure::spawn_refusal::Guard::arm(probe.clone());
+                (probe, guard)
+            });
+            let scheduler = async {
+                let mut granted = 0;
+                while let Some(turn) = futures::StreamExt::next(&mut requests).await {
+                    turn.send(()).unwrap();
+                    granted += 1;
+                }
+                granted
+            };
+            // The scheduler ends once every child has dropped its turn sender,
+            // which it holds until it exits.
+            let (result, granted) = futures::executor::block_on(async {
+                let join = async {
+                    if failed {
+                        root.join_child_processes_after_failure_async().await
+                    } else {
+                        root.join_all_child_processes_async().await
+                    }
+                };
+                futures::future::join(join, scheduler).await
+            });
+            joined.send(()).unwrap();
+            let join_spawned = refusal
+                .as_ref()
+                .is_some_and(|_| !crate::failure::spawn_refusal::is_armed());
+            if let Some((probe, _guard)) = refusal.filter(|_| !join_spawned) {
+                // Spend the refusal on a child spawn instead: its state returns
+                // to the caller, so no thread or exit notice is left owning it.
+                let state = Arc::new(());
+                let Err((_, returned)) = super::super::ChildThread::spawn_owned(
+                    std::thread::Builder::new(),
+                    state.clone(),
+                    |_| unreachable!("a refused child thread ran"),
+                ) else {
+                    panic!("the armed refusal admitted a child thread");
+                };
+                assert!(Arc::ptr_eq(&state, &returned));
+                assert!(probe.error().is_some());
+                drop(returned);
+                assert_eq!(Arc::strong_count(&state), 1);
+            }
+            (root, result, granted, join_spawned)
+        });
+        assert!(
+            root_joined
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .is_ok(),
+            "{direct:?} direct child, failed {failed}, threads refused {refuse_threads}: \
+             the traced root's exit join starved the scheduler its children need",
+        );
+        let (root, result, granted, join_spawned) = root_thread.join().unwrap();
+        assert!(!join_spawned, "the exit join spawned a host thread");
+        result.unwrap();
+        assert_eq!(granted, children.len(), "every child got exactly one turn");
+        assert!(root.namespace_orphanage.lock().unwrap().is_empty());
+        assert!(root.completed_processes.is_empty());
+        assert!(root.pending_processes.is_empty());
+        // Every child thread has returned: no owner outlives the join.
+        assert_eq!(Arc::strong_count(&lifetime), 1);
     }
 
     #[test]

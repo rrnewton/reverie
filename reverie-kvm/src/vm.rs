@@ -80,6 +80,7 @@ use crate::executor::ChildCompletion;
 use crate::executor::ChildCompletionSlot;
 use crate::executor::ChildStartCommand;
 use crate::executor::ChildStartGate;
+use crate::executor::ChildThread;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
 use crate::executor::ProcessExit;
@@ -2452,7 +2453,10 @@ impl KvmBackend {
                                 .await;
                             child.backend.cancel_guest_threads_after_failure();
                             let workers = child.backend.guest_worker_teardown_result();
-                            let children = child.executor.join_child_processes_after_failure();
+                            let children = child
+                                .executor
+                                .join_child_processes_after_failure_async()
+                                .await;
                             drop(transfer);
                             Error::combine(
                                 [cleanup, workers, children]
@@ -3014,7 +3018,7 @@ impl KvmBackend {
                 let child_panic_owner = panic_owner.clone();
                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
                 let start_gate = ChildStartGate::new(start_sender);
-                let handle = crate::failure::spawn_owned(
+                let handle = ChildThread::spawn_owned(
                     std::thread::Builder::new()
                         .name(format!("reverie-kvm-process-{raw_child_pid}")),
                     (
@@ -8141,7 +8145,7 @@ mod tests {
         let (fork_sender, fork_receiver) = std::sync::mpsc::channel();
         let fork_gate = ChildStartGate::new(fork_sender);
         let fork_completion = Arc::new(ChildCompletionSlot::default());
-        let fork_handle = std::thread::spawn(move || match fork_receiver.recv() {
+        let fork_handle = ChildThread::spawn(move || match fork_receiver.recv() {
             Ok(ChildStartCommand::CancelAfterFailure) => {
                 fork_cancelled_in_child.store(true, Ordering::Release);
                 Ok(())
@@ -8235,7 +8239,7 @@ mod tests {
             let child_destroyed = destroyed.clone();
             let child_consumed = consumed.clone();
             let child_failure = failure.clone();
-            let fork_handle = std::thread::spawn(move || {
+            let fork_handle = ChildThread::spawn(move || {
                 assert_eq!(
                     fork_receiver.recv().unwrap(),
                     ChildStartCommand::CancelAfterFailure
@@ -9175,7 +9179,7 @@ mod tests {
             Arc::new(ChildCompletionSlot::with_completion(
                 ChildCompletion::Waitable(ExitStatus::SUCCESS),
             )),
-            std::thread::spawn(|| Ok(())),
+            ChildThread::spawn(|| Ok(())),
         );
 
         let (second_sender, second_receiver) = std::sync::mpsc::channel();
@@ -9184,7 +9188,7 @@ mod tests {
             42,
             second_gate,
             Arc::new(ChildCompletionSlot::default()),
-            std::thread::spawn(|| Ok(())),
+            ChildThread::spawn(|| Ok(())),
         );
 
         let starts = Arc::new(Mutex::new(vec![PendingChildStart::fork_process(
@@ -9241,7 +9245,7 @@ mod tests {
         let (lost_sender, lost_receiver) = std::sync::mpsc::channel();
         drop(lost_receiver);
         let lost_gate = ChildStartGate::new(lost_sender);
-        let lost_handle = std::thread::spawn(|| Ok(()));
+        let lost_handle = ChildThread::spawn(|| Ok(()));
         executor.register_child_process_with_gate(
             52,
             lost_gate.clone(),
@@ -9334,7 +9338,7 @@ mod tests {
                             41,
                             gate.clone(),
                             Arc::new(ChildCompletionSlot::default()),
-                            std::thread::spawn(move || Err(child())),
+                            ChildThread::spawn(move || Err(child())),
                         );
                         starts
                             .lock()

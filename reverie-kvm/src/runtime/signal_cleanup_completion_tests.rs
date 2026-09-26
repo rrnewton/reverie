@@ -386,7 +386,7 @@ fn signal_cleanup_publishes_effects_before_cancelling_and_joining_registered_chi
     let observed_publication = Arc::new(AtomicBool::new(false));
     let child_observed_publication = observed_publication.clone();
     let child_run = run.clone();
-    let child = std::thread::spawn(move || {
+    let child = crate::executor::ChildThread::spawn(move || {
         assert_eq!(
             receiver
                 .recv_timeout(std::time::Duration::from_secs(5))
