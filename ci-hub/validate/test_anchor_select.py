@@ -107,6 +107,15 @@ def base_evidence(
     }
 
 
+def _apply_case(row: dict, case: dict) -> dict:
+    """Apply a release-payload-cases.json case: drop the pair and every absent
+    key, then set exactly the case's fields."""
+    for key in ("release_builder", "e2e_payload", *case.get("absent", ())):
+        row.pop(key, None)
+    row.update(case["fields"])
+    return row
+
+
 def qualifying_row(commit: str, *, evidence: dict[str, str], **over) -> dict:
     """A receipt that satisfies every clause of the shared predicate."""
     row = {
@@ -196,10 +205,10 @@ class PredicateBrackets(unittest.TestCase):
         cases = json.loads(
             (HERE / "tests" / "fixtures" / "release-payload-cases.json").read_text()
         )["cases"]
-        self.assertEqual(3, sum(case["expected"] is not None for case in cases))
+        self.assertEqual(7, sum(case["expected"] is not None for case in cases))
         for case in cases:
             with self.subTest(case=case["label"]):
-                row = self.row(**case["fields"])
+                row = _apply_case(self.row(), case)
                 if case["expected"] == "cargo":
                     ok, reason = A.row_qualifies(row, self.predicate)
                     self.assertTrue(ok, f"a Cargo receipt was refused: {reason}")

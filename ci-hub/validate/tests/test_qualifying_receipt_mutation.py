@@ -83,6 +83,15 @@ REPO = "rrnewton/hermit"
 _MISSING = object()
 
 
+def _apply_case(row: dict, case: dict) -> dict:
+    """Apply a release-payload-cases.json case: drop the pair and every absent
+    key, then set exactly the case's fields."""
+    for key in ("release_builder", "e2e_payload", *case.get("absent", ())):
+        row.pop(key, None)
+    row.update(case["fields"])
+    return row
+
+
 def _green_row(sha: str) -> dict:
     """A genuine schema-5 clean full-coverage PASS carrying counts + coverage."""
     return {
@@ -1054,11 +1063,46 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         cases = json.loads(
             (Path(__file__).resolve().parent / "fixtures" / "release-payload-cases.json").read_text()
         )["cases"]
-        self.assertEqual(3, sum(case["expected"] is not None for case in cases))
+        self.assertEqual(7, sum(case["expected"] is not None for case in cases))
+        predicate = qualifying_receipt.active()
+        paneled = {"full": 0, "raw-row": 0, "not-hermit": 0}
         for case in cases:
             with self.subTest(case=case["label"]):
-                row = _green_row(SHA)
-                row.update(case["fields"])
+                row = _apply_case(_green_row(SHA), case)
+                self.assertEqual(case["expected"],
+                                 qualifying_receipt.release_builder_of(row, predicate))
+                if row.get("repo") not in ("hermit", "rrnewton/hermit"):
+                    # Not a Hermit canonical receipt. validate-status and
+                    # publish_receipt bind a receipt to rrnewton/hermit and
+                    # refuse this row before reading its builder, so this
+                    # panel cannot express its verdict; the shared-reader
+                    # assertion above is the whole claim.
+                    paneled["not-hermit"] += 1
+                    continue
+                with tempfile.TemporaryDirectory() as tmp:
+                    try:
+                        _record_canonical_fixture(Path(tmp), row)
+                        writer_refused = False
+                    except ValueError:
+                        writer_refused = True
+                if writer_refused:
+                    # The canonical writer refuses a row without a real
+                    # RFC3339 UTC finished_at, so neither ledger leg can ever
+                    # read it; every raw-row leg must refuse it.
+                    self.assertIsNone(case["expected"])
+                    self.assertFalse(qualifying_receipt.is_utc_timestamp(row.get("finished_at")))
+                    panel = {
+                        "query.py": self._query_accepts(row, None),
+                        "publish_receipt.py": self._publish_accepts(row, None),
+                        "anchor_select.py": self._anchor_accepts(row, None),
+                        "finalize_receipt.py": self._finalizer_accepts(row, None),
+                        "receipt-digest canonical": self._canonical_digest_accepts(row, None),
+                        "verify_receipt.sh": self._verify_sh_accepts(row, None),
+                    }
+                    self.assertFalse(any(panel.values()),
+                                     f"{case['label']} must be refused by every raw-row consumer: {panel}")
+                    paneled["raw-row"] += 1
+                    continue
                 panel = self._panel(row, predicate=None)
                 if case["expected"] == "cargo":
                     self.assertTrue(all(panel.values()),
@@ -1066,6 +1110,8 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                 else:
                     self.assertFalse(any(panel.values()),
                                      f"{case['label']} must be refused by every consumer: {panel}")
+                paneled["full"] += 1
+        self.assertEqual({"full": 25, "raw-row": 7, "not-hermit": 5}, paneled)
 
     def test_schema4_and_newer_passed_count_contract_directly(self) -> None:
         """Both shared predicates use one reason for every current-row defect."""
@@ -1175,6 +1221,69 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                         RuntimeError,
                         "count_representation must be",
                     ):
+                        qualifying_receipt.load()
+
+    def test_release_builder_of_matches_every_shared_case(self) -> None:
+        """The reference reader itself, on a row holding only each case's keys,
+        brackets the legacy Cargo cutoff exactly as the Rust reader does."""
+        predicate = qualifying_receipt.active()
+        self.assertEqual(
+            "2026-09-25T20:42:29Z",
+            predicate["release_builder_required_from_finished_at"],
+        )
+        cases = json.loads(
+            (Path(__file__).resolve().parent / "fixtures" / "release-payload-cases.json").read_text()
+        )["cases"]
+        outcomes = []
+        for case in cases:
+            with self.subTest(case=case["label"]):
+                got = qualifying_receipt.release_builder_of(_apply_case({}, case), predicate)
+                self.assertEqual(case["expected"], got)
+                outcomes.append(got is not None)
+        self.assertEqual((7, 30), (sum(outcomes), len(outcomes) - sum(outcomes)))
+        # An older predicate without the cutoff dates no row before it.
+        undated = {k: v for k, v in predicate.items()
+                   if k != "release_builder_required_from_finished_at"}
+        legacy = {"repo": "hermit", "finished_at": "2026-08-07T20:15:31Z"}
+        self.assertEqual("cargo", qualifying_receipt.release_builder_of(legacy, predicate))
+        self.assertIsNone(qualifying_receipt.release_builder_of(legacy, undated))
+        # Non-string timestamps, which the typed Rust row cannot hold at all.
+        for finished in (1790000000, 1.5, True, ["2026-08-07T20:15:31Z"], {}):
+            with self.subTest(finished=finished):
+                self.assertIsNone(qualifying_receipt.release_builder_of(
+                    {"repo": "hermit", "finished_at": finished}, predicate))
+        for repo in (7, ["hermit"], "", "Hermit", "reverie/"):
+            with self.subTest(repo=repo):
+                self.assertIsNone(qualifying_receipt.release_builder_of(
+                    {"repo": repo, "finished_at": "2026-08-07T20:15:31Z"}, predicate))
+
+    def test_predicate_must_date_the_legacy_cargo_cutoff(self) -> None:
+        predicate = copy.deepcopy(qualifying_receipt.active())
+        missing = copy.deepcopy(predicate)
+        del missing["release_builder_required_from_finished_at"]
+        cases = [("missing", missing, "missing key 'release_builder_required_from_finished_at'")]
+        for label, value in (
+            ("null", None),
+            ("integer", 1790000000),
+            ("empty", ""),
+            ("offset", "2026-09-25T13:42:29-07:00"),
+            ("fractional", "2026-09-25T20:42:29.0Z"),
+            ("impossible", "2026-02-30T00:00:00Z"),
+            ("leap second", "2026-09-25T20:42:60Z"),
+            ("year zero", "0000-09-25T20:42:29Z"),
+        ):
+            drifted = copy.deepcopy(predicate)
+            drifted["release_builder_required_from_finished_at"] = value
+            cases.append((label, drifted, "release_builder_required_from_finished_at must be"))
+        for label, drifted, message in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "predicate.json"
+                path.write_text(json.dumps(drifted))
+                with mock.patch.dict(
+                    os.environ,
+                    {qualifying_receipt.PREDICATE_ENV: str(path)},
+                ):
+                    with self.assertRaisesRegex(RuntimeError, message):
                         qualifying_receipt.load()
 
     def test_current_schema_out_of_i64_counts_refuse_unanimously(self) -> None:

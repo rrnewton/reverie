@@ -931,7 +931,7 @@ fn history_exclusion_reasons(row: &HistoryRow) -> Result<Vec<String>, String> {
     // would present it as the Cargo debug evidence every other row is. A row
     // whose builder and payload disagree names no builder and is excluded too.
     match crate::qualifying_receipt::release_builder_of(
-        &row.extra,
+        row,
         crate::qualifying_receipt::active(),
     ) {
         Some("cargo") => {}
@@ -3635,7 +3635,29 @@ mod tests {
                 Some(_) => vec![REASON.to_owned()],
                 None => vec![INCONSISTENT.to_owned()],
             };
-            assert_eq!(history_exclusion_reasons(&row).unwrap(), expected, "{}", case.label);
+            // A legacy-boundary case may also move `repo` or drop `finished_at`,
+            // which this consumer excludes by its own named reasons; compare
+            // only the builder reasons, and require those others by name.
+            let reasons = history_exclusion_reasons(&row).unwrap();
+            let builder: Vec<String> = reasons
+                .iter()
+                .filter(|reason| [REASON, INCONSISTENT].contains(&reason.as_str()))
+                .cloned()
+                .collect();
+            assert_eq!(builder, expected, "{}", case.label);
+            let mut others: Vec<&str> = Vec::new();
+            if !row_is_hermit(&row) {
+                others.push("validation HistoryRow is not a Hermit row");
+            }
+            if row.finished_at.as_deref().is_none_or(|value| value.trim().is_empty()) {
+                others.push("validation HistoryRow omits finished_at");
+            }
+            let rest: Vec<&str> = reasons
+                .iter()
+                .map(String::as_str)
+                .filter(|reason| ![REASON, INCONSISTENT].contains(reason))
+                .collect();
+            assert_eq!(rest, others, "{}", case.label);
         }
 
         let cargo = history_row(7, "record-cargo", "run-cargo", &commit);

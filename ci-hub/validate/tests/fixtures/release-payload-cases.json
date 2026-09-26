@@ -1,15 +1,179 @@
 {
   "_comment": [
     "Builder/payload shapes shared by the Rust and Python consumers of",
-    "release_builder_of. Each case sets exactly the keys in fields on an",
-    "otherwise-qualifying row (an absent key is absent, not null) and names",
-    "the builder release_builder_of must return; null means no builder."
+    "release_builder_of. Each case removes release_builder, e2e_payload and",
+    "every key in absent (if any) from an otherwise-qualifying row, then sets",
+    "exactly the keys in fields (null is null, not absent), and names the",
+    "builder release_builder_of must return; null means no builder. A case",
+    "without either field brackets release_builder_required_from_finished_at",
+    "(2026-09-25T20:42:29Z) and the repository scope of the legacy Cargo rule."
   ],
   "cases": [
     {
-      "label": "neither field (legacy Cargo row)",
-      "fields": {},
+      "label": "neither field, Hermit row one second before the cutoff",
+      "fields": {
+        "finished_at": "2026-09-25T20:42:28Z"
+      },
+      "absent": [
+        "repo"
+      ],
       "expected": "cargo"
+    },
+    {
+      "label": "neither field, repo hermit before the cutoff",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-20T12:00:00Z"
+      },
+      "expected": "cargo"
+    },
+    {
+      "label": "neither field, repo rrnewton/hermit one second before the cutoff",
+      "fields": {
+        "repo": "rrnewton/hermit",
+        "finished_at": "2026-09-25T20:42:28Z"
+      },
+      "expected": "cargo"
+    },
+    {
+      "label": "neither field, Reverie row after the cutoff",
+      "fields": {
+        "repo": "reverie",
+        "finished_at": "2026-09-26T18:28:28Z"
+      },
+      "expected": "cargo"
+    },
+    {
+      "label": "neither field, contemporary rrnewton/reverie row",
+      "fields": {
+        "repo": "rrnewton/reverie",
+        "finished_at": "2026-09-26T18:28:28Z"
+      },
+      "expected": "cargo"
+    },
+    {
+      "label": "neither field, Hermit row at the cutoff",
+      "fields": {
+        "finished_at": "2026-09-25T20:42:29Z"
+      },
+      "absent": [
+        "repo"
+      ],
+      "expected": null
+    },
+    {
+      "label": "neither field, repo hermit at the cutoff",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T20:42:29Z"
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, contemporary repo hermit row",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-26T18:28:28Z"
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, contemporary repo rrnewton/hermit row",
+      "fields": {
+        "repo": "rrnewton/hermit",
+        "finished_at": "2026-09-26T18:28:28Z"
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, Hermit row without finished_at",
+      "fields": {
+        "repo": "hermit"
+      },
+      "absent": [
+        "finished_at"
+      ],
+      "expected": null
+    },
+    {
+      "label": "neither field, Hermit row with a null finished_at",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": null
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, finished_at with a space separator",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25 20:42:28"
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, finished_at with fractional seconds",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T20:42:28.5Z"
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, finished_at with a UTC offset",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T13:42:28-07:00"
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, finished_at on a date that does not exist",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-02-30T00:00:00Z"
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, finished_at in month zero",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-00-15T00:00:00Z"
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, finished_at at minute sixty",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T19:60:00Z"
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, finished_at on a leap second",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T19:59:60Z"
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, finished_at in year zero",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "0000-09-25T19:00:00Z"
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, a repository that is neither Hermit nor Reverie",
+      "fields": {
+        "repo": "agent-utils",
+        "finished_at": "2026-08-07T20:15:31Z"
+      },
+      "expected": null
     },
     {
       "label": "consistent cargo",

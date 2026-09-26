@@ -829,6 +829,7 @@ def load() -> dict[str, Any]:
         "base",
         "admission",
         "release_payloads",
+        "release_builder_required_from_finished_at",
     ):
         if key not in pred:
             raise RuntimeError(f"{path}: qualifying predicate missing key '{key}'")
@@ -881,6 +882,11 @@ def load() -> dict[str, Any]:
             f"{path}: qualifying predicate release_payloads must map each builder, "
             "including require.release_builder, to a non-empty payload identity"
         )
+    if not is_utc_timestamp(pred["release_builder_required_from_finished_at"]):
+        raise RuntimeError(
+            f"{path}: qualifying predicate release_builder_required_from_finished_at "
+            "must be a UTC RFC3339 timestamp such as 2026-09-25T20:42:29Z"
+        )
     return pred
 
 
@@ -897,21 +903,67 @@ def _canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
-def release_builder_of(row: Mapping[str, Any], pred: Mapping[str, Any]) -> str | None:
-    """The builder whose E2E payload a Hermit validate row executed, or None.
+#: Rows whose `repo` names Reverie. Reverie has only a Cargo build and its
+#: producers never wrote a builder, so its rows carry neither field at any date.
+_REVERIE_REPOS = ("reverie", "rrnewton/reverie")
 
-    ``release_builder`` and ``e2e_payload`` are read together. A row with
-    neither field predates them and was a Cargo run. Otherwise the row names a
-    builder only when ``release_builder`` is a key of the predicate's
-    ``release_payloads`` and ``e2e_payload`` is exactly that builder's
-    identity. Every other shape names no builder, so no consumer may treat it
-    as Cargo evidence. ci-hub/lib/qualifying_receipt.rs mirrors this.
+#: Rows whose `repo` names Hermit; an absent `repo` is a Hermit row, as in every
+#: other consumer (see `producer_definition_repository`).
+_HERMIT_REPOS = (None, "hermit", "rrnewton/hermit")
+
+
+def is_utc_timestamp(value: Any) -> bool:
+    """Whether ``value`` is a real instant in fixed-width RFC3339 UTC.
+
+    The shape alone would admit ``2026-13-45T99:00:00Z``, which still sorts
+    before a cutoff; a date that does not exist is not ordered against one.
+    ci-hub/lib/qualifying_receipt.rs `is_utc_timestamp` mirrors this.
+    """
+    if not isinstance(value, str) or not _RFC3339_Z.fullmatch(value):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
+
+
+def release_builder_of(row: Mapping[str, Any], pred: Mapping[str, Any]) -> str | None:
+    """The builder whose E2E payload a validate row executed, or None.
+
+    ``release_builder`` and ``e2e_payload`` are read together. When both are
+    present the row names a builder only when ``release_builder`` is a key of
+    the predicate's ``release_payloads`` and ``e2e_payload`` is exactly that
+    builder's identity.
+
+    A row with neither field was a Cargo run only where the fields could not
+    yet exist: a Reverie row, or a Hermit row whose ``finished_at`` is a real
+    UTC instant before ``release_builder_required_from_finished_at``, when the
+    first Hermit writer of the pair was authored. A Hermit row from that
+    instant on, or with an absent or malformed ``finished_at``, may come from a
+    writer that records the pair, so omitting both is not evidence of Cargo.
+
+    Every other shape names no builder, so no consumer may treat it as Cargo
+    evidence. ci-hub/lib/qualifying_receipt.rs mirrors this.
     """
     payloads = pred["release_payloads"]
     has_builder = "release_builder" in row
     has_payload = "e2e_payload" in row
     if not has_builder and not has_payload:
-        return "cargo" if "cargo" in payloads else None
+        if "cargo" not in payloads:
+            return None
+        repo = row.get("repo")
+        if repo in _REVERIE_REPOS:
+            return "cargo"
+        if repo not in _HERMIT_REPOS:
+            return None
+        finished = row.get("finished_at")
+        # Absent from an older predicate: no row is dated before an unknown
+        # cutoff, so a Hermit row without the pair names no builder.
+        cutoff = pred.get("release_builder_required_from_finished_at")
+        if not is_utc_timestamp(finished) or not is_utc_timestamp(cutoff):
+            return None
+        return "cargo" if finished < cutoff else None
     if not (has_builder and has_payload):
         return None
     builder = row["release_builder"]
@@ -2358,7 +2410,8 @@ def _row_qualification_without_class(
     if row.get("selection_mode") != req["selection_mode"]:
         return False, f"selection_mode={row.get('selection_mode')!r}(1-hop)"
     # The builder is read from release_builder and e2e_payload together; a row
-    # with neither field predates them and was a Cargo run.
+    # with neither field is Cargo only if it is a Reverie row or a Hermit row
+    # finished before release_builder_required_from_finished_at.
     if release_builder_of(row, pred) != req["release_builder"]:
         return False, f"release_builder={row.get('release_builder')!r}"
     if row.get("result") != req["result"]:

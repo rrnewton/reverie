@@ -2631,6 +2631,7 @@ class CellResultProjection(unittest.TestCase):
             "verified": verdict == "matched",
             "bitwise_parity": verdict == "matched",
             "verdict": verdict,
+            "no_result_reason": None,
             "infrastructure_error": None,
             "comparison": comparison if verdict in {"matched", "diverged"} else None,
             "compared_log_messages": compared if verdict in {"matched", "diverged"} else None,
@@ -3369,6 +3370,141 @@ class CellResultProjection(unittest.TestCase):
             right=right,
         )]
         return cell
+
+    def _fully_typed_report_cell(self, verdict):
+        """A matched or diverged cell whose report carries every optional field."""
+        if verdict == "matched":
+            cell = self._cell(0)
+        else:
+            cell = self._diverged_cell(
+                0, record=98, syscall=37, scheduler_turn=4, virtual_nanoseconds=80_000,
+            )
+        output = {
+            "exit_code": 0 if verdict == "matched" else 1,
+            "signal": None,
+            "stdout_sha256": "a" * 64,
+            "stdout_bytes": 12,
+            "stderr_sha256": "b" * 64,
+            "stderr_bytes": 0,
+        }
+
+        def fill(report):
+            report["compared_outputs"] = {
+                "left": dict(output),
+                "right": dict(output, stdout_sha256=("a" if verdict == "matched" else "c") * 64),
+            }
+            report["guest_exit_code"] = output["exit_code"]
+            report["dbt_counted_branches"] = {"left": 40, "right": 40 if verdict == "matched" else 41}
+            report["runtime"] = {
+                "run1": {"scheduler_turns": 4, "virtual_nanoseconds": 80_000, "syscalls": 37},
+                "run2": {"scheduler_turns": 4, "virtual_nanoseconds": 80_000},
+            }
+            # serde does not deny unknown top-level report fields.
+            report["future_producer_field"] = {"anything": [1, "two"]}
+        return self._edit_report(cell, fill)
+
+    def test_a_fully_typed_comparison_report_projects(self):
+        for verdict, outcome in (("matched", "passed"), ("diverged", "diverged")):
+            with self.subTest(verdict=verdict):
+                rows = self._project([self._fully_typed_report_cell(verdict)])
+                self.assertEqual(rows[0]["series"]["outcome"], outcome)
+        # Typed but not the canonical policy: still an honest no_result, not a refusal.
+        cell = self._edit_report(
+            self._cell(0), lambda r: r["comparison"].update(display_name=None, log_scope=None),
+        )
+        self.assertEqual(
+            series._typed_comparison_attempt(cell["attempts"][0], mode="verify", index=1),
+            "no_result",
+        )
+
+    def test_comparison_reports_refuse_every_field_hermit_cannot_read(self):
+        # Authority: VerificationReport::from_retained_cell_json_slice in the
+        # pinned hermit-cli/src/canonical_verdict.rs, which Hermit's scorecard
+        # uses for cell receipts.
+        def drop(field):
+            return lambda r: r.pop(field)
+
+        def put(field, value):
+            return lambda r: r.__setitem__(field, value)
+
+        def put_in(outer, field, value):
+            return lambda r: r[outer].__setitem__(field, value)
+
+        def put_side(side, field, value):
+            return lambda r: r["compared_outputs"][side].__setitem__(field, value)
+
+        mutations = [(f"missing {field}", drop(field)) for field in series._RETAINED_REPORT_FIELDS]
+        mutations += [
+            (f"comparison missing {field}", lambda r, f=field: r["comparison"].pop(f))
+            for field in series._COMPARISON_FIELDS
+        ]
+        mutations += [
+            ("verified string", put("verified", "true")),
+            ("bitwise_parity integer", put("bitwise_parity", 1)),
+            ("no_result_reason present", put("no_result_reason", {"kind": "not_run"})),
+            ("infrastructure_error present",
+             put("infrastructure_error", {"kind": "skid_overshoot", "count": 1})),
+            ("comparison not an object", put("comparison", ["canonical"])),
+            ("strictness unknown", put_in("comparison", "strictness", "bitwise")),
+            ("display_name integer", put_in("comparison", "display_name", 7)),
+            ("compare_logs null", put_in("comparison", "compare_logs", None)),
+            ("record_envelope null", put_in("comparison", "record_envelope", None)),
+            ("record_envelope unknown", put_in("comparison", "record_envelope", "all_records_v2")),
+            ("log_scope unknown", put_in("comparison", "log_scope", "everything")),
+            ("stripped_prefixes string", put_in("comparison", "stripped_prefixes", "x")),
+            ("canonicalizations of integers", put_in("comparison", "canonicalizations", [1])),
+            ("counts string", put("compared_log_messages", {"left": "17", "right": 17})),
+            ("counts past u64", put("compared_log_messages", {"left": 2**64, "right": 17})),
+            ("counts missing right", put("compared_log_messages", {"left": 17})),
+            ("dbt strings", put("dbt_counted_branches", {"left": "bad", "right": "bad"})),
+            ("dbt missing right", put("dbt_counted_branches", {"left": 40})),
+            ("dbt negative", put("dbt_counted_branches", {"left": -1, "right": 40})),
+            ("dbt past u64", put("dbt_counted_branches", {"left": 2**64, "right": 40})),
+            ("dbt boolean", put("dbt_counted_branches", {"left": True, "right": 40})),
+            ("dbt list", put("dbt_counted_branches", [40, 40])),
+            ("runtime string count",
+             lambda r: r["runtime"]["run1"].__setitem__("scheduler_turns", "4")),
+            ("outputs missing right", lambda r: r["compared_outputs"].pop("right")),
+            ("outputs unknown side", lambda r: r["compared_outputs"].__setitem__("middle", None)),
+            ("output unknown field", put_side("left", "stdin_bytes", 0)),
+            ("output negative bytes", put_side("left", "stdout_bytes", -1)),
+            ("output string exit", put_side("right", "exit_code", "0")),
+            ("output integer digest", put_side("right", "stderr_sha256", 7)),
+            ("guest_exit_code string", put("guest_exit_code", "0")),
+            ("guest_exit_code past i32", put("guest_exit_code", 2**31)),
+            ("guest_exit_code float", put("guest_exit_code", 1.0)),
+            ("guest_signal string", put("guest_signal", "SIGSEGV")),
+        ]
+        for coordinate in series.COORDINATE_KEYS:
+            for label, value in (("string", "bad"), ("negative", -1), ("past u64", 2**64),
+                                 ("float", 1.5), ("boolean", True)):
+                mutations.append((f"{coordinate} {label}", put(coordinate, value)))
+        for side in series.FIRST_DIVERGENT_MESSAGE_KEYS:
+            field = f"first_divergent_{side}_message"
+            for label, value in (("integer", 7), ("list", ["x"]), ("lone surrogate", "\ud800")):
+                mutations.append((f"{field} {label}", put(field, value)))
+        for verdict in ("matched", "diverged"):
+            for label, mutate in mutations:
+                with self.subTest(verdict=verdict, mutation=label):
+                    cell = self._edit_report(self._fully_typed_report_cell(verdict), mutate)
+                    with self.assertRaises(series.MalformedRow):
+                        self._project([cell])
+
+    def test_comparison_report_refuses_the_reviewed_malformed_pass(self):
+        # The reviewer's reproduction on a PASS: an omitted producer field and
+        # two DBT/coordinate fields Hermit cannot type, each refused on its own.
+        edits = {
+            "no_result_reason omitted": lambda r: r.pop("no_result_reason"),
+            "dbt_counted_branches strings":
+                lambda r: r.__setitem__("dbt_counted_branches", {"left": "bad", "right": "bad"}),
+            "first_divergent_record string":
+                lambda r: r.__setitem__("first_divergent_record", "bad"),
+        }
+        for label, edit in [*edits.items(), ("all three", lambda r: [e(r) for e in edits.values()])]:
+            with self.subTest(edit=label), self.assertRaisesRegex(
+                series.MalformedRow, "not Hermit's typed retained report"
+            ):
+                self._project([self._edit_report(self._cell(0), edit)])
 
     def test_two_hundred_raw_run_ids_become_one_batch_row(self):
         cells = [self._cell(i, duration_ms=5_100 + i) for i in range(200)]

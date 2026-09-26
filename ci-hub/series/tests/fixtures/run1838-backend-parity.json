@@ -553,7 +553,8 @@
       "series_sha256": "b42a60562d7fa537765709287f098965070cf52785bcaeea6c2266902a66eb53",
       "checker_sha256": "1dd6aea126e4f7f023e051b3f265f45f9ae1f530566c0f999661ac0ac46bcc2d",
       "temporary_hermit_head": "5ed6205e1838f04b699f6b52a7e71659a7b9482b",
-      "temporary_detcore_gitlink": "26c59eddbec5d4652d2494c84040387d9407b0e0"
+      "temporary_detcore_gitlink": "26c59eddbec5d4652d2494c84040387d9407b0e0",
+      "pressure_report_correction": "2026-09-26: the constructed pressure report omitted no_result_reason, which Hermit always serializes and its retained-cell reader requires. It now carries no_result_reason null; pressure_evidence was recomputed by the recorded old producer above (series.py at parent_commit, series_sha256), which reproduced the previous stored evidence exactly before the correction. event_id does not read the evidence and is unchanged."
     },
     "cases": [
       {
@@ -606,8 +607,8 @@
               "status": 0,
               "signal": null,
               "timed_out": false,
-              "verification_report": "{\"bitwise_parity\":true,\"compared_log_messages\":{\"left\":17,\"right\":17},\"comparison\":{\"canonicalizations\":[\"host-address-to-first-appearance-ordinal/v1\"],\"canonicalize_addresses\":true,\"compare_io_buffers\":true,\"compare_logs\":true,\"display_name\":\"BitwiseInfoV1\",\"exact_remainder\":true,\"full_trace\":true,\"ignore_lines\":false,\"log_scope\":\"info\",\"record_envelope\":\"all_records_v1\",\"skip_commit\":false,\"skip_detlog\":false,\"strictness\":\"canonical\",\"strip_lines\":false,\"stripped_prefixes\":[\"real-wall-clock-prefix/v1\"],\"virtualize_time\":true},\"first_divergent_left_message\":null,\"first_divergent_record\":null,\"first_divergent_right_message\":null,\"first_divergent_scheduler_turn\":null,\"first_divergent_syscall\":null,\"first_divergent_virtual_nanoseconds\":null,\"guest_exit_code\":null,\"guest_signal\":null,\"infrastructure_error\":null,\"runtime\":null,\"verdict\":\"matched\",\"verified\":true}",
-              "verification_report_sha256": "9372a653e44f3331d9c1c99b595990db786fdf187458cc5b423a11e8328e2b76",
+              "verification_report": "{\"bitwise_parity\":true,\"compared_log_messages\":{\"left\":17,\"right\":17},\"comparison\":{\"canonicalizations\":[\"host-address-to-first-appearance-ordinal/v1\"],\"canonicalize_addresses\":true,\"compare_io_buffers\":true,\"compare_logs\":true,\"display_name\":\"BitwiseInfoV1\",\"exact_remainder\":true,\"full_trace\":true,\"ignore_lines\":false,\"log_scope\":\"info\",\"record_envelope\":\"all_records_v1\",\"skip_commit\":false,\"skip_detlog\":false,\"strictness\":\"canonical\",\"strip_lines\":false,\"stripped_prefixes\":[\"real-wall-clock-prefix/v1\"],\"virtualize_time\":true},\"first_divergent_left_message\":null,\"first_divergent_record\":null,\"first_divergent_right_message\":null,\"first_divergent_scheduler_turn\":null,\"first_divergent_syscall\":null,\"first_divergent_virtual_nanoseconds\":null,\"guest_exit_code\":null,\"guest_signal\":null,\"infrastructure_error\":null,\"no_result_reason\":null,\"runtime\":null,\"verdict\":\"matched\",\"verified\":true}",
+              "verification_report_sha256": "2bca059527ec7951eab4f14cd32a7924313bbc6532abe3f19e20048fc148fb00",
               "first_divergent_record": null,
               "first_divergent_syscall": null,
               "first_divergent_scheduler_turn": null,
@@ -670,7 +671,7 @@
             },
             "attempt": 1,
             "pressure_evidence": {
-              "evidence_sha256": "04d8c8319a03a1c5b345bf2d6d145d7c4c6fe613a521931b4a1cbdd255b5d8e0",
+              "evidence_sha256": "ab9155e0b41448611e6e80e9a5ea6532b3d3b422460b44977d193845732c1799",
               "attempts": [
                 {
                   "index": "1",
@@ -682,7 +683,7 @@
                   "comparison": {
                     "verdict": "matched",
                     "canonical": true,
-                    "report_sha256": "9372a653e44f3331d9c1c99b595990db786fdf187458cc5b423a11e8328e2b76",
+                    "report_sha256": "2bca059527ec7951eab4f14cd32a7924313bbc6532abe3f19e20048fc148fb00",
                     "no_result_kind": null
                   }
                 }

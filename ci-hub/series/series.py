@@ -4324,6 +4324,190 @@ def _expected_output_failure_reason(
     return reason
 
 
+#: The top-level fields ``VerificationReport::from_producer_json_value``
+#: (``hermit-cli/src/canonical_verdict.rs``) requires present, null or not, in
+#: every retained cell receipt. Hermit's scorecard reads cell receipts through
+#: ``from_retained_cell_json_slice``, which requires these but not
+#: ``compared_outputs``.
+_RETAINED_REPORT_FIELDS = (
+    "verified",
+    "bitwise_parity",
+    "verdict",
+    "infrastructure_error",
+    "comparison",
+    "no_result_reason",
+    "compared_log_messages",
+    "guest_exit_code",
+    "guest_signal",
+    "first_divergent_scheduler_turn",
+    "first_divergent_virtual_nanoseconds",
+    "first_divergent_record",
+    "first_divergent_syscall",
+    "first_divergent_left_message",
+    "first_divergent_right_message",
+)
+
+#: ``ComparisonReport``'s fields, which a current producer writes every one of.
+_COMPARISON_FIELDS = (
+    "strictness",
+    "display_name",
+    "compare_logs",
+    "compare_io_buffers",
+    "log_scope",
+    "record_envelope",
+    "virtualize_time",
+    "strip_lines",
+    "canonicalize_addresses",
+    "full_trace",
+    "exact_remainder",
+    "stripped_prefixes",
+    "canonicalizations",
+    "ignore_lines",
+    "skip_commit",
+    "skip_detlog",
+)
+
+
+def _is_rust_string(value: Any) -> bool:
+    """Whether serde_json reads ``value`` as a Rust ``String``.
+
+    Python's JSON reader accepts an unpaired surrogate escape, which is not
+    valid UTF-8 and which serde_json refuses.
+    """
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _is_optional(value: Any, check) -> bool:
+    return value is None or check(value)
+
+
+def _is_u64_pair(value: Any) -> bool:
+    """``ComparedLogMessages`` or ``DbtCountedBranchComparison``: two u64s.
+
+    Neither Rust type denies unknown fields, so other fields are not refused.
+    """
+    return (
+        isinstance(value, dict)
+        and "left" in value
+        and "right" in value
+        and _is_u64(value["left"])
+        and _is_u64(value["right"])
+    )
+
+
+def _is_typed_compared_output(output: Any) -> bool:
+    """``ComparedOutput`` as serde reads it: exactly its fields, each typed.
+
+    This is the type alone. ``_is_canonical_compared_output`` additionally
+    requires the digest shape that ``require_exact_output_match`` checks for a
+    matched report.
+    """
+    return (
+        isinstance(output, dict)
+        and set(output) == _COMPARED_OUTPUT_FIELDS
+        and _is_optional_i32(output["exit_code"])
+        and _is_optional_i32(output["signal"])
+        and _is_rust_string(output["stdout_sha256"])
+        and _is_rust_string(output["stderr_sha256"])
+        and _is_u64(output["stdout_bytes"])
+        and _is_u64(output["stderr_bytes"])
+    )
+
+
+def _is_typed_comparison(comparison: Any) -> bool:
+    """``ComparisonReport`` as serde reads it. It does not deny unknown fields."""
+    if not isinstance(comparison, dict):
+        return False
+    get = comparison.get
+    optional_bools = (
+        "compare_io_buffers", "virtualize_time", "strip_lines", "canonicalize_addresses",
+        "full_trace", "exact_remainder", "ignore_lines", "skip_commit", "skip_detlog",
+    )
+    return (
+        get("strictness") in {"stripped", "canonical"}
+        and _is_optional(get("display_name"), _is_rust_string)
+        and type(get("compare_logs")) is bool
+        and all(_is_optional(get(key), lambda v: type(v) is bool) for key in optional_bools)
+        and get("log_scope") in {None, "deterministic", "info", "full_trace"}
+        and get("record_envelope") in {
+            "all_records_v1", "dbt_evidence_transport_v1",
+            "cross_backend_detcore_v1", "caller_defined",
+        }
+        and all(
+            _is_optional(
+                get(key),
+                lambda v: isinstance(v, list) and all(_is_rust_string(item) for item in v),
+            )
+            for key in ("stripped_prefixes", "canonicalizations")
+        )
+    )
+
+
+def _require_retained_comparison_report(report: dict, *, index: int) -> None:
+    """Refuse a matched or diverged report Hermit's retained-cell reader refuses.
+
+    Mirrors ``VerificationReport::from_retained_cell_json_slice`` in the pinned
+    ``hermit-cli/src/canonical_verdict.rs``: every producer field present, the
+    comparison's current fields present, and every present field of the type
+    serde reads, whether or not a later check here looks at it. A field this
+    writer does not otherwise read is still evidence the row's identity digests,
+    so a report Hermit cannot parse must not be projected as if it could.
+    Unknown top-level fields are not refused, as serde does not refuse them.
+    """
+    def refuse(detail: str) -> None:
+        raise MalformedRow(
+            f"cell attempt {index} verification report is not Hermit's typed "
+            f"retained report: {detail}"
+        )
+
+    for field in _RETAINED_REPORT_FIELDS:
+        if field not in report:
+            refuse(f"missing producer field {field!r}")
+    comparison = report["comparison"]
+    if isinstance(comparison, dict):
+        for field in _COMPARISON_FIELDS:
+            if field not in comparison:
+                refuse(f"comparison omitted {field!r}")
+    if type(report["verified"]) is not bool or type(report["bitwise_parity"]) is not bool:
+        refuse("verified and bitwise_parity must be booleans")
+    if report["no_result_reason"] is not None:
+        refuse("a comparison verdict carries no_result_reason")
+    if report["infrastructure_error"] is not None:
+        refuse("a comparison verdict carries infrastructure_error")
+    if not _is_typed_comparison(comparison):
+        refuse("comparison is not Hermit's typed ComparisonReport")
+    if not _is_optional(report["compared_log_messages"], _is_u64_pair):
+        refuse("compared_log_messages is not two u64 counts")
+    if not _is_optional(report.get("dbt_counted_branches"), _is_u64_pair):
+        refuse("dbt_counted_branches is not two u64 counts")
+    if not _is_typed_runtime(report.get("runtime")):
+        refuse("runtime is not Hermit's typed runtime")
+    outputs = report.get("compared_outputs")
+    if outputs is not None and not (
+        isinstance(outputs, dict)
+        and set(outputs) == {"left", "right"}
+        and _is_typed_compared_output(outputs["left"])
+        and _is_typed_compared_output(outputs["right"])
+    ):
+        refuse("compared_outputs is not Hermit's typed ComparedOutputs")
+    for field in ("guest_exit_code", "guest_signal"):
+        if not _is_optional_i32(report[field]):
+            refuse(f"{field} is not an optional i32")
+    for field in COORDINATE_KEYS:
+        if not _is_optional(report[field], _is_u64):
+            refuse(f"{field} is not an optional u64")
+    for side in FIRST_DIVERGENT_MESSAGE_KEYS:
+        field = f"first_divergent_{side}_message"
+        if not _is_optional(report[field], _is_rust_string):
+            refuse(f"{field} is not an optional string")
+
+
 def _typed_comparison_attempt(
     attempt: Any,
     *,
@@ -4513,6 +4697,9 @@ def _typed_comparison_attempt(
             guest = _require_matched_evidence(
                 attempt, report, index=index, expected_guest_exit=expected_guest_exit
             )
+        # After the specific checks above, so each keeps its own refusal; this
+        # refuses every remaining field Hermit's typed reader would refuse.
+        _require_retained_comparison_report(report, index=index)
         if not canonical:
             return "no_result"
         if verdict == "matched":

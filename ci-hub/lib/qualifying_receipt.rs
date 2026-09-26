@@ -306,26 +306,66 @@ pub struct QualifyingPredicate {
     /// Exact `e2e_payload` identity for each `release_builder`, mirroring
     /// Hermit's `e2e_payload_identity`. Read through [`release_builder_of`].
     pub release_payloads: std::collections::BTreeMap<String, serde_json::Value>,
+    /// First instant at which a Hermit row may come from a writer that records
+    /// `release_builder` and `e2e_payload`. Required, with no default: an
+    /// absent cutoff would silently readmit every row that omits the pair.
+    pub release_builder_required_from_finished_at: String,
 }
 
-/// The builder whose E2E payload a Hermit validate row executed, or `None`.
+/// Rows whose `repo` names Reverie. Reverie has only a Cargo build and its
+/// producers never wrote a builder, so its rows carry neither field at any date.
+const REVERIE_REPOS: [&str; 2] = ["reverie", "rrnewton/reverie"];
+
+/// Rows whose `repo` names Hermit; an absent `repo` is a Hermit row.
+const HERMIT_REPOS: [&str; 2] = ["hermit", "rrnewton/hermit"];
+
+/// Whether `ts` is a real instant in fixed-width RFC3339 UTC. The shape alone
+/// would admit `2026-13-45T99:00:00Z`, which still sorts before a cutoff; a
+/// date that does not exist is not ordered against one. `qualifying_receipt.py`
+/// `is_utc_timestamp` mirrors this. Python's `datetime` refuses a leap second
+/// and year 0, both of which chrono parses, so they are refused explicitly.
+pub(crate) fn is_utc_timestamp(ts: &str) -> bool {
+    is_rfc3339_z(ts)
+        && &ts[17..19] < "60"
+        && &ts[0..4] != "0000"
+        && chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%SZ").is_ok()
+}
+
+/// The builder whose E2E payload a validate row executed, or `None`.
 ///
-/// `release_builder` and `e2e_payload` are read together. A row with neither
-/// field predates them and was a Cargo run. Otherwise the row names a builder
-/// only when `release_builder` is a key of `release_payloads` and
-/// `e2e_payload` is exactly that builder's identity (`serde_json` equality
-/// keeps `true` distinct from `1`). Every other shape names no builder, so no
-/// consumer may treat it as Cargo evidence. `qualifying_receipt.py` mirrors
-/// this.
-pub fn release_builder_of<'p>(
-    extra: &std::collections::BTreeMap<String, serde_json::Value>,
-    pred: &'p QualifyingPredicate,
-) -> Option<&'p str> {
-    match (extra.get("release_builder"), extra.get("e2e_payload")) {
-        (None, None) => pred
-            .release_payloads
-            .get_key_value("cargo")
-            .map(|(builder, _)| builder.as_str()),
+/// `release_builder` and `e2e_payload` are read together. When both are
+/// present the row names a builder only when `release_builder` is a key of
+/// `release_payloads` and `e2e_payload` is exactly that builder's identity
+/// (`serde_json` equality keeps `true` distinct from `1`).
+///
+/// A row with neither field was a Cargo run only where the fields could not
+/// yet exist: a Reverie row, or a Hermit row whose `finished_at` is a real UTC
+/// instant before `release_builder_required_from_finished_at`, when the first
+/// Hermit writer of the pair was authored. A Hermit row from that instant on,
+/// or with an absent or malformed `finished_at`, may come from a writer that
+/// records the pair, so omitting both is not evidence of Cargo.
+///
+/// Every other shape names no builder, so no consumer may treat it as Cargo
+/// evidence. `qualifying_receipt.py` mirrors this.
+pub fn release_builder_of<'p>(row: &HistoryRow, pred: &'p QualifyingPredicate) -> Option<&'p str> {
+    match (row.extra.get("release_builder"), row.extra.get("e2e_payload")) {
+        (None, None) => {
+            let cargo = pred
+                .release_payloads
+                .get_key_value("cargo")
+                .map(|(builder, _)| builder.as_str())?;
+            let repo = row.repo.as_deref();
+            if repo.is_some_and(|repo| REVERIE_REPOS.contains(&repo)) {
+                return Some(cargo);
+            }
+            if repo.is_some_and(|repo| !HERMIT_REPOS.contains(&repo)) {
+                return None;
+            }
+            let cutoff = pred.release_builder_required_from_finished_at.as_str();
+            let finished = row.finished_at.as_deref()?;
+            (is_utc_timestamp(finished) && is_utc_timestamp(cutoff) && finished < cutoff)
+                .then_some(cargo)
+        }
         (Some(builder), Some(payload)) => pred
             .release_payloads
             .get_key_value(builder.as_str()?)
@@ -345,6 +385,9 @@ pub(crate) mod release_payload_cases {
     #[derive(serde::Deserialize)]
     pub(crate) struct Case {
         pub(crate) label: String,
+        /// Keys removed from the row before `fields` is applied.
+        #[serde(default)]
+        absent: Vec<String>,
         fields: BTreeMap<String, Value>,
         /// What [`super::release_builder_of`] must return.
         pub(crate) expected: Option<String>,
@@ -360,10 +403,36 @@ pub(crate) mod release_payload_cases {
             self.expected.as_deref()
         }
 
-        pub(crate) fn apply(&self, extra: &mut BTreeMap<String, Value>) {
-            extra.remove("release_builder");
-            extra.remove("e2e_payload");
-            extra.extend(self.fields.clone());
+        /// Applies the case to a typed row. `repo` and `finished_at` are typed
+        /// fields, so they are set there rather than in `extra`.
+        pub(crate) fn apply(&self, row: &mut crate::records::HistoryRow) {
+            fn text(key: &str, value: &Value) -> Option<String> {
+                match value {
+                    Value::Null => None,
+                    Value::String(text) => Some(text.clone()),
+                    other => panic!("fixture {key} must be a string or null, not {other}"),
+                }
+            }
+            row.extra.remove("release_builder");
+            row.extra.remove("e2e_payload");
+            for key in &self.absent {
+                match key.as_str() {
+                    "repo" => row.repo = None,
+                    "finished_at" => row.finished_at = None,
+                    other => {
+                        row.extra.remove(other);
+                    }
+                }
+            }
+            for (key, value) in &self.fields {
+                match key.as_str() {
+                    "repo" => row.repo = text(key, value),
+                    "finished_at" => row.finished_at = text(key, value),
+                    _ => {
+                        row.extra.insert(key.clone(), value.clone());
+                    }
+                }
+            }
         }
 
         /// [`Case::apply`] for a raw JSON row object.
@@ -371,6 +440,9 @@ pub(crate) mod release_payload_cases {
             let row = raw.as_object_mut().expect("a JSON row object");
             row.remove("release_builder");
             row.remove("e2e_payload");
+            for key in &self.absent {
+                row.remove(key);
+            }
             row.extend(self.fields.clone());
         }
     }
@@ -425,6 +497,11 @@ impl QualifyingPredicate {
         {
             return Err(format!(
                 "{origin}: qualifying predicate release_payloads must map each builder, including require.release_builder, to a non-empty payload identity"
+            ));
+        }
+        if !is_utc_timestamp(&predicate.release_builder_required_from_finished_at) {
+            return Err(format!(
+                "{origin}: qualifying predicate release_builder_required_from_finished_at must be a UTC RFC3339 timestamp such as 2026-09-25T20:42:29Z"
             ));
         }
         Ok(predicate)
@@ -1236,7 +1313,7 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
     if row.selection_mode.as_deref() != Some(req.selection_mode.as_str()) {
         return Qualification::refused("selection_mode");
     }
-    if release_builder_of(&row.extra, pred) != Some(req.release_builder.as_str()) {
+    if release_builder_of(row, pred) != Some(req.release_builder.as_str()) {
         return Qualification::refused("release_builder");
     }
     if row.result.as_deref() != Some(req.result.as_str()) {
@@ -1453,6 +1530,7 @@ mod tests {
             r#"{{"schema_version":5,"profile":"full","selection_mode":"full","commit":"{sha}",
                 "commit_anchored":true,"tree_dirty":false,"result":"pass","failures":0,
                 "executed_tests":427,"passed_tests":427,"filtered_tests":0,"coverage":{coverage},
+                "finished_at":"2026-08-08T09:00:00Z",
                 "checks":1,"gates_run":1,"gates_expected":1,
                 "gates":[{{"name":"test","result":"pass","exit_code":0}}],
                 "producer":"hermit-validate-sh","admission":"ci-hub-validate-lock",
@@ -1582,7 +1660,7 @@ mod tests {
         // other pairing refuses on the same clause.
         let with_payload_fields = |case: &release_payload_cases::Case| {
             let mut row = good.clone();
-            case.apply(&mut row.extra);
+            case.apply(&mut row);
             row
         };
         for case in release_payload_cases::all() {
@@ -1620,15 +1698,15 @@ mod tests {
         let mut accepted = 0;
         let mut refused = 0;
         for case in release_payload_cases::all() {
-            let mut extra = std::collections::BTreeMap::new();
-            case.apply(&mut extra);
-            assert_eq!(case.expected(), release_builder_of(&extra, &pred), "{}", case.label);
+            let mut row: HistoryRow = serde_json::from_str("{}").unwrap();
+            case.apply(&mut row);
+            assert_eq!(case.expected(), release_builder_of(&row, &pred), "{}", case.label);
             match case.expected() {
                 Some(_) => accepted += 1,
                 None => refused += 1,
             }
         }
-        assert_eq!((3, 15), (accepted, refused), "the case table lost a case");
+        assert_eq!((7, 30), (accepted, refused), "the case table lost a case");
     }
 
     #[test]
@@ -1650,6 +1728,40 @@ mod tests {
             ("empty cargo identity", empty_identity),
             ("scalar cargo identity", scalar_identity),
         ] {
+            assert!(
+                QualifyingPredicate::parse(&value.to_string(), label).is_err(),
+                "{label} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_predicate_must_date_the_legacy_cargo_cutoff() {
+        let mut base: serde_json::Value = serde_json::from_str(EMBEDDED).unwrap();
+        base.as_object_mut().unwrap().retain(|key, _| !key.starts_with('_'));
+        let pred = QualifyingPredicate::parse(&base.to_string(), "base").unwrap();
+        assert_eq!("2026-09-25T20:42:29Z", pred.release_builder_required_from_finished_at);
+        let mut missing = base.clone();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("release_builder_required_from_finished_at");
+        let mut cases = vec![("missing cutoff", missing)];
+        for (label, value) in [
+            ("null cutoff", serde_json::Value::Null),
+            ("integer cutoff", serde_json::json!(1_790_000_000)),
+            ("empty cutoff", serde_json::json!("")),
+            ("offset cutoff", serde_json::json!("2026-09-25T13:42:29-07:00")),
+            ("fractional cutoff", serde_json::json!("2026-09-25T20:42:29.0Z")),
+            ("impossible cutoff", serde_json::json!("2026-02-30T00:00:00Z")),
+            ("leap-second cutoff", serde_json::json!("2026-09-25T20:42:60Z")),
+            ("year-zero cutoff", serde_json::json!("0000-09-25T20:42:29Z")),
+        ] {
+            let mut bad = base.clone();
+            bad["release_builder_required_from_finished_at"] = value;
+            cases.push((label, bad));
+        }
+        for (label, value) in cases {
             assert!(
                 QualifyingPredicate::parse(&value.to_string(), label).is_err(),
                 "{label} must be refused"
@@ -2560,7 +2672,7 @@ mod tests {
         let row: HistoryRow = serde_json::from_str(&format!(
             r#"{{"schema_version":3,"profile":"full","selection_mode":"full","commit":"{sha}",
                 "commit_anchored":true,"tree_dirty":false,"result":"pass","failures":0,
-                "executed_tests":427,"filtered_tests":0}}"#
+                "executed_tests":427,"filtered_tests":0,"finished_at":"2026-08-08T09:00:00Z"}}"#
         ))
         .unwrap();
         let verdict = row_qualification(&row, &sha, &pred);
@@ -2716,6 +2828,7 @@ mod tests {
             r#"{{"schema_version":5,"profile":"full","selection_mode":"full","commit":"{sha}",
                 "commit_anchored":true,"tree_dirty":false,"result":"pass","failures":0,
                 "executed_tests":740,"passed_tests":740,"filtered_tests":3,
+                "finished_at":"2026-08-08T09:00:00Z",
                 "checks":1,"gates_run":1,"gates_expected":1,
                 "gates":[{{"name":"test","result":"pass","exit_code":0}}],
                 "coverage":{{"planned_test_nodes":4,"executed_test_nodes":4,
@@ -2762,6 +2875,7 @@ mod tests {
             "executed_tests": 740,
             "passed_tests": 740,
             "filtered_tests": 3,
+            "finished_at": "2026-08-08T09:00:00Z",
             "checks": 1,
             "gates_run": 1,
             "gates_expected": 1,

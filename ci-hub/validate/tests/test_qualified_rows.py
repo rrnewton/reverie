@@ -11,6 +11,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import qualified_rows as qr
 
 
+def _apply_case(row: dict, case: dict) -> dict:
+    """Apply a release-payload-cases.json case: drop the pair and every absent
+    key, then set exactly the case's fields."""
+    for key in ("release_builder", "e2e_payload", *case.get("absent", ())):
+        row.pop(key, None)
+    row.update(case["fields"])
+    return row
+
+
 def _row(name: str, finished: str, **overrides: object) -> dict[str, object]:
     row: dict[str, object] = {
         "commit": name,
@@ -45,9 +54,9 @@ def test_non_cargo_release_payload_never_qualifies() -> None:
     cases = json.loads(
         (Path(__file__).resolve().parent / "fixtures" / "release-payload-cases.json").read_text()
     )["cases"]
-    assert sum(case["expected"] is not None for case in cases) == 3
+    assert sum(case["expected"] is not None for case in cases) == 7
     for case in cases:
-        row = _row("row", "2026-08-04T10:00:00Z", **case["fields"])
+        row = _apply_case(_row("row", "2026-08-04T10:00:00Z"), case)
         expected = [row] if case["expected"] == "cargo" else []
         assert qr.qualified_rows([row]) == expected, case["label"]
 

@@ -914,7 +914,7 @@ where
         // toward one. A row whose builder and payload disagree names no
         // builder and is treated the same way.
         let cargo_payload = crate::qualifying_receipt::release_builder_of(
-            &row.extra,
+            row,
             crate::qualifying_receipt::active(),
         ) == Some("cargo");
         let run_id = row
@@ -1817,7 +1817,7 @@ mod tests {
         mut row: HistoryRow,
         case: &crate::qualifying_receipt::release_payload_cases::Case,
     ) -> HistoryRow {
-        case.apply(&mut row.extra);
+        case.apply(&mut row);
         row
     }
 
@@ -1833,8 +1833,17 @@ mod tests {
         }
         let required = required_clean_legs(1, 10).unwrap();
         let clean_runs = required.div_ceil(2);
+        // Some cases omit or malform `finished_at`, which also dates the
+        // target. A later target row without a toolchain fixes the cutoff
+        // while contributing no observation, so each case turns only on
+        // whether its clean rows count as Cargo evidence. Every dated Cargo
+        // case must finish after the 2026-08-17 failures to discharge them.
+        let mut anchor = uncalibrated_row(FIX, 900, true);
+        anchor.finished_at = Some("2026-09-27T00:00:00Z".into());
+        assert!(anchor.extra.remove("toolchain").is_some());
         let with_clean = |case: &release_payload_cases::Case| {
             let mut rows = failing.clone();
+            rows.push(anchor.clone());
             for ordinal in 0..clean_runs {
                 let clean = uncalibrated_row(FIX, 100 + ordinal, true);
                 rows.push(with_payload_case(clean, case));

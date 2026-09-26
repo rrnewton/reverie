@@ -566,8 +566,9 @@ def refuse_non_cargo_payload(encoded_row: bytes) -> None:
     scorecard records, so the finalized publication refuses before any proof
     or scorecard work. Raw rows still publish. The builder comes from
     qualifying_receipt.release_builder_of: a row with neither release_builder
-    nor e2e_payload predates them and was a Cargo run, and a row whose two
-    fields disagree names no builder and refuses as well.
+    nor e2e_payload is a Cargo run only if it is a Reverie row or a Hermit row
+    finished before release_builder_required_from_finished_at, and every other
+    row without a consistent pair names no builder and refuses as well.
     """
     import validate_rows
     receipt = validate_rows.qualifying_receipt

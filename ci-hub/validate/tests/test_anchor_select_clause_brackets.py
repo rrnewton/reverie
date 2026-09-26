@@ -58,6 +58,9 @@ PREDICATE = {
     "release_payloads": json.loads((_VALIDATE / "qualifying-receipt.json").read_text())[
         "release_payloads"
     ],
+    "release_builder_required_from_finished_at": json.loads(
+        (_VALIDATE / "qualifying-receipt.json").read_text()
+    )["release_builder_required_from_finished_at"],
     "admission": {
         "applies_at_schema_min": 5,
         "required_admission": "ci-hub-validate-lock",
@@ -66,6 +69,15 @@ PREDICATE = {
         "require_registered_producer": True,
     },
 }
+
+
+def _apply_case(row: dict, case: dict) -> dict:
+    """Apply a release-payload-cases.json case: drop the pair and every absent
+    key, then set exactly the case's fields."""
+    for key in ("release_builder", "e2e_payload", *case.get("absent", ())):
+        row.pop(key, None)
+    row.update(case["fields"])
+    return row
 
 
 def _row(**over: object) -> dict:
@@ -84,6 +96,7 @@ def _row(**over: object) -> dict:
         "executed_tests": 100,
         "passed_tests": 100,
         "schema_version": 5,
+        "finished_at": "2026-08-08T09:00:00Z",
         "producer": "hermit-validate-sh",
         "base_sha": "b" * 40,
         "base_tree": "c" * 40,
@@ -120,12 +133,12 @@ def test_receipt_without_a_usable_commit_is_refused() -> None:
 
 def test_non_cargo_release_builder_is_refused() -> None:
     """A Buck full run executed the release payload, not the debug binary a
-    receipt certifies. The baseline carries neither field and qualifies as a
-    Cargo run, so each refusal here belongs to the release_builder clause: only
-    the exact Cargo builder/payload pair also qualifies."""
-    assert sum(case["expected"] is not None for case in CASES) == 3
+    receipt certifies. The baseline carries neither field and finished before
+    the pair was written, so it qualifies as a Cargo run and each refusal here
+    belongs to the release_builder clause."""
+    assert sum(case["expected"] is not None for case in CASES) == 7
     for case in CASES:
-        row = _row(**case["fields"])
+        row = _apply_case(_row(), case)
         expected = (
             (True, "qualifies")
             if case["expected"] == "cargo"

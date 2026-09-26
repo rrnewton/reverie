@@ -19,6 +19,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import wall_cpu_ratchet as R  # noqa: E402
 
 
+def _apply_case(row: dict, case: dict) -> dict:
+    """Apply a release-payload-cases.json case: drop the pair and every absent
+    key, then set exactly the case's fields."""
+    for key in ("release_builder", "e2e_payload", *case.get("absent", ())):
+        row.pop(key, None)
+    row.update(case["fields"])
+    return row
+
+
 def _row(commit, started, finished, wall, cpu, *, cache="warm", host="h1", profile="full", result="pass"):
     return {
         "schema_version": 3,
@@ -164,11 +173,10 @@ class BuilderSeparation(unittest.TestCase):
     def test_only_a_consistent_cargo_row_is_a_timing_sample(self):
         # Neither field, or the exact Cargo builder/payload pair, times the
         # Cargo debug binary; a Buck row or an inconsistent pairing does not.
-        self.assertEqual(3, sum(case["expected"] is not None for case in CASES))
+        self.assertEqual(7, sum(case["expected"] is not None for case in CASES))
         for case in CASES:
             with self.subTest(case=case["label"]):
-                row = _row("row", _ts(4, 1, 0), _ts(4, 1, 8), 480, 1100)
-                row.update(case["fields"])
+                row = _apply_case(_row("row", _ts(4, 1, 0), _ts(4, 1, 8), 480, 1100), case)
                 (run,) = R.load_runs(_write([row]))
                 self.assertEqual(case["expected"] == "cargo", run.timed_pass)
 
