@@ -2280,8 +2280,8 @@ fn format_task_panic_marker(tid: Pid, payload: &(dyn std::any::Any + Send)) -> S
         .or_else(|| payload.downcast_ref::<&'static str>().copied())
         .unwrap_or("<non-string panic payload>");
     // Always exactly one line: a marker that can wrap is a marker a harness
-    // cannot grep. The panic's own (multi-line) output has already reached
-    // stderr through the default hook; this line exists to be machine-read.
+    // cannot grep. The default hook may have written into a test capture
+    // buffer; this independent line exists to be machine-read.
     let message: String = message
         .chars()
         .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
@@ -2311,11 +2311,14 @@ fn format_task_panic_marker(tid: Pid, payload: &(dyn std::any::Any + Send)) -> S
 /// the tracees die with the tracer. The terminal-deadlock path already relies
 /// on that.
 fn guest_task_panic_is_fatal(tid: Pid, payload: Box<dyn std::any::Any + Send>) -> ! {
-    // `eprintln!` rather than `tracing::error!` on purpose, matching detcore's
-    // terminal-deadlock report: the tracing writer prefixes a real wall-clock
-    // timestamp, and a marker meant to be compared across runs must not carry
-    // one.
-    eprintln!("{}", format_task_panic_marker(tid, payload.as_ref()));
+    // Write directly: eprintln! can stop in libtest's capture buffer, which
+    // process::exit never returns to the harness. Keep this marker free of
+    // tracing's real wall-clock prefix and preserve the fatal exit on I/O error.
+    let _ = writeln!(
+        std::io::stderr(),
+        "{}",
+        format_task_panic_marker(tid, payload.as_ref())
+    );
     let _ = std::io::stderr().flush();
     let _ = std::io::stdout().flush();
     std::process::exit(TASK_PANIC_EXIT_CODE)
@@ -8484,5 +8487,222 @@ mod tests {
             line,
             "HERMIT_TASK_PANIC tid=9 exit=101 message=<non-string panic payload>"
         );
+    }
+    // These tests use the real libtest default capture, then end the child
+    // process through the real fatal leaf. Regular files avoid pipe-drain waits.
+    mod fatal_marker_capture_tests {
+        use std::fs::File;
+        use std::fs::OpenOptions;
+        use std::io::Read;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::process::CommandExt;
+        use std::process::Child;
+        use std::process::Command;
+        use std::process::ExitStatus as ProcessStatus;
+        use std::process::Stdio;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        use super::*;
+
+        const ROLE: &str = "REVERIE_TASK_PANIC_CAPTURE_CHILD";
+        const CAPTURED: &str = "REVERIE_CAPTURE_ONLY_MUST_NOT_REACH_REAL_STDERR";
+        const LOG_LIMIT: u64 = 65536;
+
+        struct MarkerChild {
+            child: Child,
+            status: Option<ProcessStatus>,
+            deadline: Instant,
+            cleanup_deadline: Option<Instant>,
+        }
+        impl MarkerChild {
+            fn observe_until(&mut self, deadline: Instant) -> std::io::Result<ProcessStatus> {
+                loop {
+                    if let Some(status) = self.child.try_wait()? {
+                        self.status = Some(status);
+                        if Instant::now() >= deadline {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "marker terminal observation arrived after original bound",
+                            ));
+                        }
+                        return Ok(status);
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "marker child exceeded original bound",
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            fn finish(&mut self) -> std::io::Result<ProcessStatus> {
+                if let Some(status) = self.status {
+                    return Ok(status);
+                }
+                // This original Child has not been reaped or passed to any other
+                // waiter. Never discover or signal descendants by numeric PID.
+                let cleanup_deadline = *self.cleanup_deadline.get_or_insert_with(|| {
+                    self.deadline.min(Instant::now() + Duration::from_secs(2))
+                });
+                let signal = self.child.kill();
+                let result = self.observe_until(cleanup_deadline);
+                if let Err(error) = &result {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "MARKER_OWNED_CLEANUP_UNCONFIRMED signal={signal:?} wait={error}"
+                    );
+                }
+                result
+            }
+        }
+        impl Drop for MarkerChild {
+            fn drop(&mut self) {
+                if self.status.is_none() {
+                    // Unexpected Rust error/unwind does not obtain a fresh budget.
+                    let _ = self.finish();
+                }
+            }
+        }
+        fn read_log(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+            let mut bytes = Vec::new();
+            File::open(path)?
+                .take(LOG_LIMIT + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > LOG_LIMIT {
+                return Err(std::io::Error::other("marker log exceeded fixed cap"));
+            }
+            Ok(bytes)
+        }
+        fn capture_case(mode: &str, selector: &str) -> std::io::Result<()> {
+            if let Some(role) = std::env::var_os(ROLE) {
+                if role != mode {
+                    return Err(std::io::Error::other("unexpected marker child role"));
+                }
+                // This self-exec child has no tracees or further children.
+                // Contain an unexpected abort without relying on RLIMIT_CORE
+                // to suppress an external piped core collector.
+                if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0
+                    || unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) } != 0
+                {
+                    unsafe { libc::_exit(90) };
+                }
+                eprintln!("{CAPTURED}");
+                writeln!(std::io::stderr(), "MARKER_CAPTURE_ENTER mode={mode}")?;
+                if mode == "fatal" {
+                    guest_task_panic_is_fatal(
+                        Pid::from_raw(4242),
+                        Box::new(String::from("first\nsecond\r\nthird")),
+                    );
+                }
+                writeln!(std::io::stderr(), "MARKER_CAPTURE_RETURN mode=ordinary")?;
+                return Ok(());
+            }
+
+            let started = Instant::now();
+            let predicate_deadline = started + Duration::from_secs(3);
+            let final_deadline = started + Duration::from_secs(5);
+            let directory = std::env::temp_dir().join(format!(
+                "reverie-marker-capture-{}-{mode}",
+                std::process::id(),
+            ));
+            std::fs::create_dir(&directory)?; // exclusive; never reuse old logs
+            let stdout_path = directory.join("stdout.log");
+            let stderr_path = directory.join("stderr.log");
+            let log = |path: &std::path::Path| {
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(path)
+            };
+            let mut command = Command::new(std::env::current_exe()?);
+            command
+                .args([selector, "--exact", "--test-threads=1"])
+                .env(ROLE, mode)
+                .env_remove("RUST_TEST_NOCAPTURE")
+                .stdin(Stdio::null())
+                .stdout(log(&stdout_path)?)
+                .stderr(log(&stderr_path)?);
+            unsafe {
+                command.pre_exec(|| {
+                    let limit = libc::rlimit {
+                        rlim_cur: LOG_LIMIT,
+                        rlim_max: LOG_LIMIT,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let mut owned = MarkerChild {
+                child: command.spawn()?,
+                status: None,
+                deadline: final_deadline,
+                cleanup_deadline: None,
+            };
+            let original = owned.observe_until(predicate_deadline);
+            // Seal original status/timeout before separate cleanup. All fallible
+            // log reads and assertions occur after the actual owned wait.
+            let retirement = owned.finish();
+            let stdout = read_log(&stdout_path);
+            let stderr = read_log(&stderr_path);
+            let _ = writeln!(
+                std::io::stderr(),
+                "MARKER_CAPTURE_OBSERVED mode={mode} original={original:?} original_code={:?} retirement={retirement:?} elapsed={:?} stdout={stdout:?} stderr={stderr:?}",
+                original.as_ref().ok().and_then(|status| status.code()),
+                started.elapsed()
+            );
+            retirement?;
+            let status = original?; // late cleanup never repairs the predicate
+            let stdout = stdout?;
+            let stderr = stderr?;
+            std::fs::remove_file(&stdout_path)?;
+            std::fs::remove_file(&stderr_path)?;
+            std::fs::remove_dir(&directory)?;
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert_eq!(status.code(), Some(if mode == "fatal" { 101 } else { 0 }));
+            assert!(
+                !String::from_utf8_lossy(&stderr).contains(CAPTURED),
+                "this discriminator must use real normal libtest capture"
+            );
+            let expected = if mode == "fatal" {
+                b"MARKER_CAPTURE_ENTER mode=fatal\nHERMIT_TASK_PANIC tid=4242 exit=101 message=first second  third\n".as_slice()
+            } else {
+                b"MARKER_CAPTURE_ENTER mode=ordinary\nMARKER_CAPTURE_RETURN mode=ordinary\n"
+                    .as_slice()
+            };
+            assert_eq!(stderr, expected, "real stderr marker missing or altered");
+            assert!(String::from_utf8_lossy(&stdout).contains("running 1 test"));
+            if mode == "ordinary" {
+                assert!(String::from_utf8_lossy(&stdout).contains("1 passed; 0 failed"));
+            } else {
+                let output = String::from_utf8_lossy(&stdout);
+                for returned_marker in ["... ok", "... FAILED", "test result:", "failures:"] {
+                    assert!(
+                        !output.contains(returned_marker),
+                        "fatal leaf must not return a libtest result: {output}"
+                    );
+                }
+            }
+            Ok(())
+        }
+        #[test]
+        fn captured_marker_survives_fatal_exit() -> std::io::Result<()> {
+            capture_case(
+                "fatal",
+                "task::tests::fatal_marker_capture_tests::captured_marker_survives_fatal_exit",
+            )
+        }
+        #[test]
+        fn ordinary_return_uses_real_capture_without_fatal_marker() -> std::io::Result<()> {
+            capture_case(
+                "ordinary",
+                "task::tests::fatal_marker_capture_tests::ordinary_return_uses_real_capture_without_fatal_marker",
+            )
+        }
     }
 }
