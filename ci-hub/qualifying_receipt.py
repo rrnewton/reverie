@@ -133,6 +133,26 @@ def _quarantine_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def _quarantine_repeated_key(value: Any) -> bool:
+    """Whether any object in ``value`` names a key more than once as written.
+
+    ``_quarantine_json`` sees a dictionary, which has already kept only the
+    last of a repeated key, so two different row texts would compare equal.
+    Only an ``AdmissionJsonObject`` keeps its written pairs; every ledger reader
+    that can hold a quarantine parses with it. A pair view that no longer
+    matches its dictionary raises ValueError rather than answering.
+    """
+    if isinstance(value, dict):
+        pairs = _admission_pairs(value)
+        keys = [key for key, _item in pairs]
+        return len(keys) != len(set(keys)) or any(
+            _quarantine_repeated_key(item) for _key, item in pairs
+        )
+    if isinstance(value, list):
+        return any(_quarantine_repeated_key(item) for item in value)
+    return False
+
+
 # The token a ledger row records in place of the writer's workspace root; the
 # row projection renders it to the reader's root.
 _QUARANTINE_WORKSPACE_TOKEN = "{{WORKSPACE_ROOT}}"
@@ -192,9 +212,14 @@ def retained_evidence_quarantine_allowlist() -> dict[str, dict[str, Any]]:
     """
     path = RETAINED_EVIDENCE_QUARANTINE_ALLOWLIST
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+        written = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=AdmissionJsonObject)
+        repeated = _quarantine_repeated_key(written)
+    except (OSError, ValueError, RecursionError) as error:
         raise RuntimeError(f"{path}: retained evidence quarantine allowlist is unreadable: {error}")
+    if repeated:
+        raise RuntimeError(f"{path}: retained evidence quarantine allowlist is malformed")
+    # Checked as written; the entries are read below as ordinary dictionaries.
+    document = json.loads(json.dumps(written))
     entry_keys = {"ledger_shard", "event_id", "team", "envelope", "lost_row", "marker"}
     marker_keys = {"schema", "reason", "original_event_id", "expected"}
     if (
@@ -260,12 +285,15 @@ def retained_evidence_quarantine_allowlist() -> dict[str, dict[str, Any]]:
 def retained_evidence_quarantine_entry(row: Mapping[str, Any]) -> dict[str, Any] | None:
     """The allowlist entry a row's quarantine marker names exactly, or None.
 
-    None when the row carries no marker, the marker equals no entry's marker,
-    or the row differs from that entry's corrected lost row in any field.
+    None when the row carries no marker, names any key more than once as
+    written, the marker equals no entry's marker, or the row differs from that
+    entry's corrected lost row in any field.
     """
     if RETAINED_EVIDENCE_QUARANTINE_KEY not in row:
         return None
     try:
+        if _quarantine_repeated_key(row):
+            return None
         marker = _quarantine_json(row[RETAINED_EVIDENCE_QUARANTINE_KEY])
         for entry in retained_evidence_quarantine_allowlist().values():
             if marker != _quarantine_json(entry["marker"]):
@@ -653,6 +681,8 @@ def _check_validation_evidence(
                         return fault("validation artifact checker returned a malformed failure response")
                     reports[digest] = _ValidationEvidence(digest, status, report["reason"])
                 elif status == "quarantined":
+                    # The request text has already merged any repeated key;
+                    # validation_evidence rejudges the caller's own row object.
                     requested = json.loads(requests[digest])
                     if (
                         set(report) != {"row_sha256", "status", "original_event_id", "reason"}
@@ -732,7 +762,22 @@ def validation_evidence(row: dict[str, Any]) -> _ValidationEvidence:
                     f"validation artifact checker could not encode requested row: {error}"
                 )
         if digest in batch.reports:
-            return batch.reports[digest]
+            report = batch.reports[digest]
+            # The digest is over merged text, so a row repeating a key shares
+            # the exact correction's digest. Only the caller's row object still
+            # holds its written pairs; a quarantine must hold for that object.
+            if report.status == "quarantined":
+                try:
+                    entry = retained_evidence_quarantine_entry(row)
+                except RuntimeError as error:
+                    raise ValidationEvidenceReaderFault(str(error)) from error
+                if entry is None or entry["event_id"] != row.get("record_id"):
+                    return _ValidationEvidence(
+                        digest, "refused",
+                        "retained evidence quarantine row differs as written from its "
+                        "lost run beyond result, source and the allowlisted marker",
+                    )
+            return report
     if encoding_fault is not None:
         raise encoding_fault
     raise ValidationEvidenceReaderFault("row changed or was not included in the validation artifact batch")

@@ -388,6 +388,7 @@ def test_allowlisted_quarantine_is_a_distinct_outcome_that_never_qualifies():
 
 @pytest.mark.parametrize("forgery", [
     "unmarked", "self-authored-marker", "other-entry-marker", "other-commit", "retyped-schema",
+    "coverage-null-removed", "real-seconds-retyped",
 ])
 def test_quarantine_reply_for_a_row_the_allowlist_does_not_name_is_a_reader_fault(forgery):
     """Even a peer that says quarantined cannot quarantine an unlisted row."""
@@ -405,6 +406,12 @@ def test_quarantine_reply_for_a_row_the_allowlist_does_not_name_is_a_reader_faul
         row["commit"] = "b" * 40
     elif forgery == "retyped-schema":
         row["schema_version"] = 10.0
+    elif forgery == "coverage-null-removed":
+        assert row["coverage"] is None
+        del row["coverage"]
+    elif forgery == "real-seconds-retyped":
+        assert type(row["real_seconds"]) is float and row["real_seconds"].is_integer()
+        row["real_seconds"] = int(row["real_seconds"])
     with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=captured_checker(QuarantiningChecker)), mock.patch.object(receipt, "active", return_value=policy10()):
         with receipt.validation_evidence_batch([row], predicate=policy10()):
             checked = receipt.validation_evidence(row)
@@ -419,3 +426,34 @@ def test_quarantine_reply_for_a_row_the_allowlist_does_not_name_is_a_reader_faul
             assert receipt.cell_results_verdict(row, policy10()) is receipt.CellResultsVerdict.READER_FAULT
             with pytest.raises(receipt.ValidationEvidenceReaderFault):
                 validate_rows._require_cell_results(row, CI_HUB.parent)
+
+
+@pytest.mark.parametrize("where", ["row-branch", "row-same-value", "marker-reason"])
+def test_quarantine_that_repeats_a_key_is_refused_for_the_callers_own_row(where):
+    """A dictionary keeps the last of a repeated key, so the forged row below
+    encodes to the exact correction's request text and digest. A reply, even
+    a true one about that text, cannot quarantine the row the caller holds."""
+    key = receipt.RETAINED_EVIDENCE_QUARANTINE_KEY
+    genuine_text = json.dumps(quarantined_lost_rows()[0], sort_keys=True)
+    pairs = {"object_pairs_hook": receipt.AdmissionJsonObject}
+    genuine = json.loads(genuine_text, **pairs)
+    assert receipt.retained_evidence_quarantine_entry(genuine) is not None
+    if where == "row-branch":
+        text = '{"branch":"forged",' + genuine_text[1:]
+    elif where == "row-same-value":
+        text = '{"branch":' + json.dumps(genuine["branch"]) + "," + genuine_text[1:]
+    else:
+        anchor = f'"{key}": {{'
+        assert genuine_text.count(anchor) == 1
+        text = genuine_text.replace(anchor, anchor + '"reason":"forged",', 1)
+    forged = json.loads(text, **pairs)
+    assert dict(forged) == dict(genuine) or where == "marker-reason"
+    assert receipt._evidence_row_digest(forged) == receipt._evidence_row_digest(genuine)
+    assert receipt.retained_evidence_quarantine_entry(forged) is None
+    with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=captured_checker(QuarantiningChecker)), mock.patch.object(receipt, "active", return_value=policy10()):
+        with receipt.validation_evidence_batch([genuine, forged], predicate=policy10()):
+            assert receipt.validation_evidence(genuine).status == "quarantined"
+            checked = receipt.validation_evidence(forged)
+            assert checked.status == "refused"
+            assert "differs as written" in checked.reason
+            assert receipt.cell_results_verdict(forged, policy10()) is not receipt.CellResultsVerdict.QUARANTINED

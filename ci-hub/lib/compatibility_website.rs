@@ -356,6 +356,12 @@ where
         if !raw.is_object() {
             return Err(format!("{label} input line {} is not an object", index + 1));
         }
+        if let Some(refusal) = crate::validation_evidence::written_quarantine_refusal(line) {
+            return Err(format!(
+                "{label} input line {} is refused: {refusal}",
+                index + 1
+            ));
+        }
         let typed = serde_json::from_value(raw.clone())
             .map_err(|error| format!("{label} input line {} is invalid: {error}", index + 1))?;
         values.push(Parsed { typed, raw });
@@ -3613,6 +3619,24 @@ mod tests {
             CellResultsForWebsite::Unavailable(reason)
             if reason == crate::validation_evidence::QUARANTINE_REASON
         ));
+        // The website reads history text; a quarantine written differently
+        // from its correction refuses there, before any typed reading.
+        let exact_text = serde_json::to_string(&lost_run(LOST_V2_B)).unwrap();
+        assert_eq!(
+            parse_jsonl::<HistoryRow>(&format!("{exact_text}\n"), "HistoryRow")
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut retyped = lost_run(LOST_V2_B);
+        retyped["real_seconds"] = Value::from(retyped["real_seconds"].as_f64().unwrap() as u64);
+        let error = parse_jsonl::<HistoryRow>(&format!("{retyped}\n"), "HistoryRow")
+            .err()
+            .expect("a retyped quarantine must refuse");
+        assert!(
+            error.starts_with("HistoryRow input line 1 is refused: retained evidence quarantine row differs as written"),
+            "{error}"
+        );
         // A readable row that authors its own marker is refused: unavailable,
         // and never described as a quarantine.
         let exact = store.exact("selected-attempt-v1/matched");

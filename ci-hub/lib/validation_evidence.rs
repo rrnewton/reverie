@@ -341,6 +341,10 @@ struct QuarantineEntry {
     /// `no_result`, source `reconstructed` and the marker, in the `HistoryRow`
     /// form every Rust consumer reads.
     corrected: serde_json::Value,
+    /// The same row as the allowlist writes it, before any typed
+    /// deserialization. Only this form keeps a null field's presence and an
+    /// integer apart from an equal float, so written rows compare against it.
+    corrected_written: serde_json::Value,
     /// The top-level fields the ledger records relative to the workspace, as
     /// `(field, suffix after the workspace token)`.
     rendered: Vec<(String, String)>,
@@ -444,7 +448,8 @@ fn quarantine_entry(file: QuarantineEntryFile) -> Option<QuarantineEntry> {
     corrected.insert("result".to_string(), serde_json::json!("no_result"));
     corrected.insert("source".to_string(), serde_json::json!("reconstructed"));
     corrected.insert(QUARANTINE_KEY.to_string(), file.marker);
-    let row: HistoryRow = serde_json::from_value(serde_json::Value::Object(corrected)).ok()?;
+    let corrected_written = serde_json::Value::Object(corrected);
+    let row: HistoryRow = serde_json::from_value(corrected_written.clone()).ok()?;
     if !matches!(row.constructed_plan_artifact(), Ok(Some(_)))
         || !matches!(row.schema10_cell_results(), Ok(Some(_)))
     {
@@ -452,6 +457,7 @@ fn quarantine_entry(file: QuarantineEntryFile) -> Option<QuarantineEntry> {
     }
     Some(QuarantineEntry {
         corrected: serde_json::to_value(&row).ok()?,
+        corrected_written,
         rendered,
         event_id: file.event_id,
         marker,
@@ -468,14 +474,19 @@ fn quarantine_allowlist() -> Result<&'static [QuarantineEntry], String> {
         std::sync::OnceLock::new();
     ALLOWLIST
         .get_or_init(|| {
-            let parsed: QuarantineAllowlist = serde_json::from_str(include_str!(
+            let malformed =
+                |error| format!("retained evidence quarantine allowlist is malformed: {error}");
+            let written: WrittenJson = serde_json::from_str(include_str!(
                 "../validate/retained-evidence-quarantine.json"
             ))
-            .map_err(|error| {
-                format!("retained evidence quarantine allowlist is malformed: {error}")
-            })?;
+            .map_err(malformed)?;
             let inconsistent =
                 || "retained evidence quarantine allowlist is inconsistent".to_string();
+            if written.repeated_key {
+                return Err(inconsistent());
+            }
+            let parsed: QuarantineAllowlist =
+                serde_json::from_value(written.value).map_err(malformed)?;
             if parsed.schema != QUARANTINE_ALLOWLIST_SCHEMA {
                 return Err(inconsistent());
             }
@@ -500,6 +511,123 @@ fn quarantine_allowlist() -> Result<&'static [QuarantineEntry], String> {
         .map_err(Clone::clone)
 }
 
+/// A JSON value as it was written: its `Value`, and whether any object in it
+/// names a key more than once. `serde_json::Value` silently keeps the last of
+/// a repeated key, so two different texts would otherwise read as one row.
+struct WrittenJson {
+    value: serde_json::Value,
+    repeated_key: bool,
+}
+
+impl<'de> Deserialize<'de> for WrittenJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct WrittenVisitor;
+        fn once(value: serde_json::Value) -> WrittenJson {
+            WrittenJson {
+                value,
+                repeated_key: false,
+            }
+        }
+        impl<'de> serde::de::Visitor<'de> for WrittenVisitor {
+            type Value = WrittenJson;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a JSON value")
+            }
+            fn visit_bool<E>(self, value: bool) -> Result<WrittenJson, E> {
+                Ok(once(value.into()))
+            }
+            fn visit_i64<E>(self, value: i64) -> Result<WrittenJson, E> {
+                Ok(once(value.into()))
+            }
+            fn visit_u64<E>(self, value: u64) -> Result<WrittenJson, E> {
+                Ok(once(value.into()))
+            }
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<WrittenJson, E> {
+                serde_json::Number::from_f64(value)
+                    .map(|number| once(serde_json::Value::Number(number)))
+                    .ok_or_else(|| E::custom("JSON number is not finite"))
+            }
+            fn visit_str<E>(self, value: &str) -> Result<WrittenJson, E> {
+                Ok(once(value.into()))
+            }
+            fn visit_string<E>(self, value: String) -> Result<WrittenJson, E> {
+                Ok(once(value.into()))
+            }
+            fn visit_unit<E>(self) -> Result<WrittenJson, E> {
+                Ok(once(serde_json::Value::Null))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<WrittenJson, A::Error> {
+                let mut items = Vec::new();
+                let mut repeated_key = false;
+                while let Some(item) = sequence.next_element::<WrittenJson>()? {
+                    repeated_key |= item.repeated_key;
+                    items.push(item.value);
+                }
+                Ok(WrittenJson {
+                    value: serde_json::Value::Array(items),
+                    repeated_key,
+                })
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<WrittenJson, A::Error> {
+                let mut fields = serde_json::Map::new();
+                let mut repeated_key = false;
+                while let Some(key) = map.next_key::<String>()? {
+                    let item = map.next_value::<WrittenJson>()?;
+                    repeated_key |= item.repeated_key || fields.contains_key(&key);
+                    fields.insert(key, item.value);
+                }
+                Ok(WrittenJson {
+                    value: serde_json::Value::Object(fields),
+                    repeated_key,
+                })
+            }
+        }
+        deserializer.deserialize_any(WrittenVisitor)
+    }
+}
+
+/// Judge a row's written text before any typed reading can normalise it.
+///
+/// A row whose top level carries no quarantine marker returns None and is left
+/// to its typed reader, as is text that is not JSON at all. A marked row must
+/// name no key twice at any depth, carry exactly one allowlisted marker, and
+/// equal that entry's correction as written: a removed null field, an integer
+/// written for a float, or any other difference the `HistoryRow` form would
+/// erase refuses. The only tolerance is the one workspace root the row
+/// projection renders. Every reader that turns ledger text into a row calls
+/// this first, because `quarantine_outcome` sees only the typed form.
+pub fn written_quarantine_refusal(row_json: &str) -> Option<String> {
+    let written = serde_json::from_str::<WrittenJson>(row_json).ok()?;
+    let marker = written.value.get(QUARANTINE_KEY)?;
+    if written.repeated_key {
+        return Some("retained evidence quarantine row names a key more than once".into());
+    }
+    let allowlist = match quarantine_allowlist() {
+        Ok(entries) => entries,
+        Err(error) => return Some(error),
+    };
+    let Some(entry) = allowlist
+        .iter()
+        .find(|entry| entry.corrected_written.get(QUARANTINE_KEY) == Some(marker))
+    else {
+        return Some("retained evidence quarantine names no allowlisted lost run".into());
+    };
+    let mut actual = written.value;
+    match unrender_workspace(&mut actual, &entry.rendered) {
+        Some(()) if actual == entry.corrected_written => None,
+        _ => Some(
+            "retained evidence quarantine row differs as written from its lost run beyond result, source and the allowlisted marker"
+                .into(),
+        ),
+    }
+}
+
 /// Judge a quarantine marker from the row alone, before any file is opened.
 ///
 /// The marker must equal one allowlisted lost run's marker exactly, and the
@@ -507,6 +635,9 @@ fn quarantine_allowlist() -> Result<&'static [QuarantineEntry], String> {
 /// `no_result`, source `reconstructed` and the marker itself. The comparison
 /// is over the `HistoryRow` form, so a profile, count, selection mode,
 /// timing, artifact reference or any other field the row changes refuses.
+/// That form cannot see a removed null, an integer written for a float or a
+/// repeated key; `written_quarantine_refusal` judges those at every reader
+/// that parses row text, before this is reached.
 /// The one exception is the workspace root the row projection renders into
 /// the fields the ledger records relative to it: those fields must share one
 /// root before their recorded suffixes.
@@ -669,9 +800,12 @@ fn run_batch_io(
         let request: Request = serde_json::from_slice(&line)
             .map_err(|error| format!("invalid request {index}: {error}"))?;
         let row_sha256 = format!("{:x}", Sha256::digest(request.row_json.as_bytes()));
-        let outcome = match serde_json::from_str::<HistoryRow>(&request.row_json) {
-            Ok(row) => verify(&row, root),
-            Err(error) => refused(format!("HistoryRow is malformed: {error}")),
+        let outcome = match written_quarantine_refusal(&request.row_json) {
+            Some(error) => refused(error),
+            None => match serde_json::from_str::<HistoryRow>(&request.row_json) {
+                Ok(row) => verify(&row, root),
+                Err(error) => refused(format!("HistoryRow is malformed: {error}")),
+            },
         };
         let response = Response {
             row_sha256,
@@ -2235,6 +2369,132 @@ mod tests {
             reports[1]["row_sha256"],
             format!("{:x}", Sha256::digest(forged.as_bytes()))
         );
+    }
+
+    /// The written forms review found the typed comparison merging with the
+    /// exact correction: each is a different row text, and each must refuse
+    /// at every reader that parses text, before a `HistoryRow` exists.
+    fn written_quarantine_forgeries(exact: &serde_json::Value) -> Vec<(&'static str, String)> {
+        let text = serde_json::to_string(exact).unwrap();
+        let mut missing_null = exact.clone();
+        assert!(missing_null["coverage"].is_null());
+        missing_null.as_object_mut().unwrap().remove("coverage");
+        let mut retyped = exact.clone();
+        let seconds = exact["real_seconds"].as_f64().unwrap();
+        assert!(exact["real_seconds"].is_f64() && seconds.fract() == 0.0);
+        retyped["real_seconds"] = json!(seconds as u64);
+        let marker_key = format!("\"{QUARANTINE_KEY}\":{{");
+        assert_eq!(text.matches(&marker_key).count(), 1);
+        vec![
+            (
+                "coverage null removed",
+                serde_json::to_string(&missing_null).unwrap(),
+            ),
+            (
+                "real_seconds retyped as an integer",
+                serde_json::to_string(&retyped).unwrap(),
+            ),
+            (
+                "top-level branch repeated, forged first",
+                format!("{{\"branch\":\"forged\",{}", &text[1..]),
+            ),
+            (
+                "top-level branch repeated with its own value",
+                format!("{{\"branch\":{},{}", exact["branch"], &text[1..]),
+            ),
+            (
+                "marker reason repeated, forged first",
+                text.replacen(
+                    &marker_key,
+                    &format!("{marker_key}\"reason\":\"forged\","),
+                    1,
+                ),
+            ),
+        ]
+    }
+
+    #[test]
+    fn schema10_quarantine_is_judged_on_its_written_text_before_any_typed_reading() {
+        let store = Store::new();
+        for event_id in [LOST_V2_A, LOST_V2_B] {
+            let exact = lost_run(event_id);
+            let text = serde_json::to_string(&exact).unwrap();
+            assert_eq!(written_quarantine_refusal(&text), None, "{event_id}");
+            let (rows, failures) = crate::validate_status::parse_ledger(&text);
+            assert_eq!((rows.len(), failures.len()), (1, 0), "{event_id}");
+            assert!(matches!(
+                verify(&rows[0], &store.0),
+                EvidenceOutcome::Quarantined { original_event_id, .. }
+                if original_event_id == event_id
+            ));
+
+            // The one documented substitution: the rendered workspace root,
+            // shared by every field the ledger records relative to it.
+            let rendered = |roots: [&str; 2]| {
+                let mut value = exact.clone();
+                for (field, root) in ["cwd", "log_file"].into_iter().zip(roots) {
+                    let written = value[field].as_str().unwrap().to_owned();
+                    let suffix = written.strip_prefix(WORKSPACE_TOKEN).unwrap();
+                    value[field] = json!(format!("{root}{suffix}"));
+                }
+                serde_json::to_string(&value).unwrap()
+            };
+            assert_eq!(
+                written_quarantine_refusal(&rendered(["/reader/root", "/reader/root"])),
+                None
+            );
+            assert!(
+                written_quarantine_refusal(&rendered(["/reader/root", "/other/root"])).is_some()
+            );
+
+            for (label, forged) in written_quarantine_forgeries(&exact) {
+                assert_ne!(
+                    Sha256::digest(forged.as_bytes()),
+                    Sha256::digest(text.as_bytes()),
+                    "{event_id}: {label}"
+                );
+                let refusal = written_quarantine_refusal(&forged)
+                    .unwrap_or_else(|| panic!("{event_id}: {label} must refuse as written"));
+                let (rows, failures) = crate::validate_status::parse_ledger(&forged);
+                assert!(rows.is_empty(), "{event_id}: {label}");
+                assert_eq!(failures.len(), 1, "{event_id}: {label}");
+                assert_eq!(failures[0].error, refusal, "{event_id}: {label}");
+                assert_eq!(
+                    failures[0].record_id.as_deref(),
+                    Some(event_id),
+                    "{event_id}: {label}"
+                );
+
+                let mut input = Vec::new();
+                serde_json::to_writer(&mut input, &json!({"row_json": forged})).unwrap();
+                input.push(b'\n');
+                let mut output = Vec::new();
+                run_batch_io(
+                    &store.0,
+                    io::Cursor::new(input),
+                    &mut output,
+                    1 << 20,
+                    4 << 20,
+                )
+                .unwrap();
+                let report: serde_json::Value =
+                    serde_json::from_slice(output.trim_ascii_end()).unwrap();
+                assert_eq!(report["status"], "refused", "{event_id}: {label}");
+                assert_eq!(report["reason"], refusal.as_str(), "{event_id}: {label}");
+                assert_eq!(
+                    report["row_sha256"],
+                    format!("{:x}", Sha256::digest(forged.as_bytes())),
+                    "{event_id}: {label}"
+                );
+            }
+        }
+        // A repeated key refuses only where a marker makes the row a
+        // quarantine; an unmarked row is left to its ordinary reader.
+        assert_eq!(
+            written_quarantine_refusal(r#"{"branch":"a","branch":"b"}"#),
+            None
+        );
+        assert_eq!(written_quarantine_refusal("not json"), None);
     }
 
     #[test]

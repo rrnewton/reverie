@@ -1320,6 +1320,10 @@ def _require_quarantine_correction(event: dict, target: dict) -> None:
     if entry is None:
         raise ValueError("retained evidence quarantine supersedes no allowlisted lost run")
     exact = receipt._quarantine_json
+    # A dictionary keeps only the last of a repeated key, so the comparisons
+    # below would accept a forged earlier occurrence. Judge the written pairs.
+    if receipt._quarantine_repeated_key(event) or receipt._quarantine_repeated_key(target):
+        raise ValueError("retained evidence quarantine names a key more than once")
     recorded = {**entry["envelope"], "legacy_row": entry["lost_row"]}
     if exact(target) != exact(recorded):
         raise ValueError("retained evidence quarantine supersedes a run other than its lost run")

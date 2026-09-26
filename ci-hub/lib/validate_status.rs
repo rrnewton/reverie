@@ -1011,11 +1011,13 @@ pub fn parse_ledger(buf: &str) -> (Vec<HistoryRow>, Vec<LedgerParseFailure>) {
         if line.is_empty() {
             continue;
         }
-        match serde_json::from_str::<HistoryRow>(line) {
-            Ok(row) => rows.push(row),
-            Err(error) => {
-                let salvaged = serde_json::from_str::<serde_json::Value>(line).ok();
-                let error = salvaged
+        // A quarantine is judged on the written line: the typed row below
+        // cannot tell a removed null, a retyped number or a repeated key.
+        let parsed = match crate::validation_evidence::written_quarantine_refusal(line) {
+            Some(refusal) => Err(refusal),
+            None => serde_json::from_str::<HistoryRow>(line).map_err(|error| {
+                serde_json::from_str::<serde_json::Value>(line)
+                    .ok()
                     .as_ref()
                     .and_then(|value| {
                         crate::qualifying_receipt::raw_current_schema_count_type_refusal(
@@ -1024,7 +1026,13 @@ pub fn parse_ledger(buf: &str) -> (Vec<HistoryRow>, Vec<LedgerParseFailure>) {
                         )
                     })
                     .map(str::to_owned)
-                    .unwrap_or_else(|| error.to_string());
+                    .unwrap_or_else(|| error.to_string())
+            }),
+        };
+        match parsed {
+            Ok(row) => rows.push(row),
+            Err(error) => {
+                let salvaged = serde_json::from_str::<serde_json::Value>(line).ok();
                 let field = |name: &str| {
                     salvaged
                         .as_ref()

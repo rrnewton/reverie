@@ -566,6 +566,10 @@ class DirectLedgerFixture(unittest.TestCase):
         # This launches the production finalizer/CLI and an executable Python
         # scorecard fixture. The row checker and canonical producer query are
         # doubles; this verifies Git delivery, not finalized proof validity.
+        # The schema-10 row reaches portable proof preparation, whose real
+        # publisher path the portable_fixture tests exercise; here it is a
+        # double that records the exact row it received and prepares nothing.
+        portable_calls = self.root / "portable-calls.jsonl"
         bootstrap = (
             "import runpy,sys,subprocess;"
             "expected_run_id=sys.argv.pop(1);"
@@ -578,7 +582,12 @@ class DirectLedgerFixture(unittest.TestCase):
             "'cwd':sys.argv[sys.argv.index('--source-checkout')+1],'schema_version':10,'started_at':'2026-09-21T12:00:00Z','finished_at':'2026-09-21T12:10:00Z'};"
             "validate_rows.rows=lambda **k:[r];"
             "validate_rows.canonical_finalized_row=lambda **k:r;"
-            "sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name='__main__')"
+            "import json,mirror;"
+            f"calls={str(portable_calls)!r};"
+            "mirror.prepare_portable_proof=lambda parent,row,**k:"
+            "open(calls,'a').write(json.dumps(json.loads(row),sort_keys=True)+'\\n') and None;"
+            "sys.argv=sys.argv[1:];assert sys.argv[0]==mirror.__file__,sys.argv[0];"
+            "raise SystemExit(mirror.main())"
         )
         calls = []
 
@@ -628,6 +637,9 @@ class DirectLedgerFixture(unittest.TestCase):
                 self.assertIn("--results", calls[-1])
                 self.assertEqual(expected_run_id,
                                  calls[-1][calls[-1].index("--finalized-run-id") + 1])
+                prepared = [json.loads(line) for line in portable_calls.read_text().splitlines()]
+                self.assertEqual((10, expected_run_id), (prepared[-1]["schema_version"], prepared[-1]["run_id"]))
+        self.assertEqual(2, len(portable_calls.read_text().splitlines()))
         self.assertEqual({"VALIDATED", "FAILED"}, {row["event_id"] for row in self.remote_rows()})
         self.assertEqual("", git(self.source, "status", "--porcelain"))
 
@@ -642,6 +654,10 @@ class DirectLedgerFixture(unittest.TestCase):
         import run_registry
 
         expected_run_id = "validate-quarantine"
+        # As in the normal-completion test above, the schema-10 row reaches
+        # portable proof preparation; here it is a double that records the
+        # exact row it received and prepares nothing.
+        portable_calls = self.root / "portable-calls.jsonl"
         bootstrap = (
             "import runpy,sys,subprocess;"
             f"sys.path[:0]=[{str(MODULE.parent)!r},{str(mirror.TOOL_ROOT / 'ci-hub/ledger')!r}];"
@@ -653,7 +669,12 @@ class DirectLedgerFixture(unittest.TestCase):
             "'cwd':sys.argv[sys.argv.index('--source-checkout')+1],'schema_version':10,'started_at':'2026-09-21T12:00:00Z','finished_at':'2026-09-21T12:10:00Z'};"
             "validate_rows.rows=lambda **k:[r];"
             "validate_rows.canonical_finalized_row=lambda **k:r;"
-            "sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name='__main__')"
+            "import json,mirror;"
+            f"calls={str(portable_calls)!r};"
+            "mirror.prepare_portable_proof=lambda parent,row,**k:"
+            "open(calls,'a').write(json.dumps(json.loads(row),sort_keys=True)+'\\n') and None;"
+            "sys.argv=sys.argv[1:];assert sys.argv[0]==mirror.__file__,sys.argv[0];"
+            "raise SystemExit(mirror.main())"
         )
 
         def native_run(command, **kwargs):
@@ -691,6 +712,9 @@ class DirectLedgerFixture(unittest.TestCase):
             )
         self.assertTrue(start_unit.cell_ledger_published(result), result)
         self.assertEqual(result, run_registry.read_record(record_path))
+        prepared = [json.loads(line) for line in portable_calls.read_text().splitlines()]
+        self.assertEqual([(10, expected_run_id)],
+                         [(item["schema_version"], item["run_id"]) for item in prepared])
         counted = result["ledger_mirror"]["raw_publication"]["quarantine"]
         self.assertIsNone(counted["error"], counted)
         self.assertEqual(2, counted["published"])
@@ -1045,11 +1069,16 @@ class DirectLedgerFixture(unittest.TestCase):
                 self.assertEqual(str(self.parent), command[command.index("--state-root") + 1])
             return original(command, **kwargs)
 
+        # Portable proof has its own real-publisher coverage (portable_fixture);
+        # this test binds the held row and the published snapshot.
         with mock.patch.object(mirror, "finalized_producer_row", return_value=row_bytes) as query, \
+                mock.patch.object(mirror, "prepare_portable_proof", return_value=None) as portable, \
                 mock.patch.object(mirror, "_run", side_effect=inspect):
             report = mirror.mirror(self.parent, self.source, self.target, mirror.REMOTE_URL,
                                    net_wrapper="/usr/bin/env", tool_checkout=self.tool,
                                    results=self.root / "results", finalized_run_id="run-1")
+        portable.assert_called_once_with(self.parent, row_bytes, net_wrapper="/usr/bin/env",
+                                         attempts=mirror.DEFAULT_ATTEMPTS)
         self.assertEqual("published", report["state"])
         self.assertEqual(2, query.call_count)
         self.assertEqual(1, len(calls))
@@ -1062,10 +1091,13 @@ class DirectLedgerFixture(unittest.TestCase):
         rows = [json.dumps({"started_at": "2026-09-21T12:00:00Z", "finished_at": "2026-09-21T12:10:00Z",
                             "schema_version": 10, "record_id": record}).encode()
                 for record in ["original", "correction"]]
-        with mock.patch.object(mirror, "finalized_producer_row", side_effect=rows):
+        with mock.patch.object(mirror, "finalized_producer_row", side_effect=rows), \
+                mock.patch.object(mirror, "prepare_portable_proof", return_value=None) as portable:
             report = mirror.mirror(self.parent, self.source, self.target, mirror.REMOTE_URL,
                                    net_wrapper="/usr/bin/env", tool_checkout=self.tool,
                                    results=self.root / "results", finalized_run_id="run-1")
+        portable.assert_called_once_with(self.parent, rows[0], net_wrapper="/usr/bin/env",
+                                         attempts=mirror.DEFAULT_ATTEMPTS)
         self.assertEqual("derived-failed", report["state"])
         self.assertIn("changed during", report["scorecard"]["error"])
         self.assertEqual(before, git(self.remote, "rev-parse", "main:scorecard/cells.json"))

@@ -4859,6 +4859,11 @@ fn validation_row_report_with(
             matches.len()
         ));
     }
+    if let Some(refusal) =
+        validation_evidence::written_quarantine_refusal(original_lines[matches[0]])
+    {
+        return Err(format!("validation-row selected row is refused: {refusal}"));
+    }
     let row = serde_json::from_str::<HistoryRow>(original_lines[matches[0]]).map_err(|error| {
         format!("validation-row cannot canonicalize the selected HistoryRow: {error}")
     })?;
@@ -14662,6 +14667,39 @@ mod tests {
         let error = validation_row_report(&input, "absent-record", "absent-run").unwrap_err();
 
         assert!(error.contains("matched 0 terminal rows"), "{error}");
+    }
+
+    #[test]
+    fn written_quarantine_is_judged_before_history_and_selection_readers_normalize_it() {
+        use validation_evidence::fixtures::{lost_run, LOST_V2_B};
+        const REPEATED: &str = "retained evidence quarantine row names a key more than once";
+        let exact = serde_json::to_string(&lost_run(LOST_V2_B)).unwrap();
+        let repeated = format!("{{\"branch\":\"forged\",{}", &exact[1..]);
+        let raw = |text: &str| serde_json::value::RawValue::from_string(text.to_owned()).unwrap();
+
+        // The canonical reader normalizes unclaimed rows through Value, which
+        // would merge a repeated key. Every quarantine correction carries its
+        // lost run's admission claim, so its written text reaches parse_ledger;
+        // a marked row without that claim differs from every correction.
+        assert!(lost_run(LOST_V2_B)
+            .get("admission_floor_evidence")
+            .is_some());
+        let (rows, failures) = parse_history_values(&[raw(&exact)]);
+        assert_eq!((rows.len(), failures.len()), (1, 0));
+        let (rows, failures) = parse_history_values(&[raw(&repeated)]);
+        assert!(rows.is_empty());
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].error, REPEATED);
+        assert_eq!(failures[0].record_id.as_deref(), Some(LOST_V2_B));
+
+        let run_id = lost_run(LOST_V2_B)["run_id"].as_str().unwrap().to_owned();
+        let exact_error = validation_row_report(&exact, LOST_V2_B, &run_id).unwrap_err();
+        assert!(!exact_error.contains("is refused"), "{exact_error}");
+        let error = validation_row_report(&repeated, LOST_V2_B, &run_id).unwrap_err();
+        assert_eq!(
+            error,
+            format!("validation-row selected row is refused: {REPEATED}")
+        );
     }
 
     #[test]

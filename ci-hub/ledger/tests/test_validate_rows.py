@@ -3540,6 +3540,14 @@ def _quarantine_variant(name: str, lost: list[dict]) -> list[dict]:
         correction["legacy_row"]["selection_mode"] = "full"
     elif name == "dropped-passed-count":
         del correction["legacy_row"]["passed_tests"]
+    elif name == "coverage-null-removed":
+        # An absent key and a null differ; the recorded row carries the null.
+        assert correction["legacy_row"]["coverage"] is None
+        del correction["legacy_row"]["coverage"]
+    elif name == "real-seconds-retyped":
+        seconds = correction["legacy_row"]["real_seconds"]
+        assert type(seconds) is float and seconds.is_integer()
+        correction["legacy_row"]["real_seconds"] = int(seconds)
     elif name == "retyped-passed-count":
         correction["legacy_row"]["passed_tests"] = float(correction["legacy_row"]["passed_tests"])
     elif name == "boolean-exit-code":
@@ -3584,11 +3592,64 @@ def _quarantine_variant(name: str, lost: list[dict]) -> list[dict]:
     "added-field",
     "lost-run-profile-altered",
     "lost-run-envelope-altered",
+    "coverage-null-removed",
+    "real-seconds-retyped",
 ])
 def test_quarantine_correction_other_than_the_allowlisted_one_is_refused(tmp_path: Path, name: str):
     write_events(tmp_path, *_quarantine_variant(name, quarantine_lost_events()))
-    with pytest.raises(ValueError, match="retained evidence quarantine"):
-        validate_rows.rows(root=tmp_path)
+    for preserve_admission in (False, True):
+        with pytest.raises(ValueError, match="retained evidence quarantine"):
+            validate_rows.rows(root=tmp_path, preserve_admission=preserve_admission)
+
+
+def _write_event_texts(root: Path, first: dict, *texts: str) -> None:
+    path = root / "ledger" / str(first["team"]) / str(first["host"]) / "2026-08.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(text + "\n" for text in texts), encoding="utf-8")
+
+
+def _repeat_first_key(text: str, anchor: str, key: str, value: str) -> str:
+    """Write ``key`` once more, forged and first, inside the object ``anchor`` opens."""
+    assert text.count(anchor) == 1
+    return text.replace(anchor, f'{anchor}"{key}":{value},', 1)
+
+
+@pytest.mark.parametrize("where", [
+    "correction-row-branch", "correction-row-same-value", "correction-marker",
+    "correction-envelope", "lost-run-row",
+])
+def test_quarantine_that_repeats_a_key_is_refused_by_the_pair_preserving_reader(
+    tmp_path: Path, where: str,
+):
+    """Every dictionary view keeps the last of a repeated key, so each forged
+    text below reads as the exact correction. The authority reader keeps the
+    written pairs and must refuse it."""
+    key = validate_rows.qualifying_receipt.RETAINED_EVIDENCE_QUARANTINE_KEY
+    lost = quarantine_lost_events()
+    corrections = [json.dumps(quarantine_correction(event), sort_keys=True) for event in lost]
+    texts = [json.dumps(event, sort_keys=True) for event in lost]
+    _write_event_texts(tmp_path, lost[0], *texts, *corrections)
+    genuine = validate_rows.rows(root=tmp_path, preserve_admission=True)
+    assert sum(key in row for row in genuine) == 2
+    branch = json.dumps(lost[0]["legacy_row"]["branch"])
+    refusal = "retained evidence quarantine names a key more than once"
+    if where == "correction-row-branch":
+        corrections[0] = _repeat_first_key(corrections[0], '"legacy_row": {', "branch", '"forged"')
+    elif where == "correction-row-same-value":
+        corrections[0] = _repeat_first_key(corrections[0], '"legacy_row": {', "branch", branch)
+    elif where == "correction-marker":
+        corrections[0] = _repeat_first_key(corrections[0], f'"{key}": {{', "reason", '"forged"')
+    elif where == "correction-envelope":
+        # The event schema's own decoder already names this one.
+        corrections[0] = "{" + '"reason":"forged",' + corrections[0][1:]
+        refusal = "duplicate field `reason`"
+    else:
+        texts[0] = _repeat_first_key(texts[0], '"legacy_row": {', "branch", '"forged"')
+    _write_event_texts(tmp_path, lost[0], *texts, *corrections)
+    with pytest.raises(ValueError, match=refusal):
+        validate_rows.rows(root=tmp_path, preserve_admission=True)
+    with pytest.raises(ValueError, match=refusal):
+        validate_rows.status_input(root=tmp_path, preserve_admission=True)
 
 
 def test_quarantine_marker_in_a_result_row_is_refused(tmp_path: Path):
