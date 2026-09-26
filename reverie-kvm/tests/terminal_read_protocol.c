@@ -7,15 +7,19 @@
  */
 
 /* Standalone, bounded by the caller. Compile the actual terminal_read.c with
- * -DRVK_READ_TEST -std=c11 -pthread -fexceptions, matching production. Gate
- * hooks are C-only and contain no
+ * -DRVK_READ_TEST -std=c11 -pthread -fexceptions, matching production, plus
+ * test-only -fno-pie -no-pie to select the measured read PLT diagnostic ABI.
+ * Gate hooks are C-only and contain no
  * cancellation point, including the public-return/disable interval.
  *
  * Full suite: TMPDIR=/absolute/private/tmp ./terminal_read_protocol
  * The caller owns CPU/memory/pids/wall/output bounds. The default aggregate
- * qualifies the actual installed provider inventory before and after both
- * live task queries. Unknown, malformed, unreadable or changing inventories
- * fail; no provider directory, fixed deployment key or ignore flag is used.
+ * requires complete, valid, stable provider inventory before and after both
+ * live task queries. Equal nonempty exported bytes from one positive read
+ * followed by EOF may match with any such inventory; unavailable labels
+ * require the exact qualified profile.
+ * Malformed, unreadable or changing inventory fails. No provider directory,
+ * fixed deployment key or ignore flag is used.
  * --context-mode MODE selects one additive C15 control; it does not qualify
  * the other fourteen controls. Run the full suite as a separate positive. */
 #define _GNU_SOURCE
@@ -793,7 +797,7 @@ static struct attribute_query live_attribute(int tid, uint64_t start,
 
 enum provider_profile {
   PROVIDER_UNCLASSIFIED,
-  PROVIDER_CURRENT_LABELS,
+  PROVIDER_EXPORTED_BYTES,
   PROVIDER_CURRENT_UNAVAILABLE,
 };
 
@@ -802,7 +806,7 @@ enum inventory_problem {
   INVENTORY_QUERY_ERROR,
   INVENTORY_MALFORMED,
   INVENTORY_CHANGING,
-  INVENTORY_UNKNOWN,
+  INVENTORY_VALID,
 };
 
 struct provider_classification {
@@ -820,13 +824,24 @@ static bool complete_attribute(const struct attribute_query *q);
  * and proc_pid_attr_read/security_getprocattr/bpf_lsm_getprocattr were inspected
  * in CONTEXT-FINDING.md, SHA256
  * c3db390aad32c95611a75bc78e5dc7f104d5b6b33c9ff58dc45910b46f149c7b.
- * This profile accepts ONLY both actual initial -1/EINVAL observations. BPF
+ * This profile authorizes unavailable-label ONLY for both actual initial
+ * -1/EINVAL observations. BPF
  * remains active and attachments are not enumerated: no policy equivalence or
  * absence of mediation is inferred. Kernel/build/config identify provenance,
- * not an acceptance key. Extend this table only from actual CI inventories and
- * primary provider registration/getprocattr contracts; unknown profiles fail.
- * No live label-provider combination has yet been grounded for this table.
- * The CURRENT_LABELS branch is separately exercised by explicit fixtures. */
+ * not an acceptance key. This table authorizes only the unavailable-label
+ * interpretation; another spelling never authorizes an error result.
+ *
+ * Generic byte observation: the matching proc_pid_attr_read calls
+ * security_getprocattr, returns nonpositive results directly, and transports
+ * a positive provider byte count with simple_read_from_buffer. The retained
+ * complete disassemblies have SHA256
+ * 2bfd9eac0dba85db813248d8e403816e4018a780260ef7daa33a722e3143a6a7
+ * and 63c9301197afc61885abf55e191f6935c4fb857065a6d3b4e836e88bd40b6e7b.
+ * Every read invokes getprocattr again. After valid stable inventory collection,
+ * exactly one nonempty positive read followed by EOF can compare the bytes
+ * from that first invocation without splicing separately generated values.
+ * Empty EOF exports no label. The comparison requires no provider allowlist
+ * and does not assert equality of every LSM policy or mediation. */
 static const struct {
   const char *inventory;
   enum provider_profile profile;
@@ -881,6 +896,9 @@ static struct provider_classification classify_inventory(
     result.problem = INVENTORY_MALFORMED;
     return result;
   }
+  if (before->reads != 2 || after->reads != 2) {
+    return result;
+  }
   if (before->length != after->length ||
       memcmp(before->bytes, after->bytes, before->length) != 0) {
     result.problem = INVENTORY_CHANGING;
@@ -895,7 +913,8 @@ static struct provider_classification classify_inventory(
       return result;
     }
   }
-  result.problem = INVENTORY_UNKNOWN;
+  result.profile = PROVIDER_EXPORTED_BYTES;
+  result.problem = INVENTORY_VALID;
   return result;
 }
 
@@ -903,12 +922,15 @@ static enum provider_profile require_inventory(const struct attribute_query *bef
                                                const struct attribute_query *after,
                                                const char *origin) {
   struct provider_classification result = classify_inventory(before, after);
-  const char *problems[] = {"recognized", "query-error", "malformed", "changing", "unknown"};
-  const char *profiles[] = {"unclassified", "current-labels", "observed-unavailable"};
+  const char *problems[] = {"recognized", "query-error", "malformed", "changing", "valid"};
+  const char *profiles[] = {"unclassified", "exported-bytes-only", "observed-unavailable"};
+  /* Profile records error-interpretation eligibility; the separate attribute
+   * decision reports whether these actual queries exported bytes or failed. */
   printf("CONTEXT_PROVIDER_DECISION origin=%s profile=%s reason=%s mode=%s\n",
          origin, profiles[result.profile], problems[result.problem], context_mode);
   assert(fflush(stdout) == 0);
-  if (result.problem != INVENTORY_RECOGNIZED || result.profile == PROVIDER_UNCLASSIFIED) {
+  if ((result.problem != INVENTORY_RECOGNIZED && result.problem != INVENTORY_VALID) ||
+      result.profile == PROVIDER_UNCLASSIFIED) {
     context_error("provider-inventory-oracle", context_mode, EPROTO);
   }
   return result.profile;
@@ -954,13 +976,21 @@ static bool complete_attribute(const struct attribute_query *q) {
       q->length < sizeof(q->bytes) - 1 && q->close_result == 0;
 }
 
+static bool single_exported_attribute(const struct attribute_query *q) {
+  /* The collector starts at offset zero and records each read. Two reads,
+   * final EOF and nonzero length mean one positive read returned every byte.
+   * Another positive read would splice a fresh getprocattr invocation. */
+  return complete_attribute(q) && q->reads == 2 && q->length > 0;
+}
+
 static enum attribute_decision classify_attributes(const struct attribute_query *left,
                                                    const struct attribute_query *right,
                                                    enum provider_profile profile) {
   if (left->tid <= 0 || right->tid <= 0 || left->start == 0 || right->start == 0) {
     return ATTRIBUTE_REJECT;
   }
-  if (profile == PROVIDER_CURRENT_LABELS && complete_attribute(left) && complete_attribute(right)) {
+  if ((profile == PROVIDER_EXPORTED_BYTES || profile == PROVIDER_CURRENT_UNAVAILABLE) &&
+      single_exported_attribute(left) && single_exported_attribute(right)) {
     return left->length == right->length &&
         memcmp(left->bytes, right->bytes, left->length) == 0
         ? ATTRIBUTE_EQUAL : ATTRIBUTE_REJECT;
@@ -974,7 +1004,8 @@ static enum attribute_decision classify_attributes(const struct attribute_query 
 static enum attribute_decision require_attributes(const struct attribute_query *left,
                                                   const struct attribute_query *right,
                                                   enum provider_profile profile,
-                                                  const char *origin) {
+                                                  const char *origin,
+                                                  const char *error_operation) {
   enum attribute_decision decision = classify_attributes(left, right, profile);
   printf("CONTEXT_ATTRIBUTE_DECISION origin=%s decision=%s mode=%s\n", origin,
          decision == ATTRIBUTE_EQUAL ? "exact-label-bytes" :
@@ -982,7 +1013,7 @@ static enum attribute_decision require_attributes(const struct attribute_query *
          context_mode);
   assert(fflush(stdout) == 0);
   if (decision == ATTRIBUTE_REJECT) {
-    context_error("attribute-oracle", context_mode, EPROTO);
+    context_error(error_operation, context_mode, EPROTO);
   }
   return decision;
 }
@@ -1012,7 +1043,20 @@ static void fixture_error(struct attribute_query *q, int error) {
   q->eof = false;
 }
 
-static bool inventory_fixture(struct attribute_query before, struct attribute_query after) {
+static enum provider_profile classifier_inventory(struct attribute_query before,
+                                                  struct attribute_query after,
+                                                  const char *inventory) {
+  /* All classifier modes derive their profile from explicit synthetic bytes;
+   * the live tasks contribute identities, never inventory or outcome values. */
+  fixture_value(&before, inventory, strlen(inventory));
+  fixture_value(&after, inventory, strlen(inventory));
+  print_attribute(&before, "classifier-fixture-provider-before");
+  print_attribute(&after, "classifier-fixture-provider-after");
+  return require_inventory(&before, &after, "classifier-fixture-inventory");
+}
+
+static bool inventory_fixture(struct attribute_query before, struct attribute_query after,
+                              struct attribute_query left, struct attribute_query right) {
   if (strncmp(context_mode, "inventory-", 10) != 0) {
     return false;
   }
@@ -1044,7 +1088,17 @@ static bool inventory_fixture(struct attribute_query before, struct attribute_qu
   }
   print_attribute(&before, "inventory-fixture-before");
   print_attribute(&after, "inventory-fixture-after");
-  require_inventory(&before, &after, "inventory-fixture");
+  enum provider_profile profile = require_inventory(&before, &after, "inventory-fixture");
+  if (strcmp(context_mode, "inventory-unknown") == 0) {
+    /* Valid spelling is sufficient only for complete successful observations.
+     * Keep this negative's paired-EINVAL premise explicit on every host. */
+    fixture_error(&left, EINVAL);
+    fixture_error(&right, EINVAL);
+    print_attribute(&left, "inventory-fixture-creator");
+    print_attribute(&right, "inventory-fixture-helper");
+    require_attributes(&left, &right, profile, "inventory-fixture",
+                       "provider-inventory-oracle");
+  }
   puts("UNEXPECTED_ACCEPTANCE negative inventory fixture");
   return true;
 }
@@ -1053,25 +1107,28 @@ static bool inventory_fixture(struct attribute_query before, struct attribute_qu
  * actual observations printed above. A rejected fixture aborts (134); accepted
  * bad fixtures return success, which the caller MUST treat as a failed negative
  * control. Synthetic equal labels test bytes after an embedded NUL. */
-static void attribute_fixture(struct attribute_query left, struct attribute_query right,
-                              enum provider_profile profile) {
+static void attribute_fixture(struct attribute_query left, struct attribute_query right) {
   if (strcmp(context_mode, "live") == 0 || strcmp(context_mode, "mask-mismatch") == 0) {
     return;
   }
   printf("CONTEXT_TEST_FAULT mode=%s origin=classifier-fixture\n", context_mode);
+  bool nonlegacy = strcmp(context_mode, "equal-labels-nonlegacy") == 0 ||
+                   strcmp(context_mode, "unqualified-provider") == 0;
+  enum provider_profile profile = classifier_inventory(left, right,
+      nonlegacy ? "capability,bpf,ima,fixture_unknown" : "capability,bpf,ima");
   if (strcmp(context_mode, "equal-labels") == 0 ||
+      strcmp(context_mode, "equal-labels-nonlegacy") == 0 ||
       strcmp(context_mode, "label-mismatch") == 0 ||
       strcmp(context_mode, "label-length") == 0) {
     fixture_value(&left, "a\0x", 3);
     fixture_value(&right, strcmp(context_mode, "label-mismatch") == 0 ? "a\0y" : "a\0x",
                   strcmp(context_mode, "label-length") == 0 ? 4 : 3);
-    /* Synthetic classifier capability, never an entry in the live inventory
-     * table and never permission to qualify an unknown actual inventory. */
-    profile = PROVIDER_CURRENT_LABELS;
+  } else if (strcmp(context_mode, "empty-labels") == 0) {
+    fixture_value(&left, "", 0);
+    fixture_value(&right, "", 0);
   } else if (strcmp(context_mode, "query-asymmetry") == 0) {
     fixture_value(&left, "a\0x", 3);
     fixture_error(&right, EINVAL);
-    profile = PROVIDER_CURRENT_LABELS;
   } else if (strcmp(context_mode, "query-errors") == 0) {
     fixture_error(&left, EINVAL);
     fixture_error(&right, EACCES);
@@ -1083,10 +1140,10 @@ static void attribute_fixture(struct attribute_query left, struct attribute_quer
     unsigned char bytes[4095];
     memset(bytes, 'x', sizeof(bytes));
     fixture_value(&right, bytes, sizeof(bytes));
-    profile = PROVIDER_CURRENT_LABELS;
   } else if (strcmp(context_mode, "missing-task") == 0) {
     /* Linux task IDs are strictly positive. 0 cannot name a live userspace
      * thread here; require the actual proc open to reject it, not an old TID. */
+    fixture_value(&left, "a\0x", 3);
     right = query_attribute(0, 0);
     print_attribute(&right, "actual-query-of-invalid-task-zero");
     assert(right.kind == ATTRIBUTE_OPEN_ERROR && right.open_errno == ENOENT);
@@ -1094,13 +1151,15 @@ static void attribute_fixture(struct attribute_query left, struct attribute_quer
     assert(strcmp(context_mode, "unqualified-provider") == 0);
     fixture_error(&left, EINVAL);
     fixture_error(&right, EINVAL);
-    profile = PROVIDER_UNCLASSIFIED;
   }
   print_attribute(&left, "classifier-fixture-creator");
   print_attribute(&right, "classifier-fixture-helper");
-  require_attributes(&left, &right, profile, "classifier-fixture");
+  require_attributes(&left, &right, profile, "classifier-fixture", "attribute-oracle");
   if (strcmp(context_mode, "equal-labels") == 0) {
     puts("PASS synthetic-label-classifier: equal length and all bytes including NUL suffix");
+  } else if (strcmp(context_mode, "equal-labels-nonlegacy") == 0) {
+    puts("PASS synthetic-nonlegacy-label-classifier: stable valid inventory; "
+         "equal exported bytes including NUL suffix");
   } else {
     puts("UNEXPECTED_ACCEPTANCE negative context fixture");
   }
@@ -1187,7 +1246,8 @@ struct read_dispatch {
  * in-process assertions and full aggregate; it does not claim that additional
  * independent ELF association merely from dlsym agreement or printed maps.
  * Unsupported instruction layouts fail; there is no guessed decoding path,
- * private libc lookup, forced binding call, or compiler-flag change. */
+ * private libc lookup or forced binding call. The test-only -fno-pie -no-pie
+ * selection is explicit above; production compiler flags are unchanged. */
 static struct read_dispatch observe_read_dispatch(const char *phase) {
   _Static_assert(sizeof(uintptr_t) == 8, "dispatch qualification requires x86-64");
   struct read_dispatch result = {.callable = (uintptr_t)(void *)read};
@@ -1332,9 +1392,10 @@ static void inherited_context(void) {
                                                     "actual-live-inventory");
   provider_provenance(creator, creator_start);
   enum attribute_decision actual = require_attributes(&creator_lsm, &helper_lsm,
-                                                       profile, "actual-live-query");
-  if (!inventory_fixture(providers_before, providers_after)) {
-    attribute_fixture(creator_lsm, helper_lsm, profile);
+                                                       profile, "actual-live-query",
+                                                       "attribute-oracle");
+  if (!inventory_fixture(providers_before, providers_after, creator_lsm, helper_lsm)) {
+    attribute_fixture(creator_lsm, helper_lsm);
   }
 
   Dl_info binding;
@@ -1420,7 +1481,8 @@ int main(int argc, char **argv) {
     assert(strcmp(argv[i], "--context-mode") == 0 && !context_only);
     context_mode = argv[++i];
     context_only = true;
-    const char *modes[] = {"live", "equal-labels", "mask-mismatch", "query-asymmetry",
+    const char *modes[] = {"live", "equal-labels", "equal-labels-nonlegacy",
+                           "empty-labels", "mask-mismatch", "query-asymmetry",
                            "query-errors", "missing-task", "truncated-label",
                            "label-mismatch", "label-length", "unqualified-provider",
                            "query-eperm", "inventory-malformed", "inventory-unknown",

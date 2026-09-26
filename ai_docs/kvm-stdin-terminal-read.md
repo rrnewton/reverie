@@ -88,10 +88,12 @@ independently queries both live tasks' `attr/current`, checking each TID and
 start generation through collection. It records the exact open/read/close
 results, failure errnos and bytes. It also reads the active LSM inventory at
 `/sys/kernel/security/lsm` before and after the task queries. Missing,
-unreadable, truncated, malformed, changing or unknown inventories fail.
+unreadable, truncated, malformed or changing inventories fail before either
+attribute-result branch is considered.
 
-The only qualified live profile is exactly `capability,bpf,ima` (18 bytes,
-without a newline). Its source-grounded provider rule accepts only two actual
+The only inventory that authorizes an unavailable-label result is exactly
+`capability,bpf,ima` (18 bytes, without a newline). Its source-grounded error
+interpretation accepts only two actual
 initial reads returning `-1/EINVAL`, each after a successful open and followed
 by successful close. The result is **unavailable-label**, not equal labels or
 equivalent security policy. The retained kernel hook evidence supports this
@@ -100,14 +102,30 @@ fixed acceptance keys. The two retained BPF inspection attempts failed with
 EPERM: attachments remain unknown, and BPF absence is not claimed. The provider
 finding's prose mentions a newline, but the retained 18-byte file is authoritative.
 
-The separate successful-label rule requires complete reads through EOF and
-identical lengths and bytes, including embedded NUL suffixes. A synthetic
-profile exercises that branch; no additional live label-provider profile has
-been qualified. Matching error strings, mixed success/error results, other
-errnos and incomplete reads cannot satisfy either rule. Default qualification
-requires neither a copied kernel image nor privileged BPF inspection. There is
-no fixed-boot gate or ignore option. The default test fails on other active
-profiles and hosts without readable securityfs.
+The separate successful-observation rule requires each task's first read at
+offset zero to return one nonempty value of L bytes, with 0 < L < 4095, followed
+by exactly one EOF read at offset L. Open and close must succeed. Both values
+must have identical lengths and all bytes, including embedded NUL suffixes.
+Valid, stable provider inventory is required, but its spelling does not restrict
+this success branch. Linux `proc_pid_attr_read` exposes the selected
+`security_getprocattr` result through `simple_read_from_buffer`. Every read
+regenerates the value, so two positive reads could concatenate different values;
+empty EOF supplies no label. Both cases fail. Equal accepted values establish
+only equality of the exported `attr/current` bytes at their respective first
+reads. The later EOF checks completeness under this bound; it does not prove
+the value remains stable afterward. Neither branch establishes equality of all
+LSM state or security policy. Matching error strings, mixed
+success/error results, other errnos and incomplete reads cannot satisfy either
+rule. A different inventory with paired EINVAL remains a failure.
+
+The Rust transcript oracle derives these branches from typed task, query and
+inventory records, including the exact two-read sequence, byte count and EOF
+for successful values. Inventory collection also requires two reads and rejects
+empty, split, truncated or malformed records. C decision and PASS lines must
+match the independently derived branch. Default qualification requires neither a copied kernel
+image nor privileged BPF inspection. There is no fixed-boot gate or ignore
+option. Hosts without readable securityfs still fail. Synthetic successful-label
+controls do not qualify a real label-producing host or an Ubuntu execution.
 
 Credentials, groups, capabilities, NoNewPrivs, seccomp state, namespaces, cwd,
 root, masks and alternate signal stacks retain their separate comparisons.
@@ -123,16 +141,26 @@ aggregate without provider arguments, and reuses that executable for all
 `--context-mode` classifier controls through the same bounded process owner:
 
 - `equal-labels` is a clearly labeled synthetic positive, separate from the
-  live unavailable-label result.
+  actual live query result.
+- `equal-labels-nonlegacy` collects a valid nonlegacy inventory and complete
+  equal labels from explicitly synthetic memfd fixtures, using the same
+  inventory and attribute classifiers as the live path.
+- `empty-labels` collects two genuine zero-byte memfds and requires rejection
+  of their empty EOF observations.
 - `mask-mismatch`, `query-asymmetry`, `query-errors`, `query-eperm`,
   `missing-task`, `truncated-label`, `label-mismatch`, `label-length` and
   `unqualified-provider` reject the specified context or attribute defect.
-- `inventory-malformed`, `inventory-unknown`, `inventory-changing`,
-  `inventory-missing` and `inventory-truncated` reject the specified inventory
-  defect.
+- `inventory-malformed`, `inventory-changing`, `inventory-missing` and
+  `inventory-truncated` reject the specified inventory defect.
+- `inventory-unknown` retains its paired-EINVAL premise explicitly: valid
+  nonlegacy inventory cannot authorize unavailable-label.
 
 Each mode retains the real task and inventory observations separately from
-its explicitly labeled fixture or fault. Negative modes require their exact
+its explicitly labeled fixture or fault. Attribute fixtures collect explicit
+synthetic inventories and values or errors, independent of the live host's
+branch. `inventory-unknown` now reaches error authorization after valid inventory
+classification; its paired synthetic EINVAL records must be rejected with the
+retained `provider-inventory-oracle` diagnostic. Negative modes require their exact
 rejection diagnostic and SIGABRT, with no PASS or unexpected-acceptance marker;
 an unrelated failure cannot qualify them. Mask mismatch alters the actual
 helper's SIGUSR1 mask. Missing-task queries use the invalid task-zero path,
@@ -140,14 +168,23 @@ and label/truncation fixtures use the same bounded collector on real memfd
 bytes. Compile failure, abort, incomplete transcripts, capture overflow and
 timeout/descendant cleanup have separate wrapper controls. Timeout and rescue
 remain failures; expected classifier aborts do not excuse failed retirement.
+The wrapper runs seventeen context modes: two synthetic positives and fifteen
+negatives, retaining all fourteen earlier negatives. In-process synthetic record
+controls additionally reject empty values, split or extra positive reads, and
+first-read lengths that disagree with the summary through the actual Rust parser.
 
+The test-only compiler recipe explicitly selects non-PIE code and linking with
+`-fno-pie -no-pie`, alongside the existing mandatory test, cancellation, warning
+and active-assertion flags. Production compiler inputs remain unchanged.
 The read-dispatch diagnostic supports the measured x86-64 non-PIE `ET_EXEC`
 layout whose canonical `read` address begins with `ff 25 disp32`. It distinguishes
 that executable PLT address from the live GOT destination and requires fresh,
 unchanged observations before the helper read and after join, matching public
 `dlsym(RTLD_NEXT, "read")`, with `dladdr` and maps recorded. Unsupported layouts
-fail, including incompatible compiler defaults; there is no decoder fallback
-or silent compiler-flag change. The external qualification additionally binds
+fail; explicit non-PIE selection does not authorize another PLT decoder or an
+unsupported toolchain. This test-selected layout does not qualify a distribution's
+default production code generation. No additional CET flag is selected without
+actual hosted evidence. The external qualification additionally binds
 the executed ELF's exact public-read `R_X86_64_JUMP_SLOT` and the destination
 to the mapped libc's public symbol. Ordinary Cargo execution enforces the
 in-process checks; it does not independently perform that external ELF binding.
