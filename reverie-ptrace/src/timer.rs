@@ -627,6 +627,25 @@ impl Timer {
         }
     }
 
+    /// Take a timer signal that stopped a step the controller made for its
+    /// own purposes, such as the single step that runs an injected syscall,
+    /// so that the caller can resume that step without delivering it.
+    ///
+    /// Returns `false`, leaving everything unchanged, if the signal is not
+    /// this timer's. Otherwise the signal is dropped, as
+    /// [`Timer::handle_signal`] would drop it at the guest's next stop had the
+    /// controller not stepped first: the stop the controller is serving was
+    /// observed before the signal and cancels the event, unless a request made
+    /// since has replaced it. With no request since, the timer is disabled.
+    ///
+    /// Preconditions: task is in signal-delivery-stop for the timer's signal.
+    pub(crate) fn consume_signal(&mut self, task: &Stopped) -> Result<bool, TraceError> {
+        match self.inner_mut_noinit() {
+            Some(t) => t.consume_signal(task),
+            None => Ok(false),
+        }
+    }
+
     /// When a signal is received, this method drives the timer event to
     /// completion via single stepping, after checking that the signal was meant
     /// for this specific timer. This *must* be called when a timer signal is
@@ -1115,6 +1134,27 @@ impl TimerImpl {
             .expect("Timer tgkill error indicates a bug");
             self.artificial_signal_sent = true;
         }
+    }
+
+    fn consume_signal(&mut self, task: &Stopped) -> Result<bool, TraceError> {
+        let signal = task.getsiginfo()?;
+        let controller = self.controller_artificial_signal(&signal)?;
+        if !self.generated_signal(&signal, controller) {
+            return Ok(false);
+        }
+        if controller {
+            self.artificial_signal_sent = false;
+        }
+        match self.timer_status {
+            // A request made since the signal was raised replaced the event
+            // it was raised for; that request arranges its own signal.
+            EventStatus::Scheduled => {}
+            // The stop being handled was observed before the signal, so the
+            // event cannot fire: had the signal stopped the guest after that
+            // stop instead, its own stop would find the event cancelled.
+            EventStatus::Armed | EventStatus::Cancelled => self.disable_timer_before_stepping(),
+        }
+        Ok(true)
     }
 
     async fn handle_signal(

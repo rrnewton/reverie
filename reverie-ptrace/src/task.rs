@@ -7035,6 +7035,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                     task.setregs(&regs)?;
                     break Ok(task);
                 }
+                Wait::Stopped(task, Event::Signal(sig))
+                    if sig == Timer::signal_type() && self.timer.consume_signal(&task)? =>
+                {
+                    // The timer's signal is not the guest's to receive.
+                    running = self.step_stopped(task, None)?;
+                }
                 Wait::Stopped(task, Event::Signal(sig)) => {
                     self.validate_nested_liteinst_activation_signal(
                         &task,
@@ -7109,9 +7115,20 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         task.setregs(&regs)?;
 
-        // Step to run the syscall instruction.
-        let wait = self.step_stopped(task, None)?.next_state().await?;
+        // Step to run the syscall instruction. A timer signal raised before
+        // this step can stop it, usually before the syscall has run; it is
+        // the timer's, not the guest's, so take it and step again. Resuming
+        // without a signal also restarts a syscall it interrupted.
+        let mut wait = self.step_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait);
+        while let Wait::Stopped(stopped, Event::Signal(sig)) = wait {
+            if sig != Timer::signal_type() || !self.timer.consume_signal(&stopped)? {
+                wait = Wait::Stopped(stopped, Event::Signal(sig));
+                break;
+            }
+            wait = self.step_stopped(stopped, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+        }
 
         // Get the result of the syscall to return to the caller.
         let result = self
