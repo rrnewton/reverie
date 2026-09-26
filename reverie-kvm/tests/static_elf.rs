@@ -17810,15 +17810,25 @@ int main(void) {
   if (child < 0) return 11;
   if (child == 0) {
     close(hold[1]);
+    int parent[2];
+    if (pipe(parent) != 0) _exit(14);
     pid_t grandchild = fork();
     if (grandchild < 0) _exit(12);
     /* End of file arrives only once the root has exited and released its
-       write end, so both processes still need turns while it exits. The
-       child does not wait, so the grandchild may also be orphaned. */
+       write end, so both processes still need turns while it exits. */
     char byte;
     if (read(hold[0], &byte, 1) != 0) _exit(13);
+    if (grandchild == 0) {
+      /* Only the exiting child still holds this write end, so the
+         grandchild is always adopted while it runs, then joined by the
+         traced root's orphan drain. */
+      close(parent[1]);
+      if (read(parent[0], &byte, 1) != 0) _exit(15);
+      (void)getpid();
+      _exit(getppid() == 1 ? 9 : 16);
+    }
     (void)getpid();
-    _exit(grandchild == 0 ? 9 : 0);
+    _exit(0);
   }
   close(hold[0]);
   return 7;
@@ -17886,6 +17896,762 @@ int main(void) {
             "{pid} took its turn after the root's exit began: {calls:?}"
         );
     }
+}
+
+/// A turn request from the process `.0` for the call `.1`, granted by `.2`.
+/// A turn requested by a dropped-run Tool: the GlobalState's initialization
+/// (pid 0, no syscall) or a process's intercepted syscall.
+type DroppedRunTurn = (i32, Option<Sysno>, futures::channel::oneshot::Sender<()>);
+
+#[derive(Clone)]
+struct DroppedRunConfig {
+    turns: std::sync::mpsc::Sender<DroppedRunTurn>,
+    calls: Arc<Mutex<Vec<(i32, Sysno, i64)>>>,
+    teardown: Arc<DroppedRunTeardown>,
+}
+
+/// Holds each child's host thread in its thread-local teardown, after its
+/// run has returned and published its result, until released.
+struct DroppedRunTeardown {
+    // Each held thread owns one strong count until its teardown ends.
+    lifetime: Weak<()>,
+    state: Mutex<(std::collections::BTreeSet<i32>, bool)>,
+    changed: Condvar,
+    /// If set, each teardown instead waits for a turn from the test's
+    /// scheduler, which only the thread polling the run grants.
+    turns: Option<std::sync::mpsc::Sender<DroppedRunTurn>>,
+}
+
+struct DroppedRunThread {
+    pid: i32,
+    teardown: Arc<DroppedRunTeardown>,
+    _lifetime: Arc<()>,
+}
+
+impl Drop for DroppedRunThread {
+    fn drop(&mut self) {
+        let mut state = self.teardown.state.lock().unwrap();
+        state.0.insert(self.pid);
+        self.teardown.changed.notify_all();
+        if let Some(turns) = &self.teardown.turns {
+            drop(state);
+            let (turn, granted) = futures::channel::oneshot::channel();
+            turns
+                .send((self.pid, None, turn))
+                .expect("the test's scheduler stopped");
+            futures::executor::block_on(granted).expect("the test's scheduler dropped a turn");
+        } else {
+            while !state.1 {
+                state = self.teardown.changed.wait(state).unwrap();
+            }
+            drop(state);
+        }
+        // An owner that joins this thread returns only after its lifetime
+        // count is released; one that detached it returns while it sleeps.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+thread_local! {
+    static DROPPED_RUN_THREAD: std::cell::RefCell<Option<DroppedRunThread>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+static DROPPED_RUN_CONFIGS: LazyLock<Mutex<BTreeMap<u64, DroppedRunConfig>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+static DROPPED_RUN_GLOBALS_STARTED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+static DROPPED_RUN_GLOBALS_RELEASED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+const DROPPED_RUN_ROOT: i32 = 3;
+const DROPPED_RUN_SETUP: i32 = 0;
+
+fn dropped_run_turn(
+    config: &DroppedRunConfig,
+    pid: i32,
+    number: Option<Sysno>,
+) -> impl std::future::Future<Output = ()> {
+    let (turn, granted) = futures::channel::oneshot::channel();
+    config
+        .turns
+        .send((pid, number, turn))
+        .expect("the test's scheduler stopped");
+    async move { granted.await.expect("the test's scheduler dropped a turn") }
+}
+
+#[derive(Debug, Default)]
+struct DroppedRunGlobal {
+    config: u64,
+}
+
+impl Drop for DroppedRunGlobal {
+    fn drop(&mut self) {
+        DROPPED_RUN_GLOBALS_RELEASED
+            .lock()
+            .unwrap()
+            .push(self.config);
+    }
+}
+
+#[reverie::global_tool]
+impl GlobalTool for DroppedRunGlobal {
+    type Request = ();
+    type Response = ();
+    type Config = u64;
+
+    async fn init_global_state(config: &u64) -> Self {
+        DROPPED_RUN_GLOBALS_STARTED.lock().unwrap().push(*config);
+        let run = DROPPED_RUN_CONFIGS.lock().unwrap().get(config).cloned();
+        let run = run.expect("dropped-run config disappeared");
+        dropped_run_turn(&run, DROPPED_RUN_SETUP, None).await;
+        Self { config: *config }
+    }
+
+    async fn receive_rpc(&self, _from: Pid, (): ()) {}
+}
+
+/// Every intercepted call waits for a turn from the test's scheduler, and a
+/// child's first one holds its host thread at teardown.
+#[derive(Default)]
+struct DroppedRunTool {
+    pid: i32,
+    config: Option<DroppedRunConfig>,
+}
+
+#[reverie::tool]
+impl Tool for DroppedRunTool {
+    type GlobalState = DroppedRunGlobal;
+    type ThreadState = ();
+
+    fn new(pid: Pid, config: &u64) -> Self {
+        Self {
+            pid: pid.as_raw(),
+            config: DROPPED_RUN_CONFIGS.lock().unwrap().get(config).cloned(),
+        }
+    }
+
+    fn subscriptions(_config: &u64) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscalls([Sysno::getpid, Sysno::wait4, Sysno::exit_group]);
+        subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        let config = self
+            .config
+            .as_ref()
+            .expect("dropped-run config disappeared");
+        let (number, mut args) = syscall.into_parts();
+        if number == Sysno::wait4 {
+            // As Hermit's scheduler does, poll a blocking wait4 between turns,
+            // so its caller never blocks the thread that grants them.
+            let blocking = args.arg2 & libc::WNOHANG as usize == 0;
+            args.arg2 |= libc::WNOHANG as usize;
+            loop {
+                dropped_run_turn(config, self.pid, Some(number)).await;
+                let result = guest.inject(Syscall::from_raw(number, args)).await?;
+                if result != 0 || !blocking {
+                    return Ok(result);
+                }
+            }
+        }
+        if self.pid != DROPPED_RUN_ROOT {
+            DROPPED_RUN_THREAD.with(|thread| {
+                thread.borrow_mut().get_or_insert_with(|| DroppedRunThread {
+                    pid: self.pid,
+                    teardown: config.teardown.clone(),
+                    _lifetime: config
+                        .teardown
+                        .lifetime
+                        .upgrade()
+                        .expect("the test released the child lifetime"),
+                });
+            });
+        }
+        dropped_run_turn(config, self.pid, Some(number)).await;
+        if number == Sysno::exit_group {
+            let status = args.arg0 as i64;
+            config
+                .calls
+                .lock()
+                .unwrap()
+                .push((self.pid, number, status));
+            guest.tail_inject(syscall).await
+        } else {
+            let result = guest.inject(syscall).await?;
+            config
+                .calls
+                .lock()
+                .unwrap()
+                .push((self.pid, number, result));
+            Ok(result)
+        }
+    }
+}
+
+/// Where the root is when the embedder drops the run's future.
+#[derive(Clone, Copy, Debug)]
+enum RunDropPoint {
+    /// Its GlobalState is still being initialized: the image is consumed but
+    /// no guest has entered KVM, so nothing else refuses a new image.
+    Setup,
+    /// Its exit is joining a pending child, with a collected child and an
+    /// orphan still to join.
+    ExitJoin,
+    /// It still runs, waiting for a turn, and holds a pipe the orphan reads
+    /// until end of file.
+    Running,
+}
+
+/// The embedder's scheduler, polled only on the thread that polls the run and
+/// drops the backend, as on a single-threaded executor.
+struct SameThreadScheduler {
+    requests: std::sync::mpsc::Receiver<DroppedRunTurn>,
+    /// None for a run that is never dropped, which withholds no turn.
+    point: Option<RunDropPoint>,
+    held: Vec<(i32, Option<Sysno>)>,
+    waiting: Vec<futures::channel::oneshot::Sender<()>>,
+    released: bool,
+    /// Every Tool, GlobalState initialization, and config released its turn
+    /// sender.
+    stopped: bool,
+}
+
+impl SameThreadScheduler {
+    const COLLECTED: i32 = 4;
+    const PENDING: i32 = 5;
+    const ORPHAN: i32 = 6;
+
+    fn withheld(&self, pid: i32, number: Option<Sysno>) -> bool {
+        !self.released
+            && match self.point {
+                None => false,
+                Some(RunDropPoint::Setup) => pid == DROPPED_RUN_SETUP,
+                Some(RunDropPoint::ExitJoin) => pid == Self::ORPHAN,
+                // The orphan's getpid follows the drop, which closes the
+                // root's pipe.
+                Some(RunDropPoint::Running) => {
+                    number == Some(Sysno::getpid) && [DROPPED_RUN_ROOT, Self::ORPHAN].contains(&pid)
+                }
+            }
+    }
+
+    fn pump(&mut self) {
+        loop {
+            match self.requests.try_recv() {
+                Ok((pid, number, turn)) if self.withheld(pid, number) => {
+                    self.held.push((pid, number));
+                    self.waiting.push(turn);
+                }
+                Ok((_, _, turn)) => {
+                    let _ = turn.send(());
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.stopped = true;
+                    break;
+                }
+            }
+        }
+        if self.released {
+            for turn in self.waiting.drain(..) {
+                let _ = turn.send(());
+            }
+        }
+    }
+}
+
+/// This process's host threads, by TID, with their names.
+fn host_tasks() -> BTreeMap<u32, String> {
+    std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let tid = entry.file_name().to_str()?.parse().ok()?;
+            let name = std::fs::read_to_string(entry.path().join("comm")).ok()?;
+            Some((tid, name.trim_end().to_owned()))
+        })
+        .collect()
+}
+
+#[test]
+fn dropped_public_run_hands_its_children_to_the_reaper() {
+    const TEST: &str = "dropped_public_run_hands_its_children_to_the_reaper";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "dropped-public-run",
+        r#"
+#include <sys/wait.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  int running = argc > 1 && argv[1][0] == 'r';
+  int root_held[2];
+  if (pipe(root_held) != 0) return 10;
+  pid_t collected = fork();
+  if (collected < 0) return 11;
+  if (collected == 0) _exit(0);
+  pid_t parent = fork();
+  if (parent < 0) return 12;
+  if (parent == 0) {
+    pid_t orphan = fork();
+    if (orphan < 0) _exit(13);
+    if (orphan == 0) {
+      close(root_held[1]);
+      char byte;
+      if (running && read(root_held[0], &byte, 1) != 0) _exit(14);
+      (void)getpid();
+      _exit(0);
+    }
+    _exit(0);
+  }
+  int status;
+  if (waitpid(collected, &status, 0) != collected) return 15;
+  if (running) (void)getpid();
+  return 7;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    for (point, config) in [
+        (RunDropPoint::ExitJoin, 1),
+        (RunDropPoint::Running, 2),
+        (RunDropPoint::Setup, 3),
+    ] {
+        dropped_public_run_case(&directory, executable, &image, point, config);
+    }
+    returned_public_run_case(&directory, executable, &image, 4);
+    let reapers = host_tasks()
+        .into_values()
+        .filter(|name| name.starts_with("reverie-kvm-rea"))
+        .count();
+    assert_eq!(reapers, 1, "every run shares the process's one reaper");
+}
+
+fn dropped_public_run_case(
+    directory: &TestDirectory,
+    executable: &str,
+    image: &[u8],
+    point: RunDropPoint,
+    config: u64,
+) {
+    const COLLECTED: i32 = SameThreadScheduler::COLLECTED;
+    const PENDING: i32 = SameThreadScheduler::PENDING;
+    const ORPHAN: i32 = SameThreadScheduler::ORPHAN;
+    let mode = match point {
+        RunDropPoint::Running => "running",
+        RunDropPoint::Setup | RunDropPoint::ExitJoin => "exit-join",
+    };
+    let install = |backend: &mut KvmBackend| {
+        backend.install_static_elf_with_context(
+            image,
+            &[executable, mode],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+    };
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend.set_root_pid(DROPPED_RUN_ROOT).unwrap();
+    install(&mut backend).unwrap();
+
+    let lifetime = Arc::new(());
+    let teardown = Arc::new(DroppedRunTeardown {
+        lifetime: Arc::downgrade(&lifetime),
+        state: Mutex::new((Default::default(), false)),
+        changed: Condvar::new(),
+        turns: None,
+    });
+    let (turns, requests) = std::sync::mpsc::channel::<DroppedRunTurn>();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    DROPPED_RUN_CONFIGS.lock().unwrap().insert(
+        config,
+        DroppedRunConfig {
+            turns,
+            calls: calls.clone(),
+            teardown: teardown.clone(),
+        },
+    );
+    let mut scheduler = SameThreadScheduler {
+        requests,
+        point: Some(point),
+        held: Vec::new(),
+        waiting: Vec::new(),
+        released: false,
+        stopped: false,
+    };
+
+    let case = format!("dropped at {point:?}");
+    let reached = || teardown.state.lock().unwrap().0.clone();
+    // The reaper is not yet running for the first case, and is afterwards.
+    let baseline = host_tasks();
+    let mut cx = std::task::Context::from_waker(Waker::noop());
+    {
+        let mut run =
+            Box::pin(backend.run_static_elf_with_tool_completion::<DroppedRunTool>(config, true));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            assert!(
+                run.as_mut().poll(&mut cx).is_pending(),
+                "{case}: the run returned while its children were held"
+            );
+            scheduler.pump();
+            let ready = match point {
+                RunDropPoint::Setup => scheduler.held.contains(&(DROPPED_RUN_SETUP, None)),
+                RunDropPoint::ExitJoin => {
+                    calls
+                        .lock()
+                        .unwrap()
+                        .contains(&(DROPPED_RUN_ROOT, Sysno::exit_group, 7))
+                        && scheduler.held.contains(&(ORPHAN, Some(Sysno::getpid)))
+                        && reached() == [COLLECTED, PENDING].into()
+                }
+                RunDropPoint::Running => {
+                    scheduler
+                        .held
+                        .contains(&(DROPPED_RUN_ROOT, Some(Sysno::getpid)))
+                        && reached() == [COLLECTED, PENDING].into()
+                }
+            };
+            if ready {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{case}: never reached the drop point: calls={:?} held={:?} reached={:?}",
+                calls.lock().unwrap(),
+                scheduler.held,
+                reached(),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        for _ in 0..10 {
+            assert!(run.as_mut().poll(&mut cx).is_pending(), "{case}");
+            scheduler.pump();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // Collected and pending children are held in teardown. In ExitJoin
+        // the orphan also waits for its turn; in Running it still blocks
+        // reading the root's pipe and has made no call.
+        let held_threads = match point {
+            RunDropPoint::Setup => 0,
+            RunDropPoint::ExitJoin => 3,
+            RunDropPoint::Running => 2,
+        };
+        assert_eq!(
+            Arc::strong_count(&lifetime),
+            1 + held_threads,
+            "{case}: the children held before the drop"
+        );
+        assert!(
+            !scheduler.held.iter().any(|&(pid, _)| pid == ORPHAN)
+                || matches!(point, RunDropPoint::ExitJoin),
+            "{case}: the orphan ran before the root's pipe closed: {:?}",
+            scheduler.held
+        );
+    }
+    DROPPED_RUN_CONFIGS.lock().unwrap().remove(&config);
+    if matches!(point, RunDropPoint::Running) {
+        // Dropping the run released the root's files, so the orphan reads end
+        // of file and requests its getpid turn, now holding a third lifetime.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !scheduler.held.contains(&(ORPHAN, Some(Sysno::getpid))) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{case}: the orphan never saw the root's pipe close: held={:?}",
+                scheduler.held
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            scheduler.pump();
+        }
+    }
+    // Every held child still holds its lifetime, and none has been granted
+    // the turn it waits for.
+    let held_threads = match point {
+        RunDropPoint::Setup => 0,
+        RunDropPoint::ExitJoin | RunDropPoint::Running => 3,
+    };
+    let holders = match point {
+        RunDropPoint::Setup => [].into(),
+        RunDropPoint::ExitJoin | RunDropPoint::Running => [COLLECTED, PENDING].into(),
+    };
+    let assert_children_held = |when: &str| {
+        assert_eq!(
+            Arc::strong_count(&lifetime),
+            1 + held_threads,
+            "{case}: the children held {when}"
+        );
+        assert_eq!(
+            reached(),
+            holders,
+            "{case}: the children in teardown {when}"
+        );
+        assert!(
+            !DROPPED_RUN_GLOBALS_RELEASED
+                .lock()
+                .unwrap()
+                .contains(&config),
+            "{case}: GlobalState was released {when}"
+        );
+    };
+    assert_children_held("with the dropped run");
+
+    // Reusing the backend is refused before any run state is touched: no new
+    // image, no GlobalState, no Tool.
+    let started = DROPPED_RUN_GLOBALS_STARTED.lock().unwrap().len();
+    assert!(
+        matches!(
+            install(&mut backend),
+            Err(reverie_kvm::Error::AbandonedRunNotRetired)
+        ),
+        "{case}: the backend accepted an image while a dropped run was unretired"
+    );
+    let image_file = std::fs::File::open(executable).unwrap();
+    for (entry, refused) in [
+        (
+            "a real-mode program",
+            backend.install_real_mode_program(0x1000, &[0xf4]),
+        ),
+        (
+            "an image file",
+            backend.install_static_elf_file_with_context(
+                image_file,
+                &[executable, mode],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            ),
+        ),
+        ("a raw run", backend.run(|_, _| 0)),
+        ("a static ELF run", backend.run_static_elf().map(drop)),
+        (
+            "a captured static ELF run",
+            backend.run_static_elf_captured().map(drop),
+        ),
+    ] {
+        assert!(
+            matches!(refused, Err(reverie_kvm::Error::AbandonedRunNotRetired)),
+            "{case}: the backend accepted {entry} while a dropped run was unretired: {refused:?}"
+        );
+    }
+    {
+        let mut reuse =
+            Box::pin(backend.run_static_elf_with_tool_completion::<DroppedRunTool>(config, true));
+        assert!(
+            matches!(
+                reuse.as_mut().poll(&mut cx),
+                std::task::Poll::Ready(Err(reverie_kvm::Error::AbandonedRunNotRetired))
+            ),
+            "{case}: the backend admitted a run while a dropped run was unretired"
+        );
+    }
+    {
+        let mut reuse = Box::pin(backend.run_with_tool::<DroppedRunTool, _>(
+            config,
+            |_: &reverie_kvm::SyscallRequest, _: &reverie_kvm::GuestMemory| 0,
+        ));
+        assert!(
+            matches!(
+                reuse.as_mut().poll(&mut cx),
+                std::task::Poll::Ready(Err(reverie_kvm::Error::AbandonedRunNotRetired))
+            ),
+            "{case}: the backend admitted a Tool run while a dropped run was unretired"
+        );
+    }
+    assert_eq!(
+        DROPPED_RUN_GLOBALS_STARTED.lock().unwrap().len(),
+        started,
+        "{case}: a refused run initialized GlobalState"
+    );
+
+    // The same thread that must grant the children's turns drops the backend
+    // before granting any. A drop that waited for them would never return.
+    let dropping = std::time::Instant::now();
+    drop(backend);
+    assert!(
+        dropping.elapsed() < std::time::Duration::from_secs(5),
+        "{case}: the backend's drop waited {:?}",
+        dropping.elapsed()
+    );
+    assert_children_held("before its turn was granted");
+
+    scheduler.released = true;
+    teardown.state.lock().unwrap().1 = true;
+    teardown.changed.notify_all();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let retired = |scheduler: &SameThreadScheduler| {
+        let leftover = host_tasks()
+            .into_iter()
+            .filter(|(tid, name)| {
+                !baseline.contains_key(tid) && !name.starts_with("reverie-kvm-rea")
+            })
+            .collect::<BTreeMap<_, _>>();
+        let released = DROPPED_RUN_GLOBALS_RELEASED
+            .lock()
+            .unwrap()
+            .contains(&config);
+        let state = (
+            Arc::strong_count(&lifetime),
+            released,
+            scheduler.stopped,
+            leftover,
+        );
+        let done = state.0 == 1
+            && state.1 == !matches!(point, RunDropPoint::Setup)
+            && state.2
+            && state.3.is_empty();
+        (done, state)
+    };
+    loop {
+        scheduler.pump();
+        let (done, state) = retired(&scheduler);
+        if done {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{case}: the dropped run's children were never retired: \
+             (lifetime, GlobalState released, scheduler stopped, host threads)={state:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    let children = match point {
+        RunDropPoint::Setup => [].into(),
+        RunDropPoint::ExitJoin | RunDropPoint::Running => [COLLECTED, PENDING, ORPHAN].into(),
+    };
+    assert_eq!(
+        reached(),
+        children,
+        "{case}: every child's teardown finished"
+    );
+    let calls = std::mem::take(&mut *calls.lock().unwrap());
+    let exits = calls
+        .iter()
+        .filter(|(_, number, _)| *number == Sysno::exit_group)
+        .map(|&(pid, _, status)| (pid, status))
+        .collect::<BTreeMap<_, _>>();
+    let mut expected = children
+        .iter()
+        .map(|&pid| (pid, 0))
+        .collect::<BTreeMap<_, _>>();
+    if matches!(point, RunDropPoint::ExitJoin) {
+        expected.insert(DROPPED_RUN_ROOT, 7);
+    }
+    assert_eq!(exits, expected, "{case}: {calls:?}");
+    if !matches!(point, RunDropPoint::Setup) {
+        assert!(
+            calls.contains(&(ORPHAN, Sysno::getpid, i64::from(ORPHAN))),
+            "{case}: the orphan ran after the drop: {calls:?}"
+        );
+    }
+}
+
+/// A run that returns has reaped each child's host thread: a child's
+/// thread-local teardown, which here needs a turn only the thread polling the
+/// run grants, has finished, not merely begun.
+fn returned_public_run_case(
+    directory: &TestDirectory,
+    executable: &str,
+    image: &[u8],
+    config: u64,
+) {
+    const COLLECTED: i32 = SameThreadScheduler::COLLECTED;
+    const PENDING: i32 = SameThreadScheduler::PENDING;
+    const ORPHAN: i32 = SameThreadScheduler::ORPHAN;
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend.set_root_pid(DROPPED_RUN_ROOT).unwrap();
+    backend
+        .install_static_elf_with_context(
+            image,
+            &[executable, "exit-join"],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let lifetime = Arc::new(());
+    let (turns, requests) = std::sync::mpsc::channel::<DroppedRunTurn>();
+    let teardown = Arc::new(DroppedRunTeardown {
+        lifetime: Arc::downgrade(&lifetime),
+        state: Mutex::new((Default::default(), false)),
+        changed: Condvar::new(),
+        turns: Some(turns.clone()),
+    });
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    DROPPED_RUN_CONFIGS.lock().unwrap().insert(
+        config,
+        DroppedRunConfig {
+            turns,
+            calls: calls.clone(),
+            teardown: teardown.clone(),
+        },
+    );
+    let mut scheduler = SameThreadScheduler {
+        requests,
+        point: None,
+        held: Vec::new(),
+        waiting: Vec::new(),
+        released: false,
+        stopped: false,
+    };
+    let mut cx = std::task::Context::from_waker(Waker::noop());
+    let completion = {
+        let mut run =
+            Box::pin(backend.run_static_elf_with_tool_completion::<DroppedRunTool>(config, true));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let std::task::Poll::Ready(completion) = run.as_mut().poll(&mut cx) {
+                break completion;
+            }
+            scheduler.pump();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the returning run never finished: calls={:?} reached={:?}",
+                calls.lock().unwrap(),
+                teardown.state.lock().unwrap().0,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    };
+    // Checked before this thread grants any further turn.
+    assert_eq!(
+        Arc::strong_count(&lifetime),
+        1,
+        "the run returned while a child's teardown still ran"
+    );
+    assert_eq!(
+        teardown.state.lock().unwrap().0,
+        [COLLECTED, PENDING, ORPHAN].into(),
+        "every child's teardown ran"
+    );
+    DROPPED_RUN_CONFIGS.lock().unwrap().remove(&config);
+    let completion = completion.expect("the returning run failed to start");
+    let (status, _, _) = completion.result.expect("the returning run failed");
+    assert_eq!(status, 7);
+    let calls = std::mem::take(&mut *calls.lock().unwrap());
+    let exits = calls
+        .iter()
+        .filter(|(_, number, _)| *number == Sysno::exit_group)
+        .map(|&(pid, _, status)| (pid, status))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        exits,
+        [
+            (DROPPED_RUN_ROOT, 7),
+            (COLLECTED, 0),
+            (PENDING, 0),
+            (ORPHAN, 0)
+        ]
+        .into(),
+        "{calls:?}"
+    );
+    drop(completion.global_state);
+    drop(backend);
 }
 
 #[path = "support/natural_retirement.rs"]

@@ -199,6 +199,12 @@ pub enum Error {
     #[error("initial ELF reinstallation after execution is unsupported; create a fresh KvmBackend")]
     InitialElfReinstallationUnsupported,
 
+    /// A public run on this backend was dropped before it finished. Its guest
+    /// threads are cancelled, and its children handed to a reaper, only when
+    /// the backend drops, so the backend admits no further run or image.
+    #[error("a dropped KVM run has not been retired; create a fresh KvmBackend")]
+    AbandonedRunNotRetired,
+
     /// A host filesystem operation failed while preparing the guest.
     #[error("host filesystem operation failed: {0}")]
     HostIo(#[from] std::io::Error),
