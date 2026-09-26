@@ -806,6 +806,39 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual(["unavailable-parent"], [r["event_id"] for r in self.remote_rows()])
         self.assertEqual("", git(self.remote, "ls-tree", "-r", "main", "--", "scorecard/finalized"))
 
+    def test_non_cargo_release_payload_never_reaches_the_scorecard(self):
+        # A Buck full run observes the release E2E payload. Its cells must not
+        # become scorecard observations; raw rows still publish unchanged.
+        refused = {"buck": "buck", "null": None, "integer": 7, "case": "Cargo"}
+        for label, builder in refused.items():
+            with self.subTest(release_builder=label):
+                event = f"buck-{label}"
+                self.append(event)
+                before = git(self.remote, "rev-parse", "main:scorecard/cells.json")
+                encoded = json.dumps({"started_at": "2026-09-21T12:00:00Z",
+                                      "release_builder": builder}).encode()
+                with mock.patch.object(mirror, "finalized_producer_row", return_value=encoded), \
+                        mock.patch.object(mirror, "prepare_portable_proof") as portable, \
+                        mock.patch.object(mirror, "build_scorecard") as native:
+                    report = self.publish(results=self.root / "results", finalized_run_id=event)
+                self.assertEqual("derived-failed", report["state"])
+                self.assertIn("non-Cargo release payload", report["scorecard"]["error"])
+                portable.assert_not_called()
+                native.assert_not_called()
+                self.assertEqual(before, git(self.remote, "rev-parse", "main:scorecard/cells.json"))
+                self.assertIn(event, [r["event_id"] for r in self.remote_rows()])
+        # Direction control: an absent field or exactly "cargo" proceeds to the scorecard.
+        for label, row in {"absent": {}, "cargo": {"release_builder": "cargo"}}.items():
+            with self.subTest(release_builder=label):
+                encoded = json.dumps({"started_at": "2026-09-21T12:00:00Z", **row}).encode()
+                with mock.patch.object(mirror, "finalized_producer_row", return_value=encoded), \
+                        mock.patch.object(mirror, "prepare_portable_proof", return_value=None), \
+                        mock.patch.object(mirror, "build_scorecard",
+                                          side_effect=mirror.MirrorRefused("reached scorecard")) as native:
+                    report = self.publish(results=self.root / "results", finalized_run_id=f"cargo-{label}")
+                native.assert_called_once()
+                self.assertEqual("reached scorecard", report["scorecard"]["error"])
+
     def test_strict_writer_failure_cannot_publish_portable_carrier(self):
         self.append("native-refusal")
         encoded = json.dumps({"started_at": "2026-09-21T12:00:00Z"}).encode()

@@ -129,6 +129,34 @@ class BracketCpu(unittest.TestCase):
         self.assertTrue(cpu.crossed and not cpu.confounded)
 
 
+class BuilderSeparation(unittest.TestCase):
+    def test_buck_release_payload_is_never_a_timing_sample(self):
+        # Twelve Cargo priors ~485s, then twelve faster Buck release-payload
+        # runs. Mixed in, the Buck runs would drag the baseline down and make an
+        # ordinary Cargo target read as a regression.
+        rows = []
+        for i in range(12):
+            rows.append(_row(f"base{i}", _ts(3, i, 0), _ts(3, i, 8), 480 + (i % 3) * 5, 1100))
+        for i in range(12):
+            buck = _row(f"buck{i}", _ts(3, 12 + i, 0), _ts(3, 12 + i, 4), 200, 500)
+            buck["release_builder"] = "buck"
+            rows.append(buck)
+        rows.append(_row("good", _ts(4, 1, 0), _ts(4, 1, 8), 495, 1120))
+        runs = R.load_runs(_write(rows))
+        v = R.evaluate(runs, [r for r in runs if r.commit == "good"][0])
+        self.assertEqual(v.status, "clean", v.message)
+        self.assertEqual(v.baseline_n, 12)
+        buck_runs = [r for r in runs if r.commit.startswith("buck")]
+        self.assertIsNone(R._pick_target(buck_runs, "full", None))
+
+    def test_buck_run_still_counts_toward_concurrency(self):
+        cargo = _row("cargo", _ts(4, 1, 0), _ts(4, 1, 10), 480, 1100)
+        buck = _row("buck", _ts(4, 1, 5), _ts(4, 1, 15), 200, 500)
+        buck["release_builder"] = "buck"
+        runs = R.load_runs(_write([cargo, buck]))
+        self.assertEqual([r.concurrency for r in runs], [2, 2])
+
+
 class Concurrency(unittest.TestCase):
     def test_overlap_count_inclusive_of_self(self):
         # a:[1:00,1:06] b:[1:05,1:15] c:[1:08,1:20] — a ends before c starts.

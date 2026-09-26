@@ -131,6 +131,15 @@ class Run:
         return self.raw.get("result", "")
 
     @property
+    def timed_pass(self) -> bool:
+        # A Buck full run times the release E2E payload (no debug assertions, no
+        # overflow checks), which is not the Cargo debug binary these baselines
+        # measure. It still overlaps other validates, so it counts toward
+        # concurrency, but never as a timing sample. An absent field predates it
+        # and was a Cargo run.
+        return self.result == "pass" and self.raw.get("release_builder", "cargo") == "cargo"
+
+    @property
     def wall(self) -> float | None:
         w = self.raw.get("real_seconds")
         return float(w) if isinstance(w, (int, float)) and w > 0 else None
@@ -222,7 +231,7 @@ def _baseline(runs: list[Run], target: Run) -> list[Run]:
         return []
     out = []
     for r in runs:
-        if r is target or r.result != "pass":
+        if r is target or not r.timed_pass:
             continue
         if r.profile != target.profile or r.cache_state != target.cache_state or r.host != target.host:
             continue
@@ -315,7 +324,7 @@ def evaluate(
 
 
 def _pick_target(runs: list[Run], profile: str, commit: str | None) -> Run | None:
-    candidates = [r for r in runs if r.profile == profile and r.result == "pass" and r.started is not None]
+    candidates = [r for r in runs if r.profile == profile and r.timed_pass and r.started is not None]
     if commit:
         candidates = [r for r in candidates if r.commit.startswith(commit)]
     if not candidates:
@@ -413,7 +422,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     except OSError as exc:
         print(f"error: cannot read canonical ledger: {exc}", file=sys.stderr)
         return 1
-    passing = [r for r in runs if r.result == "pass" and r.wall is not None]
+    passing = [r for r in runs if r.timed_pass and r.wall is not None]
     buckets: dict[tuple[str, str, str], list[Run]] = {}
     for r in passing:
         buckets.setdefault((r.profile, r.cache_state, r.host), []).append(r)

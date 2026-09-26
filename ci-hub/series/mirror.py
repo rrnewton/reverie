@@ -268,6 +268,23 @@ def finalized_producer_row(parent: Path, run_id: str, target: str, checkout: Pat
         selected, sort_keys=True) + "\n").encode()
 
 
+def refuse_non_cargo_payload(encoded_row: bytes) -> None:
+    """Keep a Buck full run's cells out of the scorecard.
+
+    Such a run executes the release E2E payload, which has no debug assertions
+    and no overflow checks. Its cells are not the debug observations the
+    scorecard records, so the finalized publication refuses before any proof
+    or scorecard work. Raw rows still publish. An absent field predates it and
+    was a Cargo run; any present value other than exactly "cargo" refuses.
+    """
+    row = _private_row(encoded_row)
+    if "release_builder" in row and row["release_builder"] != "cargo":
+        raise MirrorRefused(
+            "finalized run used a non-Cargo release payload "
+            f"(release_builder={row['release_builder']!r}); its cells are not scorecard observations"
+        )
+
+
 def _row_bytes(row: Mapping[str, Any]) -> bytes:
     import validate_rows
     return (validate_rows.qualifying_receipt.admission_json_dumps(row, sort_keys=True) + "\n").encode()
@@ -642,6 +659,7 @@ def mirror(
             if source_checkout is None or target is None:
                 raise MirrorRefused("finalized publication requires measured source identity")
             finalized_row = finalized_producer_row(parent, finalized_run_id, target, source_checkout)
+            refuse_non_cargo_payload(finalized_row)
             portable = prepare_portable_proof(parent, finalized_row, net_wrapper=net_wrapper, attempts=attempts)
         except (MirrorRefused, OSError, ValueError, KeyError, series.SeriesError,
                 publisher.PublishRefused, subprocess.SubprocessError) as error:

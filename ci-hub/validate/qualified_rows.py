@@ -65,8 +65,12 @@ def is_qualified(row: Mapping[str, object]) -> bool:
     # by stamping a field. Rows predating the provenance fields default to HARD,
     # which is why adding this clause does not reject any existing producer.
     green_class, _green_reason = derive_class(dict(row))
+    # A Buck full run times the release E2E payload (no debug assertions, no
+    # overflow checks), not the Cargo debug binary every other green measures.
+    # An absent field predates it and was a Cargo run.
     return (
         green_class == HARD
+        and row.get("release_builder", "cargo") == "cargo"
         and row.get("result") == "pass"
         and isinstance(executed, int)
         and not isinstance(executed, bool)
