@@ -107,7 +107,7 @@ impl Tool for PreciseTimerTool {
 
     fn subscriptions(_cfg: &Schedule) -> Subscription {
         let mut s = Subscription::none();
-        s.syscalls([Sysno::clock_getres, Sysno::getppid]);
+        s.syscalls([Sysno::clock_getres, Sysno::getppid, Sysno::clock_nanosleep]);
         s
     }
 
@@ -118,15 +118,16 @@ impl Tool for PreciseTimerTool {
     ) -> Result<i64, Error> {
         match syscall.number() {
             Sysno::clock_getres => {
-                let config = *guest.config();
-                let schedule = match config.instructions {
-                    None => TimerSchedule::Rcbs(config.rcbs),
-                    Some(instructions) => {
-                        TimerSchedule::RcbsAndInstructions(config.rcbs, instructions)
-                    }
-                };
-                guest.set_timer_precise(schedule).unwrap();
+                guest.set_timer_precise(schedule(guest.config())).unwrap();
                 Ok(0)
+            }
+            // The timer's artificial signal is sent before the syscall runs,
+            // and interrupts it.
+            Sysno::clock_nanosleep
+                if syscall.into_parts().1.arg0 == libc::CLOCK_BOOTTIME as usize =>
+            {
+                guest.set_timer_precise(schedule(guest.config())).unwrap();
+                guest.tail_inject(syscall).await
             }
             _ => guest.tail_inject(syscall).await,
         }
@@ -134,6 +135,13 @@ impl Tool for PreciseTimerTool {
 
     async fn handle_timer_event<T: Guest<Self>>(&self, guest: &mut T) {
         guest.send_rpc(()).await;
+    }
+}
+
+fn schedule(config: &Schedule) -> TimerSchedule {
+    match config.instructions {
+        None => TimerSchedule::Rcbs(config.rcbs),
+        Some(instructions) => TimerSchedule::RcbsAndInstructions(config.rcbs, instructions),
     }
 }
 
@@ -479,6 +487,67 @@ fn stepped_syscall_does_not_leak_the_trap_flag(rcbs: u64, no: u64) {
     );
 }
 
+/// Sleeps for a millisecond with a `clock_nanosleep` of CLOCK_BOOTTIME, at
+/// which the Tool requests the timer, and then runs `after` rounds of a loop
+/// with one conditional branch each. Returns what the syscall returned and the
+/// value the kernel left in r11.
+#[inline(always)]
+fn interrupted_sleep_before_loop(after: u64) -> (i64, u64) {
+    let time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 1_000_000,
+    };
+    let ret: i64;
+    let r11: u64;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            "mov {r11}, r11",
+            "2:",
+            "dec {n}",
+            "jnz 2b",
+            inlateout("rax") Sysno::clock_nanosleep as i64 => ret,
+            in("rdi") libc::CLOCK_BOOTTIME as u64,
+            in("rsi") 0u64,
+            in("rdx") &time as *const libc::timespec,
+            in("r10") 0u64,
+            out("rcx") _,
+            out("r11") _,
+            n = inout(reg) after => _,
+            r11 = out(reg) r11,
+        );
+    }
+    (ret, r11)
+}
+
+// The timer's artificial signal interrupts the sleep, which then asks to be
+// restarted, and the stepping starts at the signal's stop. The first step
+// resumes the guest without a signal, so Linux runs the `syscall` again
+// with TF set, and the target is in the loop after it.
+#[test]
+fn stepping_a_restarted_syscall_does_not_leak_the_trap_flag() {
+    ret_without_perf!();
+
+    let log = check_fn_with_config::<PreciseTimerTool, _>(
+        move || {
+            let (ret, r11) = interrupted_sleep_before_loop(2 * LESS_RCBS);
+            assert_eq!(ret, 0, "the sleep must complete");
+            assert_eq!(r11 & TRAP_FLAG, 0, "the syscall saved TF in r11: {r11:#x}");
+        },
+        Schedule {
+            rcbs: LESS_RCBS,
+            instructions: None,
+        },
+        true,
+    );
+
+    assert_eq!(
+        log.timer_events.load(Ordering::SeqCst),
+        1,
+        "the timer must fire inside the loop"
+    );
+}
+
 /// Makes the `clock_getres` at which the Tool requests the timer, pushes its
 /// flags with the two-byte `pushfw`, and then runs `after` rounds of a loop
 /// with one conditional branch each. Returns the flags it pushed.
@@ -662,11 +731,13 @@ fn stepped_popf_after_a_load_of_ss_loads_the_guests_trap_flag(flags: u64) {
 }
 
 /// Makes the `clock_getres` at which the Tool requests the timer, and then
-/// loads `flags` with an `iretq` to the next instruction. It pushes the flags
-/// it now has, loads flags without TF, and runs `after` rounds of a loop with
-/// one conditional branch each. Returns the flags it pushed.
+/// loads `flags` with an `iretq` to the next instruction. If `twice` is set,
+/// the `iretq` first returns to itself, with rsp at the frame it then pops.
+/// It pushes the flags it now has, loads flags without TF, and runs `after`
+/// rounds of a loop with one conditional branch each. Returns the flags it
+/// pushed.
 #[inline(always)]
-fn iret_before_loop(flags: u64, after: u64) -> u64 {
+fn iret_before_loop(flags: u64, twice: bool, after: u64) -> u64 {
     let pushed: u64;
     unsafe {
         core::arch::asm!(
@@ -680,6 +751,18 @@ fn iret_before_loop(flags: u64, after: u64) -> u64 {
             "push {selector}",
             "lea {sp}, [rip + 3f]",
             "push {sp}",
+            "test {twice}, {twice}",
+            "jz 4f",
+            "mov {sp}, rsp",
+            "mov {selector:e}, ss",
+            "push {selector}",
+            "push {sp}",
+            "push {flags}",
+            "mov {selector:e}, cs",
+            "push {selector}",
+            "lea {sp}, [rip + 4f]",
+            "push {sp}",
+            "4:",
             "iretq",
             "3:",
             "pushfq",
@@ -696,6 +779,7 @@ fn iret_before_loop(flags: u64, after: u64) -> u64 {
             out("r11") _,
             n = inout(reg) after => _,
             flags = in(reg) flags,
+            twice = in(reg) twice as u64,
             clean = in(reg) CLEAN_FLAGS,
             sp = out(reg) _,
             selector = out(reg) _,
@@ -706,15 +790,19 @@ fn iret_before_loop(flags: u64, after: u64) -> u64 {
 }
 
 // The `iretq` is stepped, and the target is in the loop after it. Like
-// `popf`, `iret` loads the guest's own flags.
-#[test_case(CLEAN_FLAGS | TRAP_FLAG; "own trap flag")]
-#[test_case(CLEAN_FLAGS; "no trap flag")]
-fn stepped_iret_loads_the_guests_trap_flag(flags: u64) {
+// `popf`, `iret` loads the guest's own flags. An `iretq` that returns to
+// itself is stepped twice, and the second step loads the flags again, so the
+// flags the first step loads cannot be seen at the `pushfq`.
+#[test_case(CLEAN_FLAGS | TRAP_FLAG, false; "own trap flag")]
+#[test_case(CLEAN_FLAGS, false; "no trap flag")]
+#[test_case(CLEAN_FLAGS | TRAP_FLAG, true; "own trap flag, twice")]
+#[test_case(CLEAN_FLAGS, true; "no trap flag, twice")]
+fn stepped_iret_loads_the_guests_trap_flag(flags: u64, twice: bool) {
     ret_without_perf!();
 
     let log = check_fn_with_config::<PreciseTimerTool, _>(
         move || {
-            let pushed = iret_before_loop(flags, 2 * LESS_RCBS);
+            let pushed = iret_before_loop(flags, twice, 2 * LESS_RCBS);
             assert_eq!(
                 pushed & TRAP_FLAG,
                 flags & TRAP_FLAG,
@@ -732,6 +820,146 @@ fn stepped_iret_loads_the_guests_trap_flag(flags: u64) {
         log.timer_events.load(Ordering::SeqCst),
         1,
         "the timer must fire inside the loop"
+    );
+}
+
+/// The flags of the guest when `record_flags` last caught a signal, as the
+/// signal frame holds them.
+static SIGNAL_FLAGS: AtomicU64 = AtomicU64::new(0);
+
+/// Records the flags in the signal frame, clears TF in them, and continues at
+/// the address in r12.
+extern "C" fn record_flags(_: libc::c_int, _: *mut libc::siginfo_t, context: *mut libc::c_void) {
+    // SAFETY: Linux passes the context of the signal frame to a handler
+    // installed with SA_SIGINFO.
+    let context = unsafe { &mut *context.cast::<libc::ucontext_t>() };
+    let gregs = &mut context.uc_mcontext.gregs;
+    SIGNAL_FLAGS.store(gregs[libc::REG_EFL as usize] as u64, Ordering::SeqCst);
+    gregs[libc::REG_EFL as usize] &= !(TRAP_FLAG as i64);
+    gregs[libc::REG_RIP as usize] = gregs[libc::REG_R12 as usize];
+}
+
+/// Makes `record_flags` the handler of `signal`.
+fn catch(signal: libc::c_int) {
+    // SAFETY: an all-zero sigaction is valid, and the handler only reads and
+    // writes the frame and an atomic.
+    unsafe {
+        let mut action: libc::sigaction = core::mem::zeroed();
+        action.sa_sigaction = record_flags as *const () as usize;
+        action.sa_flags = libc::SA_SIGINFO;
+        assert_eq!(libc::sigaction(signal, &action, core::ptr::null_mut()), 0);
+    }
+}
+
+/// The instruction that follows a load of SS and faults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fault {
+    /// An `iretq` to a null code segment, which raises #GP and SIGSEGV.
+    Iret,
+    /// `rt_sigreturn` made with a lock prefix, which raises #UD and SIGILL
+    /// before the `syscall` runs. The frame it would read has TF set.
+    LockedRtSigreturn,
+}
+
+/// Makes the `clock_getres` at which the Tool requests the timer, and, if
+/// `popf` is set, loads flags without TF with `popfq`. Then it loads SS, so a
+/// single step runs the load and the `fault` after it, which faults. The
+/// handler of the signal continues after the fault, where it runs `after`
+/// rounds of a loop with one conditional branch each.
+#[inline(always)]
+fn fault_after_mov_ss(fault: Fault, popf: bool, after: u64) {
+    catch(libc::SIGSEGV);
+    catch(libc::SIGILL);
+    // Where rsp points at the locked `rt_sigreturn`: its frame's flags at
+    // rsp + 176, with room below for the frame of SIGILL.
+    let mut stack = vec![0u64; 8192];
+    let context = 6144;
+    stack[context + 176 / 8] = CLEAN_FLAGS | TRAP_FLAG;
+    let context = stack[context..].as_mut_ptr();
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            "test {popf}, {popf}",
+            "jz 3f",
+            "push {clean}",
+            "popfq",
+            "3:",
+            "mov r13, rsp",
+            "lea r12, [rip + 5f]",
+            "mov {selector:e}, ss",
+            "test {sigreturn}, {sigreturn}",
+            "jnz 4f",
+            // A frame with a null code segment.
+            "push 0",
+            "push 0",
+            "push {clean}",
+            "push 0",
+            "push r12",
+            "mov ss, {selector:e}",
+            "iretq",
+            "4:",
+            "mov rsp, {context}",
+            "mov eax, {rt_sigreturn}",
+            "mov ss, {selector:e}",
+            ".byte 0xf0, 0x0f, 0x05",
+            "5:",
+            "mov rsp, r13",
+            "2:",
+            "dec {n}",
+            "jnz 2b",
+            rt_sigreturn = const libc::SYS_rt_sigreturn,
+            inlateout("rax") Sysno::clock_getres as usize => _,
+            in("rdi") 0usize,
+            in("rsi") 0usize,
+            out("rcx") _,
+            out("r11") _,
+            out("r12") _,
+            out("r13") _,
+            n = inout(reg) after => _,
+            popf = in(reg) popf as u64,
+            sigreturn = in(reg) (fault == Fault::LockedRtSigreturn) as u64,
+            context = in(reg) context,
+            clean = in(reg) CLEAN_FLAGS,
+            selector = out(reg) _,
+        );
+    }
+}
+
+// One step runs the load of SS and the instruction after it, which faults
+// without returning. The signal frame must hold the flags the guest had, and
+// the guest had no TF. Without a stepped `popfq` before, Linux hides the
+// stepping TF and clears it itself before it builds the frame; after one, it
+// sees the TF as the guest's. The signal stop cancels the timer, as for the
+// syscall stop above, which loses the event.
+#[test_case(Fault::Iret, false; "iret")]
+#[test_case(Fault::Iret, true; "iret after popf")]
+#[test_case(Fault::LockedRtSigreturn, false; "locked rt_sigreturn")]
+#[test_case(Fault::LockedRtSigreturn, true; "locked rt_sigreturn after popf")]
+fn fault_after_a_load_of_ss_does_not_leak_the_trap_flag(fault: Fault, popf: bool) {
+    ret_without_perf!();
+
+    let log = check_fn_with_config::<PreciseTimerTool, _>(
+        move || {
+            fault_after_mov_ss(fault, popf, 2 * LESS_RCBS);
+            let flags = SIGNAL_FLAGS.load(Ordering::SeqCst);
+            assert_ne!(flags, 0, "the fault did not reach the handler");
+            assert_eq!(
+                flags & TRAP_FLAG,
+                0,
+                "the signal frame held the flags {flags:#x}"
+            );
+        },
+        Schedule {
+            rcbs: LESS_RCBS,
+            instructions: None,
+        },
+        true,
+    );
+
+    assert_eq!(
+        log.timer_events.load(Ordering::SeqCst),
+        0,
+        "the signal stop cancels the timer"
     );
 }
 
@@ -757,18 +985,37 @@ const fn frame_register(reg: libc::c_int) -> usize {
 /// saves TF, set.
 const R11_MARKER: u64 = 0xfeed_0346;
 
+/// Where the signal frame of `rt_sigreturn_after_loop` returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Return {
+    /// To the next instruction.
+    Next,
+    /// To the `syscall` of `rt_sigreturn` itself, with the number of `getpid`
+    /// in rax, so the `syscall` runs again as `getpid`.
+    Again,
+    /// As `Again`, and with rsp as it is at `rt_sigreturn`, so only rax tells
+    /// that `rt_sigreturn` ran.
+    AgainOnTheSameStack,
+}
+
 /// Makes the `clock_getres` at which the Tool requests the timer, runs
 /// `iterations` rounds of a loop with one conditional branch each, and, if
 /// `popf` is set, loads flags without TF with `popfq`. Then it makes
 /// `rt_sigreturn` with a signal frame that restores `flags`, r11 and its other
-/// registers, and continues at the next instruction. It stores r11 and pushes
-/// its flags, loads flags without TF, and runs `after` rounds of the loop.
-/// Returns the value of r11 and the flags it pushed.
+/// registers, and returns as `ret` says. It stores r11 and pushes its flags,
+/// loads flags without TF, and runs `after` rounds of the loop. Returns the
+/// value of r11 and the flags it pushed.
 ///
 /// The frame keeps the alternate signal stack and the blocked signals as they
 /// are. It has no floating-point state, so Linux resets it.
 #[inline(always)]
-fn rt_sigreturn_after_loop(iterations: u64, popf: bool, flags: u64, after: u64) -> [u64; 2] {
+fn rt_sigreturn_after_loop(
+    iterations: u64,
+    popf: bool,
+    flags: u64,
+    ret: Return,
+    after: u64,
+) -> [u64; 2] {
     let mut saved = [0u64; 2];
     // SAFETY: all zeros is a valid value for these C structures.
     let mut frame: SignalFrame = unsafe { core::mem::zeroed() };
@@ -802,8 +1049,16 @@ fn rt_sigreturn_after_loop(iterations: u64, popf: bool, flags: u64, after: u64) 
     gregs[libc::REG_R11 as usize] = R11_MARKER as i64;
     gregs[libc::REG_R13 as usize] = saved.as_mut_ptr() as i64;
     gregs[libc::REG_R14 as usize] = after as i64;
-    // SAFETY: the frame restores rbx, rbp and rsp as they are at the
-    // `rt_sigreturn`, and every register it changes is marked clobbered.
+    if ret != Return::Next {
+        gregs[libc::REG_RAX as usize] = libc::SYS_getpid;
+    }
+    if ret == Return::AgainOnTheSameStack {
+        let context = core::ptr::addr_of!(frame.context);
+        frame.context.uc_mcontext.gregs[libc::REG_RSP as usize] = context as i64;
+    }
+    // SAFETY: the frame restores rbx and rbp as they are at the
+    // `rt_sigreturn`, and r15 to the rsp there, which is restored from it.
+    // Every register the frame changes is marked clobbered.
     unsafe {
         core::arch::asm!(
             "syscall",
@@ -817,13 +1072,24 @@ fn rt_sigreturn_after_loop(iterations: u64, popf: bool, flags: u64, after: u64) 
             "3:",
             "mov [r12 + {rbx}], rbx",
             "mov [r12 + {rbp}], rbp",
-            "mov [r12 + {rsp}], rsp",
+            "mov [r12 + {r15}], rsp",
+            // rsp and rip as `ret` says; the frame holds rsp already if it
+            // is the stack of `rt_sigreturn`.
+            "mov rax, [r12 + {rsp}]",
+            "test rax, rax",
+            "cmovz rax, rsp",
+            "mov [r12 + {rsp}], rax",
             "lea rax, [rip + 4f]",
+            "lea rdx, [rip + 6f]",
+            "test r15, r15",
+            "cmovnz rax, rdx",
             "mov [r12 + {rip}], rax",
             "lea rsp, [r12 + {context}]",
             "mov eax, {rt_sigreturn}",
+            "6:",
             "syscall",
             "4:",
+            "mov rsp, r15",
             "mov [r13], r11",
             "pushfq",
             "pop qword ptr [r13 + 8]",
@@ -835,6 +1101,7 @@ fn rt_sigreturn_after_loop(iterations: u64, popf: bool, flags: u64, after: u64) 
             rbx = const frame_register(libc::REG_RBX),
             rbp = const frame_register(libc::REG_RBP),
             rsp = const frame_register(libc::REG_RSP),
+            r15 = const frame_register(libc::REG_R15),
             rip = const frame_register(libc::REG_RIP),
             context = const core::mem::offset_of!(SignalFrame, context),
             rt_sigreturn = const libc::SYS_rt_sigreturn,
@@ -851,7 +1118,7 @@ fn rt_sigreturn_after_loop(iterations: u64, popf: bool, flags: u64, after: u64) 
             inout("r12") &mut frame as *mut SignalFrame => _,
             inout("r13") saved.as_mut_ptr() => _,
             inout("r14") after => _,
-            out("r15") _,
+            inout("r15") (ret != Return::Next) as u64 => _,
             clobber_abi("C"),
         );
     }
@@ -861,21 +1128,38 @@ fn rt_sigreturn_after_loop(iterations: u64, popf: bool, flags: u64, after: u64) 
 // The steps run the loop, the `popfq` if there is one, and `rt_sigreturn`,
 // and the target is in the loop after it. `rt_sigreturn` restores r11 and
 // RFLAGS from the frame. TF in the frame is the guest's own, and a TF-like
-// bit in r11 is only the frame's value.
-#[test_case(false, CLEAN_FLAGS | TRAP_FLAG; "own trap flag")]
-#[test_case(false, CLEAN_FLAGS; "no trap flag")]
-#[test_case(true, CLEAN_FLAGS | TRAP_FLAG; "own trap flag after popf")]
-#[test_case(true, CLEAN_FLAGS; "no trap flag after popf")]
-fn stepped_rt_sigreturn_restores_the_frames_flags(popf: bool, flags: u64) {
+// bit in r11 is only the frame's value. Where the frame returns to the
+// `syscall`, the steps run it again as `getpid`, which saves the guest's
+// flags, with its own TF, in r11. Linux hides a TF that `rt_sigreturn` loads
+// unless a stepped `popfq` came before it.
+#[test_case(false, CLEAN_FLAGS | TRAP_FLAG, Return::Next; "own trap flag")]
+#[test_case(false, CLEAN_FLAGS, Return::Next; "no trap flag")]
+#[test_case(true, CLEAN_FLAGS | TRAP_FLAG, Return::Next; "own trap flag after popf")]
+#[test_case(true, CLEAN_FLAGS, Return::Next; "no trap flag after popf")]
+#[test_case(false, CLEAN_FLAGS | TRAP_FLAG, Return::Again; "own trap flag, again")]
+#[test_case(false, CLEAN_FLAGS, Return::Again; "no trap flag, again")]
+#[test_case(true, CLEAN_FLAGS | TRAP_FLAG, Return::Again; "own trap flag after popf, again")]
+#[test_case(true, CLEAN_FLAGS, Return::Again; "no trap flag after popf, again")]
+#[test_case(false, CLEAN_FLAGS | TRAP_FLAG, Return::AgainOnTheSameStack; "own trap flag, again on the same stack")]
+#[test_case(true, CLEAN_FLAGS | TRAP_FLAG, Return::AgainOnTheSameStack; "own trap flag after popf, again on the same stack")]
+fn stepped_rt_sigreturn_restores_the_frames_flags(popf: bool, flags: u64, ret: Return) {
     ret_without_perf!();
 
     let log = check_fn_with_config::<PreciseTimerTool, _>(
         move || {
-            let [r11, pushed] = rt_sigreturn_after_loop(4, popf, flags, 2 * LESS_RCBS);
-            assert_eq!(
-                r11, R11_MARKER,
-                "rt_sigreturn restored r11 as {r11:#x}, not the frame's"
-            );
+            let [r11, pushed] = rt_sigreturn_after_loop(4, popf, flags, ret, 2 * LESS_RCBS);
+            if ret == Return::Next {
+                assert_eq!(
+                    r11, R11_MARKER,
+                    "rt_sigreturn restored r11 as {r11:#x}, not the frame's"
+                );
+            } else {
+                assert_eq!(
+                    r11 & TRAP_FLAG,
+                    flags & TRAP_FLAG,
+                    "the frame held {flags:#x} but getpid saved {r11:#x} in r11"
+                );
+            }
             assert_eq!(
                 pushed & TRAP_FLAG,
                 flags & TRAP_FLAG,
