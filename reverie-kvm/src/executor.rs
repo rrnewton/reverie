@@ -5937,6 +5937,9 @@ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
 }
 
 fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if (args[3] as libc::off_t) < 0 {
+        return negative_errno(libc::EINVAL);
+    }
     // Linux consumes only the low 32-bit descriptor word.
     let fd = args[0] as libc::c_int;
     if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
@@ -36066,6 +36069,96 @@ mod tests {
     }
 
     #[test]
+    fn pread64_negative_offset_precedes_fd_count_and_buffer_checks() {
+        const BUFFER: u64 = 0x100;
+        const PROTECTED: u64 = PAGE_SIZE;
+        let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
+        memory.write(BUFFER, &[0x5a; 8]).unwrap();
+        memory.write(PROTECTED, &[0x5a; 8]).unwrap();
+        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
+        memory.map_user_range(PROTECTED, PAGE_SIZE, true).unwrap();
+        memory.enable_user_access();
+
+        // SAFETY: successful memfd_create transfers a new descriptor to File.
+        let fd =
+            unsafe { libc::memfd_create(c"pread-offset-precedence".as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(fd >= 0);
+        // SAFETY: fd is a valid, newly created descriptor owned by this test.
+        let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+        file.write_all(b"abcdefgh").unwrap();
+        file.seek(SeekFrom::Start(3)).unwrap();
+        let mut state = test_state(&std::env::current_dir().unwrap());
+        state.files.insert(3, file);
+
+        let cases = [
+            (3, BUFFER, 0, 0),
+            (3, PROTECTED, 7, negative_errno(libc::EFAULT)),
+            (u64::MAX, PROTECTED, 7, negative_errno(libc::EBADF)),
+        ];
+        for offset in [-1_i64, i64::MIN, 0] {
+            for (fd, address, count, valid_offset_result) in cases {
+                let expected = if offset == 0 {
+                    valid_offset_result
+                } else {
+                    negative_errno(libc::EINVAL)
+                };
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_pread64,
+                        [fd, address, count, offset as u64, 0, 0],
+                    ),
+                    expected,
+                    "fd={fd:#x}, address={address:#x}, count={count}, offset={offset}"
+                );
+                // Inspect canaries without relaxing the guest's protection.
+                for address in [BUFFER, PROTECTED] {
+                    let mut canary = [0; 8];
+                    memory.read_raw(address, &mut canary).unwrap();
+                    assert_eq!(canary, [0x5a; 8], "pread64 changed canaries");
+                }
+                assert_eq!(
+                    state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+                    3
+                );
+            }
+        }
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pread64,
+                [3, BUFFER, 2, 1, 0, 0],
+            ),
+            2
+        );
+        let mut bytes = [0; 8];
+        memory.read(BUFFER, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"bcZZZZZZ");
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            3
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [3, BUFFER, 2, 0, 0, 0],
+            ),
+            2
+        );
+        memory.read(BUFFER, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"deZZZZZZ");
+        assert_eq!(
+            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
+            5
+        );
+    }
+
+    #[test]
     fn read_and_pread64_consume_low_descriptor_words() {
         const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
         const BIT31_LOW_WORD: u64 = HIGH_WORD | (1 << 31);
@@ -36142,7 +36235,7 @@ mod tests {
                 [HIGH_WORD | 4, PREAD_ADDRESS, 1, u64::MAX, 0, 0],
             ),
             negative_errno(libc::EINVAL),
-            "offset validation follows low-word descriptor decoding"
+            "negative offsets remain invalid with high descriptor bits set"
         );
         assert_eq!(
             syscall_result(
