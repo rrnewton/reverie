@@ -65,6 +65,10 @@ const TRAP_FLAG: u64 = 0x100;
 /// Flags without TF for the guest to load: IF and the reserved bit 1.
 const CLEAN_FLAGS: u64 = 0x202;
 
+/// The x86 resume flag in RFLAGS, which the processor sets in the flags it
+/// saves for a fault.
+const RESUME_FLAG: u64 = 0x10000;
+
 /// Far above any skid margin, so the request programs a real PMU notification.
 const MANY_RCBS: u64 = 10_000;
 
@@ -81,19 +85,32 @@ struct Schedule {
     instructions: Option<u64>,
 }
 
+/// What the Tool tells the global state.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+enum Note {
+    TimerEvent,
+    /// The Tool intercepted the sleep of the restart test.
+    Sleep,
+}
+
 #[derive(Debug, Default)]
 struct Log {
     timer_events: AtomicU64,
+    sleeps: AtomicU64,
 }
 
 #[reverie::global_tool]
 impl GlobalTool for Log {
-    type Request = ();
+    type Request = Note;
     type Response = ();
     type Config = Schedule;
 
-    async fn receive_rpc(&self, _from: Pid, _: ()) {
-        self.timer_events.fetch_add(1, Ordering::SeqCst);
+    async fn receive_rpc(&self, _from: Pid, note: Note) {
+        match note {
+            Note::TimerEvent => &self.timer_events,
+            Note::Sleep => &self.sleeps,
+        }
+        .fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -132,14 +149,18 @@ impl Tool for PreciseTimerTool {
             Sysno::clock_nanosleep
                 if syscall.into_parts().1.arg0 == libc::CLOCK_BOOTTIME as usize =>
             {
+                guest.send_rpc(Note::Sleep).await;
                 guest.set_timer_precise(schedule(guest.config())).unwrap();
                 guest.tail_inject(syscall).await
             }
-            // Only once: Linux restarts the interrupted `pselect6` as a new
-            // `pselect6`, which comes back here.
-            Sysno::pselect6 if syscall.into_parts().1.arg0 == 0 && !*guest.thread_state() => {
-                *guest.thread_state_mut() = true;
-                guest.set_timer_precise(schedule(guest.config())).unwrap();
+            // The timer only once: Linux restarts the interrupted `pselect6`
+            // as a new `pselect6`, which comes back here.
+            Sysno::pselect6 if syscall.into_parts().1.arg0 == 0 => {
+                guest.send_rpc(Note::Sleep).await;
+                if !*guest.thread_state() {
+                    *guest.thread_state_mut() = true;
+                    guest.set_timer_precise(schedule(guest.config())).unwrap();
+                }
                 guest.tail_inject(syscall).await
             }
             _ => guest.tail_inject(syscall).await,
@@ -147,7 +168,7 @@ impl Tool for PreciseTimerTool {
     }
 
     async fn handle_timer_event<T: Guest<Self>>(&self, guest: &mut T) {
-        guest.send_rpc(()).await;
+        guest.send_rpc(Note::TimerEvent).await;
     }
 }
 
@@ -426,11 +447,16 @@ fn syscall_after_popf(iterations: u64, no: u64, after: u64) -> (u64, u64) {
 // the target. With the artificial signal the stepping starts at the
 // `clock_getres` return, so the seccomp stop always ends a step.
 //
-// No timer event is expected because Reverie cancels a timer at any stop that
-// reaches the Tool before the event fires, as `EventStatus` documents. That is
-// the existing contract, recorded here, not the outcome this test wants: the
-// review of https://github.com/rrnewton/reverie/pull/654 found that it loses
-// the event.
+// No timer event is expected. Reverie cancels a timer at any event it
+// delivers to the Tool before the timer's, as `set_timer_precise` and
+// `EventStatus` document, and the seccomp stop comes before the target: the
+// stepping runs only while the counter is behind the target, and a `syscall`
+// retires no branch. The review of
+// https://github.com/rrnewton/reverie/pull/654 called this a loss of the
+// event; it is not one, since the target was never reached. A stop after the
+// target is reached does lose the event
+// (https://github.com/rrnewton/reverie/issues/658), which this test does not
+// build.
 #[test_case(MANY_RCBS; "perf signal")]
 #[test_case(LESS_RCBS; "artificial signal")]
 fn stepping_that_ends_at_a_syscall_stop_does_not_leak_the_trap_flag(rcbs: u64) {
@@ -560,12 +586,17 @@ fn interrupted_sleep_before_loop(sleep: Sleep, after: u64) -> (i64, u64) {
 // restarted, and the stepping starts at the signal's stop. The first step
 // resumes the guest without a signal, so Linux runs the `syscall` again
 // with TF set, and the target is in the loop after it. A rerun `pselect6`
-// stops at its seccomp stop, which reaches the Tool and cancels the timer, as
-// in the syscall-stop test (https://github.com/rrnewton/reverie/issues/658);
-// `restart_syscall` is not traced, so that stepping reaches the target.
-#[test_case(Sleep::ClockNanosleep, 1; "restart block")]
-#[test_case(Sleep::Pselect6, 0; "same syscall")]
-fn stepping_a_restarted_syscall_does_not_leak_the_trap_flag(sleep: Sleep, events: u64) {
+// stops at its seccomp stop, before the target, which reaches the Tool
+// (intercepted twice) and cancels the timer, as in the syscall-stop test;
+// `restart_syscall` is not traced by this Tool (intercepted once), so that
+// stepping reaches the target.
+#[test_case(Sleep::ClockNanosleep, 1, 1; "restart block")]
+#[test_case(Sleep::Pselect6, 2, 0; "same syscall")]
+fn stepping_a_restarted_syscall_does_not_leak_the_trap_flag(
+    sleep: Sleep,
+    intercepted: u64,
+    events: u64,
+) {
     ret_without_perf!();
 
     let log = check_fn_with_config::<PreciseTimerTool, _>(
@@ -581,6 +612,11 @@ fn stepping_a_restarted_syscall_does_not_leak_the_trap_flag(sleep: Sleep, events
         true,
     );
 
+    assert_eq!(
+        log.sleeps.load(Ordering::SeqCst),
+        intercepted,
+        "the Tool must see the sleep, and a restarted pselect6 again"
+    );
     assert_eq!(
         log.timer_events.load(Ordering::SeqCst),
         events,
@@ -874,8 +910,11 @@ static SIGNAL_NUMBER: AtomicU64 = AtomicU64::new(0);
 /// r14, where the guest expects the fault.
 static SIGNAL_AT_R14: AtomicU64 = AtomicU64::new(0);
 
-/// Records the signal, where it was raised, and the flags in the signal frame,
-/// clears TF in them, and continues at the address in r12.
+/// r11 when `record_flags` last caught a signal, as the signal frame holds it.
+static SIGNAL_R11: AtomicU64 = AtomicU64::new(0);
+
+/// Records the signal, where it was raised, and the flags and r11 in the
+/// signal frame, clears TF in the flags, and continues at the address in r12.
 extern "C" fn record_flags(
     signal: libc::c_int,
     _: *mut libc::siginfo_t,
@@ -891,6 +930,7 @@ extern "C" fn record_flags(
         Ordering::SeqCst,
     );
     SIGNAL_FLAGS.store(gregs[libc::REG_EFL as usize] as u64, Ordering::SeqCst);
+    SIGNAL_R11.store(gregs[libc::REG_R11 as usize] as u64, Ordering::SeqCst);
     gregs[libc::REG_EFL as usize] &= !(TRAP_FLAG as i64);
     gregs[libc::REG_RIP as usize] = gregs[libc::REG_R12 as usize];
 }
@@ -1003,8 +1043,9 @@ fn fault_after_mov_ss(fault: Fault, popf: bool, after: u64) {
 // without returning. The signal frame must hold the flags the guest had, and
 // the guest had no TF. Without a stepped `popfq` before, Linux hides the
 // stepping TF and clears it itself before it builds the frame; after one, it
-// sees the TF as the guest's. The signal stop cancels the timer, as for the
-// syscall stop above, which loses the event.
+// sees the TF as the guest's. The signal stop comes before the target, since
+// the faulting instruction retires no branch, and cancels the timer, as for
+// the syscall stop above.
 #[test_case(Fault::Iret, false; "iret")]
 #[test_case(Fault::Iret, true; "iret after popf")]
 #[test_case(Fault::LockedRtSigreturn, false; "locked rt_sigreturn")]
@@ -1099,9 +1140,10 @@ fn iret_to_itself_then_fault(flags: u64, after: u64) {
 // step started, and only rsp shows that it ran. The second step raises #GP at
 // the same `iretq`. Untraced, the fault comes before the trap of any TF the
 // first `iretq` loaded, so the SIGSEGV frame holds exactly the flags the first
-// frame loaded. If the first step were judged not run, its TF would be taken
-// for the stepping TF and cleared. The signal stop cancels the timer, as for
-// the faults above.
+// frame loaded, with RF, which the processor sets for a fault. If the first
+// step were judged not run, its TF would be taken for the stepping TF and
+// cleared. The signal stop comes before the target and cancels the timer, as
+// for the faults above.
 #[test_case(CLEAN_FLAGS | TRAP_FLAG; "own trap flag")]
 #[test_case(CLEAN_FLAGS; "no trap flag")]
 fn iret_that_returns_to_itself_keeps_the_flags_it_loaded(flags: u64) {
@@ -1115,6 +1157,11 @@ fn iret_that_returns_to_itself_keeps_the_flags_it_loaded(flags: u64) {
                 frame & TRAP_FLAG,
                 flags & TRAP_FLAG,
                 "the guest loaded {flags:#x} but the signal frame held {frame:#x}"
+            );
+            assert_eq!(
+                frame,
+                flags | RESUME_FLAG,
+                "the guest loaded {flags:#x}, so the frame of the fault must hold it with RF"
             );
         },
         Schedule {
@@ -1373,8 +1420,9 @@ fn catch_on_an_alternate_stack(signal: libc::c_int) {
 /// Makes the `clock_getres` at which the Tool requests the timer. Then
 /// `rt_sigreturn` restores `flags` from a frame that returns to its own
 /// `syscall`, with the number of `rt_sigreturn` in rax and rsp one word into
-/// a page that cannot be read. The rerun `rt_sigreturn` cannot read its
-/// frame, so Linux changes no register but rax and forces SIGSEGV. Its
+/// a page that cannot be read. The rerun `rt_sigreturn` fails at its first
+/// read of the frame, so Linux restores no register from it, returns 0 in rax
+/// and forces SIGSEGV; the `syscall` itself still sets rcx and r11. The
 /// handler runs on an alternate stack and continues after the `syscall`,
 /// where the guest runs `after` rounds of a loop with one conditional branch
 /// each.
@@ -1427,10 +1475,10 @@ fn rt_sigreturn_to_itself_then_fault(flags: u64, after: u64) {
     gregs[libc::REG_RSP as usize] = unreadable as i64 + 8;
     gregs[libc::REG_R15 as usize] = after as i64;
     // SAFETY: the frame restores rbx and rbp as they are at the
-    // `rt_sigreturn`, and r13 to the rsp there, which the guest restores from
-    // it. The handler continues at the address in r12 with the registers as
-    // the frame restored them. Every register the frame changes is marked
-    // clobbered.
+    // `rt_sigreturn`, and r13 to the rsp before the guest moves it to the
+    // frame, which the guest restores from r13 after the handler. The handler
+    // continues at the address in r12 with the registers as the frame restored
+    // them. Every register the frame changes is marked clobbered.
     unsafe {
         core::arch::asm!(
             "syscall",
@@ -1481,10 +1529,11 @@ fn rt_sigreturn_to_itself_then_fault(flags: u64, after: u64) {
 // its own number in rax: rip and rax are as they were when the step started,
 // and only rsp shows that it ran. The second step runs `rt_sigreturn` again,
 // which cannot read its frame and forces SIGSEGV. Untraced, the SIGSEGV frame
-// holds exactly the flags the first frame restored. If the first step were
-// judged not run, Linux would keep hiding the TF it restored as its own, and
-// clear it before building the SIGSEGV frame. The signal stop cancels the
-// timer, as for the faults above.
+// holds exactly the flags the first frame restored, and in r11 the same flags,
+// which the rerun `syscall` saved. If the first step were judged not run,
+// Linux would keep hiding the TF it restored as its own, and clear it before
+// building the SIGSEGV frame. The signal stop comes before the target and
+// cancels the timer, as for the faults above.
 #[test_case(CLEAN_FLAGS | TRAP_FLAG; "own trap flag")]
 #[test_case(CLEAN_FLAGS; "no trap flag")]
 fn rt_sigreturn_that_returns_to_itself_keeps_the_flags_it_restored(flags: u64) {
@@ -1498,6 +1547,15 @@ fn rt_sigreturn_that_returns_to_itself_keeps_the_flags_it_restored(flags: u64) {
                 frame & TRAP_FLAG,
                 flags & TRAP_FLAG,
                 "the frame restored {flags:#x} but the SIGSEGV frame held {frame:#x}"
+            );
+            assert_eq!(
+                frame, flags,
+                "the frame restored {flags:#x} but the SIGSEGV frame held {frame:#x}"
+            );
+            let r11 = SIGNAL_R11.load(Ordering::SeqCst);
+            assert_eq!(
+                r11, flags,
+                "the rerun `syscall` saved {r11:#x} in r11, not the {flags:#x} it ran with"
             );
         },
         Schedule {
