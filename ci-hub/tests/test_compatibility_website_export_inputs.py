@@ -1724,6 +1724,44 @@ def test_portable_capture_current_correction_never_stages_old_carrier(tmp_path: 
     assert export_inputs.captured_proof_objects(captured) == {}
 
 
+def _json_copy(value):
+    return json.loads(json.dumps(value))
+
+
+def _quarantined_lost_selection(selected, *, forge=False):
+    receipt = export_inputs.validation_ledger.qualifying_receipt
+    entry = receipt.retained_evidence_quarantine_allowlist()["devbig014-1790052459-997811"]
+    lost = _json_copy(selected)
+    lost["row"].update(_json_copy(entry["row"]))
+    lost["row"].update(result="no_result", raw_result="pass", source="reconstructed")
+    marker = _json_copy(entry["marker"])
+    if forge:
+        marker["expected"]["cell_results"]["row_count"] += 1
+    lost["row"][receipt.RETAINED_EVIDENCE_QUARANTINE_KEY] = marker
+    lost["terminal"].update(run_id=entry["row"]["run_id"], record_id=entry["event_id"],
+                            event_id=entry["event_id"], event_sha256="f" * 64)
+    return lost
+
+
+def test_portable_capture_reports_an_allowlisted_lost_run_unavailable(tmp_path: Path):
+    _proof, ledger, commit, selected, _manifest, _objects = portable_capture_fixture(tmp_path)
+    lost = _quarantined_lost_selection(selected)
+    namespace = TransportNamespace(lost)
+    captured = export_inputs._capture_finalized_proof(namespace, ledger, commit)
+    assert captured["manifests"] == [] and captured["objects"] == {}
+    assert captured["missing_current_terminals"] == [lost["terminal"]]
+    assert namespace.verified == []
+
+
+def test_portable_capture_refuses_a_quarantine_the_allowlist_does_not_name(tmp_path: Path):
+    _proof, ledger, commit, selected, _manifest, _objects = portable_capture_fixture(tmp_path)
+    for forged in (_quarantined_lost_selection(selected, forge=True),
+                   {**selected, "row": {**selected["row"], "retained_evidence_quarantine":
+                       _quarantined_lost_selection(selected)["row"]["retained_evidence_quarantine"]}}):
+        with pytest.raises(export_inputs.ExportRefused, match="no allowlisted lost run"):
+            export_inputs._capture_finalized_proof(TransportNamespace(forged), ledger, commit)
+
+
 def test_portable_capture_present_object_tampering_refuses(tmp_path: Path):
     proof, ledger, _commit, selected, manifest, _objects = portable_capture_fixture(tmp_path)
     path = ledger / proof.object_path(manifest["artifacts"]["cells"]["sha256"])

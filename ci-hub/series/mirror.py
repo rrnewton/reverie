@@ -600,6 +600,7 @@ def _parent_tool_commit() -> str:
         "ci-hub/validate/flaky_cells.py", "ci-hub/validate/flaky-cells.json",
         "ci-hub/validate/green_class.py",
         "ci-hub/validate/failure_evidence.py", "ci-hub/validate/qualifying-receipt.json",
+        "ci-hub/validate/retained-evidence-quarantine.json",
         "ci-hub/health/ledger_spool_backlog.py",
         "scripts/parent-main-write", "scripts/check_commit_attribution.py",
     )

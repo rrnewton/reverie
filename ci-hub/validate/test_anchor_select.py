@@ -205,13 +205,21 @@ class PredicateBrackets(unittest.TestCase):
         cases = json.loads(
             (HERE / "tests" / "fixtures" / "release-payload-cases.json").read_text()
         )["cases"]
-        self.assertEqual(7, sum(case["expected"] is not None for case in cases))
+        self.assertEqual(11, sum(case["expected"] is not None for case in cases))
         for case in cases:
             with self.subTest(case=case["label"]):
                 row = _apply_case(self.row(), case)
                 if case["expected"] == "cargo":
-                    ok, reason = A.row_qualifies(row, self.predicate)
-                    self.assertTrue(ok, f"a Cargo receipt was refused: {reason}")
+                    # A case may move the row to another schema, whose own
+                    # clauses then apply: the pairless row must read exactly as
+                    # the same row carrying the explicit Cargo pair.
+                    verdict = A.row_qualifies(row, self.predicate)
+                    explicit = {**row, "release_builder": "cargo",
+                                "e2e_payload": self.predicate["release_payloads"]["cargo"]}
+                    self.assertEqual(A.row_qualifies(explicit, self.predicate), verdict)
+                    self.assertFalse(verdict[1].startswith("release_builder"), verdict)
+                    if row.get("schema_version") == self.row().get("schema_version"):
+                        self.assertTrue(verdict[0], f"a Cargo receipt was refused: {verdict[1]}")
                 else:
                     self.assert_refused(row, f"release_builder={row.get('release_builder')!r}")
 

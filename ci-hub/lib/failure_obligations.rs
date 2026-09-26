@@ -600,6 +600,10 @@ fn validated_observation_evidence<'a>(
         | crate::validation_evidence::EvidenceOutcome::LegacyUnbound { evidence, .. } => {
             Ok(Some(ValidatedEvidence::Schema10(evidence)))
         }
+        // A quarantined row has no retained observations to read. It neither
+        // latches nor discharges an obligation; every other missing artifact
+        // stays a reader fault for the obligation pass to judge.
+        crate::validation_evidence::EvidenceOutcome::Quarantined { .. } => Ok(None),
         crate::validation_evidence::EvidenceOutcome::Refused { reason } => {
             Err(EvidenceFault::Fatal(reason))
         }
@@ -676,7 +680,8 @@ pub(crate) fn cell_results_for_website_with<'a>(
                 )
             }
             crate::validation_evidence::EvidenceOutcome::Refused { reason }
-            | crate::validation_evidence::EvidenceOutcome::ReaderFault { reason, .. } => {
+            | crate::validation_evidence::EvidenceOutcome::ReaderFault { reason, .. }
+            | crate::validation_evidence::EvidenceOutcome::Quarantined { reason, .. } => {
                 CellResultsForWebsite::Unavailable(reason)
             }
         });
@@ -2235,6 +2240,201 @@ mod tests {
         let serialized = serde_json::to_value(cross).unwrap();
         assert_eq!(serialized["target_comparisons_complete"], false);
         assert_eq!(serialized["target_unavailable_comparisons"], 1);
+    }
+
+    /// The corrected, quarantined row of one allowlisted lost run.
+    fn lost(event_id: &str) -> HistoryRow {
+        serde_json::from_value(crate::validation_evidence::fixtures::lost_run(event_id)).unwrap()
+    }
+
+    /// Obligations at `target` from a baseline at `baseline`, its only ancestor.
+    fn schema10_obligations_between(
+        rows: &[HistoryRow],
+        store: &Path,
+        baseline: &'static str,
+        target: &'static str,
+    ) -> Vec<UnresolvedFailureObligation> {
+        unresolved(
+            rows,
+            target,
+            &target_rows(rows, target),
+            6,
+            10,
+            Some(store),
+            None,
+            move |ancestor, descendant| {
+                Ok(ancestor == descendant || (ancestor == baseline && descendant == target))
+            },
+        )
+        .map(|assessment| {
+            assert!(assessment.unverifiable_evidence.is_empty());
+            assessment.obligations
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn schema10_quarantined_rows_neither_latch_nor_discharge_obligations() {
+        use crate::validation_evidence::fixtures::{
+            Fixture, Store, LOST_COMMIT, LOST_V2_A, LOST_V2_B,
+        };
+        let store = Store::new();
+        let failed = Fixture::new("cross-diverged-then-matched", "failed", BAD, 1).write(&store.0);
+        let mut rows = vec![failed];
+        for ordinal in 0..14 {
+            rows.push(
+                Fixture::new(
+                    "selected-attempt-v1/matched",
+                    &format!("clean-{ordinal}"),
+                    LOST_COMMIT,
+                    ordinal + 2,
+                )
+                .write(&store.0),
+            );
+        }
+        // Fourteen clean runs supply 28 of the 30 legs (see the test above).
+        let open = |rows: &[HistoryRow]| {
+            let obligations = schema10_obligations_between(rows, &store.0, BAD, LOST_COMMIT);
+            assert_eq!(obligations.len(), 1);
+            assert_eq!(obligations[0].required_clean_legs, 30);
+            assert_eq!(obligations[0].baseline_failures, 1);
+            obligations[0].observed_clean_legs_at_target
+        };
+        assert_eq!(open(&rows), 28);
+        // Readable, the two lost runs would supply the legs that clear it.
+        let mut readable = rows.clone();
+        for (ordinal, run) in [
+            "validate-cpu-ordinary-cells-20260922-v2-b",
+            "validate-cpu-ordinary-cells-20260922-v2-a",
+        ]
+        .iter()
+        .enumerate()
+        {
+            readable.push(
+                Fixture::new("selected-attempt-v1/matched", run, LOST_COMMIT, ordinal as u64 + 16)
+                    .write(&store.0),
+            );
+        }
+        assert!(schema10_obligations_between(&readable, &store.0, BAD, LOST_COMMIT).is_empty());
+        // Quarantined, they supply none, and the scan still completes.
+        rows.push(lost(LOST_V2_B));
+        rows.push(lost(LOST_V2_A));
+        assert_eq!(open(&rows), 28);
+
+        // A quarantined run latches nothing, where the same run readable as a
+        // divergence would.
+        // Both runs keep the lost run's recorded finish, so the quarantine is
+        // the only difference between them.
+        let store = Store::new();
+        let mut clean = Fixture::new("selected-attempt-v1/matched", "clean", FIX, 2).write(&store.0);
+        clean.finished_at = Some("2026-09-23T00:00:00Z".into());
+        let mut diverged = Fixture::new(
+            "cross-diverged-then-matched",
+            "validate-cpu-ordinary-cells-20260922-v2-b",
+            LOST_COMMIT,
+            1,
+        )
+        .write(&store.0);
+        diverged.finished_at = Some("2026-09-22T04:47:39Z".into());
+        assert_eq!(
+            schema10_obligations_between(&[diverged, clean.clone()], &store.0, LOST_COMMIT, FIX)
+                .len(),
+            1
+        );
+        let quarantined = lost(LOST_V2_B);
+        assert!(
+            schema10_obligations_between(&[quarantined, clean], &store.0, LOST_COMMIT, FIX)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn schema10_quarantine_removes_the_lost_rows_reader_fault_and_only_theirs() {
+        use crate::validation_evidence::fixtures::{
+            self_quarantined, Fixture, Store, LOST_COMMIT, LOST_V2_A, LOST_V2_B,
+        };
+        // The ledger's four affected rows: two whose files are lost and two
+        // whose files are restored exactly.
+        let store = Store::new();
+        let restored: Vec<HistoryRow> = ["v3-b", "v3-a"]
+            .iter()
+            .enumerate()
+            .map(|(ordinal, run)| {
+                Fixture::new(
+                    "selected-attempt-v1/matched",
+                    &format!("validate-cpu-ordinary-cells-20260922-{run}"),
+                    LOST_COMMIT,
+                    ordinal as u64 + 3,
+                )
+                .write(&store.0)
+            })
+            .collect();
+        let lost_rows = vec![
+            lost(LOST_V2_B),
+            lost(LOST_V2_A),
+        ];
+        let scan = |rows: &[HistoryRow]| {
+            unresolved(
+                rows,
+                LOST_COMMIT,
+                &target_rows(rows, LOST_COMMIT),
+                6,
+                10,
+                Some(&store.0),
+                None,
+                |ancestor, descendant| Ok(ancestor == descendant),
+            )
+            .map(|assessment| {
+                assert!(assessment.unverifiable_evidence.is_empty());
+                assessment.obligations
+            })
+        };
+        let with = |index: usize, row: HistoryRow| {
+            let mut rows = lost_rows.clone();
+            rows[index] = row;
+            rows.extend_from_slice(&restored);
+            rows
+        };
+        let unmark = |row: &HistoryRow| -> HistoryRow {
+            let mut value = serde_json::to_value(row).unwrap();
+            value
+                .as_object_mut()
+                .unwrap()
+                .remove(crate::validation_evidence::QUARANTINE_KEY);
+            serde_json::from_value(value).unwrap()
+        };
+        let mut repaired = lost_rows.clone();
+        repaired.extend_from_slice(&restored);
+        assert!(scan(&repaired).unwrap().is_empty());
+        for index in 0..2 {
+            // Unmarked, each lost row is a global reader fault.
+            let error = scan(&with(index, unmark(&lost_rows[index]))).unwrap_err();
+            assert!(error.contains("validation evidence reader fault"), "{error}");
+            // A malformed marker is a refusal, and still fails the scan.
+            let mut malformed = lost_rows[index].clone();
+            malformed
+                .extra
+                .get_mut(crate::validation_evidence::QUARANTINE_KEY)
+                .unwrap()["reason"] = serde_json::json!("flaky host");
+            assert!(scan(&with(index, malformed)).is_err());
+        }
+        // A restored run whose files are then lost cannot mint its own
+        // quarantine: its self-consistent marker names no allowlisted run.
+        let lost_later = &restored[0];
+        let forged: HistoryRow =
+            serde_json::from_value(self_quarantined(lost_later, "devbig014-forged")).unwrap();
+        let value = serde_json::to_value(&forged).unwrap();
+        for reference in [
+            &value["constructed_plan"],
+            &value["cell_results"]["artifact"],
+            &value["test_results"]["artifact"],
+        ] {
+            std::fs::remove_file(store.0.join(reference["path"].as_str().unwrap())).unwrap();
+        }
+        let mut rows = lost_rows.clone();
+        rows.push(forged);
+        rows.push(restored[1].clone());
+        assert!(scan(&rows).is_err());
     }
 
     #[test]

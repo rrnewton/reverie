@@ -575,7 +575,7 @@ class DirectLedgerFixture(unittest.TestCase):
             "publisher._series_store=lambda:series;"
             "r={'repo':'hermit','run_id':expected_run_id,"
             "'record_id':'fixture-final','commit':sys.argv[sys.argv.index('--target')+1],"
-            "'cwd':sys.argv[sys.argv.index('--source-checkout')+1],'started_at':'2026-09-21T12:00:00Z','finished_at':'2026-09-21T12:10:00Z'};"
+            "'cwd':sys.argv[sys.argv.index('--source-checkout')+1],'schema_version':10,'started_at':'2026-09-21T12:00:00Z','finished_at':'2026-09-21T12:10:00Z'};"
             "validate_rows.rows=lambda **k:[r];"
             "validate_rows.canonical_finalized_row=lambda **k:r;"
             "sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name='__main__')"
@@ -650,7 +650,7 @@ class DirectLedgerFixture(unittest.TestCase):
             "publisher._series_store=lambda:series;"
             f"r={{'repo':'hermit','run_id':{expected_run_id!r},"
             "'record_id':'fixture-final','commit':sys.argv[sys.argv.index('--target')+1],"
-            "'cwd':sys.argv[sys.argv.index('--source-checkout')+1],'started_at':'2026-09-21T12:00:00Z','finished_at':'2026-09-21T12:10:00Z'};"
+            "'cwd':sys.argv[sys.argv.index('--source-checkout')+1],'schema_version':10,'started_at':'2026-09-21T12:00:00Z','finished_at':'2026-09-21T12:10:00Z'};"
             "validate_rows.rows=lambda **k:[r];"
             "validate_rows.canonical_finalized_row=lambda **k:r;"
             "sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name='__main__')"
@@ -995,7 +995,7 @@ class DirectLedgerFixture(unittest.TestCase):
 
     def test_finalized_run_uses_held_canonical_row_and_published_snapshot(self):
         self.append("finalized-cell")
-        row_bytes = json.dumps({"run_id": "run-1", "record_id": "record-1",
+        row_bytes = json.dumps({"run_id": "run-1", "record_id": "record-1", "schema_version": 10,
                                 "started_at": "2026-09-21T12:00:00Z",
                                 "finished_at": "2026-09-21T12:10:00Z"}).encode()
         calls = []
@@ -1060,7 +1060,7 @@ class DirectLedgerFixture(unittest.TestCase):
         self.append("finalized-cell")
         before = git(self.remote, "rev-parse", "main:scorecard/cells.json")
         rows = [json.dumps({"started_at": "2026-09-21T12:00:00Z", "finished_at": "2026-09-21T12:10:00Z",
-                            "record_id": record}).encode()
+                            "schema_version": 10, "record_id": record}).encode()
                 for record in ["original", "correction"]]
         with mock.patch.object(mirror, "finalized_producer_row", side_effect=rows):
             report = mirror.mirror(self.parent, self.source, self.target, mirror.REMOTE_URL,
@@ -1109,7 +1109,8 @@ class DirectLedgerFixture(unittest.TestCase):
     def test_portable_parent_source_binding_refuses_dirty_transitive_inputs(self):
         inputs = ("ci-hub/qualifying_receipt.py", "ci-hub/admission_paths.py",
                   "ci-hub/validate/gate_completeness.py", "ci-hub/validate/flaky-cells.json",
-                  "ci-hub/health/ledger_spool_backlog.py", "scripts/check_commit_attribution.py")
+                  "ci-hub/health/ledger_spool_backlog.py", "scripts/check_commit_attribution.py",
+                  "ci-hub/validate/retained-evidence-quarantine.json")
         for relative in inputs:
             path = self.parent / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1199,9 +1200,9 @@ class DirectLedgerFixture(unittest.TestCase):
         # whose builder and payload disagree names no builder and is refused too.
         cases = json.loads((Path(__file__).resolve().parents[2] / "validate" / "tests"
                             / "fixtures" / "release-payload-cases.json").read_text())["cases"]
-        self.assertEqual(7, sum(case["expected"] is not None for case in cases))
+        self.assertEqual(11, sum(case["expected"] is not None for case in cases))
         for index, case in enumerate(cases):
-            encoded = json.dumps(_apply_case({"started_at": "2026-09-21T12:00:00Z",
+            encoded = json.dumps(_apply_case({"schema_version": 10, "started_at": "2026-09-21T12:00:00Z",
                                               "finished_at": "2026-09-21T12:10:00Z"}, case)).encode()
             if case["expected"] != "cargo":
                 with self.subTest(case=case["label"]):
@@ -1232,7 +1233,7 @@ class DirectLedgerFixture(unittest.TestCase):
 
     def test_strict_writer_failure_cannot_publish_portable_carrier(self):
         self.append("native-refusal")
-        encoded = json.dumps({"started_at": "2026-09-21T12:00:00Z",
+        encoded = json.dumps({"schema_version": 10, "started_at": "2026-09-21T12:00:00Z",
                               "finished_at": "2026-09-21T12:10:00Z"}).encode()
         with mock.patch.object(mirror, "finalized_producer_row", return_value=encoded), \
                 mock.patch.object(mirror, "prepare_portable_proof", return_value={"prepared": True}), \

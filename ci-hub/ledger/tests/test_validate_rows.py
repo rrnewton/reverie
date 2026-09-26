@@ -3394,3 +3394,147 @@ print(json.dumps(validate_rows.record_reverie_finalization(request['source'],req
         if first.poll() is None:
             first.terminate()
             first.communicate(timeout=20)
+
+
+# The two lost runs the retained-evidence quarantine allowlist names, read from
+# the ledger shard it cites so the fixture cannot drift from the real events.
+QUARANTINE_SHARD = HERE.parents[2] / "ledger" / "hermit" / "devbig014" / "2026-09.jsonl"
+
+
+def quarantine_lost_events() -> list[dict]:
+    allowlist = validate_rows.qualifying_receipt.retained_evidence_quarantine_allowlist()
+    events = [
+        json.loads(line)
+        for line in QUARANTINE_SHARD.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    lost = [event for event in events if event.get("event_id") in allowlist]
+    assert sorted(event["event_id"] for event in lost) == sorted(allowlist) == [
+        "devbig014-1790052459-997811",
+        "devbig014-1790052466-983899",
+    ]
+    return lost
+
+
+def quarantine_correction(lost: dict, marker: dict | None = None) -> dict:
+    receipt = validate_rows.qualifying_receipt
+    if marker is None:
+        marker = receipt.retained_evidence_quarantine_allowlist()[lost["event_id"]]["marker"]
+    corrected = copy.deepcopy(lost["legacy_row"])
+    corrected.update(
+        result="no_result",
+        source="reconstructed",
+        **{receipt.RETAINED_EVIDENCE_QUARANTINE_KEY: copy.deepcopy(marker)},
+    )
+    return {
+        "schema": "validate-ledger/v1",
+        "event_id": f"{lost['event_id']}-quarantine",
+        "event_type": "run.correct",
+        "run_id": lost["run_id"],
+        "emitted_at": "2026-09-26T00:00:00Z",
+        "team": lost["team"],
+        "host": lost["host"],
+        "producer": {
+            "source": "reconstructed",
+            "tool": "validate_rows.py",
+            "tool_version": "1",
+        },
+        "supersedes": lost["event_id"],
+        "reason": "retained evidence lost",
+        "legacy_row": corrected,
+    }
+
+
+def test_allowlisted_quarantine_corrections_project_as_non_green_rows(tmp_path: Path):
+    lost = quarantine_lost_events()
+    # One root at a time, so workspace-relative paths expand identically.
+    write_events(tmp_path, *lost)
+    unquarantined = validate_rows.rows(root=tmp_path)
+    write_events(tmp_path, *lost, *(quarantine_correction(event) for event in lost))
+    projected = validate_rows.rows(root=tmp_path)
+    assert [row["record_id"] for row in projected] == [event["event_id"] for event in lost]
+    key = validate_rows.qualifying_receipt.RETAINED_EVIDENCE_QUARANTINE_KEY
+    for row, before, event in zip(projected, unquarantined, lost):
+        assert before["result"] == before["raw_result"] == "pass"
+        assert (row["result"], row["raw_result"], row["source"]) == (
+            "no_result", "pass", "reconstructed",
+        )
+        assert row[key]["original_event_id"] == event["event_id"]
+        # Everything but the three corrected fields is the lost row's projection.
+        corrected = {"result", "source", key}
+        assert {k: v for k, v in row.items() if k not in corrected} == {
+            k: v for k, v in before.items() if k not in corrected
+        }
+
+
+def _quarantine_variant(name: str, lost: list[dict]) -> list[dict]:
+    receipt = validate_rows.qualifying_receipt
+    key = receipt.RETAINED_EVIDENCE_QUARANTINE_KEY
+    first, second = lost
+    correction = quarantine_correction(first)
+    if name == "self-authored-marker":
+        marker = copy.deepcopy(correction["legacy_row"][key])
+        marker["expected"]["constructed_plan"]["bytes"] += 1
+        correction = quarantine_correction(first, marker)
+    elif name == "other-entry-marker":
+        correction = quarantine_correction(
+            first, receipt.retained_evidence_quarantine_allowlist()[second["event_id"]]["marker"]
+        )
+    elif name == "unlisted-supersedes":
+        other = copy.deepcopy(first)
+        other["event_id"] = "devbig014-0000000000-000000"
+        other["legacy_row"]["record_id"] = other["event_id"]
+        correction = quarantine_correction(other, correction["legacy_row"][key])
+        return [other, correction]
+    elif name == "changed-count":
+        correction["legacy_row"]["passed_tests"] += 1
+    elif name == "changed-artifact":
+        correction["legacy_row"]["constructed_plan"]["bytes"] += 1
+    elif name == "wrong-result":
+        correction["legacy_row"]["result"] = "fail"
+    elif name == "wrong-source":
+        correction["legacy_row"]["source"] = "observed"
+    elif name == "dropped-field":
+        del correction["legacy_row"]["run_number"]
+    elif name == "retyped-schema":
+        correction["legacy_row"]["schema_version"] = 10.0
+    elif name == "lost-run-altered":
+        first = copy.deepcopy(first)
+        first["legacy_row"]["commit"] = "b" * 40
+        correction = quarantine_correction(first)
+    elif name == "lost-run-premarked":
+        first = copy.deepcopy(first)
+        first["legacy_row"][key] = copy.deepcopy(correction["legacy_row"][key])
+        return [first, quarantine_correction(first)]
+    else:
+        raise AssertionError(name)
+    return [first, correction]
+
+
+@pytest.mark.parametrize("name", [
+    "self-authored-marker",
+    "other-entry-marker",
+    "unlisted-supersedes",
+    "changed-count",
+    "changed-artifact",
+    "wrong-result",
+    "wrong-source",
+    "dropped-field",
+    "retyped-schema",
+    "lost-run-altered",
+    "lost-run-premarked",
+])
+def test_quarantine_correction_other_than_the_allowlisted_one_is_refused(tmp_path: Path, name: str):
+    write_events(tmp_path, *_quarantine_variant(name, quarantine_lost_events()))
+    with pytest.raises(ValueError, match="retained evidence quarantine"):
+        validate_rows.rows(root=tmp_path)
+
+
+def test_quarantine_marker_in_a_result_row_is_refused(tmp_path: Path):
+    """A self-consistent row that marks itself quarantined is a forgery."""
+    lost = quarantine_lost_events()[0]
+    forged = copy.deepcopy(lost)
+    forged["legacy_row"] = quarantine_correction(lost)["legacy_row"]
+    write_events(tmp_path, forged)
+    with pytest.raises(ValueError, match="outside a correction"):
+        validate_rows.rows(root=tmp_path)

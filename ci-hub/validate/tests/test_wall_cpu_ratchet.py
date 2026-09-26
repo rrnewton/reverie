@@ -173,7 +173,7 @@ class BuilderSeparation(unittest.TestCase):
     def test_only_a_consistent_cargo_row_is_a_timing_sample(self):
         # Neither field, or the exact Cargo builder/payload pair, times the
         # Cargo debug binary; a Buck row or an inconsistent pairing does not.
-        self.assertEqual(7, sum(case["expected"] is not None for case in CASES))
+        self.assertEqual(11, sum(case["expected"] is not None for case in CASES))
         for case in CASES:
             with self.subTest(case=case["label"]):
                 row = _apply_case(_row("row", _ts(4, 1, 0), _ts(4, 1, 8), 480, 1100), case)

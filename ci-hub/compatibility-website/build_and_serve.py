@@ -115,6 +115,7 @@ GENERATOR_PATHS = (
     "ci-hub/series/finalized_proof.py",
     "ci-hub/series/series.py",
     "ci-hub/validate/qualifying-receipt.json",
+    "ci-hub/validate/retained-evidence-quarantine.json",
 )
 STAGE_1_READER_PATHS = (
     "ci-hub/admission_paths.py",
@@ -154,6 +155,7 @@ STAGE_1_READER_PATHS = (
     "ci-hub/validate/gate_completeness.py",
     "ci-hub/validate/green_class.py",
     "ci-hub/validate/qualifying-receipt.json",
+    "ci-hub/validate/retained-evidence-quarantine.json",
     "ci-hub/validate/run_registry.py",
     "ci-hub/validate/service_result.py",
 )
@@ -376,6 +378,11 @@ def _captured_reader_modules(
         qualifying.predicate_path = lambda: _CapturedFile(
             REPOSITORY / "ci-hub/validate/qualifying-receipt.json",
             captured["ci-hub/validate/qualifying-receipt.json"],
+        )
+        # The quarantine allowlist is read from the same captured tree.
+        qualifying.RETAINED_EVIDENCE_QUARANTINE_ALLOWLIST = _CapturedFile(
+            REPOSITORY / "ci-hub/validate/retained-evidence-quarantine.json",
+            captured["ci-hub/validate/retained-evidence-quarantine.json"],
         )
         qualifying._ACTIVE = None
         _refuse_qualification_overrides()

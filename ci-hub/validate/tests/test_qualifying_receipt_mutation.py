@@ -287,6 +287,10 @@ def _schema8_cell_row(
     """A schema-8 row with its validate path and retained-result subset."""
     row = _schema6_cell_row(sha, state)
     row["schema_version"] = 8
+    # No writer emitted schema 8 before the release-builder pair existed, so a
+    # schema-8 Cargo row names its builder explicitly.
+    row["release_builder"] = "cargo"
+    row["e2e_payload"] = copy.deepcopy(qualifying_receipt.active()["release_payloads"]["cargo"])
     row["record_id"] = "schema8-test"
     row["run_id"] = "schema8-test"
     row["profile"] = path
@@ -1063,14 +1067,32 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         cases = json.loads(
             (Path(__file__).resolve().parent / "fixtures" / "release-payload-cases.json").read_text()
         )["cases"]
-        self.assertEqual(7, sum(case["expected"] is not None for case in cases))
+        self.assertEqual(11, sum(case["expected"] is not None for case in cases))
         predicate = qualifying_receipt.active()
-        paneled = {"full": 0, "raw-row": 0, "not-hermit": 0}
+        paneled = {"full": 0, "raw-row": 0, "not-hermit": 0, "schema": 0}
+        cargo = {"release_builder": "cargo", "e2e_payload": predicate["release_payloads"]["cargo"]}
         for case in cases:
             with self.subTest(case=case["label"]):
                 row = _apply_case(_green_row(SHA), case)
                 self.assertEqual(case["expected"],
                                  qualifying_receipt.release_builder_of(row, predicate))
+                if "schema_version" in case["fields"] or "schema_version" in case.get("absent", ()):
+                    # The base row is a schema-5 receipt. A case that moves it
+                    # to another schema is also judged by that schema's own
+                    # clauses, which this panel does not model, so the shared
+                    # reader above carries the builder claim: the predicate
+                    # reads a pairless Cargo row exactly as the same row with
+                    # the explicit Cargo pair, and refuses every other one.
+                    verdict = qualifying_receipt.row_qualification(row, SHA, predicate)
+                    if case["expected"] == "cargo":
+                        self.assertEqual(
+                            qualifying_receipt.row_qualification({**row, **cargo}, SHA, predicate),
+                            verdict,
+                        )
+                    else:
+                        self.assertFalse(verdict[0], verdict)
+                    paneled["schema"] += 1
+                    continue
                 if row.get("repo") not in ("hermit", "rrnewton/hermit"):
                     # Not a Hermit canonical receipt. validate-status and
                     # publish_receipt bind a receipt to rrnewton/hermit and
@@ -1111,7 +1133,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                     self.assertFalse(any(panel.values()),
                                      f"{case['label']} must be refused by every consumer: {panel}")
                 paneled["full"] += 1
-        self.assertEqual({"full": 25, "raw-row": 7, "not-hermit": 5}, paneled)
+        self.assertEqual({"full": 25, "raw-row": 7, "not-hermit": 5, "schema": 14}, paneled)
 
     def test_schema4_and_newer_passed_count_contract_directly(self) -> None:
         """Both shared predicates use one reason for every current-row defect."""
@@ -1237,16 +1259,40 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         outcomes = []
         for case in cases:
             with self.subTest(case=case["label"]):
-                got = qualifying_receipt.release_builder_of(_apply_case({}, case), predicate)
+                got = qualifying_receipt.release_builder_of(
+                    _apply_case({"schema_version": 5}, case), predicate)
                 self.assertEqual(case["expected"], got)
                 outcomes.append(got is not None)
-        self.assertEqual((7, 30), (sum(outcomes), len(outcomes) - sum(outcomes)))
+        self.assertEqual((11, 40), (sum(outcomes), len(outcomes) - sum(outcomes)))
         # An older predicate without the cutoff dates no row before it.
         undated = {k: v for k, v in predicate.items()
                    if k != "release_builder_required_from_finished_at"}
-        legacy = {"repo": "hermit", "finished_at": "2026-08-07T20:15:31Z"}
+        legacy = {"repo": "hermit", "finished_at": "2026-08-07T20:15:31Z", "schema_version": 5}
         self.assertEqual("cargo", qualifying_receipt.release_builder_of(legacy, predicate))
         self.assertIsNone(qualifying_receipt.release_builder_of(legacy, undated))
+        # An older predicate without the schema list knows no schema that
+        # predates the pair, for a Reverie row too.
+        unlisted = {k: v for k, v in predicate.items()
+                    if k != "release_builder_pairless_schema_versions"}
+        self.assertIsNone(qualifying_receipt.release_builder_of(legacy, unlisted))
+        self.assertIsNone(qualifying_receipt.release_builder_of(
+            {**legacy, "repo": "reverie"}, unlisted))
+        # Every schema_version shape the typed Rust row cannot hold, and every
+        # integer outside the historical list, names no builder in either repo.
+        for repo in ("hermit", "reverie"):
+            for schema in ("5", 5.0, True, False, [5], {"v": 5}, None, -1, 0, 8, 9, 11, 999,
+                           1 << 64):
+                with self.subTest(repo=repo, schema=schema):
+                    self.assertIsNone(qualifying_receipt.release_builder_of(
+                        {**legacy, "repo": repo, "schema_version": schema}, predicate))
+            missing = {k: v for k, v in legacy.items() if k != "schema_version"}
+            with self.subTest(repo=repo, schema="missing"):
+                self.assertIsNone(qualifying_receipt.release_builder_of(
+                    {**missing, "repo": repo}, predicate))
+            for schema in (1, 2, 3, 4, 5, 6, 7, 10):
+                with self.subTest(repo=repo, schema=schema):
+                    self.assertEqual("cargo", qualifying_receipt.release_builder_of(
+                        {**legacy, "repo": repo, "schema_version": schema}, predicate))
         # Non-string timestamps, which the typed Rust row cannot hold at all.
         for finished in (1790000000, 1.5, True, ["2026-08-07T20:15:31Z"], {}):
             with self.subTest(finished=finished):
@@ -1275,6 +1321,77 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             drifted = copy.deepcopy(predicate)
             drifted["release_builder_required_from_finished_at"] = value
             cases.append((label, drifted, "release_builder_required_from_finished_at must be"))
+        for label, drifted, message in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "predicate.json"
+                path.write_text(json.dumps(drifted))
+                with mock.patch.dict(
+                    os.environ,
+                    {qualifying_receipt.PREDICATE_ENV: str(path)},
+                ):
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        qualifying_receipt.load()
+
+    def test_pinned_hermit_reader_states_the_same_pairless_rule(self) -> None:
+        """The pinned Hermit validate cache must read a pairless row as we do.
+
+        Reads the constants from the gitlink's committed bytes, not from the
+        submodule's working tree, so a dirty or moved checkout cannot agree.
+        """
+        import re
+
+        parent = CI_HUB.parent
+        listed = subprocess.run(
+            ["git", "-C", str(parent), "ls-tree", "HEAD", "hermit"],
+            check=True, capture_output=True, text=True,
+        ).stdout.split()
+        self.assertEqual(listed[:2], ["160000", "commit"], listed)
+        pin = listed[2]
+        if not (parent / "hermit" / ".git").exists():
+            self.skipTest(f"hermit submodule is not initialised; cannot read pin {pin}")
+        shown = subprocess.run(
+            ["git", "-C", str(parent / "hermit"), "show",
+             f"{pin}:scripts/lib/validate_history.rs"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(shown.returncode, 0, f"pin {pin} is not readable: {shown.stderr}")
+        before = re.findall(
+            r'^const LEGACY_PAIRLESS_BEFORE: &str = "([^"]*)";$', shown.stdout, re.M)
+        schemas = re.findall(
+            r"^const LEGACY_PAIRLESS_SCHEMAS: \[i64; (\d+)\] = \[([0-9, ]*)\];$",
+            shown.stdout, re.M)
+        self.assertEqual(len(before), 1, before)
+        self.assertEqual(len(schemas), 1, schemas)
+        predicate = qualifying_receipt.active()
+        self.assertEqual(before[0], predicate["release_builder_required_from_finished_at"])
+        listed_schemas = [int(value) for value in schemas[0][1].split(",")]
+        self.assertEqual(int(schemas[0][0]), len(listed_schemas))
+        self.assertEqual(listed_schemas, predicate["release_builder_pairless_schema_versions"])
+
+    def test_predicate_must_list_the_pairless_schemas(self) -> None:
+        predicate = copy.deepcopy(qualifying_receipt.active())
+        self.assertEqual([1, 2, 3, 4, 5, 6, 7, 10],
+                         predicate["release_builder_pairless_schema_versions"])
+        missing = copy.deepcopy(predicate)
+        del missing["release_builder_pairless_schema_versions"]
+        cases = [("missing", missing, "missing key 'release_builder_pairless_schema_versions'")]
+        for label, value in (
+            ("null", None),
+            ("empty", []),
+            ("duplicate", [1, 2, 2]),
+            ("zero", [0, 1]),
+            ("negative", [-1, 1]),
+            ("boolean", [True, 2]),
+            ("string", ["5"]),
+            ("float", [5.0]),
+            ("nested", [[5]]),
+            ("scalar", 5),
+            ("object", {"5": True}),
+        ):
+            drifted = copy.deepcopy(predicate)
+            drifted["release_builder_pairless_schema_versions"] = value
+            cases.append((label, drifted,
+                          "release_builder_pairless_schema_versions must be"))
         for label, drifted, message in cases:
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / "predicate.json"
@@ -1660,6 +1777,10 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         newer = copy.deepcopy(current)
         newer["schema_version"] = predicate["cell_results"]["supported_schema_max"] + 1
         newer["cell_results"]["future_field"] = True
+        # A pairless row past the ledger's schemas is not Cargo; name the pair
+        # so the cell_results bound, not the builder, is what refuses it.
+        newer["release_builder"] = "cargo"
+        newer["e2e_payload"] = copy.deepcopy(predicate["release_payloads"]["cargo"])
         self.assertEqual(
             qualifying_receipt.row_qualification(newer, SHA, predicate),
             (False, "cell_results schema-unavailable"),

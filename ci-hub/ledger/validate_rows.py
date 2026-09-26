@@ -1305,6 +1305,54 @@ def _admission_event_identity(value):
     return qualifying_receipt.admission_json_dumps(value, sort_keys=True)
 
 
+def _require_quarantine_correction(event: dict, target: dict) -> None:
+    """Require a quarantine correction to be exactly its allowlisted lost run's.
+
+    The superseded event must be an allowlisted lost run with that entry's
+    envelope and row identity, and the corrected row must equal the lost row
+    except for three fields: result ``no_result``, source ``reconstructed`` and
+    the entry's marker. Anything else -- another run, a self-authored marker, a
+    changed count or artifact reference -- is refused.
+    """
+    marker_key = qualifying_receipt.RETAINED_EVIDENCE_QUARANTINE_KEY
+    entry = qualifying_receipt.retained_evidence_quarantine_allowlist().get(
+        event.get("supersedes")
+    )
+    if entry is None:
+        raise ValueError("retained evidence quarantine supersedes no allowlisted lost run")
+    lost = target.get("legacy_row")
+    if (
+        target.get("event_id") != entry["event_id"]
+        or target.get("team") != entry["team"]
+        or target.get("host") != entry["row"]["host"]
+        or target.get("run_id") != entry["row"]["run_id"]
+        or target.get("event_type") != "run.result"
+        or not isinstance(lost, dict)
+        or marker_key in lost
+        or lost.get("raw_result") != "pass"
+        or any(
+            key not in lost
+            or lost[key] != value
+            or type(lost[key]) is not type(value)
+            for key, value in entry["row"].items()
+        )
+    ):
+        raise ValueError("retained evidence quarantine supersedes a run other than its lost run")
+    expected = {
+        **lost,
+        "result": "no_result",
+        "source": "reconstructed",
+        marker_key: entry["marker"],
+    }
+    if qualifying_receipt.admission_json_dumps(
+        event["legacy_row"], sort_keys=True
+    ) != qualifying_receipt.admission_json_dumps(expected, sort_keys=True):
+        raise ValueError(
+            "retained evidence quarantine row differs from its lost run beyond "
+            "result, source and the allowlisted marker"
+        )
+
+
 def _legacy_row_corrections(
     items: list[dict],
     *,
@@ -1330,6 +1378,21 @@ def _legacy_row_corrections(
     known_ids = set(by_id)
     replacements: dict[str, tuple[str, dict]] = {}
     correction_ids: set[str] = set()
+    marker_key = qualifying_receipt.RETAINED_EVIDENCE_QUARANTINE_KEY
+
+    for event in items:
+        row = event.get("legacy_row")
+        if (
+            event.get("event_type") != "run.correct"
+            and isinstance(row, dict)
+            and marker_key in row
+        ):
+            # A quarantine exists only as the correction of its lost run; a
+            # row that records one for itself is a forgery, not evidence.
+            raise ValueError(
+                f"validation event {event.get('event_id')!r} carries a retained "
+                "evidence quarantine outside a correction"
+            )
     corrections = [
         event
         for event in items
@@ -1376,6 +1439,11 @@ def _legacy_row_corrections(
             _require_gate_failure_bindings(corrected)
         except ValueError as error:
             refuse(str(error))
+        if marker_key in corrected:
+            try:
+                _require_quarantine_correction(event, target)
+            except (RuntimeError, ValueError) as error:
+                refuse(str(error))
         if supersedes in replacements:
             refuse(f"a second correction also supersedes {supersedes!r}")
         replacements[supersedes] = (event_id, corrected)

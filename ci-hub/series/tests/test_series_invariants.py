@@ -3483,6 +3483,12 @@ class CellResultProjection(unittest.TestCase):
             field = f"first_divergent_{side}_message"
             for label, value in (("integer", 7), ("list", ["x"]), ("lone surrogate", "\ud800")):
                 mutations.append((f"{field} {label}", put(field, value)))
+        # An unhashable value where a string enum belongs must refuse as a
+        # malformed row, not escape as a TypeError from set membership.
+        for label, value in (("array", ["canonical"]), ("object", {"canonical": True})):
+            for field in ("strictness", "log_scope", "record_envelope"):
+                mutations.append((f"{field} {label}", put_in("comparison", field, value)))
+            mutations.append((f"verdict {label}", put("verdict", value)))
         for verdict in ("matched", "diverged"):
             for label, mutate in mutations:
                 with self.subTest(verdict=verdict, mutation=label):

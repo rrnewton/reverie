@@ -740,7 +740,7 @@ def _pressure_outer_kind(payload: dict) -> str:
     failure_class = payload.get("failure_class")
     if outcome == "passed" and result == "pass" and failure_class is None:
         return "pass"
-    if failure_class == "product_failure" and outcome in {"diverged", "errored"}:
+    if failure_class == "product_failure" and _is_str_in(outcome, {"diverged", "errored"}):
         return "product"
     return {
         "understood_infrastructure_failure": "infrastructure",
@@ -776,9 +776,9 @@ def _pressure_inner_kinds(payload: dict) -> list[str] | None:
                 kind = "product"
             elif verdict == "infrastructure_error":
                 kind = "infrastructure"
-            elif verdict == "no_result" and comparison.get("no_result_kind") in {
+            elif verdict == "no_result" and _is_str_in(comparison.get("no_result_kind"), {
                 "first_run_rejected", "container_failed",
-            }:
+            }):
                 kind = "product"
             else:
                 kind = "no_result"
@@ -2789,9 +2789,9 @@ def _validate_snapshot_payload(
         required_source, required_source | {"repository"},
     ):
         raise SeriesError("scorecard snapshot has an invalid source identity")
-    if source.get("repository", PARENT_REPOSITORY) not in {
+    if not _is_str_in(source.get("repository", PARENT_REPOSITORY), {
         PARENT_REPOSITORY, LEDGER_REPOSITORY,
-    }:
+    }):
         raise SeriesError("scorecard snapshot names an unsupported repository")
     if (
         snapshot.get("schema") != SCORECARD_SNAPSHOT_SCHEMA
@@ -2814,7 +2814,7 @@ def _validate_snapshot_payload(
             raise SeriesError("scorecard snapshot has an invalid local source")
         relative = item.get("path")
         if (
-            item.get("kind") not in {"live", "published-retained"}
+            not _is_str_in(item.get("kind"), {"live", "published-retained"})
             or not isinstance(relative, str)
             or not relative
             or Path(relative).is_absolute()
@@ -4387,6 +4387,15 @@ def _is_optional(value: Any, check) -> bool:
     return value is None or check(value)
 
 
+def _is_str_in(value: Any, choices) -> bool:
+    """Whether ``value`` is one of the string ``choices``.
+
+    Row data may put an array or object where a string belongs; a bare ``in``
+    against a set would raise ``TypeError`` for those instead of refusing.
+    """
+    return isinstance(value, str) and value in choices
+
+
 def _is_u64_pair(value: Any) -> bool:
     """``ComparedLogMessages`` or ``DbtCountedBranchComparison``: two u64s.
 
@@ -4430,15 +4439,18 @@ def _is_typed_comparison(comparison: Any) -> bool:
         "full_trace", "exact_remainder", "ignore_lines", "skip_commit", "skip_detlog",
     )
     return (
-        get("strictness") in {"stripped", "canonical"}
+        _is_str_in(get("strictness"), {"stripped", "canonical"})
         and _is_optional(get("display_name"), _is_rust_string)
         and type(get("compare_logs")) is bool
         and all(_is_optional(get(key), lambda v: type(v) is bool) for key in optional_bools)
-        and get("log_scope") in {None, "deterministic", "info", "full_trace"}
-        and get("record_envelope") in {
+        and _is_optional(
+            get("log_scope"),
+            lambda v: _is_str_in(v, {"deterministic", "info", "full_trace"}),
+        )
+        and _is_str_in(get("record_envelope"), {
             "all_records_v1", "dbt_evidence_transport_v1",
             "cross_backend_detcore_v1", "caller_defined",
-        }
+        })
         and all(
             _is_optional(
                 get(key),
@@ -4599,9 +4611,7 @@ def _typed_comparison_attempt(
         )
 
     verdict = report.get("verdict")
-    # A tuple, not a set: a JSON array or object here is malformed data and
-    # must reach the MalformedRow below, not raise TypeError as unhashable.
-    if verdict in ("matched", "diverged"):
+    if _is_str_in(verdict, {"matched", "diverged"}):
         if (
             report.get("no_result_reason") is not None
             or report.get("infrastructure_error") is not None
@@ -4676,8 +4686,10 @@ def _typed_comparison_attempt(
             and comparison.get("compare_logs") is True
             and comparison.get("compare_io_buffers") is True
             and comparison.get("log_scope") == "info"
-            and comparison.get("record_envelope")
-            in ("all_records_v1", "dbt_evidence_transport_v1")  # tuple: data may be unhashable
+            and _is_str_in(
+                comparison.get("record_envelope"),
+                {"all_records_v1", "dbt_evidence_transport_v1"},
+            )
             and comparison.get("virtualize_time") is expected_virtualize_time
             and comparison.get("strip_lines") is False
             and comparison.get("canonicalize_addresses") is True
@@ -4787,8 +4799,7 @@ def _typed_comparison_attempt(
             or (reason is not None and not isinstance(reason, dict))
             or any(report.get(field) is not None for field in contradiction_fields)
             or any(attempt.get(field) is not None for field in contradiction_fields[:-1])
-            # A tuple, not a set: membership must not hash a malformed value.
-            or attempt.get("outcome") not in ("FAIL", "ERROR")
+            or not _is_str_in(attempt.get("outcome"), {"FAIL", "ERROR"})
         ):
             raise MalformedRow(
                 f"cell attempt {index} no_result report is internally inconsistent"
@@ -5496,7 +5507,7 @@ def _no_verdict_kind(attempt: dict, disposition: str) -> str:
         return "infrastructure_error"
     if verdict == "matched" and disposition == "failed_match":
         return "failed_match"
-    if verdict in {"matched", "diverged"} and disposition == "no_result":
+    if _is_str_in(verdict, {"matched", "diverged"}) and disposition == "no_result":
         return {
             "matched": "noncanonical_match",
             "diverged": "noncanonical_divergence",
@@ -5659,9 +5670,9 @@ def _declared_guest_exit_evidence(row: dict) -> dict | None:
 def _no_verdict_evidence(row: dict, projected_outcome: str) -> dict | None:
     """Retain typed non-comparison dispositions without reconstructing one."""
     mode = row.get("mode")
-    if mode not in _COMPARISON_MODES or projected_outcome not in {
+    if not _is_str_in(mode, _COMPARISON_MODES) or not _is_str_in(projected_outcome, {
         "no_result", "timeout", "errored",
-    }:
+    }):
         return None
     attempts = row.get("attempts")
     if not isinstance(attempts, list) or not attempts:

@@ -310,6 +310,10 @@ pub struct QualifyingPredicate {
     /// `release_builder` and `e2e_payload`. Required, with no default: an
     /// absent cutoff would silently readmit every row that omits the pair.
     pub release_builder_required_from_finished_at: String,
+    /// Row schemas written before the pair existed; a row without the pair is
+    /// Cargo only at one of these. Required, with no default: an absent list
+    /// would leave missing and future schemas undecided.
+    pub release_builder_pairless_schema_versions: Vec<u32>,
 }
 
 /// Rows whose `repo` names Reverie. Reverie has only a Cargo build and its
@@ -339,7 +343,9 @@ pub(crate) fn is_utc_timestamp(ts: &str) -> bool {
 /// (`serde_json` equality keeps `true` distinct from `1`).
 ///
 /// A row with neither field was a Cargo run only where the fields could not
-/// yet exist: a Reverie row, or a Hermit row whose `finished_at` is a real UTC
+/// yet exist, and only at a `schema_version` listed in
+/// `release_builder_pairless_schema_versions`: a Reverie row, or a Hermit row
+/// whose `finished_at` is a real UTC
 /// instant before `release_builder_required_from_finished_at`, when the first
 /// Hermit writer of the pair was authored. A Hermit row from that instant on,
 /// or with an absent or malformed `finished_at`, may come from a writer that
@@ -354,6 +360,12 @@ pub fn release_builder_of<'p>(row: &HistoryRow, pred: &'p QualifyingPredicate) -
                 .release_payloads
                 .get_key_value("cargo")
                 .map(|(builder, _)| builder.as_str())?;
+            if !row
+                .schema_version
+                .is_some_and(|schema| pred.release_builder_pairless_schema_versions.contains(&schema))
+            {
+                return None;
+            }
             let repo = row.repo.as_deref();
             if repo.is_some_and(|repo| REVERIE_REPOS.contains(&repo)) {
                 return Some(cargo);
@@ -403,8 +415,9 @@ pub(crate) mod release_payload_cases {
             self.expected.as_deref()
         }
 
-        /// Applies the case to a typed row. `repo` and `finished_at` are typed
-        /// fields, so they are set there rather than in `extra`.
+        /// Applies the case to a typed row. `repo`, `finished_at` and
+        /// `schema_version` are typed fields, so they are set there rather
+        /// than in `extra`.
         pub(crate) fn apply(&self, row: &mut crate::records::HistoryRow) {
             fn text(key: &str, value: &Value) -> Option<String> {
                 match value {
@@ -419,6 +432,7 @@ pub(crate) mod release_payload_cases {
                 match key.as_str() {
                     "repo" => row.repo = None,
                     "finished_at" => row.finished_at = None,
+                    "schema_version" => row.schema_version = None,
                     other => {
                         row.extra.remove(other);
                     }
@@ -428,6 +442,19 @@ pub(crate) mod release_payload_cases {
                 match key.as_str() {
                     "repo" => row.repo = text(key, value),
                     "finished_at" => row.finished_at = text(key, value),
+                    "schema_version" => {
+                        row.schema_version = match value {
+                            Value::Null => None,
+                            other => Some(
+                                other
+                                    .as_u64()
+                                    .and_then(|schema| u32::try_from(schema).ok())
+                                    .unwrap_or_else(|| {
+                                        panic!("fixture schema_version must be a u32 or null, not {other}")
+                                    }),
+                            ),
+                        }
+                    }
                     _ => {
                         row.extra.insert(key.clone(), value.clone());
                     }
@@ -502,6 +529,15 @@ impl QualifyingPredicate {
         if !is_utc_timestamp(&predicate.release_builder_required_from_finished_at) {
             return Err(format!(
                 "{origin}: qualifying predicate release_builder_required_from_finished_at must be a UTC RFC3339 timestamp such as 2026-09-25T20:42:29Z"
+            ));
+        }
+        let schemas = &predicate.release_builder_pairless_schema_versions;
+        if schemas.is_empty()
+            || schemas.contains(&0)
+            || schemas.iter().collect::<std::collections::BTreeSet<_>>().len() != schemas.len()
+        {
+            return Err(format!(
+                "{origin}: qualifying predicate release_builder_pairless_schema_versions must be a non-empty list of distinct positive integers"
             ));
         }
         Ok(predicate)
@@ -1161,7 +1197,8 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
             } => BoundaryOutcome::Refused(
                 full_validation_refusal.unwrap_or_else(|| "cell_results legacy-unbound".into()),
             ),
-            crate::validation_evidence::EvidenceOutcome::Refused { reason } => {
+            crate::validation_evidence::EvidenceOutcome::Refused { reason }
+            | crate::validation_evidence::EvidenceOutcome::Quarantined { reason, .. } => {
                 BoundaryOutcome::Refused(format!("cell_results {reason}"))
             }
             crate::validation_evidence::EvidenceOutcome::ReaderFault { reason, .. } => {

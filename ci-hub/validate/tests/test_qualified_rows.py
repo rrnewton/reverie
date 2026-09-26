@@ -24,6 +24,9 @@ def _row(name: str, finished: str, **overrides: object) -> dict[str, object]:
     row: dict[str, object] = {
         "commit": name,
         "finished_at": finished,
+        # The oldest ledger schema: pre-count, pre-coverage, and one a writer
+        # emitted before the release-builder pair existed.
+        "schema_version": 1,
         "result": "pass",
         "executed_tests": 10,
         "gates_run": 5,
@@ -54,7 +57,7 @@ def test_non_cargo_release_payload_never_qualifies() -> None:
     cases = json.loads(
         (Path(__file__).resolve().parent / "fixtures" / "release-payload-cases.json").read_text()
     )["cases"]
-    assert sum(case["expected"] is not None for case in cases) == 7
+    assert sum(case["expected"] is not None for case in cases) == 11
     for case in cases:
         row = _apply_case(_row("row", "2026-08-04T10:00:00Z"), case)
         expected = [row] if case["expected"] == "cargo" else []

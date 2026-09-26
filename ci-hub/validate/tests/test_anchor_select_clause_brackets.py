@@ -61,6 +61,9 @@ PREDICATE = {
     "release_builder_required_from_finished_at": json.loads(
         (_VALIDATE / "qualifying-receipt.json").read_text()
     )["release_builder_required_from_finished_at"],
+    "release_builder_pairless_schema_versions": json.loads(
+        (_VALIDATE / "qualifying-receipt.json").read_text()
+    )["release_builder_pairless_schema_versions"],
     "admission": {
         "applies_at_schema_min": 5,
         "required_admission": "ci-hub-validate-lock",
@@ -136,15 +139,25 @@ def test_non_cargo_release_builder_is_refused() -> None:
     receipt certifies. The baseline carries neither field and finished before
     the pair was written, so it qualifies as a Cargo run and each refusal here
     belongs to the release_builder clause."""
-    assert sum(case["expected"] is not None for case in CASES) == 7
+    assert sum(case["expected"] is not None for case in CASES) == 11
+    cargo = {
+        "release_builder": "cargo",
+        "e2e_payload": PREDICATE["release_payloads"]["cargo"],
+    }
     for case in CASES:
         row = _apply_case(_row(), case)
-        expected = (
-            (True, "qualifies")
-            if case["expected"] == "cargo"
-            else (False, f"release_builder={row.get('release_builder')!r}")
-        )
-        assert A.row_qualifies(row, PREDICATE) == expected, case["label"]
+        if case["expected"] != "cargo":
+            expected = (False, f"release_builder={row.get('release_builder')!r}")
+            assert A.row_qualifies(row, PREDICATE) == expected, case["label"]
+            continue
+        # A case may move the row to another schema, whose own clauses then
+        # apply; the pairless row must read exactly as the same row carrying
+        # the explicit Cargo pair, and the baseline schema must qualify.
+        verdict = A.row_qualifies(row, PREDICATE)
+        assert verdict == A.row_qualifies({**row, **cargo}, PREDICATE), case["label"]
+        assert not verdict[1].startswith("release_builder"), case["label"]
+        if row.get("schema_version") == _row()["schema_version"]:
+            assert verdict == (True, "qualifies"), case["label"]
 
 
 def test_failures_above_the_cap_are_refused() -> None:

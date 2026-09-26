@@ -105,6 +105,94 @@ class _ValidationEvidenceBatch:
 
 _VALIDATION_EVIDENCE_BATCHES: list[_ValidationEvidenceBatch] = []
 
+# The one retained-evidence quarantine the native verifier recognizes. The
+# validation ledger binds it to an append-only correction of a single lost run;
+# its typed answer never qualifies and carries no observations.
+RETAINED_EVIDENCE_QUARANTINE_KEY = "retained_evidence_quarantine"
+RETAINED_EVIDENCE_QUARANTINE_SCHEMA = "retained-evidence-quarantine/v1"
+RETAINED_EVIDENCE_QUARANTINE_REASON = "retained evidence lost"
+# The closed set of lost runs a quarantine may name, shared with the native
+# verifier (ci-hub/lib/validation_evidence.rs includes the same file).
+RETAINED_EVIDENCE_QUARANTINE_ALLOWLIST = (
+    _CI_HUB_DIR / "validate" / "retained-evidence-quarantine.json"
+)
+RETAINED_EVIDENCE_QUARANTINE_ALLOWLIST_SCHEMA = "retained-evidence-quarantine-allowlist/v1"
+_QUARANTINE_ROW_IDENTITY = (
+    "record_id", "run_id", "commit", "host", "repo", "finished_at", "schema_version",
+)
+
+
+def retained_evidence_quarantine_allowlist() -> dict[str, dict[str, Any]]:
+    """The allowlisted lost runs by event ID, or RuntimeError if malformed.
+
+    Mirrors ``quarantine_allowlist`` in ci-hub/lib/validation_evidence.rs: a
+    marker is honoured only when it equals an entry's marker exactly, on a row
+    carrying that entry's identity. A marker a row authors for itself is not
+    in this file and so names no lost run.
+    """
+    path = RETAINED_EVIDENCE_QUARANTINE_ALLOWLIST
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"{path}: retained evidence quarantine allowlist is unreadable: {error}")
+    entry_keys = {"ledger_shard", "event_id", "team", "row", "marker"}
+    marker_keys = {"schema", "reason", "original_event_id", "expected"}
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"_comment", "schema", "entries"}
+        or document["schema"] != RETAINED_EVIDENCE_QUARANTINE_ALLOWLIST_SCHEMA
+        or not isinstance(document["entries"], list)
+    ):
+        raise RuntimeError(f"{path}: retained evidence quarantine allowlist is malformed")
+    entries: dict[str, dict[str, Any]] = {}
+    for entry in document["entries"]:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != entry_keys
+            or not isinstance(entry["row"], dict)
+            or set(entry["row"]) != set(_QUARANTINE_ROW_IDENTITY)
+            or not isinstance(entry["marker"], dict)
+            or set(entry["marker"]) != marker_keys
+            or set(entry["marker"]["expected"] or ()) != {"constructed_plan", "cell_results", "test_results"}
+            or entry["marker"]["schema"] != RETAINED_EVIDENCE_QUARANTINE_SCHEMA
+            or entry["marker"]["reason"] != RETAINED_EVIDENCE_QUARANTINE_REASON
+            or not isinstance(entry["event_id"], str)
+            or not entry["event_id"]
+            or entry["marker"]["original_event_id"] != entry["event_id"]
+            or entry["row"]["record_id"] != entry["event_id"]
+            or entry["row"]["schema_version"] != 10
+            or type(entry["row"]["schema_version"]) is not int
+            or not isinstance(entry["ledger_shard"], str)
+            or not entry["ledger_shard"]
+            or not isinstance(entry["team"], str)
+            or not entry["team"]
+            or entry["event_id"] in entries
+        ):
+            raise RuntimeError(f"{path}: retained evidence quarantine allowlist is malformed")
+        entries[entry["event_id"]] = entry
+    return entries
+
+
+def retained_evidence_quarantine_entry(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The allowlist entry a row's quarantine marker names exactly, or None.
+
+    None when the row carries no marker, the marker equals no entry's marker,
+    or the row is not that entry's lost run.
+    """
+    marker = row.get(RETAINED_EVIDENCE_QUARANTINE_KEY)
+    if marker is None:
+        return None
+    for entry in retained_evidence_quarantine_allowlist().values():
+        if marker == entry["marker"] and all(
+            key in row
+            and row[key] == entry["row"][key]
+            and type(row[key]) is type(entry["row"][key])
+            for key in _QUARANTINE_ROW_IDENTITY
+        ):
+            return entry
+    return None
+
+
 # Reader capacity limits, not maximum valid producer artifact sizes. Exceeding
 # one leaves the batch unreadable; it never changes a comparison's verdict.
 _EVIDENCE_LINE_BYTES = 16 * 1024 * 1024
@@ -477,6 +565,26 @@ def _check_validation_evidence(
                     if set(report) != {"row_sha256", "status", "reason"} or not isinstance(report["reason"], str) or not report["reason"].strip():
                         return fault("validation artifact checker returned a malformed failure response")
                     reports[digest] = _ValidationEvidence(digest, status, report["reason"])
+                elif status == "quarantined":
+                    requested = json.loads(requests[digest])
+                    if (
+                        set(report) != {"row_sha256", "status", "original_event_id", "reason"}
+                        or report["reason"] != RETAINED_EVIDENCE_QUARANTINE_REASON
+                        or not isinstance(report["original_event_id"], str)
+                        or not report["original_event_id"]
+                        or report["original_event_id"] != requested.get("record_id")
+                        or RETAINED_EVIDENCE_QUARANTINE_KEY not in requested
+                    ):
+                        return fault("validation artifact checker returned a malformed quarantine response")
+                    # The native verifier binds the marker to the allowlist;
+                    # a reply naming any other row cannot become a quarantine.
+                    try:
+                        entry = retained_evidence_quarantine_entry(requested)
+                    except RuntimeError as error:
+                        return fault(str(error))
+                    if entry is None or entry["event_id"] != report["original_event_id"]:
+                        return fault("validation artifact checker quarantined a row that is no allowlisted lost run")
+                    reports[digest] = _ValidationEvidence(digest, status, report["reason"])
                 else:
                     return fault("validation artifact checker returned an unknown status")
             if set(reports) != set(requests):
@@ -830,6 +938,7 @@ def load() -> dict[str, Any]:
         "admission",
         "release_payloads",
         "release_builder_required_from_finished_at",
+        "release_builder_pairless_schema_versions",
     ):
         if key not in pred:
             raise RuntimeError(f"{path}: qualifying predicate missing key '{key}'")
@@ -887,6 +996,17 @@ def load() -> dict[str, Any]:
             f"{path}: qualifying predicate release_builder_required_from_finished_at "
             "must be a UTC RFC3339 timestamp such as 2026-09-25T20:42:29Z"
         )
+    schemas = pred["release_builder_pairless_schema_versions"]
+    if (
+        not isinstance(schemas, list)
+        or not schemas
+        or not all(type(schema) is int and schema > 0 for schema in schemas)
+        or len(set(schemas)) != len(schemas)
+    ):
+        raise RuntimeError(
+            f"{path}: qualifying predicate release_builder_pairless_schema_versions "
+            "must be a non-empty list of distinct positive integers"
+        )
     return pred
 
 
@@ -937,7 +1057,9 @@ def release_builder_of(row: Mapping[str, Any], pred: Mapping[str, Any]) -> str |
     builder's identity.
 
     A row with neither field was a Cargo run only where the fields could not
-    yet exist: a Reverie row, or a Hermit row whose ``finished_at`` is a real
+    yet exist, and only when its ``schema_version`` is an integer listed in
+    ``release_builder_pairless_schema_versions``: a Reverie row, or a Hermit
+    row whose ``finished_at`` is a real
     UTC instant before ``release_builder_required_from_finished_at``, when the
     first Hermit writer of the pair was authored. A Hermit row from that
     instant on, or with an absent or malformed ``finished_at``, may come from a
@@ -951,6 +1073,15 @@ def release_builder_of(row: Mapping[str, Any], pred: Mapping[str, Any]) -> str |
     has_payload = "e2e_payload" in row
     if not has_builder and not has_payload:
         if "cargo" not in payloads:
+            return None
+        schema = row.get("schema_version")
+        # Absent from an older predicate: no schema is known to predate the pair.
+        schemas = pred.get("release_builder_pairless_schema_versions")
+        if (
+            type(schema) is not int
+            or not isinstance(schemas, list)
+            or not any(type(known) is int and known == schema for known in schemas)
+        ):
             return None
         repo = row.get("repo")
         if repo in _REVERIE_REPOS:
@@ -1102,6 +1233,7 @@ class CellResultsVerdict(Enum):
     ARTIFACT_REFUSED = "artifact-refused"
     READER_FAULT = "reader-fault"
     LEGACY_UNBOUND = "legacy-unbound"
+    QUARANTINED = "quarantined"
 
 
 _CELL_IDENTITY_KEYS = ("lane", "category", "test", "mode", "backend")
@@ -1335,6 +1467,8 @@ def cell_results_verdict(
             return CellResultsVerdict.READER_FAULT
         if checked.status == "legacy-unbound":
             return CellResultsVerdict.LEGACY_UNBOUND
+        if checked.status == "quarantined":
+            return CellResultsVerdict.QUARANTINED
         return (
             CellResultsVerdict.SATISFIED
             if checked.status == "verified"
@@ -2423,7 +2557,14 @@ def _row_qualification_without_class(
     # A demonstrated zero-test run is never a full green, at any schema.
     if row.get("executed_tests") == 0:
         return False, "executed_tests==0"
-    schema = row.get("schema_version") or 0
+    # The typed Rust row holds `schema_version` as an optional u32, so any
+    # other shape never reaches its predicate; refuse it here rather than
+    # letting the comparison below raise.
+    schema = row.get("schema_version")
+    if schema is None:
+        schema = 0
+    elif type(schema) is not int or schema < 0:
+        return False, f"schema_version={schema!r}"
     executed = row.get("executed_tests")
     passed = row.get("passed_tests")
     if schema >= pred["count_representation"]["applies_at_schema_min"]:

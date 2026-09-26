@@ -1,0 +1,88 @@
+{
+  "_comment": [
+    "The complete, closed set of validation runs whose retained evidence is",
+    "irrecoverably lost and may therefore carry a retained-evidence quarantine.",
+    "A quarantine marker is honoured only when it equals one entry's marker",
+    "exactly and the row carrying it has that entry's row identity; a marker",
+    "a row authors for itself names no entry and is refused. Every value was",
+    "copied from the run.result events in ledger_shard. The quarantined row is",
+    "never green: result no_result over raw_result pass, source reconstructed,",
+    "and no consumer counts it as an observation. Adding an entry is an owner",
+    "decision, not a routine repair."
+  ],
+  "schema": "retained-evidence-quarantine-allowlist/v1",
+  "entries": [
+    {
+      "ledger_shard": "ledger/hermit/devbig014/2026-09.jsonl",
+      "event_id": "devbig014-1790052459-997811",
+      "team": "hermit",
+      "row": {
+        "record_id": "devbig014-1790052459-997811",
+        "run_id": "validate-cpu-ordinary-cells-20260922-v2-b",
+        "commit": "56b281422bffa57906309650e3fc16ed36d38de1",
+        "host": "devbig014",
+        "repo": "hermit",
+        "finished_at": "2026-09-22T04:47:39Z",
+        "schema_version": 10
+      },
+      "marker": {
+        "schema": "retained-evidence-quarantine/v1",
+        "reason": "retained evidence lost",
+        "original_event_id": "devbig014-1790052459-997811",
+        "expected": {
+          "constructed_plan": {
+            "bytes": 192788,
+            "path": "ignored/validate/artifacts/validate-cpu-ordinary-cells-20260922-v2-b/constructed-plan.json",
+            "sha256": "a03790d9f8f3d5b2540e06b1af5ea523cd6c4dffc8fdab51e641aa3c17daeb9e"
+          },
+          "cell_results": {
+            "path": "ignored/validate/artifacts/validate-cpu-ordinary-cells-20260922-v2-b/cell-results.jsonl",
+            "row_count": 2,
+            "sha256": "5c21f5c90828e8cf26d78f3606b747a95d6ba26200d4bd2ef63706e94d1919fa"
+          },
+          "test_results": {
+            "path": "ignored/validate/artifacts/validate-cpu-ordinary-cells-20260922-v2-b/test-results.jsonl",
+            "row_count": 2,
+            "sha256": "4ae4b6c233c73938d051d21dd7b08c6295f6489ddeb6963c54d54cf399dc351d"
+          }
+        }
+      }
+    },
+    {
+      "ledger_shard": "ledger/hermit/devbig014/2026-09.jsonl",
+      "event_id": "devbig014-1790052466-983899",
+      "team": "hermit",
+      "row": {
+        "record_id": "devbig014-1790052466-983899",
+        "run_id": "validate-cpu-ordinary-cells-20260922-v2-a",
+        "commit": "56b281422bffa57906309650e3fc16ed36d38de1",
+        "host": "devbig014",
+        "repo": "hermit",
+        "finished_at": "2026-09-22T04:47:46Z",
+        "schema_version": 10
+      },
+      "marker": {
+        "schema": "retained-evidence-quarantine/v1",
+        "reason": "retained evidence lost",
+        "original_event_id": "devbig014-1790052466-983899",
+        "expected": {
+          "constructed_plan": {
+            "bytes": 192788,
+            "path": "ignored/validate/artifacts/validate-cpu-ordinary-cells-20260922-v2-a/constructed-plan.json",
+            "sha256": "84ca419ab7b0b4dce1d84a824e6d36e3776a57df56677b91800c123cc6247635"
+          },
+          "cell_results": {
+            "path": "ignored/validate/artifacts/validate-cpu-ordinary-cells-20260922-v2-a/cell-results.jsonl",
+            "row_count": 2,
+            "sha256": "c71e910373638ac7dbd77f237d10bd2f3476e6c8ac5defde364750304da76ad0"
+          },
+          "test_results": {
+            "path": "ignored/validate/artifacts/validate-cpu-ordinary-cells-20260922-v2-a/test-results.jsonl",
+            "row_count": 2,
+            "sha256": "a31514d910ef8a29bdfdff9e54bfa8aed2b2f2dd5e05bfb450b5dae4823a6d59"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -334,3 +334,88 @@ def test_native_transport_checks_capability_outcome_without_inventing_it(status,
                 assert receipt.row_qualification(row, row["commit"], policy10()) == (False, "cell_results legacy-unbound")
             else:
                 assert receipt.cell_results_verdict(row, policy10()) is receipt.CellResultsVerdict.SATISFIED
+
+
+QUARANTINE_SHARD = CI_HUB.parent / "ledger" / "hermit" / "devbig014" / "2026-09.jsonl"
+
+
+def quarantined_lost_rows():
+    """The two allowlisted lost rows, each carrying its entry's exact marker."""
+    allowlist = receipt.retained_evidence_quarantine_allowlist()
+    rows = []
+    for line in QUARANTINE_SHARD.read_text(encoding="utf-8").splitlines():
+        event = json.loads(line) if line.strip() else {}
+        if event.get("event_id") in allowlist:
+            row = copy.deepcopy(event["legacy_row"])
+            row.update(
+                result="no_result", source="reconstructed",
+                **{receipt.RETAINED_EVIDENCE_QUARANTINE_KEY: copy.deepcopy(allowlist[event["event_id"]]["marker"])},
+            )
+            rows.append(row)
+    assert len(rows) == 2
+    return rows
+
+
+class QuarantiningChecker(RefusingChecker):
+    """A peer which reports every request as a quarantine of its own record."""
+
+    def __init__(self, command, *, stdin, stdout, stderr, start_new_session):
+        for line in stdin:
+            raw = json.loads(line)["row_json"]
+            stdout.write(json.dumps({
+                "row_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+                "status": "quarantined",
+                "original_event_id": json.loads(raw).get("record_id"),
+                "reason": receipt.RETAINED_EVIDENCE_QUARANTINE_REASON,
+            }).encode() + b"\n")
+
+
+def test_allowlisted_quarantine_is_a_distinct_outcome_that_never_qualifies():
+    rows = quarantined_lost_rows()
+    with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=captured_checker(QuarantiningChecker)), mock.patch.object(receipt, "active", return_value=policy10()):
+        with receipt.validation_evidence_batch(rows, predicate=policy10()):
+            for row in rows:
+                assert receipt.validation_evidence(row).status == "quarantined"
+                verdict = receipt.cell_results_verdict(row, policy10())
+                assert verdict is receipt.CellResultsVerdict.QUARANTINED
+                assert not receipt.cell_results_accepted(verdict)
+                # The lost runs are refused earlier on their profile; the
+                # cell_results clause would refuse them on its own as well.
+                assert receipt.row_qualification(row, row["commit"], policy10())[0] is False
+                with pytest.raises(ValueError, match="cell_results quarantined"):
+                    validate_rows._require_cell_results(row, CI_HUB.parent)
+
+
+@pytest.mark.parametrize("forgery", [
+    "unmarked", "self-authored-marker", "other-entry-marker", "other-commit", "retyped-schema",
+])
+def test_quarantine_reply_for_a_row_the_allowlist_does_not_name_is_a_reader_fault(forgery):
+    """Even a peer that says quarantined cannot quarantine an unlisted row."""
+    row, other = quarantined_lost_rows()
+    key = receipt.RETAINED_EVIDENCE_QUARANTINE_KEY
+    if forgery == "unmarked":
+        del row[key]
+    elif forgery == "self-authored-marker":
+        row[key]["expected"]["test_results"]["row_count"] += 1
+    elif forgery == "other-entry-marker":
+        # A self-consistent marker whose original_event_id names this row but
+        # whose artifacts are the other lost run's.
+        row[key]["expected"] = copy.deepcopy(other[key]["expected"])
+    elif forgery == "other-commit":
+        row["commit"] = "b" * 40
+    elif forgery == "retyped-schema":
+        row["schema_version"] = 10.0
+    with mock.patch.object(receipt, "_capture_validation_evidence", side_effect=captured_checker(QuarantiningChecker)), mock.patch.object(receipt, "active", return_value=policy10()):
+        with receipt.validation_evidence_batch([row], predicate=policy10()):
+            checked = receipt.validation_evidence(row)
+            assert checked.status == "reader-fault"
+            assert "quarantin" in checked.reason
+            if forgery == "retyped-schema":
+                # A non-integer schema is refused before any reply is consulted.
+                assert receipt.cell_results_verdict(row, policy10()) is receipt.CellResultsVerdict.SCHEMA_UNAVAILABLE
+                with pytest.raises(ValueError, match="cell_results schema-unavailable"):
+                    validate_rows._require_cell_results(row, CI_HUB.parent)
+                return
+            assert receipt.cell_results_verdict(row, policy10()) is receipt.CellResultsVerdict.READER_FAULT
+            with pytest.raises(receipt.ValidationEvidenceReaderFault):
+                validate_rows._require_cell_results(row, CI_HUB.parent)

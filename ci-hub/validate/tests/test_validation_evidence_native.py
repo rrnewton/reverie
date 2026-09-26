@@ -527,3 +527,39 @@ def test_schema10_normal_rust_qualification_uses_the_retained_artifact_store(tmp
         # tests assert typed causes separately. Here a missing artifact reaches
         # the real store; an earlier base refusal must avoid that lookup.
         assert (b"validation evidence: cannot open retained artifact" in errors) == (case == "missing-plan")
+
+
+def test_real_reader_quarantines_only_the_allowlisted_lost_rows_before_any_file_access(tmp_path):
+    """The real native reader, with an empty artifact store, over the lost runs."""
+    from test_validation_evidence import quarantined_lost_rows
+
+    key = receipt.RETAINED_EVIDENCE_QUARANTINE_KEY
+    listed = quarantined_lost_rows()
+    unmarked = copy.deepcopy(listed[0])
+    del unmarked[key]
+    unmarked.update(result="pass", source="observed", run_id="unmarked")
+    self_authored = copy.deepcopy(listed[0])
+    self_authored[key]["expected"]["constructed_plan"]["bytes"] += 1
+    self_authored["constructed_plan"]["bytes"] += 1
+    moved = copy.deepcopy(listed[1])
+    moved["commit"] = "b" * 40
+    predicate = copy.deepcopy(receipt.active())
+    predicate["cell_results"]["supported_schema_max"] = 10
+    assert not any(tmp_path.iterdir())
+    with receipt.validation_evidence_batch(
+        [*listed, unmarked, self_authored, moved], predicate=predicate, artifact_root=tmp_path,
+    ):
+        for row in listed:
+            checked = receipt.validation_evidence(row)
+            assert checked.status == "quarantined", checked.reason
+            assert receipt.cell_results_verdict(row, predicate) is receipt.CellResultsVerdict.QUARANTINED
+            assert receipt.row_qualification(row, row["commit"], predicate)[0] is False
+        # Without a marker the lost artifacts are an ordinary missing file.
+        assert receipt.validation_evidence(unmarked).status in {"refused", "reader-fault"}
+        assert receipt.cell_results_verdict(unmarked, predicate) is not receipt.CellResultsVerdict.QUARANTINED
+        for row in (self_authored, moved):
+            checked = receipt.validation_evidence(row)
+            assert checked.status in {"refused", "reader-fault"}, checked.status
+            assert "quarantine" in checked.reason
+            assert receipt.cell_results_verdict(row, predicate) is not receipt.CellResultsVerdict.QUARANTINED
+    assert not any(tmp_path.iterdir())

@@ -3589,6 +3589,31 @@ mod tests {
             .unwrap(),
             CellResultsForWebsite::Unavailable(_)
         ));
+        // An allowlisted lost run shows unavailable, with the quarantine reason.
+        use crate::validation_evidence::fixtures::{lost_run, self_quarantined, LOST_V2_B};
+        let quarantined: HistoryRow =
+            serde_json::from_value(lost_run(LOST_V2_B)).unwrap();
+        assert!(matches!(
+            failure_obligations::cell_results_for_website_with(&quarantined, |row| verify(
+                row, &store.0
+            ))
+            .unwrap(),
+            CellResultsForWebsite::Unavailable(reason)
+            if reason == crate::validation_evidence::QUARANTINE_REASON
+        ));
+        // A readable row that authors its own marker is refused: unavailable,
+        // and never described as a quarantine.
+        let exact = store.exact("selected-attempt-v1/matched");
+        let forged: HistoryRow =
+            serde_json::from_value(self_quarantined(&exact, "forged-event")).unwrap();
+        assert!(matches!(
+            failure_obligations::cell_results_for_website_with(&forged, |row| verify(
+                row, &store.0
+            ))
+            .unwrap(),
+            CellResultsForWebsite::Unavailable(reason)
+            if reason == "retained evidence quarantine names no allowlisted lost run"
+        ));
     }
 
     #[test]

@@ -6,7 +6,10 @@
     "exactly the keys in fields (null is null, not absent), and names the",
     "builder release_builder_of must return; null means no builder. A case",
     "without either field brackets release_builder_required_from_finished_at",
-    "(2026-09-25T20:42:29Z) and the repository scope of the legacy Cargo rule."
+    "(2026-09-25T20:42:29Z) and the repository scope of the legacy Cargo rule.",
+    "Cases that set or remove schema_version bracket",
+    "release_builder_pairless_schema_versions ([1, 2, 3, 4, 5, 6, 7, 10])",
+    "from inside and outside; the other cases keep the row's own schema."
   ],
   "cases": [
     {
@@ -369,6 +372,138 @@
           "debug_assertions": true,
           "overflow_checks": true
         }
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, Hermit row before the cutoff at schema 1",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T20:42:28Z",
+        "schema_version": 1
+      },
+      "expected": "cargo"
+    },
+    {
+      "label": "neither field, Hermit row before the cutoff at schema 7",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T20:42:28Z",
+        "schema_version": 7
+      },
+      "expected": "cargo"
+    },
+    {
+      "label": "neither field, Hermit row before the cutoff at schema 10",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T20:42:28Z",
+        "schema_version": 10
+      },
+      "expected": "cargo"
+    },
+    {
+      "label": "neither field, Reverie row at schema 3",
+      "fields": {
+        "repo": "reverie",
+        "finished_at": "2026-09-26T18:28:28Z",
+        "schema_version": 3
+      },
+      "expected": "cargo"
+    },
+    {
+      "label": "neither field, Hermit row before the cutoff without schema_version",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T20:42:28Z"
+      },
+      "absent": [
+        "schema_version"
+      ],
+      "expected": null
+    },
+    {
+      "label": "neither field, Hermit row before the cutoff with a null schema_version",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T20:42:28Z",
+        "schema_version": null
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, Hermit row before the cutoff at schema 0",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T20:42:28Z",
+        "schema_version": 0
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, Hermit row before the cutoff at schema 8, never a row schema",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T20:42:28Z",
+        "schema_version": 8
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, Hermit row before the cutoff at schema 9, never a row schema",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T20:42:28Z",
+        "schema_version": 9
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, Hermit row before the cutoff at future schema 11",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T20:42:28Z",
+        "schema_version": 11
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, Hermit row before the cutoff at future schema 999",
+      "fields": {
+        "repo": "hermit",
+        "finished_at": "2026-09-25T20:42:28Z",
+        "schema_version": 999
+      },
+      "expected": null
+    },
+    {
+      "label": "neither field, repo-less row before the cutoff at future schema 999",
+      "fields": {
+        "finished_at": "2026-09-25T20:42:28Z",
+        "schema_version": 999
+      },
+      "absent": [
+        "repo"
+      ],
+      "expected": null
+    },
+    {
+      "label": "neither field, Reverie row without schema_version",
+      "fields": {
+        "repo": "reverie",
+        "finished_at": "2026-09-26T18:28:28Z"
+      },
+      "absent": [
+        "schema_version"
+      ],
+      "expected": null
+    },
+    {
+      "label": "neither field, Reverie row at future schema 999",
+      "fields": {
+        "repo": "rrnewton/reverie",
+        "finished_at": "2026-09-26T18:28:28Z",
+        "schema_version": 999
       },
       "expected": null
     }
