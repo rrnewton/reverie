@@ -428,6 +428,7 @@ pub(crate) fn execute_basic_syscall(
     execute_basic_syscall_with_output(memory, state, request, None, None)
 }
 
+#[cfg(test)]
 fn execute_basic_syscall_with_output(
     memory: &mut GuestMemory,
     state: &mut LoadedStaticElf,

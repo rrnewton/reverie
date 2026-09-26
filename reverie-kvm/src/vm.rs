@@ -2431,6 +2431,11 @@ impl KvmBackend {
                                     .collect(),
                             )
                         }));
+                    } else {
+                        // This Direct child has no enclosing Tool callback or
+                        // deferred publisher. Collect its reader/worker errors
+                        // before dropping the backend and its diagnostic cache.
+                        return Err(child.backend.finish_direct_process_error(error));
                     }
                     return Err(error);
                 }
@@ -4303,7 +4308,8 @@ impl KvmBackend {
     pub fn run_static_elf(&mut self) -> Result<i32> {
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         let mut executor = ElfExecutor::with_output(loaded, None);
-        let (status, _, _) = self.run_static_elf_process(&mut executor)?;
+        let result = self.run_static_elf_process(&mut executor);
+        let (status, _, _) = result.map_err(|error| self.finish_direct_process_error(error))?;
         Ok(conventional_exit_code(status))
     }
 
@@ -4314,8 +4320,24 @@ impl KvmBackend {
         let capture_owner = self.prepare_captured_output(true)?;
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
-        let (status, stdout, stderr) = self.run_static_elf_process(&mut executor)?;
+        let result = self.run_static_elf_process(&mut executor);
+        let (status, stdout, stderr) =
+            result.map_err(|error| self.finish_direct_process_error(error))?;
         Ok((conventional_exit_code(status), stdout, stderr))
+    }
+
+    /// The Direct driver has returned its error and released its callback
+    /// borrows. Cancel before any physical worker join, then attach retained
+    /// reader/worker diagnostics while the concrete executor still exists.
+    /// Healthy runs keep their existing natural/group-exit retirement paths.
+    fn finish_direct_process_error(&self, error: Error) -> Error {
+        self.cancel_guest_threads_after_failure();
+        error.with_cleanup(
+            self.guest_worker_teardown_result()
+                .err()
+                .into_iter()
+                .collect(),
+        )
     }
 
     pub(crate) fn prepare_captured_output(
@@ -10428,6 +10450,113 @@ mod tests {
 #[cfg(test)]
 #[path = "terminal_vm_tests.rs"]
 mod terminal_tests;
+
+#[cfg(test)]
+mod terminal_direct_error_tests {
+    use std::os::fd::FromRawFd;
+    use std::sync::mpsc;
+    use std::task::Poll;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn public_direct_errors_join_terminal_readers_and_keep_primary_and_cleanup() {
+        for captured in [false, true] {
+            let mut backend = KvmBackend::new(16 * 1024 * 1024)
+                .expect("public Direct cleanup control requires KVM");
+            backend
+                .install_static_elf(&minimal_test_elf(&[0xf4]), "/bin/direct-read-cleanup")
+                .unwrap();
+            let group = backend.thread_group.clone();
+            let registry = group.terminal_reads.clone();
+            let primary = Arc::new(Error::GuestClock("controlled Direct entry failure".into()));
+            // This tests typed error transfer after a real helper cancellation.
+            // It does not claim that a real pthread operation returned EIO.
+            let cleanup = Arc::new(Error::TerminalReadControl {
+                operation: "test-controlled reader teardown diagnostic",
+                source: std::io::Error::from_raw_os_error(libc::EIO),
+                terminal_exit: None,
+            });
+            let worker_cleanup = cleanup.clone();
+            let returned = Arc::new(AtomicBool::new(false));
+            let worker_returned = returned.clone();
+            let endpoint_restored = Arc::new(AtomicBool::new(false));
+            let worker_endpoint_restored = endpoint_restored.clone();
+            let (ready, registered) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                // Keep the test worker's entry watch independent: only the
+                // group's terminal cancellation may retire this real reader.
+                let memory = GuestMemory::new(0, 4096).unwrap();
+                let raw_fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+                assert!(raw_fd >= 0);
+                let mut endpoint = Some(unsafe { File::from_raw_fd(raw_fd) });
+                let mut polls = 0;
+                let mut observer = crate::terminal_read::ReadContext::new(
+                    registry,
+                    true,
+                    crate::entry::driver::EntryDriverWatch::for_memory(&memory),
+                    Some(Box::pin(std::future::poll_fn(move |_| {
+                        polls += 1;
+                        if polls == 2 {
+                            // This boundary follows C handle publication.
+                            ready.send(()).unwrap();
+                        }
+                        Poll::Pending
+                    }))),
+                    Arc::new(crate::failure::tool_panics::ToolPanics::default()),
+                    false,
+                );
+                let task = reverie::SignalTaskIdentity {
+                    process: reverie::SignalProcessId {
+                        tgid: Pid::from_raw(11),
+                        generation: 12,
+                    },
+                    tid: Pid::from_raw(13),
+                    task_generation: 14,
+                };
+                let mut bytes = Vec::<u8>::new();
+                let result = observer.read(
+                    &mut endpoint,
+                    task,
+                    SyscallRequest::new(libc::SYS_read as u64, [0, 0x100, 0, 0, 0, 0]),
+                    bytes.as_mut_ptr() as usize,
+                    0,
+                );
+                assert!(matches!(result, Err(Error::TerminalReadCancelled)));
+                assert_eq!(endpoint.as_ref().unwrap().as_raw_fd(), raw_fd);
+                assert!(unsafe { libc::fcntl(raw_fd, libc::F_GETFD) } >= 0);
+                worker_endpoint_restored.store(true, Ordering::Release);
+                worker_returned.store(true, Ordering::Release);
+                Err(Error::SharedFailure(worker_cleanup))
+            });
+            group.add_worker_handle(13, worker);
+            registered
+                .recv_timeout(Duration::from_secs(5))
+                .expect("reader did not publish its C handle");
+            assert!(!returned.load(Ordering::Acquire));
+            backend
+                .memory
+                .entry_gate()
+                .poison(None, Error::SharedFailure(primary.clone()));
+            let result = if captured {
+                backend.run_static_elf_captured().map(|_| ())
+            } else {
+                backend.run_static_elf().map(|_| ())
+            };
+            let error = result.expect_err("poisoned Direct entry returned success");
+            assert!(error.retains_primary(&primary));
+            assert!(crate::failure::references_shared_error(&error, &cleanup));
+            assert!(returned.load(Ordering::Acquire));
+            assert!(endpoint_restored.load(Ordering::Acquire));
+            assert!(!group.has_owned_worker_joins());
+            assert!(group.cancelled.load(Ordering::Acquire));
+            assert!(group.cancelled_after_failure.load(Ordering::Acquire));
+            let repeated = group.teardown_result().unwrap_err();
+            assert!(crate::failure::references_shared_error(&repeated, &cleanup));
+        }
+    }
+}
 
 #[cfg(test)]
 #[path = "vm/entry_owner_tests.rs"]
