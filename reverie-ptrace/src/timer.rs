@@ -50,6 +50,8 @@ use reverie::syscalls::AddrMut;
 use reverie::syscalls::MemoryAccess;
 use safeptrace::Error as TraceError;
 use safeptrace::Event as TraceEvent;
+#[cfg(target_arch = "x86_64")]
+use safeptrace::Regs;
 use safeptrace::Running;
 use safeptrace::Stopped;
 use safeptrace::Wait;
@@ -1257,10 +1259,14 @@ impl TimerImpl {
             current, target_rcb
         );
         let mut task = task;
+        // The registers before each step. A step's cleanup reads them back
+        // afterwards, so they carry over to the next step.
+        #[cfg(target_arch = "x86_64")]
+        let mut regs = task.getregs()?;
         // Whether the guest itself has set TF. No step of this sequence has
         // run yet, so Linux has not set TF itself.
         #[cfg(target_arch = "x86_64")]
-        let mut guest_trap_flag = task.getregs()?.eflags & TRAP_FLAG != 0;
+        let mut guest_trap_flag = regs.eflags & TRAP_FLAG != 0;
         loop {
             if !current
                 .is_behind(target_rcb, target_instr)
@@ -1272,40 +1278,34 @@ impl TimerImpl {
             trace!(
                 "[instruction]\n{}\n{}",
                 crate::decoder::decode_instruction(&task)?,
-                task.getregs()?
-                    .display_with_options(RegDisplayOptions { multiline: true })
+                regs.display_with_options(RegDisplayOptions { multiline: true })
             );
             #[cfg(target_arch = "x86_64")]
-            let (flags_instruction, old_sp) = {
-                let regs = task.getregs()?;
-                (flags_instruction(&task, regs.rip), regs.rsp)
+            let start = StepStart {
+                instruction: flags_instruction(&task, regs.rip),
+                rip: regs.rip,
+                rsp: regs.rsp,
+                rax: regs.rax,
             };
             let wait = step(task)?.next_state().await?;
             observe(&wait)?;
             task = match wait {
                 // a successful single step results in SIGTRAP stop
                 Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => new_task,
-                // Any other stop means the instruction did not complete, except
-                // a `syscall`, which stops at its entry after loading r11.
+                // Any other stop ends the stepping. The step's instruction may
+                // still have run: a `syscall` stops at its seccomp stop after
+                // loading r11, for example.
                 #[cfg(target_arch = "x86_64")]
                 Wait::Stopped(mut new_task, event) => {
-                    let instruction = match flags_instruction {
-                        FlagsInstruction::Syscall => FlagsInstruction::Syscall,
-                        _ => FlagsInstruction::Other,
-                    };
-                    remove_stepping_trap_flag(&mut new_task, instruction, old_sp, guest_trap_flag)?;
+                    remove_stepping_trap_flag(&mut new_task, &start, guest_trap_flag)?;
                     return Err(HandleFailure::Event(Wait::Stopped(new_task, event)));
                 }
                 wait => return Err(HandleFailure::Event(wait)),
             };
             #[cfg(target_arch = "x86_64")]
             {
-                guest_trap_flag = remove_stepping_trap_flag(
-                    &mut task,
-                    flags_instruction,
-                    old_sp,
-                    guest_trap_flag,
-                )?;
+                (guest_trap_flag, regs) =
+                    remove_stepping_trap_flag(&mut task, &start, guest_trap_flag)?;
             }
             current.single_step_with_clock(self.read_clock());
         }
@@ -1327,64 +1327,178 @@ impl TimerImpl {
 #[cfg(target_arch = "x86_64")]
 const TRAP_FLAG: u64 = 0x100;
 
-/// An instruction whose single step can leave the TF that stepping sets where
-/// the guest sees it.
+/// TF in the second byte of a flags image in memory.
+#[cfg(target_arch = "x86_64")]
+const TRAP_FLAG_HIGH_BYTE: u8 = (TRAP_FLAG >> 8) as u8;
+
+/// Where `rt_sigreturn` reads the RFLAGS it restores, relative to the stack
+/// pointer at its `syscall`. The signal frame's `ucontext` starts there, just
+/// past the return address that the handler's `ret` popped.
+#[cfg(target_arch = "x86_64")]
+const SIGRETURN_FLAGS_OFFSET: u64 = (core::mem::offset_of!(libc::ucontext_t, uc_mcontext)
+    + core::mem::offset_of!(libc::mcontext_t, gregs)
+    + libc::REG_EFL as usize * core::mem::size_of::<libc::greg_t>())
+    as u64;
+
+/// The instruction a single step runs, as far as the step can leave the TF
+/// that stepping sets where the guest sees it. `end` is the address just past
+/// the instruction, where a step that completes it stops.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FlagsInstruction {
     /// `pushf` stores RFLAGS, including the stepping TF, on the stack.
-    Pushf,
-    /// `popf` or `iret` loads RFLAGS from the stack.
-    Popf,
+    Pushf {
+        end: u64,
+    },
+    /// `popf` or `iret` loads RFLAGS from the stack, and Linux then treats TF
+    /// as the guest's. `iret` jumps, so it has no `end`.
+    Popf {
+        end: Option<u64>,
+    },
+    /// `popf` in the same step as a `mov ss` before it. Linux looks only at
+    /// the first instruction of a step, so it can hide the TF this loads.
+    PopfAfterMovSs {
+        end: u64,
+    },
     /// `syscall` saves RFLAGS in r11, and the kernel returns it there.
-    Syscall,
+    Syscall {
+        end: u64,
+    },
     Other,
+}
+
+/// What a single step starts from.
+#[cfg(target_arch = "x86_64")]
+struct StepStart {
+    instruction: FlagsInstruction,
+    rip: u64,
+    rsp: u64,
+    rax: u64,
+}
+
+/// Reads guest code in aligned words with PTRACE_PEEKDATA, which also reads
+/// execute-only pages and never reads past the word holding the last byte
+/// examined.
+#[cfg(target_arch = "x86_64")]
+struct CodeReader<'a> {
+    task: &'a Stopped,
+    word_addr: Option<u64>,
+    word: [u8; 8],
+}
+
+#[cfg(target_arch = "x86_64")]
+impl CodeReader<'_> {
+    fn byte(&mut self, addr: u64) -> Option<u8> {
+        if self.word_addr != Some(addr & !7) {
+            self.word = read_aligned_word(self.task, addr & !7).ok()?.to_ne_bytes();
+            self.word_addr = Some(addr & !7);
+        }
+        Some(self.word[(addr & 7) as usize])
+    }
 }
 
 /// Decodes enough of the instruction at `ip` to tell whether it is `pushf`,
 /// `popf`, `iret` or `syscall`, with any prefixes.
 ///
-/// Code is read in aligned words with PTRACE_PEEKDATA, which also reads
-/// execute-only pages and never reads past the word holding the last byte
-/// examined. Code that cannot be read is `Other`; the step itself then reports
-/// the fault.
+/// A `mov` to SS holds back the debug trap until the next instruction has
+/// run, so a step that starts there runs both, and the second decides what
+/// the step leaks. Code that cannot be read is `Other`; the step itself then
+/// reports the fault.
 #[cfg(target_arch = "x86_64")]
 fn flags_instruction(task: &Stopped, ip: u64) -> FlagsInstruction {
     /// The longest x86 instruction, in bytes.
     const MAX_INSTRUCTION_LEN: u64 = 15;
-    let mut word_addr = None;
-    let mut word = [0u8; 8];
-    let mut byte = |addr: u64| -> Option<u8> {
-        if word_addr != Some(addr & !7) {
-            word = read_aligned_word(task, addr & !7).ok()?.to_ne_bytes();
-            word_addr = Some(addr & !7);
-        }
-        Some(word[(addr & 7) as usize])
+    let mut code = CodeReader {
+        task,
+        word_addr: None,
+        word: [0; 8],
     };
-    for addr in ip..ip.saturating_add(MAX_INSTRUCTION_LEN) {
-        let Some(opcode) = byte(addr) else {
+    let mut start = ip;
+    let mut after_mov_ss = false;
+    let mut addr = ip;
+    while addr < start.saturating_add(MAX_INSTRUCTION_LEN) {
+        let Some(opcode) = code.byte(addr) else {
             return FlagsInstruction::Other;
         };
         match opcode {
-            0x9c => return FlagsInstruction::Pushf,
-            0x9d | 0xcf => return FlagsInstruction::Popf,
-            0x0f if byte(addr + 1) == Some(0x05) => return FlagsInstruction::Syscall,
+            0x9c => return FlagsInstruction::Pushf { end: addr + 1 },
+            0x9d if after_mov_ss => return FlagsInstruction::PopfAfterMovSs { end: addr + 1 },
+            0x9d => {
+                return FlagsInstruction::Popf {
+                    end: Some(addr + 1),
+                };
+            }
+            0xcf => return FlagsInstruction::Popf { end: None },
+            0x0f if code.byte(addr + 1) == Some(0x05) => {
+                return FlagsInstruction::Syscall { end: addr + 2 };
+            }
+            // `mov ss, r/m16`. Of consecutive loads of SS only the first is
+            // sure to hold the trap back, so a second is not followed.
+            0x8e if !after_mov_ss => {
+                let Some(modrm) = code.byte(addr + 1) else {
+                    return FlagsInstruction::Other;
+                };
+                if (modrm >> 3) & 7 != 2 {
+                    return FlagsInstruction::Other;
+                }
+                let Some(len) = modrm_len(&mut code, addr + 1, modrm) else {
+                    return FlagsInstruction::Other;
+                };
+                addr += 1 + len;
+                start = addr;
+                after_mov_ss = true;
+                continue;
+            }
             // Legacy prefixes, then REX.
             0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x66 | 0x67 | 0xf0 | 0xf2 | 0xf3 => {}
             0x40..=0x4f => {}
             _ => return FlagsInstruction::Other,
         }
+        addr += 1;
     }
     FlagsInstruction::Other
 }
 
-/// Removes the TF that a completed single step left where the guest can see
-/// it, unless the guest set TF itself. Returns whether the guest's own TF is
-/// set after the step.
+/// The length, in 64-bit mode, of the ModRM byte `modrm` at `addr` together
+/// with the SIB byte and displacement that follow it.
+#[cfg(target_arch = "x86_64")]
+fn modrm_len(code: &mut CodeReader, addr: u64, modrm: u8) -> Option<u64> {
+    let (mode, rm) = (modrm >> 6, modrm & 7);
+    if mode == 3 {
+        return Some(1);
+    }
+    let mut len = 1;
+    if rm == 4 {
+        let sib = code.byte(addr + 1)?;
+        len += 1;
+        // No base register: a 32-bit displacement instead.
+        if mode == 0 && sib & 7 == 5 {
+            len += 4;
+        }
+    } else if mode == 0 && rm == 5 {
+        // RIP-relative.
+        len += 4;
+    }
+    len += match mode {
+        1 => 1,
+        2 => 4,
+        _ => 0,
+    };
+    Some(len)
+}
+
+/// Removes the TF that a single step left where the guest can see it, unless
+/// the guest set TF itself. Returns whether the guest's own TF is set after
+/// the step, and the registers the guest now has.
+///
+/// Whether the step ran its instruction is read from where it stopped, not
+/// from the stop: a SIGTRAP can come from elsewhere, and a stop other than
+/// the step's SIGTRAP (a group stop, or a seccomp stop at a `syscall`) can
+/// follow an instruction that ran.
 ///
 /// PTRACE_SINGLESTEP runs one instruction with TF set. Linux normally hides
 /// that TF from PTRACE_GETREGS and clears it when the tracee is next resumed,
-/// but it leaks in two ways (arch/x86/kernel/step.c):
+/// but it leaks in three ways (arch/x86/kernel/step.c):
 ///
 /// - A stepped `pushf` stores RFLAGS as it is, so the guest's stack receives
 ///   TF=1 although the guest never set it. When the guest restores that image
@@ -1393,48 +1507,80 @@ fn flags_instruction(task: &Stopped, ip: u64) -> FlagsInstruction {
 ///   (`is_setting_trap_flag`). It still sets TF for every later step in the
 ///   sequence, but never takes it back as its own, so TF shows in the
 ///   registers and stays set when the tracee is resumed.
+/// - A stepped `syscall` saves RFLAGS, TF included, in r11, where the guest
+///   finds it when the syscall returns. It does so before any seccomp stop,
+///   so a step that ends at one leaks it too.
 ///
-/// Either way the guest then runs with TF set and every instruction traps.
-/// A stepped `syscall` also saves TF in r11, where the guest finds it when the
-/// syscall returns.
+/// In the first two ways the guest then runs with TF set and every
+/// instruction traps.
 ///
-/// A stepped `popf` or `iret` loads the guest's own flags, so it decides the
-/// guest's TF for later steps. `old_sp` is the stack pointer before the step.
+/// An instruction that loads the guest's flags decides the guest's TF for
+/// later steps. Linux notices a stepped `popf` or `iret`, and shows the TF it
+/// loads. It does not notice a `popf` that runs in the same step as a
+/// `mov ss`, or the RFLAGS that `rt_sigreturn` restores from a signal frame,
+/// and hides a TF these load while it has set TF itself (TIF_FORCED_TF).
+/// Those are read from memory, and set again through PTRACE_SETREGS, which
+/// makes them the guest's.
 #[cfg(target_arch = "x86_64")]
 fn remove_stepping_trap_flag(
     task: &mut Stopped,
-    instruction: FlagsInstruction,
-    old_sp: u64,
+    start: &StepStart,
     guest_trap_flag: bool,
-) -> Result<bool, TraceError> {
+) -> Result<(bool, Regs), TraceError> {
     let mut regs = task.getregs()?;
-    if instruction == FlagsInstruction::Popf {
+    match start.instruction {
         // The flags just loaded are the guest's own.
-        return Ok(regs.eflags & TRAP_FLAG != 0);
+        FlagsInstruction::Popf { end }
+            if end.map_or(regs.rip != start.rip, |end| regs.rip == end) =>
+        {
+            return Ok((regs.eflags & TRAP_FLAG != 0, regs));
+        }
+        FlagsInstruction::PopfAfterMovSs { end } if regs.rip == end => {
+            let image = read_byte(task, start.rsp + 1).map_err(|err| memory_error(task, err))?;
+            return adopt_trap_flag(task, regs, image & TRAP_FLAG_HIGH_BYTE != 0);
+        }
+        // A completed `rt_sigreturn` restores every register from the signal
+        // frame, r11 and RFLAGS included, and sets orig_rax to -1. Linux takes
+        // the syscall number from the low 32 bits of rax.
+        FlagsInstruction::Syscall { .. }
+            if start.rax as u32 == libc::SYS_rt_sigreturn as u32
+                && regs.orig_rax as i64 == -1
+                && regs.rip != start.rip =>
+        {
+            let restored = regs.eflags & TRAP_FLAG != 0 || {
+                let addr = start.rsp + SIGRETURN_FLAGS_OFFSET + 1;
+                let image = read_byte(task, addr).map_err(|err| memory_error(task, err))?;
+                image & TRAP_FLAG_HIGH_BYTE != 0
+            };
+            return adopt_trap_flag(task, regs, restored);
+        }
+        _ => {}
     }
     if guest_trap_flag {
-        return Ok(true);
-    }
-    // pushfq stores 8 bytes and pushfw 2.
-    if instruction == FlagsInstruction::Pushf && matches!(old_sp.wrapping_sub(regs.rsp), 2 | 8) {
-        // TF is bit 0 of the image's second byte, in either size.
-        let addr = regs.rsp + 1;
-        let byte = read_aligned_word(task, addr & !7)?.to_ne_bytes()[(addr & 7) as usize];
-        if byte & (TRAP_FLAG >> 8) as u8 != 0 {
-            let addr = AddrMut::from_raw(addr as usize).ok_or(Errno::EFAULT)?;
-            task.write_exact(addr, &[byte & !(TRAP_FLAG >> 8) as u8])?;
-        }
+        return Ok((true, regs));
     }
     let mut changed = false;
-    // `rt_sigreturn` loads r11 from the signal frame, and Linux then sets
-    // orig_rax to -1, so r11 holds the guest's own value.
-    if instruction == FlagsInstruction::Syscall
-        && regs.orig_rax as i64 >= 0
-        && regs.orig_rax != libc::SYS_rt_sigreturn as u64
-        && regs.r11 & TRAP_FLAG != 0
-    {
-        regs.r11 &= !TRAP_FLAG;
-        changed = true;
+    match start.instruction {
+        // pushfq stores 8 bytes and pushfw 2.
+        FlagsInstruction::Pushf { end }
+            if regs.rip == end && matches!(start.rsp.wrapping_sub(regs.rsp), 2 | 8) =>
+        {
+            // TF is bit 0 of the image's second byte, in either size.
+            let addr = regs.rsp + 1;
+            let byte = read_byte(task, addr).map_err(|err| memory_error(task, err))?;
+            if byte & TRAP_FLAG_HIGH_BYTE != 0 {
+                let addr = AddrMut::from_raw(addr as usize).ok_or(Errno::EFAULT)?;
+                task.write_exact(addr, &[byte & !TRAP_FLAG_HIGH_BYTE])
+                    .map_err(|err| memory_error(task, err))?;
+            }
+        }
+        // The `syscall` ran if the step ended just past it, whether the
+        // syscall completed or stopped at its entry.
+        FlagsInstruction::Syscall { end } if regs.rip == end && regs.r11 & TRAP_FLAG != 0 => {
+            regs.r11 &= !TRAP_FLAG;
+            changed = true;
+        }
+        _ => {}
     }
     // Linux sets TF for every step but has lost track of it, so it shows here
     // and would stay set when the guest resumes.
@@ -1445,7 +1591,42 @@ fn remove_stepping_trap_flag(
     if changed {
         task.setregs(&regs)?;
     }
-    Ok(false)
+    Ok((false, regs))
+}
+
+/// Makes `own` the guest's TF after a step loaded flags that Linux did not
+/// notice. Linux hides the TF it sets for stepping, and clears it on resume;
+/// a TF set through PTRACE_SETREGS is the guest's, and a clear one leaves
+/// only Linux's own.
+#[cfg(target_arch = "x86_64")]
+fn adopt_trap_flag(
+    task: &mut Stopped,
+    mut regs: Regs,
+    own: bool,
+) -> Result<(bool, Regs), TraceError> {
+    if (regs.eflags & TRAP_FLAG != 0) != own {
+        regs.eflags ^= TRAP_FLAG;
+        task.setregs(&regs)?;
+    }
+    Ok((own, regs))
+}
+
+/// Guest memory access reports a tracee that has died with a plain ESRCH.
+/// PTRACE_GETREGS reports it as `Died`, which the caller reaps.
+#[cfg(target_arch = "x86_64")]
+fn memory_error(task: &Stopped, err: Errno) -> TraceError {
+    if err == Errno::ESRCH
+        && let Err(died @ TraceError::Died(_)) = task.getregs()
+    {
+        return died;
+    }
+    TraceError::Errno(err)
+}
+
+/// Reads the guest byte at `addr`.
+#[cfg(target_arch = "x86_64")]
+fn read_byte(task: &Stopped, addr: u64) -> Result<u8, Errno> {
+    Ok(read_aligned_word(task, addr & !7)?.to_ne_bytes()[(addr & 7) as usize])
 }
 
 /// Reads the aligned word at `addr` with PTRACE_PEEKDATA.
