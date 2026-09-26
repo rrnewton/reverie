@@ -3986,6 +3986,10 @@ class CellResultProjection(unittest.TestCase):
             attempt["stdout"] = stdout
         observed_bytes, observed_sha = self._stdout_identity(self.OBSERVED_STDOUT)
         report = json.loads(attempt["verification_report"])
+        # Hermit's require_exact_output_match: the report's guest disposition
+        # is the one its compared outputs record.
+        report["guest_exit_code"] = status
+        report["guest_signal"] = None
         report["compared_outputs"] = {
             side: {
                 "exit_code": status,
@@ -4132,8 +4136,9 @@ class CellResultProjection(unittest.TestCase):
              f"{contradicts}: both compared runs printed"),
             ("the contained reason names other stdout", edited(contains, edit=other_report_stdout),
              f"{contradicts}: both compared runs printed"),
+            # Refused as malformed evidence before its reason is read.
             ("unequal compared runs", edited(edit=unequal_runs),
-             f"{contradicts}: the matched report has no identical"),
+             "matched report is internally inconsistent: left and right compared outputs differ"),
             ("no compared outputs", edited(edit=no_compared_outputs),
              f"{contradicts}: the matched report has no identical"),
             ("a chaos cell", edited(edit=chaos),
@@ -4998,6 +5003,253 @@ class CellResultProjection(unittest.TestCase):
         )
         self.assertIn(message, record["reason"])
         self.assertEqual(sorted(series.spool_dir(self.parent).glob("*.jsonl")), [])
+
+    def _edit_report(self, cell, edit):
+        attempt = cell["attempts"][0]
+        report = json.loads(attempt["verification_report"])
+        edit(report)
+        self._replace_comparison_report(attempt, report)
+        return cell
+
+    def _project_one(self, cell, label):
+        rows = series.rows_from_cell_results(
+            [self._validate_cell(1), cell],
+            parent=self.parent,
+            producer="validate",
+            run_id=f"validate-integrity-{label}",
+            tree=self.tree,
+            emitted_at="2026-09-26T12:00:00Z",
+        )
+        series.validate_rows(rows)
+        return rows
+
+    def test_a_runner_red_is_typed_only_after_its_evidence_is_valid(self):
+        """The review reproduction from run 221's qemu-hello row: declared,
+        status and report exit 7, attempt and outer row FAIL/crash-error, and
+        only the right stdout_sha256 altered. The runner-red branch must not
+        retype that contradiction as failed_match; structure is refused first.
+        A structurally valid mismatch (declared 7, observed 5) is still kept
+        as failed_match, beside a passing sibling."""
+        def qemu_red():
+            cell = self._runner_red(self._declared_exit_7())
+            cell["test"] = cell["test"] + "-red"
+            return cell
+
+        def valid_mismatch():
+            cell = self._runner_red(self._expected_exit_cell(
+                status=5, signal=None, guest_exit_code=5, guest_signal=None,
+                declared=(7, None)))
+            cell["test"] = cell["test"] + "-red"
+            return cell
+
+        def undeclared_red():
+            cell = self._runner_red(self._expected_exit_cell(
+                status=3, signal=None, guest_exit_code=3, guest_signal=None,
+                declared=None))
+            cell["test"] = cell["test"] + "-red"
+            return cell
+
+        rows = self._project_one(valid_mismatch(), "valid-mismatch")
+        (red,) = [row for row in rows if row["series"]["outcome"] == "errored"]
+        (evidence,) = red["series"]["no_verdict_evidence"]["attempts"]
+        self.assertEqual(evidence["kind"], "failed_match")
+        self.assertEqual(sorted(row["series"]["outcome"] for row in rows), ["errored", "passed"])
+
+        def right(**fields):
+            return lambda r: r["compared_outputs"]["right"].update(fields)
+
+        def left(**fields):
+            return lambda r: r["compared_outputs"]["left"].update(fields)
+
+        def both(**fields):
+            return lambda r: [r["compared_outputs"][side].update(fields) for side in ("left", "right")]
+
+        def attempt_edit(make, **fields):
+            cell = make()
+            cell["attempts"][0].update(fields)
+            return cell
+
+        cases = [
+            ("qemu exit 7, right stdout_sha256 altered",
+             self._edit_report(qemu_red(), right(stdout_sha256="c" * 64)),
+             "left and right compared outputs differ"),
+            ("qemu exit 7, left stdout_sha256 altered",
+             self._edit_report(qemu_red(), left(stdout_sha256="c" * 64)),
+             "left and right compared outputs differ"),
+            ("valid mismatch, right stdout_sha256 altered",
+             self._edit_report(valid_mismatch(), right(stdout_sha256="c" * 64)),
+             "left and right compared outputs differ"),
+            ("valid mismatch, right stderr_bytes altered",
+             self._edit_report(valid_mismatch(), right(stderr_bytes=1)),
+             "left and right compared outputs differ"),
+            ("valid mismatch, right exit_code altered",
+             self._edit_report(valid_mismatch(), right(exit_code=7)),
+             "left and right compared outputs differ"),
+            ("valid mismatch, outputs name the declaration but the report does not",
+             self._edit_report(valid_mismatch(), both(exit_code=7)),
+             "contradict the report's guest disposition"),
+            ("valid mismatch, outputs record no disposition",
+             self._edit_report(valid_mismatch(), both(exit_code=None)),
+             "exactly one guest disposition"),
+            ("valid mismatch, outputs record both dispositions",
+             self._edit_report(valid_mismatch(), both(signal=11)),
+             "exactly one guest disposition"),
+            ("valid mismatch, right output shape altered",
+             self._edit_report(valid_mismatch(), lambda r: r["compared_outputs"]["right"].pop("stderr_bytes")),
+             "right compared output is not Hermit's canonical shape"),
+            ("valid mismatch, compared outputs absent",
+             self._edit_report(valid_mismatch(), lambda r: r.pop("compared_outputs")),
+             "requires compared_outputs"),
+            ("valid mismatch, Hermit status disagrees with the report",
+             attempt_edit(valid_mismatch, status=6),
+             "status does not report the guest's disposition"),
+            ("valid mismatch, Hermit signal beside an exit code",
+             attempt_edit(valid_mismatch, signal=11),
+             "status does not report the guest's disposition"),
+            ("valid mismatch, boolean status",
+             attempt_edit(valid_mismatch, status=True),
+             "attempt status is not an i32"),
+            ("valid mismatch, no --verify-allow=failure",
+             attempt_edit(valid_mismatch, argv=[
+                 "/src/hermit", "run", "--strict", "--verify-strict", "--verify",
+                 "--verify-json", "/results/verify-1.json", "--", "/results/fixtures/program",
+                 "--verify-allow=failure"]),
+             "without --verify-allow=failure"),
+            ("valid mismatch, argv not a list",
+             attempt_edit(valid_mismatch, argv="/src/hermit run --verify-allow=failure"),
+             "argv is not a list of strings"),
+            ("undeclared red, right stdout_sha256 altered",
+             self._edit_report(undeclared_red(), right(stdout_sha256="c" * 64)),
+             "left and right compared outputs differ"),
+        ]
+        for label, target, message in cases:
+            with self.subTest(label=label), self.assertRaisesRegex(
+                series.MalformedRow, "matched report is internally inconsistent: .*" + re.escape(message)
+            ):
+                self._project_one(target, "mutant")
+
+    def test_an_ordinary_matched_pass_refuses_mismatched_compared_outputs(self):
+        """Hermit's reader refuses any present compared_outputs that do not
+        support a match (canonical_verdict.rs require_exact_output_match),
+        declared row or not."""
+        def ordinary(**right_fields):
+            cell = self._validate_cell(1)
+
+            def edit(report):
+                report["guest_exit_code"] = 0
+                report["compared_outputs"] = {
+                    side: {
+                        "exit_code": 0, "signal": None,
+                        "stdout_sha256": "a" * 64, "stdout_bytes": 12,
+                        "stderr_sha256": "b" * 64, "stderr_bytes": 0,
+                    }
+                    for side in ("left", "right")
+                }
+                report["compared_outputs"]["right"].update(right_fields)
+            return self._edit_report(cell, edit)
+
+        row = self._project_validate(ordinary(), "ordinary-outputs")[0]
+        self.assertEqual(row["series"]["outcome"], "passed")
+        for label, fields, message in (
+            ("right stdout_sha256", {"stdout_sha256": "c" * 64}, "compared outputs differ"),
+            ("right stderr_sha256", {"stderr_sha256": "c" * 64}, "compared outputs differ"),
+            ("right stdout_bytes", {"stdout_bytes": 13}, "compared outputs differ"),
+            ("right exit_code", {"exit_code": 1}, "compared outputs differ"),
+            ("right fractional bytes", {"stdout_bytes": 12.0}, "not Hermit's canonical shape"),
+            ("right uppercase hash", {"stdout_sha256": "A" * 64}, "not Hermit's canonical shape"),
+        ):
+            with self.subTest(label=label), self.assertRaisesRegex(
+                series.MalformedRow, "matched report is internally inconsistent: .*" + re.escape(message)
+            ):
+                self._project_validate(ordinary(**fields), "ordinary-mutant")
+        contradicted = self._edit_report(ordinary(), lambda r: r.update(guest_exit_code=3))
+        with self.assertRaisesRegex(series.MalformedRow, "contradict the report's guest disposition"):
+            self._project_validate(contradicted, "ordinary-contradicted")
+        # Noncanonical matches project no_result, but their outputs are typed
+        # by the same reader and refused the same way.
+        noncanonical = self._edit_report(
+            ordinary(stdout_sha256="c" * 64),
+            lambda r: r["comparison"].update(strictness="stripped"),
+        )
+        with self.assertRaisesRegex(series.MalformedRow, "compared outputs differ"):
+            self._project_validate(noncanonical, "noncanonical-mutant")
+
+    def test_a_failed_match_cannot_erase_a_diverged_sibling_attempt(self):
+        red = self._runner_red(self._expected_exit_cell(
+            status=5, signal=None, guest_exit_code=5, guest_signal=None,
+            declared=(7, None)))
+        red["test"] = red["test"] + "-red"
+        diverged = self._validate_diverged_cell(1)["attempts"][0]
+        diverged["index"] = "2"
+        for label, attempts in (
+            ("diverged then failed match", [diverged, red["attempts"][0]]),
+            ("failed match then diverged", [red["attempts"][0], diverged]),
+        ):
+            mixed = json.loads(json.dumps(red))
+            mixed["attempts"] = json.loads(json.dumps(attempts))
+            with self.subTest(label=label), self.assertRaisesRegex(
+                series.MalformedRow, "also carries a diverged attempt"
+            ):
+                self._project_one(mixed, "mixed")
+
+    def test_compared_info_message_counts_are_bounded_by_u64(self):
+        def with_counts(left, right):
+            return self._edit_report(
+                self._validate_cell(1),
+                lambda r: r.update(compared_log_messages={"left": left, "right": right}),
+            )
+
+        row = self._project_validate(with_counts(2**64 - 1, 2**64 - 1), "count-max")[0]
+        self.assertEqual(row["series"]["outcome"], "passed")
+        for label, left, right, message in (
+            ("left u64::MAX + 1", 2**64, 17, "exceed u64"),
+            ("right u64::MAX + 1", 17, 2**64, "exceed u64"),
+            ("both far past u64", 2**70, 2**70, "exceed u64"),
+            ("zero", 0, 17, "no nonzero INFO-message counts"),
+            ("boolean", True, 17, "no nonzero INFO-message counts"),
+        ):
+            with self.subTest(label=label), self.assertRaisesRegex(series.MalformedRow, message):
+                self._project_validate(with_counts(left, right), "count-mutant")
+
+    def test_strict_stdin_refuses_an_overflowing_number_in_any_field(self):
+        """A real row with an unused extra field 1e999 parsed as Python
+        infinity and projected PASS; serde_json refuses it. append-cells
+        quarantines the line, and plain append refuses a backend parity row
+        carrying one."""
+        base = json.dumps(self._validate_cell(1), separators=(",", ":"))
+        for index, (label, line) in enumerate((
+            ("extra 1e999", base[:-1] + ',"extra":1e999}'),
+            ("extra -1e999", base[:-1] + ',"extra":-1e999}'),
+            ("nested 1E400", base[:-1] + ',"extra":{"deep":[1E400]}}'),
+        )):
+            with self.subTest(label=label):
+                with mock.patch.object(series.sys, "stdin", io.StringIO(line + "\n")):
+                    parsed, failures = series._stdin_cell_results()
+                self.assertEqual(parsed, [])
+                [(number, raw, error, reason)] = failures
+                self.assertEqual((number, raw, error), (1, line.encode(), "MalformedRow"))
+                self.assertTrue(reason.startswith("stdin line 1 is not JSON: "), reason)
+                self.assertIn("out-of-range number", reason)
+                self._assert_stdin_line_quarantined(
+                    line, f"overflow-mutant-{index}", "out-of-range number"
+                )
+        parity = json.dumps(self._parity_cell(), separators=(",", ":"))
+        with mock.patch.object(
+            series.sys, "stdin", io.StringIO(parity[:-1] + ',"extra":1e999}\n')
+        ), contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(series._stdin_rows(), (None, 2))
+        self.assertIn("out-of-range number", stderr.getvalue())
+        # A finite float in an extra field is still ordinary JSON to both readers.
+        with mock.patch.object(
+            series.sys, "stdin", io.StringIO(base[:-1] + ',"extra":1.5e3}\n')
+        ):
+            parsed, failures = series._stdin_cell_results()
+        self.assertEqual((failures, parsed[0][1]["extra"]), ([], 1500.0))
+        with mock.patch.object(
+            series.sys, "stdin", io.StringIO(parity[:-1] + ',"extra":1.5e3}\n')
+        ):
+            rows, status = series._stdin_rows()
+        self.assertEqual((status, rows[0]["extra"]), (0, 1500.0))
 
     def test_append_cells_refuses_duplicate_fields_and_constants_in_the_outer_row(self):
         # A null then valid declaration would otherwise collapse to the valid

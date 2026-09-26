@@ -3997,64 +3997,84 @@ def _bind_expected_guest_exit(
         )
 
 
-def _declared_failure_matches(
+def _require_matched_evidence(
     attempt: dict,
     report: dict,
-    expected_guest_exit: tuple[int | None, int | None],
-) -> bool:
-    """Whether a matched attempt ended exactly as its row declares.
+    *,
+    index: int,
+    expected_guest_exit: tuple[int | None, int | None] | None,
+) -> tuple[int | None, int | None]:
+    """Refuse a matched attempt whose evidence is malformed or contradicts itself.
 
-    All of these must hold, mirroring the runner's own pass decision:
-    Hermit ran with ``--verify-allow=failure`` before the guest separator;
-    Hermit's status reports the declared disposition (a signal death either
-    as that signal or as ``128 + signo``); the report's guest disposition
-    names exactly the declared code or signal; and ``compared_outputs`` has
-    Hermit's complete canonical shape (``ComparedOutputs`` in
-    ``hermit-cli/src/canonical_verdict.rs``), with identical left and right
-    outputs, stdout and stderr included, that name the declaration.
+    This runs before a matched attempt is classified, so a ``failed_match``
+    can only be structurally valid evidence that ended differently from what
+    its row allows; it can never be a contradiction relabelled as red.
+
+    Present ``compared_outputs`` must satisfy Hermit's
+    ``require_exact_output_match`` (``hermit-cli/src/canonical_verdict.rs``):
+    Hermit's complete canonical shape on both sides, identical left and
+    right, exactly one guest disposition, agreeing with the report's own
+    guest disposition. An undeclared report may omit them, as a historical
+    receipt does. A declared row additionally requires the outputs,
+    ``--verify-allow=failure`` before the guest separator, and a Hermit status
+    that reports the guest's disposition (a signal death either as that
+    signal or as ``128 + signo``).
+
+    Returns the report's guest disposition ``(code, signal)``.
     """
-    code, signal = expected_guest_exit
-    argv = attempt.get("argv")
-    if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
-        return False
-    hermit_args = argv[:argv.index("--")] if "--" in argv else argv
-    if "--verify-allow=failure" not in hermit_args:
-        return False
+    def refuse(detail: str) -> None:
+        raise MalformedRow(
+            f"cell attempt {index} matched report is internally inconsistent: {detail}"
+        )
+
+    if report.get("verified") is not True or report.get("bitwise_parity") is not True:
+        refuse("verified and bitwise_parity must both be true")
     status = attempt.get("status")
     observed_signal = attempt.get("signal")
-    for value in (status, observed_signal):
-        if value is not None and type(value) is not int:
-            return False
-    if code is not None:
-        hermit_matches = status == code and observed_signal is None
-    else:
-        hermit_matches = (status is None and observed_signal == signal) or (
-            status == 128 + signal and observed_signal is None
-        )
-    if not hermit_matches:
-        return False
-
-    def names_declaration(guest_code: Any, guest_signal: Any) -> bool:
-        return (
-            (guest_code is None or type(guest_code) is int)
-            and (guest_signal is None or type(guest_signal) is int)
-            and guest_code == code
-            and guest_signal == signal
-        )
-
-    if not names_declaration(report.get("guest_exit_code"), report.get("guest_signal")):
-        return False
+    for name, value in (("status", status), ("signal", observed_signal)):
+        if not _is_optional_i32(value):
+            refuse(f"attempt {name} is not an i32")
+    guest = (report.get("guest_exit_code"), report.get("guest_signal"))
+    if not all(_is_optional_i32(value) for value in guest):
+        refuse("report guest disposition is not typed")
     outputs = report.get("compared_outputs")
-    if not isinstance(outputs, dict) or set(outputs) != {"left", "right"}:
-        return False
-    left, right = outputs["left"], outputs["right"]
-    # Type each side before comparing: Python's == equates 7 with 7.0 and 1
-    # with True, which Hermit's typed reader refuses on either side.
-    return all(
-        _is_canonical_compared_output(side)
-        and names_declaration(side["exit_code"], side["signal"])
-        for side in (left, right)
-    ) and left == right
+    if outputs is None:
+        if expected_guest_exit is not None:
+            refuse("a declared guest exit requires compared_outputs")
+    else:
+        if not isinstance(outputs, dict) or set(outputs) != {"left", "right"}:
+            refuse("compared_outputs must have exactly left and right")
+        for side in ("left", "right"):
+            output = outputs[side]
+            if not _is_canonical_compared_output(output):
+                refuse(f"{side} compared output is not Hermit's canonical shape")
+            if (output["exit_code"] is None) == (output["signal"] is None):
+                refuse(f"{side} compared output must record exactly one guest disposition")
+        # Both sides are typed above: Python's == equates 7 with 7.0 and 1
+        # with True, which Hermit's typed reader refuses on either side.
+        if outputs["left"] != outputs["right"]:
+            refuse("left and right compared outputs differ")
+        if guest != (outputs["left"]["exit_code"], outputs["left"]["signal"]):
+            refuse("compared outputs contradict the report's guest disposition")
+    if expected_guest_exit is not None:
+        argv = attempt.get("argv")
+        if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
+            refuse("attempt argv is not a list of strings")
+        hermit_args = argv[:argv.index("--")] if "--" in argv else argv
+        if "--verify-allow=failure" not in hermit_args:
+            refuse("a declared guest exit ran without --verify-allow=failure")
+        code, signal = guest
+        if (code is None) == (signal is None):
+            refuse("report must record exactly one guest disposition")
+        if code is not None:
+            reported = status == code and observed_signal is None
+        else:
+            reported = (status is None and observed_signal == signal) or (
+                status == 128 + signal and observed_signal is None
+            )
+        if not reported:
+            refuse("Hermit's status does not report the guest's disposition")
+    return guest
 
 
 _COMPARED_OUTPUT_FIELDS = frozenset({
@@ -4064,6 +4084,10 @@ _COMPARED_OUTPUT_FIELDS = frozenset({
 
 def _is_u64(value: Any) -> bool:
     return type(value) is int and 0 <= value <= 2**64 - 1
+
+
+def _is_optional_i32(value: Any) -> bool:
+    return value is None or (type(value) is int and -(2**31) <= value <= 2**31 - 1)
 
 
 def _is_typed_runtime(runtime: Any) -> bool:
@@ -4092,14 +4116,12 @@ def _is_typed_runtime(runtime: Any) -> bool:
 
 
 def _is_canonical_compared_output(output: Any) -> bool:
-    """Whether one side of ``compared_outputs`` has exactly Hermit's fields.
-
-    ``exit_code`` and ``signal`` are typed by ``names_declaration``, which
-    every caller applies to the same output, on both sides.
-    """
+    """Whether one side of ``compared_outputs`` has exactly Hermit's typed fields."""
     return (
         isinstance(output, dict)
         and set(output) == _COMPARED_OUTPUT_FIELDS
+        and _is_optional_i32(output["exit_code"])
+        and _is_optional_i32(output["signal"])
         and all(
             isinstance(output[field], str)
             and re.fullmatch(r"[0-9a-f]{64}", output[field]) is not None
@@ -4444,6 +4466,11 @@ def _typed_comparison_attempt(
             raise MalformedRow(
                 f"cell attempt {index} has no nonzero INFO-message counts"
             )
+        if not (_is_u64(left) and _is_u64(right)):
+            # Hermit's CompareLogMessageCounts are u64s.
+            raise MalformedRow(
+                f"cell attempt {index} INFO-message counts exceed u64"
+            )
         if verdict == "matched" and (
             report.get("verified") is not True
             or report.get("bitwise_parity") is not True
@@ -4479,6 +4506,13 @@ def _typed_comparison_attempt(
             and comparison.get("skip_commit") is False
             and comparison.get("skip_detlog") is False
         )
+        if verdict == "matched":
+            # Every structural and integrity check refuses before the attempt
+            # is classified, canonical or not; only then can a valid match be
+            # judged against the exit its row allows.
+            guest = _require_matched_evidence(
+                attempt, report, index=index, expected_guest_exit=expected_guest_exit
+            )
         if not canonical:
             return "no_result"
         if verdict == "matched":
@@ -4489,20 +4523,13 @@ def _typed_comparison_attempt(
             status = attempt.get("status")
             if expected_guest_exit is None:
                 disposition_consistent = (
-                    isinstance(status, int)
-                    and not isinstance(status, bool)
+                    type(status) is int
                     and status >= 0
                     and (mode == "chaos" or status == 0)
                     and attempt.get("signal") is None
                 )
             else:
-                disposition_consistent = mode == "verify" and _declared_failure_matches(
-                    attempt, report, expected_guest_exit
-                )
-            if report.get("verified") is not True or report.get("bitwise_parity") is not True:
-                raise MalformedRow(
-                    f"cell attempt {index} matched report is internally inconsistent"
-                )
+                disposition_consistent = mode == "verify" and guest == expected_guest_exit
             if attempt.get("outcome") == "PASS":
                 if (
                     attempt.get("timed_out") is not False
@@ -5019,6 +5046,12 @@ def _cell_outcome(row: dict) -> str:
         if any(row.get(key) is not None for key in COORDINATE_KEYS):
             raise MalformedRow(
                 "row retaining a matched attempt the runner failed carries a divergence coordinate"
+            )
+        if "diverged" in dispositions:
+            # crash-error accepts failed_match as support, so a diverged
+            # sibling would otherwise be erased from the row's verdict.
+            raise MalformedRow(
+                "row retaining a matched attempt the runner failed also carries a diverged attempt"
             )
     if has_parity:
         _typed_backend_parity(row, dispositions)
@@ -6140,6 +6173,13 @@ def _stdin_nonjson_constant(value):
     raise MalformedRow(f"non-JSON numeric constant {value}")
 
 
+def _stdin_finite_float(text):
+    value = float(text)
+    if not math.isfinite(value):
+        raise MalformedRow(f"out-of-range number {text}")
+    return value
+
+
 def _stdin_rows() -> tuple[list[dict] | None, int]:
     rows = []
     for number, line in enumerate(sys.stdin.read().splitlines(), 1):
@@ -6149,7 +6189,8 @@ def _stdin_rows() -> tuple[list[dict] | None, int]:
             row = json.loads(line)
             if isinstance(row, dict) and "backend_parity" in row:
                 row = json.loads(line, object_pairs_hook=_parity_unique_fields,
-                                 parse_constant=_parity_nonfinite_constant)
+                                 parse_constant=_parity_nonfinite_constant,
+                                 parse_float=_stdin_finite_float)
             # serde_json refuses a lone surrogate anywhere in a row.
             json.dumps(row, ensure_ascii=False).encode()
             rows.append(row)
@@ -6174,9 +6215,10 @@ def _stdin_cell_results() -> tuple[
     unescaped. Lines of ASCII whitespace are skipped. Nothing is refused here;
     the caller quarantines failures.
 
-    Every line is read refusing duplicate fields and non-JSON constants in
-    every row, as Hermit's serde_json does. A duplicate ``expected_guest_exit``
-    or ``attempts`` would otherwise be collapsed before validation sees it.
+    Every line is read refusing duplicate fields, non-JSON constants, and
+    numbers that overflow to infinity (``1e999``) in every field of every row,
+    as Hermit's serde_json does. A duplicate ``expected_guest_exit`` or
+    ``attempts`` would otherwise be collapsed before validation sees it.
     """
     buffer = getattr(sys.stdin, "buffer", None)
     data = buffer.read() if buffer is not None else sys.stdin.read().encode("utf-8")
@@ -6191,7 +6233,8 @@ def _stdin_cell_results() -> tuple[
         try:
             line = raw.decode("utf-8")
             row = json.loads(line, object_pairs_hook=_stdin_unique_fields,
-                             parse_constant=_stdin_nonjson_constant)
+                             parse_constant=_stdin_nonjson_constant,
+                             parse_float=_stdin_finite_float)
             # serde_json refuses a lone surrogate anywhere in a row.
             json.dumps(row, ensure_ascii=False).encode()
         except (ValueError, RecursionError, MalformedRow) as error:
