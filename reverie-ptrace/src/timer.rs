@@ -1282,7 +1282,7 @@ impl TimerImpl {
             );
             #[cfg(target_arch = "x86_64")]
             let start = StepStart {
-                instruction: flags_instruction(&task, regs.rip),
+                instruction: stepped_instruction(&task, &regs),
                 rip: regs.rip,
                 rsp: regs.rsp,
                 rax: regs.rax,
@@ -1294,10 +1294,19 @@ impl TimerImpl {
                 Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => new_task,
                 // Any other stop ends the stepping. The step's instruction may
                 // still have run: a `syscall` stops at its seccomp stop after
-                // loading r11, for example.
+                // loading r11, for example. The stop is passed on even if the
+                // cleanup fails, because it can be an event, such as a new
+                // child, that must be handled.
                 #[cfg(target_arch = "x86_64")]
                 Wait::Stopped(mut new_task, event) => {
-                    remove_stepping_trap_flag(&mut new_task, &start, guest_trap_flag)?;
+                    if let Err(err) =
+                        remove_stepping_trap_flag(&mut new_task, &start, guest_trap_flag)
+                    {
+                        warn!(
+                            "Could not remove the single-step trap flag at {:?}: {:?}",
+                            event, err
+                        );
+                    }
                     return Err(HandleFailure::Event(Wait::Stopped(new_task, event)));
                 }
                 wait => return Err(HandleFailure::Event(wait)),
@@ -1341,8 +1350,9 @@ const SIGRETURN_FLAGS_OFFSET: u64 = (core::mem::offset_of!(libc::ucontext_t, uc_
     as u64;
 
 /// The instruction a single step runs, as far as the step can leave the TF
-/// that stepping sets where the guest sees it. `end` is the address just past
-/// the instruction, where a step that completes it stops.
+/// that stepping sets where the guest sees it. `at` is the address of the
+/// instruction, with its prefixes, and `end` the address just past it, where a
+/// step that completes it stops.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FlagsInstruction {
@@ -1350,18 +1360,23 @@ enum FlagsInstruction {
     Pushf {
         end: u64,
     },
-    /// `popf` or `iret` loads RFLAGS from the stack, and Linux then treats TF
-    /// as the guest's. `iret` jumps, so it has no `end`.
+    /// `popf` loads RFLAGS from the stack, and Linux then treats TF as the
+    /// guest's.
     Popf {
-        end: Option<u64>,
+        end: u64,
     },
     /// `popf` in the same step as a `mov ss` before it. Linux looks only at
     /// the first instruction of a step, so it can hide the TF this loads.
     PopfAfterMovSs {
         end: u64,
     },
+    /// `iret` loads RFLAGS like `popf`, and rip and rsp from the stack too.
+    Iret {
+        at: u64,
+    },
     /// `syscall` saves RFLAGS in r11, and the kernel returns it there.
     Syscall {
+        at: u64,
         end: u64,
     },
     Other,
@@ -1397,6 +1412,31 @@ impl CodeReader<'_> {
     }
 }
 
+/// The errors with which a syscall asks Linux to restart it when no handler
+/// runs: ERESTARTSYS, ERESTARTNOINTR, ERESTARTNOHAND and
+/// ERESTART_RESTARTBLOCK (include/linux/errno.h).
+#[cfg(target_arch = "x86_64")]
+const RESTART_ERRORS: [i64; 4] = [-512, -513, -514, -516];
+
+/// The instruction that the next step of a guest with `regs` runs.
+///
+/// That is the instruction at rip, unless the guest is stopped at the end of
+/// a syscall that asks to be restarted, which a signal or task work has
+/// interrupted. Resuming it without a signal, as a step does, makes Linux move
+/// rip back over the `syscall` and run it again (arch_do_signal_or_restart).
+/// Linux reads the syscall number from the low 32 bits of orig_rax, and
+/// orig_rax is -1 if the stop was not in a syscall.
+#[cfg(target_arch = "x86_64")]
+fn stepped_instruction(task: &Stopped, regs: &Regs) -> FlagsInstruction {
+    if regs.orig_rax as i32 != -1 && RESTART_ERRORS.contains(&(regs.rax as i64)) {
+        let restarted = flags_instruction(task, regs.rip.wrapping_sub(2));
+        if matches!(restarted, FlagsInstruction::Syscall { end, .. } if end == regs.rip) {
+            return restarted;
+        }
+    }
+    flags_instruction(task, regs.rip)
+}
+
 /// Decodes enough of the instruction at `ip` to tell whether it is `pushf`,
 /// `popf`, `iret` or `syscall`, with any prefixes.
 ///
@@ -1423,14 +1463,13 @@ fn flags_instruction(task: &Stopped, ip: u64) -> FlagsInstruction {
         match opcode {
             0x9c => return FlagsInstruction::Pushf { end: addr + 1 },
             0x9d if after_mov_ss => return FlagsInstruction::PopfAfterMovSs { end: addr + 1 },
-            0x9d => {
-                return FlagsInstruction::Popf {
-                    end: Some(addr + 1),
-                };
-            }
-            0xcf => return FlagsInstruction::Popf { end: None },
+            0x9d => return FlagsInstruction::Popf { end: addr + 1 },
+            0xcf => return FlagsInstruction::Iret { at: start },
             0x0f if code.byte(addr + 1) == Some(0x05) => {
-                return FlagsInstruction::Syscall { end: addr + 2 };
+                return FlagsInstruction::Syscall {
+                    at: start,
+                    end: addr + 2,
+                };
             }
             // `mov ss, r/m16`. Of consecutive loads of SS only the first is
             // sure to hold the trap back, so a second is not followed.
@@ -1491,10 +1530,11 @@ fn modrm_len(code: &mut CodeReader, addr: u64, modrm: u8) -> Option<u64> {
 /// the guest set TF itself. Returns whether the guest's own TF is set after
 /// the step, and the registers the guest now has.
 ///
-/// Whether the step ran its instruction is read from where it stopped, not
-/// from the stop: a SIGTRAP can come from elsewhere, and a stop other than
-/// the step's SIGTRAP (a group stop, or a seccomp stop at a `syscall`) can
-/// follow an instruction that ran.
+/// Whether the step ran its instruction is read from where it stopped, and
+/// for an instruction that loads rsp from where the stack is, not from the
+/// stop: a SIGTRAP can come from elsewhere, and a stop other than the step's
+/// SIGTRAP (a group stop, or a seccomp stop at a `syscall`) can follow an
+/// instruction that ran.
 ///
 /// PTRACE_SINGLESTEP runs one instruction with TF set. Linux normally hides
 /// that TF from PTRACE_GETREGS and clears it when the tracee is next resumed,
@@ -1509,7 +1549,8 @@ fn modrm_len(code: &mut CodeReader, addr: u64, modrm: u8) -> Option<u64> {
 ///   registers and stays set when the tracee is resumed.
 /// - A stepped `syscall` saves RFLAGS, TF included, in r11, where the guest
 ///   finds it when the syscall returns. It does so before any seccomp stop,
-///   so a step that ends at one leaks it too.
+///   so a step that ends at one leaks it too, and again when a step restarts
+///   an interrupted syscall.
 ///
 /// In the first two ways the guest then runs with TF set and every
 /// instruction traps.
@@ -1530,9 +1571,10 @@ fn remove_stepping_trap_flag(
     let mut regs = task.getregs()?;
     match start.instruction {
         // The flags just loaded are the guest's own.
-        FlagsInstruction::Popf { end }
-            if end.map_or(regs.rip != start.rip, |end| regs.rip == end) =>
-        {
+        FlagsInstruction::Popf { end } if regs.rip == end => {
+            return Ok((regs.eflags & TRAP_FLAG != 0, regs));
+        }
+        FlagsInstruction::Iret { at } if returned(&regs, start, at) => {
             return Ok((regs.eflags & TRAP_FLAG != 0, regs));
         }
         FlagsInstruction::PopfAfterMovSs { end } if regs.rip == end => {
@@ -1541,11 +1583,12 @@ fn remove_stepping_trap_flag(
         }
         // A completed `rt_sigreturn` restores every register from the signal
         // frame, r11 and RFLAGS included, and sets orig_rax to -1. Linux takes
-        // the syscall number from the low 32 bits of rax.
-        FlagsInstruction::Syscall { .. }
+        // the syscall number from the low 32 bits of rax. The frame may send
+        // rip back to the `syscall` with another syscall number in rax.
+        FlagsInstruction::Syscall { at, .. }
             if start.rax as u32 == libc::SYS_rt_sigreturn as u32
                 && regs.orig_rax as i64 == -1
-                && regs.rip != start.rip =>
+                && (returned(&regs, start, at) || regs.rax != start.rax) =>
         {
             let restored = regs.eflags & TRAP_FLAG != 0 || {
                 let addr = start.rsp + SIGRETURN_FLAGS_OFFSET + 1;
@@ -1576,7 +1619,7 @@ fn remove_stepping_trap_flag(
         }
         // The `syscall` ran if the step ended just past it, whether the
         // syscall completed or stopped at its entry.
-        FlagsInstruction::Syscall { end } if regs.rip == end && regs.r11 & TRAP_FLAG != 0 => {
+        FlagsInstruction::Syscall { end, .. } if regs.rip == end && regs.r11 & TRAP_FLAG != 0 => {
             regs.r11 &= !TRAP_FLAG;
             changed = true;
         }
@@ -1592,6 +1635,17 @@ fn remove_stepping_trap_flag(
         task.setregs(&regs)?;
     }
     Ok((false, regs))
+}
+
+/// Whether a step from `start` ran the instruction at `at`, which loads rip
+/// and rsp from memory. A step that stops before the instruction or faults in
+/// it leaves rsp as it was and rip at `at`, or at the start of the step if
+/// that is a `mov ss` before it. The instruction may return to either address
+/// too, but it then also moves rsp, unless it has loaded the rip and rsp that
+/// run it again, on the same stack.
+#[cfg(target_arch = "x86_64")]
+fn returned(regs: &Regs, start: &StepStart, at: u64) -> bool {
+    (regs.rip != start.rip && regs.rip != at) || regs.rsp != start.rsp
 }
 
 /// Makes `own` the guest's TF after a step loaded flags that Linux did not
