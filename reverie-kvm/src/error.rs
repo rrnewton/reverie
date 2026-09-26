@@ -43,6 +43,27 @@ pub enum Error {
     #[error("KVM execution stopped after a fatal run failure")]
     RunAborted,
 
+    /// An inherited-stdin read was physically retired after an already
+    /// committed thread/group cancellation. This private disposition must be
+    /// consumed before producing a syscall result or resuming a Tool callback.
+    #[error("inherited stdin read retired after terminal cancellation")]
+    TerminalReadCancelled,
+
+    /// A native reader control operation failed. This is never a guest errno.
+    /// An unjoined reader retains its endpoint and storage until process exit.
+    #[error(
+        "inherited stdin reader {operation} failed: {source} (terminal exit: {terminal_exit:?})"
+    )]
+    TerminalReadControl {
+        /// Public pthread operation or ownership invariant that failed.
+        operation: &'static str,
+        /// Original host error.
+        #[source]
+        source: std::io::Error,
+        /// First group exit, if it preceded the control failure.
+        terminal_exit: Option<reverie::ExitStatus>,
+    },
+
     /// A process exited while it still owned a logical child. Reparenting is
     /// deliberately fail-closed until wait ownership can be transferred to an
     /// in-tree PID 1 or an out-of-tree namespace reaper atomically.

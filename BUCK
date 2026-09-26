@@ -1,4 +1,5 @@
 load("@fbcode_macros//build_defs:sanitizers.bzl", "sanitizers")
+load("@fbsource//tools/build_defs:fb_native_wrapper.bzl", "fb_native")
 load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
 load("@fbsource//tools/build_defs:selects.bzl", "selects")
 
@@ -279,11 +280,23 @@ rust_library(
     ],
 )
 
+fb_native.cxx_library(
+    name = "reverie-kvm-terminal-read",
+    srcs = ["reverie-kvm/src/terminal_read.c"],
+    headers = {"terminal_read.h": "reverie-kvm/src/terminal_read.h"},
+    compiler_flags = ["-std=c11", "-pthread", "-fexceptions"],
+    exported_linker_flags = ["-pthread"],
+)
+
 rust_library(
     name = "reverie-kvm",
     srcs = glob(["reverie-kvm/src/**/*.rs"]),
     autocargo = {
         "cargo_toml_config": {
+            "package": {"build": "build.rs"},
+            "dependencies_override": {
+                "build-dependencies": {"cc": {"version": "1.5.1"}},
+            },
             "features": {
                 "default": [],
                 "native-test-support": [],
@@ -300,6 +313,7 @@ rust_library(
         "fbsource//third-party/rust:perf-event-open-sys",
         "fbsource//third-party/rust:thiserror",
         ":reverie",
+        ":reverie-kvm-terminal-read",
     ],
 )
 

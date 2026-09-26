@@ -412,6 +412,9 @@ pub(crate) struct GuestThreadGroup {
     // TODO-HUMAN-REVIEW(PR-178): Review KVM worker join ordering.
     worker_handles: Mutex<Vec<GuestWorkerHandle>>,
     worker_joins: Arc<WorkerJoins>,
+    // Helpers are canceled before a terminal Rust-worker join. Each blocked
+    // worker retains and physically joins its own C read helper locally.
+    terminal_reads: Arc<crate::terminal_read::ReadRegistry>,
     // Joining moves handles out of the registry. Cancellation must still own
     // every pending gate while a moved handle is blocking in JoinHandle::join.
     worker_start_gates: Mutex<std::collections::BTreeMap<i32, ChildStartGate>>,
@@ -630,11 +633,13 @@ impl GuestThreadGroup {
     }
 
     fn request_exit_group(&self, status: ExitStatus) {
-        self.exit_status
+        let status = *self
+            .exit_status
             .lock()
             .expect("KVM exit-group lock poisoned")
             .get_or_insert(status);
         self.cancelled.store(true, Ordering::Release);
+        self.terminal_reads.request_exit_group(status);
 
         if let Some(root) = *self.root.lock().expect("KVM guest root lock poisoned") {
             // SAFETY: root is registered for the lifetime of its run loop.
@@ -800,11 +805,15 @@ impl GuestThreadGroup {
                 .into_iter()
                 .map(Error::SharedFailure),
         );
+        if let Err(error) = self.terminal_reads.teardown_result() {
+            collected.push(error);
+        }
         Error::combine(collected)
     }
 
     fn cancel_workers(&self) {
         self.cancelled.store(true, Ordering::Release);
+        self.terminal_reads.cancel_workers();
         let gates = self
             .worker_start_gates
             .lock()
@@ -834,6 +843,9 @@ impl GuestThreadGroup {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_empty()
         );
+        // Exec reaches this boundary only after every old worker has joined.
+        // The read registry must reject rearm with any old helper still owned.
+        self.terminal_reads.rearm_after_exec();
         *self
             .exit_status
             .lock()
@@ -1355,6 +1367,43 @@ impl KvmBackend {
         self.tool_failure
             .as_ref()
             .map(|failure| failure.driver_subscription(is_traced_tree_root))
+    }
+
+    pub(crate) fn terminal_read_context(
+        &self,
+        executor: &ElfExecutor,
+        memory: &GuestMemory,
+    ) -> crate::terminal_read::ReadContext {
+        crate::terminal_read::ReadContext::new(
+            self.thread_group.terminal_reads.clone(),
+            self.is_guest_thread,
+            crate::entry::driver::EntryDriverWatch::for_memory(memory),
+            self.tool_failure
+                .as_ref()
+                .map(|failure| failure.terminal_wait(executor.is_traced_tree_root())),
+            self.tool_panic_owner(),
+            self.is_tool_guest_worker(),
+        )
+    }
+
+    pub(crate) fn execute_static_elf_syscall(
+        &self,
+        executor: &mut ElfExecutor,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+    ) -> Result<i64> {
+        // Construct an observer only for the inherited-stdin zero-count
+        // candidate. Executor routing and every original precheck still
+        // decide whether this request reaches the host read at all.
+        if request.number() == libc::SYS_read as u64
+            && request.args()[0] as libc::c_int == libc::STDIN_FILENO
+            && request.args()[2] == 0
+        {
+            let mut context = self.terminal_read_context(executor, memory);
+            executor.execute_checked_with_read_context(request, memory, &mut context)
+        } else {
+            executor.execute_checked(request, memory)
+        }
     }
 
     pub(crate) fn report_tool_failure(&self, phase: &'static str, error: Error) -> Error {
@@ -4418,7 +4467,21 @@ impl KvmBackend {
                             None,
                         )?;
                         executor.set_current_user_stack_pointer(userspace.rsp);
-                        let result = executor.execute_checked(&request, &self.memory)?;
+                        let result =
+                            match self.execute_static_elf_syscall(executor, &request, &self.memory)
+                            {
+                                Ok(result) => result,
+                                Err(Error::TerminalReadCancelled) => {
+                                    let exit = match self.guest_thread_group_exit_status() {
+                                        Some(status) => {
+                                            executor.retire_current_thread(status, true)
+                                        }
+                                        None => executor.cancel_current_thread(),
+                                    };
+                                    return self.finish_static_elf_thread(executor, exit);
+                                }
+                                Err(error) => return Err(error),
+                            };
                         SyscallRequest::write_result(&mut self.memory, frame_address, result)?;
                         (
                             executor.take_segment(),

@@ -11,13 +11,21 @@
 pub(crate) mod owned_future;
 pub(crate) mod tool_panics;
 
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Poll;
 
 use futures::FutureExt;
 use futures::channel::oneshot;
+use futures::future::BoxFuture;
 use futures::future::Shared;
 use futures::future::select;
 use reverie::BackendFailure;
@@ -27,6 +35,85 @@ use reverie::Pid;
 use crate::Error;
 
 pub(crate) type FailureSubscription = Shared<oneshot::Receiver<()>>;
+
+/// The synchronous read owner must join its C reader before destroying the
+/// actual Tool observer. A normal `select(...).await` drops its remaining
+/// future inside the ready poll, before that owner can perform retirement.
+/// Keep both observers in an always-pending driver and report its selection
+/// through this facade without completing or unwinding the driver allocation.
+struct TerminalReadWait {
+    driver: BoxFuture<'static, ()>,
+    completion: Arc<Mutex<Option<std::thread::Result<()>>>>,
+}
+
+impl TerminalReadWait {
+    fn new<G: GlobalTool + 'static>(global: Weak<G>, mut local: FailureSubscription) -> Self {
+        let completion = Arc::new(Mutex::new(None));
+        let selected = completion.clone();
+        let driver = async move {
+            let global = global
+                .upgrade()
+                .expect("KVM terminal read outlived its GlobalState");
+            let observer = catch_unwind(AssertUnwindSafe(|| global.wait_for_backend_failure()));
+            let mut observer = match observer {
+                Ok(observer) => observer,
+                Err(payload) => {
+                    *selected.lock().unwrap() = Some(Err(payload));
+                    std::future::pending::<()>().await;
+                    unreachable!("terminal observer driver completed");
+                }
+            };
+            let mut stopped = false;
+            std::future::poll_fn(|context| {
+                if !stopped {
+                    // Catch here, while both allocations remain owned by the
+                    // driver. An unwind out of this async body could otherwise
+                    // drop a panicking Tool observer before the C join.
+                    let polled = catch_unwind(AssertUnwindSafe(|| {
+                        if local.poll_unpin(context).is_ready()
+                            || observer.as_mut().poll(context).is_ready()
+                        {
+                            Poll::Ready(())
+                        } else {
+                            Poll::Pending
+                        }
+                    }));
+                    let outcome = match polled {
+                        Ok(Poll::Pending) => None,
+                        Ok(Poll::Ready(())) => Some(Ok(())),
+                        Err(payload) => Some(Err(payload)),
+                    };
+                    if let Some(outcome) = outcome {
+                        stopped = true;
+                        *selected.lock().unwrap() = Some(outcome);
+                    }
+                }
+                Poll::<()>::Pending
+            })
+            .await;
+        }
+        .boxed();
+        Self { driver, completion }
+    }
+}
+
+impl Future for TerminalReadWait {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+        let polled = self.driver.as_mut().poll(context);
+        debug_assert!(polled.is_pending());
+        let completion = self.completion.lock().unwrap().take();
+        match completion {
+            None => Poll::Pending,
+            Some(Ok(())) => Poll::Ready(()),
+            // The driver poll stack has returned and still owns the actual
+            // observer. TerminalObserver catches this exact payload, joins the
+            // C reader, then catches destruction of this facade separately.
+            Some(Err(payload)) => std::panic::resume_unwind(payload),
+        }
+    }
+}
 
 pub(crate) struct RunFailure {
     primary: Mutex<Option<(Arc<Error>, BackendFailure)>>,
@@ -38,6 +125,7 @@ pub(crate) struct RunFailure {
     sender: Mutex<Option<oneshot::Sender<()>>>,
     receiver: FailureSubscription,
     report: Box<dyn Fn(BackendFailure) + Send + Sync>,
+    terminal_wait: Box<dyn Fn(FailureSubscription) -> BoxFuture<'static, ()> + Send + Sync>,
 }
 
 struct RetainedPanicCleanup {
@@ -79,6 +167,7 @@ impl RunFailure {
     pub(crate) fn new<G: GlobalTool + 'static>(global: &Arc<G>) -> Arc<Self> {
         let (sender, receiver) = oneshot::channel();
         let global = Arc::downgrade(global);
+        let terminal_global = global.clone();
         Arc::new(Self {
             primary: Mutex::new(None),
             panic_cleanup: Mutex::new(Vec::new()),
@@ -93,6 +182,11 @@ impl RunFailure {
                     .upgrade()
                     .expect("KVM failure outlived its GlobalState")
                     .report_backend_failure(event);
+            }),
+            // Keep only a weak reference between reads. The public completion
+            // path unwraps GlobalState after all owned callbacks have retired.
+            terminal_wait: Box::new(move |local| {
+                TerminalReadWait::new(terminal_global.clone(), local).boxed()
             }),
         })
     }
@@ -344,6 +438,14 @@ impl FailureContext {
         } else {
             self.process.receiver.clone()
         }
+    }
+
+    /// A synchronous host read polls only this terminal observer on its
+    /// original Rust worker. Preserve the ordinary driver's process scope;
+    /// unrelated fork failures do not cancel it unless the Tool terminates
+    /// global state. This is deliberately distinct from an RPC subscription.
+    pub(crate) fn terminal_wait(&self, is_traced_tree_root: bool) -> BoxFuture<'static, ()> {
+        (self.run.terminal_wait)(self.driver_subscription(is_traced_tree_root))
     }
 
     pub(crate) fn publish(&self, phase: &'static str, error: Error) -> Error {
@@ -805,6 +907,150 @@ mod tests {
         fn wake_by_ref(value: &Arc<Self>) {
             value.0.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn terminal_read_wait_keeps_independent_process_failure_scope() {
+        let global = Arc::new(());
+        let run = RunFailure::new(&global);
+        let root = FailureContext::new(run.clone(), Pid::from_raw(71), Pid::from_raw(71));
+        let child = root.for_process(Pid::from_raw(72));
+        let worker = child.for_thread(Pid::from_raw(73));
+        let unrelated = root.for_process(Pid::from_raw(74));
+        let mut root_wait = root.terminal_wait(true);
+        let mut child_wait = child.terminal_wait(false);
+        let mut worker_wait = worker.terminal_wait(false);
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        for wait in [&mut root_wait, &mut child_wait, &mut worker_wait] {
+            assert!(wait.as_mut().poll(&mut cx).is_pending());
+        }
+
+        unrelated.publish("independent failure", Error::InvalidGuestPid(-17));
+        assert!(root_wait.as_mut().poll(&mut cx).is_ready());
+        assert!(child_wait.as_mut().poll(&mut cx).is_pending());
+        assert!(worker_wait.as_mut().poll(&mut cx).is_pending());
+        worker.publish("RPC cancellation", Error::RunAborted);
+        assert!(child_wait.as_mut().poll(&mut cx).is_pending());
+        assert!(worker_wait.as_mut().poll(&mut cx).is_pending());
+
+        child.publish(
+            "local failure",
+            Error::GuestClock("child failure".to_owned()),
+        );
+        assert!(child_wait.as_mut().poll(&mut cx).is_ready());
+        assert!(worker_wait.as_mut().poll(&mut cx).is_ready());
+        assert!(matches!(
+            run.primary().unwrap().primary(),
+            Error::InvalidGuestPid(-17)
+        ));
+        assert_eq!(
+            run.primary.lock().unwrap().as_ref().unwrap().1.pid,
+            Pid::from_raw(74)
+        );
+    }
+
+    struct TerminalReadGlobal {
+        sender: Mutex<Option<oneshot::Sender<()>>>,
+        receiver: FailureSubscription,
+        waits: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Default for TerminalReadGlobal {
+        fn default() -> Self {
+            let (sender, receiver) = oneshot::channel();
+            Self {
+                sender: Mutex::new(Some(sender)),
+                receiver: receiver.shared(),
+                waits: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[reverie::global_tool]
+    impl GlobalTool for TerminalReadGlobal {
+        type Request = ();
+        type Response = ();
+        type Config = ();
+
+        async fn receive_rpc(&self, _: Pid, _: ()) {}
+
+        async fn wait_for_backend_failure(&self) {
+            self.waits.fetch_add(1, Ordering::SeqCst);
+            let _ = self.receiver.clone().await;
+        }
+    }
+
+    #[test]
+    fn terminal_read_wait_observes_sticky_global_terminal_and_releases_global_owner() {
+        for before_subscription in [false, true] {
+            let global = Arc::new(TerminalReadGlobal::default());
+            let run = RunFailure::new(&global);
+            let root = FailureContext::new(run.clone(), Pid::from_raw(71), Pid::from_raw(71));
+            let child = root.for_process(Pid::from_raw(72));
+            let mut first = child.terminal_wait(false);
+            let mut second = child.terminal_wait(false);
+            assert_eq!(
+                Arc::strong_count(&global),
+                1,
+                "unpolled observer retained GlobalState"
+            );
+            let wakes = Arc::new(Wakes::default());
+            let waker = futures::task::waker(wakes.clone());
+            let mut cx = Context::from_waker(&waker);
+            if !before_subscription {
+                assert!(first.as_mut().poll(&mut cx).is_pending());
+                assert!(second.as_mut().poll(&mut cx).is_pending());
+                assert_eq!(global.waits.load(Ordering::SeqCst), 2);
+                assert_eq!(wakes.0.load(Ordering::SeqCst), 0);
+            }
+            global
+                .sender
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap()
+                .send(())
+                .unwrap();
+            if !before_subscription {
+                assert!(wakes.0.load(Ordering::SeqCst) > 0);
+            }
+            assert!(first.as_mut().poll(&mut cx).is_ready());
+            assert!(second.as_mut().poll(&mut cx).is_ready());
+            assert_eq!(global.waits.load(Ordering::SeqCst), 2);
+            assert!(
+                run.primary().is_none(),
+                "global terminal invented a backend cause"
+            );
+            drop(first);
+            drop(second);
+            assert!(
+                Arc::try_unwrap(global).is_ok(),
+                "read factory retained GlobalState"
+            );
+        }
+    }
+
+    #[test]
+    fn dropping_pending_terminal_read_wait_releases_only_its_global_owner() {
+        let global = Arc::new(TerminalReadGlobal::default());
+        let run = RunFailure::new(&global);
+        let root = FailureContext::new(run.clone(), Pid::from_raw(71), Pid::from_raw(71));
+        let mut waiting = root.terminal_wait(true);
+        assert!(
+            waiting
+                .as_mut()
+                .poll(&mut Context::from_waker(&noop_waker()))
+                .is_pending()
+        );
+        assert_eq!(Arc::strong_count(&global), 2);
+        drop(waiting);
+        assert!(run.primary().is_none());
+        assert!(root.driver_subscription(true).now_or_never().is_none());
+        assert!(
+            Arc::try_unwrap(global).is_ok(),
+            "disposed read retained GlobalState"
+        );
     }
 
     #[derive(Default)]

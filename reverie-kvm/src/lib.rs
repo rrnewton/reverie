@@ -39,6 +39,7 @@ mod runtime;
 mod signal;
 mod stats;
 mod syscall;
+mod terminal_read;
 mod timestamp;
 mod tools;
 mod vm;

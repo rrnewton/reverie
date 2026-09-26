@@ -45,6 +45,145 @@ impl GuestSyscallExecutor<AdapterTool> for RefusingExecutor {
 }
 
 #[test]
+fn terminal_read_injection_keeps_nonreturning_cancellation_and_typed_failures() {
+    struct ReadExecutor {
+        result: Option<Result<i64>>,
+        parked: Option<reverie::ParkedSignalFailureContext>,
+        completions: usize,
+        wrapped: usize,
+    }
+    impl GuestSyscallExecutor<LowerTool> for ReadExecutor {
+        fn read_clock(&self) -> Result<u64> {
+            panic!("read cancellation requested a guest clock")
+        }
+        fn execute(&mut self, request: &SyscallRequest, _: &GuestMemory) -> Result<i64> {
+            assert_eq!(request.number(), libc::SYS_read as u64);
+            assert_eq!(request.args()[..3], [0, 0, 0]);
+            self.result.take().expect("terminal read was retried")
+        }
+        fn signal_failure_context(&self) -> Option<reverie::ParkedSignalFailureContext> {
+            self.parked
+        }
+        fn with_signal_effects(&mut self, error: Error, raw: Option<i64>) -> Error {
+            assert_eq!(raw, None);
+            self.wrapped += 1;
+            error
+        }
+        fn complete_injection<'a>(
+            &'a mut self,
+            _: ToolContext<'a, LowerTool>,
+        ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
+        where
+            LowerTool: 'a,
+        {
+            self.completions += 1;
+            Box::pin(async {
+                Ok(InjectionCompletion::Returns {
+                    syscall_result: None,
+                })
+            })
+        }
+    }
+
+    let parked = reverie::ParkedSignalFailureContext {
+        site: reverie::CallbackSignalSite {
+            process: reverie::SignalProcessId {
+                tgid: Pid::from_raw(71),
+                generation: 3,
+            },
+            tid: Pid::from_raw(72),
+            task_generation: 4,
+            callback_nonce: 5,
+            boundary_nonce: 6,
+        },
+        ledger_nonce: 7,
+    };
+    for case in [
+        "cancelled",
+        "parked",
+        "dequeue",
+        "returned",
+        "failed",
+        "cleanup",
+    ] {
+        let mut executor = ReadExecutor {
+            result: Some(match case {
+                "returned" => Ok(0),
+                "failed" => Err(Error::RunAborted),
+                "cleanup" => Err(
+                    Error::TerminalReadCancelled.with_cleanup(vec![Error::HostIo(
+                        std::io::Error::from_raw_os_error(libc::EIO),
+                    )]),
+                ),
+                _ => Err(Error::TerminalReadCancelled),
+            }),
+            parked: (case == "parked").then_some(parked),
+            completions: 0,
+            wrapped: 0,
+        };
+        let mut state = ();
+        let subscriptions = Subscription::none();
+        let signal = Arc::new(Mutex::new(None));
+        let starts = Arc::new(Mutex::new(Vec::new()));
+        let mut guest = KvmGuest::<LowerTool>::new(
+            Pid::from_raw(71),
+            Pid::from_raw(72),
+            Arc::new(LowerTool),
+            GuestMemory::new(0, STACK_CAPACITY).unwrap(),
+            &[],
+            // This mock has no vCPU and never accesses registers.
+            unsafe { std::mem::zeroed() },
+            &mut state,
+            &mut executor,
+            &(),
+            None,
+            &(),
+            &subscriptions,
+            signal.clone(),
+            starts.clone(),
+            crate::bootstrap::TOOL_STACK_TOP,
+            Arc::new(AtomicBool::new(false)),
+        );
+        guest.notifying_dequeue = case == "dequeue";
+        let mut continued = false;
+        let outcome = futures::executor::block_on(drive_handler(
+            async {
+                let read = SyscallRequest::new(libc::SYS_read as u64, [0; 6])
+                    .into_syscall()
+                    .unwrap();
+                let result = guest.inject(read).await;
+                continued = true;
+                result
+            },
+            signal,
+            starts,
+            std::future::pending(),
+        ));
+        drop(guest);
+        assert_eq!(continued, case == "returned", "case={case}");
+        assert_eq!(executor.completions, usize::from(case == "returned"));
+        assert_eq!(
+            executor.wrapped,
+            usize::from(matches!(case, "dequeue" | "failed" | "cleanup"))
+        );
+        match (case, outcome) {
+            ("cancelled", HandlerOutcome::ThreadCancelled) => {}
+            ("parked", HandlerOutcome::ParkedCancelled(actual)) => assert_eq!(actual, parked),
+            ("returned", HandlerOutcome::Returned(Ok(0))) => {}
+            ("dequeue" | "failed", HandlerOutcome::RuntimeError(Error::RunAborted)) => {}
+            ("cleanup", HandlerOutcome::RuntimeError(Error::WithCleanup { primary, cleanup })) => {
+                assert!(matches!(primary.as_ref(), Error::TerminalReadCancelled));
+                assert_eq!(cleanup.len(), 1);
+                assert!(
+                    matches!(cleanup[0].as_ref(), Error::HostIo(error) if error.raw_os_error() == Some(libc::EIO))
+                );
+            }
+            _ => panic!("wrong terminal-read disposition for {case}"),
+        }
+    }
+}
+
+#[test]
 fn terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children() {
     for adapted in [false, true] {
         for thread in [false, true] {
