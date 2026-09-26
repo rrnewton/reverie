@@ -8,10 +8,11 @@
 
 //! One default Cargo case runs the complete native C aggregate, without KVM or
 //! Rust FFI. The embedded inputs cannot drift after Cargo builds this test.
-//! Current qualification requires readable securityfs with `capability,bpf,ima`
-//! and the measured non-PIE x86-64 `read@plt` layout; unknown provider profiles
-//! and unsupported dispatch layouts fail. Independent ELF association remains
-//! an external qualification check; this case requires the native assertions.
+//! Complete equal exported attribute bytes are compared independently of LSM
+//! inventory spelling; only `capability,bpf,ima` authorizes paired READ-EINVAL.
+//! Readable, valid, stable securityfs inventory remains mandatory. The native
+//! diagnostic explicitly selects the non-PIE x86-64 ABI; unsupported PLT layouts
+//! still fail. Independent ELF association remains an external qualification.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::fs::DirBuilder;
@@ -52,6 +53,8 @@ const C_FLAGS: &[&str] = &[
     "-std=c11",
     "-pthread",
     "-fexceptions",
+    "-fno-pie",
+    "-no-pie",
     "-Wall",
     "-Wextra",
     "-Werror",
@@ -429,89 +432,91 @@ impl StageOwner {
         // has a direct child here: reparenting precedes exit notification.
         // Thus only ECHILD, after the leader is consumed, proves retirement.
         // Stages are sequential; unrelated external PGID reuse is not waitable.
-        while authenticated {
-            if Instant::now() >= deadline {
-                errors.push("owned group retirement exceeded 5s grace".into());
-                break;
-            }
-            let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
-            // SAFETY: initialized output; WNOWAIT pins each returned child for
-            // generation observation before its exact-PID consuming wait.
-            let result = unsafe {
-                libc::waitid(
-                    libc::P_PGID,
-                    self.pid as libc::id_t,
-                    info.as_mut_ptr(),
-                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT | libc::__WALL,
-                )
-            };
-            if result != 0 {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::ECHILD) && self.status.is_some() {
-                    self.retired = true;
-                } else {
-                    errors.push(format!(
-                        "wait owned group {} (leader consumed={}): {error}",
-                        self.pid,
-                        self.status.is_some()
-                    ));
-                }
-                break;
-            }
-            // SAFETY: successful waitid initialized this zeroed siginfo.
-            let pid = unsafe { info.assume_init().si_pid() };
-            if pid == self.pid {
-                if self.status.is_some() {
-                    errors.push("owned leader was reported twice".into());
+        if authenticated {
+            loop {
+                if Instant::now() >= deadline {
+                    errors.push("owned group retirement exceeded 5s grace".into());
                     break;
                 }
-                match self.child.as_mut().unwrap().wait() {
-                    Ok(status) => self.status = Some(status),
-                    Err(error) => {
-                        errors.push(format!("reap owned leader: {error}"));
-                        break;
-                    }
-                }
-            } else if pid != 0 {
-                // SAFETY: query the still-unreaped child returned by P_PGID.
-                if unsafe { libc::getpgid(pid) } != self.pid {
-                    errors.push(format!(
-                        "waitable child {pid} no longer identifies owned group {}",
-                        self.pid
-                    ));
-                    break;
-                }
-                let start = match process_start(pid) {
-                    Ok(start) => start,
-                    Err(error) => {
-                        errors.push(format!("identify owned descendant {pid}: {error}"));
-                        break;
-                    }
+                let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+                // SAFETY: initialized output; WNOWAIT pins each returned child for
+                // generation observation before its exact-PID consuming wait.
+                let result = unsafe {
+                    libc::waitid(
+                        libc::P_PGID,
+                        self.pid as libc::id_t,
+                        info.as_mut_ptr(),
+                        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT | libc::__WALL,
+                    )
                 };
-                let mut status = 0;
-                // SAFETY: consume only this exact waitable owned child, using
-                // the same clone-child accounting as the observing group wait.
-                let reaped =
-                    unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG | libc::__WALL) };
-                if reaped != pid {
-                    errors.push(format!(
-                        "reap owned descendant {pid}: result={reaped} error={}",
-                        io::Error::last_os_error()
-                    ));
+                if result != 0 {
+                    let error = io::Error::last_os_error();
+                    if error.raw_os_error() == Some(libc::ECHILD) && self.status.is_some() {
+                        self.retired = true;
+                    } else {
+                        errors.push(format!(
+                            "wait owned group {} (leader consumed={}): {error}",
+                            self.pid,
+                            self.status.is_some()
+                        ));
+                    }
                     break;
                 }
-                self.descendants.push((pid, start, status));
-            }
-            if let Err(error) = self.drain() {
-                errors.push(format!("retirement stream read: {error}"));
-            }
-            if Instant::now() >= deadline {
-                errors.push("owned group retirement exceeded 5s grace".into());
-                break;
-            }
-            if let Err(error) = self.poll_pipes() {
-                errors.push(format!("retirement poll: {error}"));
-                break;
+                // SAFETY: successful waitid initialized this zeroed siginfo.
+                let pid = unsafe { info.assume_init().si_pid() };
+                if pid == self.pid {
+                    if self.status.is_some() {
+                        errors.push("owned leader was reported twice".into());
+                        break;
+                    }
+                    match self.child.as_mut().unwrap().wait() {
+                        Ok(status) => self.status = Some(status),
+                        Err(error) => {
+                            errors.push(format!("reap owned leader: {error}"));
+                            break;
+                        }
+                    }
+                } else if pid != 0 {
+                    // SAFETY: query the still-unreaped child returned by P_PGID.
+                    if unsafe { libc::getpgid(pid) } != self.pid {
+                        errors.push(format!(
+                            "waitable child {pid} no longer identifies owned group {}",
+                            self.pid
+                        ));
+                        break;
+                    }
+                    let start = match process_start(pid) {
+                        Ok(start) => start,
+                        Err(error) => {
+                            errors.push(format!("identify owned descendant {pid}: {error}"));
+                            break;
+                        }
+                    };
+                    let mut status = 0;
+                    // SAFETY: consume only this exact waitable owned child, using
+                    // the same clone-child accounting as the observing group wait.
+                    let reaped =
+                        unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG | libc::__WALL) };
+                    if reaped != pid {
+                        errors.push(format!(
+                            "reap owned descendant {pid}: result={reaped} error={}",
+                            io::Error::last_os_error()
+                        ));
+                        break;
+                    }
+                    self.descendants.push((pid, start, status));
+                }
+                if let Err(error) = self.drain() {
+                    errors.push(format!("retirement stream read: {error}"));
+                }
+                if Instant::now() >= deadline {
+                    errors.push("owned group retirement exceeded 5s grace".into());
+                    break;
+                }
+                if let Err(error) = self.poll_pipes() {
+                    errors.push(format!("retirement poll: {error}"));
+                    break;
+                }
             }
         }
         if self.retired {
@@ -787,7 +792,12 @@ const PASS_BEFORE_CONTEXT: &[&str] = &[
     "PASS injected-cancel-error: real event completion; first error retained",
     "PASS wake-before-wait: no lost wake or invented terminal outcome",
 ];
-const CONTEXT_PASS: &str = "PASS inherited-context-v2: matching credentials/namespaces/mask; new thread has disabled altstack; attribute=unavailable-label; read/join/ownership/restoration verified";
+fn context_pass(decision: AttributeDecision) -> String {
+    format!(
+        "PASS inherited-context-v2: matching credentials/namespaces/mask; new thread has disabled altstack; attribute={}; read/join/ownership/restoration verified",
+        decision.name()
+    )
+}
 const JOIN_PASS: &str =
     "PASS injected-join-error: first failure and ownership retained until process exit";
 const AGGREGATE_PASS: &str =
@@ -800,10 +810,11 @@ fn complete_protocol(stdout: &[u8]) -> Result<(), String> {
         .lines()
         .filter(|line| line.starts_with("PASS"))
         .collect();
+    let context = context_pass(live_observations(text)?.decision);
     let expected: Vec<_> = PASS_BEFORE_CONTEXT
         .iter()
         .copied()
-        .chain([CONTEXT_PASS, JOIN_PASS, AGGREGATE_PASS])
+        .chain([context.as_str(), JOIN_PASS, AGGREGATE_PASS])
         .collect();
     if actual != expected {
         return Err(format!(
@@ -853,6 +864,7 @@ fn field_is(record: &str, key: &str, expected: &str) -> Result<(), String> {
 #[derive(Clone, Copy)]
 enum AttributeExpected<'a> {
     Value(&'a [u8]),
+    Empty,
     ReadError(i32, bool), // errno; explicitly synthetic open=100
     Missing,
     Truncated,
@@ -878,6 +890,7 @@ fn attribute_record(
     // leave any recorded errno; EOF/kind/length/all bytes remain exact.
     let (kind, reads, last_read, eof, bytes) = match expected {
         AttributeExpected::Value(bytes) => ("0", "2", "0", "1", bytes.to_vec()),
+        AttributeExpected::Empty => ("0", "1", "0", "1", Vec::new()),
         AttributeExpected::ReadError(errno, synthetic) => {
             if synthetic {
                 field_is(record, "open", "100")?;
@@ -907,7 +920,257 @@ fn attribute_record(
     field_is(record, "bytes_hex", &hex)
 }
 
-fn live_observations(text: &str) -> Result<[(libc::pid_t, u64); 2], String> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AttributeObservation {
+    kind: u32,
+    open: i32,
+    reads: usize,
+    last_read: i64,
+    read_errno: i32,
+    close: i32,
+    eof: bool,
+    bytes: Vec<u8>,
+}
+
+impl AttributeObservation {
+    fn complete(&self) -> bool {
+        self.kind == 0
+            && self.open >= 0
+            && self.reads >= 1
+            && self.last_read == 0
+            && self.eof
+            && self.bytes.len() < 4095
+            && self.close == 0
+    }
+
+    fn initial_einval(&self) -> bool {
+        self.kind == 2
+            && self.open >= 0
+            && self.reads == 1
+            && self.last_read == -1
+            && self.read_errno == libc::EINVAL
+            && self.bytes.is_empty()
+            && !self.eof
+            && self.close == 0
+    }
+
+    fn single_exported_value(&self) -> bool {
+        self.complete() && self.reads == 2 && !self.bytes.is_empty()
+    }
+}
+
+fn number<T: std::str::FromStr>(record: &str, key: &str) -> Result<T, String> {
+    record_field(record, key)?
+        .parse()
+        .map_err(|_| format!("invalid numeric {key}: {record}"))
+}
+
+fn observed_attribute(
+    record: &str,
+    identity: (libc::pid_t, u64),
+) -> Result<AttributeObservation, String> {
+    if identity.0 <= 0 || identity.1 == 0 {
+        return Err("invalid observed task identity".into());
+    }
+    field_is(record, "tid", &identity.0.to_string())?;
+    field_is(record, "start", &identity.1.to_string())?;
+    // Successful calls may leave arbitrary errno values; retain typed fields
+    // without mistaking those diagnostic values for operation failures.
+    let _: i32 = number(record, "open_errno")?;
+    let _: i32 = number(record, "close_errno")?;
+    let length: usize = number(record, "length")?;
+    let encoded = record_field(record, "bytes_hex")?.as_bytes();
+    if length > 4095 || encoded.len() != length * 2 {
+        return Err("attribute byte length does not match its complete hex record".into());
+    }
+    let digit = |byte: u8| match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        _ => Err("invalid attribute hex byte".to_string()),
+    };
+    let bytes = encoded
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| Ok((digit(pair[0])? << 4) | digit(pair[1])?))
+        .collect::<Result<Vec<_>, String>>()?;
+    let eof = match record_field(record, "eof")? {
+        "0" => false,
+        "1" => true,
+        _ => return Err("invalid attribute EOF flag".into()),
+    };
+    Ok(AttributeObservation {
+        kind: number(record, "kind")?,
+        open: number(record, "open")?,
+        reads: number(record, "reads")?,
+        last_read: number(record, "last_read")?,
+        read_errno: number(record, "read_errno")?,
+        close: number(record, "close")?,
+        eof,
+        bytes,
+    })
+}
+
+// Bind each summary to its actual read records. The classifier separately
+// requires one nonempty positive read and one EOF: getprocattr regenerates its
+// value on every read, so concatenated positive chunks cannot prove one value.
+fn actual_read_sequence(
+    text: &str,
+    origin: &str,
+    identity: (libc::pid_t, u64),
+    path: &str,
+    observation: &AttributeObservation,
+) -> Result<(), String> {
+    let mut offset = 0;
+    let mut count = 0;
+    let prefix = format!("CONTEXT_ATTRIBUTE_READ origin={origin} ");
+    for record in text.lines().filter(|line| line.starts_with(&prefix)) {
+        if number::<libc::pid_t>(record, "tid")? != identity.0 {
+            continue;
+        }
+        field_is(record, "start", &identity.1.to_string())?;
+        field_is(record, "path", path)?;
+        count += 1;
+        let result: i64 = number(record, "return")?;
+        let error: i32 = number(record, "errno")?;
+        if number::<usize>(record, "index")? != count
+            || number::<usize>(record, "offset")? != offset
+            || count > observation.reads
+            || result < -1
+            || result > (4095 - offset) as i64
+            || (count < observation.reads && result <= 0)
+        {
+            return Err("inconsistent actual attribute read sequence".into());
+        }
+        if result > 0 {
+            offset += result as usize;
+        }
+        if count == observation.reads
+            && (result != observation.last_read || error != observation.read_errno)
+        {
+            return Err("actual final read disagrees with attribute summary".into());
+        }
+    }
+    if count != observation.reads || offset != observation.bytes.len() {
+        return Err("missing actual attribute reads or byte count".into());
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InventoryProfile {
+    KnownUnavailable,
+    ExportedBytes,
+}
+
+fn inventory_profile(
+    before: &AttributeObservation,
+    after: &AttributeObservation,
+) -> Result<InventoryProfile, String> {
+    if !before.complete() || !after.complete() || before.reads != 2 || after.reads != 2 {
+        return Err("provider inventory query incomplete".into());
+    }
+    for observation in [before, after] {
+        let mut seen = Vec::new();
+        for name in observation.bytes.split(|byte| *byte == b',') {
+            if name.is_empty()
+                || !name[0].is_ascii_lowercase()
+                || !name
+                    .iter()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+                || seen.contains(&name)
+            {
+                return Err("malformed provider inventory".into());
+            }
+            seen.push(name);
+        }
+    }
+    if before.bytes != after.bytes {
+        return Err("changing provider inventory".into());
+    }
+    Ok(if before.bytes == b"capability,bpf,ima" {
+        InventoryProfile::KnownUnavailable
+    } else {
+        InventoryProfile::ExportedBytes
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AttributeDecision {
+    Equal,
+    Unavailable,
+}
+
+impl AttributeDecision {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Equal => "exact-label-bytes",
+            Self::Unavailable => "unavailable-label",
+        }
+    }
+}
+
+fn attribute_decision(
+    left: &AttributeObservation,
+    right: &AttributeObservation,
+    profile: InventoryProfile,
+) -> Result<AttributeDecision, String> {
+    // proc_pid_attr_read regenerates the selected getprocattr result per read.
+    // Compare one nonempty exported value each, not all LSM state or policy.
+    if left.single_exported_value() && right.single_exported_value() && left.bytes == right.bytes {
+        Ok(AttributeDecision::Equal)
+    } else if profile == InventoryProfile::KnownUnavailable
+        && left.initial_einval()
+        && right.initial_einval()
+    {
+        Ok(AttributeDecision::Unavailable)
+    } else {
+        Err(
+            "attribute pair is neither equal nonempty single-read bytes nor qualified paired READ-EINVAL"
+                .into(),
+        )
+    }
+}
+
+struct LiveContext {
+    identities: [(libc::pid_t, u64); 2],
+    attributes: [AttributeObservation; 2],
+    profile: InventoryProfile,
+    decision: AttributeDecision,
+}
+
+fn provider_decision_record(
+    text: &str,
+    origin: &str,
+    mode: &str,
+    profile: InventoryProfile,
+) -> Result<(), String> {
+    let (profile, reason) = match profile {
+        InventoryProfile::KnownUnavailable => ("observed-unavailable", "recognized"),
+        InventoryProfile::ExportedBytes => ("exported-bytes-only", "valid"),
+    };
+    let expected = format!(
+        "CONTEXT_PROVIDER_DECISION origin={origin} profile={profile} reason={reason} mode={mode}"
+    );
+    if one_record(text, &format!("CONTEXT_PROVIDER_DECISION origin={origin} "))? != expected {
+        return Err("provider decision disagrees with typed observations".into());
+    }
+    Ok(())
+}
+
+fn live_decision_records(text: &str, mode: &str, live: &LiveContext) -> Result<(), String> {
+    provider_decision_record(text, "actual-live-inventory", mode, live.profile)?;
+    let expected = format!(
+        "CONTEXT_ATTRIBUTE_DECISION origin=actual-live-query decision={} mode={mode}",
+        live.decision.name()
+    );
+    if one_record(text, "CONTEXT_ATTRIBUTE_DECISION origin=actual-live-query ")? != expected {
+        return Err("attribute decision disagrees with typed observations".into());
+    }
+    Ok(())
+}
+
+fn live_observations(text: &str) -> Result<LiveContext, String> {
     let identity = one_record(text, "CONTEXT_IDENTITY ")?;
     let mut identities = [(0, 0); 2];
     for (index, role) in ["creator", "helper"].iter().enumerate() {
@@ -925,6 +1188,26 @@ fn live_observations(text: &str) -> Result<[(libc::pid_t, u64); 2], String> {
     if identities[0].0 == identities[1].0 {
         return Err("creator/helper identity aliased".into());
     }
+    // Every actual read event belongs to the declared pair (or the creator for
+    // inventory). An extra task's record cannot disappear in per-task filtering.
+    for origin in [
+        "actual-task-query",
+        "actual-provider-before",
+        "actual-provider-after",
+    ] {
+        let prefix = format!("CONTEXT_ATTRIBUTE_READ origin={origin} ");
+        for record in text.lines().filter(|line| line.starts_with(&prefix)) {
+            let observed = (
+                number::<libc::pid_t>(record, "tid")?,
+                number::<u64>(record, "start")?,
+            );
+            if !identities.contains(&observed)
+                || (origin != "actual-task-query" && observed != identities[0])
+            {
+                return Err("actual read record has an unbound task identity".into());
+            }
+        }
+    }
     let actual: Vec<_> = text
         .lines()
         .filter(|line| line.starts_with("CONTEXT_ATTRIBUTE origin=actual-live-query "))
@@ -932,32 +1215,42 @@ fn live_observations(text: &str) -> Result<[(libc::pid_t, u64); 2], String> {
     if actual.len() != 2 {
         return Err("both actual task attribute records are required".into());
     }
+    let mut attributes = Vec::new();
     for (record, identity) in actual.into_iter().zip(identities) {
-        attribute_record(
-            record,
-            identity,
-            AttributeExpected::ReadError(libc::EINVAL, false),
-        )?;
-        field_is(
-            record,
-            "path",
-            &format!("/proc/self/task/{}/attr/current", identity.0),
-        )?;
+        let path = format!("/proc/self/task/{}/attr/current", identity.0);
+        field_is(record, "path", &path)?;
+        let observation = observed_attribute(record, identity)?;
+        actual_read_sequence(text, "actual-task-query", identity, &path, &observation)?;
+        attributes.push(observation);
     }
+    let mut inventories = Vec::new();
     for origin in ["actual-provider-before", "actual-provider-after"] {
         let record = one_record(text, &format!("CONTEXT_ATTRIBUTE origin={origin} "))?;
-        attribute_record(
-            record,
-            identities[0],
-            AttributeExpected::Value(b"capability,bpf,ima"),
-        )?;
         field_is(record, "path", "/sys/kernel/security/lsm")?;
+        let observation = observed_attribute(record, identities[0])?;
+        actual_read_sequence(
+            text,
+            origin,
+            identities[0],
+            "/sys/kernel/security/lsm",
+            &observation,
+        )?;
+        inventories.push(observation);
     }
-    Ok(identities)
+    let profile = inventory_profile(&inventories[0], &inventories[1])?;
+    let decision = attribute_decision(&attributes[0], &attributes[1], profile)?;
+    Ok(LiveContext {
+        identities,
+        attributes: attributes
+            .try_into()
+            .map_err(|_| "missing actual attribute pair")?,
+        profile,
+        decision,
+    })
 }
 
 fn context_completion(text: &str, mode: &str, context_only: bool) -> Result<(), String> {
-    live_observations(text)?;
+    let live = live_observations(text)?;
     exact_record(
         text,
         &format!(
@@ -965,18 +1258,7 @@ fn context_completion(text: &str, mode: &str, context_only: bool) -> Result<(), 
             u8::from(context_only)
         ),
     )?;
-    exact_record(
-        text,
-        &format!(
-            "CONTEXT_PROVIDER_DECISION origin=actual-live-inventory profile=observed-unavailable reason=recognized mode={mode}"
-        ),
-    )?;
-    exact_record(
-        text,
-        &format!(
-            "CONTEXT_ATTRIBUTE_DECISION origin=actual-live-query decision=unavailable-label mode={mode}"
-        ),
-    )?;
+    live_decision_records(text, mode, &live)?;
     for exact in [
         "CONTEXT_READ_DISPATCH_STABLE callable=1 plt_bytes=1 slot=1 target=1 public_symbol=1 dso=1",
         "CONTEXT_RETIREMENT physical_joins=1 cancel_sends=0 destroyed=1 owner_closed_fd=1",
@@ -1031,8 +1313,11 @@ fn context_completion(text: &str, mode: &str, context_only: bool) -> Result<(), 
 
 const SYNTHETIC_LABEL_PASS: &str =
     "PASS synthetic-label-classifier: equal length and all bytes including NUL suffix";
+const SYNTHETIC_NONLEGACY_PASS: &str = "PASS synthetic-nonlegacy-label-classifier: stable valid inventory; equal exported bytes including NUL suffix";
 const CONTEXT_MODES: &[(&str, &str)] = &[
     ("context-equal-labels", "equal-labels"),
+    ("context-equal-labels-nonlegacy", "equal-labels-nonlegacy"),
+    ("context-empty-labels", "empty-labels"),
     ("context-mask-mismatch", "mask-mismatch"),
     ("context-query-asymmetry", "query-asymmetry"),
     ("context-query-errors", "query-errors"),
@@ -1049,21 +1334,19 @@ const CONTEXT_MODES: &[(&str, &str)] = &[
     ("context-inventory-truncated", "inventory-truncated"),
 ];
 
-fn fixture_observations(
-    text: &str,
-    mode: &str,
-    identities: [(libc::pid_t, u64); 2],
-) -> Result<(), String> {
+fn fixture_observations(text: &str, mode: &str, live: &LiveContext) -> Result<(), String> {
     use AttributeExpected::*;
+    let identities = live.identities;
     let (left, right) = match mode {
-        "equal-labels" => (Value(b"a\0x"), Value(b"a\0x")),
+        "equal-labels" | "equal-labels-nonlegacy" => (Value(b"a\0x"), Value(b"a\0x")),
+        "empty-labels" => (Empty, Empty),
+        "missing-task" => (Value(b"a\0x"), Missing),
         "label-mismatch" => (Value(b"a\0x"), Value(b"a\0y")),
         "label-length" => (Value(b"a\0x"), Value(b"a\0x\0")),
         "query-asymmetry" => (Value(b"a\0x"), ReadError(libc::EINVAL, true)),
         "query-errors" => (ReadError(libc::EINVAL, true), ReadError(libc::EACCES, true)),
         "query-eperm" => (ReadError(libc::EPERM, true), ReadError(libc::EPERM, true)),
         "unqualified-provider" => (ReadError(libc::EINVAL, true), ReadError(libc::EINVAL, true)),
-        "missing-task" => (ReadError(libc::EINVAL, false), Missing),
         "truncated-label" => (Value(b"a\0x"), Truncated),
         "inventory-malformed" => (Value(b"capability,,bpf,ima"), Value(b"capability,,bpf,ima")),
         "inventory-unknown" => (
@@ -1096,10 +1379,40 @@ fn fixture_observations(
     Ok(())
 }
 
+fn fixture_inventory(
+    text: &str,
+    mode: &str,
+    identities: [(libc::pid_t, u64); 2],
+) -> Result<InventoryProfile, String> {
+    // All fixture premises are synthetic and independent of the live host's
+    // attribute branch. These inventories traverse the real C classifier.
+    let bytes: &[u8] = if matches!(mode, "equal-labels-nonlegacy" | "unqualified-provider") {
+        b"capability,bpf,ima,fixture_unknown"
+    } else {
+        b"capability,bpf,ima"
+    };
+    let mut inventories = Vec::new();
+    for (origin, identity) in [
+        "classifier-fixture-provider-before",
+        "classifier-fixture-provider-after",
+    ]
+    .into_iter()
+    .zip(identities)
+    {
+        let record = one_record(text, &format!("CONTEXT_ATTRIBUTE origin={origin} "))?;
+        attribute_record(record, identity, AttributeExpected::Value(bytes))?;
+        inventories.push(observed_attribute(record, identity)?);
+    }
+    let profile = inventory_profile(&inventories[0], &inventories[1])?;
+    provider_decision_record(text, "classifier-fixture-inventory", mode, profile)?;
+    Ok(profile)
+}
+
 fn require_context_mode(report: &StageReport, mode: &str) -> Result<(), String> {
     let text = std::str::from_utf8(&report.stdout).map_err(|error| error.to_string())?;
     let stderr = std::str::from_utf8(&report.stderr).map_err(|error| error.to_string())?;
-    let identities = live_observations(text)?;
+    let live = live_observations(text)?;
+    let identities = live.identities;
     if identities[0].0 != report.leader {
         return Err("actual creator is not this owned stage leader".into());
     }
@@ -1127,17 +1440,37 @@ fn require_context_mode(report: &StageReport, mode: &str) -> Result<(), String> 
         .chain(stderr.lines())
         .filter(|line| line.starts_with("PASS"))
         .collect();
-    if mode == "equal-labels" {
+    if mode == "equal-labels" || mode == "equal-labels-nonlegacy" {
         report.require_success()?;
-        if !stderr.is_empty() || passes != [SYNTHETIC_LABEL_PASS, CONTEXT_PASS] {
+        let synthetic = if mode == "equal-labels" {
+            SYNTHETIC_LABEL_PASS
+        } else {
+            SYNTHETIC_NONLEGACY_PASS
+        };
+        let completion = context_pass(live.decision);
+        if !stderr.is_empty() || passes != [synthetic, completion.as_str()] {
             return Err(report.diagnostic());
         }
-        fixture_observations(text, mode, identities)?;
+        fixture_observations(text, mode, &live)?;
         exact_record(
             text,
-            "CONTEXT_ATTRIBUTE_DECISION origin=classifier-fixture decision=exact-label-bytes mode=equal-labels",
+            &format!(
+                "CONTEXT_ATTRIBUTE_DECISION origin=classifier-fixture decision=exact-label-bytes mode={mode}"
+            ),
         )?;
-        // The synthetic fixture never relabels the real unavailable observation.
+        let profile = fixture_inventory(text, mode, identities)?;
+        let left = observed_attribute(
+            one_record(text, "CONTEXT_ATTRIBUTE origin=classifier-fixture-creator ")?,
+            identities[0],
+        )?;
+        let right = observed_attribute(
+            one_record(text, "CONTEXT_ATTRIBUTE origin=classifier-fixture-helper ")?,
+            identities[1],
+        )?;
+        if attribute_decision(&left, &right, profile)? != AttributeDecision::Equal {
+            return Err("fixture did not exercise exported-byte equality".into());
+        }
+        // Synthetic acceptance never relabels the independent live observation.
         return context_completion(text, mode, true);
     }
     if report.monitor_failed
@@ -1177,35 +1510,47 @@ fn require_context_mode(report: &StageReport, mode: &str) -> Result<(), String> 
         }
         return Ok(());
     }
-    fixture_observations(text, mode, identities)?;
-    exact_record(
-        text,
-        &format!(
-            "CONTEXT_PROVIDER_DECISION origin=actual-live-inventory profile=observed-unavailable reason=recognized mode={mode}"
-        ),
-    )?;
-    exact_record(
-        text,
-        &format!(
-            "CONTEXT_ATTRIBUTE_DECISION origin=actual-live-query decision=unavailable-label mode={mode}"
-        ),
-    )?;
+    fixture_observations(text, mode, &live)?;
+    live_decision_records(text, mode, &live)?;
     let operation = if mode.starts_with("inventory-") {
-        let reason = match mode {
-            "inventory-malformed" => "malformed",
-            "inventory-unknown" => "unknown",
-            "inventory-changing" => "changing",
-            "inventory-missing" | "inventory-truncated" => "query-error",
-            _ => return Err(format!("unknown inventory mode {mode}")),
-        };
-        exact_record(
-            text,
-            &format!(
-                "CONTEXT_PROVIDER_DECISION origin=inventory-fixture profile=unclassified reason={reason} mode={mode}"
-            ),
-        )?;
+        if mode == "inventory-unknown" {
+            provider_decision_record(
+                text,
+                "inventory-fixture",
+                mode,
+                InventoryProfile::ExportedBytes,
+            )?;
+            for (origin, identity) in ["inventory-fixture-creator", "inventory-fixture-helper"]
+                .into_iter()
+                .zip(identities)
+            {
+                attribute_record(
+                    one_record(text, &format!("CONTEXT_ATTRIBUTE origin={origin} "))?,
+                    identity,
+                    AttributeExpected::ReadError(libc::EINVAL, true),
+                )?;
+            }
+            exact_record(
+                text,
+                "CONTEXT_ATTRIBUTE_DECISION origin=inventory-fixture decision=rejected mode=inventory-unknown",
+            )?;
+        } else {
+            let reason = match mode {
+                "inventory-malformed" => "malformed",
+                "inventory-changing" => "changing",
+                "inventory-missing" | "inventory-truncated" => "query-error",
+                _ => return Err(format!("unknown inventory mode {mode}")),
+            };
+            exact_record(
+                text,
+                &format!(
+                    "CONTEXT_PROVIDER_DECISION origin=inventory-fixture profile=unclassified reason={reason} mode={mode}"
+                ),
+            )?;
+        }
         "provider-inventory-oracle"
     } else {
+        fixture_inventory(text, mode, identities)?;
         exact_record(
             text,
             &format!(
@@ -1248,7 +1593,393 @@ fn context_modes(tree: &PrivateTree) -> Result<(), String> {
             }
         }
     }
-    println!("C_PROTOCOL_CONTEXT_CONTROLS positive=1 rejected=14 stderr_pass_prefix=rejected");
+    println!("C_PROTOCOL_CONTEXT_CONTROLS positive=2 rejected=15 stderr_pass_prefix=rejected");
+    Ok(())
+}
+
+// In-process controls only; not a second #[test] or a subprocess.
+// All records below are synthetic, including fields named actual-* so the real
+// parser is exercised. No generated record is printed as a live observation.
+fn typed_context_controls() -> Result<(), String> {
+    fn rejected<T>(name: &str, result: Result<T, String>, expected: &str) -> Result<(), String> {
+        match result {
+            Err(error) if error == expected => Ok(()),
+            Err(error) => Err(format!(
+                "synthetic {name}: expected {expected:?}, got {error:?}"
+            )),
+            Ok(_) => Err(format!("synthetic {name}: invalid observation accepted")),
+        }
+    }
+    fn query(
+        id: (libc::pid_t, u64),
+        origin: &str,
+        read_origin: &str,
+        path: &str,
+        chunks: &[&[u8]],
+    ) -> String {
+        let (tid, start) = id;
+        let mut text = String::new();
+        let mut bytes = Vec::new();
+        for (index, chunk) in chunks.iter().enumerate() {
+            text.push_str(&format!("CONTEXT_ATTRIBUTE_READ origin={read_origin} tid={tid} start={start} path={path} index={} return={} errno=17 offset={}\n", index + 1, chunk.len(), bytes.len()));
+            bytes.extend_from_slice(chunk);
+        }
+        text.push_str(&format!("CONTEXT_ATTRIBUTE_READ origin={read_origin} tid={tid} start={start} path={path} index={} return=0 errno=17 offset={}\n", chunks.len() + 1, bytes.len()));
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        text.push_str(&format!("CONTEXT_ATTRIBUTE origin={origin} tid={tid} start={start} path={path} kind=0 open=9 open_errno=17 reads={} last_read=0 read_errno=17 close=0 close_errno=17 eof=1 length={} bytes_hex={hex}\n", chunks.len() + 1, bytes.len()));
+        text
+    }
+    fn transcript(left: &[&[u8]], right: &[&[u8]]) -> String {
+        let inventory: &[u8] = b"capability,bpf,ima,fixture_unknown";
+        let mut text = "CONTEXT_IDENTITY creator=101/1001 helper=102/1002\n".to_string();
+        text.push_str(&query(
+            (101, 1001),
+            "actual-provider-before",
+            "actual-provider-before",
+            "/sys/kernel/security/lsm",
+            &[inventory],
+        ));
+        text.push_str(&query(
+            (101, 1001),
+            "actual-live-query",
+            "actual-task-query",
+            "/proc/self/task/101/attr/current",
+            left,
+        ));
+        text.push_str(&query(
+            (102, 1002),
+            "actual-live-query",
+            "actual-task-query",
+            "/proc/self/task/102/attr/current",
+            right,
+        ));
+        text.push_str(&query(
+            (101, 1001),
+            "actual-provider-after",
+            "actual-provider-after",
+            "/sys/kernel/security/lsm",
+            &[inventory],
+        ));
+        text
+    }
+    let text = transcript(&[b"a\0x"], &[b"a\0x"]);
+    let live = live_observations(&text)?;
+    if live.profile != InventoryProfile::ExportedBytes
+        || live.decision != AttributeDecision::Equal
+        || live.attributes[0].bytes != b"a\0x"
+    {
+        return Err("synthetic nonempty single-read nonlegacy bytes positive rejected".into());
+    }
+    let label = live.attributes[0].clone();
+    let inv = observed_attribute(
+        one_record(&text, "CONTEXT_ATTRIBUTE origin=actual-provider-before ")?,
+        (101, 1001),
+    )?;
+    let mut known_inventory = inv.clone();
+    known_inventory.bytes = b"capability,bpf,ima".to_vec();
+    let known_profile = inventory_profile(&known_inventory, &known_inventory)?;
+    if known_profile != InventoryProfile::KnownUnavailable
+        || attribute_decision(&label, &label, known_profile)? != AttributeDecision::Equal
+    {
+        return Err("synthetic known-inventory successful bytes positive rejected".into());
+    }
+    const PAIR_ERROR: &str = "attribute pair is neither equal nonempty single-read bytes nor qualified paired READ-EINVAL";
+    rejected(
+        "empty exported pair",
+        live_observations(&transcript(&[], &[])),
+        PAIR_ERROR,
+    )?;
+    rejected(
+        "split exported value",
+        live_observations(&transcript(&[b"a", b"\0x"], &[b"a\0x"])),
+        PAIR_ERROR,
+    )?;
+    rejected(
+        "extra positive chunks on both tasks",
+        live_observations(&transcript(&[b"a", b"\0", b"x"], &[b"a", b"\0", b"x"])),
+        PAIR_ERROR,
+    )?;
+    let mut einval = label.clone();
+    einval.kind = 2;
+    einval.reads = 1;
+    einval.last_read = -1;
+    einval.read_errno = libc::EINVAL;
+    einval.eof = false;
+    einval.bytes.clear();
+    if attribute_decision(&einval, &einval, InventoryProfile::KnownUnavailable)?
+        != AttributeDecision::Unavailable
+    {
+        return Err("synthetic known paired EINVAL positive rejected".into());
+    }
+    rejected(
+        "nonlegacy paired EINVAL",
+        attribute_decision(&einval, &einval, live.profile),
+        PAIR_ERROR,
+    )?;
+    rejected(
+        "success/error asymmetry",
+        attribute_decision(&label, &einval, live.profile),
+        PAIR_ERROR,
+    )?;
+    let mut partial = einval.clone();
+    partial.reads = 2;
+    partial.bytes.push(b'a');
+    rejected(
+        "partial data then EINVAL",
+        attribute_decision(&partial, &partial, InventoryProfile::KnownUnavailable),
+        PAIR_ERROR,
+    )?;
+    let mut eperm = einval.clone();
+    eperm.read_errno = libc::EPERM;
+    rejected(
+        "known paired EPERM",
+        attribute_decision(&eperm, &eperm, InventoryProfile::KnownUnavailable),
+        PAIR_ERROR,
+    )?;
+    let mut wrong = label.clone();
+    wrong.bytes[2] = b'y';
+    rejected(
+        "post-NUL mismatch",
+        attribute_decision(&label, &wrong, live.profile),
+        PAIR_ERROR,
+    )?;
+    wrong = label.clone();
+    wrong.bytes.push(0);
+    rejected(
+        "length mismatch",
+        attribute_decision(&label, &wrong, live.profile),
+        PAIR_ERROR,
+    )?;
+    wrong = label.clone();
+    wrong.eof = false;
+    rejected(
+        "missing EOF",
+        attribute_decision(&label, &wrong, live.profile),
+        PAIR_ERROR,
+    )?;
+    wrong = label.clone();
+    wrong.close = -1;
+    rejected(
+        "close failure",
+        attribute_decision(&label, &wrong, live.profile),
+        PAIR_ERROR,
+    )?;
+    wrong = label.clone();
+    wrong.kind = 4;
+    wrong.eof = false;
+    wrong.reads = 1;
+    wrong.last_read = 4095;
+    wrong.bytes = vec![b'x'; 4095];
+    rejected(
+        "truncated bytes",
+        attribute_decision(&label, &wrong, live.profile),
+        PAIR_ERROR,
+    )?;
+    for bytes in [
+        b"capability,,bpf".as_slice(),
+        b"capability,bpf,bpf",
+        b"capability,bpf\n",
+    ] {
+        let mut malformed = inv.clone();
+        malformed.bytes = bytes.to_vec();
+        rejected(
+            "malformed inventory",
+            inventory_profile(&malformed, &malformed),
+            "malformed provider inventory",
+        )?;
+    }
+    let mut empty_inventory = inv.clone();
+    empty_inventory.bytes.clear();
+    empty_inventory.reads = 1;
+    rejected(
+        "empty EOF inventory",
+        inventory_profile(&empty_inventory, &empty_inventory),
+        "provider inventory query incomplete",
+    )?;
+    let mut split_inventory = inv.clone();
+    split_inventory.reads = 3;
+    rejected(
+        "split inventory",
+        inventory_profile(&split_inventory, &split_inventory),
+        "provider inventory query incomplete",
+    )?;
+    let mut incomplete = inv.clone();
+    incomplete.eof = false;
+    rejected(
+        "incomplete inventory",
+        inventory_profile(&incomplete, &inv),
+        "provider inventory query incomplete",
+    )?;
+    rejected(
+        "truncated inventory",
+        inventory_profile(&wrong, &inv),
+        "provider inventory query incomplete",
+    )?;
+    let mut missing = inv.clone();
+    missing.kind = 1;
+    missing.open = -1;
+    missing.reads = 0;
+    missing.last_read = -2;
+    missing.close = -2;
+    missing.eof = false;
+    missing.bytes.clear();
+    rejected(
+        "missing inventory",
+        inventory_profile(&missing, &inv),
+        "provider inventory query incomplete",
+    )?;
+    let mut changed = inv.clone();
+    changed.bytes = b"capability,ima,bpf".to_vec();
+    rejected(
+        "changing inventory",
+        inventory_profile(&inv, &changed),
+        "changing provider inventory",
+    )?;
+    for (name, altered, error) in [
+        (
+            "malformed hex",
+            text.replace("bytes_hex=610078", "bytes_hex=61007z"),
+            "invalid attribute hex byte",
+        ),
+        (
+            "hex length",
+            text.replace("length=3 bytes_hex=610078", "length=4 bytes_hex=610078"),
+            "attribute byte length does not match its complete hex record",
+        ),
+        (
+            "invalid EOF",
+            text.replacen("eof=1", "eof=2", 1),
+            "invalid attribute EOF flag",
+        ),
+        (
+            "read offset",
+            text.replacen(
+                "index=2 return=0 errno=17 offset=3\n",
+                "index=2 return=0 errno=17 offset=0\n",
+                1,
+            ),
+            "inconsistent actual attribute read sequence",
+        ),
+        (
+            "read index",
+            text.replacen(
+                "index=1 return=3 errno=17 offset=0\n",
+                "index=4 return=3 errno=17 offset=0\n",
+                1,
+            ),
+            "inconsistent actual attribute read sequence",
+        ),
+        (
+            "last-read summary",
+            text.replacen(
+                "path=/proc/self/task/101/attr/current index=2 return=0 errno=17",
+                "path=/proc/self/task/101/attr/current index=2 return=0 errno=22",
+                1,
+            ),
+            "actual final read disagrees with attribute summary",
+        ),
+        (
+            "first-read length disagrees with summary",
+            text.replacen(
+                "index=1 return=3 errno=17 offset=0",
+                "index=1 return=2 errno=17 offset=0",
+                1,
+            )
+            .replacen(
+                "index=2 return=0 errno=17 offset=3\n",
+                "index=2 return=0 errno=17 offset=2\n",
+                1,
+            ),
+            "missing actual attribute reads or byte count",
+        ),
+        (
+            "undeclared third positive read",
+            format!(
+                "{text}CONTEXT_ATTRIBUTE_READ origin=actual-task-query tid=101 start=1001 path=/proc/self/task/101/attr/current index=3 return=1 errno=17 offset=3\n"
+            ),
+            "inconsistent actual attribute read sequence",
+        ),
+        (
+            "aliased tasks",
+            text.replace("helper=102/1002", "helper=101/1002"),
+            "creator/helper identity aliased",
+        ),
+        (
+            "missing task",
+            text.replace("creator=101/1001", "creator=0/0"),
+            "invalid task identity",
+        ),
+    ] {
+        rejected(name, live_observations(&altered), error)?;
+    }
+    let missing_read = text
+        .lines()
+        .filter(|line| {
+            !(line.starts_with("CONTEXT_ATTRIBUTE_READ origin=actual-task-query tid=101 ")
+                && line.contains(" index=2 "))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    rejected(
+        "missing final read",
+        live_observations(&missing_read),
+        "missing actual attribute reads or byte count",
+    )?;
+    let missing_query = text
+        .lines()
+        .filter(|line| !line.starts_with("CONTEXT_ATTRIBUTE origin=actual-live-query tid=102 "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    rejected(
+        "missing second query",
+        live_observations(&missing_query),
+        "both actual task attribute records are required",
+    )?;
+    let unbound = format!(
+        "{text}CONTEXT_ATTRIBUTE_READ origin=actual-task-query tid=103 start=1003 path=/proc/self/task/103/attr/current index=1 return=0 errno=0 offset=0\n"
+    );
+    rejected(
+        "unbound read",
+        live_observations(&unbound),
+        "actual read record has an unbound task identity",
+    )?;
+    let provider = "CONTEXT_PROVIDER_DECISION origin=actual-live-inventory profile=exported-bytes-only reason=valid mode=synthetic\n";
+    let equal = "CONTEXT_ATTRIBUTE_DECISION origin=actual-live-query decision=exact-label-bytes mode=synthetic\n";
+    let unavailable = "CONTEXT_ATTRIBUTE_DECISION origin=actual-live-query decision=unavailable-label mode=synthetic\n";
+    live_decision_records(&format!("{provider}{equal}"), "synthetic", &live)?;
+    rejected(
+        "wrong attribute decision",
+        live_decision_records(&format!("{provider}{unavailable}"), "synthetic", &live),
+        "attribute decision disagrees with typed observations",
+    )?;
+    rejected(
+        "contradictory attribute decisions",
+        live_decision_records(
+            &format!("{provider}{equal}{unavailable}"),
+            "synthetic",
+            &live,
+        ),
+        "missing/duplicated context observation: CONTEXT_ATTRIBUTE_DECISION origin=actual-live-query ",
+    )?;
+    let known = "CONTEXT_PROVIDER_DECISION origin=actual-live-inventory profile=observed-unavailable reason=recognized mode=synthetic\n";
+    rejected(
+        "wrong provider decision",
+        provider_decision_record(known, "actual-live-inventory", "synthetic", live.profile),
+        "provider decision disagrees with typed observations",
+    )?;
+    rejected(
+        "contradictory provider decisions",
+        provider_decision_record(
+            &format!("{provider}{known}"),
+            "actual-live-inventory",
+            "synthetic",
+            live.profile,
+        ),
+        "missing/duplicated context observation: CONTEXT_PROVIDER_DECISION origin=actual-live-inventory ",
+    )?;
+    println!(
+        "C_PROTOCOL_TYPED_CONTEXT_CONTROLS origin=synthetic nonlegacy_bytes=accepted empty=rejected split_reads=rejected extra_positive_reads=rejected first_read_length=rejected paired_einval=qualified_only invalid_observations=rejected"
+    );
     Ok(())
 }
 
@@ -1449,6 +2180,7 @@ fn exercise(tree: &PrivateTree) -> Result<(), String> {
     println!("C_PROTOCOL_NATIVE_TRANSCRIPT_BEGIN");
     print!("{}", String::from_utf8_lossy(&protocol.stdout));
     println!("C_PROTOCOL_NATIVE_TRANSCRIPT_END");
+    typed_context_controls()?;
     context_modes(tree)?;
 
     // These controls exercise this very subprocess owner and parser without
@@ -1545,6 +2277,7 @@ fn exercise(tree: &PrivateTree) -> Result<(), String> {
     require_retirement_order(&retirement)?;
     print!("{}", String::from_utf8_lossy(&retirement.stdout));
     let transcript = std::str::from_utf8(&protocol.stdout).unwrap();
+    let completion = context_pass(live_observations(transcript)?.decision);
     let reordered = transcript
         .replacen(PASS_BEFORE_CONTEXT[0], "WRAPPER_SWAP", 1)
         .replacen(PASS_BEFORE_CONTEXT[1], PASS_BEFORE_CONTEXT[0], 1)
@@ -1556,7 +2289,7 @@ fn exercise(tree: &PrivateTree) -> Result<(), String> {
             format!("{transcript}\n{}\n", PASS_BEFORE_CONTEXT[0]),
         ),
         ("reordered", reordered),
-        ("missing-context", transcript.replacen(CONTEXT_PASS, "", 1)),
+        ("missing-context", transcript.replacen(&completion, "", 1)),
         ("pass-colon", format!("{transcript}\nPASS:unexpected\n")),
         ("pass-tab", format!("{transcript}\nPASS\tunexpected\n")),
         ("pass-bare", format!("{transcript}\nPASS\n")),
