@@ -8334,28 +8334,19 @@ static CHILD_WAIT_EVENT_CONFIGS: LazyLock<Mutex<BTreeMap<u64, ChildWaitEventConf
 static NEXT_CHILD_WAIT_EVENT_CONFIG: AtomicU64 = AtomicU64::new(1);
 
 fn child_wait_event_config(events: &SharedChildWaitEvents) -> u64 {
-    child_wait_event_config_with_block(events, None)
-}
-
-#[derive(Clone)]
-struct ChildWaitEventConfig {
-    events: Weak<Mutex<Vec<BackendChildWaitEvent>>>,
-    blocked_getpid: Option<i32>,
-}
-
-fn child_wait_event_config_with_block(
-    events: &SharedChildWaitEvents,
-    blocked_getpid: Option<i32>,
-) -> u64 {
     let id = NEXT_CHILD_WAIT_EVENT_CONFIG.fetch_add(1, Ordering::SeqCst);
     CHILD_WAIT_EVENT_CONFIGS.lock().unwrap().insert(
         id,
         ChildWaitEventConfig {
             events: Arc::downgrade(events),
-            blocked_getpid,
         },
     );
     id
+}
+
+#[derive(Clone)]
+struct ChildWaitEventConfig {
+    events: Weak<Mutex<Vec<BackendChildWaitEvent>>>,
 }
 
 #[derive(Debug, Default)]
@@ -8491,26 +8482,15 @@ impl GlobalTool for ChildWaitEventLog {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct ChildWaitEventTool {
-    pid: i32,
-    blocked_getpid: Option<i32>,
-}
+struct ChildWaitEventTool;
 
 #[reverie::tool]
 impl Tool for ChildWaitEventTool {
     type GlobalState = ChildWaitEventLog;
     type ThreadState = ();
 
-    fn new(pid: Pid, config: &u64) -> Self {
-        Self {
-            pid: pid.as_raw(),
-            blocked_getpid: CHILD_WAIT_EVENT_CONFIGS
-                .lock()
-                .unwrap()
-                .get(config)
-                .expect("child wait event config disappeared")
-                .blocked_getpid,
-        }
+    fn new(_pid: Pid, _config: &u64) -> Self {
+        Self
     }
 
     fn subscriptions(_config: &u64) -> Subscription {
@@ -8530,11 +8510,7 @@ impl Tool for ChildWaitEventTool {
         guest: &mut G,
         syscall: Syscall,
     ) -> Result<i64, reverie::Error> {
-        if syscall.number() == Sysno::getpid && self.blocked_getpid == Some(self.pid) {
-            std::future::pending().await
-        } else {
-            Ok(guest.inject(syscall).await?)
-        }
+        Ok(guest.inject(syscall).await?)
     }
 }
 
@@ -8742,6 +8718,7 @@ fn grandchild_family_transitions_are_causal_on_real_kvm() {
 #include <signal.h>
 #include <stdlib.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 int main(int argc, char **argv) {
@@ -8752,11 +8729,15 @@ int main(int argc, char **argv) {
   sigaddset(&blocked, SIGCHLD);
   if (sigprocmask(SIG_BLOCK, &blocked, 0) != 0) return 9;
   int ready[2] = {-1, -1};
-  if ((mode == 0 || (mode >= 6 && mode <= 8)) && pipe(ready) != 0) return 10;
+  if (mode >= 6 && mode <= 8 && pipe(ready) != 0) return 10;
+  int report[2] = {-1, -1};
+  int go[2] = {-1, -1};
+  if (mode == 0 && (pipe(report) != 0 || pipe(go) != 0)) return 10;
   pid_t child = fork();
   if (child < 0) return 11;
   if (child == 0) {
     pid_t root = getppid();
+    pid_t self = getpid();
     if (mode == 4 || mode == 5 || mode == 7 || mode == 8) {
       struct sigaction action = {0};
       action.sa_handler = (mode == 4 || mode == 7) ? SIG_IGN : SIG_DFL;
@@ -8768,9 +8749,14 @@ int main(int argc, char **argv) {
     if (grandchild < 0) _exit(13);
     if (grandchild == 0) {
       if (mode == 0) {
-        char byte = 'x';
-        if (write(ready[1], &byte, 1) != 1) _exit(14);
-        for (;;) (void)getpid();
+        /* Still running when its parent exits: Linux reparents it to the
+           PID-namespace init, and getppid must say so. */
+        while (getppid() == self) {
+        }
+        pid_t reaper = getppid();
+        if (write(report[1], &reaper, sizeof reaper) != sizeof reaper) _exit(14);
+        char byte = 0;
+        if (read(go[0], &byte, 1) != 1 || byte != 'g') _exit(15);
       } else if (mode >= 6 && mode <= 8) {
         char byte = 0;
         if (read(ready[0], &byte, 1) != 1 || byte != 'x') _exit(21);
@@ -8778,8 +8764,7 @@ int main(int argc, char **argv) {
       _exit(9);
     }
     if (mode == 0) {
-      char byte = 0;
-      if (read(ready[0], &byte, 1) != 1 || byte != 'x') _exit(15);
+      /* Exit without waiting, leaving the grandchild running. */
     } else if (mode == 1 || mode == 3) {
       siginfo_t info = {0};
       if (waitid(P_PID, grandchild, &info, WEXITED | WNOWAIT) != 0 ||
@@ -8824,6 +8809,36 @@ int main(int argc, char **argv) {
   int status = 0;
   if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
       WEXITSTATUS(status) != 7) return 20;
+  if (mode == 0) {
+    pid_t reaper = 0;
+    if (read(report[0], &reaper, sizeof reaper) != sizeof reaper) return 26;
+    if (reaper != 1) return 27;
+    int self_is_init = getpid() == 1;
+    if (self_is_init) {
+      /* Consume the direct child's SIGCHLD so the orphan's is observable. */
+      struct timespec zero = {0, 0};
+      if (sigtimedwait(&blocked, 0, &zero) != SIGCHLD) return 28;
+    }
+    char byte = 'g';
+    if (write(go[1], &byte, 1) != 1) return 29;
+    int orphan_status = 0;
+    errno = 0;
+    pid_t reaped = waitpid(-1, &orphan_status, 0);
+    if (self_is_init) {
+      /* The guest is its own namespace init: it adopted the orphan, reaps
+         it with its exact status, and received its SIGCHLD. */
+      if (reaped != child + 1 || !WIFEXITED(orphan_status) ||
+          WEXITSTATUS(orphan_status) != 9) return 30;
+      sigset_t pending;
+      sigemptyset(&pending);
+      if (sigpending(&pending) != 0 || !sigismember(&pending, SIGCHLD)) return 31;
+      errno = 0;
+      if (waitpid(-1, &orphan_status, 0) != -1 || errno != ECHILD) return 32;
+    } else if (reaped != -1 || errno != ECHILD) {
+      /* Namespace init is outside the guest; the orphan is not ours. */
+      return 33;
+    }
+  }
   return 0;
 }
 "#,
@@ -8853,8 +8868,7 @@ int main(int argc, char **argv) {
     for root_pid in [1, 3] {
         for mode in 0..=8 {
             let events = Arc::new(Mutex::new(Vec::new()));
-            let config =
-                child_wait_event_config_with_block(&events, (mode == 0).then_some(root_pid + 2));
+            let config = child_wait_event_config(&events);
             let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
             backend.set_root_pid(root_pid).unwrap();
             let mode_string = mode.to_string();
@@ -8877,26 +8891,70 @@ int main(int argc, char **argv) {
             let grandchild = root_pid + 2;
             match mode {
                 0 => {
-                    let rendered = result.unwrap_err().to_string();
-                    assert!(
-                        rendered.contains("still requiring unsupported reparenting"),
-                        "live descendant, root pid {root_pid}: {rendered}"
+                    let (global, code, _stdout, stderr) = result.unwrap();
+                    assert_eq!(
+                        code,
+                        0,
+                        "live orphan, root pid {root_pid}: {}",
+                        String::from_utf8_lossy(&stderr)
                     );
-                    assert!(
-                        observed.is_empty(),
-                        "a still-live grandchild has no terminal event: {observed:?}"
-                    );
+                    let expected = if root_pid == 1 {
+                        // The guest root is namespace init: it adopts the
+                        // orphan and receives its exit event and SIGCHLD.
+                        vec![
+                            event(root_pid, 1, child, 2, true),
+                            event(root_pid, 1, grandchild, 3, true),
+                        ]
+                    } else {
+                        // Namespace init is outside the guest: the orphan's
+                        // exit has no guest-visible parent to notify.
+                        vec![event(root_pid, 1, child, 2, true)]
+                    };
+                    assert_eq!(observed, expected, "live orphan, root pid {root_pid}");
+                    let publications = global
+                        .publications
+                        .lock()
+                        .expect("child publication log poisoned")
+                        .clone();
+                    assert_eq!(publications.len(), expected.len());
+                    for publication in publications {
+                        assert!(
+                            matches!(
+                                publication,
+                                reverie::ChildExitPublicationResult::Committed(_)
+                            ),
+                            "root pid {root_pid}: {publication:?}"
+                        );
+                    }
                 }
-                1 => {
+                1 if root_pid == 1 => {
+                    // Adopting a zombie into a live guest init would need a
+                    // second SIGCHLD for an already-published exit.
                     let rendered = result.unwrap_err().to_string();
                     assert!(
-                        rendered.contains("still requiring unsupported reparenting"),
+                        rendered.contains("would have to adopt, which is unsupported"),
                         "zombie descendant, root pid {root_pid}: {rendered}"
                     );
                     assert_eq!(
                         observed,
                         vec![event(child, 2, grandchild, 3, true)],
                         "WNOWAIT must retain the zombie while suppressing only C-to-root publication",
+                    );
+                }
+                1 => {
+                    let (_global, code, _stdout, stderr) = result.unwrap();
+                    assert_eq!(
+                        code,
+                        0,
+                        "zombie descendant reaped outside the guest, root pid {root_pid}: {}",
+                        String::from_utf8_lossy(&stderr)
+                    );
+                    assert_eq!(
+                        observed,
+                        vec![
+                            event(child, 2, grandchild, 3, true),
+                            event(root_pid, 1, child, 2, true),
+                        ],
                     );
                 }
                 2 | 3 => {
