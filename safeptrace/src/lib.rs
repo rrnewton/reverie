@@ -887,6 +887,44 @@ impl Stopped {
         Ok(unsafe { data.assume_init() }[0..count as usize].to_vec())
     }
 
+    /// Like `peeksiginfo`, but returns the whole queue rather than at most its
+    /// first 64 entries.
+    ///
+    /// The kernel copies at least one entry per call if one exists at the
+    /// offset, may stop early when the tracer has a signal pending, and
+    /// returns 0 only past the end of the queue, so this reads until it gets 0.
+    /// Real-time signals queue one entry each, so a queue can exceed 64 entries.
+    pub fn peeksiginfo_all<T: Into<Option<PeekSigInfoFlags>>>(
+        &self,
+        flags: T,
+    ) -> Result<Vec<libc::siginfo_t>, Error> {
+        const CHUNK: usize = 64;
+        let flags = flags.into().map_or(0, |x| x.bits());
+        let mut data = MaybeUninit::<[libc::siginfo_t; CHUNK]>::zeroed();
+        let mut all = Vec::new();
+        loop {
+            let mut siginfo_args = ptrace_peeksiginfo_args {
+                off: all.len() as u64,
+                flags,
+                nr: CHUNK as u32,
+            };
+            let count = Errno::result(unsafe {
+                libc::ptrace(
+                    libc::PTRACE_PEEKSIGINFO,
+                    self.0.as_raw(),
+                    &mut siginfo_args as *mut _,
+                    data.as_mut_ptr() as *const _ as *const libc::c_void,
+                )
+            })
+            .map_err(|err| self.map_err(err))? as usize;
+            if count == 0 {
+                return Ok(all);
+            }
+            // SAFETY: zero-initialized, and the kernel wrote the first `count`.
+            all.extend_from_slice(&unsafe { data.assume_init_ref() }[..count]);
+        }
+    }
+
     /// Retrieve a message about the ptrace event that just happened.
     ///
     /// It shouldn't be necessary to call this in most cases because `Event`
@@ -1987,6 +2025,76 @@ mod test {
 
         // The parent should have exited last
         assert_eq!(exited.pop(), Some((parent_pid, ExitStatus::Exited(0))));
+
+        Ok(())
+    }
+
+    #[cfg(not(sanitized))]
+    #[test]
+    fn peeksiginfo_all_returns_the_whole_queue() -> Result<(), Box<dyn std::error::Error + 'static>>
+    {
+        // Real-time signals queue one entry each, so this exceeds one 64-entry
+        // read twice over.
+        const QUEUED: usize = 150;
+        let (parent_pid, tracee) = trace(
+            move || {
+                let rt = libc::SIGRTMIN();
+                unsafe {
+                    let mut set: libc::sigset_t = core::mem::zeroed();
+                    libc::sigemptyset(&mut set);
+                    libc::sigaddset(&mut set, rt);
+                    libc::sigaddset(&mut set, libc::SIGALRM);
+                    assert_eq!(
+                        libc::sigprocmask(libc::SIG_BLOCK, &set, core::ptr::null_mut()),
+                        0
+                    );
+                    for _ in 0..QUEUED {
+                        assert_eq!(
+                            libc::syscall(libc::SYS_tgkill, libc::getpid(), libc::gettid(), rt),
+                            0
+                        );
+                    }
+                    assert_eq!(
+                        libc::syscall(
+                            libc::SYS_tgkill,
+                            libc::getpid(),
+                            libc::gettid(),
+                            libc::SIGALRM
+                        ),
+                        0
+                    );
+                    libc::syscall(libc::SYS_exit_group, 0);
+                }
+                unreachable!()
+            },
+            Options::PTRACE_O_EXITKILL | Options::PTRACE_O_TRACEEXIT,
+        )?;
+
+        tracee.resume(None)?;
+
+        let mut peeked = false;
+        while let Some(wait) = wait_group(parent_pid)? {
+            match wait {
+                Wait::Stopped(tracee, Event::Exit) => {
+                    let signos = |v: Vec<libc::siginfo_t>| -> Vec<i32> {
+                        v.iter().map(|si| si.si_signo).collect()
+                    };
+                    let mut expected = vec![libc::SIGRTMIN(); QUEUED];
+                    expected.push(libc::SIGALRM);
+                    assert_eq!(signos(tracee.peeksiginfo(None)?), expected[..64]);
+                    assert_eq!(signos(tracee.peeksiginfo_all(None)?), expected);
+                    peeked = true;
+                    tracee.resume(None)?;
+                }
+                Wait::Stopped(tracee, _event) => {
+                    tracee.resume(None)?;
+                }
+                Wait::Exited(_, exit_status) => {
+                    assert_eq!(exit_status, ExitStatus::Exited(0));
+                }
+            }
+        }
+        assert!(peeked, "the tracee never reached its exit stop");
 
         Ok(())
     }

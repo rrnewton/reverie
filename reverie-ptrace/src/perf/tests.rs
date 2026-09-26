@@ -34,6 +34,7 @@ fn paused_fixture() -> (
     let counter = std::mem::ManuallyDrop::new(PerfCounter {
         fd: 99,
         mmap: Some(NonNull::from(page.as_mut())),
+        records: None,
         raw_syscall: Some(paused_read_gate),
     });
     (page, counter)
@@ -94,4 +95,67 @@ fn paused_read_rejects_changed_metadata_after_one_read() {
     assert_eq!(counter.ctr_value_paused_once(), Err(Errno::EAGAIN));
     assert_eq!(PAUSED_READS.get(), 1);
     CHANGE_SEQUENCE.set(std::ptr::null_mut());
+}
+
+/// Headers of consecutive records starting at `start`, keyed by position.
+fn record_headers(
+    start: u64,
+    records: &[(u32, u16)],
+) -> (
+    std::collections::BTreeMap<u64, perf::perf_event_header>,
+    u64,
+) {
+    let mut headers = std::collections::BTreeMap::new();
+    let mut position = start;
+    for &(type_, size) in records {
+        headers.insert(
+            position,
+            perf::perf_event_header {
+                type_,
+                misc: 0,
+                size,
+            },
+        );
+        position = position.wrapping_add(u64::from(size));
+    }
+    (headers, position)
+}
+
+#[test]
+fn only_sample_records_are_counted() {
+    // Every record type the timer's buffer can hold, starting past the
+    // wrapping point of the positions.
+    let start = u64::MAX - 15;
+    let (headers, head) = record_headers(
+        start,
+        &[
+            (perf::PERF_RECORD_SAMPLE, 8),
+            (perf::PERF_RECORD_THROTTLE, 24),
+            (perf::PERF_RECORD_SAMPLE, 8),
+            (perf::PERF_RECORD_UNTHROTTLE, 24),
+            (perf::PERF_RECORD_LOST, 24),
+            (perf::PERF_RECORD_SAMPLE, 8),
+        ],
+    );
+    let read = |position| headers[&position];
+    assert_eq!(count_sample_records(start, head, read), 3);
+    assert_eq!(count_sample_records(head, head, read), 0);
+    // A record the kernel has not finished publishing is not read.
+    assert_eq!(count_sample_records(start, head.wrapping_sub(4), read), 2);
+}
+
+#[test]
+fn malformed_record_ends_the_count() {
+    let (headers, head) = record_headers(
+        0,
+        &[
+            (perf::PERF_RECORD_SAMPLE, 8),
+            (perf::PERF_RECORD_SAMPLE, 4),
+            (perf::PERF_RECORD_SAMPLE, 8),
+        ],
+    );
+    assert_eq!(
+        count_sample_records(0, head, |position| headers[&position]),
+        1
+    );
 }
