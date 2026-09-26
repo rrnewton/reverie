@@ -20,6 +20,8 @@ use reverie::process::Stdio;
 use crate::TracerBuilder;
 pub use crate::perf::do_branches;
 use crate::spawn_fn_with_config;
+pub use crate::timer::ConsumedTimerSignals;
+pub use crate::timer::take_consumed_timer_signals;
 
 /// For some tests, its nice to show what was printed.
 pub fn print_tracee_output(output: &Output) {

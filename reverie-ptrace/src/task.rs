@@ -7035,12 +7035,6 @@ impl<L: Tool + 'static> TracedTask<L> {
                     task.setregs(&regs)?;
                     break Ok(task);
                 }
-                Wait::Stopped(task, Event::Signal(sig))
-                    if sig == Timer::signal_type() && self.timer.consume_signal(&task)? =>
-                {
-                    // The timer's signal is not the guest's to receive.
-                    running = self.step_stopped(task, None)?;
-                }
                 Wait::Stopped(task, Event::Signal(sig)) => {
                     self.validate_nested_liteinst_activation_signal(
                         &task,
@@ -7115,10 +7109,13 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         task.setregs(&regs)?;
 
-        // Step to run the syscall instruction. A timer signal raised before
-        // this step can stop it, usually before the syscall has run; it is
-        // the timer's, not the guest's, so take it and step again. Resuming
-        // without a signal also restarts a syscall it interrupted.
+        // Step to run the syscall instruction. A timer signal pending when
+        // the step starts stops it before the syscall instruction runs. That
+        // includes one raised before a skip_seccomp_syscall that preceded
+        // this step: Linux reports that step's SIGTRAP first and leaves the
+        // signal pending. It is the timer's, not the guest's, so take it and
+        // step again. Nothing raises it while the syscall runs: the counter
+        // excludes the kernel and the controller sends no kick meanwhile.
         let mut wait = self.step_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait);
         while let Wait::Stopped(stopped, Event::Signal(sig)) = wait {
