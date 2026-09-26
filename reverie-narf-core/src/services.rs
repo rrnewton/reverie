@@ -57,8 +57,10 @@ pub struct CreatedTask {
 /// `Send + Sync` is required because [`reverie::Guest`] is `Send` and
 /// [`reverie::GlobalRPC`] is `Sync`. Narf's transition object is not `Send`;
 /// the kernel's wrapper supplies these bounds on the strength of the fact that
-/// the core polls the Tool exactly once, synchronously, on the calling CPU and
-/// drops the guest before the interceptor returns.
+/// the core reaches a `KernelServices` only synchronously, on the calling CPU,
+/// inside the interceptor call that created it: a Tool future kept across a
+/// park holds no reference to it, and sees the next call's services only
+/// while that call polls it.
 pub trait KernelServices: Send + Sync {
     /// Guest-memory accessor bound to the current task's address space.
     type Memory: MemoryAccess + Send;

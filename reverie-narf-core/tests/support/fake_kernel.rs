@@ -26,6 +26,7 @@
 #![allow(dead_code)]
 
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::AtomicBool;
@@ -177,7 +178,9 @@ struct World {
 
 /// The fake kernel: tasks, address spaces and a log of what ran.
 pub struct FakeKernel {
-    world: SpinLock<World>,
+    /// Shared with every [`FakeMemory`], which must be `'static` because a
+    /// Tool future (and anything it holds) can outlive one callback.
+    world: Arc<SpinLock<World>>,
 }
 
 fn user_regs(rsp: u64) -> libc::user_regs_struct {
@@ -197,7 +200,7 @@ impl FakeKernel {
     /// An empty fake kernel whose first task ID is 1000.
     pub fn new() -> Self {
         Self {
-            world: SpinLock::new(World {
+            world: Arc::new(SpinLock::new(World {
                 tasks: BTreeMap::new(),
                 spaces: BTreeMap::new(),
                 next_tid: 1000,
@@ -207,7 +210,7 @@ impl FakeKernel {
                 violations: Vec::new(),
                 pending_exits: Vec::new(),
                 teardowns: Vec::new(),
-            }),
+            })),
         }
     }
 
@@ -261,7 +264,7 @@ impl FakeKernel {
 
     /// Delivers a new guest syscall from `tid` to `host`, then reports any
     /// task that died to `host.task_exited`.
-    pub fn syscall<T: Tool>(
+    pub fn syscall<T: Tool + 'static>(
         &self,
         host: &FakeHost<T>,
         tid: Pid,
@@ -271,7 +274,7 @@ impl FakeKernel {
     }
 
     /// Re-executes `tid`'s parked syscall, as Narf's backstop tick does.
-    pub fn reexecute<T: Tool>(
+    pub fn reexecute<T: Tool + 'static>(
         &self,
         host: &FakeHost<T>,
         tid: Pid,
@@ -288,7 +291,7 @@ impl FakeKernel {
     }
 
     /// Delivers an arbitrary interceptor entry.
-    pub fn enter<T: Tool>(
+    pub fn enter<T: Tool + 'static>(
         &self,
         host: &FakeHost<T>,
         tid: Pid,
@@ -303,7 +306,7 @@ impl FakeKernel {
     }
 
     /// Runs `tid`'s thread-start callback.
-    pub fn thread_start<T: Tool>(
+    pub fn thread_start<T: Tool + 'static>(
         &self,
         host: &FakeHost<T>,
         tid: Pid,
@@ -388,16 +391,16 @@ impl FakeKernel {
 }
 
 /// Guest memory of one fake process.
-pub struct FakeMemory<'k> {
-    kernel: &'k FakeKernel,
+pub struct FakeMemory {
+    world: Arc<SpinLock<World>>,
     pid: i32,
 }
 
-impl MemoryAccess for FakeMemory<'_> {
+impl MemoryAccess for FakeMemory {
     fn read_vectored(&self, from: &[IoSlice], to: &mut [IoSliceMut]) -> Result<usize, Errno> {
         // Remote slices name guest addresses; they are never dereferenced.
         let mut gathered = Vec::new();
-        self.kernel.with(|world| {
+        self.world.with(|world| {
             let space = world.spaces.get(&self.pid).ok_or(Errno::ESRCH)?;
             for remote in from {
                 let range = space.range(remote.as_ptr() as usize, remote.len())?;
@@ -419,7 +422,7 @@ impl MemoryAccess for FakeMemory<'_> {
         for local in from {
             source.extend_from_slice(local);
         }
-        self.kernel.with(|world| {
+        self.world.with(|world| {
             let space = world.spaces.get_mut(&self.pid).ok_or(Errno::ESRCH)?;
             let mut written = 0;
             for remote in to.iter() {
@@ -580,7 +583,7 @@ fn run_native(
 }
 
 impl<'k> KernelServices for FakeServices<'k> {
-    type Memory = FakeMemory<'k>;
+    type Memory = FakeMemory;
 
     fn tid(&self) -> Pid {
         Pid::from_raw(self.tid)
@@ -606,7 +609,7 @@ impl<'k> KernelServices for FakeServices<'k> {
 
     fn memory(&self) -> Self::Memory {
         FakeMemory {
-            kernel: self.kernel,
+            world: self.kernel.world.clone(),
             pid: self.pid().as_raw(),
         }
     }
