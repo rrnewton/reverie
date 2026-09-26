@@ -20,6 +20,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
@@ -747,6 +748,15 @@ pub(crate) struct LoadedStaticElf {
     /// root guest has no traced parent. Use [`Self::is_traced_tree_root`] to
     /// answer the traced-tree question.
     pub ppid: i32,
+    /// Guest-visible parent after orphan reparenting, or zero while the
+    /// process still has its fork-time parent [`Self::ppid`].
+    ///
+    /// Linux reparents a live child when its parent exits, so a later
+    /// `getppid(2)` observes the new reaper. Every thread and every exec image
+    /// of one process shares this cell; fork gives the child a fresh one. Only
+    /// the exiting parent's family-ledger transition stores into it, under that
+    /// parent's process transaction.
+    pub reparented_ppid: Arc<AtomicI32>,
     /// True iff this process is the root of the *traced* process tree, i.e. it
     /// was installed by the backend rather than created by a guest `fork`/`clone`.
     ///
@@ -873,6 +883,16 @@ pub(crate) struct LoadedStaticElf {
 }
 
 impl LoadedStaticElf {
+    /// The parent PID this process currently reports through `getppid(2)`
+    /// and `/proc/self/{stat,status}`: the reaper after orphan reparenting,
+    /// otherwise the fork-time (or synthetic root) parent.
+    pub(crate) fn visible_ppid(&self) -> i32 {
+        match self.reparented_ppid.load(Ordering::Acquire) {
+            0 => self.ppid,
+            reaper => reaper,
+        }
+    }
+
     /// Return replaced descriptions, including inherited stdin at fd 0, so
     /// callers retire them after both the authoritative file-table and
     /// signal-transaction guards are released.
@@ -954,6 +974,9 @@ impl LoadedStaticElf {
             pgid: self.pgid,
             tid: child_pid,
             ppid: self.pid,
+            // A fork child starts with its fork-time parent; reparenting is a
+            // later transition of this process alone.
+            reparented_ppid: Arc::new(AtomicI32::new(0)),
             // A guest-created child always has a traced parent: this process.
             is_traced_tree_root: false,
             logical_clock_ns: self.logical_clock_ns,
@@ -1156,6 +1179,8 @@ impl LoadedStaticElf {
         self.pgid = previous.pgid;
         self.tid = previous.tid;
         self.ppid = previous.ppid;
+        // Reparenting belongs to the process, which exec retains.
+        self.reparented_ppid = previous.reparented_ppid;
         // `execve` replaces the image, never the position in the process tree.
         self.is_traced_tree_root = previous.is_traced_tree_root;
         self.logical_clock_ns = previous.logical_clock_ns;
@@ -1533,6 +1558,7 @@ fn load_executable(
         pgid: 1,
         tid: 1,
         ppid: 0,
+        reparented_ppid: Arc::new(AtomicI32::new(0)),
         // The backend-installed image is the root of the traced process tree.
         // `KvmBackend::set_root_pid` may later renumber `pid`/`tid`/`ppid`; it
         // must not change this.

@@ -64,17 +64,21 @@ pub enum Error {
         terminal_exit: Option<reverie::ExitStatus>,
     },
 
-    /// A process exited while it still owned a logical child. Reparenting is
-    /// deliberately fail-closed until wait ownership can be transferred to an
-    /// in-tree PID 1 or an out-of-tree namespace reaper atomically.
+    /// A process exited leaving an unreaped zombie child while the traced
+    /// root is a live PID 1. Linux would hand that zombie to the guest init
+    /// with a second SIGCHLD; that re-notification is not implemented, so the
+    /// run fails closed. Running orphans, and zombies reaped by an init
+    /// outside the guest, are reparented normally.
     #[error(
-        "KVM process {process:?} exited with child {child:?} still requiring unsupported reparenting"
+        "KVM process {process:?} exited with zombie child {child:?} that guest init {reaper:?} would have to adopt, which is unsupported"
     )]
-    DescendantReparentingUnsupported {
+    ZombieAdoptionUnsupported {
         /// Exiting process generation.
         process: reverie::SignalProcessId,
-        /// Direct child generation that still needs a reaper.
+        /// Unreaped zombie child generation.
         child: reverie::SignalProcessId,
+        /// Live guest init that would adopt it.
+        reaper: reverie::SignalProcessId,
     },
 
     /// A child reached its terminal boundary after its exact parent generation

@@ -3065,9 +3065,22 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
                                 // already-committed publication decision.
                                 let first_poll =
                                     poll_fn(|cx| Poll::Ready(callback.as_mut().poll(cx))).await;
+                                // An orphan adopted by guest init is collected by
+                                // its adopter; its dead fork parent's slot only
+                                // records that the host thread is consumed.
+                                let slot_completion = if executor.publish_adopted_child_completion(
+                                    snapshot.completion.parent,
+                                    completion,
+                                ) {
+                                    crate::executor::ChildCompletion::AutoReaped(
+                                        snapshot.completion.status,
+                                    )
+                                } else {
+                                    completion
+                                };
                                 let waitability = if context
                                     .completion
-                                    .publish_after_fence(completion)
+                                    .publish_after_fence(slot_completion)
                                 {
                                     let _ = context.completion_notifier.send(context.raw_child_pid);
                                     Ok(())
@@ -3136,9 +3149,9 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
                 Ok(crate::executor::ProcessFamilyExit::Failed) => {
                     unreachable!("executor maps failed family state to an error")
                 }
-                Ok(crate::executor::ProcessFamilyExit::DescendantReparentingUnsupported {
-                    ..
-                }) => unreachable!("executor maps unsupported reparenting to an error"),
+                Ok(crate::executor::ProcessFamilyExit::ZombieAdoptionUnsupported { .. }) => {
+                    unreachable!("executor maps unsupported zombie adoption to an error")
+                }
                 Ok(crate::executor::ProcessFamilyExit::ParentGenerationUnavailable { .. }) => {
                     unreachable!("executor maps a missing parent generation to an error")
                 }

@@ -858,7 +858,7 @@ fn execute_basic_syscall_inner(
         // TODO-HUMAN-REVIEW(PR-132): Review distinct KVM thread IDs.
         i64::from(state.tid)
     } else if number == libc::SYS_getppid as u64 {
-        i64::from(state.ppid)
+        i64::from(state.visible_ppid())
     } else if number == libc::SYS_getpgrp as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-92): Review virtual process-group identity.
@@ -3064,6 +3064,8 @@ impl ElfExecutor {
         _child_retirement = state.file_retirement.hold();
         state.pid = self.state.pid;
         state.ppid = self.state.ppid;
+        // Reparenting is process-wide: every thread reports the same reaper.
+        state.reparented_ppid = self.state.reparented_ppid.clone();
         // A CLONE_THREAD worker stays inside the same process, so it inherits the
         // thread group leader's position in the traced process tree.
         state.is_traced_tree_root = self.state.is_traced_tree_root;
@@ -3446,6 +3448,34 @@ impl ElfExecutor {
         crate::Error::combine(errors)
     }
 
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-kvm-orphan-reparent): Review adopted-orphan waits.
+    /// Move this process's adopted orphans that match a wait selector and are
+    /// already collectable into `state.children`, like joined fork children.
+    /// Returns whether one was collected and whether a matching one is still
+    /// running, or the pid of one that failed before publishing its status.
+    /// `register` arms this executor's wake channel atomically with the
+    /// observation, for a caller about to block.
+    fn collect_adopted_children(
+        &mut self,
+        matches: impl Fn(i32) -> bool,
+        register: bool,
+    ) -> Result<(bool, bool), i32> {
+        let adopter = self.admitted_signal_identity().process;
+        let waiter = register.then_some(&self.child_completion_sender);
+        let poll = self
+            .signal_registry
+            .poll_adopted_children(adopter, matches, waiter);
+        let collected = !poll.waitable.is_empty();
+        for (pid, status) in poll.waitable {
+            self.state.children.insert(pid, status);
+        }
+        match poll.failed {
+            Some(pid) => Err(pid),
+            None => Ok((collected, poll.running)),
+        }
+    }
+
     fn synchronize_wait4(&mut self, request: &SyscallRequest) -> Option<i64> {
         if request.number() != libc::SYS_wait4 as u64 {
             return None;
@@ -3459,13 +3489,21 @@ impl ElfExecutor {
         let nonblocking = args[2] & libc::WNOHANG as u64 != 0;
 
         loop {
+            let adopted_running = match self.collect_adopted_children(matches, false) {
+                Ok((true, _)) => return None,
+                Ok((false, running)) => running,
+                Err(pid) => {
+                    eprintln!("reverie-kvm adopted child {pid} failed before wait4");
+                    return Some(negative_errno(libc::EIO));
+                }
+            };
             let pids = self
                 .pending_processes
                 .keys()
                 .copied()
                 .filter(|pid| matches(*pid))
                 .collect::<Vec<_>>();
-            if pids.is_empty() {
+            if pids.is_empty() && !adopted_running {
                 return None;
             }
 
@@ -3484,14 +3522,25 @@ impl ElfExecutor {
                 }
             }
 
+            let running = running.is_some() || adopted_running;
             if nonblocking {
-                if running.is_some() {
+                if running {
                     return Some(0);
                 }
                 continue;
             }
-            if running.is_none() {
+            if !running {
                 continue;
+            }
+            if adopted_running {
+                match self.collect_adopted_children(matches, true) {
+                    Ok((true, _)) => return None,
+                    Ok((false, _)) => {}
+                    Err(pid) => {
+                        eprintln!("reverie-kvm adopted child {pid} failed before wait4");
+                        return Some(negative_errno(libc::EIO));
+                    }
+                }
             }
             if self
                 .child_completion_receiver
@@ -3546,13 +3595,21 @@ impl ElfExecutor {
         let nonblocking = args[3] & libc::WNOHANG as u64 != 0;
 
         loop {
+            let adopted_running = match self.collect_adopted_children(matches, false) {
+                Ok((true, _)) => return None,
+                Ok((false, running)) => running,
+                Err(pid) => {
+                    eprintln!("reverie-kvm adopted child {pid} failed before waitid");
+                    return Some(negative_errno(libc::EIO));
+                }
+            };
             let pids = self
                 .pending_processes
                 .keys()
                 .copied()
                 .filter(|pid| matches(*pid))
                 .collect::<Vec<_>>();
-            if pids.is_empty() {
+            if pids.is_empty() && !adopted_running {
                 return None;
             }
 
@@ -3571,7 +3628,8 @@ impl ElfExecutor {
                 }
             }
 
-            if nonblocking && running.is_some() {
+            let running = running.is_some() || adopted_running;
+            if nonblocking && running {
                 if args[2] != 0 {
                     let memory = memory.clone();
                     if memory
@@ -3584,8 +3642,18 @@ impl ElfExecutor {
                 }
                 return Some(0);
             }
-            if running.is_none() {
+            if !running {
                 continue;
+            }
+            if adopted_running {
+                match self.collect_adopted_children(matches, true) {
+                    Ok((true, _)) => return None,
+                    Ok((false, _)) => {}
+                    Err(pid) => {
+                        eprintln!("reverie-kvm adopted child {pid} failed before waitid");
+                        return Some(negative_errno(libc::EIO));
+                    }
+                }
             }
             if self
                 .child_completion_receiver
@@ -4708,8 +4776,12 @@ impl ElfExecutor {
             | Some(exit @ ProcessFamilyExit::Child(_))
             | Some(exit @ ProcessFamilyExit::RunTeardownChild { .. }) => Ok(exit),
             Some(ProcessFamilyExit::Failed) => Err(crate::Error::RunAborted),
-            Some(ProcessFamilyExit::DescendantReparentingUnsupported { child }) => {
-                Err(crate::Error::DescendantReparentingUnsupported { process, child })
+            Some(ProcessFamilyExit::ZombieAdoptionUnsupported { child, reaper }) => {
+                Err(crate::Error::ZombieAdoptionUnsupported {
+                    process,
+                    child,
+                    reaper,
+                })
             }
             Some(ProcessFamilyExit::ParentGenerationUnavailable { parent }) => {
                 Err(crate::Error::ParentGenerationUnavailable { process, parent })
@@ -4735,6 +4807,25 @@ impl ElfExecutor {
                 process.tgid.as_raw()
             ))),
         }
+    }
+
+    /// Deliver this exited process's completion to the guest init that
+    /// adopted it, instead of to its dead fork parent. Returns false when the
+    /// process was not adopted by `adopter`.
+    pub(crate) fn publish_adopted_child_completion(
+        &self,
+        adopter: reverie::SignalProcessId,
+        completion: ChildCompletion,
+    ) -> bool {
+        let waitable = match completion {
+            ChildCompletion::Waitable(status) => Some(status),
+            ChildCompletion::AutoReaped(_) => None,
+        };
+        self.signal_registry.publish_adopted_child_completion(
+            adopter,
+            self.admitted_signal_identity().process,
+            waitable,
+        )
     }
 
     fn record_consumed_child_wait(&self, child_pid: i32) -> crate::Result<()> {
@@ -13690,7 +13781,7 @@ fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
     // file has 52 fields; pad with zeros so field-counting parsers are satisfied.
     let mut line = format!("{} (", state.pid).into_bytes();
     line.extend_from_slice(&proc_comm(state));
-    line.extend_from_slice(format!(") R {} 0 0 0 -1 0", state.ppid).as_bytes());
+    line.extend_from_slice(format!(") R {} 0 0 0 -1 0", state.visible_ppid()).as_bytes());
     for _ in 0..44 {
         line.extend_from_slice(b" 0");
     }
@@ -13717,7 +13808,7 @@ fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
          Threads:\t1\n",
             umask = state.umask,
             pid = state.pid,
-            ppid = state.ppid,
+            ppid = state.visible_ppid(),
         )
         .as_bytes(),
     );
@@ -17151,6 +17242,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         pgid: 1,
         tid: 1,
         ppid: 0,
+        reparented_ppid: Arc::new(std::sync::atomic::AtomicI32::new(0)),
         is_traced_tree_root: true,
         logical_clock_ns: 0,
         umask: 0o022,

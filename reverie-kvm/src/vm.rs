@@ -947,7 +947,7 @@ fn validate_root_pid(pid: i32) -> Result<i32> {
 /// PID 1, so the conventional root guest (PID 3, see detcore `ROOT_DETPID`) has
 /// `getppid() == 1`. KVM synthesizes the guest identity rather than using a real
 /// namespace, so it must reproduce the same parent value for parity.
-const CONTAINER_INIT_PID: i32 = 1;
+pub(crate) const CONTAINER_INIT_PID: i32 = 1;
 
 /// Deterministic parent PID for the container's root guest, matching the ptrace
 /// backend. A guest that is itself the namespace init (PID 1) has no parent and
@@ -2296,8 +2296,8 @@ impl KvmBackend {
             crate::executor::ProcessFamilyExit::Failed => {
                 unreachable!("executor maps failed family state to an error")
             }
-            crate::executor::ProcessFamilyExit::DescendantReparentingUnsupported { .. } => {
-                unreachable!("executor maps unsupported reparenting to an error")
+            crate::executor::ProcessFamilyExit::ZombieAdoptionUnsupported { .. } => {
+                unreachable!("executor maps unsupported zombie adoption to an error")
             }
             crate::executor::ProcessFamilyExit::ParentGenerationUnavailable { .. } => {
                 unreachable!("executor maps a missing parent generation to an error")
@@ -7179,14 +7179,25 @@ mod tests {
         assert_eq!(*global.events.lock().unwrap(), vec![expected]);
     }
 
-    #[test]
-    fn finish_forked_process_refuses_unreaped_descendant() {
+    /// Direct forks complete synchronously, so the only orphan a Direct
+    /// child can leave is a zombie. Returns the exiting child's and zombie's
+    /// identities, the root identity, and the finish result.
+    fn finish_forked_process_with_unreaped_zombie(
+        root_pid: i32,
+    ) -> (
+        reverie::SignalProcessId,
+        reverie::SignalProcessId,
+        reverie::SignalProcessId,
+        Result<()>,
+    ) {
         let mut parent =
             KvmBackend::new(16 * 1024 * 1024).expect("direct fork family control requires KVM");
         parent
             .install_static_elf(&minimal_test_elf(&[0xf4]), "/bin/fork-family-reparenting")
             .unwrap();
+        parent.set_root_pid(root_pid).unwrap();
         let mut executor = ElfExecutor::new(parent.static_elf.take().unwrap(), false);
+        let root = executor.signal_task_identity().unwrap().process;
         let registers = parent.vcpu.get_regs().unwrap();
         stage_process_syscall_return(
             &mut parent.memory,
@@ -7198,25 +7209,65 @@ mod tests {
 
         let mut child = parent
             .prepare_forked_process(
-                &executor, 2, None, None, None, None, false, false, false, None,
+                &executor,
+                root_pid + 1,
+                None,
+                None,
+                None,
+                None,
+                false,
+                false,
+                false,
+                None,
             )
             .unwrap();
         let owner = child.executor.signal_task_identity().unwrap().process;
-        let mut descendant = child.executor.fork_child(3, false, false).unwrap();
+        let mut descendant = child
+            .executor
+            .fork_child(root_pid + 2, false, false)
+            .unwrap();
         let descendant_id = descendant.signal_task_identity().unwrap().process;
         descendant.retire_current_thread(ExitStatus::Exited(9), false);
         child
             .executor
             .retire_current_thread(ExitStatus::Exited(7), false);
 
-        let error = parent
-            .finish_forked_process(&mut executor, child, ExitStatus::Exited(7), vec![], vec![])
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            Error::DescendantReparentingUnsupported { process, child }
-                if process == owner && child == descendant_id
-        ));
+        let result = parent.finish_forked_process(
+            &mut executor,
+            child,
+            ExitStatus::Exited(7),
+            vec![],
+            vec![],
+        );
+        (owner, descendant_id, root, result)
+    }
+
+    #[test]
+    fn finish_forked_process_refuses_zombie_adoption_by_guest_init() {
+        // PID 1 is the guest's own namespace init: Linux would hand it the
+        // zombie with a second SIGCHLD, which remains an explicit refusal.
+        let (owner, descendant, root, result) = finish_forked_process_with_unreaped_zombie(1);
+        assert_eq!(root.tgid.as_raw(), 1);
+        let error = result.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::ZombieAdoptionUnsupported { process, child, reaper }
+                    if process == owner && child == descendant && reaper == root
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn finish_forked_process_hands_zombie_to_init_outside_guest() {
+        // Under Hermit's root PID 3, namespace init is outside the guest and
+        // reaps the zombie with no guest-visible effect; the exiting child's
+        // own completion still reaches its live parent.
+        let (owner, _descendant, root, result) = finish_forked_process_with_unreaped_zombie(3);
+        assert_eq!(root.tgid.as_raw(), 3);
+        result.unwrap();
+        assert_eq!(owner.tgid.as_raw(), 4);
     }
 
     #[derive(Default)]
