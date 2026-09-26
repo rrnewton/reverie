@@ -135,9 +135,13 @@ class Run:
         # A Buck full run times the release E2E payload (no debug assertions, no
         # overflow checks), which is not the Cargo debug binary these baselines
         # measure. It still overlaps other validates, so it counts toward
-        # concurrency, but never as a timing sample. An absent field predates it
-        # and was a Cargo run.
-        return self.result == "pass" and self.raw.get("release_builder", "cargo") == "cargo"
+        # concurrency, but never as a timing sample. release_builder_of reads the
+        # builder and payload together.
+        receipt = canonical_ledger.qualifying_receipt
+        return (
+            self.result == "pass"
+            and receipt.release_builder_of(self.raw, receipt.active()) == "cargo"
+        )
 
     @property
     def wall(self) -> float | None:

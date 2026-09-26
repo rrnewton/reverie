@@ -564,14 +564,19 @@ def refuse_non_cargo_payload(encoded_row: bytes) -> None:
     Such a run executes the release E2E payload, which has no debug assertions
     and no overflow checks. Its cells are not the debug observations the
     scorecard records, so the finalized publication refuses before any proof
-    or scorecard work. Raw rows still publish. An absent field predates it and
-    was a Cargo run; any present value other than exactly "cargo" refuses.
+    or scorecard work. Raw rows still publish. The builder comes from
+    qualifying_receipt.release_builder_of: a row with neither release_builder
+    nor e2e_payload predates them and was a Cargo run, and a row whose two
+    fields disagree names no builder and refuses as well.
     """
+    import validate_rows
+    receipt = validate_rows.qualifying_receipt
     row = _private_row(encoded_row)
-    if "release_builder" in row and row["release_builder"] != "cargo":
+    if receipt.release_builder_of(row, receipt.active()) != "cargo":
         raise MirrorRefused(
             "finalized run used a non-Cargo release payload "
-            f"(release_builder={row['release_builder']!r}); its cells are not scorecard observations"
+            f"(release_builder={row.get('release_builder')!r}, "
+            f"e2e_payload={row.get('e2e_payload')!r}); its cells are not scorecard observations"
         )
 
 

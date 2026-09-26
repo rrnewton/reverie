@@ -17,11 +17,17 @@ every negative below would pass for the wrong reason.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import anchor_select as A  # noqa: E402
+
+_VALIDATE = Path(__file__).resolve().parents[1]
+CASES = json.loads((_VALIDATE / "tests" / "fixtures" / "release-payload-cases.json").read_text())[
+    "cases"
+]
 
 PREDICATE = {
     "require": {
@@ -49,6 +55,9 @@ PREDICATE = {
         "known": ["hermit-validate-sh"],
     },
     "base": {"applies_at_schema_min": 5, "branch": "main"},
+    "release_payloads": json.loads((_VALIDATE / "qualifying-receipt.json").read_text())[
+        "release_payloads"
+    ],
     "admission": {
         "applies_at_schema_min": 5,
         "required_admission": "ci-hub-validate-lock",
@@ -111,15 +120,18 @@ def test_receipt_without_a_usable_commit_is_refused() -> None:
 
 def test_non_cargo_release_builder_is_refused() -> None:
     """A Buck full run executed the release payload, not the debug binary a
-    receipt certifies. The baseline carries no field and qualifies as a Cargo
-    run, so each refusal here belongs to the release_builder clause."""
-    assert A.row_qualifies(_row(release_builder="cargo"), PREDICATE) == (
-        True,
-        "qualifies",
-    )
-    for builder in ("buck", None, 7, "Cargo"):
-        ok, reason = A.row_qualifies(_row(release_builder=builder), PREDICATE)
-        assert (ok, reason) == (False, f"release_builder={builder!r}"), builder
+    receipt certifies. The baseline carries neither field and qualifies as a
+    Cargo run, so each refusal here belongs to the release_builder clause: only
+    the exact Cargo builder/payload pair also qualifies."""
+    assert sum(case["expected"] is not None for case in CASES) == 3
+    for case in CASES:
+        row = _row(**case["fields"])
+        expected = (
+            (True, "qualifies")
+            if case["expected"] == "cargo"
+            else (False, f"release_builder={row.get('release_builder')!r}")
+        )
+        assert A.row_qualifies(row, PREDICATE) == expected, case["label"]
 
 
 def test_failures_above_the_cap_are_refused() -> None:

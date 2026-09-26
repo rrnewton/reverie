@@ -193,10 +193,18 @@ class PredicateBrackets(unittest.TestCase):
     def test_buck_release_payload_receipt_refused(self):
         """A Buck-mode green ran the release payload, without debug assertions
         or overflow checks; it is supplemental evidence, not an anchor."""
-        self.assert_refused(self.row(release_builder="buck"), "release_builder='buck'")
-        self.assert_refused(self.row(release_builder=None), "release_builder=None")
-        ok, reason = A.row_qualifies(self.row(release_builder="cargo"), self.predicate)
-        self.assertTrue(ok, f"an explicit cargo receipt was refused: {reason}")
+        cases = json.loads(
+            (HERE / "tests" / "fixtures" / "release-payload-cases.json").read_text()
+        )["cases"]
+        self.assertEqual(3, sum(case["expected"] is not None for case in cases))
+        for case in cases:
+            with self.subTest(case=case["label"]):
+                row = self.row(**case["fields"])
+                if case["expected"] == "cargo":
+                    ok, reason = A.row_qualifies(row, self.predicate)
+                    self.assertTrue(ok, f"a Cargo receipt was refused: {reason}")
+                else:
+                    self.assert_refused(row, f"release_builder={row.get('release_builder')!r}")
 
     def test_compat_only_profile_refused(self):
         """The owner's named hazard: ~164 portable-strict-compat-only rows in the

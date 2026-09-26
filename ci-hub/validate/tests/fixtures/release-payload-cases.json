@@ -1,0 +1,212 @@
+{
+  "_comment": [
+    "Builder/payload shapes shared by the Rust and Python consumers of",
+    "release_builder_of. Each case sets exactly the keys in fields on an",
+    "otherwise-qualifying row (an absent key is absent, not null) and names",
+    "the builder release_builder_of must return; null means no builder."
+  ],
+  "cases": [
+    {
+      "label": "neither field (legacy Cargo row)",
+      "fields": {},
+      "expected": "cargo"
+    },
+    {
+      "label": "consistent cargo",
+      "fields": {
+        "release_builder": "cargo",
+        "e2e_payload": {
+          "path": "target/debug/hermit",
+          "profile": "debug",
+          "debug_assertions": true,
+          "overflow_checks": true
+        }
+      },
+      "expected": "cargo"
+    },
+    {
+      "label": "consistent buck",
+      "fields": {
+        "release_builder": "buck",
+        "e2e_payload": {
+          "path": "target/ci/hermit-strict",
+          "profile": "release",
+          "debug_assertions": false,
+          "overflow_checks": false
+        }
+      },
+      "expected": "buck"
+    },
+    {
+      "label": "builder absent beside the Buck payload",
+      "fields": {
+        "e2e_payload": {
+          "path": "target/ci/hermit-strict",
+          "profile": "release",
+          "debug_assertions": false,
+          "overflow_checks": false
+        }
+      },
+      "expected": null
+    },
+    {
+      "label": "builder absent beside the Cargo payload",
+      "fields": {
+        "e2e_payload": {
+          "path": "target/debug/hermit",
+          "profile": "debug",
+          "debug_assertions": true,
+          "overflow_checks": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "label": "cargo builder without a payload",
+      "fields": {
+        "release_builder": "cargo"
+      },
+      "expected": null
+    },
+    {
+      "label": "buck builder without a payload",
+      "fields": {
+        "release_builder": "buck"
+      },
+      "expected": null
+    },
+    {
+      "label": "cargo builder beside the Buck payload",
+      "fields": {
+        "release_builder": "cargo",
+        "e2e_payload": {
+          "path": "target/ci/hermit-strict",
+          "profile": "release",
+          "debug_assertions": false,
+          "overflow_checks": false
+        }
+      },
+      "expected": null
+    },
+    {
+      "label": "buck builder beside the Cargo payload",
+      "fields": {
+        "release_builder": "buck",
+        "e2e_payload": {
+          "path": "target/debug/hermit",
+          "profile": "debug",
+          "debug_assertions": true,
+          "overflow_checks": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "label": "cargo builder beside a null payload",
+      "fields": {
+        "release_builder": "cargo",
+        "e2e_payload": null
+      },
+      "expected": null
+    },
+    {
+      "label": "integer 1 for a boolean flag",
+      "fields": {
+        "release_builder": "cargo",
+        "e2e_payload": {
+          "path": "target/debug/hermit",
+          "profile": "debug",
+          "debug_assertions": 1,
+          "overflow_checks": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "label": "payload with an extra field",
+      "fields": {
+        "release_builder": "cargo",
+        "e2e_payload": {
+          "path": "target/debug/hermit",
+          "profile": "debug",
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "lto": false
+        }
+      },
+      "expected": null
+    },
+    {
+      "label": "payload missing a field",
+      "fields": {
+        "release_builder": "cargo",
+        "e2e_payload": {
+          "path": "target/debug/hermit",
+          "profile": "debug",
+          "debug_assertions": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "label": "payload as a string",
+      "fields": {
+        "release_builder": "cargo",
+        "e2e_payload": "target/debug/hermit"
+      },
+      "expected": null
+    },
+    {
+      "label": "null builder",
+      "fields": {
+        "release_builder": null,
+        "e2e_payload": {
+          "path": "target/debug/hermit",
+          "profile": "debug",
+          "debug_assertions": true,
+          "overflow_checks": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "label": "integer builder",
+      "fields": {
+        "release_builder": 7,
+        "e2e_payload": {
+          "path": "target/debug/hermit",
+          "profile": "debug",
+          "debug_assertions": true,
+          "overflow_checks": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "label": "capitalised builder",
+      "fields": {
+        "release_builder": "Cargo",
+        "e2e_payload": {
+          "path": "target/debug/hermit",
+          "profile": "debug",
+          "debug_assertions": true,
+          "overflow_checks": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "label": "unknown builder",
+      "fields": {
+        "release_builder": "bazel",
+        "e2e_payload": {
+          "path": "target/debug/hermit",
+          "profile": "debug",
+          "debug_assertions": true,
+          "overflow_checks": true
+        }
+      },
+      "expected": null
+    }
+  ]
+}

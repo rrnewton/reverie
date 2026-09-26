@@ -46,7 +46,7 @@ import time
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 _CI_HUB_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_CI_HUB_DIR / "lib"))
 sys.path.insert(0, str(_CI_HUB_DIR / "validate"))
@@ -828,6 +828,7 @@ def load() -> dict[str, Any]:
         "cell_results",
         "base",
         "admission",
+        "release_payloads",
     ):
         if key not in pred:
             raise RuntimeError(f"{path}: qualifying predicate missing key '{key}'")
@@ -870,6 +871,16 @@ def load() -> dict[str, Any]:
     ):
         if key not in pred["admission"]:
             raise RuntimeError(f"{path}: qualifying predicate missing admission.{key}")
+    payloads = pred["release_payloads"]
+    if (
+        not isinstance(payloads, dict)
+        or pred["require"]["release_builder"] not in payloads
+        or not all(isinstance(identity, dict) and identity for identity in payloads.values())
+    ):
+        raise RuntimeError(
+            f"{path}: qualifying predicate release_payloads must map each builder, "
+            "including require.release_builder, to a non-empty payload identity"
+        )
     return pred
 
 
@@ -879,6 +890,38 @@ def active() -> dict[str, Any]:
     if _ACTIVE is None:
         _ACTIVE = load()
     return _ACTIVE
+
+
+def _canonical_json(value: Any) -> str:
+    # Distinguishes JSON types that Python equality conflates (true == 1).
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def release_builder_of(row: Mapping[str, Any], pred: Mapping[str, Any]) -> str | None:
+    """The builder whose E2E payload a Hermit validate row executed, or None.
+
+    ``release_builder`` and ``e2e_payload`` are read together. A row with
+    neither field predates them and was a Cargo run. Otherwise the row names a
+    builder only when ``release_builder`` is a key of the predicate's
+    ``release_payloads`` and ``e2e_payload`` is exactly that builder's
+    identity. Every other shape names no builder, so no consumer may treat it
+    as Cargo evidence. ci-hub/lib/qualifying_receipt.rs mirrors this.
+    """
+    payloads = pred["release_payloads"]
+    has_builder = "release_builder" in row
+    has_payload = "e2e_payload" in row
+    if not has_builder and not has_payload:
+        return "cargo" if "cargo" in payloads else None
+    if not (has_builder and has_payload):
+        return None
+    builder = row["release_builder"]
+    if not isinstance(builder, str) or builder not in payloads:
+        return None
+    try:
+        payload = _canonical_json(row["e2e_payload"])
+    except ValueError:
+        return None
+    return builder if payload == _canonical_json(payloads[builder]) else None
 
 
 class CoverageVerdict(Enum):
@@ -2314,9 +2357,9 @@ def _row_qualification_without_class(
         return False, f"profile={row.get('profile')!r}"
     if row.get("selection_mode") != req["selection_mode"]:
         return False, f"selection_mode={row.get('selection_mode')!r}(1-hop)"
-    # A row without the field predates it and was a Cargo run; a present
-    # non-string value is not a builder.
-    if row.get("release_builder", "cargo") != req["release_builder"]:
+    # The builder is read from release_builder and e2e_payload together; a row
+    # with neither field predates them and was a Cargo run.
+    if release_builder_of(row, pred) != req["release_builder"]:
         return False, f"release_builder={row.get('release_builder')!r}"
     if row.get("result") != req["result"]:
         return False, f"result={row.get('result')!r}"

@@ -40,15 +40,16 @@ def test_truncated_and_zero_executed_rows_do_not_qualify() -> None:
 
 
 def test_non_cargo_release_payload_never_qualifies() -> None:
-    absent = _row("absent", "2026-08-04T10:00:00Z")
-    cargo = _row("cargo", "2026-08-04T10:01:00Z", release_builder="cargo")
-    assert [row["commit"] for row in qr.qualified_rows([absent, cargo])] == [
-        "absent",
-        "cargo",
-    ]
-    for builder in ("buck", None, 7, "Cargo"):
-        row = _row("other", "2026-08-04T10:02:00Z", release_builder=builder)
-        assert qr.qualified_rows([row]) == [], builder
+    # Only a row with neither field or the exact Cargo builder/payload pair is
+    # a Cargo measurement; a Buck row or an inconsistent pairing never is.
+    cases = json.loads(
+        (Path(__file__).resolve().parent / "fixtures" / "release-payload-cases.json").read_text()
+    )["cases"]
+    assert sum(case["expected"] is not None for case in cases) == 3
+    for case in cases:
+        row = _row("row", "2026-08-04T10:00:00Z", **case["fields"])
+        expected = [row] if case["expected"] == "cargo" else []
+        assert qr.qualified_rows([row]) == expected, case["label"]
 
 
 def test_missing_conditions_fail_closed() -> None:

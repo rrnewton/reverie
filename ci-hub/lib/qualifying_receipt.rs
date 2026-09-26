@@ -82,9 +82,9 @@ pub struct RequireClause {
     pub tree_dirty: bool,
     pub profile: String,
     pub selection_mode: String,
-    /// Builder whose E2E payload a qualifying green executed. A row without
-    /// the field predates it and was a Cargo run. The predicate file itself
-    /// must name the builder, as the Python loader requires.
+    /// Builder whose E2E payload a qualifying green executed, as
+    /// [`release_builder_of`] derives it. The predicate file itself must name
+    /// the builder, as the Python loader requires.
     pub release_builder: String,
     pub result: String,
     pub failures_max: u64,
@@ -303,6 +303,92 @@ pub struct QualifyingPredicate {
     /// predates the key still parses; the live file declares it explicitly.
     #[serde(default)]
     pub producer: ProducerClause,
+    /// Exact `e2e_payload` identity for each `release_builder`, mirroring
+    /// Hermit's `e2e_payload_identity`. Read through [`release_builder_of`].
+    pub release_payloads: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// The builder whose E2E payload a Hermit validate row executed, or `None`.
+///
+/// `release_builder` and `e2e_payload` are read together. A row with neither
+/// field predates them and was a Cargo run. Otherwise the row names a builder
+/// only when `release_builder` is a key of `release_payloads` and
+/// `e2e_payload` is exactly that builder's identity (`serde_json` equality
+/// keeps `true` distinct from `1`). Every other shape names no builder, so no
+/// consumer may treat it as Cargo evidence. `qualifying_receipt.py` mirrors
+/// this.
+pub fn release_builder_of<'p>(
+    extra: &std::collections::BTreeMap<String, serde_json::Value>,
+    pred: &'p QualifyingPredicate,
+) -> Option<&'p str> {
+    match (extra.get("release_builder"), extra.get("e2e_payload")) {
+        (None, None) => pred
+            .release_payloads
+            .get_key_value("cargo")
+            .map(|(builder, _)| builder.as_str()),
+        (Some(builder), Some(payload)) => pred
+            .release_payloads
+            .get_key_value(builder.as_str()?)
+            .filter(|(_, identity)| *identity == payload)
+            .map(|(builder, _)| builder.as_str()),
+        _ => None,
+    }
+}
+
+/// The builder/payload case table shared with the Python consumers' tests, so
+/// every consumer in both languages is checked against the same shapes.
+#[cfg(test)]
+pub(crate) mod release_payload_cases {
+    use serde_json::Value;
+    use std::collections::BTreeMap;
+
+    #[derive(serde::Deserialize)]
+    pub(crate) struct Case {
+        pub(crate) label: String,
+        fields: BTreeMap<String, Value>,
+        /// What [`super::release_builder_of`] must return.
+        pub(crate) expected: Option<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Table {
+        cases: Vec<Case>,
+    }
+
+    impl Case {
+        pub(crate) fn expected(&self) -> Option<&str> {
+            self.expected.as_deref()
+        }
+
+        pub(crate) fn apply(&self, extra: &mut BTreeMap<String, Value>) {
+            extra.remove("release_builder");
+            extra.remove("e2e_payload");
+            extra.extend(self.fields.clone());
+        }
+
+        /// [`Case::apply`] for a raw JSON row object.
+        pub(crate) fn apply_json(&self, raw: &mut Value) {
+            let row = raw.as_object_mut().expect("a JSON row object");
+            row.remove("release_builder");
+            row.remove("e2e_payload");
+            row.extend(self.fields.clone());
+        }
+    }
+
+    pub(crate) fn all() -> Vec<Case> {
+        let table: Table = serde_json::from_str(include_str!(
+            "../validate/tests/fixtures/release-payload-cases.json"
+        ))
+        .expect("release-payload-cases.json parses");
+        table.cases
+    }
+
+    pub(crate) fn buck() -> Case {
+        all()
+            .into_iter()
+            .find(|case| case.label == "consistent buck")
+            .expect("the table names a consistent buck case")
+    }
 }
 
 fn default_accepts_green_class() -> Vec<String> {
@@ -329,6 +415,16 @@ impl QualifyingPredicate {
                 COUNT_REPRESENTATION_SCHEMA_MIN,
                 COUNT_REPRESENTATION_FIELDS,
                 COUNT_REPRESENTATION_SIGNED_BITS,
+            ));
+        }
+        let payloads = &predicate.release_payloads;
+        if !payloads.contains_key(&predicate.require.release_builder)
+            || !payloads
+                .values()
+                .all(|identity| identity.as_object().is_some_and(|fields| !fields.is_empty()))
+        {
+            return Err(format!(
+                "{origin}: qualifying predicate release_payloads must map each builder, including require.release_builder, to a non-empty payload identity"
             ));
         }
         Ok(predicate)
@@ -1140,11 +1236,7 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
     if row.selection_mode.as_deref() != Some(req.selection_mode.as_str()) {
         return Qualification::refused("selection_mode");
     }
-    let release_builder = match row.extra.get("release_builder") {
-        None => Some("cargo"),
-        Some(value) => value.as_str(),
-    };
-    if release_builder != Some(req.release_builder.as_str()) {
+    if release_builder_of(&row.extra, pred) != Some(req.release_builder.as_str()) {
         return Qualification::refused("release_builder");
     }
     if row.result.as_deref() != Some(req.result.as_str()) {
@@ -1485,25 +1577,23 @@ mod tests {
         wrong_result.result = Some("failure".into());
         assert_eq!("result", refusal(&wrong_result));
 
-        // A Buck green executed the release payload; an explicit cargo row is
-        // the legacy row, and a present non-string value is not a builder.
-        let mut buck = good.clone();
-        buck.extra
-            .insert("release_builder".into(), serde_json::json!("buck"));
-        assert_eq!("release_builder", refusal(&buck));
-        let mut malformed_builder = good.clone();
-        malformed_builder
-            .extra
-            .insert("release_builder".into(), serde_json::Value::Null);
-        assert_eq!("release_builder", refusal(&malformed_builder));
-        let mut cargo = good.clone();
-        cargo
-            .extra
-            .insert("release_builder".into(), serde_json::json!("cargo"));
-        assert!(
-            row_qualifies(&cargo, &sha, &pred),
-            "an explicit cargo row must qualify"
-        );
+        // A Buck green executed the release payload. Only a row with neither
+        // field or the exact Cargo builder/payload pair names Cargo; every
+        // other pairing refuses on the same clause.
+        let with_payload_fields = |case: &release_payload_cases::Case| {
+            let mut row = good.clone();
+            case.apply(&mut row.extra);
+            row
+        };
+        for case in release_payload_cases::all() {
+            let row = with_payload_fields(&case);
+            if case.expected() == Some("cargo") {
+                assert!(row_qualifies(&row, &sha, &pred), "{} must qualify", case.label);
+            } else {
+                assert_eq!("release_builder", refusal(&row), "{}", case.label);
+            }
+        }
+        let buck = with_payload_fields(&release_payload_cases::buck());
 
         // THE POINT OF THE TEST, not an afterthought: the five causes must be
         // DISTINGUISHABLE. Asserting each string individually would still pass
@@ -1522,6 +1612,49 @@ mod tests {
             distinct.len(),
             "each clause needs its own cause: {causes:?}"
         );
+    }
+
+    #[test]
+    fn release_builder_of_reads_the_builder_and_payload_together() {
+        let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
+        let mut accepted = 0;
+        let mut refused = 0;
+        for case in release_payload_cases::all() {
+            let mut extra = std::collections::BTreeMap::new();
+            case.apply(&mut extra);
+            assert_eq!(case.expected(), release_builder_of(&extra, &pred), "{}", case.label);
+            match case.expected() {
+                Some(_) => accepted += 1,
+                None => refused += 1,
+            }
+        }
+        assert_eq!((3, 15), (accepted, refused), "the case table lost a case");
+    }
+
+    #[test]
+    fn a_predicate_must_name_the_required_builders_payload() {
+        let mut base: serde_json::Value = serde_json::from_str(EMBEDDED).unwrap();
+        base.as_object_mut().unwrap().retain(|key, _| !key.starts_with('_'));
+        let mut missing = base.clone();
+        missing.as_object_mut().unwrap().remove("release_payloads");
+        let mut no_cargo = base.clone();
+        no_cargo["release_payloads"].as_object_mut().unwrap().remove("cargo");
+        let mut empty_identity = base.clone();
+        empty_identity["release_payloads"]["cargo"] = serde_json::json!({});
+        let mut scalar_identity = base.clone();
+        scalar_identity["release_payloads"]["cargo"] = serde_json::json!("target/debug/hermit");
+        assert!(QualifyingPredicate::parse(&base.to_string(), "base").is_ok());
+        for (label, value) in [
+            ("missing release_payloads", missing),
+            ("no cargo identity", no_cargo),
+            ("empty cargo identity", empty_identity),
+            ("scalar cargo identity", scalar_identity),
+        ] {
+            assert!(
+                QualifyingPredicate::parse(&value.to_string(), label).is_err(),
+                "{label} must be refused"
+            );
+        }
     }
 
     #[test]

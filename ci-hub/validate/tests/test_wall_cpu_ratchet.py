@@ -35,6 +35,11 @@ def _row(commit, started, finished, wall, cpu, *, cache="warm", host="h1", profi
     }
 
 
+CASES = json.loads(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "fixtures", "release-payload-cases.json")).read())["cases"]
+BUCK = next(case["fields"] for case in CASES if case["label"] == "consistent buck")
+
+
 def _ts(day, hh, mm=0):
     return f"2026-08-{day:02d}T{hh:02d}:{mm:02d}:00Z"
 
@@ -139,7 +144,7 @@ class BuilderSeparation(unittest.TestCase):
             rows.append(_row(f"base{i}", _ts(3, i, 0), _ts(3, i, 8), 480 + (i % 3) * 5, 1100))
         for i in range(12):
             buck = _row(f"buck{i}", _ts(3, 12 + i, 0), _ts(3, 12 + i, 4), 200, 500)
-            buck["release_builder"] = "buck"
+            buck.update(BUCK)
             rows.append(buck)
         rows.append(_row("good", _ts(4, 1, 0), _ts(4, 1, 8), 495, 1120))
         runs = R.load_runs(_write(rows))
@@ -152,9 +157,20 @@ class BuilderSeparation(unittest.TestCase):
     def test_buck_run_still_counts_toward_concurrency(self):
         cargo = _row("cargo", _ts(4, 1, 0), _ts(4, 1, 10), 480, 1100)
         buck = _row("buck", _ts(4, 1, 5), _ts(4, 1, 15), 200, 500)
-        buck["release_builder"] = "buck"
+        buck.update(BUCK)
         runs = R.load_runs(_write([cargo, buck]))
         self.assertEqual([r.concurrency for r in runs], [2, 2])
+
+    def test_only_a_consistent_cargo_row_is_a_timing_sample(self):
+        # Neither field, or the exact Cargo builder/payload pair, times the
+        # Cargo debug binary; a Buck row or an inconsistent pairing does not.
+        self.assertEqual(3, sum(case["expected"] is not None for case in CASES))
+        for case in CASES:
+            with self.subTest(case=case["label"]):
+                row = _row("row", _ts(4, 1, 0), _ts(4, 1, 8), 480, 1100)
+                row.update(case["fields"])
+                (run,) = R.load_runs(_write([row]))
+                self.assertEqual(case["expected"] == "cargo", run.timed_pass)
 
 
 class Concurrency(unittest.TestCase):

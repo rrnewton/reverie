@@ -928,14 +928,21 @@ fn history_exclusion_reasons(row: &HistoryRow) -> Result<Vec<String>, String> {
     }
     // A Buck full run's E2E cells executed the release payload (no debug
     // assertions, no overflow checks). Publishing it as a cell's current result
-    // would present it as the Cargo debug evidence every other row is. An
-    // absent field predates it and was a Cargo run.
-    if row
-        .extra
-        .get("release_builder")
-        .is_some_and(|value| value.as_str() != Some("cargo"))
-    {
-        reasons.insert("validation HistoryRow ran a non-Cargo release payload".to_owned());
+    // would present it as the Cargo debug evidence every other row is. A row
+    // whose builder and payload disagree names no builder and is excluded too.
+    match crate::qualifying_receipt::release_builder_of(
+        &row.extra,
+        crate::qualifying_receipt::active(),
+    ) {
+        Some("cargo") => {}
+        Some(_) => {
+            reasons.insert("validation HistoryRow ran a non-Cargo release payload".to_owned());
+        }
+        None => {
+            reasons.insert(
+                "validation HistoryRow does not record a consistent release payload".to_owned(),
+            );
+        }
     }
     for (field, value) in [
         ("run_id", row.run_id.as_deref()),
@@ -3611,36 +3618,31 @@ mod tests {
 
     #[test]
     fn non_cargo_release_payload_rows_are_excluded_by_name() {
+        use crate::qualifying_receipt::release_payload_cases;
         const REASON: &str = "validation HistoryRow ran a non-Cargo release payload";
+        const INCONSISTENT: &str =
+            "validation HistoryRow does not record a consistent release payload";
         let commit = "c".repeat(40);
-        for (builder, excluded) in [
-            (None, false),
-            (Some(Value::from("cargo")), false),
-            (Some(Value::from("buck")), true),
-            (Some(Value::Null), true),
-            (Some(Value::from(7)), true),
-            (Some(Value::from("Cargo")), true),
-        ] {
-            let mut raw = history_row(7, "record-builder", "run-builder", &commit);
-            if let Some(builder) = &builder {
-                raw["release_builder"] = builder.clone();
-            }
+        let with_case = |mut raw: Value, case: &release_payload_cases::Case| {
+            case.apply_json(&mut raw);
+            raw
+        };
+        for case in release_payload_cases::all() {
+            let raw = with_case(history_row(7, "record-builder", "run-builder", &commit), &case);
             let row: HistoryRow = serde_json::from_value(raw).unwrap();
-            let expected: Vec<String> = if excluded {
-                vec![REASON.to_owned()]
-            } else {
-                Vec::new()
+            let expected: Vec<String> = match case.expected() {
+                Some("cargo") => Vec::new(),
+                Some(_) => vec![REASON.to_owned()],
+                None => vec![INCONSISTENT.to_owned()],
             };
-            assert_eq!(
-                history_exclusion_reasons(&row).unwrap(),
-                expected,
-                "release_builder={builder:?}"
-            );
+            assert_eq!(history_exclusion_reasons(&row).unwrap(), expected, "{}", case.label);
         }
 
         let cargo = history_row(7, "record-cargo", "run-cargo", &commit);
-        let mut buck = history_row(7, "record-buck", "run-buck", &commit);
-        buck["release_builder"] = Value::from("buck");
+        let mut buck = with_case(
+            history_row(7, "record-buck", "run-buck", &commit),
+            &release_payload_cases::buck(),
+        );
         buck["finished_at"] = Value::from("2026-09-02T00:02:00Z");
         let parsed = parse_jsonl::<HistoryRow>(&jsonl(&[cargo, buck]), "HistoryRow").unwrap();
         let projected = project_history(&parsed, None).unwrap();

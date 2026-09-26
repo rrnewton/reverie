@@ -1047,23 +1047,25 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
     def test_live_refuses_a_non_cargo_release_builder_unanimously(self) -> None:
         """A Buck run's E2E cells executed the release payload, which has no
         debug assertions or overflow checks, so its green is not the Cargo
-        debug-payload green this predicate certifies. Every consumer refuses a
-        release_builder that is not the string "cargo", and accepts an explicit
-        "cargo" exactly as it accepts the absent field older Cargo rows carry."""
-        cargo = _green_row(SHA)
-        cargo["release_builder"] = "cargo"
-        panel = self._panel(cargo, predicate=None)
-        self.assertTrue(all(panel.values()),
-                        f"an explicit cargo green must be accepted by every consumer: {panel}")
-        for builder in ("buck", None, 7, "Cargo"):
-            with self.subTest(release_builder=builder):
+        debug-payload green this predicate certifies. Every consumer accepts
+        exactly the rows naming Cargo -- neither field, as older Cargo rows
+        carry, or the exact Cargo builder/payload pair -- and refuses a Buck row
+        and every inconsistent builder/payload pairing."""
+        cases = json.loads(
+            (Path(__file__).resolve().parent / "fixtures" / "release-payload-cases.json").read_text()
+        )["cases"]
+        self.assertEqual(3, sum(case["expected"] is not None for case in cases))
+        for case in cases:
+            with self.subTest(case=case["label"]):
                 row = _green_row(SHA)
-                row["release_builder"] = builder
+                row.update(case["fields"])
                 panel = self._panel(row, predicate=None)
-                self.assertFalse(
-                    any(panel.values()),
-                    f"release_builder={builder!r} must be refused by every consumer: {panel}",
-                )
+                if case["expected"] == "cargo":
+                    self.assertTrue(all(panel.values()),
+                                    f"{case['label']} must be accepted by every consumer: {panel}")
+                else:
+                    self.assertFalse(any(panel.values()),
+                                     f"{case['label']} must be refused by every consumer: {panel}")
 
     def test_schema4_and_newer_passed_count_contract_directly(self) -> None:
         """Both shared predicates use one reason for every current-row defect."""

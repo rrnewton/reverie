@@ -16,7 +16,22 @@
     ],
     "signed_bits": 64
   },
-  "_release_builder_names_the_tested_binary": "A Hermit validate row records release_builder (cargo or buck) and e2e_payload. In Buck mode every E2E cell ran the release target/ci/hermit-strict, without debug assertions or overflow checks, not the debug target/debug/hermit a full-suite receipt certifies. Such a green is supplemental evidence and never qualifies. A row without the field predates it and was a Cargo run. A present non-string value refuses. Only the PASS predicate reads this: a Buck red is still a red for the known-failure paths.",
+  "_release_builder_names_the_tested_binary": "A Hermit validate row records release_builder (cargo or buck) and e2e_payload. In Buck mode every E2E cell ran the release target/ci/hermit-strict, without debug assertions or overflow checks, not the debug target/debug/hermit a full-suite receipt certifies. Such a green is supplemental evidence and never qualifies. The two fields are read together: a row names a builder only when release_builder is one of the release_payloads keys and e2e_payload is exactly that builder's identity (JSON types included, so true is not 1). A row with neither field predates them and was a Cargo run. Every other combination names no builder and is not Cargo evidence: one field without the other, a non-string or unknown builder, or a payload that disagrees with its builder, such as release_builder cargo beside the Buck payload. Only the PASS predicate reads this: a Buck red is still a red for the known-failure paths.",
+  "_release_payloads_mirror_hermit": "Exact copies of e2e_payload_identity in hermit scripts/validate.rs, which writes both fields on every validate row. A change there must change these entries in the same landing.",
+  "release_payloads": {
+    "cargo": {
+      "path": "target/debug/hermit",
+      "profile": "debug",
+      "debug_assertions": true,
+      "overflow_checks": true
+    },
+    "buck": {
+      "path": "target/ci/hermit-strict",
+      "profile": "release",
+      "debug_assertions": false,
+      "overflow_checks": false
+    }
+  },
   "require": {
     "commit_anchored": true,
     "tree_dirty": false,

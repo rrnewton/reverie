@@ -911,11 +911,12 @@ where
         // assertions, no overflow checks) is not the debug evidence an
         // obligation asks for. Its failures still latch an obligation, but its
         // clean legs and unavailable comparisons neither discharge one nor count
-        // toward one. An absent field predates it and was a Cargo run.
-        let cargo_payload = row
-            .extra
-            .get("release_builder")
-            .is_none_or(|value| value.as_str() == Some("cargo"));
+        // toward one. A row whose builder and payload disagree names no
+        // builder and is treated the same way.
+        let cargo_payload = crate::qualifying_receipt::release_builder_of(
+            &row.extra,
+            crate::qualifying_receipt::active(),
+        ) == Some("cargo");
         let run_id = row
             .run_id
             .as_deref()
@@ -1812,10 +1813,15 @@ mod tests {
         assert_eq!(obligations[0].observed_clean_legs_at_target, 2);
     }
 
-    fn with_release_builder(mut row: HistoryRow, builder: serde_json::Value) -> HistoryRow {
-        row.extra.insert("release_builder".into(), builder);
+    fn with_payload_case(
+        mut row: HistoryRow,
+        case: &crate::qualifying_receipt::release_payload_cases::Case,
+    ) -> HistoryRow {
+        case.apply(&mut row.extra);
         row
     }
+
+    use crate::qualifying_receipt::release_payload_cases;
 
     #[test]
     fn non_cargo_clean_runs_cannot_discharge_an_obligation() {
@@ -1827,41 +1833,35 @@ mod tests {
         }
         let required = required_clean_legs(1, 10).unwrap();
         let clean_runs = required.div_ceil(2);
-        let with_clean = |builder: Option<serde_json::Value>| {
+        let with_clean = |case: &release_payload_cases::Case| {
             let mut rows = failing.clone();
             for ordinal in 0..clean_runs {
                 let clean = uncalibrated_row(FIX, 100 + ordinal, true);
-                rows.push(match &builder {
-                    Some(builder) => with_release_builder(clean, builder.clone()),
-                    None => clean,
-                });
+                rows.push(with_payload_case(clean, case));
             }
             rows
         };
 
-        for builder in [None, Some(serde_json::json!("cargo"))] {
-            assert!(
-                evaluate(&with_clean(builder.clone()), FIX)
-                    .unwrap()
-                    .is_empty(),
-                "release_builder={builder:?} must discharge the obligation"
-            );
-        }
-        for builder in [
-            serde_json::json!("buck"),
-            serde_json::Value::Null,
-            serde_json::json!(7),
-            serde_json::json!("Cargo"),
-        ] {
-            let obligations = evaluate(&with_clean(Some(builder.clone())), FIX).unwrap();
-            assert_eq!(obligations.len(), 1, "release_builder={builder}");
-            assert_eq!(obligations[0].required_clean_legs, required);
-            assert_eq!(obligations[0].observed_clean_legs_at_target, 0);
+        // Only a row with neither field or the exact Cargo builder/payload
+        // pair discharges; every inconsistent pairing is not Cargo evidence.
+        for case in release_payload_cases::all() {
+            let obligations = evaluate(&with_clean(&case), FIX).unwrap();
+            if case.expected() == Some("cargo") {
+                assert!(
+                    obligations.is_empty(),
+                    "{} must discharge the obligation",
+                    case.label
+                );
+            } else {
+                assert_eq!(obligations.len(), 1, "{}", case.label);
+                assert_eq!(obligations[0].required_clean_legs, required);
+                assert_eq!(obligations[0].observed_clean_legs_at_target, 0);
+            }
         }
 
         // Cargo red, then a Buck clean run, then a Cargo clean run: only the
         // Cargo run discharges it.
-        let mut rows = with_clean(Some(serde_json::json!("buck")));
+        let mut rows = with_clean(&release_payload_cases::buck());
         for ordinal in 0..clean_runs {
             rows.push(uncalibrated_row(FIX, 200 + ordinal, true));
         }
@@ -1870,8 +1870,10 @@ mod tests {
 
     #[test]
     fn non_cargo_failure_still_latches_an_obligation() {
-        let buck_red =
-            with_release_builder(uncalibrated_row(BAD, 1, false), serde_json::json!("buck"));
+        let buck_red = with_payload_case(
+            uncalibrated_row(BAD, 1, false),
+            &release_payload_cases::buck(),
+        );
         let obligations = evaluate(&[buck_red, uncalibrated_row(FIX, 2, true)], FIX).unwrap();
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations[0].failing_commit, BAD);

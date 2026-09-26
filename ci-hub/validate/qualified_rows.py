@@ -67,10 +67,10 @@ def is_qualified(row: Mapping[str, object]) -> bool:
     green_class, _green_reason = derive_class(dict(row))
     # A Buck full run times the release E2E payload (no debug assertions, no
     # overflow checks), not the Cargo debug binary every other green measures.
-    # An absent field predates it and was a Cargo run.
+    # release_builder_of reads the builder and payload together.
     return (
         green_class == HARD
-        and row.get("release_builder", "cargo") == "cargo"
+        and qualifying_receipt.release_builder_of(row, qualifying_receipt.active()) == "cargo"
         and row.get("result") == "pass"
         and isinstance(executed, int)
         and not isinstance(executed, bool)
