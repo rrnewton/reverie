@@ -6,6 +6,7 @@ authors = ["Meta Platforms"]
 edition = "2024"
 repository = "https://github.com/facebookexperimental/reverie"
 license = "BSD-2-Clause"
+build = "build.rs"
 
 [features]
 default = []
@@ -23,3 +24,6 @@ thiserror = "2.0.18"
 
 [dev-dependencies]
 serde = { version = "1.0.219", features = ["derive"] }
+
+[build-dependencies]
+cc = "1.5.1"

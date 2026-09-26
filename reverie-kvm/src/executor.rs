@@ -435,6 +435,27 @@ fn execute_basic_syscall_with_output(
     current_user_stack_pointer: Option<u64>,
     output: Option<&mut CapturedOutput>,
 ) -> SyscallAction {
+    execute_basic_syscall_with_read_context(
+        memory,
+        state,
+        request,
+        current_user_stack_pointer,
+        output,
+        None,
+    )
+}
+
+fn execute_basic_syscall_with_read_context(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    request: &SyscallRequest,
+    current_user_stack_pointer: Option<u64>,
+    output: Option<&mut CapturedOutput>,
+    terminal_read: Option<(
+        &mut crate::terminal_read::ReadContext,
+        reverie::SignalTaskIdentity,
+    )>,
+) -> SyscallAction {
     let mutates_layout = matches!(request.number(), number if
         number == libc::SYS_brk as u64 || number == libc::SYS_mmap as u64
         || number == libc::SYS_mremap as u64 || number == libc::SYS_munmap as u64
@@ -446,6 +467,7 @@ fn execute_basic_syscall_with_output(
             request,
             current_user_stack_pointer,
             output,
+            terminal_read,
         );
     }
     let owner = memory.clone();
@@ -461,8 +483,14 @@ fn execute_basic_syscall_with_output(
     state.mmap_base = cursors.mmap_base;
     state.mmap_next = cursors.mmap_next;
     state.mmap_limit = cursors.mmap_limit;
-    let action =
-        execute_basic_syscall_inner(memory, state, request, current_user_stack_pointer, output);
+    let action = execute_basic_syscall_inner(
+        memory,
+        state,
+        request,
+        current_user_stack_pointer,
+        output,
+        terminal_read,
+    );
     owner.set_allocation_cursors(AllocationCursors::from_elf(state));
     action
 }
@@ -473,6 +501,10 @@ fn execute_basic_syscall_inner(
     request: &SyscallRequest,
     current_user_stack_pointer: Option<u64>,
     output: Option<&mut CapturedOutput>,
+    terminal_read: Option<(
+        &mut crate::terminal_read::ReadContext,
+        reverie::SignalTaskIdentity,
+    )>,
 ) -> SyscallAction {
     let args = request.args();
     let number = request.number();
@@ -536,7 +568,10 @@ fn execute_basic_syscall_inner(
     let result = if number == libc::SYS_write as u64 {
         write(memory, state, args, output)
     } else if number == libc::SYS_read as u64 {
-        read(memory, state, args)
+        match read(memory, state, request, terminal_read) {
+            Ok(result) => result,
+            Err(error) => return SyscallAction::Failure(error),
+        }
     } else if number == libc::SYS_writev as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         vectored_io(memory, state, args, libc::SYS_writev, output)
@@ -5201,6 +5236,24 @@ impl ElfExecutor {
         request: &SyscallRequest,
         memory: &GuestMemory,
     ) -> crate::Result<i64> {
+        self.execute_checked_inner(request, memory, None)
+    }
+
+    pub(crate) fn execute_checked_with_read_context(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+        terminal_read: &mut crate::terminal_read::ReadContext,
+    ) -> crate::Result<i64> {
+        self.execute_checked_inner(request, memory, Some(terminal_read))
+    }
+
+    fn execute_checked_inner(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+        terminal_read: Option<&mut crate::terminal_read::ReadContext>,
+    ) -> crate::Result<i64> {
         #[cfg(test)]
         memory.observe_test_syscall_dispatch(request);
         if let Some(child_pid) = self.state.consumed_child_wait {
@@ -5254,12 +5307,14 @@ impl ElfExecutor {
             && request.args()[0] as libc::c_int == libc::SIGCHLD
             && request.args()[1] != 0)
             .then(|| installed_signal_action(&self.state, libc::SIGCHLD));
-        let action = execute_basic_syscall_with_output(
+        let identity = self.admitted_signal_identity();
+        let action = execute_basic_syscall_with_read_context(
             &mut memory,
             &mut self.state,
             request,
             self.current_user_stack_pointer,
             self.output.as_mut(),
+            terminal_read.map(|context| (context, identity)),
         );
         if let Some(before) = sigchld_action_before {
             let after = installed_signal_action(&self.state, libc::SIGCHLD);
@@ -5726,22 +5781,33 @@ fn host_write(fd: RawFd, bytes: &[u8]) -> i64 {
     }
 }
 
-fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -> i64 {
+fn prepare_host_read(memory: &GuestMemory, address: u64, length: usize) -> Result<Vec<u8>, i64> {
     if !range_is_valid(memory, address, length as u64) {
-        return negative_errno(libc::EFAULT);
+        return Err(negative_errno(libc::EFAULT));
     }
     let Ok(writable) = memory.user().user_accessible_prefix(address, length) else {
-        return negative_errno(libc::EFAULT);
+        return Err(negative_errno(libc::EFAULT));
     };
     if writable == 0 && length != 0 {
-        return negative_errno(libc::EFAULT);
+        return Err(negative_errno(libc::EFAULT));
     }
-    let mut bytes = vec![0; writable];
+    Ok(vec![0; writable])
+}
+
+fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -> i64 {
+    let mut bytes = match prepare_host_read(memory, address, length) {
+        Ok(bytes) => bytes,
+        Err(error) => return error,
+    };
     // SAFETY: bytes is writable for its full length and fd is a live host descriptor.
     let count = unsafe { libc::read(fd, bytes.as_mut_ptr().cast::<libc::c_void>(), bytes.len()) };
     if count < 0 {
         return io_error(std::io::Error::last_os_error());
     }
+    finish_host_read(memory, address, &bytes, count)
+}
+
+fn finish_host_read(memory: &mut GuestMemory, address: u64, bytes: &[u8], count: isize) -> i64 {
     let count = count as usize;
     if count == 0 {
         return 0;
@@ -5889,51 +5955,83 @@ fn random_device_read(
     Ok(copied as i64)
 }
 
-fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn read(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    request: &SyscallRequest,
+    terminal_read: Option<(
+        &mut crate::terminal_read::ReadContext,
+        reverie::SignalTaskIdentity,
+    )>,
+) -> crate::Result<i64> {
+    let args = request.args();
     // Linux consumes only the low 32-bit descriptor word.
     let fd = args[0] as libc::c_int;
     if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
-        return description.read(memory, args, false);
+        return Ok(description.read(memory, args, false));
     }
     let Ok(requested_length) = usize::try_from(args[2]) else {
-        return negative_errno(libc::EINVAL);
+        return Ok(negative_errno(libc::EINVAL));
     };
     let length = requested_length.min(MAX_HOST_IO);
     if is_open_standard(state, fd) {
         if fd != libc::STDIN_FILENO {
-            return negative_errno(libc::EBADF);
+            return Ok(negative_errno(libc::EBADF));
         }
         let Some(stdin) = state.stdin.as_ref() else {
-            return negative_errno(libc::EBADF);
+            return Ok(negative_errno(libc::EBADF));
         };
         if let Err(error) = ensure_read_capable(stdin) {
-            return error;
+            return Ok(error);
         }
         if !range_is_valid(memory, args[1], args[2]) {
-            return negative_errno(libc::EFAULT);
+            return Ok(negative_errno(libc::EFAULT));
         }
-        return host_read(memory, stdin.as_raw_fd(), args[1], length);
+        if length == 0
+            && let Some((context, identity)) = terminal_read
+        {
+            // Preserve host_read's complete preflight and its empty Vec's
+            // actual staging pointer. The C reader receives these scalar host
+            // arguments, never the original guest numeric pointer.
+            let mut bytes = match prepare_host_read(memory, args[1], length) {
+                Ok(bytes) => bytes,
+                Err(error) => return Ok(error),
+            };
+            let returned = context.read(
+                &mut state.stdin,
+                identity,
+                *request,
+                bytes.as_mut_ptr() as usize,
+                bytes.len(),
+            )?;
+            return Ok(if returned.count < 0 {
+                io_error(std::io::Error::from_raw_os_error(returned.errno))
+            } else {
+                finish_host_read(memory, args[1], &bytes, returned.count)
+            });
+        }
+        return Ok(host_read(memory, stdin.as_raw_fd(), args[1], length));
     }
     let Some(file) = state.files.get(&fd) else {
-        return negative_errno(libc::EBADF);
+        return Ok(negative_errno(libc::EBADF));
     };
     if let Err(error) = ensure_read_capable(file) {
-        return error;
+        return Ok(error);
     }
     if let Err(error) = ensure_readable(file) {
-        return error;
+        return Ok(error);
     }
     let host_fd = file.as_raw_fd();
     if let Some(result) = signalfd_read(memory, state, fd, args[1], requested_length) {
-        return result;
+        return Ok(result);
     }
     if !range_is_valid(memory, args[1], args[2]) {
-        return negative_errno(libc::EFAULT);
+        return Ok(negative_errno(libc::EFAULT));
     }
     if requested_length == 0 {
-        return 0;
+        return Ok(0);
     }
-    host_read(memory, host_fd, args[1], length)
+    Ok(host_read(memory, host_fd, args[1], length))
 }
 
 fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {

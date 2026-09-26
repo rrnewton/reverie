@@ -696,7 +696,9 @@ where
             self.process_context = ProcessExecutionContext::InitialExecCompleted;
             return Ok(0);
         }
-        let result = self.executor.execute_checked(request, memory)?;
+        let result = self
+            .backend
+            .execute_static_elf_syscall(self.executor, request, memory)?;
         self.last_result = Some(result);
         self.polled_read_attempt = Some((*request, result));
         Ok(result)
@@ -1460,6 +1462,12 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         self.admit_ordinary_operation().await;
         let raw = match self.executor.execute(&request, &self.memory) {
             Ok(raw) => raw,
+            Err(Error::TerminalReadCancelled) => {
+                // Reuse the existing nonreturning cancellation disposition,
+                // including parked/dequeue ownership. No syscall result or
+                // signal-effect wrapper may be manufactured for this read.
+                match self.cancel_current_thread().await {}
+            }
             Err(error) => {
                 let error = self.executor.with_signal_effects(error, None);
                 self.signal_handler(HandlerSignal::RuntimeError(error));
@@ -5610,9 +5618,13 @@ impl KvmBackend {
                     executor.reserve_signal_effects(64).map_err(|errno| {
                         executor.with_signal_effects(Error::Reverie(errno.into()), None)
                     })?;
-                    let raw = executor
-                        .execute_checked(&request, &memory)
-                        .map_err(|error| executor.with_signal_effects(error, None))?;
+                    let raw = match self.execute_static_elf_syscall(executor, &request, &memory) {
+                        Ok(raw) => raw,
+                        Err(Error::TerminalReadCancelled) => {
+                            return Ok(self.cancelled_tool_thread_status(executor));
+                        }
+                        Err(error) => return Err(executor.with_signal_effects(error, None)),
+                    };
                     flush_pending_signal_effects_with_tool(
                         self,
                         executor,
