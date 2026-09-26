@@ -309,27 +309,18 @@ struct QuarantineExpected {
     test_results: serde_json::Value,
 }
 
-/// The row identity one allowlisted lost run carries.
+/// One allowlisted lost run as the tracked file states it: its `run.result`
+/// event, split into the envelope and the recorded row, and the one marker a
+/// correction of that row may carry.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct QuarantineRowIdentity {
-    record_id: String,
-    run_id: String,
-    commit: String,
-    host: String,
-    repo: String,
-    finished_at: String,
-    schema_version: u32,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct QuarantineEntry {
+struct QuarantineEntryFile {
     ledger_shard: String,
     event_id: String,
     team: String,
-    row: QuarantineRowIdentity,
-    marker: QuarantineMarker,
+    envelope: serde_json::Map<String, serde_json::Value>,
+    lost_row: serde_json::Map<String, serde_json::Value>,
+    marker: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -338,15 +329,140 @@ struct QuarantineAllowlist {
     #[serde(rename = "_comment")]
     _comment: Vec<String>,
     schema: String,
-    entries: Vec<QuarantineEntry>,
+    entries: Vec<QuarantineEntryFile>,
 }
 
-pub const QUARANTINE_ALLOWLIST_SCHEMA: &str = "retained-evidence-quarantine-allowlist/v1";
+/// One allowlisted lost run, checked once when the allowlist is first read.
+#[derive(Debug)]
+struct QuarantineEntry {
+    event_id: String,
+    marker: QuarantineMarker,
+    /// The only row that may carry `marker`: `lost_row` with result
+    /// `no_result`, source `reconstructed` and the marker, in the `HistoryRow`
+    /// form every Rust consumer reads.
+    corrected: serde_json::Value,
+    /// The top-level fields the ledger records relative to the workspace, as
+    /// `(field, suffix after the workspace token)`.
+    rendered: Vec<(String, String)>,
+}
+
+/// The token a ledger row records in place of the writer's workspace root.
+/// The row projection renders it to the reader's root.
+const WORKSPACE_TOKEN: &str = "{{WORKSPACE_ROOT}}";
+
+/// The fields of `lost` that carry the workspace token, or None when the
+/// token appears anywhere but at the start of a top-level string.
+fn workspace_rendered_fields(
+    lost: &serde_json::Map<String, serde_json::Value>,
+) -> Option<Vec<(String, String)>> {
+    let mut rendered = Vec::new();
+    for (key, value) in lost {
+        match value
+            .as_str()
+            .and_then(|text| text.strip_prefix(WORKSPACE_TOKEN))
+        {
+            Some(suffix) if !suffix.contains(WORKSPACE_TOKEN) => {
+                rendered.push((key.clone(), suffix.to_owned()))
+            }
+            Some(_) => return None,
+            None if value.to_string().contains(WORKSPACE_TOKEN) => return None,
+            None => {}
+        }
+    }
+    Some(rendered)
+}
+
+/// Undo one workspace rendering: every field the lost row records relative to
+/// the workspace must carry the same non-empty root before its recorded
+/// suffix, and is returned to the token. Only that root may differ.
+fn unrender_workspace(row: &mut serde_json::Value, rendered: &[(String, String)]) -> Option<()> {
+    let object = row.as_object_mut()?;
+    let mut root: Option<String> = None;
+    for (key, suffix) in rendered {
+        let text = object.get(key)?.as_str()?;
+        let prefix = text.strip_suffix(suffix.as_str())?;
+        if prefix.is_empty() || root.as_deref().is_some_and(|root| root != prefix) {
+            return None;
+        }
+        root = Some(prefix.to_owned());
+        object.insert(
+            key.clone(),
+            serde_json::json!(format!("{WORKSPACE_TOKEN}{suffix}")),
+        );
+    }
+    Some(())
+}
+
+pub const QUARANTINE_ALLOWLIST_SCHEMA: &str = "retained-evidence-quarantine-allowlist/v2";
+
+/// Check one tracked entry before any row is judged against it. The recorded
+/// row must be the raw pass the quarantine names, carry no correction yet, and
+/// repeat the marker's artifact references; its correction must read as a
+/// schema-10 row with well-formed references.
+fn quarantine_entry(file: QuarantineEntryFile) -> Option<QuarantineEntry> {
+    let marker: QuarantineMarker = serde_json::from_value(file.marker.clone()).ok()?;
+    let lost = &file.lost_row;
+    let envelope = &file.envelope;
+    let str_of = |map: &serde_json::Map<String, serde_json::Value>, key: &str| {
+        map.get(key)
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+    };
+    let consistent = marker.schema == QUARANTINE_SCHEMA
+        && marker.reason == QUARANTINE_REASON
+        && marker.original_event_id == file.event_id
+        && !file.event_id.is_empty()
+        && !file.ledger_shard.is_empty()
+        && !file.team.is_empty()
+        && str_of(lost, "record_id").as_deref() == Some(file.event_id.as_str())
+        && lost.get("schema_version") == Some(&serde_json::json!(10))
+        && str_of(lost, "result").as_deref() == Some("pass")
+        && str_of(lost, "raw_result").as_deref() == Some("pass")
+        && !lost.contains_key("source")
+        && !lost.contains_key(QUARANTINE_KEY)
+        && lost.get("constructed_plan") == Some(&marker.expected.constructed_plan)
+        && lost
+            .get("cell_results")
+            .and_then(|value| value.get("artifact"))
+            == Some(&marker.expected.cell_results)
+        && lost
+            .get("test_results")
+            .and_then(|value| value.get("artifact"))
+            == Some(&marker.expected.test_results)
+        && !envelope.contains_key("legacy_row")
+        && str_of(envelope, "event_id").as_deref() == Some(file.event_id.as_str())
+        && str_of(envelope, "event_type").as_deref() == Some("run.result")
+        && str_of(envelope, "team").as_deref() == Some(file.team.as_str())
+        && ["run_id", "commit", "host"].iter().all(|key| {
+            str_of(envelope, key).is_some() && str_of(envelope, key) == str_of(lost, key)
+        });
+    if !consistent {
+        return None;
+    }
+    let rendered = workspace_rendered_fields(lost)?;
+    let mut corrected = lost.clone();
+    corrected.insert("result".to_string(), serde_json::json!("no_result"));
+    corrected.insert("source".to_string(), serde_json::json!("reconstructed"));
+    corrected.insert(QUARANTINE_KEY.to_string(), file.marker);
+    let row: HistoryRow = serde_json::from_value(serde_json::Value::Object(corrected)).ok()?;
+    if !matches!(row.constructed_plan_artifact(), Ok(Some(_)))
+        || !matches!(row.schema10_cell_results(), Ok(Some(_)))
+    {
+        return None;
+    }
+    Some(QuarantineEntry {
+        corrected: serde_json::to_value(&row).ok()?,
+        rendered,
+        event_id: file.event_id,
+        marker,
+    })
+}
 
 /// The closed set of lost runs a quarantine may name, read from the tracked
 /// `ci-hub/validate/retained-evidence-quarantine.json` compiled into this
 /// binary. A marker is not evidence of loss by itself: any row can author
-/// one, so only a marker equal to an entry here is honoured.
+/// one, so only a marker equal to an entry here is honoured, and only on that
+/// entry's exact corrected row.
 fn quarantine_allowlist() -> Result<&'static [QuarantineEntry], String> {
     static ALLOWLIST: std::sync::OnceLock<Result<Vec<QuarantineEntry>, String>> =
         std::sync::OnceLock::new();
@@ -355,24 +471,30 @@ fn quarantine_allowlist() -> Result<&'static [QuarantineEntry], String> {
             let parsed: QuarantineAllowlist = serde_json::from_str(include_str!(
                 "../validate/retained-evidence-quarantine.json"
             ))
-            .map_err(|error| format!("retained evidence quarantine allowlist is malformed: {error}"))?;
-            let consistent = parsed.schema == QUARANTINE_ALLOWLIST_SCHEMA
-                && parsed.entries.iter().all(|entry| {
-                    entry.marker.schema == QUARANTINE_SCHEMA
-                        && entry.marker.reason == QUARANTINE_REASON
-                        && entry.marker.original_event_id == entry.event_id
-                        && entry.row.record_id == entry.event_id
-                        && entry.row.schema_version == 10
-                        && !entry.ledger_shard.is_empty()
-                        && !entry.team.is_empty()
-                });
-            let mut ids: Vec<&str> = parsed.entries.iter().map(|entry| entry.event_id.as_str()).collect();
+            .map_err(|error| {
+                format!("retained evidence quarantine allowlist is malformed: {error}")
+            })?;
+            let inconsistent =
+                || "retained evidence quarantine allowlist is inconsistent".to_string();
+            if parsed.schema != QUARANTINE_ALLOWLIST_SCHEMA {
+                return Err(inconsistent());
+            }
+            let entries = parsed
+                .entries
+                .into_iter()
+                .map(quarantine_entry)
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(inconsistent)?;
+            let mut ids: Vec<&str> = entries
+                .iter()
+                .map(|entry| entry.event_id.as_str())
+                .collect();
             ids.sort_unstable();
             ids.dedup();
-            if !consistent || ids.len() != parsed.entries.len() {
-                return Err("retained evidence quarantine allowlist is inconsistent".to_string());
+            if ids.len() != entries.len() {
+                return Err(inconsistent());
             }
-            Ok(parsed.entries)
+            Ok(entries)
         })
         .as_deref()
         .map_err(Clone::clone)
@@ -381,15 +503,24 @@ fn quarantine_allowlist() -> Result<&'static [QuarantineEntry], String> {
 /// Judge a quarantine marker from the row alone, before any file is opened.
 ///
 /// The marker must equal one allowlisted lost run's marker exactly, and the
-/// row must carry that run's identity, still name the three artifact
-/// references the marker binds, and be a reconstructed non-green row. Anything
-/// else refuses, including a marker a row wrote for itself. It never returns a
-/// verified outcome, and a row without the marker never reaches here, so an
-/// unmarked missing file stays a reader fault.
+/// row must be that run's recorded row in every field except result
+/// `no_result`, source `reconstructed` and the marker itself. The comparison
+/// is over the `HistoryRow` form, so a profile, count, selection mode,
+/// timing, artifact reference or any other field the row changes refuses.
+/// The one exception is the workspace root the row projection renders into
+/// the fields the ledger records relative to it: those fields must share one
+/// root before their recorded suffixes.
+/// Anything else refuses too, including a marker a row wrote for itself. It
+/// never returns a verified outcome, and a row without the marker never
+/// reaches here, so an unmarked missing file stays a reader fault.
 fn quarantine_outcome(row: &HistoryRow, marker: &serde_json::Value) -> EvidenceOutcome {
     let marker: QuarantineMarker = match serde_json::from_value(marker.clone()) {
         Ok(value) => value,
-        Err(error) => return refused(format!("retained evidence quarantine is malformed: {error}")),
+        Err(error) => {
+            return refused(format!(
+                "retained evidence quarantine is malformed: {error}"
+            ))
+        }
     };
     let allowlist = match quarantine_allowlist() {
         Ok(entries) => entries,
@@ -398,17 +529,6 @@ fn quarantine_outcome(row: &HistoryRow, marker: &serde_json::Value) -> EvidenceO
     let Some(entry) = allowlist.iter().find(|entry| entry.marker == marker) else {
         return refused("retained evidence quarantine names no allowlisted lost run");
     };
-    let identity = &entry.row;
-    if row.extra.get("record_id").and_then(|value| value.as_str()) != Some(identity.record_id.as_str())
-        || row.run_id.as_deref() != Some(identity.run_id.as_str())
-        || row.commit.as_deref() != Some(identity.commit.as_str())
-        || row.host.as_deref() != Some(identity.host.as_str())
-        || row.repo.as_deref() != Some(identity.repo.as_str())
-        || row.finished_at.as_deref() != Some(identity.finished_at.as_str())
-        || row.schema_version != Some(identity.schema_version)
-    {
-        return refused("retained evidence quarantine is carried by a row other than its lost run");
-    }
     if row.result.as_deref() != Some("no_result")
         || row.extra.get("raw_result").and_then(|value| value.as_str()) != Some("pass")
         || row.source.as_deref() != Some("reconstructed")
@@ -417,36 +537,17 @@ fn quarantine_outcome(row: &HistoryRow, marker: &serde_json::Value) -> EvidenceO
             "retained evidence quarantine requires a reconstructed no_result row over raw_result pass",
         );
     }
-    // The row's own references must still be well-formed before they can be
-    // compared; the marker may only repeat them, never replace them.
-    match (row.constructed_plan_artifact(), row.schema10_cell_results()) {
-        (Ok(Some(_)), Ok(Some(_))) => {}
-        (Err(error), _) | (_, Err(error)) => {
-            return refused(format!(
-                "retained evidence quarantine row has malformed artifact references: {error}"
-            ))
-        }
-        _ => return refused("retained evidence quarantine row has malformed artifact references"),
-    }
-    let test_results = serde_json::to_value(&row.test_results).ok();
-    let actual = [
-        row.extra.get("constructed_plan").cloned(),
-        serde_json::to_value(&row.cell_results)
-            .ok()
-            .and_then(|value| value.get("artifact").cloned()),
-        test_results.and_then(|value| value.get("artifact").cloned()),
-    ];
-    let expected = [
-        &entry.marker.expected.constructed_plan,
-        &entry.marker.expected.cell_results,
-        &entry.marker.expected.test_results,
-    ];
-    if actual.iter().zip(expected).any(|(actual, expected)| actual.as_ref() != Some(expected)) {
-        return refused("retained evidence quarantine differs from the row's artifact references");
-    }
-    EvidenceOutcome::Quarantined {
-        original_event_id: entry.event_id.clone(),
-        reason: entry.marker.reason.clone(),
+    let actual = serde_json::to_value(row)
+        .ok()
+        .and_then(|mut actual| unrender_workspace(&mut actual, &entry.rendered).map(|()| actual));
+    match actual {
+        Some(actual) if actual == entry.corrected => EvidenceOutcome::Quarantined {
+            original_event_id: entry.event_id.clone(),
+            reason: entry.marker.reason.clone(),
+        },
+        _ => refused(
+            "retained evidence quarantine row differs from its lost run beyond result, source and the allowlisted marker",
+        ),
     }
 }
 
@@ -932,7 +1033,8 @@ mod tests {
     use super::*;
     use crate::records::ComparisonRelationV10;
     use fixtures::{
-        allowlisted, lost_run, self_quarantined, Fixture, Store, LOST_COMMIT, LOST_V2_A, LOST_V2_B,
+        allowlisted, lost_run, recorded_lost_row, self_quarantined, Fixture, Store, LOST_COMMIT,
+        LOST_V2_A, LOST_V2_B,
     };
     use serde_json::json;
 
@@ -1626,48 +1728,265 @@ mod tests {
     #[test]
     fn schema10_quarantine_allowlist_names_exactly_the_two_lost_runs() {
         let entries = quarantine_allowlist().expect("the tracked allowlist is consistent");
-        let named: Vec<(&str, &str)> = entries
+        let named: Vec<(&str, String)> = entries
             .iter()
-            .map(|entry| (entry.event_id.as_str(), entry.row.run_id.as_str()))
+            .map(|entry| {
+                (
+                    entry.event_id.as_str(),
+                    allowlisted(&entry.event_id)["lost_row"]["run_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned(),
+                )
+            })
             .collect();
         assert_eq!(
             named,
             [
-                (LOST_V2_B, "validate-cpu-ordinary-cells-20260922-v2-b"),
-                (LOST_V2_A, "validate-cpu-ordinary-cells-20260922-v2-a"),
+                (
+                    LOST_V2_B,
+                    "validate-cpu-ordinary-cells-20260922-v2-b".to_owned()
+                ),
+                (
+                    LOST_V2_A,
+                    "validate-cpu-ordinary-cells-20260922-v2-a".to_owned()
+                ),
             ]
         );
-        for entry in entries {
-            assert_eq!(entry.row.commit, LOST_COMMIT);
-            assert_eq!(entry.row.host, "devbig014");
-            assert_eq!(entry.team, "hermit");
-            assert_eq!(entry.ledger_shard, "ledger/hermit/devbig014/2026-09.jsonl");
-        }
-        // Every entry repeats its ledger event byte for byte.
+        // Every entry repeats its ledger event whole: the envelope is the event
+        // without its row, and lost_row is the recorded row, field for field.
         let shard = include_str!("../../ledger/hermit/devbig014/2026-09.jsonl");
         for entry in entries {
-            let event: serde_json::Value = shard
+            let raw = allowlisted(&entry.event_id);
+            assert_eq!(raw["team"], "hermit");
+            assert_eq!(raw["ledger_shard"], "ledger/hermit/devbig014/2026-09.jsonl");
+            let events: Vec<serde_json::Value> = shard
                 .lines()
                 .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-                .find(|event| event["event_id"] == entry.event_id.as_str())
-                .expect("the lost run's event is in its shard");
-            let legacy = &event["legacy_row"];
-            assert_eq!(event["event_type"], "run.result");
-            assert_eq!(event["team"], entry.team.as_str());
-            for (key, value) in [
-                ("record_id", json!(entry.row.record_id)),
-                ("run_id", json!(entry.row.run_id)),
-                ("commit", json!(entry.row.commit)),
-                ("host", json!(entry.row.host)),
-                ("repo", json!(entry.row.repo)),
-                ("finished_at", json!(entry.row.finished_at)),
-                ("schema_version", json!(entry.row.schema_version)),
-            ] {
-                assert_eq!(legacy[key], value, "{} {key}", entry.event_id);
+                .filter(|event| event["event_id"] == entry.event_id.as_str())
+                .collect();
+            assert_eq!(events.len(), 1, "{} has one event", entry.event_id);
+            let mut event = events[0].clone();
+            let legacy = event.as_object_mut().unwrap().remove("legacy_row").unwrap();
+            assert_eq!(raw["envelope"], event, "{} envelope", entry.event_id);
+            assert_eq!(raw["lost_row"], legacy, "{} lost_row", entry.event_id);
+            assert_eq!(legacy["commit"], LOST_COMMIT);
+            assert_eq!(legacy["host"], "devbig014");
+            assert_eq!(legacy.as_object().unwrap().len(), 78);
+            // The one row that may carry the marker is the fixture's correction.
+            let corrected: HistoryRow = serde_json::from_value(lost_run(&entry.event_id)).unwrap();
+            assert_eq!(entry.corrected, serde_json::to_value(&corrected).unwrap());
+        }
+    }
+
+    #[test]
+    fn schema10_quarantine_allowlist_refuses_an_entry_that_is_not_its_recorded_lost_run() {
+        let file = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut raw = allowlisted(LOST_V2_B);
+            edit(&mut raw);
+            quarantine_entry(serde_json::from_value(raw).unwrap())
+        };
+        assert!(file(&|_| {}).is_some());
+        let edits: Vec<(&str, Box<dyn Fn(&mut serde_json::Value)>)> = vec![
+            (
+                "recorded row already non-green",
+                Box::new(|v| v["lost_row"]["result"] = json!("no_result")),
+            ),
+            (
+                "recorded raw result not pass",
+                Box::new(|v| v["lost_row"]["raw_result"] = json!("fail")),
+            ),
+            (
+                "recorded row names a source",
+                Box::new(|v| v["lost_row"]["source"] = json!("observed")),
+            ),
+            (
+                "recorded row already marked",
+                Box::new(|v| v["lost_row"][QUARANTINE_KEY] = json!({})),
+            ),
+            (
+                "recorded row another record",
+                Box::new(|v| v["lost_row"]["record_id"] = json!(LOST_V2_A)),
+            ),
+            (
+                "recorded row another schema",
+                Box::new(|v| v["lost_row"]["schema_version"] = json!(9)),
+            ),
+            (
+                "recorded plan differs from marker",
+                Box::new(|v| v["lost_row"]["constructed_plan"]["bytes"] = json!(1)),
+            ),
+            (
+                "recorded cells differ from marker",
+                Box::new(|v| v["lost_row"]["cell_results"]["artifact"]["row_count"] = json!(3)),
+            ),
+            (
+                "recorded tests differ from marker",
+                Box::new(|v| {
+                    v["lost_row"]["test_results"]["artifact"]["sha256"] = json!("0".repeat(64))
+                }),
+            ),
+            (
+                "marker names another event",
+                Box::new(|v| v["marker"]["original_event_id"] = json!(LOST_V2_A)),
+            ),
+            (
+                "marker is malformed",
+                Box::new(|v| v["marker"]["scope"] = json!("all")),
+            ),
+            (
+                "envelope carries a row",
+                Box::new(|v| v["envelope"]["legacy_row"] = json!({})),
+            ),
+            (
+                "envelope another event",
+                Box::new(|v| v["envelope"]["event_id"] = json!(LOST_V2_A)),
+            ),
+            (
+                "envelope another type",
+                Box::new(|v| v["envelope"]["event_type"] = json!("run.correct")),
+            ),
+            (
+                "envelope another team",
+                Box::new(|v| v["envelope"]["team"] = json!("reverie")),
+            ),
+            (
+                "envelope another run",
+                Box::new(|v| v["envelope"]["run_id"] = json!("other")),
+            ),
+            (
+                "envelope another commit",
+                Box::new(|v| v["envelope"]["commit"] = json!("0".repeat(40))),
+            ),
+            (
+                "envelope another host",
+                Box::new(|v| v["envelope"]["host"] = json!("devbig030")),
+            ),
+        ];
+        for (name, edit) in edits {
+            assert!(
+                file(&*edit).is_none(),
+                "{name} must make the allowlist inconsistent"
+            );
+        }
+    }
+
+    #[test]
+    fn schema10_quarantine_admits_only_one_rendered_workspace_root() {
+        let store = Store::new();
+        let exact = lost_run(LOST_V2_B);
+        let render = |value: &serde_json::Value, cwd_root: &str, log_root: &str| {
+            let mut value = value.clone();
+            for (key, root) in [("cwd", cwd_root), ("log_file", log_root)] {
+                let text = value[key].as_str().unwrap().replace(WORKSPACE_TOKEN, root);
+                value[key] = json!(text);
             }
-            assert_eq!(legacy["constructed_plan"], entry.marker.expected.constructed_plan);
-            assert_eq!(legacy["cell_results"]["artifact"], entry.marker.expected.cell_results);
-            assert_eq!(legacy["test_results"]["artifact"], entry.marker.expected.test_results);
+            value
+        };
+        // The row projection renders the token to the reader's root.
+        assert!(matches!(
+            outcome_of(
+                &store,
+                &render(
+                    &exact,
+                    "/home/reader/work/dev-hermit",
+                    "/home/reader/work/dev-hermit"
+                )
+            ),
+            EvidenceOutcome::Quarantined { .. }
+        ));
+        for (name, value) in [
+            ("two roots", render(&exact, "/a", "/b")),
+            ("empty root", render(&exact, "", "")),
+            ("rendered log only", render(&exact, WORKSPACE_TOKEN, "/a")),
+        ] {
+            assert!(
+                matches!(outcome_of(&store, &value), EvidenceOutcome::Refused { .. }),
+                "{name} must refuse"
+            );
+        }
+        let mut suffix = render(&exact, "/a", "/a");
+        suffix["cwd"] = json!("/a/worktrees/slots/another/hermit");
+        assert!(matches!(
+            outcome_of(&store, &suffix),
+            EvidenceOutcome::Refused { .. }
+        ));
+        let mut token_elsewhere = allowlisted(LOST_V2_B)["lost_row"]
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            workspace_rendered_fields(&token_elsewhere).unwrap().len(),
+            2,
+            "cwd and log_file are the lost rows' workspace-relative fields"
+        );
+        token_elsewhere.insert("branch".into(), json!(format!("x{WORKSPACE_TOKEN}")));
+        assert!(workspace_rendered_fields(&token_elsewhere).is_none());
+        token_elsewhere.remove("branch");
+        token_elsewhere.insert("coverage".into(), json!({"path": WORKSPACE_TOKEN}));
+        assert!(workspace_rendered_fields(&token_elsewhere).is_none());
+    }
+
+    #[test]
+    fn schema10_each_lost_run_has_exactly_its_appended_quarantine_correction() {
+        // Each lost run has one append-only run.correct event in its tracked
+        // shard, and the row it supersedes with is exactly the canonical
+        // projection: the recorded row with the corrected result and source
+        // and the allowlisted marker. That row is quarantined. The recorded
+        // raw pass itself is unchanged in the timeline and, read alone, is
+        // still a reader fault; the marker on it without the correction's
+        // result and source refuses.
+        let store = Store::new();
+        let shard = include_str!("../../ledger/hermit/devbig014/2026-09.jsonl");
+        for event_id in [LOST_V2_B, LOST_V2_A] {
+            let recorded_event = shard
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .find(|event| event["event_id"] == event_id && event["event_type"] == "run.result")
+                .expect("the lost run's event is in its shard");
+            let corrections: Vec<serde_json::Value> = shard
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .filter(|event| event["supersedes"] == event_id)
+                .collect();
+            assert_eq!(
+                corrections.len(),
+                1,
+                "{event_id} has exactly one correction"
+            );
+            let correction = &corrections[0];
+            assert_eq!(correction["event_type"], "run.correct");
+            assert_eq!(correction["schema"], "validate-ledger/v1");
+            assert_eq!(correction["event_id"], format!("{event_id}-quarantine"));
+            assert_eq!(correction["reason"], "retained evidence lost");
+            assert_eq!(
+                correction["producer"],
+                serde_json::json!({"source": "reconstructed", "tool": "validate_rows.py", "tool_version": "1"})
+            );
+            for key in ["run_id", "team", "host"] {
+                assert_eq!(correction[key], recorded_event[key], "{event_id} {key}");
+            }
+            assert_eq!(correction["legacy_row"], lost_run(event_id));
+            assert!(matches!(
+                outcome_of(&store, &correction["legacy_row"]),
+                EvidenceOutcome::Quarantined { original_event_id, reason }
+                if original_event_id == event_id && reason == QUARANTINE_REASON
+            ));
+
+            let recorded = recorded_lost_row(event_id);
+            assert_eq!(recorded, recorded_event["legacy_row"]);
+            assert_eq!(recorded["result"], "pass");
+            assert!(recorded.get(QUARANTINE_KEY).is_none());
+            assert!(matches!(
+                outcome_of(&store, &recorded),
+                EvidenceOutcome::ReaderFault { .. }
+            ));
+            let mut marked = recorded.clone();
+            marked[QUARANTINE_KEY] = allowlisted(event_id)["marker"].clone();
+            assert!(matches!(
+                outcome_of(&store, &marked),
+                EvidenceOutcome::Refused { .. }
+            ));
         }
     }
 
@@ -1711,9 +2030,15 @@ mod tests {
         let mut refusals: Vec<(&str, serde_json::Value)> = Vec::new();
         // A readable row that writes its own self-consistent marker. Every
         // field it states agrees with the row, and no allowlist entry names it.
-        refusals.push(("self-authored marker", self_quarantined(&row, "forged-event")));
+        refusals.push((
+            "self-authored marker",
+            self_quarantined(&row, "forged-event"),
+        ));
         // The same, claiming a real lost event's id from another run's row.
-        refusals.push(("self-authored marker naming a lost event", self_quarantined(&row, LOST_V2_B)));
+        refusals.push((
+            "self-authored marker naming a lost event",
+            self_quarantined(&row, LOST_V2_B),
+        ));
         // The exact allowlisted marker copied onto another run's row.
         let mut borrowed = self_quarantined(&row, LOST_V2_B);
         borrowed[QUARANTINE_KEY] = allowlisted(LOST_V2_B)["marker"].clone();
@@ -1727,9 +2052,15 @@ mod tests {
             edit(&mut value);
             refusals.push((name, value));
         };
-        push("marker is not an object", &|v: &mut serde_json::Value| v[QUARANTINE_KEY] = json!("lost"));
-        push("marker is null", &|v: &mut serde_json::Value| v[QUARANTINE_KEY] = serde_json::Value::Null);
-        push("unknown marker field", &|v: &mut serde_json::Value| v[QUARANTINE_KEY]["scope"] = json!("all"));
+        push("marker is not an object", &|v: &mut serde_json::Value| {
+            v[QUARANTINE_KEY] = json!("lost")
+        });
+        push("marker is null", &|v: &mut serde_json::Value| {
+            v[QUARANTINE_KEY] = serde_json::Value::Null
+        });
+        push("unknown marker field", &|v: &mut serde_json::Value| {
+            v[QUARANTINE_KEY]["scope"] = json!("all")
+        });
         push("unknown expected field", &|v: &mut serde_json::Value| {
             v[QUARANTINE_KEY]["expected"]["log"] = json!({})
         });
@@ -1740,7 +2071,10 @@ mod tests {
         }
         for field in ["constructed_plan", "cell_results", "test_results"] {
             push(field, &move |v: &mut serde_json::Value| {
-                v[QUARANTINE_KEY]["expected"].as_object_mut().unwrap().remove(field);
+                v[QUARANTINE_KEY]["expected"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field);
             });
             push(field, &move |v: &mut serde_json::Value| {
                 v[QUARANTINE_KEY]["expected"][field]["sha256"] = json!("0".repeat(64));
@@ -1749,26 +2083,95 @@ mod tests {
         push("other schema", &|v: &mut serde_json::Value| {
             v[QUARANTINE_KEY]["schema"] = json!("retained-evidence-quarantine/v2")
         });
-        push("other reason", &|v: &mut serde_json::Value| v[QUARANTINE_KEY]["reason"] = json!("flaky host"));
+        push("other reason", &|v: &mut serde_json::Value| {
+            v[QUARANTINE_KEY]["reason"] = json!("flaky host")
+        });
         push("branched record", &|v: &mut serde_json::Value| {
             v[QUARANTINE_KEY]["original_event_id"] = json!(LOST_V2_A)
         });
         push("row names no record", &|v: &mut serde_json::Value| {
             v.as_object_mut().unwrap().remove("record_id");
         });
-        push("row names another record", &|v: &mut serde_json::Value| v["record_id"] = json!(LOST_V2_A));
-        push("another commit", &|v: &mut serde_json::Value| v["commit"] = json!("0".repeat(40)));
-        push("another host", &|v: &mut serde_json::Value| v["host"] = json!("devbig030"));
-        push("another repo", &|v: &mut serde_json::Value| v["repo"] = json!("reverie"));
-        push("another finish", &|v: &mut serde_json::Value| v["finished_at"] = json!("2026-09-22T04:47:40Z"));
-        push("pass result", &|v: &mut serde_json::Value| v["result"] = json!("pass"));
-        push("fail result", &|v: &mut serde_json::Value| v["result"] = json!("fail"));
-        push("raw result is not pass", &|v: &mut serde_json::Value| v["raw_result"] = json!("fail"));
+        push("row names another record", &|v: &mut serde_json::Value| {
+            v["record_id"] = json!(LOST_V2_A)
+        });
+        push("another commit", &|v: &mut serde_json::Value| {
+            v["commit"] = json!("0".repeat(40))
+        });
+        push("another host", &|v: &mut serde_json::Value| {
+            v["host"] = json!("devbig030")
+        });
+        push("another repo", &|v: &mut serde_json::Value| {
+            v["repo"] = json!("reverie")
+        });
+        push("another finish", &|v: &mut serde_json::Value| {
+            v["finished_at"] = json!("2026-09-22T04:47:40Z")
+        });
+        push("pass result", &|v: &mut serde_json::Value| {
+            v["result"] = json!("pass")
+        });
+        push("fail result", &|v: &mut serde_json::Value| {
+            v["result"] = json!("fail")
+        });
+        push("raw result is not pass", &|v: &mut serde_json::Value| {
+            v["raw_result"] = json!("fail")
+        });
         push("raw result absent", &|v: &mut serde_json::Value| {
             v.as_object_mut().unwrap().remove("raw_result");
         });
-        push("observed source", &|v: &mut serde_json::Value| v["source"] = json!("observed"));
-        push("source absent", &|v: &mut serde_json::Value| v["source"] = serde_json::Value::Null);
+        push("observed source", &|v: &mut serde_json::Value| {
+            v["source"] = json!("observed")
+        });
+        push("source absent", &|v: &mut serde_json::Value| {
+            v["source"] = serde_json::Value::Null
+        });
+        // Every field of the recorded row is bound, not only its identity:
+        // a verdict-relevant or provenance field the row changes refuses.
+        push("another profile", &|v: &mut serde_json::Value| {
+            v["profile"] = json!("full")
+        });
+        push("another passed count", &|v: &mut serde_json::Value| {
+            v["passed_tests"] = json!(3)
+        });
+        push("passed count absent", &|v: &mut serde_json::Value| {
+            v.as_object_mut().unwrap().remove("passed_tests");
+        });
+        push("another selection mode", &|v: &mut serde_json::Value| {
+            v["selection_mode"] = json!("full")
+        });
+        push("another executed count", &|v: &mut serde_json::Value| {
+            v["executed_tests"] = json!(3)
+        });
+        push("another exit code", &|v: &mut serde_json::Value| {
+            v["exit_code"] = json!(1)
+        });
+        push("another start", &|v: &mut serde_json::Value| {
+            v["started_at"] = json!("2026-09-22T04:00:00Z")
+        });
+        push("another run id", &|v: &mut serde_json::Value| {
+            v["run_id"] = json!("validate-cpu-ordinary-cells-20260922-v2-c")
+        });
+        push("another tree", &|v: &mut serde_json::Value| {
+            v["tree"] = json!("0".repeat(40))
+        });
+        push("another admission", &|v: &mut serde_json::Value| {
+            v["admission"] = json!({})
+        });
+        push("another producer", &|v: &mut serde_json::Value| {
+            v["producer"] = json!({"source": "observed", "tool": "forged"})
+        });
+        push("another real time", &|v: &mut serde_json::Value| {
+            v["real_seconds"] = json!(1.5)
+        });
+        push("another cell outcome", &|v: &mut serde_json::Value| {
+            v["cell_results"]["forged"] = json!(true)
+        });
+        push("added field", &|v: &mut serde_json::Value| {
+            v["full_coverage"] = json!(true)
+        });
+        push("removed field", &|v: &mut serde_json::Value| {
+            v.as_object_mut().unwrap().remove("branch");
+        });
         push("other plan reference", &|v: &mut serde_json::Value| {
             v["constructed_plan"]["sha256"] = json!("0".repeat(64));
         });
@@ -1795,14 +2198,23 @@ mod tests {
     fn schema10_quarantine_crosses_the_batch_transport_as_its_own_status() {
         let store = Store::new();
         let exact = serde_json::to_string(&lost_run(LOST_V2_A)).unwrap();
-        let forged = serde_json::to_string(&self_quarantined(&store.exact("matched"), "forged-event")).unwrap();
+        let forged =
+            serde_json::to_string(&self_quarantined(&store.exact("matched"), "forged-event"))
+                .unwrap();
         let mut input = Vec::new();
         for row in [&exact, &forged] {
             serde_json::to_writer(&mut input, &json!({"row_json": row})).unwrap();
             input.push(b'\n');
         }
         let mut output = Vec::new();
-        run_batch_io(&store.0, io::Cursor::new(input), &mut output, 1 << 20, 4 << 20).unwrap();
+        run_batch_io(
+            &store.0,
+            io::Cursor::new(input),
+            &mut output,
+            1 << 20,
+            4 << 20,
+        )
+        .unwrap();
         let reports: Vec<serde_json::Value> = output
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())

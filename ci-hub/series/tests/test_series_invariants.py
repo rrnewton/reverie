@@ -5637,6 +5637,19 @@ class CellResultProjection(unittest.TestCase):
         with self.assertRaises(series.MalformedRow):
             self._project([self._cell(0, outcome="SOMETHING_NEW")])
 
+    def test_cell_outcome_refuses_unhashable_or_untyped_enum_values(self):
+        # A list or object is unhashable: membership in a closed enum would raise
+        # a raw TypeError. Every such value is a row refusal instead.
+        for field in ("outcome", "result", "failure_class"):
+            for value in (["PASS"], {"PASS": True}, 1, True):
+                with self.subTest(field=field, value=value):
+                    cell = self._cell(0, outcome="PASS")
+                    cell[field] = value
+                    with self.assertRaises(series.MalformedRow):
+                        series._cell_outcome(cell)
+                    with self.assertRaises(series.MalformedRow):
+                        self._project([cell])
+
     def test_cell_outcome_refuses_unknown_or_missing_mode(self):
         for mode in ("unknown", None):
             for outcome in ("PASS", "FAIL"):

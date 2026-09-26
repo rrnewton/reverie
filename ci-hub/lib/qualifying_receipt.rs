@@ -354,16 +354,19 @@ pub(crate) fn is_utc_timestamp(ts: &str) -> bool {
 /// Every other shape names no builder, so no consumer may treat it as Cargo
 /// evidence. `qualifying_receipt.py` mirrors this.
 pub fn release_builder_of<'p>(row: &HistoryRow, pred: &'p QualifyingPredicate) -> Option<&'p str> {
-    match (row.extra.get("release_builder"), row.extra.get("e2e_payload")) {
+    match (
+        row.extra.get("release_builder"),
+        row.extra.get("e2e_payload"),
+    ) {
         (None, None) => {
             let cargo = pred
                 .release_payloads
                 .get_key_value("cargo")
                 .map(|(builder, _)| builder.as_str())?;
-            if !row
-                .schema_version
-                .is_some_and(|schema| pred.release_builder_pairless_schema_versions.contains(&schema))
-            {
+            if !row.schema_version.is_some_and(|schema| {
+                pred.release_builder_pairless_schema_versions
+                    .contains(&schema)
+            }) {
                 return None;
             }
             let repo = row.repo.as_deref();
@@ -450,7 +453,9 @@ pub(crate) mod release_payload_cases {
                                     .as_u64()
                                     .and_then(|schema| u32::try_from(schema).ok())
                                     .unwrap_or_else(|| {
-                                        panic!("fixture schema_version must be a u32 or null, not {other}")
+                                        panic!(
+                                        "fixture schema_version must be a u32 or null, not {other}"
+                                    )
                                     }),
                             ),
                         }
@@ -488,6 +493,41 @@ pub(crate) mod release_payload_cases {
             .find(|case| case.label == "consistent buck")
             .expect("the table names a consistent buck case")
     }
+
+    impl Case {
+        /// Whether the case sets or removes `schema_version`. Those cases
+        /// bracket `release_builder_pairless_schema_versions` through
+        /// [`super::release_builder_of`] directly; a consumer fixture built for
+        /// one schema is not a valid row at another, so consumer tests skip
+        /// them and count the skips.
+        pub(crate) fn sets_schema(&self) -> bool {
+            self.fields.contains_key("schema_version")
+                || self.absent.iter().any(|key| key == "schema_version")
+        }
+    }
+
+    /// The number of cases [`Case::sets_schema`] selects.
+    pub(crate) const SCHEMA_CASES: usize = 14;
+
+    /// The embedded predicate's Cargo builder and payload, which a writer of a
+    /// schema outside the pairless list records explicitly.
+    fn cargo_pair() -> (Value, Value) {
+        let predicate: Value = serde_json::from_str(super::EMBEDDED).unwrap();
+        let payload = predicate["release_payloads"]["cargo"].clone();
+        assert!(
+            payload.is_object(),
+            "the embedded predicate names a Cargo payload"
+        );
+        (Value::from("cargo"), payload)
+    }
+
+    /// Records the Cargo pair on a raw fixture row.
+    pub(crate) fn name_cargo_json(raw: &mut Value) {
+        let (builder, payload) = cargo_pair();
+        let row = raw.as_object_mut().expect("a JSON row object");
+        row.insert("release_builder".into(), builder);
+        row.insert("e2e_payload".into(), payload);
+    }
 }
 
 fn default_accepts_green_class() -> Vec<String> {
@@ -518,9 +558,11 @@ impl QualifyingPredicate {
         }
         let payloads = &predicate.release_payloads;
         if !payloads.contains_key(&predicate.require.release_builder)
-            || !payloads
-                .values()
-                .all(|identity| identity.as_object().is_some_and(|fields| !fields.is_empty()))
+            || !payloads.values().all(|identity| {
+                identity
+                    .as_object()
+                    .is_some_and(|fields| !fields.is_empty())
+            })
         {
             return Err(format!(
                 "{origin}: qualifying predicate release_payloads must map each builder, including require.release_builder, to a non-empty payload identity"
@@ -534,7 +576,11 @@ impl QualifyingPredicate {
         let schemas = &predicate.release_builder_pairless_schema_versions;
         if schemas.is_empty()
             || schemas.contains(&0)
-            || schemas.iter().collect::<std::collections::BTreeSet<_>>().len() != schemas.len()
+            || schemas
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != schemas.len()
         {
             return Err(format!(
                 "{origin}: qualifying predicate release_builder_pairless_schema_versions must be a non-empty list of distinct positive integers"
@@ -1614,6 +1660,8 @@ mod tests {
         ))
         .unwrap();
         value["schema_version"] = serde_json::json!(8);
+        // Schema 8 is not a pairless schema, so its writer names the builder.
+        release_payload_cases::name_cargo_json(&mut value);
         value["run_id"] = serde_json::json!("schema8-order");
         value["cell_results"] = serde_json::json!({
             "path": path,
@@ -1700,14 +1748,24 @@ mod tests {
             case.apply(&mut row);
             row
         };
+        let mut schema_cases = 0;
         for case in release_payload_cases::all() {
+            if case.sets_schema() {
+                schema_cases += 1;
+                continue;
+            }
             let row = with_payload_fields(&case);
             if case.expected() == Some("cargo") {
-                assert!(row_qualifies(&row, &sha, &pred), "{} must qualify", case.label);
+                assert!(
+                    row_qualifies(&row, &sha, &pred),
+                    "{} must qualify",
+                    case.label
+                );
             } else {
                 assert_eq!("release_builder", refusal(&row), "{}", case.label);
             }
         }
+        assert_eq!(release_payload_cases::SCHEMA_CASES, schema_cases);
         let buck = with_payload_fields(&release_payload_cases::buck());
 
         // THE POINT OF THE TEST, not an afterthought: the five causes must be
@@ -1735,25 +1793,43 @@ mod tests {
         let mut accepted = 0;
         let mut refused = 0;
         for case in release_payload_cases::all() {
-            let mut row: HistoryRow = serde_json::from_str("{}").unwrap();
+            // A pairless schema, so only the cases that move it test the list.
+            let mut row: HistoryRow = serde_json::from_str(r#"{"schema_version": 10}"#).unwrap();
             case.apply(&mut row);
-            assert_eq!(case.expected(), release_builder_of(&row, &pred), "{}", case.label);
+            assert_eq!(
+                case.expected(),
+                release_builder_of(&row, &pred),
+                "{}",
+                case.label
+            );
             match case.expected() {
                 Some(_) => accepted += 1,
                 None => refused += 1,
             }
         }
-        assert_eq!((7, 30), (accepted, refused), "the case table lost a case");
+        assert_eq!((11, 40), (accepted, refused), "the case table lost a case");
+        assert_eq!(
+            release_payload_cases::SCHEMA_CASES,
+            release_payload_cases::all()
+                .iter()
+                .filter(|case| case.sets_schema())
+                .count()
+        );
     }
 
     #[test]
     fn a_predicate_must_name_the_required_builders_payload() {
         let mut base: serde_json::Value = serde_json::from_str(EMBEDDED).unwrap();
-        base.as_object_mut().unwrap().retain(|key, _| !key.starts_with('_'));
+        base.as_object_mut()
+            .unwrap()
+            .retain(|key, _| !key.starts_with('_'));
         let mut missing = base.clone();
         missing.as_object_mut().unwrap().remove("release_payloads");
         let mut no_cargo = base.clone();
-        no_cargo["release_payloads"].as_object_mut().unwrap().remove("cargo");
+        no_cargo["release_payloads"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cargo");
         let mut empty_identity = base.clone();
         empty_identity["release_payloads"]["cargo"] = serde_json::json!({});
         let mut scalar_identity = base.clone();
@@ -1775,9 +1851,14 @@ mod tests {
     #[test]
     fn a_predicate_must_date_the_legacy_cargo_cutoff() {
         let mut base: serde_json::Value = serde_json::from_str(EMBEDDED).unwrap();
-        base.as_object_mut().unwrap().retain(|key, _| !key.starts_with('_'));
+        base.as_object_mut()
+            .unwrap()
+            .retain(|key, _| !key.starts_with('_'));
         let pred = QualifyingPredicate::parse(&base.to_string(), "base").unwrap();
-        assert_eq!("2026-09-25T20:42:29Z", pred.release_builder_required_from_finished_at);
+        assert_eq!(
+            "2026-09-25T20:42:29Z",
+            pred.release_builder_required_from_finished_at
+        );
         let mut missing = base.clone();
         missing
             .as_object_mut()
@@ -1788,11 +1869,26 @@ mod tests {
             ("null cutoff", serde_json::Value::Null),
             ("integer cutoff", serde_json::json!(1_790_000_000)),
             ("empty cutoff", serde_json::json!("")),
-            ("offset cutoff", serde_json::json!("2026-09-25T13:42:29-07:00")),
-            ("fractional cutoff", serde_json::json!("2026-09-25T20:42:29.0Z")),
-            ("impossible cutoff", serde_json::json!("2026-02-30T00:00:00Z")),
-            ("leap-second cutoff", serde_json::json!("2026-09-25T20:42:60Z")),
-            ("year-zero cutoff", serde_json::json!("0000-09-25T20:42:29Z")),
+            (
+                "offset cutoff",
+                serde_json::json!("2026-09-25T13:42:29-07:00"),
+            ),
+            (
+                "fractional cutoff",
+                serde_json::json!("2026-09-25T20:42:29.0Z"),
+            ),
+            (
+                "impossible cutoff",
+                serde_json::json!("2026-02-30T00:00:00Z"),
+            ),
+            (
+                "leap-second cutoff",
+                serde_json::json!("2026-09-25T20:42:60Z"),
+            ),
+            (
+                "year-zero cutoff",
+                serde_json::json!("0000-09-25T20:42:29Z"),
+            ),
         ] {
             let mut bad = base.clone();
             bad["release_builder_required_from_finished_at"] = value;

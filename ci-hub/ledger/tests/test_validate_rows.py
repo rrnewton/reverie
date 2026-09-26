@@ -3467,6 +3467,38 @@ def test_allowlisted_quarantine_corrections_project_as_non_green_rows(tmp_path: 
         }
 
 
+def test_tracked_shard_carries_exactly_the_canonical_quarantine_corrections(tmp_path: Path):
+    # The real shard holds one appended run.correct per lost run, equal to the
+    # canonical correction apart from when it was emitted, and projecting that
+    # whole shard quarantines exactly the two lost runs.
+    lost = quarantine_lost_events()
+    events = [
+        json.loads(line)
+        for line in QUARANTINE_SHARD.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    receipt = validate_rows.qualifying_receipt
+    for event in lost:
+        appended = [e for e in events if e.get("supersedes") == event["event_id"]]
+        assert len(appended) == 1
+        expected = quarantine_correction(event)
+        assert {k: v for k, v in appended[0].items() if k != "emitted_at"} == {
+            k: v for k, v in expected.items() if k != "emitted_at"
+        }
+        assert appended[0]["emitted_at"] > event["emitted_at"]
+    copy_path = tmp_path / "ledger" / "hermit" / "devbig014" / "2026-09.jsonl"
+    copy_path.parent.mkdir(parents=True)
+    copy_path.write_bytes(QUARANTINE_SHARD.read_bytes())
+    projected = validate_rows.rows(root=tmp_path)
+    quarantined = [row for row in projected if receipt.RETAINED_EVIDENCE_QUARANTINE_KEY in row]
+    assert sorted(row["record_id"] for row in quarantined) == sorted(e["event_id"] for e in lost)
+    for row in quarantined:
+        assert (row["result"], row["raw_result"], row["source"]) == (
+            "no_result", "pass", "reconstructed",
+        )
+        assert receipt.retained_evidence_quarantine_entry(row) is not None
+
+
 def _quarantine_variant(name: str, lost: list[dict]) -> list[dict]:
     receipt = validate_rows.qualifying_receipt
     key = receipt.RETAINED_EVIDENCE_QUARANTINE_KEY
@@ -3502,6 +3534,27 @@ def _quarantine_variant(name: str, lost: list[dict]) -> list[dict]:
         first = copy.deepcopy(first)
         first["legacy_row"]["commit"] = "b" * 40
         correction = quarantine_correction(first)
+    elif name == "changed-profile":
+        correction["legacy_row"]["profile"] = "full"
+    elif name == "changed-selection-mode":
+        correction["legacy_row"]["selection_mode"] = "full"
+    elif name == "dropped-passed-count":
+        del correction["legacy_row"]["passed_tests"]
+    elif name == "retyped-passed-count":
+        correction["legacy_row"]["passed_tests"] = float(correction["legacy_row"]["passed_tests"])
+    elif name == "boolean-exit-code":
+        # 0 == False in Python; the binding compares types, not equality.
+        correction["legacy_row"]["exit_code"] = False
+    elif name == "added-field":
+        correction["legacy_row"]["full_coverage"] = True
+    elif name == "lost-run-profile-altered":
+        # The lost run's own row is also bound, not only its identity fields.
+        first = copy.deepcopy(first)
+        first["legacy_row"]["profile"] = "full"
+        correction = quarantine_correction(first)
+    elif name == "lost-run-envelope-altered":
+        first = copy.deepcopy(first)
+        first["emitted_at"] = "2026-09-22T04:47:40Z"
     elif name == "lost-run-premarked":
         first = copy.deepcopy(first)
         first["legacy_row"][key] = copy.deepcopy(correction["legacy_row"][key])
@@ -3523,6 +3576,14 @@ def _quarantine_variant(name: str, lost: list[dict]) -> list[dict]:
     "retyped-schema",
     "lost-run-altered",
     "lost-run-premarked",
+    "changed-profile",
+    "changed-selection-mode",
+    "dropped-passed-count",
+    "retyped-passed-count",
+    "boolean-exit-code",
+    "added-field",
+    "lost-run-profile-altered",
+    "lost-run-envelope-altered",
 ])
 def test_quarantine_correction_other_than_the_allowlisted_one_is_refused(tmp_path: Path, name: str):
     write_events(tmp_path, *_quarantine_variant(name, quarantine_lost_events()))

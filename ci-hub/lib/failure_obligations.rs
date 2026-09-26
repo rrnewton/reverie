@@ -918,10 +918,9 @@ where
         // clean legs and unavailable comparisons neither discharge one nor count
         // toward one. A row whose builder and payload disagree names no
         // builder and is treated the same way.
-        let cargo_payload = crate::qualifying_receipt::release_builder_of(
-            row,
-            crate::qualifying_receipt::active(),
-        ) == Some("cargo");
+        let cargo_payload =
+            crate::qualifying_receipt::release_builder_of(row, crate::qualifying_receipt::active())
+                == Some("cargo");
         let run_id = row
             .run_id
             .as_deref()
@@ -1259,6 +1258,8 @@ mod tests {
     fn schema8_row(commit: &str, ordinal: u64, matched: bool, path: &str) -> HistoryRow {
         let mut value = serde_json::to_value(row(commit, ordinal, matched)).unwrap();
         value["schema_version"] = serde_json::json!(8);
+        // Schema 8 is not a pairless schema, so its writer names the builder.
+        crate::qualifying_receipt::release_payload_cases::name_cargo_json(&mut value);
         value["profile"] = serde_json::json!(path);
         value["selection_mode"] = serde_json::json!("full");
         value["cell_results"]["path"] = serde_json::json!(path);
@@ -1858,7 +1859,12 @@ mod tests {
 
         // Only a row with neither field or the exact Cargo builder/payload
         // pair discharges; every inconsistent pairing is not Cargo evidence.
+        let mut schema_cases = 0;
         for case in release_payload_cases::all() {
+            if case.sets_schema() {
+                schema_cases += 1;
+                continue;
+            }
             let obligations = evaluate(&with_clean(&case), FIX).unwrap();
             if case.expected() == Some("cargo") {
                 assert!(
@@ -1872,6 +1878,7 @@ mod tests {
                 assert_eq!(obligations[0].observed_clean_legs_at_target, 0);
             }
         }
+        assert_eq!(release_payload_cases::SCHEMA_CASES, schema_cases);
 
         // Cargo red, then a Buck clean run, then a Cargo clean run: only the
         // Cargo run discharges it.
@@ -2311,8 +2318,13 @@ mod tests {
         .enumerate()
         {
             readable.push(
-                Fixture::new("selected-attempt-v1/matched", run, LOST_COMMIT, ordinal as u64 + 16)
-                    .write(&store.0),
+                Fixture::new(
+                    "selected-attempt-v1/matched",
+                    run,
+                    LOST_COMMIT,
+                    ordinal as u64 + 16,
+                )
+                .write(&store.0),
             );
         }
         assert!(schema10_obligations_between(&readable, &store.0, BAD, LOST_COMMIT).is_empty());
@@ -2326,7 +2338,8 @@ mod tests {
         // Both runs keep the lost run's recorded finish, so the quarantine is
         // the only difference between them.
         let store = Store::new();
-        let mut clean = Fixture::new("selected-attempt-v1/matched", "clean", FIX, 2).write(&store.0);
+        let mut clean =
+            Fixture::new("selected-attempt-v1/matched", "clean", FIX, 2).write(&store.0);
         clean.finished_at = Some("2026-09-23T00:00:00Z".into());
         let mut diverged = Fixture::new(
             "cross-diverged-then-matched",
@@ -2369,10 +2382,7 @@ mod tests {
                 .write(&store.0)
             })
             .collect();
-        let lost_rows = vec![
-            lost(LOST_V2_B),
-            lost(LOST_V2_A),
-        ];
+        let lost_rows = vec![lost(LOST_V2_B), lost(LOST_V2_A)];
         let scan = |rows: &[HistoryRow]| {
             unresolved(
                 rows,
@@ -2409,7 +2419,10 @@ mod tests {
         for index in 0..2 {
             // Unmarked, each lost row is a global reader fault.
             let error = scan(&with(index, unmark(&lost_rows[index]))).unwrap_err();
-            assert!(error.contains("validation evidence reader fault"), "{error}");
+            assert!(
+                error.contains("validation evidence reader fault"),
+                "{error}"
+            );
             // A malformed marker is a refusal, and still fails the scan.
             let mut malformed = lost_rows[index].clone();
             malformed

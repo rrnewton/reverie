@@ -930,10 +930,7 @@ fn history_exclusion_reasons(row: &HistoryRow) -> Result<Vec<String>, String> {
     // assertions, no overflow checks). Publishing it as a cell's current result
     // would present it as the Cargo debug evidence every other row is. A row
     // whose builder and payload disagree names no builder and is excluded too.
-    match crate::qualifying_receipt::release_builder_of(
-        row,
-        crate::qualifying_receipt::active(),
-    ) {
+    match crate::qualifying_receipt::release_builder_of(row, crate::qualifying_receipt::active()) {
         Some("cargo") => {}
         Some(_) => {
             reasons.insert("validation HistoryRow ran a non-Cargo release payload".to_owned());
@@ -3304,6 +3301,22 @@ mod tests {
     }
 
     fn history_row(schema: u64, record_id: &str, run_id: &str, commit: &str) -> Value {
+        let mut row = history_row_without_builder(schema, record_id, run_id, commit);
+        // A writer of a schema outside the pairless list names the builder.
+        let pairless =
+            &crate::qualifying_receipt::active().release_builder_pairless_schema_versions;
+        if !u32::try_from(schema).is_ok_and(|schema| pairless.contains(&schema)) {
+            crate::qualifying_receipt::release_payload_cases::name_cargo_json(&mut row);
+        }
+        row
+    }
+
+    fn history_row_without_builder(
+        schema: u64,
+        record_id: &str,
+        run_id: &str,
+        commit: &str,
+    ) -> Value {
         serde_json::json!({
             "schema_version": schema,
             "record_id": record_id,
@@ -3591,8 +3604,7 @@ mod tests {
         ));
         // An allowlisted lost run shows unavailable, with the quarantine reason.
         use crate::validation_evidence::fixtures::{lost_run, self_quarantined, LOST_V2_B};
-        let quarantined: HistoryRow =
-            serde_json::from_value(lost_run(LOST_V2_B)).unwrap();
+        let quarantined: HistoryRow = serde_json::from_value(lost_run(LOST_V2_B)).unwrap();
         assert!(matches!(
             failure_obligations::cell_results_for_website_with(&quarantined, |row| verify(
                 row, &store.0
@@ -3652,8 +3664,16 @@ mod tests {
             case.apply_json(&mut raw);
             raw
         };
+        let mut schema_cases = 0;
         for case in release_payload_cases::all() {
-            let raw = with_case(history_row(7, "record-builder", "run-builder", &commit), &case);
+            if case.sets_schema() {
+                schema_cases += 1;
+                continue;
+            }
+            let raw = with_case(
+                history_row(7, "record-builder", "run-builder", &commit),
+                &case,
+            );
             let row: HistoryRow = serde_json::from_value(raw).unwrap();
             let expected: Vec<String> = match case.expected() {
                 Some("cargo") => Vec::new(),
@@ -3674,7 +3694,11 @@ mod tests {
             if !row_is_hermit(&row) {
                 others.push("validation HistoryRow is not a Hermit row");
             }
-            if row.finished_at.as_deref().is_none_or(|value| value.trim().is_empty()) {
+            if row
+                .finished_at
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+            {
                 others.push("validation HistoryRow omits finished_at");
             }
             let rest: Vec<&str> = reasons
@@ -3683,6 +3707,23 @@ mod tests {
                 .filter(|reason| ![REASON, INCONSISTENT].contains(reason))
                 .collect();
             assert_eq!(rest, others, "{}", case.label);
+        }
+        assert_eq!(release_payload_cases::SCHEMA_CASES, schema_cases);
+        // The schema cases' bound reaches this consumer too: the same row
+        // without the pair, at a schema no pairless writer emitted, names no
+        // builder.
+        for schema in [8, 9, 11] {
+            // Schema 8's cell_results shape, as the schema-9 test above uses.
+            let mut raw =
+                history_row_without_builder(8, "record-unlisted", "run-unlisted", &commit);
+            raw["schema_version"] = Value::from(schema);
+            let unlisted: HistoryRow = serde_json::from_value(raw).unwrap();
+            assert!(
+                history_exclusion_reasons(&unlisted)
+                    .unwrap()
+                    .contains(&INCONSISTENT.to_owned()),
+                "schema {schema}"
+            );
         }
 
         let cargo = history_row(7, "record-cargo", "run-cargo", &commit);

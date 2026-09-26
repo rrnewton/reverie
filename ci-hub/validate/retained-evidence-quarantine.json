@@ -1,29 +1,903 @@
 {
   "_comment": [
     "The complete, closed set of validation runs whose retained evidence is",
-    "irrecoverably lost and may therefore carry a retained-evidence quarantine.",
-    "A quarantine marker is honoured only when it equals one entry's marker",
-    "exactly and the row carrying it has that entry's row identity; a marker",
-    "a row authors for itself names no entry and is refused. Every value was",
-    "copied from the run.result events in ledger_shard. The quarantined row is",
-    "never green: result no_result over raw_result pass, source reconstructed,",
-    "and no consumer counts it as an observation. Adding an entry is an owner",
-    "decision, not a routine repair."
+    "irrecoverably lost and whose append-only correction may therefore carry a",
+    "retained-evidence quarantine. envelope and lost_row are the run.result",
+    "event in ledger_shard, copied whole: a quarantined row must equal lost_row",
+    "in every field except result no_result, source reconstructed and this",
+    "entry's marker, and a correction may only supersede the event that",
+    "envelope and lost_row describe. A marker a row authors for itself names no",
+    "entry and is refused. The quarantined row is never green and no consumer",
+    "counts it as an observation. This file grants nothing by itself: only the",
+    "one run.correct event per entry appended to ledger_shard, whose legacy_row",
+    "is exactly that corrected row, makes the lost run quarantined. The",
+    "recorded raw passes stay in the timeline unchanged, and read alone their",
+    "missing artifacts are reader faults. Adding an entry is an owner decision,",
+    "not a routine repair."
   ],
-  "schema": "retained-evidence-quarantine-allowlist/v1",
+  "schema": "retained-evidence-quarantine-allowlist/v2",
   "entries": [
     {
       "ledger_shard": "ledger/hermit/devbig014/2026-09.jsonl",
       "event_id": "devbig014-1790052459-997811",
       "team": "hermit",
-      "row": {
-        "record_id": "devbig014-1790052459-997811",
-        "run_id": "validate-cpu-ordinary-cells-20260922-v2-b",
+      "envelope": {
         "commit": "56b281422bffa57906309650e3fc16ed36d38de1",
+        "emitted_at": "2026-09-22T04:47:39Z",
+        "event_id": "devbig014-1790052459-997811",
+        "event_type": "run.result",
         "host": "devbig014",
-        "repo": "hermit",
+        "outcome": "pass",
+        "producer": {
+          "source": "observed",
+          "tool": "hermit-validate-rs",
+          "tool_version": "10"
+        },
+        "run_id": "validate-cpu-ordinary-cells-20260922-v2-b",
+        "run_number": 1892,
+        "schema": "validate-ledger/v1",
+        "started_at": "2026-09-22T04:29:23Z",
+        "team": "hermit",
+        "workspace": {
+          "repo_relative": "{{WORKSPACE_ROOT}}/worktrees/slots/pr-drain-ci-signal-cell-history-authority-20260920/hermit"
+        }
+      },
+      "lost_row": {
+        "admission": "ci-hub-validate-lock",
+        "admission_floor_evidence": {
+          "artifact": {
+            "bytes": 1438,
+            "locator": {
+              "path": "ignored/validate/admission/validate-only-hosted-portable-56b281422bff-validate-cpu-ordinary-cells-20260922-v2-b.log/context.json",
+              "scope": "workspace"
+            },
+            "sha256": "a0600937ce31c8d936c2c3980de3b8ea81607c5b10e4eea0b189bf43c0cef313"
+          },
+          "context": {
+            "authority": {
+              "host": "devbig014",
+              "kind": "validate",
+              "owner_boot_id": "b597126a-0485-436b-b809-4c28c423193d",
+              "owner_host": "devbig014",
+              "owner_pid": 994349,
+              "owner_start_ticks": 221013315,
+              "response_sha256": "1bc05f7f86437ba362ba70832731e52be134113ddc583926178b09c40d8c8e4b",
+              "slot": 1,
+              "target": "56b281422bffa57906309650e3fc16ed36d38de1"
+            },
+            "canonical_plan_sha256": "67dedad10d04d0018b8a37fc349de5684f3067561c7eb97e8519dd54f58a74f7",
+            "contract": "ci-hub-admission-floor/v2",
+            "execution_plan_sha256": "170d33803d479c8aaacfa27643e2f8b72079ca1ea3bff80656566ccee412d688",
+            "floor": {
+              "kind": "current-main",
+              "observed_main_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+              "sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+              "tree": "2bd523e6215d76514f1ce658b58a929e39dcbe66"
+            },
+            "host": "devbig014",
+            "log_identity": {
+              "path": "ignored/validate/validate-only-hosted-portable-56b281422bff-validate-cpu-ordinary-cells-20260922-v2-b.log",
+              "scope": "workspace"
+            },
+            "observed_at": "2026-09-22T04:29:01Z",
+            "pin_bindings": [
+              {
+                "base_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+                "canonical_command_sha256": "2ede7e19cdd715add06499b7161fc80f7c4f68a4fb9b83294e4e000ae90b8cfc",
+                "execution_command_sha256": "7a8dfe2ede75c43fe1af390e6f5a0fbfca3a08e27effb749f5d3363254697675",
+                "node": "pre.reverie_pin"
+              }
+            ],
+            "run_id": "validate-cpu-ordinary-cells-20260922-v2-b",
+            "started_at": "2026-09-22T04:29:23Z",
+            "target_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+            "target_tree": "2bd523e6215d76514f1ce658b58a929e39dcbe66"
+          }
+        },
+        "admission_provenance_error": null,
+        "base_observation": {
+          "contract": "post-run-local-main-merge-base/v1",
+          "observed_at": "2026-09-22T04:47:39Z",
+          "observed_main_sha": "56b281422bffa57906309650e3fc16ed36d38de1"
+        },
+        "base_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+        "base_tree": "2bd523e6215d76514f1ce658b58a929e39dcbe66",
+        "branch": "codex/ordinary-cells-b-finalizer-main-20260922",
+        "cache_state": "warm",
+        "cell_results": {
+          "artifact": {
+            "path": "ignored/validate/artifacts/validate-cpu-ordinary-cells-20260922-v2-b/cell-results.jsonl",
+            "row_count": 2,
+            "sha256": "5c21f5c90828e8cf26d78f3606b747a95d6ba26200d4bd2ef63706e94d1919fa"
+          },
+          "binding_contract": 1,
+          "cells": [
+            {
+              "backend": "ptrace",
+              "backend_parity": null,
+              "category": "chaos-c",
+              "cell_verdict": {
+                "bitwise_parity": true,
+                "compared_log_messages": {
+                  "left": 190,
+                  "right": 190
+                },
+                "comparison": {
+                  "canonicalizations": [
+                    "host-address-to-first-appearance-ordinal/v1"
+                  ],
+                  "canonicalize_addresses": true,
+                  "compare_io_buffers": true,
+                  "compare_logs": true,
+                  "display_name": "BitwiseInfoV1",
+                  "exact_remainder": true,
+                  "full_trace": true,
+                  "ignore_lines": false,
+                  "log_scope": "info",
+                  "record_envelope": "all_records_v1",
+                  "skip_commit": false,
+                  "skip_detlog": false,
+                  "strictness": "canonical",
+                  "strip_lines": false,
+                  "stripped_prefixes": [
+                    "real-wall-clock-prefix/v1"
+                  ],
+                  "virtualize_time": true
+                },
+                "comparison_tier": "canonical-bitwise",
+                "state": "compared-and-matched"
+              },
+              "evidence_binding": {
+                "producer": "validate",
+                "run_id": "validate-cpu-ordinary-cells-20260922-v2-b",
+                "selected_attempt": 1,
+                "series_cell": "chaos-c/lock-granularity/chaos/ptrace",
+                "tree": "56b281422bffa57906309650e3fc16ed36d38de1"
+              },
+              "lane": "portable",
+              "mode": "chaos",
+              "selected_attempt": 1,
+              "test": "chaos-c/lock-granularity"
+            },
+            {
+              "backend": "ptrace",
+              "backend_parity": null,
+              "category": "chaos-c",
+              "cell_verdict": {
+                "bitwise_parity": true,
+                "compared_log_messages": {
+                  "left": 175,
+                  "right": 175
+                },
+                "comparison": {
+                  "canonicalizations": [
+                    "host-address-to-first-appearance-ordinal/v1"
+                  ],
+                  "canonicalize_addresses": true,
+                  "compare_io_buffers": true,
+                  "compare_logs": true,
+                  "display_name": "BitwiseInfoV1",
+                  "exact_remainder": true,
+                  "full_trace": true,
+                  "ignore_lines": false,
+                  "log_scope": "info",
+                  "record_envelope": "all_records_v1",
+                  "skip_commit": false,
+                  "skip_detlog": false,
+                  "strictness": "canonical",
+                  "strip_lines": false,
+                  "stripped_prefixes": [
+                    "real-wall-clock-prefix/v1"
+                  ],
+                  "virtualize_time": true
+                },
+                "comparison_tier": "canonical-bitwise",
+                "state": "compared-and-matched"
+              },
+              "evidence_binding": {
+                "producer": "validate",
+                "run_id": "validate-cpu-ordinary-cells-20260922-v2-b",
+                "selected_attempt": 1,
+                "series_cell": "chaos-c/lock-granularity/verify/ptrace",
+                "tree": "56b281422bffa57906309650e3fc16ed36d38de1"
+              },
+              "lane": "portable",
+              "mode": "verify",
+              "selected_attempt": 1,
+              "test": "chaos-c/lock-granularity"
+            }
+          ],
+          "hermit_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+          "path": "only-hosted-portable",
+          "population_sha256": "35f627b376f19333988c964b908c66f95b87260b12fecfc520b48c42765522ea",
+          "recorded_count": 2,
+          "run_id": "validate-cpu-ordinary-cells-20260922-v2-b",
+          "selected": [
+            {
+              "backend": "ptrace",
+              "category": "chaos-c",
+              "lane": "portable",
+              "mode": "chaos",
+              "test": "chaos-c/lock-granularity"
+            },
+            {
+              "backend": "ptrace",
+              "category": "chaos-c",
+              "lane": "portable",
+              "mode": "verify",
+              "test": "chaos-c/lock-granularity"
+            }
+          ],
+          "selected_backend_parity": [],
+          "selected_count": 2,
+          "source_tree_dirty": false
+        },
+        "checks": 11,
+        "commit": "56b281422bffa57906309650e3fc16ed36d38de1",
+        "commit_anchored": true,
+        "concurrency_proof": "validate_lock_owner_ancestry+live_flock_registry_cpu_delta",
+        "concurrent_validates": 1,
+        "constructed_plan": {
+          "bytes": 192788,
+          "path": "ignored/validate/artifacts/validate-cpu-ordinary-cells-20260922-v2-b/constructed-plan.json",
+          "sha256": "a03790d9f8f3d5b2540e06b1af5ea523cd6c4dffc8fdab51e641aa3c17daeb9e"
+        },
+        "corrects": null,
+        "coverage": null,
+        "cwd": "{{WORKSPACE_ROOT}}/worktrees/slots/pr-drain-ci-signal-cell-history-authority-20260920/hermit",
+        "dag_jobs": 2,
+        "dependency_skipped_nodes": [],
+        "executed_nodes": 11,
+        "executed_tests": 2,
+        "exit_code": 0,
+        "failed_cells": [],
+        "failed_comparisons": [],
+        "failures": 0,
+        "filtered_tests": 0,
         "finished_at": "2026-09-22T04:47:39Z",
-        "schema_version": 10
+        "gates": [
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 139.092217359,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "build.rust_scripts",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 139.092217359,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 142.695519321,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "build.runtime_release",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 142.695519321,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 320.471639762,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "build.workspace_on_host",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 320.471639762,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 3.220399882,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "build.manifest_guests",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 3.220399882,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 145.59127996,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "setup.manifest_plan",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 145.59127996,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 0.122825794,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "setup.nextest",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 0.122825794,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 3.050736731,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "build.e2e_artifact_on_host",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 3.050736731,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 8.207262836,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "e2e.manifest_chaos_c_on_host",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 8.207262836,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 17.542426851,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "pre.submodules",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 17.542426851,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 5.319283311,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "pre.reverie_pin",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 5.319283311,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 405.937074737,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "gate.manifest",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 405.937074737,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          }
+        ],
+        "gates_expected": 11,
+        "gates_run": 11,
+        "git_ahead": 0,
+        "git_behind": 0,
+        "git_depth": 3094,
+        "host": "devbig014",
+        "intentional_skipped_nodes": [],
+        "interruption_signal": null,
+        "log_file": "{{WORKSPACE_ROOT}}/ignored/validate/validate-only-hosted-portable-56b281422bff-validate-cpu-ordinary-cells-20260922-v2-b.log",
+        "log_identity": {
+          "path": "ignored/validate/validate-only-hosted-portable-56b281422bff-validate-cpu-ordinary-cells-20260922-v2-b.log",
+          "scope": "workspace"
+        },
+        "main_observation": {
+          "ahead": 0,
+          "behind": 0,
+          "contract": "post-run-local-main-distance/v1",
+          "observed_at": "2026-09-22T04:47:39Z",
+          "observed_main_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+          "target_sha": "56b281422bffa57906309650e3fc16ed36d38de1"
+        },
+        "no_result_nodes": [],
+        "passed_tests": 2,
+        "planned_node_count": 11,
+        "planned_nodes": [
+          "build.e2e_artifact_on_host",
+          "build.manifest_guests",
+          "build.runtime_release",
+          "build.rust_scripts",
+          "build.workspace_on_host",
+          "e2e.manifest_chaos_c_on_host",
+          "gate.manifest",
+          "pre.reverie_pin",
+          "pre.submodules",
+          "setup.manifest_plan",
+          "setup.nextest"
+        ],
+        "producer": "hermit-validate-rs",
+        "product_result_node_count": 11,
+        "product_result_nodes": [
+          "build.e2e_artifact_on_host",
+          "build.manifest_guests",
+          "build.runtime_release",
+          "build.rust_scripts",
+          "build.workspace_on_host",
+          "e2e.manifest_chaos_c_on_host",
+          "gate.manifest",
+          "pre.reverie_pin",
+          "pre.submodules",
+          "setup.manifest_plan",
+          "setup.nextest"
+        ],
+        "profile": "only-hosted-portable",
+        "raw_result": "pass",
+        "raw_result_input_census_v1": {
+          "files": [
+            {
+              "bytes": 423280,
+              "path": "portable/manifest_chaos_c/results.jsonl",
+              "rows": [
+                {
+                  "attempt": 1,
+                  "cell": {
+                    "backend": "ptrace",
+                    "category": "chaos-c",
+                    "lane": "portable",
+                    "mode": "chaos",
+                    "test": "chaos-c/lock-granularity"
+                  },
+                  "line": 1
+                },
+                {
+                  "attempt": 1,
+                  "cell": {
+                    "backend": "ptrace",
+                    "category": "chaos-c",
+                    "lane": "portable",
+                    "mode": "verify",
+                    "test": "chaos-c/lock-granularity"
+                  },
+                  "line": 2
+                }
+              ],
+              "sha256": "49c0db9aee2546e87a22794aacef3adab420270afb1c436ecd4d8a3963e6fa8a"
+            }
+          ],
+          "hermit_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+          "run_id": "validate-cpu-ordinary-cells-20260922-v2-b",
+          "schema": 1
+        },
+        "real_seconds": 1049.0,
+        "record_id": "devbig014-1790052459-997811",
+        "repo": "hermit",
+        "result": "pass",
+        "retried_nodes": [],
+        "retry_rounds": 0,
+        "reverie_base_sha": "123df7c4c0169006fbfe1f11a1553fe333eac937",
+        "reverie_base_tree": "cdbfcf9e78e8f9e5b29af5b0ab40701f855c698b",
+        "reverie_pin_current": true,
+        "run_id": "validate-cpu-ordinary-cells-20260922-v2-b",
+        "run_number": 1892,
+        "schema_version": 10,
+        "selection_mode": "only",
+        "skipped_nodes": 0,
+        "slot": "slots",
+        "started_at": "2026-09-22T04:29:23Z",
+        "sys_seconds": 691.355752,
+        "test_results": {
+          "artifact": {
+            "path": "ignored/validate/artifacts/validate-cpu-ordinary-cells-20260922-v2-b/test-results.jsonl",
+            "row_count": 2,
+            "sha256": "4ae4b6c233c73938d051d21dd7b08c6295f6489ddeb6963c54d54cf399dc351d"
+          },
+          "compatibility": null,
+          "hermit_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+          "nodes": [
+            {
+              "node": "e2e.manifest_chaos_c_on_host",
+              "outer_attempt": 1,
+              "row_count": 2,
+              "totals": {
+                "executed_tests": 2,
+                "failed_tests": 0,
+                "filtered_tests": 0,
+                "passed_tests": 2
+              }
+            }
+          ],
+          "path": "only-hosted-portable",
+          "population_sha256": "2545ef32d8a92418d51c895a29b1cc0df3dbc66bf434d9cc8a16b202db2e5db2",
+          "recorded_count": 2,
+          "run_id": "validate-cpu-ordinary-cells-20260922-v2-b",
+          "selected": {
+            "compatibility": false,
+            "nodes": [
+              "e2e.manifest_chaos_c_on_host"
+            ]
+          },
+          "selected_count": 1,
+          "source_tree_dirty": false,
+          "totals": {
+            "executed_tests": 2,
+            "failed_tests": 0,
+            "filtered_tests": 0,
+            "passed_tests": 2
+          }
+        },
+        "timed_out_nodes": [],
+        "toolchain": "rustc 1.99.0-nightly (be8e82435 2026-07-11)",
+        "tree": "2bd523e6215d76514f1ce658b58a929e39dcbe66",
+        "tree_dirty": false,
+        "unaccounted_nodes": [],
+        "understood_infrastructure_failure_nodes": {},
+        "understood_prerequisite_failure_nodes": [],
+        "unreported_attempt_nodes": [],
+        "user_seconds": 3557.094114,
+        "validation_complete": true
       },
       "marker": {
         "schema": "retained-evidence-quarantine/v1",
@@ -52,14 +926,883 @@
       "ledger_shard": "ledger/hermit/devbig014/2026-09.jsonl",
       "event_id": "devbig014-1790052466-983899",
       "team": "hermit",
-      "row": {
-        "record_id": "devbig014-1790052466-983899",
-        "run_id": "validate-cpu-ordinary-cells-20260922-v2-a",
+      "envelope": {
         "commit": "56b281422bffa57906309650e3fc16ed36d38de1",
+        "emitted_at": "2026-09-22T04:47:46Z",
+        "event_id": "devbig014-1790052466-983899",
+        "event_type": "run.result",
         "host": "devbig014",
-        "repo": "hermit",
+        "outcome": "pass",
+        "producer": {
+          "source": "observed",
+          "tool": "hermit-validate-rs",
+          "tool_version": "10"
+        },
+        "run_id": "validate-cpu-ordinary-cells-20260922-v2-a",
+        "run_number": 1891,
+        "schema": "validate-ledger/v1",
+        "started_at": "2026-09-22T04:28:50Z",
+        "team": "hermit",
+        "workspace": {
+          "repo_relative": "{{WORKSPACE_ROOT}}/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit"
+        }
+      },
+      "lost_row": {
+        "admission": "ci-hub-validate-lock",
+        "admission_floor_evidence": {
+          "artifact": {
+            "bytes": 1438,
+            "locator": {
+              "path": "ignored/validate/admission/validate-only-hosted-portable-56b281422bff-validate-cpu-ordinary-cells-20260922-v2-a.log/context.json",
+              "scope": "workspace"
+            },
+            "sha256": "4b499a873b40dd184ef0a70b40390934d20d5acf6746c38834864d279c2fcb8f"
+          },
+          "context": {
+            "authority": {
+              "host": "devbig014",
+              "kind": "validate",
+              "owner_boot_id": "b597126a-0485-436b-b809-4c28c423193d",
+              "owner_host": "devbig014",
+              "owner_pid": 979374,
+              "owner_start_ticks": 221012157,
+              "response_sha256": "1bc05f7f86437ba362ba70832731e52be134113ddc583926178b09c40d8c8e4b",
+              "slot": 0,
+              "target": "56b281422bffa57906309650e3fc16ed36d38de1"
+            },
+            "canonical_plan_sha256": "67dedad10d04d0018b8a37fc349de5684f3067561c7eb97e8519dd54f58a74f7",
+            "contract": "ci-hub-admission-floor/v2",
+            "execution_plan_sha256": "170d33803d479c8aaacfa27643e2f8b72079ca1ea3bff80656566ccee412d688",
+            "floor": {
+              "kind": "current-main",
+              "observed_main_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+              "sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+              "tree": "2bd523e6215d76514f1ce658b58a929e39dcbe66"
+            },
+            "host": "devbig014",
+            "log_identity": {
+              "path": "ignored/validate/validate-only-hosted-portable-56b281422bff-validate-cpu-ordinary-cells-20260922-v2-a.log",
+              "scope": "workspace"
+            },
+            "observed_at": "2026-09-22T04:28:27Z",
+            "pin_bindings": [
+              {
+                "base_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+                "canonical_command_sha256": "2ede7e19cdd715add06499b7161fc80f7c4f68a4fb9b83294e4e000ae90b8cfc",
+                "execution_command_sha256": "7a8dfe2ede75c43fe1af390e6f5a0fbfca3a08e27effb749f5d3363254697675",
+                "node": "pre.reverie_pin"
+              }
+            ],
+            "run_id": "validate-cpu-ordinary-cells-20260922-v2-a",
+            "started_at": "2026-09-22T04:28:50Z",
+            "target_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+            "target_tree": "2bd523e6215d76514f1ce658b58a929e39dcbe66"
+          }
+        },
+        "admission_provenance_error": null,
+        "base_observation": {
+          "contract": "post-run-local-main-merge-base/v1",
+          "observed_at": "2026-09-22T04:47:45Z",
+          "observed_main_sha": "a6f3907908dc2751bf7d5511667aab6f07620a59"
+        },
+        "base_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+        "base_tree": "2bd523e6215d76514f1ce658b58a929e39dcbe66",
+        "branch": "codex/ordinary-cells-a-finalizer-main-20260922",
+        "cache_state": "warm",
+        "cell_results": {
+          "artifact": {
+            "path": "ignored/validate/artifacts/validate-cpu-ordinary-cells-20260922-v2-a/cell-results.jsonl",
+            "row_count": 2,
+            "sha256": "c71e910373638ac7dbd77f237d10bd2f3476e6c8ac5defde364750304da76ad0"
+          },
+          "binding_contract": 1,
+          "cells": [
+            {
+              "backend": "ptrace",
+              "backend_parity": null,
+              "category": "chaos-c",
+              "cell_verdict": {
+                "bitwise_parity": true,
+                "compared_log_messages": {
+                  "left": 190,
+                  "right": 190
+                },
+                "comparison": {
+                  "canonicalizations": [
+                    "host-address-to-first-appearance-ordinal/v1"
+                  ],
+                  "canonicalize_addresses": true,
+                  "compare_io_buffers": true,
+                  "compare_logs": true,
+                  "display_name": "BitwiseInfoV1",
+                  "exact_remainder": true,
+                  "full_trace": true,
+                  "ignore_lines": false,
+                  "log_scope": "info",
+                  "record_envelope": "all_records_v1",
+                  "skip_commit": false,
+                  "skip_detlog": false,
+                  "strictness": "canonical",
+                  "strip_lines": false,
+                  "stripped_prefixes": [
+                    "real-wall-clock-prefix/v1"
+                  ],
+                  "virtualize_time": true
+                },
+                "comparison_tier": "canonical-bitwise",
+                "state": "compared-and-matched"
+              },
+              "evidence_binding": {
+                "producer": "validate",
+                "run_id": "validate-cpu-ordinary-cells-20260922-v2-a",
+                "selected_attempt": 1,
+                "series_cell": "chaos-c/lock-granularity/chaos/ptrace",
+                "tree": "56b281422bffa57906309650e3fc16ed36d38de1"
+              },
+              "lane": "portable",
+              "mode": "chaos",
+              "selected_attempt": 1,
+              "test": "chaos-c/lock-granularity"
+            },
+            {
+              "backend": "ptrace",
+              "backend_parity": null,
+              "category": "chaos-c",
+              "cell_verdict": {
+                "bitwise_parity": true,
+                "compared_log_messages": {
+                  "left": 175,
+                  "right": 175
+                },
+                "comparison": {
+                  "canonicalizations": [
+                    "host-address-to-first-appearance-ordinal/v1"
+                  ],
+                  "canonicalize_addresses": true,
+                  "compare_io_buffers": true,
+                  "compare_logs": true,
+                  "display_name": "BitwiseInfoV1",
+                  "exact_remainder": true,
+                  "full_trace": true,
+                  "ignore_lines": false,
+                  "log_scope": "info",
+                  "record_envelope": "all_records_v1",
+                  "skip_commit": false,
+                  "skip_detlog": false,
+                  "strictness": "canonical",
+                  "strip_lines": false,
+                  "stripped_prefixes": [
+                    "real-wall-clock-prefix/v1"
+                  ],
+                  "virtualize_time": true
+                },
+                "comparison_tier": "canonical-bitwise",
+                "state": "compared-and-matched"
+              },
+              "evidence_binding": {
+                "producer": "validate",
+                "run_id": "validate-cpu-ordinary-cells-20260922-v2-a",
+                "selected_attempt": 1,
+                "series_cell": "chaos-c/lock-granularity/verify/ptrace",
+                "tree": "56b281422bffa57906309650e3fc16ed36d38de1"
+              },
+              "lane": "portable",
+              "mode": "verify",
+              "selected_attempt": 1,
+              "test": "chaos-c/lock-granularity"
+            }
+          ],
+          "hermit_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+          "path": "only-hosted-portable",
+          "population_sha256": "35f627b376f19333988c964b908c66f95b87260b12fecfc520b48c42765522ea",
+          "recorded_count": 2,
+          "run_id": "validate-cpu-ordinary-cells-20260922-v2-a",
+          "selected": [
+            {
+              "backend": "ptrace",
+              "category": "chaos-c",
+              "lane": "portable",
+              "mode": "chaos",
+              "test": "chaos-c/lock-granularity"
+            },
+            {
+              "backend": "ptrace",
+              "category": "chaos-c",
+              "lane": "portable",
+              "mode": "verify",
+              "test": "chaos-c/lock-granularity"
+            }
+          ],
+          "selected_backend_parity": [],
+          "selected_count": 2,
+          "source_tree_dirty": false
+        },
+        "checks": 11,
+        "commit": "56b281422bffa57906309650e3fc16ed36d38de1",
+        "commit_anchored": true,
+        "concurrency_proof": "validate_lock_owner_ancestry+live_flock_registry_cpu_delta",
+        "concurrent_validates": 1,
+        "constructed_plan": {
+          "bytes": 192788,
+          "path": "ignored/validate/artifacts/validate-cpu-ordinary-cells-20260922-v2-a/constructed-plan.json",
+          "sha256": "84ca419ab7b0b4dce1d84a824e6d36e3776a57df56677b91800c123cc6247635"
+        },
+        "corrects": null,
+        "coverage": null,
+        "cwd": "{{WORKSPACE_ROOT}}/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit",
+        "dag_jobs": 2,
+        "dependency_skipped_nodes": [],
+        "executed_nodes": 11,
+        "executed_tests": 2,
+        "exit_code": 0,
+        "failed_cells": [],
+        "failed_comparisons": [],
+        "failures": 0,
+        "filtered_tests": 0,
         "finished_at": "2026-09-22T04:47:46Z",
-        "schema_version": 10
+        "gates": [
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 141.669423346,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "build.rust_scripts",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 141.669423346,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 143.861827841,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "build.runtime_release",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 143.861827841,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 326.391820809,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "build.workspace_on_host",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 326.391820809,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 3.340657208,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "build.manifest_guests",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 3.340657208,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 145.011530878,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "setup.manifest_plan",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 145.011530878,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 0.123612813,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "setup.nextest",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 0.123612813,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 3.090267187,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "build.e2e_artifact_on_host",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 3.090267187,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 8.146490138,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "e2e.manifest_chaos_c_on_host",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 8.146490138,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 21.324991717,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "pre.submodules",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 21.324991717,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 6.258314788,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "pre.reverie_pin",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 6.258314788,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          },
+          {
+            "aborted": false,
+            "attempts": [
+              {
+                "aborted": false,
+                "attempt": 1,
+                "cpu_timed_out": false,
+                "environmental_class": null,
+                "environmental_detail_observed": false,
+                "environmental_refuted_shape": null,
+                "environmental_verdict": null,
+                "execution": "completed",
+                "exit_code": 0,
+                "oom_kills": 0,
+                "oomed": false,
+                "real_seconds": 432.833160865,
+                "reason": "",
+                "reported": true,
+                "result": "pass",
+                "retry_class": null,
+                "retry_detail": null,
+                "timed_out": false,
+                "understood_infrastructure_class": null
+              }
+            ],
+            "cpu_timed_out": false,
+            "execution": "completed",
+            "exit_code": 0,
+            "failure_origin": null,
+            "first_attempt_reason": "",
+            "first_attempt_result": "pass",
+            "name": "gate.manifest",
+            "non_product_failure_bucket": null,
+            "oom_kills": 0,
+            "oomed": false,
+            "raw_aborted": false,
+            "raw_result": "pass",
+            "real_seconds": 432.833160865,
+            "reason": "",
+            "reported": true,
+            "result": "pass",
+            "retries": 0,
+            "timed_out": false
+          }
+        ],
+        "gates_expected": 11,
+        "gates_run": 11,
+        "git_ahead": 0,
+        "git_behind": 1,
+        "git_depth": 3094,
+        "host": "devbig014",
+        "intentional_skipped_nodes": [],
+        "interruption_signal": null,
+        "log_file": "{{WORKSPACE_ROOT}}/ignored/validate/validate-only-hosted-portable-56b281422bff-validate-cpu-ordinary-cells-20260922-v2-a.log",
+        "log_identity": {
+          "path": "ignored/validate/validate-only-hosted-portable-56b281422bff-validate-cpu-ordinary-cells-20260922-v2-a.log",
+          "scope": "workspace"
+        },
+        "main_observation": {
+          "ahead": 0,
+          "behind": 1,
+          "contract": "post-run-local-main-distance/v1",
+          "observed_at": "2026-09-22T04:47:45Z",
+          "observed_main_sha": "a6f3907908dc2751bf7d5511667aab6f07620a59",
+          "target_sha": "56b281422bffa57906309650e3fc16ed36d38de1"
+        },
+        "no_result_nodes": [],
+        "passed_tests": 2,
+        "planned_node_count": 11,
+        "planned_nodes": [
+          "build.e2e_artifact_on_host",
+          "build.manifest_guests",
+          "build.runtime_release",
+          "build.rust_scripts",
+          "build.workspace_on_host",
+          "e2e.manifest_chaos_c_on_host",
+          "gate.manifest",
+          "pre.reverie_pin",
+          "pre.submodules",
+          "setup.manifest_plan",
+          "setup.nextest"
+        ],
+        "producer": "hermit-validate-rs",
+        "product_result_node_count": 11,
+        "product_result_nodes": [
+          "build.e2e_artifact_on_host",
+          "build.manifest_guests",
+          "build.runtime_release",
+          "build.rust_scripts",
+          "build.workspace_on_host",
+          "e2e.manifest_chaos_c_on_host",
+          "gate.manifest",
+          "pre.reverie_pin",
+          "pre.submodules",
+          "setup.manifest_plan",
+          "setup.nextest"
+        ],
+        "profile": "only-hosted-portable",
+        "raw_result": "pass",
+        "raw_result_input_census_v1": {
+          "files": [
+            {
+              "bytes": 421843,
+              "path": "portable/manifest_chaos_c/results.jsonl",
+              "rows": [
+                {
+                  "attempt": 1,
+                  "cell": {
+                    "backend": "ptrace",
+                    "category": "chaos-c",
+                    "lane": "portable",
+                    "mode": "chaos",
+                    "test": "chaos-c/lock-granularity"
+                  },
+                  "line": 1
+                },
+                {
+                  "attempt": 1,
+                  "cell": {
+                    "backend": "ptrace",
+                    "category": "chaos-c",
+                    "lane": "portable",
+                    "mode": "verify",
+                    "test": "chaos-c/lock-granularity"
+                  },
+                  "line": 2
+                }
+              ],
+              "sha256": "6db4ac04d8b9c28d1578db678f8fe2b6d2550985de1361ae6a228d0af8d67f36"
+            }
+          ],
+          "hermit_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+          "run_id": "validate-cpu-ordinary-cells-20260922-v2-a",
+          "schema": 1
+        },
+        "real_seconds": 1088.0,
+        "record_id": "devbig014-1790052466-983899",
+        "repo": "hermit",
+        "result": "pass",
+        "retried_nodes": [],
+        "retry_rounds": 0,
+        "reverie_base_sha": "123df7c4c0169006fbfe1f11a1553fe333eac937",
+        "reverie_base_tree": "cdbfcf9e78e8f9e5b29af5b0ab40701f855c698b",
+        "reverie_pin_current": true,
+        "run_id": "validate-cpu-ordinary-cells-20260922-v2-a",
+        "run_number": 1891,
+        "schema_version": 10,
+        "selection_mode": "only",
+        "skipped_nodes": 0,
+        "slot": "slots",
+        "started_at": "2026-09-22T04:28:50Z",
+        "sys_seconds": 678.3135709999999,
+        "test_results": {
+          "artifact": {
+            "path": "ignored/validate/artifacts/validate-cpu-ordinary-cells-20260922-v2-a/test-results.jsonl",
+            "row_count": 2,
+            "sha256": "a31514d910ef8a29bdfdff9e54bfa8aed2b2f2dd5e05bfb450b5dae4823a6d59"
+          },
+          "compatibility": null,
+          "hermit_sha": "56b281422bffa57906309650e3fc16ed36d38de1",
+          "nodes": [
+            {
+              "node": "e2e.manifest_chaos_c_on_host",
+              "outer_attempt": 1,
+              "row_count": 2,
+              "totals": {
+                "executed_tests": 2,
+                "failed_tests": 0,
+                "filtered_tests": 0,
+                "passed_tests": 2
+              }
+            }
+          ],
+          "path": "only-hosted-portable",
+          "population_sha256": "2545ef32d8a92418d51c895a29b1cc0df3dbc66bf434d9cc8a16b202db2e5db2",
+          "recorded_count": 2,
+          "run_id": "validate-cpu-ordinary-cells-20260922-v2-a",
+          "selected": {
+            "compatibility": false,
+            "nodes": [
+              "e2e.manifest_chaos_c_on_host"
+            ]
+          },
+          "selected_count": 1,
+          "source_tree_dirty": false,
+          "totals": {
+            "executed_tests": 2,
+            "failed_tests": 0,
+            "filtered_tests": 0,
+            "passed_tests": 2
+          }
+        },
+        "timed_out_nodes": [],
+        "toolchain": "rustc 1.99.0-nightly (be8e82435 2026-07-11)",
+        "tree": "2bd523e6215d76514f1ce658b58a929e39dcbe66",
+        "tree_dirty": false,
+        "unaccounted_nodes": [],
+        "understood_infrastructure_failure_nodes": {},
+        "understood_prerequisite_failure_nodes": [],
+        "unreported_attempt_nodes": [],
+        "user_seconds": 3537.380546,
+        "validation_complete": true
       },
       "marker": {
         "schema": "retained-evidence-quarantine/v1",

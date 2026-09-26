@@ -1728,17 +1728,20 @@ def _json_copy(value):
     return json.loads(json.dumps(value))
 
 
-def _quarantined_lost_selection(selected, *, forge=False):
+def _quarantined_lost_selection(selected, *, forge=False, root="/home/fixture/workspace"):
+    # The whole projected row of the lost run: its recorded row, corrected,
+    # with the projection's workspace rendering applied as a reader sees it.
     receipt = export_inputs.validation_ledger.qualifying_receipt
     entry = receipt.retained_evidence_quarantine_allowlist()["devbig014-1790052459-997811"]
     lost = _json_copy(selected)
-    lost["row"].update(_json_copy(entry["row"]))
-    lost["row"].update(result="no_result", raw_result="pass", source="reconstructed")
-    marker = _json_copy(entry["marker"])
+    row = _json_copy(receipt.retained_evidence_quarantine_corrected_row(entry))
+    for key, value in row.items():
+        if isinstance(value, str) and value.startswith("{{WORKSPACE_ROOT}}"):
+            row[key] = root + value[len("{{WORKSPACE_ROOT}}"):]
     if forge:
-        marker["expected"]["cell_results"]["row_count"] += 1
-    lost["row"][receipt.RETAINED_EVIDENCE_QUARANTINE_KEY] = marker
-    lost["terminal"].update(run_id=entry["row"]["run_id"], record_id=entry["event_id"],
+        row[receipt.RETAINED_EVIDENCE_QUARANTINE_KEY]["expected"]["cell_results"]["row_count"] += 1
+    lost["row"] = row
+    lost["terminal"].update(run_id=row["run_id"], record_id=entry["event_id"],
                             event_id=entry["event_id"], event_sha256="f" * 64)
     return lost
 
@@ -1755,9 +1758,15 @@ def test_portable_capture_reports_an_allowlisted_lost_run_unavailable(tmp_path: 
 
 def test_portable_capture_refuses_a_quarantine_the_allowlist_does_not_name(tmp_path: Path):
     _proof, ledger, commit, selected, _manifest, _objects = portable_capture_fixture(tmp_path)
+    exact = _quarantined_lost_selection(selected)
+    changed_profile = _json_copy(exact)
+    changed_profile["row"]["profile"] = "quick"
+    split_root = _json_copy(exact)
+    split_root["row"]["log_file"] = "/elsewhere" + split_root["row"]["log_file"][len("/home/fixture/workspace"):]
     for forged in (_quarantined_lost_selection(selected, forge=True),
                    {**selected, "row": {**selected["row"], "retained_evidence_quarantine":
-                       _quarantined_lost_selection(selected)["row"]["retained_evidence_quarantine"]}}):
+                       exact["row"]["retained_evidence_quarantine"]}},
+                   changed_profile, split_root):
         with pytest.raises(export_inputs.ExportRefused, match="no allowlisted lost run"):
             export_inputs._capture_finalized_proof(TransportNamespace(forged), ledger, commit)
 

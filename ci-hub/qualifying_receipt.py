@@ -116,10 +116,69 @@ RETAINED_EVIDENCE_QUARANTINE_REASON = "retained evidence lost"
 RETAINED_EVIDENCE_QUARANTINE_ALLOWLIST = (
     _CI_HUB_DIR / "validate" / "retained-evidence-quarantine.json"
 )
-RETAINED_EVIDENCE_QUARANTINE_ALLOWLIST_SCHEMA = "retained-evidence-quarantine-allowlist/v1"
-_QUARANTINE_ROW_IDENTITY = (
-    "record_id", "run_id", "commit", "host", "repo", "finished_at", "schema_version",
-)
+RETAINED_EVIDENCE_QUARANTINE_ALLOWLIST_SCHEMA = "retained-evidence-quarantine-allowlist/v2"
+# The only fields a quarantine correction changes in its lost run's row.
+RETAINED_EVIDENCE_QUARANTINE_CORRECTED = {
+    "result": "no_result",
+    "source": "reconstructed",
+}
+
+
+def _quarantine_json(value: Any) -> str:
+    """Type-exact JSON for comparing a row with its allowlisted lost run.
+
+    Sorted keys, and no normalisation: ``true`` and ``1``, ``10`` and ``10.0``
+    and an absent key and ``null`` all differ.
+    """
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+# The token a ledger row records in place of the writer's workspace root; the
+# row projection renders it to the reader's root.
+_QUARANTINE_WORKSPACE_TOKEN = "{{WORKSPACE_ROOT}}"
+
+
+def _quarantine_rendered_fields(lost: Mapping[str, Any]) -> dict[str, str] | None:
+    """``lost``'s workspace-relative fields as field -> suffix after the token.
+
+    None when the token appears anywhere but at the start of a top-level string.
+    """
+    rendered: dict[str, str] = {}
+    for key, value in lost.items():
+        if isinstance(value, str) and value.startswith(_QUARANTINE_WORKSPACE_TOKEN):
+            suffix = value[len(_QUARANTINE_WORKSPACE_TOKEN):]
+            if _QUARANTINE_WORKSPACE_TOKEN in suffix:
+                return None
+            rendered[key] = suffix
+        elif _QUARANTINE_WORKSPACE_TOKEN in _quarantine_json(value):
+            return None
+    return rendered
+
+
+def _quarantine_unrendered(row: Mapping[str, Any], rendered: Mapping[str, str]) -> dict[str, Any] | None:
+    """Undo one workspace rendering, or None when the fields disagree.
+
+    Every workspace-relative field must carry the same non-empty root before
+    its recorded suffix; only that root may differ from the lost row.
+    """
+    out = dict(row)
+    roots = set()
+    for key, suffix in rendered.items():
+        text = out.get(key)
+        if not isinstance(text, str) or not text.endswith(suffix) or len(text) == len(suffix):
+            return None
+        roots.add(text[: len(text) - len(suffix)])
+        out[key] = _QUARANTINE_WORKSPACE_TOKEN + suffix
+    return out if len(roots) <= 1 else None
+
+
+def retained_evidence_quarantine_corrected_row(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """The one row that may carry ``entry``'s marker: its lost row, corrected."""
+    return {
+        **entry["lost_row"],
+        **RETAINED_EVIDENCE_QUARANTINE_CORRECTED,
+        RETAINED_EVIDENCE_QUARANTINE_KEY: entry["marker"],
+    }
 
 
 def retained_evidence_quarantine_allowlist() -> dict[str, dict[str, Any]]:
@@ -127,15 +186,16 @@ def retained_evidence_quarantine_allowlist() -> dict[str, dict[str, Any]]:
 
     Mirrors ``quarantine_allowlist`` in ci-hub/lib/validation_evidence.rs: a
     marker is honoured only when it equals an entry's marker exactly, on a row
-    carrying that entry's identity. A marker a row authors for itself is not
-    in this file and so names no lost run.
+    equal to that entry's recorded lost row except for the corrected result,
+    source and the marker. A marker a row authors for itself is not in this
+    file and so names no lost run.
     """
     path = RETAINED_EVIDENCE_QUARANTINE_ALLOWLIST
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise RuntimeError(f"{path}: retained evidence quarantine allowlist is unreadable: {error}")
-    entry_keys = {"ledger_shard", "event_id", "team", "row", "marker"}
+    entry_keys = {"ledger_shard", "event_id", "team", "envelope", "lost_row", "marker"}
     marker_keys = {"schema", "reason", "original_event_id", "expected"}
     if (
         not isinstance(document, dict)
@@ -146,29 +206,53 @@ def retained_evidence_quarantine_allowlist() -> dict[str, dict[str, Any]]:
         raise RuntimeError(f"{path}: retained evidence quarantine allowlist is malformed")
     entries: dict[str, dict[str, Any]] = {}
     for entry in document["entries"]:
-        if (
-            not isinstance(entry, dict)
-            or set(entry) != entry_keys
-            or not isinstance(entry["row"], dict)
-            or set(entry["row"]) != set(_QUARANTINE_ROW_IDENTITY)
-            or not isinstance(entry["marker"], dict)
-            or set(entry["marker"]) != marker_keys
-            or set(entry["marker"]["expected"] or ()) != {"constructed_plan", "cell_results", "test_results"}
-            or entry["marker"]["schema"] != RETAINED_EVIDENCE_QUARANTINE_SCHEMA
-            or entry["marker"]["reason"] != RETAINED_EVIDENCE_QUARANTINE_REASON
-            or not isinstance(entry["event_id"], str)
-            or not entry["event_id"]
-            or entry["marker"]["original_event_id"] != entry["event_id"]
-            or entry["row"]["record_id"] != entry["event_id"]
-            or entry["row"]["schema_version"] != 10
-            or type(entry["row"]["schema_version"]) is not int
-            or not isinstance(entry["ledger_shard"], str)
-            or not entry["ledger_shard"]
-            or not isinstance(entry["team"], str)
-            or not entry["team"]
-            or entry["event_id"] in entries
+        if not (
+            isinstance(entry, dict)
+            and set(entry) == entry_keys
+            and isinstance(entry["event_id"], str)
+            and entry["event_id"]
+            and entry["event_id"] not in entries
+            and isinstance(entry["ledger_shard"], str)
+            and entry["ledger_shard"]
+            and isinstance(entry["team"], str)
+            and entry["team"]
+            and isinstance(entry["marker"], dict)
+            and set(entry["marker"]) == marker_keys
+            and isinstance(entry["marker"]["expected"], dict)
+            and set(entry["marker"]["expected"]) == {"constructed_plan", "cell_results", "test_results"}
+            and entry["marker"]["schema"] == RETAINED_EVIDENCE_QUARANTINE_SCHEMA
+            and entry["marker"]["reason"] == RETAINED_EVIDENCE_QUARANTINE_REASON
+            and entry["marker"]["original_event_id"] == entry["event_id"]
+            and isinstance(entry["lost_row"], dict)
+            and isinstance(entry["envelope"], dict)
         ):
             raise RuntimeError(f"{path}: retained evidence quarantine allowlist is malformed")
+        lost, envelope, expected = entry["lost_row"], entry["envelope"], entry["marker"]["expected"]
+        cells, tests = lost.get("cell_results"), lost.get("test_results")
+        if not (
+            lost.get("record_id") == entry["event_id"]
+            and type(lost.get("schema_version")) is int
+            and lost["schema_version"] == 10
+            and lost.get("result") == "pass"
+            and lost.get("raw_result") == "pass"
+            and "source" not in lost
+            and RETAINED_EVIDENCE_QUARANTINE_KEY not in lost
+            and _quarantine_json(lost.get("constructed_plan")) == _quarantine_json(expected["constructed_plan"])
+            and isinstance(cells, dict)
+            and _quarantine_json(cells.get("artifact")) == _quarantine_json(expected["cell_results"])
+            and isinstance(tests, dict)
+            and _quarantine_json(tests.get("artifact")) == _quarantine_json(expected["test_results"])
+            and "legacy_row" not in envelope
+            and envelope.get("event_id") == entry["event_id"]
+            and envelope.get("event_type") == "run.result"
+            and envelope.get("team") == entry["team"]
+            and _quarantine_rendered_fields(lost) is not None
+            and all(
+                isinstance(envelope.get(key), str) and envelope[key] == lost.get(key)
+                for key in ("run_id", "commit", "host")
+            )
+        ):
+            raise RuntimeError(f"{path}: retained evidence quarantine allowlist is inconsistent")
         entries[entry["event_id"]] = entry
     return entries
 
@@ -177,19 +261,22 @@ def retained_evidence_quarantine_entry(row: Mapping[str, Any]) -> dict[str, Any]
     """The allowlist entry a row's quarantine marker names exactly, or None.
 
     None when the row carries no marker, the marker equals no entry's marker,
-    or the row is not that entry's lost run.
+    or the row differs from that entry's corrected lost row in any field.
     """
-    marker = row.get(RETAINED_EVIDENCE_QUARANTINE_KEY)
-    if marker is None:
+    if RETAINED_EVIDENCE_QUARANTINE_KEY not in row:
         return None
-    for entry in retained_evidence_quarantine_allowlist().values():
-        if marker == entry["marker"] and all(
-            key in row
-            and row[key] == entry["row"][key]
-            and type(row[key]) is type(entry["row"][key])
-            for key in _QUARANTINE_ROW_IDENTITY
-        ):
-            return entry
+    try:
+        marker = _quarantine_json(row[RETAINED_EVIDENCE_QUARANTINE_KEY])
+        for entry in retained_evidence_quarantine_allowlist().values():
+            if marker != _quarantine_json(entry["marker"]):
+                continue
+            actual = _quarantine_unrendered(row, _quarantine_rendered_fields(entry["lost_row"]))
+            if actual is not None and _quarantine_json(actual) == _quarantine_json(
+                retained_evidence_quarantine_corrected_row(entry)
+            ):
+                return entry
+    except (TypeError, ValueError, RecursionError):
+        return None
     return None
 
 
