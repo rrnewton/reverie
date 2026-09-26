@@ -3449,7 +3449,7 @@ impl ElfExecutor {
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-kvm-orphan-reparent): Review adopted-orphan waits.
+    // TODO-HUMAN-REVIEW(PR-653): Review adopted-orphan waits.
     /// Move this process's adopted orphans that match a wait selector and are
     /// already collectable into `state.children`, like joined fork children.
     /// Returns whether one was collected and whether a matching one is still
