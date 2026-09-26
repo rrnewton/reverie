@@ -69,6 +69,12 @@ const CLEAN_FLAGS: u64 = 0x202;
 /// saves for a fault.
 const RESUME_FLAG: u64 = 0x10000;
 
+/// The flags that `test` sets for a zero result: ZF and PF.
+const ZERO_RESULT_FLAGS: u64 = 0x44;
+
+/// The x86 adjust flag in RFLAGS, which `test` leaves undefined.
+const ADJUST_FLAG: u64 = 0x10;
+
 /// Far above any skid margin, so the request programs a real PMU notification.
 const MANY_RCBS: u64 = 10_000;
 
@@ -450,8 +456,11 @@ fn syscall_after_popf(iterations: u64, no: u64, after: u64) -> (u64, u64) {
 // No timer event is expected. Reverie cancels a timer at any event it
 // delivers to the Tool before the timer's, as `set_timer_precise` and
 // `EventStatus` document, and the seccomp stop comes before the target: the
-// stepping runs only while the counter is behind the target, and a `syscall`
-// retires no branch. The review of
+// `syscall` is a few branches short of it, the stop comes before the
+// `syscall` completes, and the counter counts no branch in the kernel. With
+// the perf signal, an interrupt late by nearly the whole skid margin comes
+// after the seccomp stop, so no step runs; that stop still came first and
+// cancels the timer. The review of
 // https://github.com/rrnewton/reverie/pull/654 called this a loss of the
 // event; it is not one, since the target was never reached. A stop after the
 // target is reached does lose the event
@@ -1043,9 +1052,12 @@ fn fault_after_mov_ss(fault: Fault, popf: bool, after: u64) {
 // without returning. The signal frame must hold the flags the guest had, and
 // the guest had no TF. Without a stepped `popfq` before, Linux hides the
 // stepping TF and clears it itself before it builds the frame; after one, it
-// sees the TF as the guest's. The signal stop comes before the target, since
-// the faulting instruction retires no branch, and cancels the timer, as for
-// the syscall stop above.
+// sees the TF as the guest's. Beyond TF, the frame must hold the flags the
+// guest had untraced, except AF, which `test` leaves undefined. The signal
+// stop comes before the target, since the fault comes 2 branches after the
+// `clock_getres`, 13 short of the target, and the stop comes before the
+// faulting instruction completes. It cancels the timer, as for the syscall
+// stop above.
 #[test_case(Fault::Iret, false; "iret")]
 #[test_case(Fault::Iret, true; "iret after popf")]
 #[test_case(Fault::LockedRtSigreturn, false; "locked rt_sigreturn")]
@@ -1066,6 +1078,17 @@ fn fault_after_a_load_of_ss_does_not_leak_the_trap_flag(fault: Fault, popf: bool
                 flags & TRAP_FLAG,
                 0,
                 "the signal frame held the flags {flags:#x}"
+            );
+            // The `test` of `sigreturn` last wrote the arithmetic flags: ZF
+            // and PF for the iret (0), neither for the rt_sigreturn (1).
+            let expected = match fault {
+                Fault::Iret => CLEAN_FLAGS | ZERO_RESULT_FLAGS | RESUME_FLAG,
+                Fault::LockedRtSigreturn => CLEAN_FLAGS | RESUME_FLAG,
+            };
+            assert_eq!(
+                flags & !ADJUST_FLAG,
+                expected,
+                "the guest had {expected:#x}, so the frame of the fault must hold it"
             );
         },
         Schedule {
