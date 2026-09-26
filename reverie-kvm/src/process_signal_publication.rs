@@ -544,7 +544,7 @@ impl ProcessSignalRegistry {
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-kvm-orphan-reparent): Review KVM orphan reparenting
+    // TODO-HUMAN-REVIEW(PR-653): Review KVM orphan reparenting
     // at the logical exit transition.
     /// Decide one process's terminal family transition under the family lock
     /// and its current parent's transaction. Returns the exit together with
