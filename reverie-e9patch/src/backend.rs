@@ -264,13 +264,28 @@ impl ExecutableResource {
     }
 
     fn cleanup_in_place(&mut self, completed: bool) -> io::Result<()> {
+        self.cleanup_in_place_with_post_remove(completed, |_| {})
+    }
+
+    // The callback lets tests install a replacement after the real unlink and
+    // before replacing the resource (which drops its TempPath).
+    fn cleanup_in_place_with_post_remove(
+        &mut self,
+        completed: bool,
+        post_remove: impl FnOnce(&Path),
+    ) -> io::Result<()> {
         let remove = |path: &Path| match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
         };
         match self {
-            Self::Temporary(path) => remove(path)?,
+            Self::Temporary(path) => {
+                remove(path)?;
+                // The pathname is gone; Drop must not unlink a new occupant.
+                path.disable_cleanup(true);
+                post_remove(path);
+            }
             Self::Overlay {
                 mount,
                 backing_path,
@@ -288,6 +303,8 @@ impl ExecutableResource {
                 // pathname cleanup. Its concurrent-topology limitation remains.
                 mount.unmount()?;
                 remove(backing_path)?;
+                backing_path.disable_cleanup(true);
+                post_remove(backing_path);
             }
             Self::Original => {}
         }
@@ -1214,6 +1231,169 @@ mod tests {
 
     use super::*;
 
+    struct ReplacementOracle {
+        path: PathBuf,
+        original: File,
+        original_identity: (u64, u64),
+        replacement: Option<File>,
+    }
+
+    impl ReplacementOracle {
+        fn new(directory: &Path) -> (Self, tempfile::TempPath) {
+            let mut file = tempfile::NamedTempFile::new_in(directory).unwrap();
+            file.write_all(b"original inode bytes").unwrap();
+            let original = file.reopen().unwrap();
+            let metadata = original.metadata().unwrap();
+            assert_eq!(metadata.nlink(), 1);
+            let path = file.into_temp_path();
+            (
+                Self {
+                    path: path.to_path_buf(),
+                    original,
+                    original_identity: (metadata.dev(), metadata.ino()),
+                    replacement: None,
+                },
+                path,
+            )
+        }
+
+        fn replace(&mut self, path: &Path) {
+            assert_eq!(path, self.path);
+            assert_eq!(
+                fs::symlink_metadata(path).unwrap_err().kind(),
+                io::ErrorKind::NotFound,
+                "the real first unlink must precede replacement"
+            );
+            let original = self.original.metadata().unwrap();
+            assert_eq!((original.dev(), original.ino()), self.original_identity);
+            assert_eq!(original.nlink(), 0);
+            let mut replacement = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .unwrap();
+            replacement
+                .write_all(b"distinct replacement bytes")
+                .unwrap();
+            let metadata = replacement.metadata().unwrap();
+            // The open original fd prevents inode reuse from satisfying this.
+            assert_ne!((metadata.dev(), metadata.ino()), self.original_identity);
+            assert_eq!(metadata.nlink(), 1);
+            eprintln!(
+                "post-remove path={} original={:?}/nlink={} replacement={:?}/nlink={}",
+                path.display(),
+                self.original_identity,
+                original.nlink(),
+                (metadata.dev(), metadata.ino()),
+                metadata.nlink()
+            );
+            self.replacement = Some(replacement);
+        }
+
+        fn assert_survives(&self) {
+            use std::os::unix::fs::FileExt;
+
+            let held = self.replacement.as_ref().expect("post-remove hook ran");
+            let metadata = fs::symlink_metadata(&self.path)
+                .expect("cleanup/Drop unlinked the distinct replacement");
+            let held_metadata = held.metadata().unwrap();
+            assert_eq!(
+                (metadata.dev(), metadata.ino()),
+                (held_metadata.dev(), held_metadata.ino())
+            );
+            assert_ne!((metadata.dev(), metadata.ino()), self.original_identity);
+            assert_eq!(metadata.nlink(), 1);
+            assert_eq!(held_metadata.nlink(), 1);
+            assert_eq!(fs::read(&self.path).unwrap(), b"distinct replacement bytes");
+            let mut bytes = [0; 26];
+            assert_eq!(held.read_at(&mut bytes, 0).unwrap(), bytes.len());
+            assert_eq!(&bytes, b"distinct replacement bytes");
+            let original = self.original.metadata().unwrap();
+            assert_eq!((original.dev(), original.ino()), self.original_identity);
+            assert_eq!(original.nlink(), 0);
+            let mut bytes = [0; 20];
+            assert_eq!(self.original.read_at(&mut bytes, 0).unwrap(), bytes.len());
+            assert_eq!(&bytes, b"original inode bytes");
+        }
+    }
+
+    fn temporary_cleanup_replacement(missing: bool) {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut oracle, path) = ReplacementOracle::new(directory.path());
+        let mut resource = ExecutableResource::Temporary(path);
+        if missing {
+            fs::remove_file(&oracle.path).unwrap();
+        }
+        resource
+            .cleanup_in_place_with_post_remove(true, |path| oracle.replace(path))
+            .unwrap();
+        assert!(matches!(resource, ExecutableResource::Original));
+        oracle.assert_survives();
+        drop(resource);
+        oracle.assert_survives();
+    }
+
+    #[test]
+    fn temporary_cleanup_preserves_replacement() {
+        temporary_cleanup_replacement(false);
+    }
+
+    #[test]
+    fn temporary_not_found_cleanup_preserves_replacement() {
+        temporary_cleanup_replacement(true);
+    }
+
+    #[test]
+    fn temporary_failed_unlink_retains_guard_for_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut oracle, path) = ReplacementOracle::new(directory.path());
+        let mut resource = ExecutableResource::Temporary(path);
+        let parked = directory.path().join("parked-original");
+        fs::rename(&oracle.path, &parked).unwrap();
+        fs::create_dir(&oracle.path).unwrap();
+        let error = resource
+            .cleanup_in_place_with_post_remove(true, |_| panic!("failed unlink ran hook"))
+            .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EISDIR));
+        let ExecutableResource::Temporary(path) = &resource else {
+            panic!("failed unlink lost the original guard")
+        };
+        assert_eq!(path.to_path_buf(), oracle.path);
+        assert_eq!(oracle.original.metadata().unwrap().nlink(), 1);
+        fs::remove_dir(&oracle.path).unwrap();
+        fs::rename(&parked, &oracle.path).unwrap();
+        resource
+            .cleanup_in_place_with_post_remove(true, |path| oracle.replace(path))
+            .unwrap();
+        assert!(matches!(resource, ExecutableResource::Original));
+        drop(resource);
+        oracle.assert_survives();
+    }
+
+    #[test]
+    fn temporary_failed_unlink_keeps_drop_armed() {
+        let directory = tempfile::tempdir().unwrap();
+        let (oracle, path) = ReplacementOracle::new(directory.path());
+        let mut resource = ExecutableResource::Temporary(path);
+        let parked = directory.path().join("parked-original");
+        fs::rename(&oracle.path, &parked).unwrap();
+        fs::create_dir(&oracle.path).unwrap();
+        let error = resource.cleanup_in_place(true).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EISDIR));
+        assert!(matches!(resource, ExecutableResource::Temporary(_)));
+        fs::remove_dir(&oracle.path).unwrap();
+        fs::rename(&parked, &oracle.path).unwrap();
+        // Directly dropping this test-owned guard proves a failed unlink did
+        // not disarm it. Production error paths retain/quarantine the guard.
+        drop(resource);
+        assert_eq!(
+            fs::symlink_metadata(&oracle.path).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(oracle.original.metadata().unwrap().nlink(), 0);
+    }
+
     #[test]
     fn retained_executable_cleanup_preserves_backing_on_detach_refusal() {
         let backing = tempfile::NamedTempFile::new().unwrap().into_temp_path();
@@ -1315,6 +1495,9 @@ mod tests {
         Setup,
         Constructor,
         SuccessRefusal,
+        Replacement,
+        MissingReplacement,
+        RetryReplacement,
     }
 
     fn overlay_now_ns() -> u64 {
@@ -1379,6 +1562,7 @@ mod tests {
     async fn run_overlay_case(name: &'static str, case: OverlayCase) {
         const ROLE: &str = "REVERIE_REAL_OVERLAY_CHILD";
         const DEADLINE: &str = "REVERIE_REAL_OVERLAY_DEADLINE";
+        const PARENT_NAMESPACE: &str = "REVERIE_REAL_OVERLAY_PARENT_NAMESPACE";
         if std::env::var(ROLE).as_deref() != Ok(name) {
             let deadline = overlay_now_ns() + 5_000_000_000;
             let mut child = std::process::Command::new("/usr/bin/unshare")
@@ -1393,6 +1577,10 @@ mod tests {
                 .arg(std::env::current_exe().unwrap())
                 .args(["--exact", name, "--nocapture", "--test-threads=1"])
                 .env(ROLE, name)
+                .env(
+                    PARENT_NAMESPACE,
+                    fs::read_link("/proc/thread-self/ns/mnt").unwrap(),
+                )
                 .env(DEADLINE, deadline.to_string())
                 .spawn()
                 .unwrap();
@@ -1427,6 +1615,18 @@ mod tests {
         }
         assert!(std::env::args().any(|arg| arg == name));
         assert!(std::env::args().any(|arg| arg == "--exact"));
+        assert_ne!(
+            fs::read_link("/proc/thread-self/ns/mnt")
+                .unwrap()
+                .as_os_str(),
+            std::env::var_os(PARENT_NAMESPACE).unwrap(),
+            "mount fixture must own a private namespace before changing mounts"
+        );
+        eprintln!(
+            "private mount namespace {:?}; parent {:?}",
+            fs::read_link("/proc/thread-self/ns/mnt").unwrap(),
+            std::env::var_os(PARENT_NAMESPACE).unwrap()
+        );
         let remaining = std::env::var(DEADLINE)
             .unwrap()
             .parse::<u64>()
@@ -1441,6 +1641,15 @@ mod tests {
     }
 
     async fn overlay_case_body(case: OverlayCase) {
+        if matches!(
+            case,
+            OverlayCase::Replacement
+                | OverlayCase::MissingReplacement
+                | OverlayCase::RetryReplacement
+        ) {
+            overlay_cleanup_replacement(case);
+            return;
+        }
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("target");
         fs::write(&target, b"original-file").unwrap();
@@ -1581,6 +1790,9 @@ mod tests {
                 assert_eq!(error.to_string(), original);
                 drop(error);
             }
+            OverlayCase::Replacement
+            | OverlayCase::MissingReplacement
+            | OverlayCase::RetryReplacement => unreachable!(),
             OverlayCase::Constructor => {}
             OverlayCase::SuccessRefusal => {
                 // Real kernel refusal: clear only this thread's effective
@@ -1639,6 +1851,117 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), b"original-file");
         fs::remove_file(&backing_name).unwrap();
         assert_overlay_admission_closed().await;
+    }
+
+    fn overlay_cleanup_replacement(case: OverlayCase) {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        fs::write(&target, b"underlying target bytes").unwrap();
+        let underlying_mount = visible_mount_id(&target);
+        let (mut oracle, backing) = ReplacementOracle::new(directory.path());
+        let mut resource = ExecutableResource::overlay(backing, &target).unwrap();
+        let overlay_mount = visible_mount_id(&target);
+        assert_ne!(overlay_mount, underlying_mount);
+        assert_mount_present(overlay_mount);
+        assert_eq!(fs::read(&target).unwrap(), b"original inode bytes");
+        // The constructor performed a real bind and readonly remount.
+        assert_eq!(
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&target)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EROFS)
+        );
+        if matches!(case, OverlayCase::RetryReplacement) {
+            let mut header = [0x2008_0522_u32, 0];
+            let mut caps = [[0_u32; 3]; 2];
+            assert_eq!(
+                unsafe { libc::syscall(libc::SYS_capget, header.as_mut_ptr(), caps.as_mut_ptr()) },
+                0
+            );
+            let saved = caps;
+            assert_ne!(caps[0][0] & (1 << 21), 0);
+            caps[0][0] &= !(1 << 21);
+            assert_eq!(
+                unsafe { libc::syscall(libc::SYS_capset, header.as_ptr(), caps.as_ptr()) },
+                0
+            );
+            let refused = resource
+                .cleanup_in_place_with_post_remove(true, |_| panic!("unmount refusal ran hook"));
+            assert_eq!(
+                unsafe { libc::syscall(libc::SYS_capset, header.as_ptr(), saved.as_ptr()) },
+                0
+            );
+            assert_eq!(refused.unwrap_err().raw_os_error(), Some(libc::EPERM));
+            let ExecutableResource::Overlay {
+                mount,
+                backing_path,
+            } = &resource
+            else {
+                panic!("unmount refusal lost original resource")
+            };
+            assert!(mount.mounted);
+            assert_eq!(backing_path.to_path_buf(), oracle.path);
+            assert_eq!(oracle.original.metadata().unwrap().nlink(), 1);
+            assert_eq!(visible_mount_id(&target), overlay_mount);
+            assert_mount_present(overlay_mount);
+        }
+        if matches!(case, OverlayCase::MissingReplacement) {
+            fs::remove_file(&oracle.path).unwrap();
+        }
+        resource
+            .cleanup_in_place_with_post_remove(true, |path| {
+                assert_eq!(visible_mount_id(&target), underlying_mount);
+                assert_eq!(fs::read(&target).unwrap(), b"underlying target bytes");
+                assert!(
+                    !fs::read_to_string("/proc/thread-self/mountinfo")
+                        .unwrap()
+                        .lines()
+                        .any(
+                            |line| line.split_once(' ').unwrap().0.parse::<u64>().unwrap()
+                                == overlay_mount
+                        ),
+                    "original overlay must be unmounted before replacement"
+                );
+                eprintln!(
+                    "unmounted overlay={overlay_mount} restored_mount={underlying_mount} target={}",
+                    target.display()
+                );
+                oracle.replace(path);
+            })
+            .unwrap();
+        assert!(matches!(resource, ExecutableResource::Original));
+        oracle.assert_survives();
+        drop(resource);
+        oracle.assert_survives();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn overlay_cleanup_preserves_replacement() {
+        run_overlay_case(
+            "backend::tests::overlay_cleanup_preserves_replacement",
+            OverlayCase::Replacement,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn overlay_not_found_cleanup_preserves_replacement() {
+        run_overlay_case(
+            "backend::tests::overlay_not_found_cleanup_preserves_replacement",
+            OverlayCase::MissingReplacement,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn overlay_failed_unmount_retains_guard_for_retry() {
+        run_overlay_case(
+            "backend::tests::overlay_failed_unmount_retains_guard_for_retry",
+            OverlayCase::RetryReplacement,
+        )
+        .await;
     }
 
     #[tokio::test(flavor = "current_thread")]
