@@ -3650,6 +3650,16 @@ impl KvmBackend {
         let Some(permit) = executor.owned_delivery_permit() else {
             return Ok(());
         };
+        if matches!(
+            outcome,
+            reverie::SignalBoundaryOutcome::Terminated { group: false, .. }
+        ) {
+            // This receipt is the Tool's observation of the thread's death, and
+            // a Tool may wake a joiner from it. Linux clears CLONE_CHILD_CLEARTID
+            // before that death is observable, so the joiner must not see the
+            // stale TID word.
+            self.clear_worker_tid_before_terminal_receipt(executor);
+        }
         if let reverie::SignalBoundaryOutcome::Terminated {
             group: true,
             wait_status,

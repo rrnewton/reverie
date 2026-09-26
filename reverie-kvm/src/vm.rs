@@ -4104,12 +4104,40 @@ impl KvmBackend {
         }
     }
 
+    /// Clears a CLONE_THREAD worker's CLONE_CHILD_CLEARTID word before the
+    /// worker's non-group terminal signal-boundary receipt is published.
+    ///
+    /// Linux clears and wakes this word in `mm_release`, called from `exit_mm`,
+    /// before `exit_notify` makes the task's death observable. A receipt is
+    /// how a Tool observes that death; Detcore, for example, retires the task
+    /// and wakes a `pthread_join` waiter from it. If the clear waited for
+    /// `finish_tool_process`, the woken joiner would read the stale TID and
+    /// retry `FUTEX_WAIT` a host-timing-dependent number of times.
+    ///
+    /// The clear consumes the registered address, so the later call in
+    /// `finish_tool_process` does nothing. A process leader keeps its existing
+    /// discard-or-clear policy at the signal-return and finish sites.
+    pub(crate) fn clear_worker_tid_before_terminal_receipt(&mut self, executor: &mut ElfExecutor) {
+        if self.is_guest_thread {
+            self.clear_registered_worker_tid_before_exit(executor);
+        }
+    }
+
     pub(crate) fn clear_registered_worker_tid_before_exit(&mut self, executor: &mut ElfExecutor) {
         self.release_thread_slot();
         let Some(address) = executor.take_clear_child_tid() else {
             return;
         };
         debug_assert!(self.thread_slot.is_none());
+        // Errors below are dropped on purpose. A bad guest address is Linux's
+        // EFAULT: mm_release ignores the failed store ("if userspace has not
+        // set up a proper pointer then tough luck") and the exit proceeds with
+        // no errno to report. Its FUTEX_WAKE on an unmapped word also fails
+        // with EFAULT, so skipping the host wake for an inaccessible or
+        // untranslatable word has the same effect. The other error source is
+        // a backend failure already recorded on the entry gate. Reading it
+        // here does not consume it: it stays pending on the gate, and
+        // route_entry_outcome folds it into the exiting thread's outcome.
         let _ = self.memory.user().put_user_i32(address, 0);
         if self.memory.user().user_accessible_prefix(address, 4).ok() != Some(4) {
             return;

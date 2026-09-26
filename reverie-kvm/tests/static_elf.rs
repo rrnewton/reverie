@@ -11200,6 +11200,196 @@ int main(void) {
     assert_eq!(i32::from_le_bytes(final_bytes), SIGNAL_EXIT_AFTER_CALLBACK);
 }
 
+const TERMINAL_RECEIPT_CHILD_TID: u64 = 0x0800_3000;
+static TERMINAL_RECEIPT_MEMORY: Mutex<Option<reverie_kvm::GuestMemory>> = Mutex::new(None);
+
+/// Reserves a permit for a worker's `SYS_exit`, as Detcore does for exit
+/// boundaries, and records the worker's CLONE_CHILD_CLEARTID word at the
+/// moment its terminal receipt is published.
+#[derive(Default)]
+struct TerminalReceiptGlobal {
+    control: Mutex<Option<reverie::BackendSignalControl>>,
+    permit: Mutex<Option<reverie::SignalDeliveryPermit>>,
+    receipts: Mutex<Vec<(reverie::SignalBoundaryOutcome, i32)>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for TerminalReceiptGlobal {
+    type Request = reverie::SignalTaskIdentity;
+    type Response = ();
+    type Config = ();
+
+    fn install_backend_signal_control(
+        &self,
+        control: Option<reverie::BackendSignalControl>,
+    ) -> Result<reverie::BackendSignalControlMode, reverie::Error> {
+        *self.control.lock().unwrap() = Some(control.expect("real run capability"));
+        Ok(reverie::BackendSignalControlMode::ToolControlled)
+    }
+
+    async fn receive_rpc(&self, _from: Pid, task: reverie::SignalTaskIdentity) {
+        let permit = reverie::SignalDeliveryPermit {
+            task,
+            sequence: 1,
+            site: None,
+        };
+        assert!(self.permit.lock().unwrap().is_none());
+        self.control
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .process
+            .reserve_delivery(permit)
+            .unwrap();
+        *self.permit.lock().unwrap() = Some(permit);
+    }
+
+    fn authorize_backend_signal_boundary(
+        &self,
+        task: reverie::SignalTaskIdentity,
+    ) -> Result<Option<reverie::SignalDeliveryPermit>, reverie::Error> {
+        Ok(self
+            .permit
+            .lock()
+            .unwrap()
+            .filter(|permit| permit.task == task))
+    }
+
+    async fn on_backend_signal_boundary(
+        &self,
+        receipt: reverie::SignalBoundaryReceipt,
+    ) -> Result<(), reverie::Error> {
+        assert_eq!(self.permit.lock().unwrap().take(), Some(receipt.permit));
+        let mut bytes = [0; std::mem::size_of::<i32>()];
+        TERMINAL_RECEIPT_MEMORY
+            .lock()
+            .expect("terminal-receipt memory lock poisoned")
+            .as_ref()
+            .expect("terminal-receipt memory was not installed")
+            .read(TERMINAL_RECEIPT_CHILD_TID, &mut bytes)
+            .expect("child TID word must be readable at the terminal receipt");
+        self.receipts
+            .lock()
+            .unwrap()
+            .push((receipt.outcome, i32::from_le_bytes(bytes)));
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct TerminalReceiptTool;
+
+#[reverie::tool]
+impl Tool for TerminalReceiptTool {
+    type GlobalState = TerminalReceiptGlobal;
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        call: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        if call.number() == Sysno::exit && guest.tid() != guest.pid() {
+            let task = guest
+                .signal_task_identity()
+                .expect("a started worker has a task identity");
+            guest.send_rpc(task).await;
+        }
+        guest.tail_inject(call).await
+    }
+}
+
+/// A Tool can wake a `pthread_join` waiter from a worker's non-group terminal
+/// receipt, as Detcore does. Linux clears CLONE_CHILD_CLEARTID in `mm_release`
+/// before the exit is observable, so the word must already be zero when that
+/// receipt is published. A stale TID there makes glibc's join loop retry
+/// `FUTEX_WAIT` a host-timing-dependent number of times.
+#[test]
+fn worker_exit_clears_child_tid_before_terminal_receipt() {
+    if !kvm_available("worker exit CHILD_CLEARTID terminal receipt ordering test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "worker-exit-cleartid-receipt",
+        r#"
+#define _GNU_SOURCE
+#include <sched.h>
+#include <stdint.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define TID_WORD ((volatile int *)UINT64_C(0x08003000))
+static _Alignas(16) unsigned char child_stack[1 << 20];
+
+static int child_main(void *unused) {
+  (void)unused;
+  if (*TID_WORD != syscall(SYS_gettid)) syscall(SYS_exit, 43);
+  syscall(SYS_exit, 0);
+  return 44;
+}
+
+int main(void) {
+  void *mapped = mmap((void *)TID_WORD, 4096, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+  if (mapped != (void *)TID_WORD) return 20;
+  *TID_WORD = 0x7fffffff;
+
+  int flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |
+              CLONE_THREAD | CLONE_SYSVSEM | CLONE_CHILD_SETTID |
+              CLONE_CHILD_CLEARTID;
+  int child = clone(child_main, child_stack + sizeof(child_stack), flags,
+                    0, 0, 0, (int *)TID_WORD);
+  if (child < 0) return 22;
+  while (*TID_WORD != 0) syscall(SYS_sched_yield);
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    *TERMINAL_RECEIPT_MEMORY
+        .lock()
+        .expect("terminal-receipt memory lock poisoned") = Some(backend.memory().clone());
+
+    let completion = futures::executor::block_on(
+        backend.run_static_elf_with_tool_completion::<TerminalReceiptTool>((), true),
+    );
+    *TERMINAL_RECEIPT_MEMORY
+        .lock()
+        .expect("terminal-receipt memory lock poisoned") = None;
+    let completion = completion.unwrap();
+    let global = completion.global_state;
+    let (status, stdout, stderr) = completion.result.unwrap();
+    assert_eq!(status, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert!(global.permit.into_inner().unwrap().is_none());
+    assert_eq!(
+        global.receipts.into_inner().unwrap(),
+        vec![(
+            reverie::SignalBoundaryOutcome::Terminated {
+                group: false,
+                wait_status: 0,
+            },
+            0,
+        )],
+    );
+}
+
 #[derive(Default)]
 struct RestartSignalLog {
     callbacks: Mutex<Vec<u8>>,
