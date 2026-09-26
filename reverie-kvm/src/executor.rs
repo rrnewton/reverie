@@ -5729,9 +5729,10 @@ fn host_write(fd: RawFd, bytes: &[u8]) -> i64 {
 // A zero-length scalar read still invokes the endpoint and validates the
 // numeric user address. Only actual host endpoints may use this helper.
 fn host_read_zero(fd: RawFd, address: u64) -> i64 {
-    // SAFETY: the literal zero count prevents a buffer access. Keep the original
-    // numeric address for Linux's address/alignment checks; do not create a
-    // slice, probe guest memory, or substitute an empty allocation's pointer.
+    // SAFETY: this relies on the endpoint honoring count zero without copying
+    // through the buffer. Keep the original numeric address for Linux's
+    // access_ok check; do not create a slice, probe guest memory, or substitute
+    // an empty allocation's pointer.
     let result = unsafe { libc::read(fd, address as usize as *mut libc::c_void, 0) };
     if result < 0 {
         io_error(std::io::Error::last_os_error())
@@ -36544,8 +36545,11 @@ mod tests {
             }
             memory.write(READ_ZERO_BUFFER, &[0x5a; 16]).unwrap();
             for address in READ_ZERO_ADDRESSES {
-                // These synthetic descriptions retain their existing guest
-                // range checks, including canonical addresses beyond the arena.
+                // Preserve a known divergence: at the canonical 3 * PAGE_SIZE
+                // address beyond this arena, these synthetic routes return
+                // EFAULT while native read(..., 0) returns zero. Random reads
+                // dispatch earlier, so the ordinary path's random exclusion is
+                // defensive and is not exercised by this dispatcher test.
                 let expected_result = if address <= memory.guest_end() {
                     0
                 } else {
@@ -36665,7 +36669,10 @@ mod tests {
             events: libc::POLLIN,
             revents: 0,
         };
-        for address in [READ_ZERO_BUFFER, READ_ZERO_PROTECTED, 0, 1, 3 * PAGE_SIZE] {
+        // Preserve virtual EINVAL even at the two high/noncanonical addresses,
+        // where native signalfd currently returns EFAULT. Those cases also
+        // distinguish this route from an accidental read of its eventfd carrier.
+        for address in READ_ZERO_ADDRESSES {
             assert_eq!(
                 syscall_result(
                     &mut memory,
@@ -36673,7 +36680,8 @@ mod tests {
                     libc::SYS_read,
                     [READ_ZERO_HIGH_FD | fd as u64, address, 0, 0, 0, 0],
                 ),
-                negative_errno(libc::EINVAL)
+                negative_errno(libc::EINVAL),
+                "virtual signalfd address={address:#x}"
             );
             assert_read_zero_canaries(&memory);
             // SAFETY: carrier is a live one-element pollfd array, timeout is zero.
