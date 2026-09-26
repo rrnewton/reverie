@@ -33,6 +33,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1227,16 +1228,138 @@ static void compare_context_state(int creator, int helper) {
   }
 }
 
+enum { READ_PLT_LEGACY_BYTES = 6, READ_PLT_ENDBR64_BYTES = 10 };
+static const unsigned char read_plt_endbr64[] = {0xf3, 0x0f, 0x1e, 0xfa};
+
+/* Only these two complete x86-64 encodings are supported. In particular this
+ * does not scan for a jump, follow another thunk, or accept other prefixes. */
+static bool decode_read_plt(const unsigned char *bytes, size_t length,
+                            uintptr_t callable, uintptr_t *slot) {
+  size_t jump;
+  if (length == READ_PLT_LEGACY_BYTES) {
+    jump = 0;
+  } else if (length == READ_PLT_ENDBR64_BYTES &&
+             memcmp(bytes, read_plt_endbr64, sizeof(read_plt_endbr64)) == 0) {
+    jump = sizeof(read_plt_endbr64);
+  } else {
+    return false;
+  }
+  if (bytes[jump] != 0xff || bytes[jump + 1] != 0x25 ||
+      callable > UINTPTR_MAX - length) {
+    return false;
+  }
+  int32_t displacement;
+  memcpy(&displacement, bytes + jump + 2, sizeof(displacement));
+  uintptr_t next = callable + length;
+  if (displacement < 0) {
+    /* Widen before negation so INT32_MIN is defined. */
+    uintptr_t magnitude = (uintptr_t)(-(int64_t)displacement);
+    if (next < magnitude) return false;
+    *slot = next - magnitude;
+  } else {
+    uintptr_t magnitude = (uintptr_t)displacement;
+    if (next > UINTPTR_MAX - magnitude) return false;
+    *slot = next + magnitude;
+  }
+  return true;
+}
+
+static bool same_read_plt(const unsigned char *left, size_t left_length,
+                          const unsigned char *right, size_t right_length) {
+  return (left_length == READ_PLT_LEGACY_BYTES ||
+          left_length == READ_PLT_ENDBR64_BYTES) &&
+         left_length == right_length && memcmp(left, right, left_length) == 0;
+}
+
+static void qualify_read_plt_decoder(void) {
+  const uintptr_t callable = UINT64_C(0x100000000);
+  const int32_t displacements[] = {0, 24, -24, INT32_MAX, INT32_MIN};
+  for (unsigned form = 0; form < 2; ++form) {
+    size_t jump = form ? sizeof(read_plt_endbr64) : 0;
+    size_t length = jump + READ_PLT_LEGACY_BYTES;
+    unsigned char bytes[READ_PLT_ENDBR64_BYTES] = {0};
+    if (form) memcpy(bytes, read_plt_endbr64, sizeof(read_plt_endbr64));
+    bytes[jump] = 0xff;
+    bytes[jump + 1] = 0x25;
+    uintptr_t slot;
+    for (unsigned i = 0; i < sizeof(displacements) / sizeof(displacements[0]); ++i) {
+      int32_t displacement = displacements[i];
+      memcpy(bytes + jump + 2, &displacement, sizeof(displacement));
+      assert(decode_read_plt(bytes, length, callable, &slot));
+      assert(slot == (uintptr_t)((int64_t)callable + (int64_t)length + displacement));
+    }
+    /* Every short input refuses before reading an absent displacement byte. */
+    for (size_t short_length = 0; short_length < length; ++short_length) {
+      assert(!decode_read_plt(bytes, short_length, callable, &slot));
+    }
+    assert(!decode_read_plt(bytes, length + 1, callable, &slot));
+    for (size_t i = 0; i < jump + 2; ++i) {
+      unsigned char changed[READ_PLT_ENDBR64_BYTES];
+      memcpy(changed, bytes, sizeof(changed));
+      changed[i] ^= 1;
+      assert(!decode_read_plt(changed, length, callable, &slot));
+    }
+    assert(same_read_plt(bytes, length, bytes, length));
+    for (size_t i = 0; i < length; ++i) {
+      unsigned char changed[READ_PLT_ENDBR64_BYTES];
+      memcpy(changed, bytes, sizeof(changed));
+      changed[i] ^= 1;
+      assert(!same_read_plt(bytes, length, changed, length));
+    }
+    assert(!same_read_plt(bytes, length, bytes,
+                          form ? READ_PLT_LEGACY_BYTES : READ_PLT_ENDBR64_BYTES));
+    int32_t displacement = 0;
+    memcpy(bytes + jump + 2, &displacement, sizeof(displacement));
+    assert(!decode_read_plt(bytes, length, UINTPTR_MAX - length + 1, &slot));
+    displacement = 1;
+    memcpy(bytes + jump + 2, &displacement, sizeof(displacement));
+    assert(!decode_read_plt(bytes, length, UINTPTR_MAX - length, &slot));
+    displacement = -(int32_t)length - 1;
+    memcpy(bytes + jump + 2, &displacement, sizeof(displacement));
+    assert(!decode_read_plt(bytes, length, 0, &slot));
+  }
+  const struct {
+    unsigned char bytes[14];
+    size_t length;
+  } malformed[] = {
+      {{0xf3, 0x0f, 0x1e, 0xfb, 0xff, 0x25}, 10}, /* ENDBR32 */
+      {{0xf2, 0xff, 0x25}, 7},                    /* BND */
+      {{0xf3, 0x0f, 0x1e, 0xfa, 0xf2, 0xff, 0x25}, 11},
+      {{0x3e, 0xff, 0x25}, 7},                    /* NOTRACK */
+      {{0xff, 0x15}, 6},                          /* indirect call */
+      {{0xff, 0x24}, 6},                          /* other ModRM */
+      {{0xff, 0x35}, 6},
+      {{0xe9}, 5},                               /* direct jump */
+      {{0x90, 0xff, 0x25}, 7},                    /* NOP + jump */
+      {{0x66, 0x90, 0xff, 0x25}, 8},
+      {{0xf3, 0x0f, 0x1e, 0xfa, 0xff, 0x15}, 10},
+      {{0xf3, 0x0f, 0x1e, 0xfa, 0xf3, 0x0f, 0x1e, 0xfa, 0xff, 0x25}, 14},
+  };
+  uintptr_t slot;
+  for (size_t i = 0; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    assert(!decode_read_plt(malformed[i].bytes, malformed[i].length, callable, &slot));
+  }
+  /* A complete jump at every other offset must not turn into a scan. */
+  for (size_t offset = 1; offset <= 8; ++offset) {
+    unsigned char shifted[14] = {0};
+    shifted[offset] = 0xff;
+    shifted[offset + 1] = 0x25;
+    assert(!decode_read_plt(shifted, offset + READ_PLT_LEGACY_BYTES, callable, &slot));
+  }
+}
+
 struct read_dispatch {
   uintptr_t callable;
-  unsigned char plt[6];
+  unsigned char plt[READ_PLT_ENDBR64_BYTES];
+  size_t plt_length;
   uintptr_t slot;
   uintptr_t target;
   void *next_read;
   Dl_info binding;
 };
 
-/* This diagnostic qualifies the observed x86-64, non-PIE ELF PLT layout only.
+/* This diagnostic qualifies the two explicit x86-64, non-PIE ELF PLT forms:
+ * ff25+disp32, with or without one exact ENDBR64 immediately before the jump.
  * A canonical function address can identify read@plt in the executable. Keep
  * that observation distinct from the live destination. This process asserts
  * live PLT/GOT/public-dlsym agreement and stability and records dladdr/maps.
@@ -1250,23 +1373,34 @@ struct read_dispatch {
  * selection is explicit above; production compiler flags are unchanged. */
 static struct read_dispatch observe_read_dispatch(const char *phase) {
   _Static_assert(sizeof(uintptr_t) == 8, "dispatch qualification requires x86-64");
-  struct read_dispatch result = {.callable = (uintptr_t)(void *)read};
+  struct read_dispatch result = {.callable = (uintptr_t)(void *)read,
+                                 .plt_length = READ_PLT_LEGACY_BYTES};
   const volatile unsigned char *code = (const volatile unsigned char *)result.callable;
-  for (size_t i = 0; i < sizeof(result.plt); ++i) {
+  for (size_t i = 0; i < sizeof(read_plt_endbr64); ++i) {
     result.plt[i] = code[i];
   }
-  printf("CONTEXT_READ_PLT phase=%s callable=%p plt_hex=", phase, (void *)result.callable);
-  for (size_t i = 0; i < sizeof(result.plt); ++i) {
+  /* Inspect the six-byte legacy window (prefix and opcode for CET) before
+   * reading any additional displacement bytes. */
+  for (size_t i = sizeof(read_plt_endbr64); i < READ_PLT_LEGACY_BYTES; ++i) {
+    result.plt[i] = code[i];
+  }
+  if (memcmp(result.plt, read_plt_endbr64, sizeof(read_plt_endbr64)) == 0 &&
+      result.plt[4] == 0xff && result.plt[5] == 0x25) {
+    result.plt_length = READ_PLT_ENDBR64_BYTES;
+  }
+  for (size_t i = READ_PLT_LEGACY_BYTES; i < result.plt_length; ++i) {
+    result.plt[i] = code[i];
+  }
+  printf("CONTEXT_READ_PLT phase=%s callable=%p plt_hex=", phase,
+         (void *)result.callable);
+  for (size_t i = 0; i < result.plt_length; ++i) {
     printf("%02x", result.plt[i]);
   }
   putchar('\n');
   assert(fflush(stdout) == 0);
-  if (result.plt[0] != 0xff || result.plt[1] != 0x25) {
+  if (!decode_read_plt(result.plt, result.plt_length, result.callable, &result.slot)) {
     context_error("unsupported-read-plt-layout", phase, ENOTSUP);
   }
-  int32_t displacement;
-  memcpy(&displacement, result.plt + 2, sizeof(displacement));
-  result.slot = result.callable + sizeof(result.plt) + (uintptr_t)(intptr_t)displacement;
   assert(result.slot % sizeof(uintptr_t) == 0);
   /* A fresh aligned ABI word load at each observation, even under optimization. */
   result.target = *(const volatile uintptr_t *)result.slot;
@@ -1288,7 +1422,7 @@ static struct read_dispatch observe_read_dispatch(const char *phase) {
   assert(result.binding.dli_sname != NULL && result.binding.dli_saddr == result.next_read);
   printf("CONTEXT_READ_DISPATCH phase=%s callable=%p plt_hex=", phase,
          (void *)result.callable);
-  for (size_t i = 0; i < sizeof(result.plt); ++i) {
+  for (size_t i = 0; i < result.plt_length; ++i) {
     printf("%02x", result.plt[i]);
   }
   printf(" slot=%p target=%p next_read=%p dso=%s base=%p symbol=%s symbol_address=%p\n",
@@ -1302,7 +1436,7 @@ static struct read_dispatch observe_read_dispatch(const char *phase) {
 static void compare_read_dispatch(const struct read_dispatch *before,
                                   const struct read_dispatch *after) {
   assert(before->callable == after->callable);
-  assert(memcmp(before->plt, after->plt, sizeof(before->plt)) == 0);
+  assert(same_read_plt(before->plt, before->plt_length, after->plt, after->plt_length));
   assert(before->slot == after->slot);
   assert(before->target == after->target);
   assert(before->next_read == after->next_read);
@@ -1314,6 +1448,7 @@ static void compare_read_dispatch(const struct read_dispatch *before,
 }
 
 static void inherited_context(void) {
+  qualify_read_plt_decoder();
   reset();
   gate(RVK_READ_TEST_BEFORE_ENABLE);
   atomic_store(&capture_context, true);
@@ -1404,6 +1539,7 @@ static void inherited_context(void) {
   printf("CONTEXT_READ_BINDING address=%p dso=%s base=%p symbol=%s symbol_address=%p\n",
          (void *)read, binding.dli_fname, binding.dli_fbase,
          binding.dli_sname != NULL ? binding.dli_sname : "<unknown>", binding.dli_saddr);
+  puts("CONTEXT_READ_PLT_DECODER legacy=1 endbr64=1 signed=1 malformed_rejected=1 truncated_rejected=1 overflow_rejected=1 stability_bytes=1 stability_length=1");
   struct read_dispatch dispatch_before = observe_read_dispatch("before-read");
   print_proc_file("/proc/self/maps");
   compare_context_state(creator, helper);
