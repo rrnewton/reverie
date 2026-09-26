@@ -4,6 +4,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
+use std::sync::LazyLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -22,6 +23,7 @@ use reverie::Rdtsc;
 use reverie::RdtscResult;
 use reverie::Subscription;
 use reverie::Tid;
+use reverie::TimerSchedule;
 use reverie::Tool;
 use reverie::process::Command;
 use reverie::syscalls::Addr;
@@ -2116,4 +2118,108 @@ async fn cancelling_wait_reaps_and_unregisters_liteinst_root() {
 #[tokio::test(flavor = "current_thread")]
 async fn cancelling_wait_with_output_reaps_and_unregisters_liteinst_root() {
     cancel_host_wait(true).await;
+}
+
+/// Branches from a timer request to its PMU notification. The fixture
+/// `hybrid_timer_signal_at_helper.c` retires about this many between each
+/// request and the syscall that follows it.
+const HELPER_NOTIFICATION_RCBS: u64 = 9_000;
+
+/// The skid margin differs between processors, so the interval is set from
+/// it: the notification then comes HELPER_NOTIFICATION_RCBS branches after
+/// the request.
+static HELPER_REQUEST_RCBS: LazyLock<u64> =
+    LazyLock::new(|| reverie_ptrace::PmuConfig::new().skid_margin() + HELPER_NOTIFICATION_RCBS);
+
+#[derive(Debug, Default)]
+struct TimerEvents {
+    fired: AtomicU64,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for TimerEvents {
+    type Request = ();
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Tid, _fired: ()) {
+        self.fired.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct RequestAtClockGetres;
+
+#[reverie::tool]
+impl Tool for RequestAtClockGetres {
+    type GlobalState = TimerEvents;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        [Sysno::clock_getres, Sysno::getppid].into_iter().collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        if syscall.number() == Sysno::clock_getres {
+            guest.set_timer_precise(TimerSchedule::Rcbs(*HELPER_REQUEST_RCBS))?;
+        }
+        guest.tail_inject(syscall).await
+    }
+
+    async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
+        guest.send_rpc(()).await;
+    }
+}
+
+/// The timer's counter also counts the branches of the LiteInst patch
+/// helper, which runs in the guest at a site's first seccomp stop, so a
+/// precise timer's overflow can be raised while the helper runs. That signal
+/// is the timer's: it must neither fail the helper nor reach the guest,
+/// which has no handler for it.
+#[tokio::test(flavor = "current_thread")]
+async fn timer_overflow_in_the_patch_helper_is_the_timers() {
+    reverie_ptrace::ret_without_perf!();
+    let helper_before = reverie_ptrace::testing::liteinst_helper_timer_signals_discarded();
+    let injection_before = reverie_ptrace::testing::late_timer_signals_discarded();
+    let skid = reverie_ptrace::PmuConfig::new().skid_margin();
+    let (_directory, guest) = compile_fixture("hybrid_timer_signal_at_helper.c");
+    let mut command = Command::new(guest);
+    command.arg(skid.to_string());
+    let (output, global) =
+        LiteinstBackend::run_host_with_output_and_preload::<RequestAtClockGetres>(
+            command,
+            (),
+            preload_path(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(output.stdout, b"rounds=32\n", "{output:?}");
+    assert!(output.status.success(), "{output:?}");
+    // Each request's target lies past the getppid that follows it. Its
+    // signal is discarded before any stop can fire it, or, if it is
+    // delivered before getppid, stepping to the target is cut short by
+    // getppid's seccomp stop.
+    assert_eq!(global.fired.load(Ordering::SeqCst), 0, "{output:?}");
+    // In the 4 of every 16 rounds that retire fewer than
+    // HELPER_NOTIFICATION_RCBS branches before getppid, the counter reaches
+    // its threshold in getppid's helper. In the other rounds it reaches it
+    // before getppid. When the processor raises each signal depends on its
+    // interrupt latency: a helper round's signal can come after the helper
+    // returns, and another round's can come once the helper has started. So
+    // the count is not required to be exactly 8. A signal already pending at
+    // the getppid stop is taken during the CPUID policy injection instead.
+    let helper = reverie_ptrace::testing::liteinst_helper_timer_signals_discarded() - helper_before;
+    let injection = reverie_ptrace::testing::late_timer_signals_discarded() - injection_before;
+    eprintln!(
+        "timer signals discarded in the patch helper: {helper}, at injected syscalls: {injection}"
+    );
+    assert!(
+        helper > 0,
+        "no helper run had the timer's signal: {output:?}"
+    );
 }

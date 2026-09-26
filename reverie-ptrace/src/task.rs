@@ -2259,6 +2259,10 @@ fn set_ret(task: &Stopped, ret: Reg) -> Result<Reg, TraceError> {
 /// Late timer overflow signals discarded at injected syscalls, for tests.
 pub(crate) static LATE_TIMER_SIGNALS_DISCARDED: AtomicU64 = AtomicU64::new(0);
 
+/// Timer overflow signals discarded while the LiteInst patch helper ran, for
+/// tests.
+pub(crate) static LITEINST_HELPER_TIMER_SIGNALS_DISCARDED: AtomicU64 = AtomicU64::new(0);
+
 /// Canonical marker emitted when a guest-thread task dies of a panic.
 ///
 /// The token is what a harness greps for, in the same spirit as
@@ -4761,6 +4765,72 @@ impl<L: Tool + 'static> TracedTask<L> {
                         "patch helper completed successfully",
                     );
                     return Err(self.liteinst_helper_failure(original, rollback));
+                }
+                Wait::Stopped(stopped, Event::Signal(sig)) if sig == Timer::signal_type() => {
+                    // The counter counts the helper's branches, so the timer's
+                    // own overflow notification can be raised while the helper
+                    // runs. (One already pending at the seccomp stop that led
+                    // here is taken by untraced_syscall when the helper's CPUID
+                    // policy is read, before the helper starts, when overflow
+                    // records exist.) That stop ticked the timer event, and
+                    // nothing has requested one since, so the event is Armed or
+                    // Cancelled and its signal's own stop would drop it. It
+                    // never reaches the guest; resume the helper without it.
+                    // Any other signal, one not backed by an unconsumed
+                    // overflow record, and a failure to tell still roll the
+                    // helper back.
+                    match self.consume_own_timer_overflow(&stopped) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            let original = Error::runtime(
+                                self.tid(),
+                                "run LiteInst patch helper",
+                                format!("unexpected stopped event: {:?}", Event::Signal(sig)),
+                            );
+                            return Err(self
+                                .rollback_liteinst_helper_error(stopped, &saved, original)
+                                .await);
+                        }
+                        Err(error) => {
+                            return Err(self
+                                .rollback_liteinst_helper_error(
+                                    stopped,
+                                    &saved,
+                                    Error::Internal(error),
+                                )
+                                .await);
+                        }
+                    }
+                    tracing::debug!(
+                        "[{}] discarding a timer overflow signal in the LiteInst patch helper",
+                        stopped.pid()
+                    );
+                    LITEINST_HELPER_TIMER_SIGNALS_DISCARDED.fetch_add(1, Ordering::Relaxed);
+                    let running = match self.resume_stopped(stopped, None) {
+                        Ok(running) => running,
+                        Err(error) => {
+                            return Err(self
+                                .rollback_liteinst_helper_error(
+                                    Stopped::new_unchecked(self.tid()),
+                                    &saved,
+                                    Error::Internal(error),
+                                )
+                                .await);
+                        }
+                    };
+                    wait = match running.next_state().await {
+                        Ok(wait) => wait,
+                        Err(error) => {
+                            return Err(self
+                                .rollback_liteinst_helper_error(
+                                    Stopped::new_unchecked(self.tid()),
+                                    &saved,
+                                    Error::Internal(error),
+                                )
+                                .await);
+                        }
+                    };
+                    self.arm_liteinst_wait(&wait);
                 }
                 Wait::Stopped(stopped, event) => {
                     let original = Error::runtime(
