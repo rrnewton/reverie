@@ -153,6 +153,24 @@ impl InjectedCleanupUnconfirmed {
     }
 }
 
+// Test-only side observations keep the exact returned value and error intact.
+// The non-test expansion is precisely the original expression.
+macro_rules! legacy_cleanup_observe {
+    ($phase:literal, $tid:expr, $generation:expr, $expression:expr) => {{
+        #[cfg(all(test, target_arch = "x86_64"))]
+        {
+            let observation = injected_error_tests::RefusalPhase::enter($phase, $tid, $generation);
+            let result = $expression;
+            observation.finish(&result);
+            result
+        }
+        #[cfg(not(all(test, target_arch = "x86_64")))]
+        {
+            $expression
+        }
+    }};
+}
+
 struct LiteinstTraceeCleanup {
     identity: TraceeIdentity,
     newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
@@ -1120,42 +1138,96 @@ impl TraceeIdentity {
         parent: Option<(Pid, Option<ChildOp>)>,
         validate_proc_parent: bool,
     ) -> Result<Self, Errno> {
-        let before = tracee_snapshot(tid).map_err(io_errno)?;
+        let before = legacy_cleanup_observe!(
+            "identity-proc-snapshot-site1",
+            tid,
+            None,
+            tracee_snapshot(tid)
+        )
+        .map_err(io_errno)?;
         let parent_snapshot = parent
-            .map(|(parent_tid, _)| tracee_snapshot(parent_tid).map_err(io_errno))
+            .map(|(parent_tid, _)| {
+                legacy_cleanup_observe!(
+                    "identity-parent-snapshot-site1",
+                    parent_tid,
+                    None,
+                    tracee_snapshot(parent_tid)
+                )
+                .map_err(io_errno)
+            })
             .transpose()?;
-        let proc_dir = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
-            .open(format!("/proc/{tid}"))
-            .map_err(io_errno)?;
-        let proc_inode = proc_dir.metadata().map_err(io_errno)?.ino();
+        let proc_dir = legacy_cleanup_observe!(
+            "identity-proc-open",
+            tid,
+            None,
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+                .open(format!("/proc/{tid}"))
+        )
+        .map_err(io_errno)?;
+        let proc_inode = legacy_cleanup_observe!(
+            "identity-retained-proc-metadata",
+            tid,
+            None,
+            proc_dir.metadata()
+        )
+        .map_err(io_errno)?
+        .ino();
         let pidfd = if tid == before.tgid {
             let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, tid.as_raw(), 0) };
             if fd == -1 {
-                return Err(Errno::last());
+                let error = Errno::last();
+                return legacy_cleanup_observe!("identity-pidfd-open", tid, None, Err(error));
             }
             Some(unsafe { OwnedFd::from_raw_fd(fd as i32) })
         } else {
             None
         };
-        let after = tracee_snapshot(tid).map_err(io_errno)?;
-        let current_inode = fs::metadata(format!("/proc/{tid}"))
-            .map_err(io_errno)?
-            .ino();
+        let after = legacy_cleanup_observe!(
+            "identity-proc-snapshot-site2",
+            tid,
+            None,
+            tracee_snapshot(tid)
+        )
+        .map_err(io_errno)?;
+        let current_inode = legacy_cleanup_observe!(
+            "identity-current-proc-metadata",
+            tid,
+            None,
+            fs::metadata(format!("/proc/{tid}"))
+        )
+        .map_err(io_errno)?
+        .ino();
         if before != after || current_inode != proc_inode || !tracer_is_current(after.tracer_pid) {
-            return Err(Errno::ESRCH);
+            return legacy_cleanup_observe!(
+                "identity-stability-check-site1",
+                tid,
+                None,
+                Err(Errno::ESRCH)
+            );
         }
 
         let parent = match (parent, parent_snapshot) {
             (Some((parent_tid, op)), Some(parent_snapshot)) => {
-                let parent_after = tracee_snapshot(parent_tid).map_err(io_errno)?;
+                let parent_after = legacy_cleanup_observe!(
+                    "identity-parent-snapshot-site2",
+                    parent_tid,
+                    None,
+                    tracee_snapshot(parent_tid)
+                )
+                .map_err(io_errno)?;
                 if parent_after != parent_snapshot
                     || (validate_proc_parent
                         && after.tgid != parent_snapshot.tgid
                         && after.ppid != parent_snapshot.tgid)
                 {
-                    return Err(Errno::ESRCH);
+                    return legacy_cleanup_observe!(
+                        "identity-stability-check-site2",
+                        tid,
+                        None,
+                        Err(Errno::ESRCH)
+                    );
                 }
                 Some((parent_tid, parent_snapshot.tgid, op))
             }
@@ -1311,6 +1383,8 @@ impl LiteinstTraceeCleanup {
     fn capture_pending_children(&self, terminal: &TerminalCleanup) -> std::io::Result<()> {
         while let Some(reservation) = terminal.reserve_pending_for_cleanup(Duration::ZERO) {
             let state = reservation.decode().map_err(|error| {
+                #[cfg(all(test, target_arch = "x86_64"))]
+                injected_error_tests::refusal_leaf_error(Some("queued-state-decode"), &error, None);
                 std::io::Error::other(format!("decode queued cancellation state: {error}"))
             })?;
             if let Wait::Stopped(stopped, Event::NewChild(op, child)) = state {
@@ -1332,11 +1406,20 @@ impl LiteinstTraceeCleanup {
             .terminal
             .as_ref()
             .expect("registered LiteInst cleanup has a root terminal handle");
-        terminal
-            .ensure_registered()
-            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+        legacy_cleanup_observe!(
+            "root-ensure-registration",
+            self.pid(),
+            Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+            terminal.ensure_registered()
+        )
+        .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
         if self.root_frozen {
-            return self.capture_pending_children(terminal);
+            return legacy_cleanup_observe!(
+                "root-pending-children-site1",
+                self.pid(),
+                Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                self.capture_pending_children(terminal)
+            );
         }
         if let Some(mut held) = self.held_root_stop.lock().unwrap().take() {
             let owns_claimed_exit = matches!(held.status, HeldRootStopStatus::Exit);
@@ -1368,27 +1451,47 @@ impl LiteinstTraceeCleanup {
                 || !terminal.same_generation(&held.terminal)
                 || !matching_status
             {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "held root stop lease did not match the exact event generation/status",
-                ));
+                return legacy_cleanup_observe!(
+                    "held-root-validation",
+                    self.pid(),
+                    Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "held root stop lease did not match the exact event generation/status",
+                    ))
+                );
             }
-            if owns_claimed_exit {
-                // SAFETY: taking the exact-generation held lease is the
-                // cancellation handoff for the ExitFuture-minted Stopped. The
-                // handler future has been dropped, so no independent Stopped
-                // capability survives this exclusive slot transfer.
-                unsafe { terminal.revoke_owned_exit_stop() }
-            } else {
-                terminal.revoke_unclaimed_exit_stop()
-            }
+            legacy_cleanup_observe!(
+                "held-root-revocation",
+                self.pid(),
+                Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                if owns_claimed_exit {
+                    // SAFETY: taking the exact-generation held lease is the
+                    // cancellation handoff for the ExitFuture-minted Stopped. The
+                    // handler future has been dropped, so no independent Stopped
+                    // capability survives this exclusive slot transfer.
+                    unsafe { terminal.revoke_owned_exit_stop() }
+                } else {
+                    terminal.revoke_unclaimed_exit_stop()
+                }
+            )
             .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
             held.disarm();
             self.root_frozen = true;
-            return self.capture_pending_children(terminal);
+            return legacy_cleanup_observe!(
+                "root-pending-children-site2",
+                self.pid(),
+                Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                self.capture_pending_children(terminal)
+            );
         }
 
-        match self.identity.send_signal(Signal::SIGSTOP) {
+        match legacy_cleanup_observe!(
+            "root-stop-signal-delivery",
+            self.pid(),
+            Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+            self.identity.send_signal(Signal::SIGSTOP)
+        ) {
             Ok(()) | Err(Errno::ESRCH) => {}
             Err(error) => return Err(std::io::Error::from_raw_os_error(error.into_raw())),
         }
@@ -1397,7 +1500,13 @@ impl LiteinstTraceeCleanup {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if let Some(reservation) = terminal.reserve_pending_for_cleanup(remaining) {
-                let state = reservation.decode().map_err(|error| {
+                let state = legacy_cleanup_observe!(
+                    "queued-state-decode",
+                    self.pid(),
+                    Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                    reservation.decode()
+                )
+                .map_err(|error| {
                     std::io::Error::other(format!(
                         "decode exact root freeze state for {}: {error}",
                         self.pid()
@@ -1411,21 +1520,34 @@ impl LiteinstTraceeCleanup {
                         .entry(child_pid)
                         .or_insert_with(|| NewbornTracee::from_event(stopped.pid(), op, &child));
                 }
-                terminal
-                    .revoke_unclaimed_exit_stop()
-                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                legacy_cleanup_observe!(
+                    "root-freeze-revocation-site1",
+                    self.pid(),
+                    Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                    terminal.revoke_unclaimed_exit_stop()
+                )
+                .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
                 reservation.commit();
                 // Any exact-generation nonterminal wait status means the root
                 // is kernel-stopped. Drain the remaining FIFO while it cannot
                 // execute and create another child.
-                self.capture_pending_children(terminal)?;
+                legacy_cleanup_observe!(
+                    "root-pending-children-site3",
+                    self.pid(),
+                    Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                    self.capture_pending_children(terminal)
+                )?;
                 self.root_frozen = true;
                 return Ok(());
             }
             if terminal.exit_stop_observed() {
-                terminal
-                    .revoke_unclaimed_exit_stop()
-                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                legacy_cleanup_observe!(
+                    "root-freeze-revocation-site2",
+                    self.pid(),
+                    Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                    terminal.revoke_unclaimed_exit_stop()
+                )
+                .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
                 self.root_frozen = true;
                 return Ok(());
             }
@@ -1434,10 +1556,15 @@ impl LiteinstTraceeCleanup {
                 return Ok(());
             }
             if remaining.is_zero() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    format!("root {} did not enter an exact notifier stop", self.pid()),
-                ));
+                return legacy_cleanup_observe!(
+                    "root-freeze-timeout",
+                    self.pid(),
+                    Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("root {} did not enter an exact notifier stop", self.pid()),
+                    ))
+                );
             }
         }
     }
@@ -1505,6 +1632,8 @@ impl LiteinstTraceeCleanup {
     }
 
     fn terminate_and_confirm_before(&mut self, deadline: Option<Instant>) -> std::io::Result<()> {
+        #[cfg(all(test, target_arch = "x86_64"))]
+        injected_error_tests::refusal_attempt();
         if self.confirm_reaped().is_ok() {
             return Ok(());
         }
@@ -1521,6 +1650,8 @@ impl LiteinstTraceeCleanup {
             self.retained_terminal_descendants
                 .extend(terminal_descendants);
         }
+        #[cfg(all(test, target_arch = "x86_64"))]
+        injected_error_tests::refusal_attempt_result(self.pid(), &result);
         result
     }
 
@@ -1531,16 +1662,29 @@ impl LiteinstTraceeCleanup {
         deadline: Option<Instant>,
     ) -> std::io::Result<()> {
         if self.terminal.is_none() {
-            terminate_and_reap_new_child_with_identity(Running::new(self.pid()), &self.identity)
-                .map_err(|error| {
-                    std::io::Error::other(format!("pre-registration LiteInst cleanup: {error}"))
-                })?;
+            legacy_cleanup_observe!(
+                "pre-registration-cleanup",
+                self.pid(),
+                Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                terminate_and_reap_new_child_with_identity(
+                    Running::new(self.pid()),
+                    &self.identity
+                )
+            )
+            .map_err(|error| {
+                std::io::Error::other(format!("pre-registration LiteInst cleanup: {error}"))
+            })?;
             self.armed = false;
             return Ok(());
         }
 
         if self.identity.same_process() {
-            self.freeze_root_generation(deadline)?;
+            legacy_cleanup_observe!(
+                "root-freeze",
+                self.pid(),
+                Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                self.freeze_root_generation(deadline)
+            )?;
         } else {
             // The exact root generation is already gone, so it cannot create
             // another descendant. Drain any child event the notifier published
@@ -1548,7 +1692,12 @@ impl LiteinstTraceeCleanup {
             // generation-bound descendants; trying to freeze a completed root
             // would only collide with its consumed exit capability.
             if let Some(terminal) = self.terminal.as_ref() {
-                self.capture_pending_children(terminal)?;
+                legacy_cleanup_observe!(
+                    "root-pending-children-site4",
+                    self.pid(),
+                    Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                    self.capture_pending_children(terminal)
+                )?;
             }
             self.root_frozen = true;
         }
@@ -1562,40 +1711,86 @@ impl LiteinstTraceeCleanup {
         }
         self.discover_descendants(descendants, terminal_descendants)?;
         let root_terminal = self.terminal.as_ref().unwrap();
-        self.capture_pending_children(root_terminal)?;
+        legacy_cleanup_observe!(
+            "root-pending-children-site5",
+            self.pid(),
+            Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+            self.capture_pending_children(root_terminal)
+        )?;
         if !root_terminal.pending_is_empty() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 "root notifier FIFO changed while frozen",
             ));
         }
-        match self.identity.send_signal(Signal::SIGKILL) {
+        match legacy_cleanup_observe!(
+            "root-kill-signal-delivery",
+            self.pid(),
+            Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+            self.identity.send_signal(Signal::SIGKILL)
+        ) {
             Ok(()) | Err(Errno::ESRCH) => {}
             Err(error) => return Err(std::io::Error::from_raw_os_error(error.into_raw())),
         }
         for tracee in descendants.values() {
-            tracee
-                .terminal
-                .ensure_registered()
-                .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
-            send_identity_sigkill(&tracee.identity)?;
+            legacy_cleanup_observe!(
+                "descendant-ensure-registration-site1",
+                tracee.identity.tid,
+                Some(injected_error_tests::RefusalGeneration::of(
+                    &tracee.identity
+                )),
+                tracee.terminal.ensure_registered()
+            )
+            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+            legacy_cleanup_observe!(
+                "descendant-kill-signal-delivery-site1",
+                tracee.identity.tid,
+                Some(injected_error_tests::RefusalGeneration::of(
+                    &tracee.identity
+                )),
+                send_identity_sigkill(&tracee.identity)
+            )?;
         }
 
         let deadline = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(2));
         while Instant::now() < deadline {
             if let Some(terminal) = self.terminal.as_ref() {
-                self.capture_pending_children(terminal)?;
+                legacy_cleanup_observe!(
+                    "root-pending-children-site6",
+                    self.pid(),
+                    Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                    self.capture_pending_children(terminal)
+                )?;
             }
             for tracee in descendants.values() {
-                self.capture_pending_children(&tracee.terminal)?;
+                legacy_cleanup_observe!(
+                    "descendant-pending-children-site1",
+                    tracee.identity.tid,
+                    Some(injected_error_tests::RefusalGeneration::of(
+                        &tracee.identity
+                    )),
+                    self.capture_pending_children(&tracee.terminal)
+                )?;
             }
             self.discover_descendants(descendants, terminal_descendants)?;
             for tracee in descendants.values() {
-                tracee
-                    .terminal
-                    .ensure_registered()
-                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
-                send_identity_sigkill(&tracee.identity)?;
+                legacy_cleanup_observe!(
+                    "descendant-ensure-registration-site2",
+                    tracee.identity.tid,
+                    Some(injected_error_tests::RefusalGeneration::of(
+                        &tracee.identity
+                    )),
+                    tracee.terminal.ensure_registered()
+                )
+                .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                legacy_cleanup_observe!(
+                    "descendant-kill-signal-delivery-site2",
+                    tracee.identity.tid,
+                    Some(injected_error_tests::RefusalGeneration::of(
+                        &tracee.identity
+                    )),
+                    send_identity_sigkill(&tracee.identity)
+                )?;
             }
 
             let root_done = self
@@ -1608,7 +1803,16 @@ impl LiteinstTraceeCleanup {
                 .collect::<Vec<_>>();
             for pid in completed {
                 if let Some(tracee) = descendants.get(&pid) {
-                    self.capture_pending_children(&tracee.terminal)?;
+                    legacy_cleanup_observe!(
+                        "descendant-pending-children-site2",
+                        tracee.identity.tid,
+                        Some(injected_error_tests::RefusalGeneration::of(
+                            &tracee.identity
+                        )),
+                        self.capture_pending_children(&tracee.terminal)
+                    )?;
+                    #[cfg(all(test, target_arch = "x86_64"))]
+                    injected_error_tests::refusal_borrow_retired(tracee)?;
                 }
                 let tracee = descendants
                     .remove(&pid)
@@ -1634,13 +1838,20 @@ impl LiteinstTraceeCleanup {
                     observations.insert(pid, identity);
                 }
             }
+            #[cfg(all(test, target_arch = "x86_64"))]
+            injected_error_tests::refusal_cleanup_progress(self)?;
             if let Some(observations) = self.fatal_terminal_observations.as_mut() {
                 // This map never authorizes a signal or wait: Linux may leave a
                 // terminal zombie for a different natural parent after our
                 // ptracer wait. Only observe that same retained generation.
                 let mut absent = Vec::new();
                 for (pid, identity) in observations.iter() {
-                    if !identity.observe_same_process()? {
+                    if !legacy_cleanup_observe!(
+                        "fatal-terminal-identity-observe",
+                        *pid,
+                        Some(injected_error_tests::RefusalGeneration::of(identity)),
+                        identity.observe_same_process()
+                    )? {
                         absent.push(*pid);
                     }
                 }
@@ -1672,18 +1883,39 @@ impl LiteinstTraceeCleanup {
                 // reaped. Otherwise an auto-attached child can be reparented
                 // before its notifier consumes the final wait status.
                 if !root_done && descendants.is_empty() && self.identity.is_our_tracee() {
-                    root_terminal
-                        .revoke_unclaimed_exit_stop()
-                        .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
-                    let _ = ptrace::cont(self.pid().into(), None);
+                    legacy_cleanup_observe!(
+                        "root-cleanup-exit-revocation",
+                        self.pid(),
+                        Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                        root_terminal.revoke_unclaimed_exit_stop()
+                    )
+                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                    let _ = legacy_cleanup_observe!(
+                        "root-cleanup-cont",
+                        self.pid(),
+                        Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                        ptrace::cont(self.pid().into(), None)
+                    );
                 }
                 for tracee in descendants.values() {
                     if tracee.identity.is_our_tracee() {
-                        tracee
-                            .terminal
-                            .revoke_unclaimed_exit_stop()
-                            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
-                        let _ = ptrace::cont(tracee.identity.tid.into(), None);
+                        legacy_cleanup_observe!(
+                            "descendant-cleanup-exit-revocation",
+                            tracee.identity.tid,
+                            Some(injected_error_tests::RefusalGeneration::of(
+                                &tracee.identity
+                            )),
+                            tracee.terminal.revoke_unclaimed_exit_stop()
+                        )
+                        .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                        let _ = legacy_cleanup_observe!(
+                            "descendant-cleanup-cont",
+                            tracee.identity.tid,
+                            Some(injected_error_tests::RefusalGeneration::of(
+                                &tracee.identity
+                            )),
+                            ptrace::cont(tracee.identity.tid.into(), None)
+                        );
                     }
                 }
             }
@@ -1692,20 +1924,25 @@ impl LiteinstTraceeCleanup {
             }
         }
 
-        Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            if self.fatal_terminal_observations.is_some() {
-                format!(
-                    "LiteInst tracee {} cleanup or fatal terminal-disappearance confirmation timed out",
-                    self.pid()
-                )
-            } else {
-                format!(
-                    "notifier did not acknowledge terminal cleanup for LiteInst tracee {}",
-                    self.pid()
-                )
-            },
-        ))
+        legacy_cleanup_observe!(
+            "cleanup-confirmation-timeout",
+            self.pid(),
+            Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                if self.fatal_terminal_observations.is_some() {
+                    format!(
+                        "LiteInst tracee {} cleanup or fatal terminal-disappearance confirmation timed out",
+                        self.pid()
+                    )
+                } else {
+                    format!(
+                        "notifier did not acknowledge terminal cleanup for LiteInst tracee {}",
+                        self.pid()
+                    )
+                },
+            ))
+        )
     }
 
     fn discover_descendants(
@@ -1749,10 +1986,15 @@ impl LiteinstTraceeCleanup {
                 .expect("listed newborn must remain registered");
             let identity = match newborn.identity.take() {
                 Some(identity) => identity,
-                None => match TraceeIdentity::capture_event_child(
-                    newborn.link.tid,
-                    newborn.link.parent_tid,
-                    newborn.link.op,
+                None => match legacy_cleanup_observe!(
+                    "event-child-identity",
+                    tid,
+                    None,
+                    TraceeIdentity::capture_event_child(
+                        newborn.link.tid,
+                        newborn.link.parent_tid,
+                        newborn.link.op,
+                    )
                 ) {
                     Ok(identity) => identity,
                     Err(error) => {
@@ -1787,7 +2029,12 @@ impl LiteinstTraceeCleanup {
             .is_some_and(|flag| flag.load(Ordering::SeqCst))
         {
             self.restore_transferred_newborns(descendants, &mut transferred, &mut absorbed);
-            return Err(std::io::Error::from_raw_os_error(libc::EIO));
+            return legacy_cleanup_observe!(
+                "discovery-persistent-refusal",
+                self.pid(),
+                Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                Err(std::io::Error::from_raw_os_error(libc::EIO))
+            );
         }
         #[cfg(test)]
         if self
@@ -1796,10 +2043,20 @@ impl LiteinstTraceeCleanup {
             .is_some_and(|flag| flag.swap(false, Ordering::SeqCst))
         {
             self.restore_transferred_newborns(descendants, &mut transferred, &mut absorbed);
-            return Err(std::io::Error::from_raw_os_error(libc::EIO));
+            return legacy_cleanup_observe!(
+                "discovery-one-shot-refusal",
+                self.pid(),
+                Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                Err(std::io::Error::from_raw_os_error(libc::EIO))
+            );
         }
 
-        let task_tids = match task_tids(self.pid()) {
+        let task_tids = match legacy_cleanup_observe!(
+            "task-directory-scan",
+            self.pid(),
+            Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+            task_tids(self.pid())
+        ) {
             Ok(tids) => tids,
             Err(error) => {
                 self.restore_transferred_newborns(descendants, &mut transferred, &mut absorbed);
@@ -1813,7 +2070,12 @@ impl LiteinstTraceeCleanup {
             {
                 continue;
             }
-            let identity = match TraceeIdentity::open_task_tid(tid, self.identity.snapshot.tgid) {
+            let identity = match legacy_cleanup_observe!(
+                "task-identity-capture",
+                tid,
+                None,
+                TraceeIdentity::open_task_tid(tid, self.identity.snapshot.tgid)
+            ) {
                 Ok(Some(identity)) => identity,
                 Ok(None) => continue,
                 Err(error) => {
@@ -1821,9 +2083,14 @@ impl LiteinstTraceeCleanup {
                     return Err(error);
                 }
             };
-            let terminal = Stopped::try_new_current_unchecked(tid)
-                .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?
-                .terminal_cleanup();
+            let terminal = legacy_cleanup_observe!(
+                "task-notifier-capture",
+                tid,
+                None,
+                Stopped::try_new_current_unchecked(tid)
+            )
+            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?
+            .terminal_cleanup();
             descendants.insert(
                 tid,
                 RegisteredTraceeCleanup {
@@ -1839,7 +2106,12 @@ impl LiteinstTraceeCleanup {
             if !visited.insert(parent) {
                 continue;
             }
-            let children = match direct_children(parent) {
+            let children = match legacy_cleanup_observe!(
+                "children-list-read",
+                parent,
+                None,
+                direct_children(parent)
+            ) {
                 Ok(children) => children,
                 Err(error) => {
                     let error = std::io::Error::new(
@@ -1857,7 +2129,12 @@ impl LiteinstTraceeCleanup {
                 {
                     continue;
                 }
-                let identity = match TraceeIdentity::open_discovered(child, parent) {
+                let identity = match legacy_cleanup_observe!(
+                    "listed-child-identity",
+                    child,
+                    None,
+                    TraceeIdentity::open_discovered(child, parent)
+                ) {
                     Ok(Some(identity)) => identity,
                     Ok(None) => continue,
                     Err(error) => {
@@ -1892,7 +2169,12 @@ impl LiteinstTraceeCleanup {
             .is_some_and(|flag| flag.swap(false, Ordering::SeqCst))
         {
             self.restore_transferred_newborns(descendants, &mut transferred, &mut absorbed);
-            return Err(std::io::Error::from_raw_os_error(libc::EIO));
+            return legacy_cleanup_observe!(
+                "post-scan-one-shot-refusal",
+                self.pid(),
+                Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                Err(std::io::Error::from_raw_os_error(libc::EIO))
+            );
         }
         Ok(())
     }
@@ -1930,7 +2212,12 @@ fn send_identity_sigkill(identity: &TraceeIdentity) -> std::io::Result<()> {
         // separately on the owning tracer thread.
         return Ok(());
     }
-    match identity.send_signal(Signal::SIGKILL) {
+    match legacy_cleanup_observe!(
+        "descendant-kill-signal-delivery-site3",
+        identity.tid,
+        Some(injected_error_tests::RefusalGeneration::of(identity)),
+        identity.send_signal(Signal::SIGKILL)
+    ) {
         Ok(()) | Err(Errno::ESRCH) => Ok(()),
         Err(error) => Err(std::io::Error::from_raw_os_error(error.into_raw())),
     }
@@ -1941,6 +2228,8 @@ impl Drop for LiteinstTraceeCleanup {
         if !self.armed {
             return;
         }
+        #[cfg(all(test, target_arch = "x86_64"))]
+        injected_error_tests::refusal_armed_drop(self.pid());
         // Cancellation cannot await an orderly drain, so synchronously request
         // termination and wait for the notifier-owned final reap. Before async
         // registration, the bounded raw-wait fallback owns cleanup instead.
@@ -2079,9 +2368,20 @@ fn direct_children(pid: Pid) -> std::io::Result<Vec<Pid>> {
             if error.kind() == std::io::ErrorKind::NotFound
                 && !std::path::Path::new(&process_path).exists() =>
         {
+            #[cfg(all(test, target_arch = "x86_64"))]
+            injected_error_tests::refusal_handled_children_absence(pid, &error);
             return Ok(Vec::new());
         }
         Err(error) => {
+            #[cfg(all(test, target_arch = "x86_64"))]
+            {
+                let _phase = injected_error_tests::RefusalPhase::enter(
+                    "children-task-directory-open",
+                    pid,
+                    None,
+                );
+                injected_error_tests::refusal_leaf_error(None, &error, None);
+            }
             return Err(std::io::Error::new(
                 error.kind(),
                 format!("read {process_path}/task: {error}"),
@@ -2090,8 +2390,13 @@ fn direct_children(pid: Pid) -> std::io::Result<Vec<Pid>> {
     };
     let mut children = Vec::new();
     for task in task_dir {
-        let task = task?;
-        let contents = match fs::read_to_string(task.path().join("children")) {
+        let task = legacy_cleanup_observe!("children-task-directory-entry", pid, None, task)?;
+        let contents = match legacy_cleanup_observe!(
+            "children-file-read",
+            pid,
+            None,
+            fs::read_to_string(task.path().join("children"))
+        ) {
             Ok(contents) => contents,
             Err(error)
                 if error.kind() == std::io::ErrorKind::NotFound && !*PROC_CHILDREN_SUPPORTED =>
@@ -4891,7 +5196,7 @@ mod tests {
         let _observations = FatalReapObservationScope::new();
         let words = FatalWords::new();
         let address = words.0 as usize;
-        let sentinel = fork_paused_child();
+        let sentinel = fork_paused_child(deadline);
         let sentinel_identity = untraced_process_identity(sentinel);
         let tracer = spawn_fn_with_config::<FatalTool, _>(
             move || {
@@ -6330,7 +6635,7 @@ mod tests {
         let address = words.0 as usize;
         pause.waiting_word.store(address, Ordering::SeqCst);
         crate::task::FATAL_FORK_PAUSE.with(|slot| *slot.borrow_mut() = Some(pause.clone()));
-        let sentinel = fork_paused_child();
+        let sentinel = fork_paused_child(Instant::now() + Duration::from_millis(100));
         let sentinel_identity = untraced_process_identity(sentinel);
         let tracer = spawn_fn_with_config::<FatalTool, _>(
             move || {
@@ -6695,13 +7000,702 @@ mod tests {
         );
     }
 
-    fn fork_paused_child() -> Pid {
-        match unsafe { unistd::fork() }.expect("fork test child") {
-            ForkResult::Child => loop {
-                unsafe { libc::pause() };
-            },
-            ForkResult::Parent { child } => Pid::from(child),
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn paused_sentinel_does_not_retain_counted_fifo_writer() -> std::io::Result<()> {
+        use std::io::Read;
+        use std::io::Seek;
+        use std::io::SeekFrom;
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+        use std::os::fd::FromRawFd;
+        use std::os::fd::OwnedFd;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // This sole natural waiter owns the original unreaped child from fork.
+        // Install its bounded cleanup scope before any fallible identity read.
+        struct FifoSentinel {
+            pid: Pid,
+            pidfd: Option<OwnedFd>,
+            status: Option<i32>,
+            deadline: Instant,
+            cleanup_deadline: Option<Instant>,
+            wait_authority_lost: bool,
         }
+        impl FifoSentinel {
+            fn finish(&mut self) -> std::io::Result<i32> {
+                if let Some(status) = self.status {
+                    return Ok(status);
+                }
+                if self.wait_authority_lost {
+                    return Err(std::io::Error::other(
+                        "original sentinel wait authority was refused; no further signal or wait",
+                    ));
+                }
+                let cleanup_deadline = *self.cleanup_deadline.get_or_insert_with(|| {
+                    self.deadline.min(Instant::now() + Duration::from_secs(2))
+                });
+                let signal = unsafe {
+                    if let Some(pidfd) = &self.pidfd {
+                        libc::syscall(
+                            libc::SYS_pidfd_send_signal,
+                            pidfd.as_raw_fd(),
+                            libc::SIGKILL,
+                            std::ptr::null::<libc::siginfo_t>(),
+                            0,
+                        ) as i32
+                    } else {
+                        // A lost original wait cannot authorize a later numeric
+                        // signal during Drop. Preserve uncertainty rather than
+                        // treating ECHILD as terminal confirmation.
+                        sentinel_wait_policy()?;
+                        let mut info: libc::siginfo_t = std::mem::zeroed();
+                        if libc::waitid(
+                            libc::P_PID,
+                            self.pid.as_raw() as libc::id_t,
+                            &mut info,
+                            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                        ) != 0
+                        {
+                            let error = std::io::Error::last_os_error();
+                            self.wait_authority_lost = true;
+                            return Err(error);
+                        }
+                        if info.si_pid() == self.pid.as_raw() {
+                            0 // already terminal: consume the original wait below
+                        } else if info.si_pid() == 0 {
+                            libc::kill(self.pid.as_raw(), libc::SIGKILL)
+                        } else {
+                            self.wait_authority_lost = true;
+                            return Err(std::io::Error::other(
+                                "sentinel original wait identity mismatch",
+                            ));
+                        }
+                    }
+                };
+                let signal_errno = (signal != 0).then(std::io::Error::last_os_error);
+                loop {
+                    let mut status = 0;
+                    let waited =
+                        unsafe { libc::waitpid(self.pid.as_raw(), &mut status, libc::WNOHANG) };
+                    if waited == self.pid.as_raw() {
+                        self.status = Some(status);
+                        if Instant::now() >= cleanup_deadline {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "actual sentinel wait exceeded original cleanup or total bound",
+                            ));
+                        }
+                        return Ok(status);
+                    }
+                    if waited < 0 {
+                        let error = std::io::Error::last_os_error();
+                        if error.kind() != std::io::ErrorKind::Interrupted {
+                            self.wait_authority_lost = true;
+                            return Err(error);
+                        }
+                    }
+                    if Instant::now() >= cleanup_deadline {
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "FIFO_SENTINEL_CLEANUP_UNCONFIRMED pid={} signal={signal} signal_error={signal_errno:?}",
+                            self.pid
+                        );
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "sentinel cleanup did not produce an actual original wait",
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+        impl Drop for FifoSentinel {
+            fn drop(&mut self) {
+                if self.status.is_none() {
+                    // Same absolute deadline, including unexpected unwind.
+                    let _ = self.finish();
+                }
+            }
+        }
+        fn pidfd_not_ready(fd: i32) -> std::io::Result<bool> {
+            let mut entry = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let result = unsafe { libc::poll(&mut entry, 1, 0) };
+            if result < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if entry.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+                return Err(std::io::Error::other("original sentinel pidfd refused"));
+            }
+            Ok(result == 0 && entry.revents == 0)
+        }
+        let started = Instant::now();
+        let predicate_deadline = started + Duration::from_secs(3);
+        let final_deadline = started + Duration::from_secs(5);
+        // Refuse automatic natural reap before creating our owned PID anchor.
+        let mut disposition: libc::sigaction = unsafe { std::mem::zeroed() };
+        if unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut disposition) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if disposition.sa_sigaction == libc::SIG_IGN
+            || disposition.sa_flags & libc::SA_NOCLDWAIT != 0
+        {
+            return Err(std::io::Error::other(
+                "sentinel test requires retained child wait ownership",
+            ));
+        }
+        let directory =
+            std::env::temp_dir().join(format!("reverie-counted-fifo-{}", std::process::id()));
+        std::fs::create_dir(&directory)?;
+        let fifo_path = directory.join("counted.fifo");
+        use std::os::unix::ffi::OsStrExt;
+        let fifo_c = std::ffi::CString::new(fifo_path.as_os_str().as_bytes())
+            .map_err(std::io::Error::other)?;
+        if unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut reader = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(&fifo_path)?;
+        let writer = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(&fifo_path)?;
+        let writer_fd = writer.as_raw_fd();
+        if writer_fd < 3 {
+            return Err(std::io::Error::other(
+                "FIFO writer must be a non-stdio descriptor",
+            ));
+        }
+        let parent_path = directory.join("parent-owned.log");
+        let mut parent_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&parent_path)?;
+        parent_file.write_all(b"before-")?;
+        let writer_flags = unsafe { libc::fcntl(writer_fd, libc::F_GETFD) };
+        if writer_flags < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if writer_flags & libc::FD_CLOEXEC == 0 {
+            return Err(std::io::Error::other(
+                "FIFO discriminator must retain CLOEXEC across fork",
+            ));
+        }
+        let pid = fork_paused_child(predicate_deadline);
+        let mut sentinel = FifoSentinel {
+            pid,
+            pidfd: None,
+            status: None,
+            deadline: final_deadline,
+            cleanup_deadline: None,
+            wait_authority_lost: false,
+        };
+        // Only the parent's writer is dropped. Child EOF is the predicate.
+        drop(writer);
+        let observed = (|| -> std::io::Result<(TraceeSnapshot, String, usize)> {
+            let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), 0) };
+            if raw < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            sentinel.pidfd = Some(unsafe { OwnedFd::from_raw_fd(raw as i32) });
+            let pidfd = sentinel.pidfd.as_ref().unwrap().as_raw_fd();
+            let original = tracee_snapshot(pid)?;
+            if original.tgid != pid
+                || original.ppid.as_raw() != std::process::id() as i32
+                || original.tracer_pid.as_raw() != 0
+            {
+                return Err(std::io::Error::other(
+                    "unexpected original sentinel identity",
+                ));
+            }
+            let mut would_block = 0usize;
+            loop {
+                let mut byte = [0u8; 1];
+                let eof = match reader.read(&mut byte) {
+                    Ok(0) => true,
+                    Ok(_) => return Err(std::io::Error::other("unexpected counted FIFO data")),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        would_block += 1;
+                        false
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                        if Instant::now() >= predicate_deadline {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "FIFO observation interrupted through original three-second bound",
+                            ));
+                        }
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                // close_range failure exits 90. Require the original task to
+                // have actually reached pause; EOF during exit cannot pass.
+                let syscall = std::fs::read_to_string(format!("/proc/{pid}/syscall"))?;
+                let paused = syscall
+                    .split_whitespace()
+                    .next()
+                    .and_then(|number| number.parse::<i64>().ok())
+                    == Some(libc::SYS_pause);
+                let current = tracee_snapshot(pid)?;
+                let live = pidfd_not_ready(pidfd)?;
+                if current != original || !live {
+                    return Err(std::io::Error::other(
+                        "sentinel exited or changed before FIFO verdict",
+                    ));
+                }
+                if Instant::now() >= predicate_deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!(
+                            "FIFO writer remains while original child reached pause: pid={pid} generation={original:?} paused={paused} eof={eof} pidfd_live={live} would_block={would_block}"
+                        ),
+                    ));
+                }
+                if eof && paused {
+                    parent_file.write_all(b"after")?;
+                    parent_file.seek(SeekFrom::Start(0))?;
+                    let mut parent_bytes = [0u8; 12];
+                    parent_file.read_exact(&mut parent_bytes)?;
+                    if &parent_bytes != b"before-after" {
+                        return Err(std::io::Error::other("parent-owned descriptor changed"));
+                    }
+                    if !pidfd_not_ready(pidfd)? || tracee_snapshot(pid)? != original {
+                        return Err(std::io::Error::other(
+                            "sentinel stopped being live during parent-FD check",
+                        ));
+                    }
+                    if Instant::now() >= predicate_deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "FIFO/parent-FD observation completed after original three seconds",
+                        ));
+                    }
+                    return Ok((original, syscall, would_block));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })();
+        // Seal the untouched-live/EOF or specific old-behavior failure BEFORE
+        // any signal. All Result errors and assertions follow this owned wait.
+        let retirement = sentinel.finish();
+        let _ = writeln!(
+            std::io::stderr(),
+            "FIFO_SENTINEL_OBSERVED pid={pid} writer_fd={writer_fd} cloexec=true observed={observed:?} retirement={retirement:?} elapsed={:?}",
+            started.elapsed()
+        );
+        let raw_status = retirement?;
+        drop(reader);
+        drop(parent_file);
+        std::fs::remove_file(&fifo_path)?;
+        std::fs::remove_file(&parent_path)?;
+        std::fs::remove_dir(&directory)?;
+        let (generation, syscall, _) = observed?; // rescue cannot create success
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(libc::WIFSIGNALED(raw_status));
+        assert_eq!(libc::WTERMSIG(raw_status), libc::SIGKILL);
+        assert_eq!(generation.tgid, pid);
+        assert_eq!(
+            syscall
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<i64>().ok()),
+            Some(libc::SYS_pause)
+        );
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        Ok(())
+    }
+
+    // The caller's existing absolute deadline stays authoritative. Simple
+    // identity fixtures use an explicit new 100 ms setup-only deadline.
+    fn fork_paused_child(deadline: Instant) -> Pid {
+        try_fork_paused_child(deadline, 0).expect("sentinel descriptor setup refused")
+    }
+
+    #[derive(Debug)]
+    struct PausedSentinelSetupRefusal {
+        cause: std::io::Error,
+        child: Option<Pid>,
+        actual_wait: Option<i32>,
+        wait_observed_after: Option<Duration>,
+        cleanup_within_bound: bool,
+        cleanup_error: Option<std::io::Error>,
+    }
+    impl PausedSentinelSetupRefusal {
+        fn before_fork(cause: std::io::Error) -> Self {
+            Self {
+                cause,
+                child: None,
+                actual_wait: None,
+                wait_observed_after: None,
+                cleanup_within_bound: false,
+                cleanup_error: None,
+            }
+        }
+    }
+
+    // Read-only admission. Every caller must preserve this process policy and
+    // remain the sole natural waiter while its original child is outstanding.
+    // In particular, no custom handler may consume this child's wait status.
+    fn sentinel_wait_policy() -> std::io::Result<()> {
+        let mut disposition: libc::sigaction = unsafe { std::mem::zeroed() };
+        if unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut disposition) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if disposition.sa_sigaction != libc::SIG_DFL
+            || disposition.sa_flags & libc::SA_NOCLDWAIT != 0
+        {
+            return Err(std::io::Error::other(
+                "sentinel requires SIGCHLD default/no-auto-reap and its sole original waiter",
+            ));
+        }
+        Ok(())
+    }
+
+    // Err preserves the setup cause, actual original PID/status/time, and an
+    // independently failed within-bound result. None status never proves exit.
+    fn try_fork_paused_child(
+        deadline: Instant,
+        close_flags: u32,
+    ) -> Result<Pid, PausedSentinelSetupRefusal> {
+        use std::os::fd::AsRawFd;
+        use std::os::fd::FromRawFd;
+        use std::os::fd::OwnedFd;
+        let started = Instant::now();
+        let setup_deadline = deadline.min(started + Duration::from_millis(100));
+        let cleanup_deadline = deadline.min(started + Duration::from_secs(2));
+        let preflight = || -> std::io::Result<(OwnedFd, OwnedFd)> {
+            sentinel_wait_policy()?;
+            let mut fds = [-1; 2];
+            if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let originals = unsafe { [OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])] };
+            // Duplicating both ends makes the >=3 property explicit even when
+            // the process entered with one or more standard descriptors closed.
+            let duplicate = |fd| -> std::io::Result<OwnedFd> {
+                let raw = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+                if raw < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(unsafe { OwnedFd::from_raw_fd(raw) })
+            };
+            let reader = duplicate(originals[0].as_raw_fd())?;
+            let writer = duplicate(originals[1].as_raw_fd())?;
+            if unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok((reader, writer))
+        };
+        let (reader, writer) = preflight().map_err(PausedSentinelSetupRefusal::before_fork)?;
+        if Instant::now() >= setup_deadline {
+            return Err(PausedSentinelSetupRefusal::before_fork(
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "sentinel setup deadline expired before fork",
+                ),
+            ));
+        }
+        let child = match unsafe { unistd::fork() }.map_err(|error| {
+            PausedSentinelSetupRefusal::before_fork(std::io::Error::from_raw_os_error(error as i32))
+        })? {
+            ForkResult::Child => {
+                let fd = writer.as_raw_fd();
+                let mut code = 0i32;
+                // Keep only this private setup writer until the explicit ACK;
+                // close it before pause. No Rust allocation or unwind in child.
+                if fd > 3
+                    && unsafe {
+                        libc::syscall(libc::SYS_close_range, 3u32, (fd - 1) as u32, close_flags)
+                    } != 0
+                {
+                    code = unsafe { *libc::__errno_location() };
+                }
+                if code == 0
+                    && unsafe {
+                        libc::syscall(
+                            libc::SYS_close_range,
+                            (fd + 1) as u32,
+                            u32::MAX,
+                            close_flags,
+                        )
+                    } != 0
+                {
+                    code = unsafe { *libc::__errno_location() };
+                }
+                let mut frame = [0u8; 5];
+                frame[0] = u8::from(code != 0);
+                frame[1..].copy_from_slice(&code.to_ne_bytes());
+                let mut sent = 0usize;
+                while sent < frame.len() {
+                    let result = unsafe {
+                        libc::write(fd, frame[sent..].as_ptr().cast(), frame.len() - sent)
+                    };
+                    if result > 0 {
+                        sent += result as usize;
+                    } else if result < 0 && unsafe { *libc::__errno_location() } == libc::EINTR {
+                        continue;
+                    } else {
+                        unsafe { libc::_exit(90) };
+                    }
+                }
+                unsafe { libc::close(fd) };
+                if code != 0 {
+                    unsafe { libc::_exit(90) };
+                }
+                loop {
+                    unsafe { libc::pause() };
+                }
+            }
+            ForkResult::Parent { child } => Pid::from(child),
+        };
+        drop(writer);
+        let mut wait_authority_lost = false;
+        let observation = (|| -> std::io::Result<()> {
+            let mut frame = [0u8; 6]; // an extra byte rejects oversized replies
+            let mut used = 0usize;
+            loop {
+                if Instant::now() >= setup_deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "sentinel setup ACK exceeded caller/setup deadline",
+                    ));
+                }
+                let count = unsafe {
+                    libc::read(
+                        reader.as_raw_fd(),
+                        frame[used..].as_mut_ptr().cast(),
+                        frame.len() - used,
+                    )
+                };
+                if count > 0 {
+                    used += count as usize;
+                    if used == frame.len() {
+                        return Err(std::io::Error::other("oversized sentinel setup ACK"));
+                    }
+                } else if count == 0 {
+                    if used != 5 {
+                        return Err(std::io::Error::other(
+                            "missing/truncated sentinel setup ACK",
+                        ));
+                    }
+                    let code = i32::from_ne_bytes(frame[1..5].try_into().unwrap());
+                    if frame[0] == 1 && code != 0 {
+                        return Err(std::io::Error::from_raw_os_error(code));
+                    }
+                    if frame[0] != 0 || code != 0 {
+                        return Err(std::io::Error::other("invalid sentinel setup ACK"));
+                    }
+                    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                    if unsafe {
+                        libc::waitid(
+                            libc::P_PID,
+                            child.as_raw() as libc::id_t,
+                            &mut info,
+                            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                        )
+                    } != 0
+                    {
+                        let error = std::io::Error::last_os_error();
+                        // ECHILD or any refused original wait is not authority
+                        // to signal a possibly reused numeric PID afterward.
+                        wait_authority_lost = true;
+                        return Err(error);
+                    }
+                    if unsafe { info.si_pid() } != 0 {
+                        return Err(std::io::Error::other(
+                            "sentinel terminated before setup publication",
+                        ));
+                    }
+                    if Instant::now() >= setup_deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "sentinel liveness observation exceeded caller/setup deadline",
+                        ));
+                    }
+                    return Ok(());
+                } else {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != std::io::ErrorKind::WouldBlock
+                        && error.kind() != std::io::ErrorKind::Interrupted
+                    {
+                        return Err(error);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })();
+        if let Err(error) = observation {
+            let mut actual = None;
+            let mut wait_observed_after = None;
+            let mut cleanup_within_bound = false;
+            let mut signal = None;
+            let mut signal_error = None;
+            // Reconfirm the original unreaped direct-child anchor before any
+            // numeric operation. A previous wait refusal cannot be repaired by
+            // recapturing a PID. No policy override or new wait budget is used.
+            let anchor = if wait_authority_lost {
+                Err(std::io::Error::other(
+                    "original setup wait authority refused; no numeric signal or consuming wait",
+                ))
+            } else {
+                sentinel_wait_policy().and_then(|()| {
+                    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                    if unsafe {
+                        libc::waitid(
+                            libc::P_PID,
+                            child.as_raw() as libc::id_t,
+                            &mut info,
+                            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                        )
+                    } != 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    let observed = unsafe { info.si_pid() };
+                    if observed == 0 {
+                        Ok(true)
+                    } else if observed == child.as_raw() {
+                        Ok(false) // actual terminal child; consume, never signal
+                    } else {
+                        Err(std::io::Error::other(
+                            "original sentinel wait identity mismatch",
+                        ))
+                    }
+                })
+            };
+            let cleanup_error = match anchor {
+                Err(refusal) => Some(refusal),
+                Ok(alive) => {
+                    if alive {
+                        // The admitted no-auto-reap/sole-waiter contract and
+                        // successful non-consuming wait retain this PID anchor.
+                        let result = unsafe { libc::kill(child.as_raw(), libc::SIGKILL) };
+                        signal_error = (result != 0).then(std::io::Error::last_os_error);
+                        signal = Some(result);
+                    }
+                    loop {
+                        let mut status = 0;
+                        let waited =
+                            unsafe { libc::waitpid(child.as_raw(), &mut status, libc::WNOHANG) };
+                        if waited == child.as_raw() {
+                            let observed = Instant::now();
+                            actual = Some(status);
+                            wait_observed_after = Some(observed.duration_since(started));
+                            cleanup_within_bound = observed < cleanup_deadline;
+                            // A real late status is retained, but cannot satisfy
+                            // the same precomputed cleanup deadline.
+                            break (!cleanup_within_bound).then(|| {
+                                std::io::Error::new(
+                                    std::io::ErrorKind::TimedOut,
+                                    "actual sentinel reap observed after original cleanup deadline",
+                                )
+                            });
+                        }
+                        if waited < 0 {
+                            let refusal = std::io::Error::last_os_error();
+                            if refusal.kind() != std::io::ErrorKind::Interrupted {
+                                break Some(refusal); // no later numeric signal
+                            }
+                        }
+                        let remaining = cleanup_deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            break Some(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "sentinel original-child cleanup remains unconfirmed at existing deadline",
+                            ));
+                        }
+                        std::thread::sleep(remaining.min(Duration::from_millis(1)));
+                    }
+                }
+            };
+            let failure = PausedSentinelSetupRefusal {
+                cause: error,
+                child: Some(child),
+                actual_wait: actual,
+                wait_observed_after,
+                cleanup_within_bound,
+                cleanup_error,
+            };
+            let _ = writeln!(
+                std::io::stderr(),
+                "SENTINEL_SETUP_REFUSED failure={failure:?} signal={signal:?} signal_error={signal_error:?} elapsed={:?}",
+                started.elapsed()
+            );
+            return Err(failure);
+        }
+        Ok(child)
+    }
+
+    #[test]
+    fn paused_sentinel_setup_refusal_is_not_live_success() {
+        let started = Instant::now();
+        // Invalid close_range flags fail inside the real child before an ACK
+        // of success. Assertions follow its original natural wait.
+        let result = try_fork_paused_child(started + Duration::from_secs(3), u32::MAX);
+        let failure = match result {
+            Err(failure) => failure,
+            Ok(child) => {
+                // A broken setup guard must not leak its successful child when
+                // this negative assertion fires. Retire only that original PID.
+                let signal = unsafe { libc::kill(child.as_raw(), libc::SIGKILL) };
+                let mut actual = None;
+                while Instant::now() < started + Duration::from_secs(3) {
+                    let mut status = 0;
+                    let waited =
+                        unsafe { libc::waitpid(child.as_raw(), &mut status, libc::WNOHANG) };
+                    if waited == child.as_raw() {
+                        actual = Some(status);
+                        break;
+                    }
+                    if waited < 0
+                        && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+                    {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                panic!(
+                    "invalid flags admitted a live sentinel: pid={child} separate_signal={signal} separate_wait={actual:?}"
+                );
+            }
+        };
+        assert_eq!(failure.cause.raw_os_error(), Some(libc::EINVAL));
+        let child = failure.child.expect("actual setup child");
+        let status = failure
+            .actual_wait
+            .expect("original setup child was not reaped");
+        assert!(
+            failure.cleanup_within_bound,
+            "actual wait did not meet original cleanup deadline"
+        );
+        assert!(
+            failure.cleanup_error.is_none(),
+            "{:?}",
+            failure.cleanup_error
+        );
+        assert!(
+            failure
+                .wait_observed_after
+                .expect("actual wait observation time")
+                < Duration::from_secs(2)
+        );
+        assert!(libc::WIFEXITED(status) || libc::WIFSIGNALED(status));
+        if libc::WIFEXITED(status) {
+            assert_eq!(libc::WEXITSTATUS(status), 90);
+        } else {
+            assert_eq!(libc::WTERMSIG(status), libc::SIGKILL);
+        }
+        assert!(!std::path::Path::new(&format!("/proc/{child}")).exists());
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     fn fork_paused_grandchild() -> (Pid, Pid, std::os::unix::net::UnixStream) {
@@ -7778,14 +8772,14 @@ mod tests {
 
     #[test]
     fn stale_pidfd_identity_never_signals_reused_numeric_pid() {
-        let old_pid = fork_paused_child();
+        let old_pid = fork_paused_child(Instant::now() + Duration::from_millis(100));
         let mut identity = untraced_process_identity(old_pid);
         identity
             .send_signal(Signal::SIGKILL)
             .expect("kill old child");
         Running::new(old_pid).wait().expect("reap old child");
 
-        let unrelated_pid = fork_paused_child();
+        let unrelated_pid = fork_paused_child(Instant::now() + Duration::from_millis(100));
         identity.tid = unrelated_pid;
         assert_eq!(identity.send_signal(Signal::SIGKILL), Err(Errno::ESRCH));
         assert_eq!(unsafe { libc::kill(unrelated_pid.as_raw(), 0) }, 0);
@@ -7808,7 +8802,7 @@ mod tests {
             );
         }
 
-        let replacement = fork_paused_child();
+        let replacement = fork_paused_child(Instant::now() + Duration::from_millis(100));
         assert!(skippable_tracee_open_error(replacement, Errno::ESRCH));
         assert!(!skippable_tracee_open_error(replacement, Errno::EMFILE));
         unsafe { libc::kill(replacement.as_raw(), libc::SIGKILL) };
@@ -7855,7 +8849,7 @@ mod tests {
 
     #[test]
     fn tracee_generation_survives_zombie_until_real_reap() {
-        let pid = fork_paused_child();
+        let pid = fork_paused_child(Instant::now() + Duration::from_millis(100));
         let identity = untraced_process_identity(pid);
         identity
             .send_signal(Signal::SIGKILL)
@@ -7904,7 +8898,7 @@ mod tests {
             .expect("reap traced child");
         assert_eq!(wait.assume_exited().1, ExitStatus::Exited(0));
 
-        let unrelated_pid = fork_paused_child();
+        let unrelated_pid = fork_paused_child(Instant::now() + Duration::from_millis(100));
         let unrelated_identity = untraced_process_identity(unrelated_pid);
         assert!(
             !terminal_descendant_remains_owned(&unrelated_identity),

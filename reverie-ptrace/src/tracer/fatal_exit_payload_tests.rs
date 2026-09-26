@@ -14,7 +14,7 @@ mod fatal_exit_payload_tests {
         let _observations = FatalReapObservationScope::new();
         let control = Arc::new(ExitPayloadControl::default());
         EXIT_PAYLOAD_CONTROL.with(|slot| *slot.borrow_mut() = Some(control.clone()));
-        let sentinel = fork_paused_child();
+        let sentinel = fork_paused_child(deadline);
         let sentinel_identity = untraced_process_identity(sentinel);
         let tracer = tokio::time::timeout(
             deadline.saturating_duration_since(Instant::now()),
@@ -169,7 +169,7 @@ mod fatal_exit_payload_tests {
         EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = Some(control.clone()));
         let words = FatalWords::new();
         let address = words.0 as usize;
-        let sentinel = fork_paused_child();
+        let sentinel = fork_paused_child(deadline);
         let sentinel_identity = untraced_process_identity(sentinel);
         let tracer = tokio::time::timeout(
             deadline.saturating_duration_since(Instant::now()),
